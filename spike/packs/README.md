@@ -60,6 +60,17 @@ reads `found` when the run settles.
 8. **No secrets in output.** A secret scanner's lead shows a redacted value and
    a hash. It never shows the full secret.
 
+## Shared helpers
+
+- `lib/wrap.mjs` `runTool()` runs one tool in Docker. It mounts the workspace
+  at `/work`, has no network, drops all capabilities, and runs as the host user.
+- `lib/wrap.mjs` `sarifLeads()` turns a SARIF log into leads.
+- `lib/ensemble.mjs` `mergeStatic()` merges leads from two or more engines. A
+  spot two engines agree on is marked `corroborated` and ranks first.
+- `lib/event.mjs` `event()` writes one run event.
+
+Use these. Do not write a second Docker runner or SARIF parser in a pack.
+
 ## Proof kinds
 
 | Kind       | A finding is real when…                                             | Modules |
