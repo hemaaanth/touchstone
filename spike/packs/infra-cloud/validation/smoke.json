@@ -1,0 +1,81 @@
+{
+  "smoke": "pass",
+  "leads": 183,
+  "proven": 183,
+  "cryptoChecks": [
+    "public-signer-load-balancer",
+    "hot-wallet-key-in-config",
+    "exposed-signer-service",
+    "internet-rpc-admin-namespaces",
+    "ci-can-exec-signers",
+    "broad-kms-sign",
+    "internet-signer-security-group",
+    "frontend-public-write",
+    "frontend-object-lock-missing",
+    "frontend-versioning-disabled",
+    "ci-can-write-frontend"
+  ],
+  "coverage": [
+    {
+      "engine": "trivy",
+      "status": "ok",
+      "code": 0,
+      "reported": 85,
+      "unlocated": 0,
+      "leads": 85
+    },
+    {
+      "engine": "kics",
+      "status": "ok",
+      "code": 0,
+      "reported": 88,
+      "unlocated": 0,
+      "leads": 88
+    },
+    {
+      "engine": "prowler",
+      "status": "ok",
+      "findings": 3
+    }
+  ],
+  "cloud": {
+    "engine": "prowler",
+    "status": "ok",
+    "source": "private moto lab seeded from pinned IaC",
+    "seed": {
+      "bucket": "touchstone-lab-frontend",
+      "acl": "public-read-write",
+      "versioning": "Suspended",
+      "objectLock": false,
+      "publicAccessBlock": {
+        "BlockPublicAcls": false,
+        "BlockPublicPolicy": false,
+        "IgnorePublicAcls": false,
+        "RestrictPublicBuckets": false
+      }
+    },
+    "code": 3,
+    "findings": [
+      {
+        "check": "s3_bucket_object_lock",
+        "status": "FAIL"
+      },
+      {
+        "check": "s3_bucket_object_versioning",
+        "status": "FAIL"
+      },
+      {
+        "check": "s3_bucket_public_write_acl",
+        "status": "PASS"
+      }
+    ],
+    "liveConfig": {
+      "versioning": "Suspended",
+      "objectLock": false,
+      "publicWriteAcl": false
+    }
+  },
+  "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+  "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+  "spendUsd": 0
+}

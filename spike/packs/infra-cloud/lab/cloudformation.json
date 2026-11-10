@@ -1,0 +1,28 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Throwaway crypto infrastructure. Never deploy.",
+  "Resources": {
+    "ValidatorLB": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "Scheme": "internet-facing",
+        "Type": "network",
+        "Subnets": ["subnet-00000000", "subnet-11111111"],
+        "Tags": [{ "Key": "touchstone-role", "Value": "validator" }]
+      }
+    },
+    "ValidatorListener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "LoadBalancerArn": { "Ref": "ValidatorLB" },
+        "Port": 9000,
+        "Protocol": "TCP",
+        "DefaultActions": [{ "Type": "forward", "TargetGroupArn": { "Ref": "ValidatorTargets" } }]
+      }
+    },
+    "ValidatorTargets": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": { "Port": 9000, "Protocol": "TCP", "VpcId": "vpc-00000000", "TargetType": "instance", "Targets": [{ "Id": "i-00000000000000000" }] }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+FROM debian:bookworm-slim
+ADD --checksum=sha256:25649b3e1212a86bbd467d3e73812218459455c335fad7aaed7fe458782355c5 https://github.com/kubescape/kubescape/releases/download/v4.0.20/kubescape_4.0.20_linux_amd64 /usr/local/bin/kubescape
+ADD --checksum=sha256:972b20839b2159d2db1311d9ac95b995d8fdeadcd8c2a02b176e88a127c84e66 https://github.com/kubescape/regolibrary/releases/download/v2/workloadscan /opt/policies/workloadscan.json
+ADD --checksum=sha256:6e05e01793eecc8dad788ae3b0d83138ae9eddb6f5932c113ae1bd8ffc97b8c7 https://github.com/kubescape/regolibrary/releases/download/v2/default_config_inputs /opt/policies/controls-config.json
+ADD --checksum=sha256:e7f1ad0e9dcae362c4b365ea1dde9f22d8663d9c9e4ca51c84a5f5c71618ec4b https://github.com/kubescape/regolibrary/releases/download/v2/exceptions /opt/policies/exceptions.json
+RUN chmod 755 /usr/local/bin/kubescape && chmod 644 /opt/policies/*
+ENTRYPOINT ["/usr/local/bin/kubescape"]

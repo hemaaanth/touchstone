@@ -1,0 +1,76 @@
+{
+  "risky": {
+    "engine": "prowler",
+    "status": "ok",
+    "source": "private moto lab seeded from pinned IaC",
+    "seed": {
+      "bucket": "touchstone-lab-frontend",
+      "acl": "public-read-write",
+      "versioning": "Suspended",
+      "objectLock": false,
+      "publicAccessBlock": {
+        "BlockPublicAcls": false,
+        "BlockPublicPolicy": false,
+        "IgnorePublicAcls": false,
+        "RestrictPublicBuckets": false
+      }
+    },
+    "code": 3,
+    "findings": [
+      {
+        "check": "s3_bucket_object_lock",
+        "status": "FAIL"
+      },
+      {
+        "check": "s3_bucket_object_versioning",
+        "status": "FAIL"
+      },
+      {
+        "check": "s3_bucket_public_write_acl",
+        "status": "PASS"
+      }
+    ],
+    "liveConfig": {
+      "versioning": "Suspended",
+      "objectLock": false,
+      "publicWriteAcl": false
+    }
+  },
+  "safe": {
+    "engine": "prowler",
+    "status": "ok",
+    "source": "private moto lab seeded from pinned IaC",
+    "seed": {
+      "bucket": "touchstone-lab-frontend",
+      "acl": "private",
+      "versioning": "Enabled",
+      "objectLock": true,
+      "publicAccessBlock": {
+        "BlockPublicAcls": false,
+        "BlockPublicPolicy": false,
+        "IgnorePublicAcls": false,
+        "RestrictPublicBuckets": false
+      }
+    },
+    "code": 0,
+    "findings": [
+      {
+        "check": "s3_bucket_object_lock",
+        "status": "PASS"
+      },
+      {
+        "check": "s3_bucket_object_versioning",
+        "status": "PASS"
+      },
+      {
+        "check": "s3_bucket_public_write_acl",
+        "status": "PASS"
+      }
+    ],
+    "liveConfig": {
+      "versioning": "Enabled",
+      "objectLock": true,
+      "publicWriteAcl": false
+    }
+  }
+}

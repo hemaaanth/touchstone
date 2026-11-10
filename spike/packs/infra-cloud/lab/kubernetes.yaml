@@ -1,0 +1,124 @@
+# Throwaway lab manifest. Never apply. Never fund its generated wallet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signers
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hot-wallet
+  namespace: signers
+data:
+  HOT_WALLET_PRIVATE_KEY: "0xb316f766d5530fab0ddd66e87dbda90f02895cd22ad259a3be4f0d5b6b2f4005"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signer
+  namespace: signers
+spec:
+  selector:
+    matchLabels:
+      app: signer
+  template:
+    metadata:
+      labels:
+        app: signer
+    spec:
+      containers:
+        - name: signer
+          image: consensys/web3signer:latest
+          args: ["--http-listen-host=0.0.0.0", "--http-listen-port=9000"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: HOT_WALLET_PRIVATE_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: hot-wallet
+                  key: HOT_WALLET_PRIVATE_KEY
+          ports:
+            - containerPort: 9000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signer
+  namespace: signers
+spec:
+  type: NodePort
+  selector:
+    app: signer
+  ports:
+    - port: 9000
+      targetPort: 9000
+      nodePort: 30900
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpc
+  namespace: signers
+spec:
+  selector:
+    matchLabels:
+      app: rpc
+  template:
+    metadata:
+      labels:
+        app: rpc
+    spec:
+      containers:
+        - name: geth
+          image: ethereum/client-go:latest
+          args: ["--http", "--http.addr=0.0.0.0", "--http.port=8545", "--http.api=eth,net,web3,admin,debug,personal"]
+          ports:
+            - containerPort: 8545
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpc
+  namespace: signers
+spec:
+  type: LoadBalancer
+  selector:
+    app: rpc
+  ports:
+    - port: 8545
+      targetPort: 8545
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer
+  namespace: cicd
+  labels:
+    touchstone-role: ci
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ci-exec
+  namespace: signers
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-to-signers
+  namespace: signers
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: cicd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ci-exec
