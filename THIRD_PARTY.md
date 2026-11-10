@@ -11,3 +11,5 @@ here.
 | Nuclei GitHub takeover template v10.1.0 (lab comparison only) | [projectdiscovery/nuclei-templates](https://github.com/projectdiscovery/nuclei-templates/blob/v10.1.0/http/takeovers/github-takeover.yaml), Copyright (c) 2020 ProjectDiscovery, Inc. | MIT; notice in domains/NOTICE | spike/packs/domains/lab/github-takeover.yaml |
 | CSP parser and evaluator workflow; rules stay inside the tool image | [google/csp-evaluator](https://github.com/google/csp-evaluator), Copyright Google Inc. | Apache-2.0; upstream license stays in installed package | spike/packs/domains/analyze.mjs |
 | Retire.js advisory snapshot 5.2.5, unchanged | [RetireJS/retire.js](https://github.com/RetireJS/retire.js/tree/5.2.5), Copyright Retire.js contributors | Apache-2.0; upstream license stays in installed package | Built into the domains tool image by spike/packs/domains/Dockerfile |
+| forge-std (test library, vendored) | https://github.com/foundry-rs/forge-std | MIT or Apache-2.0 | `spike/packs/keys/lab/lib/forge-std/` |
+| forge-std (test library, vendored) | https://github.com/foundry-rs/forge-std | MIT or Apache-2.0 | `spike/packs/chain-watch/lab/lib/forge-std/` |
