@@ -7,7 +7,7 @@
 //   (cd lab/vault-reentrancy && docker run --rm -v foundry-svm:/home/foundry/.svm -v "$PWD":/work -w /work IMG 'forge build')
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 
@@ -65,9 +65,11 @@ export function makeWorkspace(targetDir) {
   const cfg = existsSync(cfgFile) ? readTouchstone(targetDir) : {};
   if (cfg.pack && cfg.pack !== "contracts") {
     // Skip by top-level name only: a nested `out` or `cache` may be real source.
-    cpSync(targetDir, ws, {
+    // Compare resolved paths, so "lab/x/" or a relative path still skips oracle/.
+    const root = resolve(targetDir);
+    cpSync(root, ws, {
       recursive: true,
-      filter: (src) => !(dirname(src) === targetDir && SKIP_DIRS.has(basename(src))),
+      filter: (src) => !(resolve(dirname(src)) === root && SKIP_DIRS.has(basename(src))),
     });
     return ws;
   }
