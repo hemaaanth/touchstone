@@ -1,0 +1,27 @@
+{
+  "proofModule": "spike/lib/proof-evidence.mjs",
+  "integratedMain": "b757617",
+  "focusedTests": { "passed": 8, "failed": 0 },
+  "mergedSpikeSuite": { "passed": 60, "failed": 0 },
+  "offlineSmoke": {
+    "captureMatchesPinnedSnapshot": true,
+    "dnsxRows": 8,
+    "httpxServices": 4,
+    "domainsReplayed": 6,
+    "approvalPatternSubmission": "rejected-review-only",
+    "surfaceInventoryLeads": 12,
+    "surfaceVulnerabilities": 0,
+    "alteredSnapshotReplay": "rejected",
+    "observatoryMissingCsp": true,
+    "observatoryMissingSri": true,
+    "spendUSD": 0
+  },
+  "liveRuns": [
+    { "pack": "domains", "model": "near/Qwen/Qwen3.8-27B", "status": "done", "findings": 3, "usd": 0.00556441 },
+    { "pack": "domains", "model": "near/Qwen/Qwen3.8-27B-abliterated", "status": "done", "findings": 6, "usd": 0.00539142 },
+    { "pack": "surface", "model": "near/Qwen/Qwen3.8-27B-abliterated", "status": "done", "inventoryLeads": 12, "findings": 0, "usd": 0.00259398 }
+  ],
+  "liveRunTotalUSD": 0.01354981,
+  "liveRunBudgetUSD": 1,
+  "liveRunNote": "Model runs preceded the shared-proof cutover. The final focused tests, full suite, and offline smoke use the shared proof."
+}

@@ -1,0 +1,8 @@
+{
+  "pack": "domains",
+  "kind": "lab",
+  "evidenceSnapshot": {
+    "file": "snapshot.json",
+    "sha256": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512"
+  }
+}
