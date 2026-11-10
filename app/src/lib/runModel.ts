@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react"
 import { fetchRun, streamRun } from "./api"
 import { isTerminal } from "./format"
+import { repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
@@ -508,6 +509,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "no-finding":
         finalText = str(e.final) || null
         break
+      case "settled": {
+        // The streamed prose can end one chunk short. The settled event holds the
+        // whole answer, so the last prose step takes it. Old records get the same repair.
+        const summary = e.summary as { final?: { text?: unknown } } | undefined
+        repairFinalSay(steps, summary?.final?.text)
+        break
+      }
       case "run-complete":
         // The engine's terminal event: the run has settled. Carries the final
         // status and the finding it recorded, if any. The stream still ends with

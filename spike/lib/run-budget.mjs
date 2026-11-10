@@ -1,6 +1,6 @@
 // Budgets belong to a run, not the lifetime spend ledger. Check between calls:
 // the final response can cost more than the amount left when it started.
-export const DEFAULT_RUN_BUDGET_USD = 5;
+export const DEFAULT_RUN_BUDGET_USD = 1;
 
 export function validateRunBudget(value) {
   const n = Number(value);

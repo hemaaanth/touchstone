@@ -24,13 +24,13 @@ import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig, runBudgetUsd } from "../../spike/lib/providers.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
-import { prepassView, prepassFailed } from "../../spike/lib/prepass-view.mjs"
+import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -278,7 +278,7 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias, targetId, modules, budgetUsd, pack } = {}) {
+export async function createRun({ alias, targetId, modules, budgetUsd, pack } = {}) {
   const cfg = readConfig()
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
@@ -305,7 +305,7 @@ export function createRun({ alias, targetId, modules, budgetUsd, pack } = {}) {
   const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
   const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
   for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
-  const ws = prepareWorkspace(target, { modules: plan })
+  const ws = await prepareRunWorkspace(target, { modules: plan })
 
   const run = {
     id,
@@ -394,6 +394,12 @@ async function startEngine(run) {
   spawnAgent(run, leads)
 }
 
+// The part of the engine's `settled` event the run view may see: the whole final text.
+function slimSettled(e) {
+  const text = e.summary?.final?.text
+  return { t: e.t ?? Date.now(), ev: "settled", summary: typeof text === "string" ? { final: { text } } : {} }
+}
+
 // Handle one engine event for a run. Shared by the audit worker and the
 // follow-up worker.
 function engineEvents(run) {
@@ -412,6 +418,9 @@ function engineEvents(run) {
         usage: e.usage ?? null,
         reports: e.reports ?? [],
       }
+      // The view gets only the final text, so it can repair prose that ended one
+      // chunk short. The findings and sources stay on the server.
+      broadcast(run, slimSettled(e))
       return
     }
     broadcast(run, e)
@@ -579,6 +588,9 @@ function followUp(run, text) {
   const target = run.target ?? (run.scope?.id ? getTarget(run.scope.id) : null)
   if (!target) throw new Error("this run's scope is no longer in the library")
   run.target = target
+  // A generated lab is new on every run, with its own throwaway keys, so a reopened
+  // session would meet a different repository than the one it audited.
+  if (target.generated) throw new Error("this run's lab was generated for that run only, so it cannot be reopened for a follow-up")
   run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
   // Steps from earlier turns are keyed by attempt; start past the last one.
   const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
@@ -777,7 +789,7 @@ function rebuildEvents(id, record, engineEvents) {
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
-  const view = prepassView(record.prepass ?? r.prepass ?? (r.static || r.fuzz ? { static: r.static, fuzz: r.fuzz } : null))
+  const view = prepassView(record.prepass ?? prepassFromResult(r))
   if (view) evs.push({ t: t0, ev: "prepass", ...view })
   // Older engines did not stream each PoC as a file. The settled summary still
   // holds every run_poc call in order, so give each attempt its file back.
@@ -785,7 +797,10 @@ function rebuildEvents(id, record, engineEvents) {
   const sources = (settled?.summary?.calls ?? []).filter((c) => c.name === "run_poc" && c.args?.test_source)
   const hasFile = new Set(engineEvents.filter((e) => e.ev === "artifact-open" && e.kind === "poc").map((e) => `${e.contract}#${e.attempt}`))
   for (const e of engineEvents) {
-    if (e.ev === "settled") continue
+    if (e.ev === "settled") {
+      evs.push(slimSettled(e))
+      continue
+    }
     evs.push(e)
     if (e.ev !== "run_poc" || !e.contract) continue
     const k = sources.findIndex((c) => c.args.contract_name === e.contract)

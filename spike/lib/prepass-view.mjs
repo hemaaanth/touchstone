@@ -119,6 +119,20 @@ export function prepassView(record) {
   return { total, tools: tools.slice(0, MAX_TOOLS), leads: sorted.slice(0, MAX_LEADS) };
 }
 
+// A CLI record (agent-run.mjs) spreads the prepass record into the top level of
+// the result instead of keeping it as `prepass`. Pick the prepass fields back out
+// by name, so old CLI records show the same fold as app records. Only the keys
+// prepassView reads are taken; the rest of the result is never touched.
+export function prepassFromResult(r) {
+  const res = obj(r);
+  if (res.prepass) return res.prepass;
+  if (res.static || res.fuzz) return { static: res.static, fuzz: res.fuzz };
+  const out = {};
+  for (const k of ["coverage", "tools", "leads", "mode", "pack", "suspects", "top"]) if (res[k] != null) out[k] = res[k];
+  // `top` alone is the chain packs' shape; a result with only `pack` is not a prepass.
+  return out.coverage || out.tools || out.leads || out.top ? out : null;
+}
+
 // What the run view shows when a pack's prepass threw. The error text can hold a
 // secret (a scanner's output), so it is never copied.
 export const prepassFailed = () => ({ total: 0, tools: [], leads: [], failed: true });
