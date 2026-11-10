@@ -30,6 +30,7 @@ import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
+import { prepassView, prepassFailed } from "../../spike/lib/prepass-view.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -376,10 +377,16 @@ async function startEngine(run) {
     run.static = prep?.record?.static
     run.fuzz = prep?.record?.fuzz
     leads = prep?.env ?? {}
+    // One neutral summary of what the tools found, for every pack. The raw
+    // static-scan and fuzz-scan events above stay for the finding panels.
+    const view = prepassView(run.prepass)
+    if (view) broadcast(run, { t: Date.now(), ev: "prepass", ...view })
   } catch (err) {
     // A pre-pass failure must not sink the run: the agent can still audit from
     // source with no leads. Record the reason as diagnostic noise and continue.
     run.stderr += `[prepass] ${String(err?.message ?? err)}\n`
+    // The view gets a generic note only: scanner error text can hold a secret.
+    broadcast(run, { t: Date.now(), ev: "prepass", ...prepassFailed() })
   }
   // The run may have been torn down while scanning (e.g. process restart); only
   // start the agent if it is still live.
@@ -770,6 +777,8 @@ function rebuildEvents(id, record, engineEvents) {
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
+  const view = prepassView(record.prepass ?? r.prepass ?? (r.static || r.fuzz ? { static: r.static, fuzz: r.fuzz } : null))
+  if (view) evs.push({ t: t0, ev: "prepass", ...view })
   // Older engines did not stream each PoC as a file. The settled summary still
   // holds every run_poc call in order, so give each attempt its file back.
   const settled = engineEvents.find((e) => e.ev === "settled")

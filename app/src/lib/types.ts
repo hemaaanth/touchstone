@@ -131,6 +131,29 @@ export interface FuzzSuspect {
 }
 
 // The fuzz pre-pass summary: which invariant the fuzzers broke that fed the agent.
+// What a pack's tool scan found before the agent started, the same shape for
+// every pack (built by spike/lib/prepass-view.mjs). Leads are not findings.
+export interface PrepassTool {
+  name: string
+  status: "ran" | "unavailable"
+  reason: string | null
+  leads: number
+}
+export interface PrepassLead {
+  check: string
+  impact: string
+  where: string
+  detail: string
+  tools: string[]
+  corroborated: boolean
+}
+export interface PrepassView {
+  total: number
+  tools: PrepassTool[]
+  leads: PrepassLead[]
+  failed?: boolean
+}
+
 export interface FuzzScan {
   tool: string
   // Which fuzz engines ran this pass (e.g. ["Echidna", "Medusa"]).
@@ -296,6 +319,7 @@ export interface RunEvent {
 //   opened           { mode: "run" | "decide" }                   session begins
 //   static-scan      { suspects, engines[], top[] }               static pre-pass
 //   fuzz-scan        { suspects, engines[], top[] }               fuzz pre-pass
+//   prepass          PrepassView                                  tool scan summary
 //   list_sources     {}                                           listed sources
 //   read_source      { file }                                     read a file
 //   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
