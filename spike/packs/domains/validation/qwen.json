@@ -1,0 +1,193 @@
+{
+  "alias": "qwen",
+  "approveMode": "auto",
+  "ms": 63654,
+  "status": "done",
+  "pack": "domains",
+  "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+  "leads": [
+    {
+      "id": "f8fb217c46bff3e4",
+      "check": "dangling-cname",
+      "where": "old.touchstone.test",
+      "severity": "low",
+      "impact": "Low",
+      "description": "The CNAME points to removed.touchstone.test, which returned NXDOMAIN for A and AAAA. This proves stale DNS, not service claimability.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": []
+    },
+    {
+      "id": "c355841b2dfd92f1",
+      "check": "weak-csp",
+      "where": "http://touchstone.test:8080/",
+      "severity": "low",
+      "impact": "Low",
+      "description": "The enforcing HTTP CSP has missing or unsafe directives: object-src, script-src. Report-only policies do not enforce protection.",
+      "engine": "csp-evaluator",
+      "file": "snapshot.json",
+      "lines": []
+    },
+    {
+      "id": "a4fac2cc2becbcc0",
+      "check": "wallet-cdn-without-sri",
+      "where": "http://touchstone.test:8080/#script=http://cdn.touchstone.test:8080/ethers.js",
+      "severity": "medium",
+      "impact": "Medium",
+      "description": "The page loads a third-party wallet library without a valid SRI hash. A CDN change can change code served to wallet users.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": []
+    },
+    {
+      "id": "527f12e0a5de9b1c",
+      "check": "wallet-unlimited-approval-pattern",
+      "where": "http://www.touchstone.test:8080/bundle.js",
+      "severity": "low",
+      "impact": "Low",
+      "description": "The captured bundle combines a wallet signing or approval API with an unlimited allowance and a spender or operator. This is a review lead, not proof of malware or theft.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": [],
+      "reviewOnly": true
+    },
+    {
+      "id": "f027efec4eb2eacc",
+      "check": "dnssec-evidence-missing",
+      "where": "touchstone.test",
+      "severity": "informational",
+      "impact": "Informational",
+      "description": "The snapshot has no validated DNSSEC chain. This does not prove DNSSEC is disabled.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": []
+    },
+    {
+      "id": "38e7b6af71d0f734",
+      "check": "registry-lock-evidence-missing",
+      "where": "touchstone.test",
+      "severity": "informational",
+      "impact": "Informational",
+      "description": "The snapshot has no RDAP evidence of a registry lock. A registrar transfer lock alone is not a registry lock.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": []
+    },
+    {
+      "id": "fdab047043ba0801",
+      "check": "frontend-content-pin-missing",
+      "where": "touchstone.eth",
+      "severity": "informational",
+      "impact": "Informational",
+      "description": "The captured ENS/IPFS configuration has no matching immutable content CID and pin receipt. This proves missing evidence, not lost content.",
+      "engine": "touchstone",
+      "file": "snapshot.json",
+      "lines": []
+    }
+  ],
+  "retire": {
+    "version": "5.2.5",
+    "start": "2026-11-10T20:30:28.637Z",
+    "data": [],
+    "messages": [],
+    "errors": [],
+    "time": 0.021
+  },
+  "pocRuns": 0,
+  "findings": [
+    {
+      "n": 3,
+      "title": "wallet-cdn-without-sri",
+      "severity": "medium",
+      "poc": "a4fac2cc2becbcc0",
+      "explanation": "Check wallet-cdn-without-sri, severity medium. The page at http://touchstone.test:8080/ loads a third-party wallet library from http://cdn.touchstone.test:8080/ethers.js with no valid SRI integrity hash. A change on the CDN can change the code executed by wallet users. Fix: add a pinned SHA-256 SRI integrity attribute with the crossorigin attribute to that script tag, or host the library on our own origin.",
+      "evidence": {
+        "check": "wallet-cdn-without-sri",
+        "where": "http://touchstone.test:8080/#script=http://cdn.touchstone.test:8080/ethers.js",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512"
+      },
+      "proof": {
+        "kind": "evidence",
+        "status": "pass",
+        "check": "wallet-cdn-without-sri",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+        "detail": "Allowlisted detector confirmed the pinned evidence."
+      },
+      "proven": true
+    },
+    {
+      "n": 1,
+      "title": "weak-csp",
+      "severity": "low",
+      "poc": "c355841b2dfd92f1",
+      "explanation": "Check weak-csp, severity low. The enforcing HTTP Content-Security-Policy at http://touchstone.test:8080/ is missing object-src and script-src directives, so it does not restrict script sources or block plugin content. Fix: add an enforcing script-src limited to required origins and object-src 'none'.",
+      "evidence": {
+        "check": "weak-csp",
+        "where": "http://touchstone.test:8080/",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512"
+      },
+      "proof": {
+        "kind": "evidence",
+        "status": "pass",
+        "check": "weak-csp",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+        "detail": "Allowlisted detector confirmed the pinned evidence."
+      },
+      "proven": true
+    },
+    {
+      "n": 2,
+      "title": "dangling-cname",
+      "severity": "low",
+      "poc": "f8fb217c46bff3e4",
+      "explanation": "Check dangling-cname, severity low. old.touchstone.test is a CNAME to removed.touchstone.test, which returned NXDOMAIN for A and AAAA. This proves a stale DNS record. It does not prove the target is claimable. Fix: delete the stale CNAME or repoint it to an active service.",
+      "evidence": {
+        "check": "dangling-cname",
+        "where": "old.touchstone.test",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512"
+      },
+      "proof": {
+        "kind": "evidence",
+        "status": "pass",
+        "check": "dangling-cname",
+        "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+        "detail": "Allowlisted detector confirmed the pinned evidence."
+      },
+      "proven": true
+    }
+  ],
+  "findingSubmitted": true,
+  "finding": {
+    "title": "wallet-cdn-without-sri",
+    "severity": "medium",
+    "poc": "a4fac2cc2becbcc0"
+  },
+  "pocProved": false,
+  "proof": {
+    "kind": "evidence",
+    "status": "pass",
+    "check": "wallet-cdn-without-sri",
+    "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+    "detail": "Allowlisted detector confirmed the pinned evidence."
+  },
+  "decision": "approved",
+  "recorded": true,
+  "calls": [
+    "snapshot_leads",
+    "submit_finding",
+    "submit_finding",
+    "submit_finding"
+  ],
+  "final": "\n\nAll three supported findings were recorded and verified against the pinned snapshot (hash `a89e3256…512`).\n\n## Coverage summary — 7 leads reviewed, worst first\n\n**Submitted (3):**\n1. `a4fac2cc2becbcc0` — `wallet-cdn-without-sri`, **medium**: third-party wallet library on `cdn.touchstone.test:8080/ethers.js` loaded without a valid SRI hash. Submitted.\n2. `c355841b2dfd92f1` — `weak-csp`, **low**: enforcing CSP at `http://touchstone.test:8080/` missing `object-src` and `script-src`. Submitted.\n3. `f8fb217c46bff3e4` — `dangling-cname`, **low**: `old.touchstone.test` CNAME → NXDOMAIN target; reported strictly as stale DNS, not claimability. Submitted.\n\n**Not submitted (4):**\n- `527f12e0a5de9b1c` — `wallet-unlimited-approval-pattern`: flagged `reviewOnly`; approval pattern is not proof of a drainer. Excluded per policy.\n- `f027efec4eb2eacc` — `dnssec-evidence-missing` (informational): no validated DNSSEC chain in the snapshot; missing evidence does not prove DNSSEC is disabled.\n- `38e7b6af71d0f734` — `registry-lock-evidence-missing` (informational): no RDAP registry-lock evidence; absence is not proof the lock is missing.\n- `fdab047043ba0801` — `frontend-content-pin-missing` (informati",
+  "usage": {
+    "usd": 0.00556441,
+    "models": {
+      "near/Qwen/Qwen3.8-27B": {
+        "in": 6034,
+        "out": 3943,
+        "reasoning": 3021
+      }
+    }
+  },
+  "reports": []
+}

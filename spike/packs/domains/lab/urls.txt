@@ -1,0 +1,5 @@
+http://touchstone.test:8080
+http://www.touchstone.test:8080
+http://cdn.touchstone.test:8080
+http://rpc.touchstone.test:8080
+http://old.touchstone.test:8080

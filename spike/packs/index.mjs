@@ -4,8 +4,15 @@
 // Contracts run, so every older workspace keeps working.
 import contracts from "./contracts/pack.mjs";
 import supplyChain from "./supply-chain/pack.mjs";
+import domains from "./domains/pack.mjs";
+import surface from "./surface/pack.mjs";
+import keys from "./keys/pack.mjs";
+import chainWatch from "./chain-watch/pack.mjs";
 
-export const PACKS = { [contracts.id]: contracts, [supplyChain.id]: supplyChain };
+export const PACKS = {
+  [contracts.id]: contracts, [supplyChain.id]: supplyChain, [domains.id]: domains, [surface.id]: surface,
+  [keys.id]: keys, [chainWatch.id]: chainWatch,
+};
 
 export function packFor(cfg = {}) {
   const id = cfg.pack ?? "contracts";

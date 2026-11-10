@@ -1,0 +1,11 @@
+{
+  "name": "tools",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "csp_evaluator": "1.1.5",
+    "dns-zonefile": "0.3.2",
+    "parse5": "7.2.1",
+    "retire": "5.2.5"
+  }
+}
