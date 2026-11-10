@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { createContext, useContext, useEffect, useMemo, useState } from "react"
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -35,6 +35,13 @@ import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
 import { ShimmerLabel } from "@/components/assistant-ui/elements/surfaces"
+import { FindingDetail } from "./finding-detail"
+
+// How the proof card reaches the run's detail navigation. buildMessages packs a
+// finding id into the proof part's args, but the click handler lives in RunChat;
+// a tool-call part's args must stay serialisable, so the callback flows down as
+// context instead. Default is a no-op (card not clickable).
+const OpenFinding = createContext<(id: string) => void>(() => {})
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -57,6 +64,10 @@ export function RunChat({
   onStatus: (status: RunStatus, pending: PendingApproval | null) => void
 }) {
   const state = useRun(run.id)
+  // When a proven finding's card is clicked, its detailed replay report takes
+  // over this column; `onBack` returns to the chat. Navigation stays inside the
+  // one workspace — the conversation sits one click behind the report.
+  const [detailId, setDetailId] = useState<string | null>(null)
   // Flash fix: keep the sidebar's known status until this run's own stream has
   // actually produced events. reduceEvents defaults to "starting", so reading
   // state.status before any event would flash "Starting" on a settled run.
@@ -90,6 +101,10 @@ export function RunChat({
     },
   })
 
+  if (detailId) {
+    return <FindingDetail findingId={detailId} onBack={() => setDetailId(null)} />
+  }
+
   return (
     <div className="flex h-full min-w-0 flex-col">
       {/* T3-style top bar: the target, nothing else. Status lives in the live
@@ -99,13 +114,15 @@ export function RunChat({
       </header>
 
       <AssistantRuntimeProvider runtime={runtime}>
-        <Thread
-          live={live}
-          empty={messages.length === 0}
-          error={status === "error" ? state?.error ?? null : null}
-          activity={state?.activity ?? "working"}
-          startedAt={run.startedAt}
-        />
+        <OpenFinding.Provider value={setDetailId}>
+          <Thread
+            live={live}
+            empty={messages.length === 0}
+            error={status === "error" ? state?.error ?? null : null}
+            activity={state?.activity ?? "working"}
+            startedAt={run.startedAt}
+          />
+        </OpenFinding.Provider>
       </AssistantRuntimeProvider>
     </div>
   )
@@ -271,8 +288,14 @@ function TypingCaret() {
 // `step.state` — never from assistant-ui's generic running/done status. `tail`
 // is set only on the one cognition block currently being written on a live run.
 const StepPart: ToolCallMessagePartComponent = ({ args }) => {
-  const a = args as { step?: Step; pending?: PendingApproval; proven?: boolean; tail?: boolean }
-  if (a.pending) return <ProofCard pending={a.pending} proven={!!a.proven} />
+  const a = args as {
+    step?: Step
+    pending?: PendingApproval
+    proven?: boolean
+    findingId?: string | null
+    tail?: boolean
+  }
+  if (a.pending) return <ProofCard pending={a.pending} proven={!!a.proven} findingId={a.findingId ?? null} />
   const step = a.step
   if (!step) return null
 
@@ -414,14 +437,24 @@ function PocRow({ step }: { step: Step }) {
   )
 }
 
-function ProofCard({ pending, proven }: { pending: PendingApproval; proven: boolean }) {
-  return (
-    <div
-      className={cn(
-        "rounded-xl border p-4",
-        proven ? "border-emerald-500/50 bg-emerald-500/5" : "border-amber-500/50 bg-amber-500/5",
-      )}
-    >
+// The inline finding card. Amber while the replay runs; green once recorded.
+// A recorded finding with an id is clickable — it opens the detailed replay
+// report in this column. The whole card becomes a button so it is keyboard
+// reachable, with a hover ring and a "View replay proof" affordance so the click
+// target reads as one. An unproven card stays a plain, non-interactive div.
+function ProofCard({
+  pending,
+  proven,
+  findingId,
+}: {
+  pending: PendingApproval
+  proven: boolean
+  findingId: string | null
+}) {
+  const openFinding = useContext(OpenFinding)
+  const clickable = proven && !!findingId
+  const body = (
+    <>
       <div className="flex items-center gap-2">
         {proven ? (
           <ShieldCheck className="size-4 text-emerald-500" />
@@ -437,6 +470,35 @@ function ProofCard({ pending, proven }: { pending: PendingApproval; proven: bool
         {proven ? "Proven by replay — recorded as a finding." : "Replaying to prove the exploit…"}
       </p>
       {pending.poc ? <p className="mt-2 font-mono text-[11px] text-muted-foreground">{pending.poc}</p> : null}
+      {clickable ? (
+        <p className="mt-2.5 flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+          View replay proof
+          <ChevronRight className="size-3.5" />
+        </p>
+      ) : null}
+    </>
+  )
+
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={() => openFinding(findingId)}
+        className="block w-full rounded-xl border border-emerald-500/50 bg-emerald-500/5 p-4 text-left transition-colors hover:bg-emerald-500/10 focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
+      >
+        {body}
+      </button>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-4",
+        proven ? "border-emerald-500/50 bg-emerald-500/5" : "border-amber-500/50 bg-amber-500/5",
+      )}
+    >
+      {body}
     </div>
   )
 }
@@ -508,7 +570,7 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
       type: "tool-call",
       toolCallId: "proof",
       toolName: "proof",
-      args: { pending: state.pending, proven: status === "recorded" },
+      args: { pending: state.pending, proven: status === "recorded", findingId: state.findingId },
       result: status === "recorded" ? "proven" : "pending",
     })
   }

@@ -26,6 +26,19 @@ export function elapsed(startedAt: number | null | undefined, now: number = Date
   return `${h}h ${String(m % 60).padStart(2, "0")}m`
 }
 
+// A dollar figure for a run's spend. Sub-cent costs show four places so a
+// fraction-of-a-cent run never rounds to "$0.00"; everything else is cents.
+export function formatUsd(usd: number | null): string {
+  if (usd == null) return "—"
+  if (usd < 0.01) return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(2)}`
+}
+
+// A grouped integer ("18,234"), or an em dash when the figure is absent.
+export function formatNum(n: number | null): string {
+  return n == null ? "—" : n.toLocaleString("en-US")
+}
+
 // A run is live while it is still doing work; terminal once it has settled.
 const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
 export const isTerminal = (s: RunStatus): boolean => TERMINAL.includes(s)

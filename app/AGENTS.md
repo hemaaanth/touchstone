@@ -25,8 +25,10 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
 - The backend is a vite middleware (`server/api.mjs`) over the pi-durable
   engine. `bun run dev` serves the app and `/api/` from one process.
 - **Information architecture.** Left sidebar = runs list + Projects / Modules /
-  Playbooks / Settings. Center = the agent run chat. Right = findings as
-  artifact cards. Dark by default.
+  Playbooks / Settings. Center = the agent run chat; findings are scoped to
+  their run, and clicking a proven finding's proof card opens its replay-proof
+  report in the same column ("Back to run" returns to the chat). There is no
+  global findings rail. Dark by default.
 - Do not upgrade existing dependencies (additive is fine). Use bun.
 - Competitor and reference repos are for reading only. Learn their patterns,
   then write our own code. Never copy-paste their code, even when the license

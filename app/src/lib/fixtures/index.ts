@@ -1,6 +1,8 @@
 import type { RunEvent, RunSummary } from "../types"
 import { streamingFixture } from "./streaming"
 
+export { getFixtureFinding, fixtureFinding } from "./finding"
+
 // Named `.events` sequences the DEV shell can replay through useRun without a
 // server or a live model. Keyed by the name after `fixture:` in a run id.
 const FIXTURES: Record<string, RunEvent[]> = {
