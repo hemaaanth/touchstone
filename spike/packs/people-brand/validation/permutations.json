@@ -1,0 +1,37 @@
+{
+  "target": "astralharbor.test",
+  "network": "none",
+  "dnstwist": {
+    "version": "20250130",
+    "command": [
+      "dnstwist",
+      "--format",
+      "list",
+      "astralharbor.test"
+    ],
+    "exit": 0,
+    "candidates": 9366,
+    "matches": [
+      "astralharb0r.test",
+      "astralharbro.test"
+    ],
+    "missing": [
+      "xn--astralhrbor-4ij.test"
+    ]
+  },
+  "urlcrazy": {
+    "commit": "78bf6e855d6d83e387ae3b5c8ffc36f241b96f66",
+    "command": [
+      "ruby",
+      "/opt/urlcrazy/urlcrazy",
+      "-r",
+      "-i",
+      "-f",
+      "json",
+      "astralharbor.test"
+    ],
+    "exit": 1,
+    "stderr": "Aborting. Invalid domainname."
+  },
+  "decision": "Use dnstwist for generated ASCII names. Add confusables and pinned certificate SANs for the Unicode gap. URLCrazy cannot parse this offline .test lab."
+}
