@@ -22,8 +22,6 @@ import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { runPrepass } from "./lib/prepass.mjs";
-import { proveFindings } from "./lib/record.mjs";
 import { event } from "./lib/event.mjs";
 import { packFor } from "./packs/index.mjs";
 
@@ -266,36 +264,22 @@ async function main() {
   const db = `${DIR}run-${ALIAS}.sqlite`;
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   const ws = makeWorkspace(TARGET);
+  const pack = packFor(readTouchstone(ws));
   const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events` };
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
-  // The pre-pass ensemble — static analyzers (Slither + Aderyn) then property
-  // fuzzers (Echidna + Medusa) — scans the target before the agent starts and
-  // hands it a ranked suspect list. Where two engines agree, the suspect ranks
-  // higher; that agreement is a stronger lead, never a verdict. A suspect is only
-  // real once the agent turns it into a passing PoC. runPrepass is the SAME code
-  // the web app runs, so a CLI run and a live run drive the identical pipeline and
-  // emit byte-identical scan events. Callbacks print the CLI's progress and append
-  // each event to the events file; the returned runEnv carries the leads to the
-  // run worker.
-  const { scan, scanEvent, fuzz, fuzzEvent, runEnv: leads } = await runPrepass(ws, {
-    onStaticStart: () => console.log(`\n== static analysis (Slither + Aderyn) ==`),
-    onStatic: (ev, scanResult) => {
+  const prep = await pack.prepass?.(ws, {
+    emit: (ev) => {
       appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
-      console.log("· static-scan " + JSON.stringify({ mode: scanResult.mode, engines: ev.engines, suspects: ev.suspects, top: ev.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
-    },
-    onFuzzStart: () => console.log(`\n== fuzzing (Echidna + Medusa) ==`),
-    onFuzz: (ev) => {
-      appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
-      console.log("· fuzz-scan " + JSON.stringify({ applicable: ev.applicable, engines: ev.engines, suspects: ev.suspects, top: ev.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
+      console.log("· " + ev.ev + " " + JSON.stringify(ev));
     },
   });
 
   // One worker runs the whole audit. submit_finding never blocks, so nothing
   // has to be killed or resumed; the run settles on its own.
   console.log(`\n== agent run (${ALIAS}) ==`);
-  const runEnv = { ...env, ...leads };
+  const runEnv = { ...env, ...prep?.env };
   const first = await runChild("run", db, ws, runEnv);
   const all = first.events;
   const settled = all.find((e) => e.ev === "settled");
@@ -307,7 +291,7 @@ async function main() {
   // test was written to assert. "Proven" binds to the submitted test only; a
   // throwaway diagnostic that happens to pass never turns a record green. Runs
   // before the workspace is torn down below.
-  const findings = await proveFindings(ws, settled?.findings ?? [], all, (m) => console.log("· " + m));
+  const findings = await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)) ?? [];
   for (const f of findings) {
     console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
   }
@@ -316,14 +300,7 @@ async function main() {
   const result = {
     alias: ALIAS, approveMode: "auto", ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
-    // The static pre-pass that fed the agent its leads. Kept in the record so the
-    // report can show the feeder → proof story: a suspect Slither ranked, then
-    // proven by replay. A suspect is never a finding on its own.
-    static: { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: scanEvent.top },
-    // The fuzz pre-pass that fed the agent its accounting leads. Same story as
-    // static: a broken invariant is a suspect the fuzzer ranked, then proven by
-    // replay. A suspect is never a finding on its own.
-    fuzz: { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: fuzzEvent.top },
+    ...prep?.record,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.

@@ -15,6 +15,8 @@ import { concreteSolc, forgeTest, readTouchstone, warmSolc, writePoc } from "../
 import { moduleOn } from "../../lib/modules.mjs";
 import { fetchSource } from "../../lib/fetch.mjs";
 import { event } from "../../lib/event.mjs";
+import { runPrepass } from "../../lib/prepass.mjs";
+import { proveFindings } from "../../lib/record.mjs";
 
 // Total run_poc attempts for the whole audit. A comprehensive audit proves
 // several findings, so this is larger than a one-bug run needs. The prompt tells
@@ -407,6 +409,24 @@ function nudge(state) {
   return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause, one that the fixes for the findings above would not already stop. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
 }
 
+async function prepass(ws, { emit }) {
+  const modules = readTouchstone(ws).modules;
+  const record = {};
+  const prep = await runPrepass(ws, {
+    runStatic: modules == null || moduleOn(modules, "static"),
+    runFuzz: modules == null || moduleOn(modules, "fuzz"),
+    onStatic: (ev, scan) => {
+      record.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top };
+      emit(ev);
+    },
+    onFuzz: (ev, fuzz) => {
+      record.fuzz = { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: ev.top };
+      emit(ev);
+    },
+  });
+  return { env: prep.runEnv, record };
+}
+
 // The pack manifest. Every pack exports this shape; see packs/README.md.
 export default {
   id: "contracts",
@@ -417,4 +437,6 @@ export default {
   tools,
   kickoff,
   nudge,
+  prepass,
+  prove: proveFindings,
 };

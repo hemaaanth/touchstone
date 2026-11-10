@@ -20,15 +20,15 @@ import { spawn } from "node:child_process"
 import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
+import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig, runBudgetUsd } from "../../spike/lib/providers.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
-import { runPrepass } from "../../spike/lib/prepass.mjs"
-import { proveFindings, sortFindings } from "../../spike/lib/record.mjs"
+import { packFor } from "../../spike/packs/index.mjs"
+import { sortFindings } from "../../spike/lib/record.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -349,31 +349,17 @@ function setRunStatus(run, status) {
   broadcast(run, e)
 }
 
-// Run the pre-pass ensemble over the prepared workspace, then spawn the agent
-// worker with the leads. This is the SAME runPrepass the CLI drives, so a live
-// run and a CLI run hand the agent byte-identical leads and emit byte-identical
-// scan events. Each scan event is broadcast to the UI as it lands, and the ranked
-// suspects are kept on the run so the persisted record carries the feeder → proof
-// story. A suspect is never a finding — only a passing replay is.
+// Run the pack's pre-pass before starting the agent with its leads.
 async function startEngine(run) {
   let leads = {}
   try {
-    const prep = await runPrepass(run.ws, {
-      // Gate each half on this run's module plan. A brief starts with no local
-      // source, so both are off and the scanners never spin up; the agent fetches
-      // the code and audits it directly.
-      runStatic: moduleOn(run.modules, "static"),
-      runFuzz: moduleOn(run.modules, "fuzz"),
-      onStatic: (ev, scan) => {
-        run.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top }
-        broadcast(run, ev)
-      },
-      onFuzz: (ev, fuzz) => {
-        run.fuzz = { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: ev.top }
-        broadcast(run, ev)
-      },
+    const prep = await packFor(readTouchstone(run.ws)).prepass?.(run.ws, {
+      emit: (ev) => broadcast(run, ev),
     })
-    leads = prep.runEnv
+    run.prepass = prep?.record ?? null
+    run.static = prep?.record?.static
+    run.fuzz = prep?.record?.fuzz
+    leads = prep?.env ?? {}
   } catch (err) {
     // A pre-pass failure must not sink the run: the agent can still audit from
     // source with no leads. Record the reason as diagnostic noise and continue.
@@ -509,9 +495,9 @@ async function recordRun(run, found) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const findings = await proveFindings(run.ws, found, run.events, (m) => {
+    const findings = await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
-    })
+    }) ?? []
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
@@ -620,9 +606,9 @@ function followUp(run, text) {
 // Add findings a follow-up proved to the run record, after the ones it holds,
 // so earlier finding ids stay the same.
 async function recordMore(run, found) {
-  const findings = await proveFindings(run.ws, found, run.events, (m) => {
+  const findings = await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
-  })
+  }) ?? []
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {

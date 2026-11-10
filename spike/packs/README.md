@@ -35,6 +35,8 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `tools`   | `(ws, state) => Tool[]`     | The pi-durable tools. The set must not change during a run. |
 | `kickoff` | `(ws, env) => string`       | The first message. `env` carries the pre-pass leads. |
 | `nudge`   | `(state) => string \| null` | One optional follow-up when the model stops early. |
+| `prepass` | `(ws, { emit }) => Promise<{ env, record }>` | Optional tool scan before kickoff. Emits run events and returns leads and record data. |
+| `prove` | `(ws, found, events, log) => Promise<Finding[]>` | Optional replay after the agent settles. Returns findings worst first. No hook means no findings. |
 
 `state` is `{ poc, passed, found }`. `passed` maps a proof name to the exact
 source that passed. `found` is the list of submitted findings. The engine

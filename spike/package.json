@@ -2,6 +2,9 @@
   "name": "near-smoke",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --experimental-test-module-mocks --test test/"
+  },
   "dependencies": {
     "@earendil-works/chord": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
