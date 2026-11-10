@@ -94,10 +94,29 @@ function parseAssertions(testSource) {
   return out
 }
 
-function normalize(raw, id) {
+// Split one stored run into its findings. A multi-finding record has
+// `findings[]`, worst first; finding k gets the id `<runId>.<k+1>` and carries its
+// own proof, pocProved and dismissed flag. A legacy record has one `finding`,
+// keeps the run id as its id, and keeps those fields at the run level.
+function splitRun(raw, runId) {
+  const r = raw.result || {}
+  if (Array.isArray(r.findings) && r.findings.length) {
+    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f }))
+  }
+  if (r.finding) {
+    return [{
+      id: runId,
+      runId,
+      index: null,
+      finding: { ...r.finding, pocProved: r.pocProved, proof: r.proof, dismissed: r.dismissed },
+    }]
+  }
+  return []
+}
+
+function normalize(raw, { id, runId, finding }) {
   const r = raw.result || {}
   const t = raw.transcript || {}
-  const finding = r.finding || {}
   // Pair each run_poc call with its result by position — the engine emits them
   // in lockstep — so every run carries the contract name it actually ran. That
   // pairing is what lets the proof bind to the SUBMITTED test, not any test.
@@ -122,13 +141,16 @@ function normalize(raw, id) {
   // The engine's structured proof delta, present only on runs recorded after the
   // engine began emitting it and only when something proved. We require a parsable
   // transfers array so a malformed or null delta falls back to the source parse.
-  const engineProof = r.proof && Array.isArray(r.proof.transfers) ? r.proof : null
+  const engineProof = finding.proof && Array.isArray(finding.proof.transfers) ? finding.proof : null
 
   // The exploit source shown and parsed is the proving run's own test — or, if
   // nothing proved, the last attempt, so the report still shows what was tried.
   const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
   const testSource = sourceCall ? sourceCall.args.test_source : null
-  const submit = (t.calls || []).find((x) => x.name === "submit_finding")
+  // The write-up is this finding's own submit_finding call. A run can submit
+  // several findings, so match on the test contract it names.
+  const submits = (t.calls || []).filter((x) => x.name === "submit_finding")
+  const submit = submits.find((x) => x.args?.poc_contract === finding.poc) || (submits.length === 1 ? submits[0] : null)
   const readSrc = (t.results || []).find((x) => x.name === "read_source")
 
   const modelName = Object.keys((r.usage && r.usage.models) || {})[0] || null
@@ -183,6 +205,8 @@ function normalize(raw, id) {
 
   return {
     id,
+    // The run this finding came from. One run can record several findings.
+    runId,
     title: finding.title || null,
     severity: finding.severity || null,
     module: "Contracts",
@@ -205,14 +229,14 @@ function normalize(raw, id) {
     stages: {
       hypothesis: Boolean(readSrc),
       reproduced: runs.length > 0,
-      proven: Boolean(r.pocProved && proving && proving.pass),
-      accepted: r.dismissed
+      proven: Boolean(finding.pocProved && proving && proving.pass),
+      accepted: finding.dismissed
         ? "dismissed"
         : r.decision === "approved"
           ? (r.approveMode === "auto" ? "auto" : true)
           : false,
     },
-    dismissed: Boolean(r.dismissed),
+    dismissed: Boolean(finding.dismissed),
     decision: r.decision || null,
     recorded: Boolean(r.recorded),
     proof: {
@@ -247,7 +271,7 @@ function normalize(raw, id) {
     staticScan,
     fuzzScan,
     hypothesis: readSrc ? (readSrc.text || "").trim() : null,
-    explanation: submit ? submit.args.explanation : null,
+    explanation: finding.explanation || (submit ? submit.args.explanation : null),
     calls: r.calls || [],
     model: modelName,
     usage: {
@@ -272,9 +296,10 @@ async function readRuns() {
   for (const file of files) {
     try {
       const raw = JSON.parse(await readFile(path.join(RESULTS_DIR, file), "utf8"))
-      if (!raw.result || !raw.result.finding) continue
-      const id = file.replace(/^run-/, "").replace(/\.json$/, "")
-      out.push(normalize(raw, id))
+      const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
+      for (const item of splitRun(raw, runId)) {
+        out.push({ ...normalize(raw, item), _index: item.index })
+      }
     } catch {
       // A malformed or partial file is skipped, never shown as a fake finding.
     }
@@ -287,6 +312,7 @@ export async function listFindings() {
   // The list shows only the few fields a row needs.
   return all.map((f) => ({
     id: f.id,
+    runId: f.runId,
     title: f.title,
     severity: f.severity,
     module: f.module,
@@ -324,9 +350,11 @@ async function readEvents(id) {
 
 export async function getFinding(id) {
   const all = await readRuns()
-  const finding = all.find((f) => f.id === id) || null
-  if (!finding) return null
-  const events = await readEvents(id)
+  const found = all.find((f) => f.id === id) || null
+  if (!found) return null
+  const { _index, ...finding } = found
+  // The transcript belongs to the run, which may hold several findings.
+  const events = await readEvents(finding.runId)
   // Replay the opening `scope` and `modules` events a live run streams but the
   // persisted .events file omits (the orchestrator broadcasts them in memory
   // only). Built from the saved record so history matches a live run, and only
@@ -349,10 +377,18 @@ export async function getFinding(id) {
 // says "I don't count this as a finding I care about."
 export async function dismissFinding(id, dismissed) {
   if (!/^[\w.-]+$/.test(id)) throw new Error("bad finding id")
-  const file = path.join(RESULTS_DIR, `run-${id}.json`)
+  const target = (await readRuns()).find((f) => f.id === id)
+  if (!target) throw new Error("no such finding")
+  const file = path.join(RESULTS_DIR, `run-${target.runId}.json`)
   const raw = JSON.parse(await readFile(file, "utf8"))
   raw.result = raw.result || {}
-  raw.result.dismissed = Boolean(dismissed)
+  // A multi-finding record keeps the flag on the finding itself; a legacy
+  // single-finding record keeps it on the run.
+  if (target._index != null && raw.result.findings?.[target._index]) {
+    raw.result.findings[target._index].dismissed = Boolean(dismissed)
+  } else {
+    raw.result.dismissed = Boolean(dismissed)
+  }
   await writeFile(file, JSON.stringify(raw, null, 2))
   return { id, dismissed: Boolean(dismissed) }
 }

@@ -43,6 +43,7 @@ export type StepKind =
   | "say"
   | "subagent"
   | "artifact"
+  | "submitted"
 
 export interface Step {
   key: string
@@ -62,7 +63,16 @@ export interface Step {
   // can look the live document up in RunState.artifacts.
   subId?: string
   subState?: AgentNode["state"]
+  // "submitted" step: the finding the agent submitted at this point. Its card
+  // renders inline here, so several findings read in the order they landed.
+  finding?: PendingApproval
 }
+
+// Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
+// on which finding leads.
+const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
+export const severityRank = (s: string | undefined) => SEV_RANK[String(s ?? "").toLowerCase()] ?? 4
+
 
 export interface RunState {
   events: RunEvent[]
@@ -72,7 +82,10 @@ export interface RunState {
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
   status: RunStatus
+  // The worst finding submitted so far (null until the first one).
   pending: PendingApproval | null
+  // Every finding the agent submitted, in submission order.
+  submitted: PendingApproval[]
   decision: Verdict | null
   error: string | null
   finalText: string | null // the agent's words when it could not prove anything
@@ -108,6 +121,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const steps: Step[] = []
   let status: RunStatus = "starting"
   let pending: PendingApproval | null = null
+  const submitted: PendingApproval[] = []
   let decision: Verdict | null = null
   let error: string | null = null
   let finalText: string | null = null
@@ -313,6 +327,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         const title = str(e.title) || "Document"
         const attempt = num(e.attempt)
         const contract = str(e.contract) || undefined
+        const forFinding = str(e.findingId) || undefined
         const version: ArtifactVersion = {
           id: vid,
           text: "",
@@ -330,9 +345,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
             kind: (str(e.kind) || "report") as ArtifactDoc["kind"],
             lang: str(e.lang) || undefined,
             versions: [version],
+            ...(forFinding ? { findingId: forFinding } : {}),
           })
         }
-        latestArtifact = { fileId, versionId: vid }
+        // Proofs land worst first. Follow only the first one, so the pane opens
+        // on the worst finding, not the last (least severe) one recorded.
+        const laterProof = str(e.kind) === "proof" && artifacts.some((a) => a.kind === "proof" && a.id !== fileId)
+        if (!laterProof) latestArtifact = { fileId, versionId: vid }
         steps.push({ key, kind: "artifact", phase, label: title, detail: str(e.kind) || undefined, subId: vid })
         activity = "working"
         break
@@ -418,6 +437,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
             proven: e.proven !== false,
             dismissed: false,
             ms: num(e.ms),
+            poc: str(e.poc) || undefined,
             stages:
               stages ?? {
                 hypothesis: true,
@@ -441,14 +461,46 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (s) s.state = "rejected"
         break
       }
-      case "approval-pending":
-        pending = {
-          id: str(e.id),
-          title: str(e.title),
+      case "finding-submitted":
+      case "approval-pending": {
+        // The agent submitted a finding. The new engine keeps auditing after
+        // this (`finding-submitted`, many per run); an old run had exactly one
+        // (`approval-pending`, then a decide phase). Either way the card sits
+        // here in the transcript, and `pending` tracks the worst one so far.
+        const poc = str(e.poc)
+        if (submitted.some((f) => f.poc && f.poc === poc)) break
+        const n = num(e.n) ?? submitted.length + 1
+        const f: PendingApproval = {
+          id: str(e.id) || `sub-${n}`,
+          title: str(e.title) || "Finding",
           severity: (str(e.severity) || "medium") as Severity,
-          poc: str(e.poc),
+          poc,
+          n,
         }
-        status = "awaiting-approval"
+        submitted.push(f)
+        steps.push({ key, kind: "submitted", phase, label: f.title, finding: f })
+        pending = submitted.reduce((w, x) => (severityRank(x.severity) < severityRank(w.severity) ? x : w))
+        if (e.ev === "approval-pending") status = "awaiting-approval"
+        break
+      }
+      case "submit-rejected":
+        steps.push({
+          key,
+          kind: "note",
+          phase,
+          label:
+            e.reason === "duplicate"
+              ? `Skipped a repeat submission of ${str(e.poc)}`
+              : `Refused to record ${str(e.poc)}: its test has not passed`,
+        })
+        break
+      case "audit-continue":
+        steps.push({
+          key,
+          kind: "note",
+          phase,
+          label: `Asked the agent to keep auditing (${num(e.found) ?? 0} found so far)`,
+        })
         break
       case "host-deciding":
         steps.push({
@@ -493,7 +545,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       case "status":
         if (typeof e.status === "string") status = e.status as RunStatus
-        if (e.pending) pending = e.pending as PendingApproval
+        // The server's own view of `pending` only matters when the stream had
+        // no submission event to derive it from (a very old replay).
+        if (e.pending && !submitted.length) pending = e.pending as PendingApproval
         if (e.decision === "approve" || e.decision === "deny") decision = e.decision
         // The live server records a finding by broadcasting a terminal `status`
         // (not the CLI's `run-complete`), stamping the recorded run's id here. We
@@ -531,6 +585,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     scope,
     status,
     pending,
+    submitted,
     decision,
     error,
     finalText,

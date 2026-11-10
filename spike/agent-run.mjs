@@ -2,23 +2,22 @@
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
 //   ALIAS=ds-abl node agent-run.mjs    pick the model
-//   APPROVE=deny node agent-run.mjs    deny the finding instead of approving it
+//   MAX_POC=20 node agent-run.mjs      raise the PoC attempt budget
 //
 // The agent gets real tools over a per-run Foundry sandbox: it reads the contract
-// source, writes its own exploit test, runs it offline in Docker, and must prove
-// the drain. Recording the finding is gated behind a human decision.
+// source, writes its own exploit tests, runs them offline in Docker, and must
+// prove each exploit.
 //
-// Durable approval, the way pi-durable intends it: the agent worker runs until it
-// reaches submit_finding, persists the pending request, and the worker exits. A
-// separate "decide" invocation then resumes the run over the same SQLite file and
-// approves or denies it. The agent process can be fully down while waiting. This
-// is exactly milestone 3's shape: the UI server is the decider.
+// The audit is comprehensive. One contract can have several bugs. The agent first
+// ranks every suspect, worst first. Then it tries to prove each one. Each passing
+// test is submitted as its own finding, and the audit keeps going. submit_finding
+// never blocks and never ends the run. When the run settles, the engine replays
+// every submitted test once more and records each finding with its own proof.
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, Harness, LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { obj, str } from "@earendil-works/pi-schema";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
@@ -27,14 +26,13 @@ import { cleanupWorkspace, concreteSolc, forgeTest, makeWorkspace, readTouchston
 import { runPrepass } from "./lib/prepass.mjs";
 import { moduleOn } from "./lib/modules.mjs";
 import { fetchSource } from "./lib/fetch.mjs";
-import { proofDelta } from "./lib/proof.mjs";
+import { proveFindings } from "./lib/record.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? Object.keys(MODELS)[0];
 if (!MODELS[ALIAS]) {
   throw new Error(`Unknown ALIAS "${ALIAS}" for provider "${PROVIDER_ID}". Known: ${Object.keys(MODELS).join(", ")}`);
 }
-const APPROVE = process.env.APPROVE ?? "auto"; // auto | deny
 // Which lab to audit. Defaults to the reentrancy lab (Slither's showcase); set
 // TARGET=../lab/vault-accounting to run the fuzzing showcase. A relative value is
 // resolved against this file; an absolute path is used as-is.
@@ -50,31 +48,46 @@ function event(name, data = {}) {
   if (process.env.EVENTS_FILE) appendFileSync(process.env.EVENTS_FILE, line + "\n");
 }
 
-// Approval state: one doc per request plus an index the decider watches.
-const Approval = defineDocFamily({
-  kind: "app.approval", version: 1, scope: "session", family: true,
-  initial: (seed) => ({ ...seed, status: "pending" }),
-  checkpointWhen: () => false,
-});
-const Pending = defineDoc({
-  kind: "app.pending", version: 1, scope: "session",
-  initial: () => ({ ids: [] }),
-  checkpointWhen: () => false,
-});
-// The set of PoC contracts that have actually passed a replay. This is the hard
-// gate: submit_finding records a finding ONLY if its named test is in here. It is
-// durable state (not an in-memory set) so the gate holds across the resume that
-// the approval step forces — the decide process never re-runs run_poc, yet still
-// sees which tests passed in the original run.
-const PocPassed = defineDoc({
-  kind: "app.pocpassed", version: 1, scope: "session",
-  initial: () => ({ names: [] }),
-  checkpointWhen: () => false,
-});
+// Total run_poc attempts for the whole audit. A comprehensive audit proves
+// several findings, so this is larger than a one-bug run needs. The prompt tells
+// the agent the number so it can plan its attempts across suspects.
+const MAX_POC = Number(process.env.MAX_POC ?? 12);
+const PER_SUSPECT = 3;
+
+// How the audit works. Shared by the lab and brief prompts. The key change from
+// a one-bug run: a finding never ends the audit, and a low or medium finding
+// never stops the agent from looking for a worse one.
+const AUDIT = `How the audit works:
+- A contract can have SEVERAL vulnerabilities. Your job is to find and prove ALL
+  of them, not just the first one.
+- Plan first. Before you write any test, list every suspect you see, ranked worst
+  first. Include suspects the analyzers did not flag. Write the list in your reply.
+- Work down the list, worst first. Spend at most ${PER_SUSPECT} run_poc attempts on one
+  suspect. If it still fails, mark it "not proven" and move on.
+- Use a NEW test contract name for each suspect (for example \`ReentrancyTest\`,
+  \`RoundingTest\`). Never reuse a name for a different bug.
+- The moment a test passes, call submit_finding for it. Then CONTINUE with the
+  next suspect. Submitting a finding never ends the audit. A low or medium finding
+  never means you can skip a worse suspect.
+- Submit each passing test once. One finding per test contract.
+- You have ${MAX_POC} run_poc attempts in total. Plan for them.
+- Stop only when every suspect is proven or ruled out, or the budget is spent.
+  Then write a short coverage summary: one line per suspect, marked "proven",
+  "not exploitable", or "not tried".
+
+Severity:
+- critical: an attacker steals or locks most of the funds.
+- high: an attacker steals some funds, or breaks the core accounting.
+- medium: the loss needs unusual conditions, or it is small.
+- low: no direct loss of funds.
+
+A proof is a test that passes AND shows the harm: funds move to the attacker, or
+other users' funds are locked or lost.`;
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a Solidity smart contract the operator owns and has asked you to audit.
-Your job: find a real, exploitable vulnerability and PROVE it with a runnable Foundry test.
+Your job: find EVERY real, exploitable vulnerability and PROVE each one with a
+runnable Foundry test.
 
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
@@ -92,11 +105,12 @@ Rules of the environment:
 - Write a Foundry test (a contract that imports forge-std/Test.sol) and run it with
   run_poc. A proof is a test that demonstrably moves funds the attacker should not
   get, and passes. Iterate on run_poc until your proof passes.
-- When your proof passes, call submit_finding exactly once with the vulnerability
-  class, severity, the name of your passing test contract, and a short explanation.
-  submit_finding needs a human approval before it is recorded.
+- When a proof passes, call submit_finding with the vulnerability class,
+  severity, the name of that passing test contract, and a short explanation.
 
-Write the explanation so a smart 15-year-old with no security or Solidity
+${AUDIT}
+
+Write each explanation so a smart 15-year-old with no security or Solidity
 background can follow it. Use Simplified Technical English: short sentences, one
 idea per sentence, plain words, no jargon you do not define. Say what goes wrong,
 why the contract lets it happen, and what the attacker gains. Put identifiers
@@ -115,8 +129,8 @@ Keep going without asking the operator questions. Work from the actual source.`;
 // live chain, so a proof can never touch real funds.
 const SYSTEM_BRIEF = `You are an authorized offensive-security agent in an isolated sandbox.
 The operator has given you a brief — a markdown write-up of a target they own and
-have asked you to audit. Your job: find a real, exploitable vulnerability in the
-code the brief points at and PROVE it with a runnable Foundry test.
+have asked you to audit. Your job: find EVERY real, exploitable vulnerability in
+the code the brief points at and PROVE each one with a runnable Foundry test.
 
 How this scope works:
 - Read the brief first: read_source BRIEF.md. It describes the target and links
@@ -135,11 +149,12 @@ How this scope works:
   until it passes.
 - forge-std is vendored. Solidity is chosen automatically to match each file's
   pragma, so you do not pin a compiler version.
-- When your proof passes, call submit_finding exactly once with the vulnerability
-  class, severity, the name of your passing test contract, and a short explanation.
-  submit_finding needs a human approval before it is recorded.
+- When a proof passes, call submit_finding with the vulnerability class,
+  severity, the name of that passing test contract, and a short explanation.
 
-Write the explanation so a smart 15-year-old with no security or Solidity
+${AUDIT}
+
+Write each explanation so a smart 15-year-old with no security or Solidity
 background can follow it. Use Simplified Technical English: short sentences, one
 idea per sentence, plain words, no jargon you do not define. Put identifiers in
 \`backticks\`, every multi-line snippet in a fenced block whose opening fence
@@ -151,8 +166,6 @@ Keep going without asking the operator questions. Work from the actual code.`;
 function systemFor(ws) {
   return readTouchstone(ws).kind === "brief" ? SYSTEM_BRIEF : SYSTEM;
 }
-
-const MAX_POC = Number(process.env.MAX_POC ?? 6); // bound runtime: qwen can iterate 2–11 times otherwise
 
 // Which workspace subtrees the agent may list and read. A lab's code is copied
 // into src/; a brief's fetched code lands under vendor/. Nothing else in the
@@ -197,9 +210,16 @@ function resolveReadable(ws, raw) {
   return null;
 }
 
-function tools(ws) {
+// Per-process audit state. One run is one process, so plain memory is enough.
+//   poc     run_poc attempts so far
+//   passed  test contract name -> the exact source that last passed
+//   found   submitted findings, in submit order
+function auditState() {
+  return { poc: 0, passed: new Map(), found: [] };
+}
+
+function tools(ws, state) {
   const modules = readTouchstone(ws).modules ?? [];
-  let pocAttempts = 0;
   const listSources = defineTool({
     name: "list_sources",
     description: "List every Solidity source file available to audit, as workspace-relative paths. A lab's code is under src/; a brief's fetched code is under vendor/ (fetch it first with fetch_source).",
@@ -270,11 +290,13 @@ function tools(ws) {
       contract_name: str({ description: "name of the test contract to run, e.g. VaultDrainTest" }),
     }),
     replay: "unsafe",
-    execute: async (args, api, c) => {
-      pocAttempts++;
+    execute: async (args) => {
+      const pocAttempts = ++state.poc;
       if (pocAttempts > MAX_POC) {
         event("run_poc-capped", { contract: args.contract_name, attempts: pocAttempts });
-        return { output: [{ type: "text", text: `PoC attempt budget exhausted (${MAX_POC} runs used). Stop iterating. If an earlier run passed, call submit_finding now with that test contract. Otherwise report that you could not prove an exploit.` }], isError: true };
+        const unsent = [...state.passed.keys()].filter((name) => !state.found.some((f) => f.poc === name));
+        const hint = unsent.length ? ` These passing tests are not submitted yet: ${unsent.join(", ")}. Submit any that prove a real bug.` : "";
+        return { output: [{ type: "text", text: `PoC attempt budget exhausted (${MAX_POC} runs used). Stop running tests.${hint} Then write the coverage summary: one line per suspect, marked "proven", "not exploitable", or "not tried".` }], isError: true };
       }
       // Surface the exact PoC source for this attempt as a versioned artifact, so
       // the console's document pane shows v1/v2/v3 of the file the agent iterates
@@ -293,58 +315,44 @@ function tools(ws) {
       writePoc(ws, args.test_source);
       const r = await forgeTest(ws, { matchContract: args.contract_name });
       event("run_poc-done", { contract: args.contract_name, passed: r.passed, failed: r.failed, timedOut: r.timedOut });
-      // Record a genuine pass durably, so submit_finding's gate can trust it even
-      // after the process is killed and resumed at the approval step.
-      if (r.passed) {
-        await api.commit(async (tx) => {
-          const d = await tx.doc(PocPassed);
-          if (!d.names.includes(args.contract_name)) d.names.push(args.contract_name);
-        }, c);
-      }
-      return { output: [{ type: "text", text: r.output || "(no output)" }] };
+      // Remember the exact source that passed. submit_finding's gate reads this,
+      // and the final replay proof re-runs this source, not a later edit.
+      if (r.passed) state.passed.set(args.contract_name, args.test_source);
+      const left = MAX_POC - pocAttempts;
+      const note = r.passed && !state.found.some((f) => f.poc === args.contract_name)
+        ? `\n\nThis test PASSED. If it proves a real bug, call submit_finding for \`${args.contract_name}\` now, then continue with the next suspect.`
+        : "";
+      return { output: [{ type: "text", text: `${r.output || "(no output)"}${note}\n\n(${left} run_poc attempt${left === 1 ? "" : "s"} left.)` }] };
     },
   });
   const submitFinding = defineTool({
     name: "submit_finding",
-    description: "Record a confirmed vulnerability finding. Needs a human approval before it is recorded. Call once, after your PoC passes.",
+    description: "Record one proven vulnerability. Call it as soon as a test passes, once per passing test contract. It returns at once; then continue the audit with the next suspect.",
     parameters: obj({
       title: str(), severity: str({ description: "critical | high | medium | low" }),
       poc_contract: str({ description: "name of your passing test contract" }),
       explanation: str({ description: "Plain-language write-up a non-expert 15-year-old can follow: short sentences, one idea each, identifiers in `backticks`, every multi-line code snippet in a fenced block whose opening fence names the language (```solidity, ```javascript, ```typescript, …), and a final line starting with \"Fix:\"." }),
     }),
     replay: "safe",
-    execute: async (args, api, c) => {
-      // Hard gate: a finding is real ONLY when its own Foundry test passed a
-      // replay. Read the durable pass-set and refuse any submission whose named
-      // test is not in it. No pending request is created, so an unproven claim
-      // never reaches the approval queue and can never be recorded.
-      let proven = false;
-      await api.commit(async (tx) => {
-        const d = await tx.doc(PocPassed);
-        proven = d.names.includes(args.poc_contract);
-      }, c);
-      if (!proven) {
-        event("submit-rejected", { poc: args.poc_contract });
-        return { output: [{ type: "text", text: `Cannot record this finding: your named test \`${args.poc_contract}\` has not passed run_poc in this session. A finding is only real once its own Foundry test passes and moves funds. Make that exact test pass, then call submit_finding again.` }], isError: true };
+    execute: async (args) => {
+      const poc = String(args.poc_contract ?? "").trim();
+      // Hard gate: a finding is real ONLY when its own Foundry test passed. An
+      // unproven claim is refused here and can never be recorded.
+      const source = state.passed.get(poc);
+      if (!source) {
+        event("submit-rejected", { poc, reason: "not-passed" });
+        return { output: [{ type: "text", text: `Cannot record this finding: your named test \`${poc}\` has not passed run_poc in this session. A finding is only real once its own Foundry test passes and shows the harm. Make that exact test pass, then call submit_finding again.` }], isError: true };
       }
-      const id = await api.memo("approvalId", randomUUID(), c);
-      await api.commit(async (tx) => {
-        await tx.doc(Approval, id, { tool: "submit_finding", args });
-        const p = await tx.doc(Pending);
-        if (!p.ids.includes(id)) p.ids.push(id);
-      }, c);
-      event("approval-pending", { id, title: args.title, severity: args.severity, poc: args.poc_contract });
-      const watch = await api.watchDoc(Approval, id, c);
-      const decided = await new Promise((resolve) => {
-        if (watch.value.status !== "pending") return resolve(watch.value);
-        watch.start(async (call) => {
-          if (call.kind === "value" && call.value.status !== "pending") resolve(call.value);
-        });
-      });
-      await watch.stop();
-      event("approval-decided", { id, status: decided.status });
-      if (decided.status !== "approved") throw new Error(`Finding denied by ${decided.by ?? "reviewer"}`);
-      return { output: [{ type: "text", text: `Finding recorded: ${args.title} (${args.severity}).` }] };
+      const dup = state.found.find((f) => f.poc === poc);
+      if (dup) {
+        event("submit-rejected", { poc, reason: "duplicate" });
+        return { output: [{ type: "text", text: `\`${poc}\` is already recorded as finding #${dup.n} ("${dup.title}"). Each finding needs its own test contract. If this is a different bug, write a new test with a new contract name. Otherwise continue with the next suspect.` }], isError: true };
+      }
+      const n = state.found.length + 1;
+      state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
+      event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
+      const left = Math.max(0, MAX_POC - state.poc);
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect on your list, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
   const staticFindings = defineTool({
@@ -391,10 +399,8 @@ function tools(ws) {
     },
   });
   // The tool set is gated on this run's module plan, so the agent holds only the
-  // tools the run actually enabled — and the run child and the decide child build
-  // the identical set from .touchstone.json, so the resume at the approval step
-  // sees the same tools the original run did (pi-durable requires a stable tool
-  // set across a resume). list_sources, read_source, run_poc and submit_finding
+  // tools the run actually enabled. It is built from .touchstone.json, so it is
+  // stable for the whole run (pi-durable requires a stable tool set). list_sources, read_source, run_poc and submit_finding
   // are always present; static_findings and fuzz_findings exist only when their
   // pre-pass module ran; fetch_source only for a brief that fetches its sources.
   const out = [listSources, readSource];
@@ -405,9 +411,9 @@ function tools(ws) {
   return out;
 }
 
-async function openHarness(db, ws) {
+async function openHarness(db, ws, state) {
   const registry = createRegistry();
-  registry.install(defineExtension({ name: "contracts", tools: tools(ws) }));
+  registry.install(defineExtension({ name: "contracts", tools: tools(ws, state) }));
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
     models: inferenceModels(),
@@ -481,38 +487,19 @@ async function chargeUsage(harness) {
   return { usd, models: Object.fromEntries(Object.entries(u.models ?? {}).map(([k, v]) => [k, { in: v.input, out: v.output, reasoning: v.reasoning }])) };
 }
 
-// ---- Child worker: one process, one mode.
+// ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
-  const { harness, root, reports } = await openHarness(db, ws);
+  const state = auditState();
+  const { harness, root, reports } = await openHarness(db, ws, state);
   event("opened", { mode });
-  if (mode === "decide") {
-    harness.resume();
-    // The decider: watch the pending index and approve/deny each request.
-    const seen = new Set();
-    const decide = async (ids) => {
-      for (const id of ids) {
-        await new Promise((r) => setTimeout(r, 400)); // a beat, as a human would take
-        const status = APPROVE === "deny" ? "denied" : "approved";
-        event("host-deciding", { id, status });
-        await harness.commit(async (tx) => {
-          const d = await tx.doc(Approval, id, { tool: "?", args: {} });
-          d.status = status; d.by = "operator";
-        }, ctx);
-      }
-    };
-    const w = await harness.watchDoc(Pending, ctx);
-    const handle = (v) => { const fresh = (v?.ids ?? []).filter((i) => !seen.has(i)); fresh.forEach((i) => seen.add(i)); if (fresh.length) decide(fresh); };
-    if (w) { handle(w.value); w.start(async (call) => { if (call.kind === "value") handle(call.value); }); }
-  }
-  // Same requestId resumes the same submission after a restart.
   const staticBriefText = process.env.STATIC_BRIEF;
   const fuzzBriefText = process.env.FUZZ_BRIEF;
   // A brief starts with no local source and no pre-pass leads — its first move is
   // to read BRIEF.md and fetch the linked code; the proof deploys that code in a
   // local EVM with no fork and no live chain. A lab's code is already under src/.
   const base = readTouchstone(ws).kind === "brief"
-    ? "Read BRIEF.md first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Find an exploitable vulnerability and prove it with a passing Foundry PoC that deploys the code locally and moves funds to an attacker — no forking, no live chain — then submit the finding."
-    : "Audit the contract(s) under src/. Find an exploitable vulnerability, prove it with a passing Foundry PoC that moves funds to an attacker, then submit the finding.";
+    ? "Read BRIEF.md first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC that deploys the code locally — no forking, no live chain. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary."
+    : "Audit the contract(s) under src/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary.";
   const leadBlocks = [];
   if (staticBriefText) leadBlocks.push(`${staticBriefText}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
   if (fuzzBriefText) leadBlocks.push(`${fuzzBriefText}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
@@ -554,21 +541,36 @@ async function child([, , , mode, db, ws]) {
     process.stdin.resume();
   }
 
-  const settled = await sub.wait(ctx);
+  let settled = await sub.wait(ctx);
+
+  // One nudge. Models often stop after their first finding. If the agent found
+  // something, still has PoC budget, and ended its turn cleanly, ask it once to
+  // work through the suspects it has not tried. One nudge only, so a model that
+  // truly finished just writes its coverage summary and stops.
+  if (settled.status === "done" && state.found.length > 0 && state.poc < MAX_POC) {
+    const list = state.found.map((f) => `#${f.n} ${f.title} (${f.severity}, test \`${f.poc}\`)`).join("\n");
+    const left = MAX_POC - state.poc;
+    event("audit-continue", { found: state.found.length, left });
+    const more = await root.submit({
+      type: "input", requestId: "continue1",
+      content: `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit each new passing test as its own finding. If no suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`,
+    }, ctx);
+    settled = await more.wait(ctx);
+  }
+
   const s = await summarize(root);
-  const pending = await harness.snapshot(Pending, ctx);
   const usage = await chargeUsage(harness);
-  event("settled", { status: settled.status, reason: settled.reason, summary: s, pendingIds: pending?.ids, usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found, usage, reports });
   await harness.close(ctx);
   process.exit(0);
 }
 
-// Spawn a worker; resolve on exit. killOn(evt) returns ms to wait before SIGKILL, else undefined.
-function runChild(mode, db, ws, env, killOn) {
+// Spawn a worker; resolve on exit.
+function runChild(mode, db, ws, env) {
   return new Promise((resolve) => {
     const p = spawn(process.execPath, [new URL(import.meta.url).pathname, "child", mode, db, ws], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const events = [];
-    let killed = false, buf = "", err = "";
+    let buf = "", err = "";
     p.stdout.on("data", (d) => {
       buf += d;
       let i;
@@ -578,12 +580,10 @@ function runChild(mode, db, ws, env, killOn) {
         const e = JSON.parse(line.slice(6));
         events.push(e);
         console.log("· " + e.ev + (e.ev === "settled" ? "" : " " + JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !["t", "ev"].includes(k))))));
-        const wait = !killed && killOn ? killOn(e) : undefined;
-        if (wait !== undefined) { killed = true; setTimeout(() => p.kill("SIGKILL"), wait); }
       }
     });
     p.stderr.on("data", (d) => { err += d; });
-    p.on("exit", (code, signal) => resolve({ code, signal, killed, events, stderr: err.slice(-1500) }));
+    p.on("exit", (code, signal) => resolve({ code, signal, events, stderr: err.slice(-1500) }));
   });
 }
 
@@ -618,69 +618,29 @@ async function main() {
     },
   });
 
-  // Phase 1: run the agent until it reaches the approval point (then kill it, to
-  // prove the run survives the process going away), or until it settles on its own.
-  console.log(`\n== phase 1: agent run (${ALIAS}) ==`);
+  // One worker runs the whole audit. submit_finding never blocks, so nothing
+  // has to be killed or resumed; the run settles on its own.
+  console.log(`\n== agent run (${ALIAS}) ==`);
   const runEnv = { ...env, ...leads };
-  const first = await runChild("run", db, ws, runEnv, (e) => (e.ev === "approval-pending" ? 1200 : undefined));
-
-  // Phase 2: only if a finding is pending — resume over the same DB and decide it.
-  let second = null;
-  if (first.events.some((e) => e.ev === "approval-pending")) {
-    console.log(`\n== phase 2: resume + ${APPROVE === "deny" ? "deny" : "approve"} ==`);
-    second = await runChild("decide", db, ws, env, null);
-  }
-
-  const all = [...first.events, ...(second?.events ?? [])];
-  const settled = (second ?? first).events.find((e) => e.ev === "settled");
+  const first = await runChild("run", db, ws, runEnv);
+  const all = first.events;
+  const settled = all.find((e) => e.ev === "settled");
   const pocRuns = all.filter((e) => e.ev === "run_poc").length;
-  const decided = all.find((e) => e.ev === "approval-decided");
-  const pendingEv = all.find((e) => e.ev === "approval-pending");
-  // "Proven" binds to the SUBMITTED test, not any passing test. A throwaway
-  // diagnostic that happens to pass must never turn the record green — only the
-  // exact contract the finding claims, proving its own exploit, counts. The
-  // submit_finding gate already refuses an unproven submission, so a pending
-  // finding's named test has passed; we re-check it here so the stored record
-  // carries the binding, not just the live gate.
-  const provenContract = pendingEv?.poc ?? null;
-  const pocPassed = provenContract
-    ? all.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === provenContract)
-    : false;
 
-  // Structured proof delta — the engine's own reading of the proven exploit.
-  // When a finding proved, re-run its exact test ONE more time in JSON trace mode
-  // and read the real money the EVM moved, per address, straight from the trace.
-  // This replaces source-regex guesswork with machine truth: the proof panel shows
-  // what the chain DID, not what the test was written to assert. We reconstruct
-  // the proving source from the agent's last run_poc call for the proven contract,
-  // and run it before the workspace is torn down below.
-  let proof = null;
-  if (pocPassed && provenContract) {
-    const pocCalls = (settled?.summary?.calls ?? []).filter(
-      (c) => c.name === "run_poc" && c.args?.contract_name === provenContract && c.args?.test_source,
-    );
-    const source = pocCalls.at(-1)?.args?.test_source ?? null;
-    if (source) {
-      try {
-        proof = await proofDelta(ws, { source, contract: provenContract });
-      } catch (err) {
-        console.log("· proof-delta failed:", String(err?.message || err).slice(0, 200));
-      }
-    }
-    if (proof) {
-      console.log(
-        "· proof-delta " +
-          JSON.stringify({
-            status: proof.status,
-            gas: proof.gasUsed,
-            transfers: proof.transfers.map((t) => `${t.label}:${t.net}`),
-          }),
-      );
-    }
+  // Structured proof delta for EACH finding — the engine's own reading of each
+  // proven exploit. Each finding's exact passing source is replayed once more in
+  // JSON trace mode, so its proof panel shows what the chain DID, not what the
+  // test was written to assert. "Proven" binds to the submitted test only; a
+  // throwaway diagnostic that happens to pass never turns a record green. Runs
+  // before the workspace is torn down below.
+  const findings = await proveFindings(ws, settled?.findings ?? [], all, (m) => console.log("· " + m));
+  for (const f of findings) {
+    console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
   }
+  const worst = findings[0] ?? null;
 
   const result = {
-    alias: ALIAS, approveMode: APPROVE, ms: Date.now() - t0,
+    alias: ALIAS, approveMode: "auto", ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
     // The static pre-pass that fed the agent its leads. Kept in the record so the
     // report can show the feeder → proof story: a suspect Slither ranked, then
@@ -690,17 +650,19 @@ async function main() {
     // static: a broken invariant is a suspect the fuzzer ranked, then proven by
     // replay. A suspect is never a finding on its own.
     fuzz: { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: fuzzEvent.top },
-    pocRuns, pocProved: pocPassed,
-    // The engine's structured proof delta for the proven exploit: real pass/fail,
-    // gas, decoded logs, and the signed money-moved table read from the trace.
-    // Null when nothing proved or the replay produced no parsable JSON.
-    proof,
-    findingSubmitted: !!pendingEv, finding: pendingEv ? { title: pendingEv.title, severity: pendingEv.severity, poc: pendingEv.poc } : null,
-    decision: decided?.status ?? null,
-    recorded: decided?.status === "approved",
-    killedAfterApproval: first.killed,
+    pocRuns,
+    // Every proven finding, worst first, each with its own replay proof: real
+    // pass/fail, gas, decoded logs, and the signed money-moved table.
+    findings,
+    // Back-compat single-finding fields: the worst finding.
+    findingSubmitted: findings.length > 0,
+    finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,
+    pocProved: worst?.pocProved ?? false,
+    proof: worst?.proof ?? null,
+    decision: findings.length ? "approved" : null,
+    recorded: findings.length > 0,
     calls: settled?.summary?.calls?.map((c) => c.name),
-    final: settled?.summary?.final?.text?.slice(0, 400),
+    final: settled?.summary?.final?.text?.slice(0, 1200),
     usage: settled?.usage, reports: settled?.reports,
   };
   writeFileSync(`${DIR}run-${ALIAS}.json`, JSON.stringify({ result, transcript: settled?.summary }, null, 2));

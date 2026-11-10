@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, decideRun, steerRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 
 function send(res, status, json) {
@@ -75,17 +75,6 @@ export async function handleRuns(req, res) {
     }
     req.on("close", close)
     res.on("close", close)
-    return true
-  }
-
-  // POST /api/runs/:id/decision — approve or deny the pending finding
-  if (parts.length === 4 && parts[3] === "decision" && req.method === "POST") {
-    const body = await readBody(req)
-    try {
-      send(res, 200, decideRun(id, body.verdict))
-    } catch (err) {
-      send(res, 409, { error: String(err?.message ?? err) })
-    }
     return true
   }
 

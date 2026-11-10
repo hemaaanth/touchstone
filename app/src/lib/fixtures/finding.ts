@@ -190,6 +190,23 @@ export const fixtureFinding: Finding = {
 // ever hit the real /api/findings/:id (which does not know these ids).
 const FIXTURE_FINDINGS: Record<string, Finding> = {
   "f-reentry": fixtureFinding,
+  // The audit fixture's three findings reuse the same report body; only the
+  // headline differs. Enough to check that each card opens its own proof.
+  "fixture:audit.1": { ...fixtureFinding, id: "fixture:audit.1", runId: "fixture:audit" },
+  "fixture:audit.2": {
+    ...fixtureFinding,
+    id: "fixture:audit.2",
+    runId: "fixture:audit",
+    title: "Anyone can set the protocol fee",
+    severity: "medium",
+  },
+  "fixture:audit.3": {
+    ...fixtureFinding,
+    id: "fixture:audit.3",
+    runId: "fixture:audit",
+    title: "Fee rounds to zero on small sweeps",
+    severity: "low",
+  },
 }
 
 export function getFixtureFinding(id: string): Finding | null {

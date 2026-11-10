@@ -1,5 +1,6 @@
 import type { RunEvent, RunSummary } from "../types"
 import { streamingFixture } from "./streaming"
+import { auditFixture } from "./audit"
 
 export { getFixtureFinding, fixtureFinding } from "./finding"
 
@@ -7,6 +8,7 @@ export { getFixtureFinding, fixtureFinding } from "./finding"
 // server or a live model. Keyed by the name after `fixture:` in a run id.
 const FIXTURES: Record<string, RunEvent[]> = {
   streaming: streamingFixture,
+  audit: auditFixture,
 }
 
 export function getFixture(name: string): RunEvent[] {
@@ -22,6 +24,14 @@ export const fixtureRuns: RunSummary[] = [
     status: "running",
     startedAt: 0, // stamped at mount by the shell so the elapsed clock ticks.
     title: "Vault.sol — withdraw() path",
+    severity: "high",
+  },
+  {
+    id: "fixture:audit",
+    alias: "ds-abl",
+    status: "running",
+    startedAt: 0,
+    title: "Vault.sol — full audit",
     severity: "high",
   },
 ]

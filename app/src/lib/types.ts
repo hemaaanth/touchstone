@@ -28,6 +28,9 @@ export interface FindingSummary {
   proven: boolean
   dismissed: boolean
   ms: number | null
+  // The passing test contract this finding names. Lets the transcript match a
+  // submitted finding to its recorded (replayed) one. Absent on old records.
+  poc?: string
 }
 
 export interface PocRun {
@@ -247,14 +250,19 @@ export interface RunEvent {
 //   subagent-spawned { id, parent?, area, title }                 child conversation
 //   subagent-done    { id, status }                               child settles
 //   agent-graph      { nodes: AgentNode[] }                       owner→child tree
-//   finding          { id, runId?, title, severity, module?,      a proven finding
-//                      target?, proven, stages? }                 lands in the run rail
+//   finding-submitted { n, title, severity, poc }                 agent submits one of
+//                                                                 many; audit goes on
+//   submit-rejected  { poc, reason }                              not passed / duplicate
+//   audit-continue   { found, left }                              nudge to keep auditing
+//   finding          { id, runId?, title, severity, module?,      a recorded finding,
+//                      target?, proven, poc?, stages? }           one per submission
+//   artifact-open    (kind "proof") also carries findingId
 //   steer-pending    { id, text }                                 operator steer queued
 //   operator-message { id?, text }                                steer admitted to turn
 //   steer-rejected   { id, reason? }                              steer dropped
-//   approval-pending { id, title, severity, poc }                 proof gate
-//   host-deciding    { status }                                   recording / rejecting
-//   approval-decided { status }                                   gate settled
+//   approval-pending { id, title, severity, poc }                 legacy: one finding
+//   host-deciding    { status }                                   legacy decide phase
+//   approval-decided { status }                                   legacy gate settled
 //   no-finding       { final }                                    agent's closing words
 //   run-complete     { status, findingId? }                       run settled
 //   closed           {}                                           stream ends
@@ -320,13 +328,19 @@ export interface ArtifactDoc {
   kind: ArtifactKind
   lang?: string
   versions: ArtifactVersion[]
+  // A proof artifact names the recorded finding it proves, so each finding card
+  // opens its own replay. Absent on old runs (one finding, one proof).
+  findingId?: string
 }
 
+// A finding the agent submitted mid-audit. `n` is its order of submission.
+// (The name is historical: findings used to wait on an approval gate.)
 export interface PendingApproval {
   id: string
   title: string
   severity: Severity
   poc: string
+  n?: number
 }
 
 export interface RunView {
@@ -342,6 +356,10 @@ export interface RunView {
   pending: PendingApproval | null
   decision: "approve" | "deny" | null
   findingId: string | null
+  // Every finding the agent submitted, in order, and the recorded ids (worst
+  // first) once the run settles.
+  submitted?: PendingApproval[]
+  findingIds?: string[]
   error: string | null
 }
 

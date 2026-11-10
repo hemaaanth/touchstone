@@ -5,18 +5,17 @@
 // exploit. Nothing here is a mock. Clicking "Run" in the UI spawns the agent;
 // the events you watch are the agent's actual tool calls as they happen.
 //
-// Lifecycle, mapped onto the engine's durable two-phase shape:
-//   1. Phase "run": spawn the agent worker. It reads the contract, writes a
-//      Foundry PoC, and runs it — iterating until the exploit passes. We stream
-//      every EVENT line it prints. When it reaches submit_finding it durably
-//      persists a pending approval to SQLite and blocks; we kill the worker (the
-//      request survives in the DB) and move the run to "awaiting-approval".
-//   2. The human decides in the UI (Approve / Deny).
-//   3. Phase "decide": resume over the same SQLite. Resume replays the run from
-//      durable state — no new inference, no new docker — so it is cheap and
-//      deterministic. The decider writes the human's verdict, the worker
-//      unblocks, records (or rejects) the finding, and settles. We persist the
-//      settled run as spike/results/agent/run-<id>.json so it joins history.
+// Lifecycle. One audit can prove several findings.
+//   1. Spawn the agent worker. It ranks every suspect, worst first, then writes
+//      and runs a Foundry PoC for each one. We stream every EVENT line it prints.
+//      Each passing test it submits arrives as a `finding-submitted` event. The
+//      worker does not block on a finding; it keeps auditing.
+//   2. The worker settles on its own. It hands back every submitted finding with
+//      the exact test source that passed.
+//   3. We replay each finding's test once more for its proof delta, persist the
+//      run as spike/results/agent/run-<id>.json, and broadcast one `finding`
+//      event plus one replay-proof artifact per finding. A proven run records
+//      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs"
 import path from "node:path"
@@ -27,7 +26,7 @@ import { listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../
 import { readScopes, addBriefScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { runPrepass } from "../../spike/lib/prepass.mjs"
-import { proofDelta } from "../../spike/lib/proof.mjs"
+import { proveFindings, sortFindings } from "../../spike/lib/record.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -63,8 +62,7 @@ const loadedKeys = loadEnvLocal()
 if (loadedKeys > 0) console.log(`[runs] loaded ${loadedKeys} key(s) from spike/.env.local`)
 const ENGINE = path.join(SPIKE, "agent-run.mjs")
 const RESULTS_DIR = path.join(SPIKE, "results", "agent")
-const MAX_POC = process.env.MAX_POC ?? "6"
-const KILL_GRACE_MS = 1500 // let the pending approval commit land before SIGKILL
+const MAX_POC = process.env.MAX_POC ?? "12"
 
 // Which models the UI may run. Lifted straight from the engine's price table,
 // so a run can never name a model the engine does not know how to bill.
@@ -149,9 +147,13 @@ function view(run) {
     status: run.status,
     startedAt: run.startedAt,
     events: run.events,
+    // The worst finding submitted so far, as the run's headline.
     pending: run.pending,
+    // Every finding submitted so far, in submit order.
+    submitted: run.submitted,
     decision: run.decision,
-    findingId: run.status === "recorded" ? run.id : null,
+    findingId: run.status === "recorded" ? (run.findingIds?.[0] ?? null) : null,
+    findingIds: run.findingIds ?? [],
     error: run.error,
     // The pre-pass ensemble's ranked suspects (static then fuzz) and the proven
     // exploit's structured proof delta — the feeder → proof story, same shape the
@@ -172,6 +174,7 @@ export function listRuns() {
       startedAt: r.startedAt,
       title: r.pending?.title ?? null,
       severity: r.pending?.severity ?? null,
+      findings: r.submitted.length,
     }))
 }
 
@@ -227,7 +230,7 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
   // Resolve the module plan from the scope and the operator's request. A module
   // the scope cannot support (static/fuzz on a brief with no local source yet) is
   // off with a reason, never silently dropped. The plan rides into the workspace
-  // config so the run child and the decide child agree on which tools exist.
+  // config, so the run worker builds exactly the tools this plan enables.
   const plan = planModules(target, modules)
   // Respect the hard spend cap before spending a cent of real inference.
   guard(0.02)
@@ -253,6 +256,8 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
     ws,
     eventsFile,
     pending: null,
+    submitted: [],
+    findingIds: [],
     decision: null,
     error: null,
     child: null,
@@ -344,27 +349,27 @@ function spawnAgent(run, leads) {
     child,
     (e) => {
       if (e.ev === "settled") {
-        // The agent settled without submitting a finding. That has two very
-        // different meanings and we must not conflate them: if it actually ran
-        // (status "answered"), it is an honest dead end — it audited and found
-        // nothing to prove. If it is "unanswered" (e.g. reason "model_error"),
-        // the inference itself failed and this is an error, not a clean miss.
+        // Internal: carries the summary and every finding with its passing
+        // source. Persistence reads it on exit; it is not a UI step.
         run.settled = {
           final: e.summary?.final?.text ?? null,
           status: e.status ?? null,
           reason: e.reason ?? null,
           calls: (e.summary?.calls ?? []).length,
+          summary: e.summary ?? {},
+          findings: e.findings ?? [],
+          usage: e.usage ?? null,
+          reports: e.reports ?? [],
         }
         return
       }
       broadcast(run, e)
-      if (e.ev === "approval-pending") {
-        run.pending = { id: e.id, title: e.title, severity: e.severity, poc: e.poc }
-        run.status = "awaiting-approval"
+      if (e.ev === "finding-submitted") {
+        // The agent proved one more bug and keeps going. Track it, and keep the
+        // worst one as the run's headline for the sidebar.
+        run.submitted.push({ n: e.n, title: e.title, severity: e.severity, poc: e.poc })
+        run.pending = sortFindings(run.submitted)[0]
         broadcast(run, { ev: "status", status: run.status, pending: run.pending })
-        // The pending request is now durable in SQLite. Kill the blocked worker;
-        // the finding survives and the human decides when they are ready.
-        setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS)
       }
     },
     (line) => {
@@ -374,23 +379,22 @@ function spawnAgent(run, leads) {
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
-  child.on("exit", () => {
-    if (run.status === "awaiting-approval") {
-      // The agent proved an exploit and we killed it at the durable gate. The
-      // operator chose auto-accept, so record it immediately — no manual click.
-      // The decide phase just replays SQLite (no inference, no docker), so this
-      // is cheap and deterministic. The operator can dismiss it later from the
-      // ledger. The workspace is cleaned up by the decide child on its exit.
-      decideRun(run.id, "approve")
+  child.on("exit", async () => {
+    if (run.status !== "running" && run.status !== "starting") return
+    const s = run.settled
+    // Findings come from the settled event, which carries each passing source.
+    // If the worker died before settling, fall back to the live list: those
+    // findings still record, but without a fresh replay proof.
+    const found = s?.findings?.length ? s.findings : run.submitted
+    if (found.length) {
+      await recordRun(run, found)
       return
     }
-    if (run.status !== "running" && run.status !== "starting") return // killed at the gate — expected
     cleanupWorkspace(run.ws)
-    const s = run.settled
-    if (s && s.status === "answered") {
+    if (s && s.status === "done") {
       // Terminal, but not an error: the agent audited and found nothing to prove.
       run.error = null
-      s.final && broadcast(run, { ev: "no-finding", final: s.final })
+      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
       setRunStatus(run, "no-finding")
     } else if (s) {
       // Settled "unanswered" — the inference did not complete. Report the real
@@ -408,11 +412,56 @@ function spawnAgent(run, leads) {
   })
 }
 
+// Record every finding of a settled run. Replays each finding's test for its
+// proof delta (over the still-live workspace), writes the run record, then
+// broadcasts one `finding` and one replay-proof artifact per finding, worst
+// first. The workspace is torn down only after the replays finish.
+async function recordRun(run, found) {
+  run.status = "deciding"
+  broadcast(run, { ev: "status", status: run.status, pending: run.pending })
+  try {
+    const findings = await proveFindings(run.ws, found, run.events, (m) => {
+      run.stderr += `[proof-delta] ${m}\n`
+    })
+    persistRun(run, findings)
+    run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
+    run.proof = findings[0]?.proof ?? null
+    findings.forEach((f, k) => {
+      const id = run.findingIds[k]
+      broadcast(run, {
+        ev: "finding",
+        id,
+        runId: run.id,
+        title: f.title,
+        severity: f.severity,
+        poc: f.poc,
+        proven: f.pocProved,
+        target: run.target.title,
+      })
+      // Each proven finding's replay proof is a pane document. Its body is
+      // fetched by finding id via /api/findings/:id, which persistRun just wrote.
+      if (!f.pocProved) return
+      broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: id })
+      broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
+    })
+    run.status = "recorded"
+    run.decision = "approve"
+    broadcast(run, { ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
+  } catch (err) {
+    run.error = String(err?.message ?? err)
+    run.status = "error"
+    broadcast(run, { ev: "status", status: run.status, error: run.error })
+  } finally {
+    cleanupWorkspace(run.ws)
+    broadcast(run, { ev: "closed" })
+  }
+}
+
 // Steer a live run. The operator's message is written to the worker's stdin as
 // one JSON line; the worker injects it into the agent's in-flight turn (native
 // pi-durable steering) and echoes it back as an `operator-message` event once it
-// lands. Only valid while the worker is actually running — at the approval gate
-// the worker is already killed, and a settled run has no turn to join.
+// lands. Only valid while the worker is actually running — a settled run has no
+// turn to join.
 export function steerRun(id, text) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
@@ -424,117 +473,17 @@ export function steerRun(id, text) {
   return { ok: true }
 }
 
-export function decideRun(id, verdict) {
-  const run = runs.get(id)
-  if (!run) throw new Error("no such run")
-  if (run.status !== "awaiting-approval") throw new Error(`run is ${run.status}, not awaiting approval`)
-  if (verdict !== "approve" && verdict !== "deny") throw new Error("verdict must be approve or deny")
-
-  run.status = "deciding"
-  run.decision = verdict
-  broadcast(run, { ev: "status", status: run.status, decision: verdict })
-
-  // APPROVE=deny denies; anything else approves (see agent-run.mjs decider).
-  const env = { ...process.env, ALIAS: run.alias, EVENTS_FILE: run.eventsFile, APPROVE: verdict === "deny" ? "deny" : "approve" }
-  const child = spawn(process.execPath, [ENGINE, "child", "decide", run.db, run.ws], {
-    cwd: SPIKE,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  run.child = child
-  let settled = null
-
-  pipeEvents(
-    child,
-    (e) => {
-      if (e.ev === "settled") {
-        settled = e
-        return // internal: triggers persistence on exit, not a UI step
-      }
-      broadcast(run, e)
-    },
-    (line) => {
-      run.stderr += line + "\n"
-    },
-  )
-  child.stderr.on("data", (d) => {
-    run.stderr += d
-  })
-  child.on("exit", async () => {
-    try {
-      // persistSettled computes the proof delta — it re-runs the proven test over
-      // the still-live workspace — so it must finish BEFORE the finally below tears
-      // the workspace down. Hence await, and hence the handler is async.
-      if (settled) await persistSettled(run, settled, verdict)
-      const recorded = verdict === "approve"
-      run.status = recorded ? "recorded" : "denied"
-      // A recorded finding opens its replay proof as a pane document, the same
-      // way the CLI fixture does. The proof body is fetched by the finding id
-      // (this run's id) via /api/findings/:id — persistSettled wrote that record
-      // above — so this artifact only needs to exist to give the finding card its
-      // "Open replay proof" target and to swing the pane to the proof. Emitted
-      // before the recorded status so the doc is present when the card turns green.
-      if (recorded) {
-        const title = run.pending?.poc ? `Replay proof — ${run.pending.poc}` : "Replay proof"
-        broadcast(run, { ev: "artifact-open", id: `proof-${run.id}`, title, kind: "proof" })
-        broadcast(run, { ev: "artifact-done", id: `proof-${run.id}` })
-      }
-      broadcast(run, { ev: "status", status: run.status, decision: verdict, findingId: recorded ? run.id : null })
-    } catch (err) {
-      run.error = String(err?.message ?? err)
-      run.status = "error"
-      broadcast(run, { ev: "status", status: run.status, error: run.error })
-    } finally {
-      cleanupWorkspace(run.ws)
-      broadcast(run, { ev: "closed" })
-    }
-  })
-
-  return view(run)
-}
-
-// Assemble the engine's canonical { result, transcript } record from the live
-// event stream + the settled summary, and write it where the findings reader
-// looks. This mirrors agent-run.mjs main()'s result assembly exactly, so a live
-// run and a CLI run produce byte-compatible history.
-async function persistSettled(run, settled, verdict) {
+// Assemble the engine's canonical { result, transcript } record and write it
+// where the findings reader looks. This mirrors agent-run.mjs main(), so a live
+// run and a CLI run produce the same history shape.
+function persistRun(run, findings) {
   const evs = run.events
-  const pending = run.pending ?? {}
+  const s = run.settled ?? {}
+  const summary = s.summary ?? {}
   const pocRuns = evs.filter((e) => e.ev === "run_poc").length
-  const summary = settled.summary ?? {}
   const times = evs.map((e) => e.t).filter(Boolean)
   const ms = times.length ? times[times.length - 1] - times[0] : null
-
-  // "Proven" binds to the SUBMITTED contract, not any passing test — a throwaway
-  // diagnostic that happens to pass must never turn the record green. The proven
-  // contract is the one the finding claims (pending.poc); we re-check that its own
-  // test passed, mirroring agent-run.mjs main() exactly.
-  const provenContract = pending.poc ?? null
-  const pocProved = provenContract
-    ? evs.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === provenContract)
-    : false
-
-  // Structured proof delta — the engine's own reading of the proven exploit. When
-  // a finding proved, re-run its exact test ONE more time in JSON trace mode and
-  // read the real money the EVM moved, per address, straight from the trace. This
-  // runs over the still-live workspace (the decide exit handler tears it down only
-  // after we return). Mirrors the CLI so live and CLI records carry the same proof.
-  let proof = null
-  if (pocProved && provenContract) {
-    const pocCalls = (summary.calls ?? []).filter(
-      (c) => c.name === "run_poc" && c.args?.contract_name === provenContract && c.args?.test_source,
-    )
-    const source = pocCalls.at(-1)?.args?.test_source ?? null
-    if (source) {
-      try {
-        proof = await proofDelta(run.ws, { source, contract: provenContract })
-      } catch (err) {
-        run.stderr += `[proof-delta] ${String(err?.message ?? err)}\n`
-      }
-    }
-  }
-  run.proof = proof
-
+  const worst = findings[0] ?? null
   const result = {
     alias: run.alias,
     // The scope this run was pointed at, from the target library, so history and
@@ -545,31 +494,29 @@ async function persistSettled(run, settled, verdict) {
     modules: run.modules ?? null,
     // The app has no manual gate: a proven run records itself. Mark approvals
     // "auto" so the ledger reads "Accepted · auto" rather than implying a click.
-    approveMode: verdict === "deny" ? "deny" : "auto",
+    approveMode: "auto",
     ms,
-    status: settled.status ?? null,
-    reason: settled.reason ?? null,
-    // The pre-pass ensembles that fed the agent its leads, kept in the record so
-    // the report can show the feeder → proof story: a suspect an engine ranked,
-    // then proven by replay. Null if a pre-pass stage did not run. A suspect is
-    // never a finding on its own.
+    status: s.status ?? null,
+    reason: s.reason ?? null,
+    // The pre-pass ensembles that fed the agent its leads: a suspect an engine
+    // ranked, then proven by replay. A suspect is never a finding on its own.
     static: run.static ?? null,
     fuzz: run.fuzz ?? null,
     pocRuns,
-    pocProved,
-    // The engine's structured proof delta for the proven exploit: real pass/fail,
-    // gas, decoded logs, and the signed money-moved table read from the trace.
-    // Null when nothing proved or the replay produced no parsable JSON.
-    proof,
-    findingSubmitted: Boolean(pending.id),
-    finding: pending.id ? { title: pending.title, severity: pending.severity, poc: pending.poc } : null,
-    decision: verdict === "deny" ? "denied" : "approved",
-    recorded: verdict === "approve",
-    killedAfterApproval: true,
+    // Every proven finding, worst first, each with its own replay proof: real
+    // pass/fail, gas, decoded logs, and the signed money-moved table.
+    findings,
+    // Back-compat single-finding fields: the worst finding.
+    findingSubmitted: findings.length > 0,
+    finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,
+    pocProved: worst?.pocProved ?? false,
+    proof: worst?.proof ?? null,
+    decision: "approved",
+    recorded: true,
     calls: (summary.calls ?? []).map((c) => c.name),
     final: summary.final?.text ?? null,
-    usage: settled.usage ?? null,
-    reports: settled.reports ?? [],
+    usage: s.usage ?? null,
+    reports: s.reports ?? [],
   }
   writeFileSync(path.join(RESULTS_DIR, `run-${run.id}.json`), JSON.stringify({ result, transcript: summary }, null, 2))
 }

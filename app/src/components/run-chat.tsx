@@ -20,12 +20,14 @@ import {
   ShieldCheck,
   TerminalSquare,
   Loader2,
+  Clock,
+  CircleSlash,
 } from "lucide-react"
 import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { getFixtureFinding } from "@/lib/fixtures"
-import { elapsed } from "@/lib/format"
+import { elapsed, isTerminal } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -105,7 +107,8 @@ export function RunChat({
   // structured report in the pane. Resolve that finding only while the proof is
   // actually on screen; the id comes from the run-complete stamp, or the finding
   // event that lands a little earlier.
-  const proofFindingId = state?.findingId ?? state?.findings[0]?.id ?? null
+  // A run can record several findings; each proof document names its own.
+  const proofFindingId = openDoc?.findingId ?? state?.findingId ?? state?.findings[0]?.id ?? null
   const finding = useFinding(openDoc?.kind === "proof" ? proofFindingId : null)
   // Flash fix: keep the sidebar's known status until this run's own stream has
   // actually produced events. reduceEvents defaults to "starting", so reading
@@ -396,7 +399,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     step?: Step
     group?: Step[]
     pending?: PendingApproval
-    proven?: boolean
+    card?: CardState
     proofArtifactId?: string | null
     artifact?: ArtifactDoc | null
     version?: ArtifactVersion | null
@@ -405,7 +408,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     tail?: boolean
   }
   if (a.pending)
-    return <ProofCard pending={a.pending} proven={!!a.proven} proofArtifactId={a.proofArtifactId ?? null} />
+    return <ProofCard pending={a.pending} state={a.card ?? "waiting"} proofArtifactId={a.proofArtifactId ?? null} />
   if (a.group) return <ToolGroupPart group={a.group} />
   if (a.artifact && a.version)
     return (
@@ -652,24 +655,43 @@ function PocRow({ step }: { step: Step }) {
 // The whole card becomes a button so it is keyboard reachable, with a hover ring
 // and an "Open replay proof" affordance so the click target reads as one. An
 // unproven card stays a plain, non-interactive div.
+// waiting: the test passed; the audit goes on and the final replay comes at the
+// end. replaying: the run is recording now. proven: the final replay held.
+// unproven / dropped: the run settled without proving this one.
+type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
+
+const CARD_NOTE: Record<CardState, string> = {
+  waiting: "Test passed. The final replay runs when the audit ends.",
+  replaying: "Replaying to prove the exploit…",
+  proven: "Proven by replay — recorded as a finding.",
+  unproven: "Recorded, but the final replay did not reproduce it.",
+  dropped: "Not recorded: the run ended before the final replay.",
+}
+
 function ProofCard({
   pending,
-  proven,
+  state,
   proofArtifactId,
 }: {
   pending: PendingApproval
-  proven: boolean
+  state: CardState
   proofArtifactId: string | null
 }) {
   const openArtifact = useContext(OpenArtifact)
+  const proven = state === "proven"
+  const amber = state === "waiting" || state === "replaying"
   const clickable = proven && !!proofArtifactId
   const body = (
     <>
       <div className="flex items-center gap-2">
         {proven ? (
           <ShieldCheck className="size-4 shrink-0 text-emerald-500" />
+        ) : state === "replaying" ? (
+          <Loader2 className="size-4 shrink-0 animate-spin text-amber-500" />
+        ) : state === "waiting" ? (
+          <Clock className="size-4 shrink-0 text-amber-500" />
         ) : (
-          <Loader2 className="size-4 animate-spin text-amber-500" />
+          <CircleSlash className="size-4 shrink-0 text-muted-foreground" />
         )}
         <span className="text-sm font-semibold">{pending.title}</span>
         <Badge variant="outline" className="ml-auto capitalize">
@@ -677,7 +699,7 @@ function ProofCard({
         </Badge>
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        {proven ? "Proven by replay — recorded as a finding." : "Replaying to prove the exploit…"}
+        {CARD_NOTE[state]}
       </p>
       {pending.poc ? <p className="mt-2 font-mono text-[11px] text-muted-foreground">{pending.poc}</p> : null}
       {clickable ? (
@@ -705,7 +727,11 @@ function ProofCard({
     <div
       className={cn(
         "rounded-xl border p-4",
-        proven ? "border-emerald-500/50 bg-emerald-500/5" : "border-amber-500/50 bg-amber-500/5",
+        proven
+          ? "border-emerald-500/50 bg-emerald-500/5"
+          : amber
+            ? "border-amber-500/50 bg-amber-500/5"
+            : "bg-muted/30",
       )}
     >
       {body}
@@ -781,6 +807,19 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     }
     // A cognition/outcome step ends the current group and renders on its own.
     flushGroup()
+    // A submitted finding renders its card right where the agent submitted it,
+    // so a run with several findings reads in the order they landed.
+    if (step.kind === "submitted" && step.finding) {
+      const { card, proofArtifactId } = cardFor(state, step.finding, status)
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: step.key,
+        toolName: "proof",
+        args: { pending: step.finding, card, proofArtifactId },
+        result: card,
+      })
+      return
+    }
     // An artifact step carries only the document id; pack the live document so
     // its transcript chip shows the current writing state and word count. The
     // replay proof is the exception: the green finding card below is its
@@ -829,21 +868,31 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
   }
 
-  // The live proof card: pending approval, turning green only once recorded.
-  // Once proven it links to the replay-proof document in the pane, so hand it
-  // that artifact's id (the engine opens one when it records the finding).
-  if (state.pending) {
-    if (!buf) buf = { id: "proof", parts: [] }
-    const proofArtifactId = state.artifacts.find((a) => a.kind === "proof")?.id ?? null
-    ;(buf.parts as unknown[]).push({
-      type: "tool-call",
-      toolCallId: "proof",
-      toolName: "proof",
-      args: { pending: state.pending, proven: status === "recorded", proofArtifactId },
-      result: status === "recorded" ? "proven" : "pending",
-    })
-  }
-
   flush()
   return msgs
+}
+
+// Match a submitted finding to its recorded one and its replay-proof document.
+// New runs match by test contract name. An old run recorded one finding with no
+// contract name, so its one submission maps to the run's one finding.
+function cardFor(
+  state: RunState,
+  sub: PendingApproval,
+  status: RunStatus,
+): { card: CardState; proofArtifactId: string | null } {
+  const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
+  const rec = legacy
+    ? state.submitted.length === 1 && status === "recorded"
+      ? state.findings[0]
+      : undefined
+    : state.findings.find((f) => f.poc === sub.poc)
+  if (rec) {
+    if (!rec.proven) return { card: "unproven", proofArtifactId: null }
+    const proofs = state.artifacts.filter((a) => a.kind === "proof")
+    const doc = proofs.find((a) => a.findingId === rec.id) ?? (legacy ? proofs[0] : undefined)
+    return { card: "proven", proofArtifactId: doc?.id ?? null }
+  }
+  if (status === "deciding") return { card: "replaying", proofArtifactId: null }
+  if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofArtifactId: null }
+  return { card: "waiting", proofArtifactId: null }
 }
