@@ -6,6 +6,8 @@ import { readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
+import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
+import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // app/server -> repo root -> spike/results/agent
@@ -203,13 +205,24 @@ function normalize(raw, { id, runId, finding }) {
       }
     : null
 
+  // Which replay made this finding's proof. http and evidence proofs carry their
+  // own record (no Foundry run, no static or fuzz scan); forge is the default and
+  // is read exactly as before.
+  const kind = proofKind(finding)
+  const other = proofView(finding)
+  const pack = r.pack || "contracts"
+
   return {
     id,
     // The run this finding came from. One run can record several findings.
     runId,
     title: finding.title || null,
     severity: finding.severity || null,
-    module: "Contracts",
+    pack,
+    proofKind: kind,
+    // The pack's own pre-pass record, as the run kept it (any shape).
+    prepass: r.prepass ?? null,
+    module: pack === "contracts" ? "Contracts" : (PACKS[pack]?.title ?? pack),
     // Prefer the structured target from the library (new runs); fall back to the
     // transcript's own list_sources for older/CLI runs that predate it.
     target: r.target?.title || (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
@@ -227,9 +240,9 @@ function normalize(raw, { id, runId, finding }) {
     // later dismiss it in the ledger, which is a judgement, not a disproof —
     // so `proven` stays true and only the final stage reads "dismissed".
     stages: {
-      hypothesis: Boolean(readSrc),
-      reproduced: runs.length > 0,
-      proven: Boolean(finding.pocProved && proving && proving.pass),
+      hypothesis: other ? true : Boolean(readSrc),
+      reproduced: other ? true : runs.length > 0,
+      proven: other ? isProven(finding) : Boolean(finding.pocProved && proving && proving.pass),
       accepted: finding.dismissed
         ? "dismissed"
         : r.decision === "approved"
@@ -239,7 +252,7 @@ function normalize(raw, { id, runId, finding }) {
     dismissed: Boolean(finding.dismissed),
     decision: r.decision || null,
     recorded: Boolean(r.recorded),
-    proof: {
+    proof: other ?? {
       tool: "Foundry",
       compiler: proving ? proving.compiler : null,
       test: engineProof ? engineProof.test : proving ? proving.test : finding.poc,
@@ -268,8 +281,8 @@ function normalize(raw, { id, runId, finding }) {
         : null,
       testSource,
     },
-    staticScan,
-    fuzzScan,
+    staticScan: other ? null : staticScan,
+    fuzzScan: other ? null : fuzzScan,
     hypothesis: readSrc ? (readSrc.text || "").trim() : null,
     explanation: finding.explanation || (submit ? submit.args.explanation : null),
     calls: r.calls || [],

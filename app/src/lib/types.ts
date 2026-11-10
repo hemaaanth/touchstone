@@ -140,10 +140,50 @@ export interface FuzzScan {
   top: FuzzSuspect[]
 }
 
-export interface Finding extends FindingSummary {
+// A value on a proof card. A secret arrives redacted with its hash, never whole.
+export type ProofCell =
+  | { name: string; redacted: false; value: string }
+  | { name: string; redacted: true; sha256: string }
+
+// One request the replay sent and the response it got back.
+export interface HttpExchange {
+  label: string
+  request: { method: string; url: string; headers: ProofCell[]; body: string | null }
+  response: { status: number | null; headers: ProofCell[]; body: string | null }
+}
+
+// The `http` proof: the replay ran the request script against the practice
+// service, and the oracle checked the harm in the responses.
+export interface HttpProof {
+  kind: "http"
+  pass: boolean
+  oracle: { name: string; detail: string; passed: boolean }
+  exchanges: HttpExchange[]
+  detail: string
+}
+
+// The `evidence` proof: the replay checked the cited evidence again against the
+// pinned snapshot.
+export interface EvidenceProof {
+  kind: "evidence"
+  pass: boolean
+  check: string
+  snapshotHash: string
+  commit: string | null
+  cited: ProofCell[]
+  detail: string
+}
+
+export type ProofKind = "forge" | "http" | "evidence"
+
+export interface FindingBase extends FindingSummary {
+  // Which replay made the proof. Absent on a record from before kinds existed.
+  proofKind?: ProofKind
+  pack?: string
+  // The pack's own pre-pass record, as the run kept it.
+  prepass?: unknown
   decision: string | null
   recorded: boolean
-  proof: Proof
   // The static pre-pass that produced the agent's leads, or null if none ran.
   staticScan: StaticScan | null
   // The fuzz pre-pass that produced the agent's accounting leads, or null if the
@@ -158,6 +198,14 @@ export interface Finding extends FindingSummary {
   // finding's Conversation tab. Empty when no transcript was saved for the run.
   events: RunEvent[]
 }
+
+// The proof field follows the kind: one card per kind.
+export type Finding = FindingBase &
+  (
+    | { proofKind?: "forge"; proof: Proof }
+    | { proofKind: "http"; proof: HttpProof }
+    | { proofKind: "evidence"; proof: EvidenceProof }
+  )
 
 // ---- Live runs. A run is one real agent session driving real inference and a
 // real Foundry sandbox. These shapes mirror server/runs.mjs.

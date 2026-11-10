@@ -29,6 +29,7 @@ import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } 
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
+import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -208,6 +209,9 @@ function view(run) {
     // CLI persists. Null until each stage has run. A suspect is never a finding.
     static: run.static ?? null,
     fuzz: run.fuzz ?? null,
+    // The pack's whole pre-pass record, whatever its shape. Contracts keeps its
+    // static and fuzz parts above as well.
+    prepass: run.prepass ?? null,
     proof: run.proof ?? null,
   }
 }
@@ -488,13 +492,14 @@ function announceFindings(run, findings, first) {
       title: f.title,
       severity: f.severity,
       poc: f.poc,
-      proven: f.pocProved,
+      proofKind: proofKind(f),
+      proven: isProven(f),
       target: scopeOf(run)?.title ?? null,
     })
     // Each proven finding's replay proof is a pane document. Its body is
     // fetched by finding id via /api/findings/:id, which the record now holds.
-    if (!f.pocProved) return
-    broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: id })
+    if (!isProven(f)) return
+    broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc ?? f.title}`, kind: "proof", findingId: id })
     broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
   })
 }
@@ -507,9 +512,9 @@ async function recordRun(run, found) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const findings = await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+    const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
-    }) ?? []
+    }))
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
@@ -618,9 +623,9 @@ function followUp(run, text) {
 // Add findings a follow-up proved to the run record, after the ones it holds,
 // so earlier finding ids stay the same.
 async function recordMore(run, found) {
-  const findings = await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+  const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
-  }) ?? []
+  }))
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {
@@ -632,7 +637,7 @@ async function recordMore(run, found) {
     if (!r.finding) {
       const worst = findings[0]
       r.finding = { title: worst.title, severity: worst.severity, poc: worst.poc }
-      r.pocProved = worst.pocProved
+      r.pocProved = isProven(worst)
       r.proof = worst.proof ?? null
     }
     writeFileSync(file, JSON.stringify(rec, null, 2))
@@ -710,6 +715,8 @@ function persistRun(run, findings) {
     // ranked, then proven by replay. A suspect is never a finding on its own.
     static: run.static ?? null,
     fuzz: run.fuzz ?? null,
+    // The pack's whole pre-pass record, kept as it came.
+    prepass: run.prepass ?? null,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.
@@ -717,7 +724,7 @@ function persistRun(run, findings) {
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,
-    pocProved: worst?.pocProved ?? false,
+    pocProved: isProven(worst),
     proof: worst?.proof ?? null,
     decision: "approved",
     recorded: true,
@@ -784,14 +791,14 @@ function rebuildEvents(id, record, engineEvents) {
   // New records list every finding (ids `<runId>.<k>`); an older record has
   // one finding whose id is the run id (see splitRun in findings.mjs).
   const list = Array.isArray(r.findings) && r.findings.length
-    ? r.findings.map((f, k) => ({ id: `${id}.${k + 1}`, title: f.title, severity: f.severity, poc: f.poc, proven: !!f.pocProved }))
+    ? r.findings.map((f, k) => ({ id: `${id}.${k + 1}`, title: f.title, severity: f.severity, poc: f.poc, proven: isProven(f) }))
     : r.finding
-      ? [{ id, title: r.finding.title, severity: r.finding.severity, poc: r.finding.poc, proven: !!r.pocProved }]
+      ? [{ id, title: r.finding.title, severity: r.finding.severity, poc: r.finding.poc, proven: isProven({ pocProved: r.pocProved, proof: r.proof }) }]
       : []
   for (const f of list) {
     evs.push({ t: tN, ev: "finding", id: f.id, runId: id, title: f.title, severity: f.severity, poc: f.poc, proven: f.proven, target: r.target?.title ?? null })
     if (!f.proven) continue
-    evs.push({ t: tN, ev: "artifact-open", id: `proof-${f.id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: f.id })
+    evs.push({ t: tN, ev: "artifact-open", id: `proof-${f.id}`, title: `Replay proof — ${f.poc ?? f.title}`, kind: "proof", findingId: f.id })
     evs.push({ t: tN, ev: "artifact-done", id: `proof-${f.id}` })
   }
   const ids = list.map((f) => f.id)
