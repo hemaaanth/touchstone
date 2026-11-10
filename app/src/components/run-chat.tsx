@@ -14,13 +14,8 @@ import {
   ArrowDown,
   Brain,
   ChevronRight,
-  FileSearch,
-  FileText,
-  FlaskConical,
   GitBranch,
-  ListTree,
   PenLine,
-  Radar,
   ShieldCheck,
   TerminalSquare,
   Loader2,
@@ -35,6 +30,8 @@ import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
 import { ShimmerLabel } from "@/components/assistant-ui/elements/surfaces"
+import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
+import { StreamingText } from "@/components/assistant-ui/elements/streaming-text"
 import { FindingDetail } from "./finding-detail"
 
 // How the proof card reaches the run's detail navigation. buildMessages packs a
@@ -222,28 +219,34 @@ function Thread({
   )
 }
 
+// The composer floats under the thread — no divider, no helper line. A single
+// rounded pill with the send button tucked inside; disabled (not bordered-off)
+// once the run settles, so a closed run reads as quiet rather than broken.
 function Composer({ live }: { live: boolean }) {
   return (
-    <div className="border-t p-3">
+    <div className="px-5 pb-4 pt-1">
       <div className="mx-auto max-w-(--thread-max-width)">
-        <ComposerPrimitive.Root className="flex items-end gap-2 rounded-xl border bg-card p-2 focus-within:ring-2 focus-within:ring-ring/40">
+        <ComposerPrimitive.Root
+          className={cn(
+            "flex items-end gap-2 rounded-2xl border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur",
+            "transition-colors focus-within:border-border focus-within:ring-2 focus-within:ring-ring/25",
+            !live && "opacity-70",
+          )}
+        >
           <ComposerPrimitive.Input
             autoFocus
             disabled={!live}
             rows={1}
             submitOnEnter
-            placeholder={live ? "Steer the agent… (Enter to send)" : "This run has settled."}
-            className="min-h-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-60"
+            placeholder={live ? "Steer the agent…" : "This run has settled."}
+            className="min-h-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
           <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-8 shrink-0" disabled={!live}>
+            <Button size="icon" className="size-7 shrink-0 rounded-full" disabled={!live}>
               <ArrowUp className="size-4" />
             </Button>
           </ComposerPrimitive.Send>
         </ComposerPrimitive.Root>
-        <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-          Green only after a deterministic Foundry replay proves the finding.
-        </p>
       </div>
     </div>
   )
@@ -275,14 +278,6 @@ const Text: TextMessagePartComponent = ({ text }) => (
   <div className="text-sm leading-relaxed whitespace-pre-wrap">{text}</div>
 )
 
-// A thin caret that blinks at the tail of a block still being written, so a
-// live stream reads as the agent typing rather than text popping in.
-function TypingCaret() {
-  return (
-    <span className="ml-0.5 inline-block h-[0.9em] w-[2px] translate-y-[2px] animate-pulse rounded-full bg-foreground/70 align-baseline motion-reduce:animate-none" />
-  )
-}
-
 // Our own renderer for every part we pack as a tool-call. It reads the Step we
 // packed into `args`, so the PoC pass/fail tone and the proof card come from
 // `step.state` — never from assistant-ui's generic running/done status. `tail`
@@ -290,12 +285,14 @@ function TypingCaret() {
 const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   const a = args as {
     step?: Step
+    group?: Step[]
     pending?: PendingApproval
     proven?: boolean
     findingId?: string | null
     tail?: boolean
   }
   if (a.pending) return <ProofCard pending={a.pending} proven={!!a.proven} findingId={a.findingId ?? null} />
+  if (a.group) return <ToolGroupPart group={a.group} />
   const step = a.step
   if (!step) return null
 
@@ -318,17 +315,42 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
       </div>
     )
 
-  const Icon = ICONS[step.kind] ?? FileText
+  // Every remaining kind (open/list/read/scan/note/cap) is grouped into a
+  // ToolGroup by buildMessages, so nothing else should reach here.
+  return null
+}
+
+// Short mono tool names for the grouped rows, so each reads as a tool call
+// (`read src/Vault.sol`) rather than a sentence.
+const TOOL_NAME: Partial<Record<Step["kind"], string>> = {
+  open: "init",
+  list: "ls",
+  read: "read",
+  scan: "scan",
+  note: "read",
+  cap: "cap",
+}
+
+// A contiguous run of the agent's non-cognition steps, folded into one card that
+// is collapsed by default — so recon no longer pops in row by row and jitters
+// the layout under the live stream. Expanding shows each call and its leads.
+function ToolGroupPart({ group }: { group: Step[] }) {
+  const [open, setOpen] = useState(false)
+  const tools: GroupedTool[] = group.map((s) => ({
+    id: s.key,
+    name: TOOL_NAME[s.kind] ?? s.kind,
+    target: s.detail ? `${s.label} — ${s.detail}` : s.label,
+    state: s.state === "fail" ? "failed" : "done",
+  }))
+  const label = group.length === 1 ? group[0].label : "Recon & static analysis"
   return (
-    <div className="flex items-start gap-2.5">
-      <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-        <Icon className="size-3.5" />
-      </span>
-      <div className="min-w-0 pt-0.5">
-        <p className="text-sm">{step.label}</p>
-        {step.detail ? <p className="text-xs text-muted-foreground">{step.detail}</p> : null}
-      </div>
-    </div>
+    <ToolGroup
+      className="max-w-none"
+      label={label}
+      tools={tools}
+      open={open}
+      onOpenChange={setOpen}
+    />
   )
 }
 
@@ -344,8 +366,7 @@ function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
           <ShimmerLabel active>Thinking</ShimmerLabel>
         </div>
         <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
-          {step.label}
-          <TypingCaret />
+          <StreamingText text={step.label} streaming />
         </p>
       </div>
     )
@@ -366,12 +387,12 @@ function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
   )
 }
 
-// Streamed assistant prose. Types itself with a caret while it is the live tail.
+// Streamed assistant prose. While it is the live tail each incoming chunk fades
+// in and a caret trails the text; once settled it is plain prose.
 function SayPart({ step, tail }: { step: Step; tail: boolean }) {
   return (
     <div className="whitespace-pre-wrap text-sm leading-relaxed">
-      {step.label}
-      {tail ? <TypingCaret /> : null}
+      <StreamingText text={step.label} streaming={tail} />
     </div>
   )
 }
@@ -503,15 +524,6 @@ function ProofCard({
   )
 }
 
-const ICONS: Partial<Record<Step["kind"], typeof FileText>> = {
-  open: Radar,
-  list: ListTree,
-  read: FileSearch,
-  scan: Radar,
-  note: FileText,
-  cap: FlaskConical,
-}
-
 // Fold the reduced step stream into assistant-ui messages. Operator steps are
 // the user's bubbles; each contiguous run of agent steps is one assistant
 // message whose parts carry the Step for our renderers — reasoning/prose/subagent
@@ -541,13 +553,45 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     buf = null
   }
 
+  // A contiguous run of the agent's non-cognition steps collapses into one
+  // ToolGroup card instead of a row each, so recon stops jittering the layout.
+  let group: Step[] = []
+  const flushGroup = () => {
+    if (buf && group.length) {
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: `group:${group[0].key}`,
+        toolName: "toolgroup",
+        args: { group },
+        result: "done",
+      })
+    }
+    group = []
+  }
+  const GROUPED = new Set<Step["kind"]>(["open", "list", "read", "scan", "note", "cap"])
+
   state.steps.forEach((step, i) => {
     if (step.kind === "operator") {
+      flushGroup()
       flush()
       msgs.push({ role: "user", id: step.key, content: [{ type: "text", text: step.label }] })
       return
     }
+    // The decide pass already shows up as the single proof card below, which
+    // carries its own replaying → proven state. Its bookkeeping rows ("Recording
+    // the finding", the approved "Finding recorded") stacked above that card and
+    // read as duplicates out of order — drop them. A denial has no green card to
+    // carry it, so its one red "Finding denied" row stays.
+    if (step.phase === "decide" && step.kind === "note") return
+    if (step.kind === "decided" && step.state === "pass") return
+
     if (!buf) buf = { id: step.key, parts: [] }
+    if (GROUPED.has(step.kind)) {
+      group.push(step)
+      return
+    }
+    // A cognition/outcome step ends the current group and renders on its own.
+    flushGroup()
     ;(buf.parts as unknown[]).push({
       type: "tool-call",
       toolCallId: step.key,
@@ -556,6 +600,7 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
       result: step.state ?? "done",
     })
   })
+  flushGroup()
 
   // Closing prose (the agent's words when nothing could be proven).
   if (status === "no-finding" && state.finalText) {

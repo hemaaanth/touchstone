@@ -1,6 +1,6 @@
 import { FolderGit2, Boxes, BookMarked, Settings2, Plus, ShieldCheck } from "lucide-react"
 import type { ProviderInfo, RunSummary, SpendState } from "@/lib/types"
-import { ago, DOT, statusLabel, statusTone } from "@/lib/format"
+import { ago, DOT, formatUsd, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "cn"
 import {
   Sidebar,
@@ -13,6 +13,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarSeparator,
 } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 
@@ -53,12 +54,14 @@ export function AppSidebar({
           </div>
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
         </div>
-        <Button size="sm" className="w-full justify-start gap-2" onClick={onNewRun}>
+        {/* The one primary action: a full-width button, not a chip. */}
+        <Button className="w-full justify-center gap-2" onClick={onNewRun}>
           <Plus className="size-4" />
           New run
         </Button>
       </SidebarHeader>
 
+      {/* Runs are the whole point of the rail, so they own the scrolling body. */}
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Runs</SidebarGroupLabel>
@@ -93,33 +96,23 @@ export function AppSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {PAGES.map((p) => (
-                <SidebarMenuItem key={p.id}>
-                  <SidebarMenuButton isActive={isPage(p.id)} onClick={() => onSelect({ kind: "page", id: p.id })}>
-                    <p.icon className="size-4" />
-                    <span>{p.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="gap-2 p-2">
-        {spend ? (
-          <div className="flex items-center justify-between rounded-md px-2 py-1 text-[11px] text-muted-foreground">
-            <span>{provider?.label ?? "Spend"}</span>
-            <span className="tabular-nums">
-              ${spend.usd.toFixed(2)} / ${spend.cap.toFixed(0)}
-            </span>
-          </div>
-        ) : null}
+      {/* Workspace nav + account controls sit together at the base, divided
+          from the runs list above. Projects / Modules / Playbooks are
+          destinations you leave the runs for, so they live down here by
+          Settings rather than competing with the list. */}
+      <SidebarFooter className="gap-1 p-2">
+        <SidebarSeparator className="mx-0 mb-1" />
         <SidebarMenu>
+          {PAGES.map((p) => (
+            <SidebarMenuItem key={p.id}>
+              <SidebarMenuButton isActive={isPage(p.id)} onClick={() => onSelect({ kind: "page", id: p.id })}>
+                <p.icon className="size-4" />
+                <span>{p.label}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
           <SidebarMenuItem>
             <SidebarMenuButton
               isActive={isPage("settings")}
@@ -130,7 +123,37 @@ export function AppSidebar({
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+
+        {spend ? <SpendMeter spend={spend} provider={provider} /> : null}
       </SidebarFooter>
     </Sidebar>
+  )
+}
+
+// The run budget, read at a glance: who is paying, how much of the cap is gone,
+// and a bar that fills as spend climbs — amber only as it nears the ceiling.
+// Neutral fill otherwise, so it never borrows the proven-finding green/red.
+function SpendMeter({ spend, provider }: { spend: SpendState; provider: ProviderInfo | null }) {
+  const pct = spend.cap > 0 ? Math.min(100, (spend.usd / spend.cap) * 100) : 0
+  const near = pct >= 90
+  return (
+    <div className="rounded-md px-2 pt-1.5 pb-1">
+      <div className="mb-1.5 flex items-center justify-between text-[11px]">
+        <span className="font-medium text-muted-foreground">{provider?.label ?? "Spend"}</span>
+        <span className="tabular-nums text-foreground/80">
+          {formatUsd(spend.usd)}
+          <span className="text-muted-foreground"> / {formatUsd(spend.cap)}</span>
+        </span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width] duration-500",
+            near ? "bg-amber-500" : "bg-foreground/45",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
   )
 }
