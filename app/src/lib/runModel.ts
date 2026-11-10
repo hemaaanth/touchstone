@@ -9,6 +9,7 @@ import type {
   FindingStages,
   FindingSummary,
   PendingApproval,
+  PrepassView,
   RunEvent,
   RunStatus,
   Severity,
@@ -121,6 +122,9 @@ export interface RunState {
   latestArtifact: { fileId: string; versionId: string } | null
   // The finding the run settled on, from `run-complete`. Null until then.
   findingId: string | null
+  // What the pack's tools found before the agent started. Null when the pack
+  // has no prepass or it has not finished.
+  prepass: PrepassView | null
 }
 
 export function reduceEvents(events: RunEvent[]): RunState {
@@ -144,6 +148,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const artifacts: ArtifactDoc[] = []
   let latestArtifact: { fileId: string; versionId: string } | null = null
   let findingId: string | null = null
+  let prepass: PrepassView | null = null
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
   const str = (v: unknown) => (typeof v === "string" ? v : "")
@@ -162,13 +167,6 @@ export function reduceEvents(events: RunEvent[]): RunState {
     }
     steps.push({ key: k, kind, phase, conv, label: text })
   }
-  const topChecks = (v: unknown): string[] =>
-    Array.isArray(v)
-      ? v
-          .map((x) => (x && typeof x === "object" && "check" in x ? str((x as { check: unknown }).check) : ""))
-          .filter(Boolean)
-      : []
-
   events.forEach((e, i) => {
     const key = `${i}-${e.ev}`
     switch (e.ev) {
@@ -190,61 +188,24 @@ export function reduceEvents(events: RunEvent[]): RunState {
           steps.push({ key, kind: "open", phase, label: "Agent session started" })
         break
       }
-      case "static-scan": {
-        // The pre-pass: two independent static engines scan the target and hand
-        // the agent a ranked suspect list before it starts. A suspect is only a
-        // lead — never a finding until a replay proves it — so this gets a neutral
-        // mark. Suspects both engines agree on rank first; we note how many.
-        const n = num(e.suspects) ?? 0
-        const engines = Array.isArray(e.engines) && e.engines.length
-          ? (e.engines as unknown[]).map(str).filter(Boolean)
-          : ["Slither"]
-        const who = engines.join(" + ")
-        const names = topChecks(e.top).slice(0, 3)
-        const agreed = Array.isArray(e.top)
-          ? (e.top as unknown[]).filter((x) => x && typeof x === "object" && (x as { corroborated?: unknown }).corroborated).length
-          : 0
-        const detailParts: string[] = []
-        if (names.length) detailParts.push(`${who}: ${names.join(", ")}`)
-        if (agreed > 0) detailParts.push(`${agreed} corroborated`)
-        steps.push({
-          key,
-          kind: "scan",
-          phase,
-          label: n > 0 ? `Static scan — ${n} suspect${n === 1 ? "" : "s"}` : "Static scan — nothing flagged",
-          detail: detailParts.length ? detailParts.join(" · ") : undefined,
-        })
+      case "prepass": {
+        // The pack's tool scan, summarised for every pack. It shows in one closed
+        // fold above the transcript, so the raw static-scan and fuzz-scan events
+        // add no step of their own. The leads are not findings.
+        prepass = {
+          total: num(e.total) ?? 0,
+          tools: Array.isArray(e.tools) ? (e.tools as PrepassView["tools"]) : [],
+          leads: Array.isArray(e.leads) ? (e.leads as PrepassView["leads"]) : [],
+          ...(e.failed ? { failed: true } : {}),
+        }
         break
       }
+      case "static-scan":
+      case "fuzz-scan":
+        break
       case "static_findings":
         steps.push({ key, kind: "note", phase, label: "Read the static analyzer report" })
         break
-      case "fuzz-scan": {
-        // The fuzz pre-pass: two independent property fuzzers try to break an
-        // invariant from ordinary calls. A broken invariant is only a lead —
-        // never a finding until a replay proves it — so this gets the same neutral
-        // mark. An invariant both fuzzers broke ranks first; we note how many.
-        const n = num(e.suspects) ?? 0
-        const engines = Array.isArray(e.engines) && e.engines.length
-          ? (e.engines as unknown[]).map(str).filter(Boolean)
-          : ["Echidna"]
-        const who = engines.join(" + ")
-        const names = topChecks(e.top).slice(0, 3)
-        const agreed = Array.isArray(e.top)
-          ? (e.top as unknown[]).filter((x) => x && typeof x === "object" && (x as { corroborated?: unknown }).corroborated).length
-          : 0
-        const detailParts: string[] = []
-        if (names.length) detailParts.push(`${who}: ${names.join(", ")}`)
-        if (agreed > 0) detailParts.push(`${agreed} corroborated`)
-        steps.push({
-          key,
-          kind: "scan",
-          phase,
-          label: n > 0 ? `Fuzzing — ${n} invariant${n === 1 ? "" : "s"} broken` : "Fuzzing — nothing broken",
-          detail: detailParts.length ? detailParts.join(" · ") : undefined,
-        })
-        break
-      }
       case "fuzz_findings":
         steps.push({ key, kind: "note", phase, label: "Read the property fuzzer report" })
         break
@@ -627,6 +588,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     artifacts,
     latestArtifact,
     findingId,
+    prepass,
   }
 }
 

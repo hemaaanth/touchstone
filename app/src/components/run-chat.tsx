@@ -25,7 +25,8 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react"
-import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
+import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassView, RunStatus, RunSummary } from "@/lib/types"
+import { PrepassFold } from "@/components/prepass"
 import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { INK, isTerminal, severityTone } from "@/lib/format"
@@ -208,6 +209,7 @@ export function RunChat({
             <Thread
               live={live}
               empty={messages.length === 0}
+              prepass={state?.prepass ?? null}
               error={status === "error" ? state?.error ?? null : null}
               archived={archived}
               sendError={sendError}
@@ -370,12 +372,14 @@ function RunActions({
 function Thread({
   live,
   empty,
+  prepass,
   error,
   archived,
   sendError,
 }: {
   live: boolean
   empty: boolean
+  prepass: PrepassView | null
   error: string | null
   archived: boolean
   sendError: string | null
@@ -387,6 +391,8 @@ function Thread({
     >
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
         <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-3 px-5 py-6">
+          {prepass ? <PrepassFold prepass={prepass} /> : null}
+
           {empty ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
