@@ -17,7 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
@@ -627,6 +627,26 @@ export function archiveRun(id, archived) {
   run.archived = Boolean(archived)
   broadcast(run, { t: Date.now(), ev: "archived", archived: run.archived })
   return { ok: true, archived: run.archived }
+}
+
+// Delete a run. Its files (stream, record, engine log, session) move to a
+// trash folder beside them rather than being erased, so a mistake can be put
+// back by hand. The run's findings live in its record, so they leave the
+// ledger with it. A run the agent is still working on cannot be deleted.
+export function deleteRun(id) {
+  const run = runs.get(id)
+  if (!run) throw new Error("no such run")
+  if (!idle(run)) throw new Error("the agent is still working; delete it once it stops")
+  const trash = path.join(RESULTS_DIR, "trash")
+  mkdirSync(trash, { recursive: true })
+  const prefix = `run-${id}.`
+  if (existsSync(RESULTS_DIR)) {
+    for (const f of readdirSync(RESULTS_DIR)) {
+      if (f.startsWith(prefix)) renameSync(path.join(RESULTS_DIR, f), path.join(trash, f))
+    }
+  }
+  runs.delete(id)
+  return { ok: true }
 }
 
 // Assemble the engine's canonical { result, transcript } record and write it

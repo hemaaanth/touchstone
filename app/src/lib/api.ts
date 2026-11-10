@@ -73,6 +73,12 @@ export function archiveRun(id: string, archived: boolean): Promise<{ ok: true; a
   return postJson<{ ok: true; archived: boolean }>(`/api/runs/${encodeURIComponent(id)}/archive`, { archived })
 }
 
+// Delete a run. The server moves its files to a trash folder and drops it from
+// the list. Its findings leave the ledger with it. A busy run refuses.
+export function deleteRun(id: string): Promise<{ ok: true }> {
+  return postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(id)}/delete`, {})
+}
+
 // Ledger override. A proven exploit is recorded automatically; this flips a
 // recorded finding to "dismissed" (or restores it). It never re-runs the engine
 // and never alters the proof — it only changes how the finding reads.

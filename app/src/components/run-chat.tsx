@@ -10,32 +10,51 @@ import {
   type TextMessagePartComponent,
 } from "@assistant-ui/react"
 import {
+  Archive,
+  ArchiveRestore,
   ArrowUp,
   ArrowDown,
   Brain,
   ChevronRight,
   FileCode2,
   GitBranch,
-  PenLine,
+  MoreHorizontal,
   Play,
   ShieldX,
   TerminalSquare,
+  Trash2,
   Loader2,
 } from "lucide-react"
-import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
+import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { elapsed, INK, isTerminal, severityTone } from "@/lib/format"
+import { INK, isTerminal, severityTone } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
 import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
 import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
+import { FilesPanel } from "@/components/assistant-ui/elements/files-panel"
+import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 // How a transcript chip — or the proof card — opens its document in the pane
 // beside the chat. A file can have several versions, so the callback takes the
@@ -56,24 +75,31 @@ const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>
 //
 // Beyond tool steps the thread now surfaces the agent's own cognition — streamed
 // reasoning folds into a collapsible "thinking" block, streamed prose fades in as
-// it arrives, and a subagent handoff reads as its own row. A live AgentStatus
-// pill above the composer names what the agent is doing right now.
+// it arrives, and a subagent handoff reads as its own row.
 
-export function RunChat({ run }: { run: RunSummary }) {
+export function RunChat({
+  run,
+  onArchive,
+  onDelete,
+}: {
+  run: RunSummary
+  onArchive: (id: string, archived: boolean) => void
+  onDelete: (id: string) => Promise<void>
+}) {
   const state = useRun(run.id)
   // The workspace documents the agent wrote, and which one the pane shows. On
   // desktop a new artifact auto-opens the pane and the pane follows to it;
-  // closing it sticks until a newer document arrives (or the header chip reopens
-  // the last one). On a phone the pane is a full-screen overlay, so it never
+  // closing it sticks until a newer document arrives (or the Files panel opens
+  // one). On a phone the pane is a full-screen overlay, so it never
   // opens by itself: the document drafts in its chat card and opens on a tap.
   const artifacts = state?.artifacts ?? []
   // The pane opens a file at one version. `latestArtifact` names the most recent
   // write (file + version); a new version of an older file still counts as the
   // latest even though it does not move that file to the end of `artifacts`.
   const latest = state?.latestArtifact ?? null
-  const latestFile = latest ? artifacts.find((a) => a.id === latest.fileId) ?? null : null
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
   const [openVersionId, setOpenVersionId] = useState<string | null>(null)
+  const [filesOpen, setFilesOpen] = useStoredFlag("ts.filesOpen", false)
   // Open a file at a version. Omit the version to land on the file's latest.
   const openArtifact = (fileId: string, versionId?: string) => {
     setOpenArtifactId(fileId)
@@ -141,29 +167,41 @@ export function RunChat({ run }: { run: RunSummary }) {
           document pane. The chat flexes; the pane is a fixed-width column on
           desktop and a full-width overlay on mobile (so `relative` anchors it). */}
       <div className="relative flex h-full min-w-0">
-        <div className="flex h-full min-w-0 flex-1 flex-col">
-          {/* T3-style top bar: the sidebar toggle (mobile only — the sidebar is
-              a Sheet there and unreachable otherwise), the target, then one
-              trailing chip to reopen the document pane once it has been closed. */}
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+        <div className="relative flex h-full min-w-0 flex-1 flex-col">
+          {/* The run's files float in the chat's top-right corner, under the top
+              bar. Folded, the panel is one line; open, it lists every file. */}
+          {artifacts.length ? (
+            <div className="pointer-events-none absolute top-14 right-3 z-10 flex max-h-[calc(100%-4rem)] justify-end">
+              <FilesPanel
+                docs={artifacts}
+                activeId={openDoc?.id ?? null}
+                activeVersionId={openVersionId}
+                open={filesOpen}
+                onOpenChange={setFilesOpen}
+                onOpen={(fileId, versionId) => {
+                  openArtifact(fileId, versionId)
+                  // On a phone the document covers the chat, so fold the list.
+                  if (isNarrow()) setFilesOpen(false)
+                }}
+              />
+            </div>
+          ) : null}
+          {/* The top bar holds the run's title and the actions on the run as a
+              whole: archive, and delete behind a menu. Both wait while the agent
+              works, because the server refuses to change a busy run. The sidebar
+              toggle shows on mobile only, where the sidebar is a Sheet. */}
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
             <SidebarTrigger className="-ml-1 md:hidden" />
             <h1 className="min-w-0 truncate text-sm font-medium">
               {scope?.title ?? run.title ?? run.alias}
             </h1>
-            {latest && latestFile && !openDoc ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="ml-auto h-7 shrink-0 gap-1.5"
-                onClick={() => openArtifact(latest.fileId, latest.versionId)}
-              >
-                <FileCode2 className="size-3.5" />
-                <span>Artifacts</span>
-                {artifacts.length > 1 ? (
-                  <span className="tabular-nums text-muted-foreground">{artifacts.length}</span>
-                ) : null}
-              </Button>
-            ) : null}
+            <RunActions
+              archived={archived}
+              busy={live || !state}
+              findings={state?.findings.length ?? 0}
+              onArchive={() => onArchive(run.id, !archived)}
+              onDelete={() => onDelete(run.id)}
+            />
           </header>
 
           <AssistantRuntimeProvider runtime={runtime}>
@@ -171,8 +209,6 @@ export function RunChat({ run }: { run: RunSummary }) {
               live={live}
               empty={messages.length === 0}
               error={status === "error" ? state?.error ?? null : null}
-              activity={state?.activity ?? "working"}
-              startedAt={state?.replyStartedAt ?? run.startedAt}
               archived={archived}
               sendError={sendError}
             />
@@ -181,11 +217,9 @@ export function RunChat({ run }: { run: RunSummary }) {
 
         {openDoc ? (
           <ArtifactPane
-            docs={artifacts}
-            activeId={openDoc.id}
+            doc={openDoc}
             versionId={openVersionId}
             finding={finding}
-            onSelect={(id) => openArtifact(id)}
             onSelectVersion={setOpenVersionId}
             onClose={() => {
               setOpenArtifactId(null)
@@ -227,29 +261,108 @@ function useFinding(findingId: string | null): Finding | null {
   return remote
 }
 
-// A clock that ticks once a second while the run is live, so the AgentStatus
-// elapsed reads up in real time. Stops dead once the run settles.
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [active])
-  return now
+// A yes/no setting kept in localStorage, so a panel stays as the operator left it.
+function useStoredFlag(key: string, initial: boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState(() => {
+    const saved = localStorage.getItem(key)
+    return saved == null ? initial : saved === "1"
+  })
+  const set = (v: boolean) => {
+    setValue(v)
+    localStorage.setItem(key, v ? "1" : "0")
+  }
+  return [value, set]
 }
 
-const ACTIVITY_LABEL: Record<Activity, string> = {
-  thinking: "Thinking",
-  working: "Working",
-  typing: "Writing",
-  idle: "Idle",
-}
-
-function ActivityIcon({ activity }: { activity: Activity }) {
-  if (activity === "thinking") return <Brain className="size-3" />
-  if (activity === "typing") return <PenLine className="size-3" />
-  return <Loader2 className="size-3 animate-spin" />
+// The actions on the whole run, at the end of the top bar. Archive is one tap
+// and undoes itself. Delete sits in a menu and asks first. The server moves a
+// deleted run's files to a trash folder, so a mistake can still be recovered by
+// hand. Both wait while the agent works.
+function RunActions({
+  archived,
+  busy,
+  findings,
+  onArchive,
+  onDelete,
+}: {
+  archived: boolean
+  busy: boolean
+  findings: number
+  onArchive: () => void
+  onDelete: () => Promise<void>
+}) {
+  const [confirm, setConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const wait = busy ? "Wait for the agent to finish" : undefined
+  return (
+    <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground"
+        disabled={busy}
+        title={wait}
+        onClick={onArchive}
+      >
+        {archived ? <ArchiveRestore /> : <Archive />}
+        <span className="hidden sm:inline">{archived ? "Unarchive" : "Archive"}</span>
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions" />}
+        >
+          <MoreHorizontal />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-40">
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={busy}
+            onClick={() => {
+              setError(null)
+              setConfirm(true)
+            }}
+          >
+            <Trash2 />
+            Delete run
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog open={confirm} onOpenChange={(o) => !deleting && setConfirm(o)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete this run?</DialogTitle>
+            <DialogDescription>
+              The run leaves the list with its transcript and files.
+              {findings
+                ? ` Its ${findings === 1 ? "finding leaves" : `${findings} findings leave`} the ledger too.`
+                : ""}{" "}
+              The files move to a trash folder, so they can be restored by hand.
+            </DialogDescription>
+          </DialogHeader>
+          {error ? <p className="text-xs text-bad">{error}</p> : null}
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" disabled={deleting} />}>Cancel</DialogClose>
+            <Button
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => {
+                setDeleting(true)
+                onDelete()
+                  .catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : String(err))
+                    setDeleting(false)
+                  })
+              }}
+            >
+              {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
 }
 
 // The thread body + composer, styled in base-nova. Headless assistant-ui
@@ -258,21 +371,15 @@ function Thread({
   live,
   empty,
   error,
-  activity,
-  startedAt,
   archived,
   sendError,
 }: {
   live: boolean
   empty: boolean
   error: string | null
-  activity: Activity
-  startedAt: number
   archived: boolean
   sendError: string | null
 }) {
-  const now = useNow(live)
-  const agentState: AgentState = "working"
   return (
     <ThreadPrimitive.Root
       className="flex min-h-0 flex-1 flex-col bg-background"
@@ -306,19 +413,6 @@ function Thread({
           </Button>
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.Viewport>
-
-      {/* The live cognition pill: what the agent is doing right now, with a
-          real-time elapsed clock. Gone the moment the run settles. */}
-      {live ? (
-        <div className="flex justify-center px-5 pb-1 pt-1">
-          <AgentStatus
-            state={agentState}
-            label={ACTIVITY_LABEL[activity]}
-            elapsed={elapsed(startedAt, now)}
-            trailing={<ActivityIcon activity={activity} />}
-          />
-        </div>
-      ) : null}
 
       <Composer live={live} archived={archived} error={sendError} />
     </ThreadPrimitive.Root>
@@ -412,7 +506,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   if (!step) return null
 
   if (step.kind === "reasoning") return <ReasoningPart step={step} tail={!!a.tail} />
-  if (step.kind === "say") return <SayPart step={step} />
+  if (step.kind === "say") return <SayPart step={step} tail={!!a.tail} />
   if (step.kind === "subagent") return <HandoffRow step={step} />
   if (step.kind === "poc")
     return <AttemptCard step={step} file={a.artifact ?? null} version={a.version ?? null} vIndex={a.vIndex ?? 1} />
@@ -464,40 +558,35 @@ function ToolGroupPart({ group }: { group: Step[] }) {
   )
 }
 
-// Streamed reasoning. Live and finished thinking share one shape: a header and
-// a side rail. While it is the live tail the header shimmers "Thinking" and the
-// rail stays open; once the agent moves on it folds into "Thought it through",
-// which the operator can reopen.
+// Streamed reasoning. This model thinks at length, so the block starts folded:
+// one quiet line that shimmers "Thinking…" while the agent thinks, then reads
+// "Thought it through". A click opens the side rail with the full text, live or
+// done, and the block keeps that choice when the agent moves on.
 function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
-  const body = <Markdown text={step.label} className={RAIL} />
-  if (tail) {
-    return (
-      <div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Brain className="size-3.5" />
-          <ShimmerLabel active>Thinking</ShimmerLabel>
-        </div>
-        {body}
-      </div>
-    )
-  }
+  const [open, setOpen] = useState(false)
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
         <Brain className="size-3.5" />
-        Thought it through
+        {tail ? <ShimmerLabel active>Thinking…</ShimmerLabel> : "Thought it through"}
         <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]:rotate-90" />
       </CollapsibleTrigger>
-      <CollapsibleContent>{body}</CollapsibleContent>
+      <CollapsibleContent>{open ? <ReasoningBody text={step.label} tail={tail} /> : null}</CollapsibleContent>
     </Collapsible>
   )
 }
 
+// The rail mounts only while open, so folded thinking costs no Markdown parse.
+function ReasoningBody({ text, tail }: { text: string; tail: boolean }) {
+  return <Markdown text={useSmoothText(text, tail)} className={RAIL} />
+}
+
 const RAIL = "mt-1.5 border-l-2 border-border pl-3 text-[13px] leading-relaxed text-muted-foreground"
 
-// Streamed assistant prose, rendered as Markdown.
-function SayPart({ step }: { step: Step }) {
-  return <Markdown text={step.label} className="text-sm leading-relaxed" />
+// Streamed assistant prose, rendered as Markdown. While it streams, it reveals
+// word by word instead of in the uneven chunks the transport sends.
+function SayPart({ step, tail }: { step: Step; tail: boolean }) {
+  return <Markdown text={useSmoothText(step.label, tail)} className="text-sm leading-relaxed" />
 }
 
 // A subagent handoff: the lead delegated an angle to a child conversation. Reads
@@ -742,23 +831,18 @@ function FindingCard({
 // handoffs and tool cards alike. The agent's closing prose and the live proof
 // card trail the final assistant message. Keying each message by its first step
 // id keeps rows and scroll stable as the stream grows. `tail` marks the single
-// cognition block being written right now so only it fades its fresh text in.
+// cognition block being written right now so only it reveals word by word.
 function buildMessages(state: RunState | null, status: RunStatus, live: boolean): ThreadMessageLike[] {
   if (!state) return []
   const msgs: ThreadMessageLike[] = []
   let buf: { id: string; parts: ThreadMessageLike["content"] } | null = null
 
-  // The last reasoning/prose block is the live tail — the one still streaming.
-  let tailIndex = -1
-  if (live) {
-    for (let i = state.steps.length - 1; i >= 0; i--) {
-      const k = state.steps[i].kind
-      if (k === "say" || k === "reasoning") {
-        tailIndex = i
-        break
-      }
-    }
-  }
+  // The live tail is the block still streaming: the run's last step, when that
+  // step is reasoning or prose. Once a tool step follows, the block is done, so
+  // "Thinking…" never shimmers above a tool that is already running.
+  const lastIndex = state.steps.length - 1
+  const lastKind = state.steps[lastIndex]?.kind
+  const tailIndex = live && (lastKind === "say" || lastKind === "reasoning") ? lastIndex : -1
 
   const flush = () => {
     if (buf && buf.parts.length) msgs.push({ role: "assistant", id: buf.id, content: buf.parts })

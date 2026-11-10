@@ -6,7 +6,7 @@ import type {
   SpendState,
   TargetChoice,
 } from "@/lib/types"
-import { archiveRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { archiveRun, deleteRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
@@ -110,6 +110,24 @@ export function App() {
       .catch(() => {})
   }, [])
 
+  // Delete a run from its top bar. The row leaves the list, and the view moves
+  // to the next run so the stage is never left on a run that is gone. Errors
+  // go back to the caller, which shows them in its confirm dialog.
+  const onDelete = useCallback(
+    (id: string) =>
+      deleteRun(id).then(() => {
+        setRuns((prev) => {
+          const rest = prev.filter((r) => r.id !== id)
+          setView((cur) =>
+            cur?.kind === "run" && cur.id === id ? (rest[0] ? { kind: "run", id: rest[0].id } : null) : cur,
+          )
+          return rest
+        })
+        refreshModels()
+      }),
+    [refreshModels],
+  )
+
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
 
@@ -132,7 +150,7 @@ export function App() {
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} />
+          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onDelete={onDelete} />
         ) : view?.kind === "page" ? (
           <PageStub id={view.id} />
         ) : (

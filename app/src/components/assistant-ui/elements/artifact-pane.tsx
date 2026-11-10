@@ -14,9 +14,9 @@ import { ResizeHandle, useStoredWidth } from "@/components/resize-handle";
 // the transcript, so the operator reads the whole file while the run keeps
 // moving. Code arrives as growing snapshots, highlighted monochrome with its
 // fresh tail fading in; a proof document renders the recorded finding's
-// structured replay report. When more than one document is open the header
-// becomes a tab strip so the operator can move between them without leaving the
-// pane. One accent rule holds: a proof leads with the shield and the proven
+// structured replay report. The pane shows one file at a time. The Files panel
+// in the chat picks which, so a run with many files never crowds this header.
+// One accent rule holds: a proof leads with the shield and the proven
 // green lives inside its report, never on the chrome here.
 const KIND_META: Record<ArtifactDoc["kind"], string> = {
   poc: "Proof of concept",
@@ -34,31 +34,24 @@ function iconFor(doc: ArtifactDoc) {
 }
 
 export function ArtifactPane({
-  docs,
-  activeId,
+  doc,
   versionId,
   finding,
-  onSelect,
   onSelectVersion,
   onClose,
 }: {
-  docs: ArtifactDoc[];
-  activeId: string | null;
+  doc: ArtifactDoc;
   versionId: string | null;
   finding: Finding | null;
-  onSelect: (id: string) => void;
   onSelectVersion: (versionId: string) => void;
   onClose: () => void;
 }) {
   const [width, setWidth, initialWidth] = useStoredWidth("ts.paneWidth", 432, 320, 1100);
-  const doc = docs.find((d) => d.id === activeId) ?? docs[docs.length - 1];
-  if (!doc) return null;
 
   const version =
     doc.versions.find((v) => v.id === versionId) ?? doc.versions[doc.versions.length - 1];
   if (!version) return null;
 
-  const multi = docs.length > 1;
   const Icon = iconFor(doc);
   const code = isCodeDoc(doc);
   const proof = doc.kind === "proof";
@@ -78,31 +71,7 @@ export function ArtifactPane({
     >
       <ResizeHandle edge="left" width={width} onWidth={setWidth} initial={initialWidth} label="Resize document pane" />
       <header className="flex h-12 shrink-0 items-center gap-1 border-b pe-1.5 ps-1.5">
-        {multi ? (
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-            {docs.map((d) => {
-              const TabIcon = iconFor(d);
-              const active = d.id === doc.id;
-              return (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => onSelect(d.id)}
-                  className={cn(
-                    "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
-                    active
-                      ? "bg-muted font-medium text-foreground"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                  )}
-                >
-                  <TabIcon className="size-3.5 shrink-0" />
-                  <span className="max-w-[8.5rem] truncate">{d.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
             <Icon className="size-4 shrink-0 text-muted-foreground" />
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-sm font-medium leading-tight">
@@ -118,8 +87,7 @@ export function ArtifactPane({
                 )}
               </span>
             </div>
-          </div>
-        )}
+        </div>
         <button
           type="button"
           onClick={onClose}
