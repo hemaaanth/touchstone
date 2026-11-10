@@ -58,3 +58,15 @@ test("leads are capped and the real count is kept", () => {
 test("a failed prepass has no detail", () => {
   assert.deepEqual(prepassFailed(), { total: 0, tools: [], leads: [], failed: true });
 });
+
+test("a chain pack record with a top list becomes one tool named by its mode", () => {
+  const v = prepassView({ mode: "keys", block: 12, suspects: 9, corroborated: 2, top: [
+    { check: "threshold-1", impact: "Medium", where: "Safe 0xab" },
+    { check: "module-enabled", impact: "High", where: { name: "Safe 0xcd" } },
+  ] });
+  assert.deepEqual(v.tools, [{ name: "keys", status: "ran", reason: null, leads: 9 }]);
+  assert.equal(v.leads[0].check, "module-enabled");
+  assert.equal(v.leads[0].where, "Safe 0xcd");
+  assert.deepEqual(v.leads[0].tools, ["keys"]);
+  assert.equal(v.total, 9);
+});

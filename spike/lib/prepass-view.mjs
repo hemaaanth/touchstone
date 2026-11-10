@@ -6,6 +6,8 @@
 //                    fuzz:   { tool, engines, applicable, suspects, top[] } }
 //   supply chain   { coverage: [{ engine, status, code, timedOut, leads }],
 //                    leads: [{ check, impact, where, file, lines, description, engine }] }
+//   Keys, Chain watch { mode, block, suspects, corroborated, top: [{ check, impact, where }] }
+//   Domains, Surface { pack, leads: [{ engine, check, impact, where, description }] }
 //   any other pack the same coverage / leads keys, or `tools` instead of `coverage`
 // prepassView turns each of them into one shape for the run view:
 //   { total, tools: [{ name, status: "ran" | "unavailable", reason, leads }],
@@ -85,6 +87,11 @@ export function prepassView(record) {
   let leads;
   if (rec.static || rec.fuzz) {
     ({ tools, leads } = contracts(rec));
+  } else if (Array.isArray(rec.top) && !rec.leads && !rec.coverage && !rec.tools) {
+    // One world scan with a ranked top list (the chain packs).
+    const name = str(rec.mode ?? rec.pack, 60) || "scan";
+    tools = [tool(rec, name, Number(rec.suspects) || rec.top.length)];
+    leads = rec.top.map((l) => lead(l, name));
   } else {
     const list = arr(rec.leads);
     const cov = arr(rec.coverage ?? rec.tools).map(obj);
