@@ -192,6 +192,9 @@ function Sidebar({
             } as React.CSSProperties
           }
           side={side}
+          // Closing the sheet would hand focus back to whatever had it before —
+          // often the composer — and pop the phone keyboard. Leave focus alone.
+          finalFocus={false}
         >
           <SheetHeader className="sr-only">
             <SheetTitle>Sidebar</SheetTitle>

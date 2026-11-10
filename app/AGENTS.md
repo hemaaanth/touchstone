@@ -26,9 +26,12 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   engine. `bun run dev` serves the app and `/api/` from one process.
 - **Information architecture.** Left sidebar = runs list + Projects / Modules /
   Playbooks / Settings. Center = the agent run chat; findings are scoped to
-  their run, and clicking a proven finding's proof card opens its replay-proof
-  report in the same column ("Back to run" returns to the chat). There is no
-  global findings rail. Dark by default.
+  their run. Files the agent writes (PoC code, the replay proof) are artifacts
+  in a closable right pane, tabbed. Clicking a proven finding's proof card opens
+  its replay-proof artifact there. On desktop a new artifact auto-opens the
+  pane; on a phone the pane is a full-screen overlay, so it only opens on a tap
+  and the file drafts inside its chat card instead. There is no global findings
+  rail. Dark by default.
 - Do not upgrade existing dependencies (additive is fine). Use bun.
 - Competitor and reference repos are for reading only. Learn their patterns,
   then write our own code. Never copy-paste their code, even when the license

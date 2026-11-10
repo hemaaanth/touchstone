@@ -14,6 +14,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarSeparator,
+  useSidebar,
 } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 
@@ -44,6 +45,17 @@ export function AppSidebar({
   provider: ProviderInfo | null
 }) {
   const isPage = (id: string) => view?.kind === "page" && view.id === id
+  // On a phone the rail is a sheet over the content. Picking a destination
+  // closes it, so you land on the chat you chose instead of behind the menu.
+  const { setOpenMobile } = useSidebar()
+  const go = (v: View) => {
+    onSelect(v)
+    setOpenMobile(false)
+  }
+  const newRun = () => {
+    setOpenMobile(false)
+    onNewRun()
+  }
 
   return (
     <Sidebar>
@@ -55,7 +67,7 @@ export function AppSidebar({
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
         </div>
         {/* The one primary action: a full-width button, not a chip. */}
-        <Button className="w-full justify-center gap-2" onClick={onNewRun}>
+        <Button className="w-full justify-center gap-2" onClick={newRun}>
           <Plus className="size-4" />
           New run
         </Button>
@@ -76,7 +88,7 @@ export function AppSidebar({
                     <SidebarMenuItem key={r.id}>
                       <SidebarMenuButton
                         isActive={view?.kind === "run" && view.id === r.id}
-                        onClick={() => onSelect({ kind: "run", id: r.id })}
+                        onClick={() => go({ kind: "run", id: r.id })}
                         className="h-auto items-start py-1.5"
                       >
                         <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
@@ -107,7 +119,7 @@ export function AppSidebar({
         <SidebarMenu>
           {PAGES.map((p) => (
             <SidebarMenuItem key={p.id}>
-              <SidebarMenuButton isActive={isPage(p.id)} onClick={() => onSelect({ kind: "page", id: p.id })}>
+              <SidebarMenuButton isActive={isPage(p.id)} onClick={() => go({ kind: "page", id: p.id })}>
                 <p.icon className="size-4" />
                 <span>{p.label}</span>
               </SidebarMenuButton>
@@ -116,7 +128,7 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton
               isActive={isPage("settings")}
-              onClick={() => onSelect({ kind: "page", id: "settings" })}
+              onClick={() => go({ kind: "page", id: "settings" })}
             >
               <Settings2 className="size-4" />
               <span>Settings</span>

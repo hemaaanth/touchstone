@@ -66,9 +66,11 @@ export function RunChat({
   onStatus: (status: RunStatus, pending: PendingApproval | null) => void
 }) {
   const state = useRun(run.id)
-  // The workspace documents the agent wrote, and which one the pane shows. A new
-  // artifact auto-opens the pane and the pane follows to it; closing it sticks
-  // until a newer document arrives (or the header chip reopens the last one).
+  // The workspace documents the agent wrote, and which one the pane shows. On
+  // desktop a new artifact auto-opens the pane and the pane follows to it;
+  // closing it sticks until a newer document arrives (or the header chip reopens
+  // the last one). On a phone the pane is a full-screen overlay, so it never
+  // opens by itself: the document drafts in its chat card and opens on a tap.
   const artifacts = state?.artifacts ?? []
   const latestId = artifacts.length ? artifacts[artifacts.length - 1].id : null
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
@@ -76,7 +78,7 @@ export function RunChat({
   useEffect(() => {
     if (latestId && latestId !== seenArtifact.current) {
       seenArtifact.current = latestId
-      setOpenArtifactId(latestId)
+      if (!isNarrow()) setOpenArtifactId(latestId)
     }
   }, [latestId])
   const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
@@ -142,7 +144,7 @@ export function RunChat({
                 onClick={() => setOpenArtifactId(latestId)}
               >
                 <FileCode2 className="size-3.5" />
-                <span className="max-w-[12rem] truncate">
+                <span className="max-w-[7rem] truncate md:max-w-[12rem]">
                   {artifacts[artifacts.length - 1].title}
                 </span>
               </Button>
@@ -173,6 +175,16 @@ export function RunChat({
     </OpenArtifact.Provider>
   )
 }
+
+// Read at call time, not from state: the first artifact can land before a
+// hook-based mobile flag has settled. Matches Tailwind's `md` breakpoint.
+function isNarrow(): boolean {
+  return window.matchMedia("(max-width: 767px)").matches
+}
+
+// A touch device raises its on-screen keyboard whenever an input takes focus,
+// so the composer only grabs focus on its own where there is a real pointer.
+const FINE_POINTER = typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches
 
 // Resolve the finding a proof document renders. In DEV the fixtures carry the
 // finding synchronously so the proof pane fills in the same tick it opens; a
@@ -307,7 +319,7 @@ function Composer({ live }: { live: boolean }) {
           )}
         >
           <ComposerPrimitive.Input
-            autoFocus
+            autoFocus={FINE_POINTER}
             disabled={!live}
             rows={1}
             submitOnEnter
@@ -536,7 +548,24 @@ function ArtifactChip({ doc }: { doc: ArtifactDoc }) {
       meta={meta}
       generating={doc.writing}
       words={words}
+      preview={doc.writing ? <DraftTail text={doc.text} /> : null}
     />
+  )
+}
+
+// Phone only: the last few lines of a file as it drafts, inside its chat card,
+// so you watch it being written without the pane covering the chat. The top
+// fades out, and long lines clip rather than wrap. Desktop has the live pane.
+function DraftTail({ text }: { text: string }) {
+  const tail = text.trimEnd().split("\n").slice(-5).join("\n")
+  if (!tail) return null
+  return (
+    <pre
+      aria-hidden
+      className="overflow-hidden rounded-lg bg-foreground/[0.04] px-2.5 py-2 font-mono text-[10.5px] leading-[1.45] whitespace-pre text-muted-foreground [mask-image:linear-gradient(to_bottom,transparent,black_45%)] md:hidden"
+    >
+      {tail}
+    </pre>
   )
 }
 
@@ -550,10 +579,12 @@ function PocRow({ step }: { step: Step }) {
   return (
     <div className={cn("rounded-lg border px-3 py-2.5", tone)}>
       <div className="flex items-center gap-2 text-sm font-medium">
-        <TerminalSquare className="size-4" />
-        {step.label}
-        {step.contract ? <span className="font-mono text-xs text-muted-foreground">{step.contract}</span> : null}
-        <span className="ml-auto flex items-center gap-1.5 text-xs">
+        <TerminalSquare className="size-4 shrink-0" />
+        <span className="shrink-0 whitespace-nowrap">{step.label}</span>
+        {step.contract ? (
+          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{step.contract}</span>
+        ) : null}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs">
           {step.state === "running" ? (
             <>
               <Loader2 className="size-3.5 animate-spin" /> running
@@ -591,7 +622,7 @@ function ProofCard({
     <>
       <div className="flex items-center gap-2">
         {proven ? (
-          <ShieldCheck className="size-4 text-emerald-500" />
+          <ShieldCheck className="size-4 shrink-0 text-emerald-500" />
         ) : (
           <Loader2 className="size-4 animate-spin text-amber-500" />
         )}
