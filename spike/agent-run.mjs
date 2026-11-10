@@ -77,14 +77,16 @@ Your job: find a real, exploitable vulnerability and PROVE it with a runnable Fo
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - Use list_sources and read_source to read the contract under src/.
-- A static analyzer (Slither) has already scanned the target. Call static_findings
-  to read its ranked list of suspect functions and the exact vulnerable lines.
-  Treat each as a LEAD, not a verdict: a lead counts only once your PoC proves it.
-- A property fuzzer (Echidna) may also have run. Call fuzz_findings to read any
-  invariant it broke, with the exact call sequence that broke it. This finds
-  accounting bugs (bad rounding, unfunded payouts, insolvency) that the static
-  analyzer cannot see. A broken invariant is also only a LEAD — reproduce it as a
-  passing Foundry PoC before you submit it.
+- Two static analyzers (Slither + Aderyn) have already scanned the target. Call
+  static_findings to read their ranked list of suspect functions and the exact
+  vulnerable lines; a spot both engines flag is a stronger lead. Treat each as a
+  LEAD, not a verdict: a lead counts only once your PoC proves it.
+- Two property fuzzers (Echidna + Medusa) may also have run. Call fuzz_findings to
+  read any invariant they broke, with the exact call sequence that broke it; an
+  invariant both engines broke is a stronger lead. This finds accounting bugs (bad
+  rounding, unfunded payouts, insolvency) that the static analyzers cannot see. A
+  broken invariant is also only a LEAD — reproduce it as a passing Foundry PoC
+  before you submit it.
 - Write a Foundry test (a contract that imports forge-std/Test.sol) and run it with
   run_poc. A proof is a test that demonstrably moves funds the attacker should not
   get, and passes. Iterate on run_poc until your proof passes.
@@ -230,7 +232,7 @@ function tools(ws) {
   });
   const fuzzFindings = defineTool({
     name: "fuzz_findings",
-    description: "Read the property fuzzer (Echidna) report for the target: any invariant it broke, with the exact sequence of ordinary deposits and withdrawals that broke it. This catches accounting bugs a static analyzer cannot see. A broken invariant is only a lead — reproduce it with run_poc before you submit it.",
+    description: "Read the property fuzzer report for the target: any invariant two independent fuzzers (Echidna + Medusa) broke, with the exact sequence of ordinary deposits and withdrawals that broke it. This catches accounting bugs a static analyzer cannot see. Invariants both fuzzers broke are marked and ranked first. A broken invariant is only a lead — reproduce it with run_poc before you submit it.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => {
@@ -239,7 +241,11 @@ function tools(ws) {
       try { items = JSON.parse(process.env.FUZZ_JSON || "[]"); } catch { items = []; }
       if (!items.length) return { output: [{ type: "text", text: "Property fuzzing broke no invariant (or no fuzz template fit this target). Audit the source directly." }] };
       const text = items
-        .map((d, i) => `#${i + 1} [${d.impact}] ${d.check} at ${d.where} (invariant ${d.property})\n${d.description}${d.sequence?.length ? `\nBreaking call sequence: ${d.sequence.join(" → ")}` : ""}`)
+        .map((d, i) => {
+          const engines = Array.isArray(d.engines) && d.engines.length ? d.engines.join(" + ") : "Echidna";
+          const agree = d.corroborated ? ` — ${engines} AGREE (stronger lead)` : ` — broken by ${engines}`;
+          return `#${i + 1} [${d.impact}] ${d.check} at ${d.where} (invariant ${d.property})${agree}\n${d.description}${d.sequence?.length ? `\nBreaking call sequence: ${d.sequence.join(" → ")}` : ""}`;
+        })
         .join("\n\n");
       return { output: [{ type: "text", text }] };
     },
@@ -317,8 +323,8 @@ async function child([, , , mode, db, ws]) {
   const fuzzBriefText = process.env.FUZZ_BRIEF;
   const base = "Audit the contract(s) under src/. Find an exploitable vulnerability, prove it with a passing Foundry PoC that moves funds to an attacker, then submit the finding.";
   const leadBlocks = [];
-  if (staticBriefText) leadBlocks.push(`${staticBriefText}\n\nThese are leads from a static analyzer, scariest first. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
-  if (fuzzBriefText) leadBlocks.push(`${fuzzBriefText}\n\nThese are leads from a property fuzzer: each is an invariant it broke from ordinary calls. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
+  if (staticBriefText) leadBlocks.push(`${staticBriefText}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
+  if (fuzzBriefText) leadBlocks.push(`${fuzzBriefText}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
   const sub = await root.submit({
     type: "input", requestId: "run1",
     content: leadBlocks.length ? `${base}\n\n${leadBlocks.join("\n\n")}` : base,
@@ -417,23 +423,25 @@ async function main() {
   appendFileSync(env.EVENTS_FILE, JSON.stringify(scanEvent) + "\n");
   console.log("· static-scan " + JSON.stringify({ mode: scan.mode, engines: scan.engines, suspects: scanEvent.suspects, top: scanEvent.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
 
-  // Fuzz pre-pass: a property fuzzer (Echidna) tries to break an invariant we
-  // assert about the target, from ordinary deposits and withdrawals. It catches
-  // accounting bugs the static analyzer cannot — but only where a fuzz template
-  // fits the target; otherwise it honestly finds nothing. A broken invariant is a
-  // strong lead (it comes with the breaking call sequence) but never a finding on
-  // its own: the agent must still reproduce it as a passing PoC.
-  console.log(`\n== fuzzing (Echidna) ==`);
+  // Fuzz pre-pass: two property fuzzers (Echidna + Medusa) drive the SAME
+  // generated harness and try to break an invariant we assert about the target,
+  // from ordinary deposits and withdrawals. They catch accounting bugs the static
+  // engines cannot — but only where a fuzz template fits the target; otherwise
+  // they honestly find nothing. A broken invariant is a strong lead (it comes with
+  // the breaking call sequence) but never a finding on its own: the agent must
+  // still reproduce it as a passing PoC. An invariant both fuzzers break is
+  // corroborated and ranks first — agreement raises rank, never verdict.
+  console.log(`\n== fuzzing (Echidna + Medusa) ==`);
   const fuzz = await fuzzScan(ws);
   const fuzzBriefText = fuzzBrief(fuzz);
   const fuzzEvent = {
-    t: Date.now(), ev: "fuzz-scan", tool: fuzz.tool,
+    t: Date.now(), ev: "fuzz-scan", tool: fuzz.tool, engines: fuzz.engines,
     template: fuzz.template, applicable: fuzz.applicable,
     suspects: fuzz.findings.length,
-    top: fuzz.findings.slice(0, 8).map((d) => ({ check: d.check, impact: d.impact, where: d.where, property: d.property, sequence: d.sequence })),
+    top: fuzz.findings.slice(0, 8).map((d) => ({ check: d.check, impact: d.impact, where: d.where, property: d.property, sequence: d.sequence, engines: d.engines || [], corroborated: Boolean(d.corroborated) })),
   };
   appendFileSync(env.EVENTS_FILE, JSON.stringify(fuzzEvent) + "\n");
-  console.log("· fuzz-scan " + JSON.stringify({ applicable: fuzz.applicable, suspects: fuzzEvent.suspects, top: fuzzEvent.top.map((x) => `${x.impact}:${x.check}`) }));
+  console.log("· fuzz-scan " + JSON.stringify({ applicable: fuzz.applicable, engines: fuzz.engines, suspects: fuzzEvent.suspects, top: fuzzEvent.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
 
   // Phase 1: run the agent until it reaches the approval point (then kill it, to
   // prove the run survives the process going away), or until it settles on its own.
@@ -474,7 +482,7 @@ async function main() {
     // The fuzz pre-pass that fed the agent its accounting leads. Same story as
     // static: a broken invariant is a suspect the fuzzer ranked, then proven by
     // replay. A suspect is never a finding on its own.
-    fuzz: { tool: fuzz.tool, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: fuzzEvent.top },
+    fuzz: { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: fuzzEvent.top },
     pocRuns, pocProved: pocPassed,
     findingSubmitted: !!pendingEv, finding: pendingEv ? { title: pendingEv.title, severity: pendingEv.severity, poc: pendingEv.poc } : null,
     decision: decided?.status ?? null,

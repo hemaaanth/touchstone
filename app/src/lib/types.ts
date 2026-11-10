@@ -92,7 +92,7 @@ export interface StaticScan {
   top: StaticSuspect[]
 }
 
-// One invariant the property fuzzer broke before the agent ran, with the exact
+// One invariant the property fuzzers broke before the agent ran, with the exact
 // call sequence that broke it. A lead, never a verdict — the replay is what makes
 // it real.
 export interface FuzzSuspect {
@@ -101,11 +101,18 @@ export interface FuzzSuspect {
   property: string
   where: string | null
   sequence: string[]
+  // Which independent fuzzers broke this invariant. When both did, it is
+  // corroborated and ranks higher — agreement sharpens attention, it never
+  // substitutes for the replay that makes a finding real.
+  engines: string[]
+  corroborated: boolean
 }
 
-// The fuzz pre-pass summary: which invariant the fuzzer broke that fed the agent.
+// The fuzz pre-pass summary: which invariant the fuzzers broke that fed the agent.
 export interface FuzzScan {
   tool: string
+  // Which fuzz engines ran this pass (e.g. ["Echidna", "Medusa"]).
+  engines: string[]
   template: string | null
   suspects: number
   top: FuzzSuspect[]

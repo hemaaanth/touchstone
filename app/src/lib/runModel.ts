@@ -98,17 +98,28 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "note", phase, label: "Read the static analyzer report" })
         break
       case "fuzz-scan": {
-        // The fuzz pre-pass: a property fuzzer tries to break an invariant from
-        // ordinary calls. A broken invariant is only a lead — never a finding
-        // until a replay proves it — so this gets the same neutral mark.
+        // The fuzz pre-pass: two independent property fuzzers try to break an
+        // invariant from ordinary calls. A broken invariant is only a lead —
+        // never a finding until a replay proves it — so this gets the same neutral
+        // mark. An invariant both fuzzers broke ranks first; we note how many.
         const n = num(e.suspects) ?? 0
+        const engines = Array.isArray(e.engines) && e.engines.length
+          ? (e.engines as unknown[]).map(str).filter(Boolean)
+          : ["Echidna"]
+        const who = engines.join(" + ")
         const names = topChecks(e.top).slice(0, 3)
+        const agreed = Array.isArray(e.top)
+          ? (e.top as unknown[]).filter((x) => x && typeof x === "object" && (x as { corroborated?: unknown }).corroborated).length
+          : 0
+        const detailParts: string[] = []
+        if (names.length) detailParts.push(`${who}: ${names.join(", ")}`)
+        if (agreed > 0) detailParts.push(`${agreed} corroborated`)
         steps.push({
           key,
           kind: "scan",
           phase,
           label: n > 0 ? `Fuzzing — ${n} invariant${n === 1 ? "" : "s"} broken` : "Fuzzing — nothing broken",
-          detail: names.length ? `Echidna: ${names.join(", ")}` : undefined,
+          detail: detailParts.length ? detailParts.join(" · ") : undefined,
         })
         break
       }

@@ -157,6 +157,8 @@ function normalize(raw, id) {
   const fuzzScan = r.fuzz && r.fuzz.suspects > 0
     ? {
         tool: r.fuzz.tool || "Echidna",
+        // Which fuzz engines ran. Older runs predate the second engine.
+        engines: Array.isArray(r.fuzz.engines) ? r.fuzz.engines : ["Echidna"],
         template: r.fuzz.template || null,
         suspects: r.fuzz.suspects,
         top: (Array.isArray(r.fuzz.top) ? r.fuzz.top : []).map((s) => ({
@@ -165,6 +167,10 @@ function normalize(raw, id) {
           property: s.property || "",
           where: s.where || null,
           sequence: Array.isArray(s.sequence) ? s.sequence : [],
+          // Which engines broke this invariant, and whether more than one did.
+          // Both fuzzers breaking it raises its rank; it never makes it a finding.
+          engines: Array.isArray(s.engines) && s.engines.length ? s.engines : ["Echidna"],
+          corroborated: Boolean(s.corroborated),
         })),
       }
     : null

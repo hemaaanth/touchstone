@@ -178,15 +178,21 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
       ) : null}
 
       {/* Fuzzing led here — the same feeder → proof story for an accounting bug.
-          Echidna broke an invariant from ordinary calls; the replay above is what
-          turned that lead into a proof. Neutral, never green: a broken invariant
-          is a suspect, not a finding. */}
+          Two independent fuzzers broke an invariant from ordinary calls; the
+          replay above is what turned that lead into a proof. Neutral, never green:
+          a broken invariant is a suspect, not a finding. Where both fuzzers break
+          the same invariant we mark it — agreement raises rank, it never
+          substitutes for the replay. */}
       {finding.fuzzScan ? (
         <div className="flex flex-col gap-(--space-s)">
           <span className="type-s weight-medium text-(--cte-text)">Fuzzing led here</span>
           <p className="type-xs text-(--cte-text-muted)">
             {finding.fuzzScan.tool} broke {finding.fuzzScan.suspects} invariant
-            {finding.fuzzScan.suspects === 1 ? "" : "s"} from ordinary deposits and withdrawals before the agent started. A broken invariant is only a lead — the replay above is what proved it.
+            {finding.fuzzScan.suspects === 1 ? "" : "s"} from ordinary deposits and withdrawals before the agent started
+            {finding.fuzzScan.engines.length > 1
+              ? ` — ${finding.fuzzScan.engines.join(" and ")} ran as independent engines`
+              : ""}
+            . A broken invariant is only a lead — the replay above is what proved it.
           </p>
           <ul className="flex flex-col gap-(--space-s)">
             {finding.fuzzScan.top.slice(0, 3).map((s, i) => (
@@ -196,6 +202,11 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
                   <span className="text-(--cte-text)">{s.check}</span>
                   {s.where ? <span className="text-(--cte-text-muted)">{s.where}</span> : null}
                   <span className="text-(--cte-text-muted)">({s.property})</span>
+                  {s.corroborated ? (
+                    <span className="text-(--cte-text-muted)" title={`Broken independently by ${s.engines.join(" and ")}`}>
+                      · {s.engines.join(" + ")} agree
+                    </span>
+                  ) : null}
                 </span>
                 {s.sequence.length > 0 ? (
                   <span className="text-(--cte-text-muted)">{s.sequence.join(" → ")}</span>
