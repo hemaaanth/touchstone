@@ -24,6 +24,8 @@ import { fileURLToPath } from "node:url"
 import { makeWorkspace, cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
 import { guard, spent, MODELS, CAP_USD, PROVIDER_ID, PROVIDER_LABEL } from "../../spike/lib/inference.mjs"
 import { listTargets, pickTarget, resolveTargetDir, targetSummary } from "../../spike/lib/targets.mjs"
+import { runPrepass } from "../../spike/lib/prepass.mjs"
+import { proofDelta } from "../../spike/lib/proof.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -128,6 +130,12 @@ function view(run) {
     decision: run.decision,
     findingId: run.status === "recorded" ? run.id : null,
     error: run.error,
+    // The pre-pass ensemble's ranked suspects (static then fuzz) and the proven
+    // exploit's structured proof delta — the feeder → proof story, same shape the
+    // CLI persists. Null until each stage has run. A suspect is never a finding.
+    static: run.static ?? null,
+    fuzz: run.fuzz ?? null,
+    proof: run.proof ?? null,
   }
 }
 
@@ -223,23 +231,71 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
   }
   runs.set(id, run)
 
-  const env = { ...process.env, ALIAS: alias, EVENTS_FILE: eventsFile, MAX_POC }
+  setRunStatus(run, "running")
+  // Drive the full engine asynchronously: the pre-pass ensemble first (so the
+  // agent starts with leads), then the agent worker. This takes minutes — docker
+  // scanners run before any inference — exactly what the CLI does. We do NOT await
+  // it: the run is already in the registry, so the HTTP response returns now and
+  // the UI watches the scan events, then the agent events, stream in live.
+  startEngine(run).catch((err) => {
+    run.error = String(err?.message ?? err)
+    setRunStatus(run, "error")
+    broadcast(run, { ev: "closed" })
+  })
+
+  return view(run)
+}
+
+function setRunStatus(run, status) {
+  run.status = status
+  broadcast(run, { ev: "status", status, pending: run.pending, decision: run.decision })
+}
+
+// Run the pre-pass ensemble over the prepared workspace, then spawn the agent
+// worker with the leads. This is the SAME runPrepass the CLI drives, so a live
+// run and a CLI run hand the agent byte-identical leads and emit byte-identical
+// scan events. Each scan event is broadcast to the UI as it lands, and the ranked
+// suspects are kept on the run so the persisted record carries the feeder → proof
+// story. A suspect is never a finding — only a passing replay is.
+async function startEngine(run) {
+  let leads = {}
+  try {
+    const prep = await runPrepass(run.ws, {
+      onStatic: (ev, scan) => {
+        run.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top }
+        broadcast(run, ev)
+      },
+      onFuzz: (ev, fuzz) => {
+        run.fuzz = { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: ev.top }
+        broadcast(run, ev)
+      },
+    })
+    leads = prep.runEnv
+  } catch (err) {
+    // A pre-pass failure must not sink the run: the agent can still audit from
+    // source with no leads. Record the reason as diagnostic noise and continue.
+    run.stderr += `[prepass] ${String(err?.message ?? err)}\n`
+  }
+  // The run may have been torn down while scanning (e.g. process restart); only
+  // start the agent if it is still live.
+  if (run.status !== "running") return
+  spawnAgent(run, leads)
+}
+
+// Spawn the agent worker over the prepared workspace, with the pre-pass leads in
+// its env, and wire its event stream into the run.
+function spawnAgent(run, leads) {
+  const env = { ...process.env, ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
-  const child = spawn(process.execPath, [ENGINE, "child", "run", db, ws], {
+  const child = spawn(process.execPath, [ENGINE, "child", "run", run.db, run.ws], {
     cwd: SPIKE,
     env,
     stdio: ["pipe", "pipe", "pipe"],
   })
   child.stdin.on("error", () => {})
   run.child = child
-
-  const setStatus = (status) => {
-    run.status = status
-    broadcast(run, { ev: "status", status, pending: run.pending, decision: run.decision })
-  }
-  setStatus("running")
 
   pipeEvents(
     child,
@@ -292,7 +348,7 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
       // Terminal, but not an error: the agent audited and found nothing to prove.
       run.error = null
       s.final && broadcast(run, { ev: "no-finding", final: s.final })
-      setStatus("no-finding")
+      setRunStatus(run, "no-finding")
     } else if (s) {
       // Settled "unanswered" — the inference did not complete. Report the real
       // reason rather than pretending the agent chose not to find anything.
@@ -300,15 +356,13 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
         s.reason === "model_error"
           ? "the model call failed (model_error) — no inference completed, nothing was spent"
           : `the run did not complete (${s.reason ?? s.status ?? "unknown"})`
-      setStatus("error")
+      setRunStatus(run, "error")
     } else {
       run.error = run.stderr.slice(-800) || "the agent exited before proving a finding"
-      setStatus("error")
+      setRunStatus(run, "error")
     }
     broadcast(run, { ev: "closed" })
   })
-
-  return view(run)
 }
 
 // Steer a live run. The operator's message is written to the worker's stdin as
@@ -363,9 +417,12 @@ export function decideRun(id, verdict) {
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
-  child.on("exit", () => {
+  child.on("exit", async () => {
     try {
-      if (settled) persistSettled(run, settled, verdict)
+      // persistSettled computes the proof delta — it re-runs the proven test over
+      // the still-live workspace — so it must finish BEFORE the finally below tears
+      // the workspace down. Hence await, and hence the handler is async.
+      if (settled) await persistSettled(run, settled, verdict)
       const recorded = verdict === "approve"
       run.status = recorded ? "recorded" : "denied"
       broadcast(run, { ev: "status", status: run.status, decision: verdict, findingId: recorded ? run.id : null })
@@ -386,14 +443,43 @@ export function decideRun(id, verdict) {
 // event stream + the settled summary, and write it where the findings reader
 // looks. This mirrors agent-run.mjs main()'s result assembly exactly, so a live
 // run and a CLI run produce byte-compatible history.
-function persistSettled(run, settled, verdict) {
+async function persistSettled(run, settled, verdict) {
   const evs = run.events
   const pending = run.pending ?? {}
   const pocRuns = evs.filter((e) => e.ev === "run_poc").length
-  const pocProved = evs.some((e) => e.ev === "run_poc-done" && e.passed)
   const summary = settled.summary ?? {}
   const times = evs.map((e) => e.t).filter(Boolean)
   const ms = times.length ? times[times.length - 1] - times[0] : null
+
+  // "Proven" binds to the SUBMITTED contract, not any passing test — a throwaway
+  // diagnostic that happens to pass must never turn the record green. The proven
+  // contract is the one the finding claims (pending.poc); we re-check that its own
+  // test passed, mirroring agent-run.mjs main() exactly.
+  const provenContract = pending.poc ?? null
+  const pocProved = provenContract
+    ? evs.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === provenContract)
+    : false
+
+  // Structured proof delta — the engine's own reading of the proven exploit. When
+  // a finding proved, re-run its exact test ONE more time in JSON trace mode and
+  // read the real money the EVM moved, per address, straight from the trace. This
+  // runs over the still-live workspace (the decide exit handler tears it down only
+  // after we return). Mirrors the CLI so live and CLI records carry the same proof.
+  let proof = null
+  if (pocProved && provenContract) {
+    const pocCalls = (summary.calls ?? []).filter(
+      (c) => c.name === "run_poc" && c.args?.contract_name === provenContract && c.args?.test_source,
+    )
+    const source = pocCalls.at(-1)?.args?.test_source ?? null
+    if (source) {
+      try {
+        proof = await proofDelta(run.ws, { source, contract: provenContract })
+      } catch (err) {
+        run.stderr += `[proof-delta] ${String(err?.message ?? err)}\n`
+      }
+    }
+  }
+  run.proof = proof
 
   const result = {
     alias: run.alias,
@@ -406,8 +492,18 @@ function persistSettled(run, settled, verdict) {
     ms,
     status: settled.status ?? null,
     reason: settled.reason ?? null,
+    // The pre-pass ensembles that fed the agent its leads, kept in the record so
+    // the report can show the feeder → proof story: a suspect an engine ranked,
+    // then proven by replay. Null if a pre-pass stage did not run. A suspect is
+    // never a finding on its own.
+    static: run.static ?? null,
+    fuzz: run.fuzz ?? null,
     pocRuns,
     pocProved,
+    // The engine's structured proof delta for the proven exploit: real pass/fail,
+    // gas, decoded logs, and the signed money-moved table read from the trace.
+    // Null when nothing proved or the replay produced no parsable JSON.
+    proof,
     findingSubmitted: Boolean(pending.id),
     finding: pending.id ? { title: pending.title, severity: pending.severity, poc: pending.poc } : null,
     decision: verdict === "deny" ? "denied" : "approved",

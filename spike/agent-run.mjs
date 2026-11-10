@@ -24,8 +24,7 @@ import { obj, str } from "@earendil-works/pi-schema";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { cleanupWorkspace, forgeTest, makeWorkspace, writePoc } from "./lib/sandbox.mjs";
-import { staticScan, staticBrief } from "./lib/static.mjs";
-import { fuzzScan, fuzzBrief } from "./lib/fuzz.mjs";
+import { runPrepass } from "./lib/prepass.mjs";
 import { proofDelta } from "./lib/proof.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
@@ -404,50 +403,32 @@ async function main() {
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
-  // Static pre-pass: two independent engines (Slither + Aderyn) scan the target as
-  // one compilation unit and our ensemble layer merges them into a ranked suspect
-  // list before the agent starts. A static alert is only a lead — the agent must
-  // still turn it into a passing PoC. Where the two engines agree, the suspect is
-  // ranked higher; that agreement is a stronger hint, never a verdict.
-  console.log(`\n== static analysis (Slither + Aderyn) ==`);
-  const scan = await staticScan(ws);
-  const brief = staticBrief(scan);
-  const scanEvent = {
-    t: Date.now(), ev: "static-scan", tool: scan.tool, engines: scan.engines,
-    files: scan.files, analysed: scan.analysed, failed: scan.failed,
-    suspects: scan.findings.length,
-    top: scan.findings.slice(0, 8).map((d) => ({
-      check: d.check, impact: d.impact, where: d.where, line: d.lines[0] ?? null,
-      engines: d.engines, corroborated: d.corroborated,
-    })),
-  };
-  appendFileSync(env.EVENTS_FILE, JSON.stringify(scanEvent) + "\n");
-  console.log("· static-scan " + JSON.stringify({ mode: scan.mode, engines: scan.engines, suspects: scanEvent.suspects, top: scanEvent.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
-
-  // Fuzz pre-pass: two property fuzzers (Echidna + Medusa) drive the SAME
-  // generated harness and try to break an invariant we assert about the target,
-  // from ordinary deposits and withdrawals. They catch accounting bugs the static
-  // engines cannot — but only where a fuzz template fits the target; otherwise
-  // they honestly find nothing. A broken invariant is a strong lead (it comes with
-  // the breaking call sequence) but never a finding on its own: the agent must
-  // still reproduce it as a passing PoC. An invariant both fuzzers break is
-  // corroborated and ranks first — agreement raises rank, never verdict.
-  console.log(`\n== fuzzing (Echidna + Medusa) ==`);
-  const fuzz = await fuzzScan(ws);
-  const fuzzBriefText = fuzzBrief(fuzz);
-  const fuzzEvent = {
-    t: Date.now(), ev: "fuzz-scan", tool: fuzz.tool, engines: fuzz.engines,
-    template: fuzz.template, applicable: fuzz.applicable,
-    suspects: fuzz.findings.length,
-    top: fuzz.findings.slice(0, 8).map((d) => ({ check: d.check, impact: d.impact, where: d.where, property: d.property, sequence: d.sequence, engines: d.engines || [], corroborated: Boolean(d.corroborated) })),
-  };
-  appendFileSync(env.EVENTS_FILE, JSON.stringify(fuzzEvent) + "\n");
-  console.log("· fuzz-scan " + JSON.stringify({ applicable: fuzz.applicable, engines: fuzz.engines, suspects: fuzzEvent.suspects, top: fuzzEvent.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
+  // The pre-pass ensemble — static analyzers (Slither + Aderyn) then property
+  // fuzzers (Echidna + Medusa) — scans the target before the agent starts and
+  // hands it a ranked suspect list. Where two engines agree, the suspect ranks
+  // higher; that agreement is a stronger lead, never a verdict. A suspect is only
+  // real once the agent turns it into a passing PoC. runPrepass is the SAME code
+  // the web app runs, so a CLI run and a live run drive the identical pipeline and
+  // emit byte-identical scan events. Callbacks print the CLI's progress and append
+  // each event to the events file; the returned runEnv carries the leads to the
+  // run worker.
+  const { scan, scanEvent, fuzz, fuzzEvent, runEnv: leads } = await runPrepass(ws, {
+    onStaticStart: () => console.log(`\n== static analysis (Slither + Aderyn) ==`),
+    onStatic: (ev, scanResult) => {
+      appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
+      console.log("· static-scan " + JSON.stringify({ mode: scanResult.mode, engines: ev.engines, suspects: ev.suspects, top: ev.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
+    },
+    onFuzzStart: () => console.log(`\n== fuzzing (Echidna + Medusa) ==`),
+    onFuzz: (ev) => {
+      appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
+      console.log("· fuzz-scan " + JSON.stringify({ applicable: ev.applicable, engines: ev.engines, suspects: ev.suspects, top: ev.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
+    },
+  });
 
   // Phase 1: run the agent until it reaches the approval point (then kill it, to
   // prove the run survives the process going away), or until it settles on its own.
   console.log(`\n== phase 1: agent run (${ALIAS}) ==`);
-  const runEnv = { ...env, STATIC_BRIEF: brief, STATIC_JSON: JSON.stringify(scan.findings), FUZZ_BRIEF: fuzzBriefText, FUZZ_JSON: JSON.stringify(fuzz.findings) };
+  const runEnv = { ...env, ...leads };
   const first = await runChild("run", db, ws, runEnv, (e) => (e.ev === "approval-pending" ? 1200 : undefined));
 
   // Phase 2: only if a finding is pending — resume over the same DB and decide it.
