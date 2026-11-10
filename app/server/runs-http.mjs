@@ -6,6 +6,7 @@
 // findings router.
 import { createRun, steerRun, archiveRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setCap, discoverModels } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -189,4 +190,30 @@ export function handleModels(req, res) {
   if (url.pathname !== "/api/models" || req.method !== "GET") return false
   send(res, 200, { models: availableModels(), targets: availableTargets(), spend: spendState(), provider: providerInfo() })
   return true
+}
+
+// Settings. API keys go in, never out: responses carry only a masked key state.
+//   GET    /api/settings                   — providers, default, spend
+//   POST   /api/settings/providers         — add or update { id?, label, baseUrl, apiKey?, models? }
+//   DELETE /api/settings/providers/:id     — remove a saved provider
+//   POST   /api/settings/discover          — list a gateway's models { id?, baseUrl?, apiKey? }
+//   POST   /api/settings/default           — { provider, model } for new runs
+//   POST   /api/settings/cap               — { capUsd }
+export async function handleSettings(req, res) {
+  const url = new URL(req.url, "http://localhost")
+  const parts = url.pathname.split("/").filter(Boolean)
+  if (parts[0] !== "api" || parts[1] !== "settings") return false
+  const route = `${req.method} ${parts.slice(2, 3).join("/")}`
+  try {
+    if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
+    if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true
+    if (parts.length === 4 && route === "DELETE providers") return send(res, 200, deleteProvider(decodeURIComponent(parts[3]))), true
+    if (parts.length === 3 && route === "POST discover") return send(res, 200, await discoverModels(await readBody(req))), true
+    if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
+    if (parts.length === 3 && route === "POST cap") return send(res, 200, setCap((await readBody(req)).capUsd)), true
+  } catch (err) {
+    send(res, 400, { error: String(err?.message ?? err) })
+    return true
+  }
+  return false
 }

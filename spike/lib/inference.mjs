@@ -1,14 +1,14 @@
 // Raw inference client + spend ledger for the ACTIVE provider (see providers.mjs).
 //
-// This is provider-agnostic: BASE_URL, MODELS, and the key env name all come
-// from whichever provider PROVIDER selects. The key itself is read from that
-// provider's env var (load spike/.env.local into the environment first).
+// BASE_URL, MODELS and the key come from the provider active when this module
+// loads: PROVIDER=<id>, else the Settings default. Each engine run is a fresh
+// process, so this snapshot is that run's provider. The cap is read on every
+// guard() call, so a Settings change applies at once.
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { CAP_USD, FALLBACK_PRICE, activeProvider } from "./providers.mjs";
+import { FALLBACK_PRICE, activeProvider, capUsd, providerKey } from "./providers.mjs";
 
 const PROVIDER = activeProvider();
 
-export { CAP_USD };
 export const PROVIDER_ID = PROVIDER.id;
 export const PROVIDER_LABEL = PROVIDER.label;
 export const BASE_URL = PROVIDER.baseUrl;
@@ -17,10 +17,9 @@ export const MODELS = PROVIDER.models;
 const LEDGER = new URL("../spend.json", import.meta.url);
 
 export function key() {
-  const name = PROVIDER.keyEnv;
-  const k = process.env[name];
+  const k = providerKey(PROVIDER);
   if (!k) {
-    throw new Error(`${name} is not set (provider "${PROVIDER.id}"). Run: set -a; . ./.env.local; set +a`);
+    throw new Error(`No API key for provider "${PROVIDER.id}". Add it in Settings${PROVIDER.keyEnv ? ` or set ${PROVIDER.keyEnv}` : ""}.`);
   }
   return k;
 }
@@ -35,8 +34,9 @@ export function spent() {
 }
 export function guard(estimateUsd = 0) {
   const total = spent();
-  if (total + estimateUsd >= CAP_USD) {
-    throw new Error(`Spend cap: $${total.toFixed(4)} spent, next call estimate $${estimateUsd.toFixed(4)}, cap $${CAP_USD}`);
+  const cap = capUsd();
+  if (total + estimateUsd >= cap) {
+    throw new Error(`Spend cap: $${total.toFixed(4)} spent, next call estimate $${estimateUsd.toFixed(4)}, cap $${cap}`);
   }
 }
 export function costOf(modelId, inTok, outTok) {

@@ -11,6 +11,7 @@ import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { PageStub } from "@/components/page-stub"
+import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
@@ -151,6 +152,8 @@ export function App() {
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
           <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onDelete={onDelete} />
+        ) : view?.kind === "page" && view.id === "settings" ? (
+          <SettingsPage onChanged={refreshModels} />
         ) : view?.kind === "page" ? (
           <PageStub id={view.id} />
         ) : (

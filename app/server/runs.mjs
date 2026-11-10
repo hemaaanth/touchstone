@@ -21,7 +21,8 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdir
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
-import { guard, spent, MODELS, CAP_USD, PROVIDER_ID, PROVIDER_LABEL } from "../../spike/lib/inference.mjs"
+import { guard, spent } from "../../spike/lib/inference.mjs"
+import { activeProvider, allProviders, capUsd, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
@@ -64,24 +65,34 @@ const ENGINE = path.join(SPIKE, "agent-run.mjs")
 const RESULTS_DIR = path.join(SPIKE, "results", "agent")
 const MAX_POC = process.env.MAX_POC ?? "12"
 
-// Which models the UI may run. Lifted straight from the engine's price table,
-// so a run can never name a model the engine does not know how to bill.
+// Which models the UI may run: the active provider's price table, the Settings
+// default first. A run can never name a model the engine does not know how to bill.
 export function availableModels() {
-  return Object.entries(MODELS).map(([alias, m]) => ({
-    alias,
-    id: m.id,
-    abliterated: alias.endsWith("-abl"),
-  }))
+  const cfg = readConfig()
+  const p = activeProvider(cfg)
+  const first = defaultAlias(p, cfg)
+  return Object.entries(p.models)
+    .map(([alias, m]) => ({ alias, id: m.id, abliterated: /-abl$|abliterat|uncensor/i.test(`${alias} ${m.id}`) }))
+    .sort((a, b) => (b.alias === first) - (a.alias === first))
 }
 
 export function spendState() {
-  return { usd: spent(), cap: CAP_USD }
+  return { usd: spent(), cap: capUsd() }
 }
 
-// The active inference provider (NEAR / Boundless / Lyber), so the UI can show
-// which gateway a run will drive.
+// The active inference provider, so the UI can show which gateway a run drives.
 export function providerInfo() {
-  return { id: PROVIDER_ID, label: PROVIDER_LABEL }
+  const p = activeProvider()
+  return { id: p.id, label: p.label }
+}
+
+// The provider a run used. Runs from before Settings did not record one; they
+// ran on Boundless, or on the first provider that knows the alias.
+function runProvider(run) {
+  if (run.provider) return run.provider
+  const all = allProviders()
+  if (all.boundless?.models?.[run.alias]) return "boundless"
+  return Object.values(all).find((p) => p.models?.[run.alias])?.id ?? activeProvider().id
 }
 
 // The target library the UI picks a scope from. No filesystem paths leak out.
@@ -252,8 +263,11 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } = {}) {
-  if (!MODELS[alias]) throw new Error(`unknown model alias: ${alias}`)
+export function createRun({ alias, targetId, modules } = {}) {
+  const cfg = readConfig()
+  const provider = activeProvider(cfg)
+  alias ??= defaultAlias(provider, cfg)
+  if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
   // Pick the scope from the target library: an explicit choice, or random across
   // the labs so repeated Runs stop re-breaking one prepared bug. Throws on an
   // unknown id before anything is spent.
@@ -277,9 +291,10 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
   const run = {
     id,
     alias,
+    provider: provider.id,
     target,
     modules: plan,
-    model: MODELS[alias].id,
+    model: provider.models[alias].id,
     status: "starting",
     startedAt: Date.now(),
     events: [],
@@ -306,6 +321,8 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
   // The module plan for this run — which parts of the pipeline are on, and the
   // honest reason for any that are off. Also replayed to late subscribers.
   broadcast(run, modulesEvent(plan))
+  // The provider and model, so a follow-up after a restart uses the same pair.
+  broadcast(run, { t: Date.now(), ev: "provider", provider: provider.id, model: run.model })
 
   setRunStatus(run, "running")
   // Drive the full engine asynchronously: the pre-pass ensemble first (so the
@@ -398,7 +415,7 @@ function engineEvents(run) {
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
-  const env = { ...process.env, ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...leads }
+  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -551,6 +568,7 @@ function followUp(run, text) {
     cwd: SPIKE,
     env: {
       ...process.env,
+      PROVIDER: runProvider(run),
       ALIAS: run.alias,
       EVENTS_FILE: run.eventsFile,
       MAX_POC,
@@ -662,6 +680,7 @@ function persistRun(run, findings) {
   const worst = findings[0] ?? null
   const result = {
     alias: run.alias,
+    provider: runProvider(run),
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
     target: scopeOf(run),
@@ -785,12 +804,15 @@ function savedRun(id, events, mtime) {
   let findingIds = []
   let scope = null
   let modules = null
+  let provider = null
+  let model = null
   let archived = false
   const submitted = []
   for (const e of events) {
     if (e.ev === "archived") archived = Boolean(e.archived)
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
+    if (e.ev === "provider") ({ provider = null, model = null } = e)
     if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
       submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc })
     }
@@ -821,7 +843,8 @@ function savedRun(id, events, mtime) {
     target: null,
     scope,
     modules,
-    model: MODELS[alias]?.id ?? alias,
+    provider,
+    model: model ?? Object.values(allProviders()).find((p) => p.models?.[alias])?.models[alias].id ?? alias,
     status,
     archived,
     startedAt: events.find((e) => e.t)?.t ?? mtime,

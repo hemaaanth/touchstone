@@ -1,15 +1,23 @@
 // Inference providers for the red-team engine.
 //
 // Each provider speaks the OpenAI Chat Completions format over its own base URL
-// and API key, so adding one is pure config: a base URL, the name of the env var
-// that holds its key, and a table of models with per-token prices.
+// and API key. A provider is config only: a base URL, a key, and a table of
+// models with per-token prices (USD per 1M tokens).
 //
-// Select the active provider with PROVIDER=<id> (default below). The active one
-// drives BOTH paths: the raw calls in lib/inference.mjs (probes, ledger) and the
-// pi-durable agent loop in lib/provider.mjs. Keys are supplied via spike/.env.local
-// (e.g. NEARAI_API_KEY, BOUNDLESS_API_KEY, LYBER_API_KEY) — never hard-coded here.
+// Two sources, merged by id:
+//   1. PROVIDERS below: built-in presets. Their key comes from an env var
+//      (spike/.env.local), e.g. NEARAI_API_KEY.
+//   2. spike/data/providers.json: providers the operator saved in the app's
+//      Settings page. A saved entry overrides a preset with the same id. Its key
+//      is stored in that file (mode 0600, gitignored) and never leaves the server.
+//
+// The active provider is PROVIDER=<id> if set, else the default saved in
+// Settings, else FALLBACK_ID. The app pins PROVIDER per run, so a run keeps its
+// provider even when the default changes later.
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-export const CAP_USD = 2.0;
+// The project-wide spend cap, unless Settings saves another one.
+export const DEFAULT_CAP_USD = 25.0;
 
 // Conservative fallback when a provider has not published per-token prices yet.
 // Assume expensive so the spend cap trips early rather than letting a run bleed
@@ -74,18 +82,81 @@ export const PROVIDERS = {
   },
 };
 
-// Default provider. Rotated to Boundless after NEAR rejected its key; the
-// Boundless key is validated and its abliterated model confirmed served.
-// Override per-run with PROVIDER=<id> (e.g. PROVIDER=near, PROVIDER=lyber).
-export const ACTIVE_ID = process.env.PROVIDER ?? "boundless";
+const FALLBACK_ID = "boundless";
+const CONFIG = new URL("../data/providers.json", import.meta.url);
 
-export function activeProvider() {
-  const p = PROVIDERS[ACTIVE_ID];
-  if (!p) {
-    throw new Error(`Unknown PROVIDER "${ACTIVE_ID}". Known: ${Object.keys(PROVIDERS).join(", ")}`);
+// ---- Saved config. Shape:
+//   { default: { provider, model } | null, capUsd: number | null,
+//     providers: { [id]: { id, label, baseUrl, apiKey, models: { [alias]: model } } } }
+export function readConfig() {
+  const empty = { default: null, capUsd: null, providers: {} };
+  if (!existsSync(CONFIG)) return empty;
+  try {
+    return { ...empty, ...JSON.parse(readFileSync(CONFIG, "utf8")) };
+  } catch {
+    return empty;
   }
-  if (!p.baseUrl) {
-    throw new Error(`Provider "${ACTIVE_ID}" has no baseUrl configured yet.`);
+}
+
+export function writeConfig(cfg) {
+  mkdirSync(new URL(".", CONFIG), { recursive: true });
+  writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(CONFIG, 0o600);
+}
+
+// Every provider: presets merged with saved entries. Read fresh on each call,
+// so the app server sees a Settings change without a restart.
+export function allProviders(cfg = readConfig()) {
+  const out = {};
+  for (const [id, p] of Object.entries(PROVIDERS)) out[id] = { ...p, builtIn: true };
+  for (const [id, saved] of Object.entries(cfg.providers ?? {})) {
+    const base = out[id] ?? { id, builtIn: false };
+    out[id] = {
+      ...base,
+      ...saved,
+      id,
+      label: saved.label || base.label || id,
+      baseUrl: saved.baseUrl || base.baseUrl,
+      models: saved.models && Object.keys(saved.models).length ? saved.models : base.models ?? {},
+    };
   }
+  return out;
+}
+
+// The key for a provider: the one saved in Settings, else its env var.
+export function providerKey(p) {
+  return p?.apiKey || (p?.keyEnv ? process.env[p.keyEnv] : null) || null;
+}
+
+export function activeId(cfg = readConfig()) {
+  return process.env.PROVIDER || cfg.default?.provider || FALLBACK_ID;
+}
+
+export function getProvider(id, cfg = readConfig()) {
+  const p = allProviders(cfg)[id];
+  if (!p) throw new Error(`Unknown provider "${id}". Known: ${Object.keys(allProviders(cfg)).join(", ")}`);
+  if (!p.baseUrl) throw new Error(`Provider "${id}" has no base URL.`);
   return p;
+}
+
+export function activeProvider(cfg = readConfig()) {
+  return getProvider(activeId(cfg), cfg);
+}
+
+// The model alias a new run uses on provider p: the Settings default when it
+// belongs to p, else p's first model.
+export function defaultAlias(p, cfg = readConfig()) {
+  const want = cfg.default?.provider === p.id ? cfg.default?.model : null;
+  if (want && p.models?.[want]) return want;
+  return Object.keys(p.models ?? {})[0] ?? null;
+}
+
+export function capUsd(cfg = readConfig()) {
+  const c = Number(cfg.capUsd);
+  return Number.isFinite(c) && c > 0 ? c : DEFAULT_CAP_USD;
+}
+
+// A filename-safe alias for a model id. Run ids and file names start with it.
+export function aliasFor(modelId) {
+  return String(modelId).split("/").pop().toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "model";
 }

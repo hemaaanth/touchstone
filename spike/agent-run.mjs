@@ -20,6 +20,7 @@ import { createRegistry, defineExtension, Harness, LiveDoc, ROOT_CONVERSATION_ID
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
+import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { runPrepass } from "./lib/prepass.mjs";
 import { proveFindings } from "./lib/record.mjs";
@@ -27,7 +28,7 @@ import { event } from "./lib/event.mjs";
 import { packFor } from "./packs/index.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
-const ALIAS = process.env.ALIAS ?? Object.keys(MODELS)[0];
+const ALIAS = process.env.ALIAS ?? defaultAlias(activeProvider());
 if (!MODELS[ALIAS]) {
   throw new Error(`Unknown ALIAS "${ALIAS}" for provider "${PROVIDER_ID}". Known: ${Object.keys(MODELS).join(", ")}`);
 }
@@ -261,7 +262,7 @@ function runChild(mode, db, ws, env) {
 }
 
 async function main() {
-  guard(0.25); // one agent run; well under the $2 NEAR cap
+  guard(0.25); // one agent run, checked against the project spend cap
   const db = `${DIR}run-${ALIAS}.sqlite`;
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   const ws = makeWorkspace(TARGET);

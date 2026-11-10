@@ -41,9 +41,9 @@ export function NewRunDialog({
   onStart: (alias: string, targetId?: string) => void
 }) {
   const runnable = targets.filter((t) => t.runnable)
-  // The operator's pick, else the first abliterated model.
+  // The operator's pick, else the default model (the server lists it first).
   const [picked, setAlias] = useState("")
-  const alias = picked || (models.find((m) => m.abliterated) ?? models[0])?.alias || ""
+  const alias = picked || models[0]?.alias || ""
   const [scopeId, setScopeId] = useState(RANDOM)
   const listRef = useRef<HTMLDivElement>(null)
 

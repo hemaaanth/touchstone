@@ -378,3 +378,54 @@ export interface RunSummary {
 }
 
 export type Verdict = "approve" | "deny"
+
+// ---- Settings. API keys never come back from the server: only this state.
+export interface KeyState {
+  set: boolean
+  source: "settings" | "env" | null
+  envName?: string | null
+  last4: string | null
+}
+
+export interface ProviderModel {
+  alias: string
+  id: string
+  input: number
+  output: number
+  context: number | null
+  priced: boolean
+}
+
+export interface ProviderSetting {
+  id: string
+  label: string
+  baseUrl: string
+  builtIn: boolean
+  saved: boolean
+  key: KeyState
+  models: ProviderModel[]
+}
+
+export interface SettingsState {
+  providers: ProviderSetting[]
+  default: { provider: string; model: string | null }
+  envOverride: string | null
+  spend: SpendState
+  fallbackPrice: { input: number; output: number }
+}
+
+export interface DiscoveredModel {
+  id: string
+  input: number | null
+  output: number | null
+  context: number | null
+}
+
+// One model row in the provider editor. Prices are USD per 1M tokens; an empty
+// price means "unknown", and the server bills it at the fallback price.
+export interface ModelDraft {
+  id: string
+  input: string
+  output: string
+  context: number | null
+}

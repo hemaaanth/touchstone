@@ -1,4 +1,5 @@
 import type {
+  DiscoveredModel,
   Finding,
   FindingSummary,
   ModelChoice,
@@ -6,6 +7,7 @@ import type {
   RunEvent,
   RunSummary,
   RunView,
+  SettingsState,
   SpendState,
   TargetChoice,
 } from "./types"
@@ -119,4 +121,39 @@ export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0,
   // The server ends the stream after "closed"; any other drop also ends it.
   source.onerror = end
   return end
+}
+
+// ---- Settings. Keys go up in a request body and never come back.
+
+export function fetchSettings(): Promise<SettingsState> {
+  return getJson<SettingsState>("/api/settings")
+}
+
+export function saveProvider(body: {
+  id?: string
+  label: string
+  baseUrl: string
+  apiKey?: string
+  models?: { id: string; input: string; output: string; context: number | null }[]
+}): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/providers", body)
+}
+
+export async function deleteProvider(id: string): Promise<SettingsState> {
+  const res = await fetch(`/api/settings/providers/${encodeURIComponent(id)}`, { method: "DELETE" })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error((json as { error?: string }).error ?? `delete -> ${res.status}`)
+  return json as SettingsState
+}
+
+export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean }> {
+  return postJson<{ models: DiscoveredModel[]; keyUsed: boolean }>("/api/settings/discover", body)
+}
+
+export function setDefaultModel(provider: string, model: string): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/default", { provider, model })
+}
+
+export function setSpendCap(capUsd: number): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/cap", { capUsd })
 }
