@@ -1,27 +1,26 @@
 // Aderyn adapter — the second static engine.
 //
 // Aderyn is Cyfrin's Rust static analyzer. We treat it exactly like Slither: a
-// black-box subprocess that reads the project and emits suspects. We do not port
-// or copy any of its logic; we run the real binary and translate its JSON report
+// black-box tool that reads the project and emits suspects. We do not port or
+// copy any of its logic; we run the real binary and translate its JSON report
 // into the one normalized lead shape the ensemble layer merges. Aderyn compiles
 // the WHOLE project as one unit (it reads foundry.toml for the source dir and
 // remappings), so it is multi-file by construction — a useful contrast to how we
 // drive Slither. A second independent engine is the point: where it agrees with
 // Slither, the ensemble layer raises the suspect's rank.
 //
-// The binary is a build artifact, not our source, so it is not committed. It is
-// fetched by tools/install-aderyn.sh to tools/bin/aderyn (pinned version), or
-// supplied on PATH / via ADERYN_BIN. If it is absent the scan degrades cleanly to
-// "unavailable" and the pipeline runs Slither-only.
-import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+// Aderyn runs in Docker through lib/wrap.mjs runTool(): no network, no extra
+// privileges, the workspace mounted at /work. The image holds a pinned Aderyn and
+// the solc versions it needs. Build it once with tools/build-aderyn-image.sh. If
+// the image is missing the scan degrades cleanly to "unavailable" and the
+// pipeline runs Slither-only.
+import { runTool } from "./wrap.mjs";
 
-// spike/lib/aderyn.mjs -> repo root -> tools/bin/aderyn
-const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const ADERYN_BIN = process.env.ADERYN_BIN || join(REPO_ROOT, "tools", "bin", "aderyn");
+const IMAGE = process.env.ADERYN_IMAGE || "touchstone/aderyn:0.6.8";
+
+// Aderyn writes its report to a file. Write it to /tmp inside the container, then
+// print it, so nothing lands in the workspace the agent can see.
+const SCAN = "aderyn /work --output /tmp/report.json >/dev/null 2>&1; cat /tmp/report.json";
 
 // Aderyn groups issues by severity section. It only emits high/low today; we read
 // medium too, defensively, in case a future version adds it.
@@ -30,13 +29,6 @@ const SECTIONS = [
   ["medium_issues", "Medium"],
   ["low_issues", "Low"],
 ];
-
-const run = (bin, args, cwd, timeoutMs) =>
-  new Promise((resolve) => {
-    execFile(bin, args, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0, spawnErr: err?.code === "ENOENT" ? err : null });
-    });
-  });
 
 // Turn one Aderyn issue instance into a normalized lead. Aderyn anchors to a file
 // and line but does not name the enclosing Contract.function the way Slither does,
@@ -61,25 +53,20 @@ function toLead(issue, impact) {
 // ensemble layer can note that only one static engine ran instead of silently
 // pretending the project is clean.
 export async function aderynScan(ws, { timeoutMs = 180_000 } = {}) {
-  const outDir = mkdtempSync(join(tmpdir(), "aderyn-out-"));
-  const outFile = join(outDir, "report.json");
+  const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", SCAN], ws, timeoutMs });
+  let report;
   try {
-    const r = await run(ADERYN_BIN, [ws, "--output", outFile], ws, timeoutMs);
-    if (r.spawnErr) return { tool: "Aderyn", available: false, reason: "binary not found", leads: [] };
-    let report;
-    try {
-      report = JSON.parse(readFileSync(outFile, "utf8"));
-    } catch {
-      return { tool: "Aderyn", available: false, reason: r.timedOut ? "timed out" : "no report produced", leads: [] };
-    }
-    const leads = [];
-    for (const [section, impact] of SECTIONS) {
-      const issues = (report[section] && report[section].issues) || [];
-      for (const issue of issues) leads.push(...toLead(issue, impact));
-    }
-    const files = (report.files_summary && report.files_summary.total_source_units) || null;
-    return { tool: "Aderyn", available: true, files, leads };
-  } finally {
-    rmSync(outDir, { recursive: true, force: true });
+    report = JSON.parse(r.stdout);
+  } catch {
+    const noImage = /unable to find image|no such image|pull access denied/i.test(r.stderr);
+    const reason = r.timedOut ? "timed out" : noImage ? "image not built (tools/build-aderyn-image.sh)" : "no report produced";
+    return { tool: "Aderyn", available: false, reason, leads: [] };
   }
+  const leads = [];
+  for (const [section, impact] of SECTIONS) {
+    const issues = (report[section] && report[section].issues) || [];
+    for (const issue of issues) leads.push(...toLead(issue, impact));
+  }
+  const files = (report.files_summary && report.files_summary.total_source_units) || null;
+  return { tool: "Aderyn", available: true, files, leads };
 }

@@ -11,8 +11,8 @@
 //     workspace, OFFLINE (--network none). We compile the whole src/ tree as ONE
 //     unit so cross-file inheritance and inter-contract flows resolve and nothing
 //     is double-counted — see collectSlitherLeads.
-//   - Aderyn (Cyfrin), a Rust analyzer run as a host binary that compiles the
-//     whole project natively — see lib/aderyn.mjs.
+//   - Aderyn (Cyfrin), a Rust analyzer run in Docker through runTool(), OFFLINE.
+//     It compiles the whole project natively — see lib/aderyn.mjs.
 // Where the two engines agree, the ensemble layer (lib/ensemble.mjs) raises the
 // suspect's rank. That agreement signal — not either tool — is our contribution.
 import { readdirSync, statSync, writeFileSync, rmSync } from "node:fs";

@@ -32,8 +32,8 @@ spike/spend-openrouter.json
 # Reference clones — competitor/learning repos, not our code
 reference/
 
-# Static-engine binary — a build artifact, not our source. Fetched by
-# tools/install-aderyn.sh (pinned version). Keep it out of the tree.
+# Local tool binaries. Aderyn now runs in Docker (tools/aderyn/Dockerfile), so
+# nothing needs to live here. Keep any local binary out of the tree.
 tools/bin/
 
 # Large research corpus and design-exploration scratch (not the app)
