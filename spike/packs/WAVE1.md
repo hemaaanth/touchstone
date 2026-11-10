@@ -97,9 +97,9 @@ Set them up like this. `MAIN` is the main checkout.
 ```sh
 MAIN=/home/hemanth/Projects/near/redteam-harness
 bun install                      # in the worktree root and in app/ if you touch the app
-mkdir -p spike/data tools/bin
+mkdir -p spike/data
 ln -sf $MAIN/spike/data/providers.json spike/data/providers.json
-ln -sf $MAIN/tools/bin/aderyn tools/bin/aderyn
+# Aderyn runs from the Docker image touchstone/aderyn:0.6.8 (already built).
 set -a; . $MAIN/spike/.env.local; set +a   # loads the NEAR AI key; never print it
 export SPEND_LEDGER=$MAIN/spike/spend.json SPEND_CAP_USD=50.85 RUN_BUDGET_USD=1
 ```
