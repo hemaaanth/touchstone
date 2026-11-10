@@ -1,0 +1,44 @@
+{
+  "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+  "tests": {
+    "command": "cd spike && bun run test",
+    "pass": 135,
+    "fail": 0
+  },
+  "regression": {
+    "before": "The article and GitHub source citation test failed with two extra findings.",
+    "after": "The full suite passes with the attribution guards."
+  },
+  "smoke": {
+    "command": "node spike/packs/people-brand/smoke.mjs",
+    "leads": 11,
+    "submitted": 11,
+    "proven": 11,
+    "severity": {
+      "high": 3,
+      "medium": 7,
+      "low": 1
+    },
+    "tamperedSnapshotProven": 0
+  },
+  "network": "none",
+  "modelBudgetPerRunUsd": 1,
+  "coordinatorMain": "31881f8",
+  "liveRuns": [
+    {
+      "file": "qwen-abl-initial.json",
+      "model": "near/qwen-abl",
+      "usd": 0.010592100000000002,
+      "proven": 11,
+      "note": "Before safe domain-remediation guidance."
+    },
+    {
+      "file": "qwen-abl.json",
+      "model": "near/qwen-abl",
+      "usd": 0.01050767,
+      "proven": 11,
+      "note": "Final attribution guards and safe remediation guidance."
+    }
+  ],
+  "totalLiveUsd": 0.02109977
+}

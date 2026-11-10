@@ -151,3 +151,5 @@ Its recorded cost was $0.02941203 under the $1 run budget.
 `validation/live-record.json` keeps the safe result.
 `validation/live.json` keeps its summary and archive reference.
 The raw test key was checked absent from that saved result.
+After merging coordinator main, the full spike suite passed all 155 tests.
+App target discovery found `infra-cloud/lab`, kept its pack config and selected the evidence proof kind.

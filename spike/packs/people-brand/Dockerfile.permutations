@@ -1,0 +1,7 @@
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev build-essential libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
+RUN gem install --no-document colorize async async-dns async-http
+ADD https://codeload.github.com/urbanadventurer/urlcrazy/tar.gz/78bf6e855d6d83e387ae3b5c8ffc36f241b96f66 /tmp/urlcrazy.tgz
+RUN mkdir -p /opt/urlcrazy && tar -xzf /tmp/urlcrazy.tgz --strip-components=1 -C /opt/urlcrazy && rm /tmp/urlcrazy.tgz
+RUN pip install --no-cache-dir dnstwist==20250130 idna==3.10
+ENTRYPOINT []
