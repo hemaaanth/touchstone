@@ -12,3 +12,8 @@ export function packFor(cfg = {}) {
   if (!pack) throw new Error(`Unknown pack "${id}". Known: ${Object.keys(PACKS).join(", ")}`);
   return pack;
 }
+
+// What the New run dialog needs to list the modules.
+export function packList() {
+  return Object.values(PACKS).map(({ id, title, tier, proof }) => ({ id, title: title ?? id, tier, proof }));
+}

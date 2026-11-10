@@ -27,7 +27,7 @@ import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
-import { packFor } from "../../spike/packs/index.mjs"
+import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -99,6 +99,12 @@ function runProvider(run) {
 // The target library the UI picks a scope from. No filesystem paths leak out.
 export function availableTargets() {
   return listTargets()
+}
+
+// The modules (packs) the New run dialog may offer. Read from the pack loader,
+// so a new pack appears here with no change to the app.
+export function availablePacks() {
+  return packList()
 }
 
 // Operator-configured scopes (briefs). Summarized like the target library, so the
@@ -179,6 +185,8 @@ function view(run) {
     // resource is under evaluation.
     target: scopeOf(run)?.title ?? null,
     scope: scopeOf(run),
+    // The module (pack) this run uses. A run saved before modules existed is Contracts.
+    pack: scopeOf(run)?.pack ?? "contracts",
     // The module plan for this run — which parts of the pipeline are on and why,
     // so a reconnecting client can render it without replaying the event stream.
     modules: run.modules ?? null,
@@ -265,7 +273,7 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias, targetId, modules, budgetUsd } = {}) {
+export function createRun({ alias, targetId, modules, budgetUsd, pack } = {}) {
   const cfg = readConfig()
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
@@ -273,7 +281,11 @@ export function createRun({ alias, targetId, modules, budgetUsd } = {}) {
   // Pick the scope from the target library: an explicit choice, or random across
   // the labs so repeated Runs stop re-breaking one prepared bug. Throws on an
   // unknown id before anything is spent.
-  const target = pickTarget({ id: targetId })
+  // The module (pack) comes from the request. With no pack, a chosen scope
+  // decides it, and nothing chosen means Contracts. An unknown pack, or a scope
+  // that belongs to another pack, is refused before anything is spent.
+  if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
+  const target = pickTarget({ id: targetId, pack: pack || undefined })
   // Resolve the module plan from the scope and the operator's request. A module
   // the scope cannot support (static/fuzz on a brief with no local source yet) is
   // off with a reason, never silently dropped. The plan rides into the workspace
@@ -684,6 +696,7 @@ function persistRun(run, findings) {
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
     target: scopeOf(run),
+    pack: scopeOf(run)?.pack ?? "contracts",
     // The module plan this run used — which parts of the pipeline were on, and the
     // reason for any that were off — so history shows the honest configuration.
     modules: run.modules ?? null,

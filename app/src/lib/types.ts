@@ -199,12 +199,22 @@ export interface TargetScope {
   id: string
   title: string
   kind: "lab" | "local-source" | "brief"
+  // The module (pack) this scope belongs to. Absent on a record saved before modules.
+  pack?: string
   blurb: string
   entry: string
   files?: string[]
   links?: string[]
   signal: string
   proofSurface: ProofSurface
+}
+
+// A module the New run dialog offers: one pack from the engine's loader.
+export interface PackChoice {
+  id: string
+  title: string
+  tier?: string
+  proof: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
