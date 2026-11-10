@@ -54,3 +54,19 @@ test("a target with no config gives a workspace with no config", () => {
     assert.deepEqual(readTouchstone(ws), {});
   });
 });
+
+test("a target path with a trailing slash still skips oracle/", () => {
+  const target = mkdtempSync(join(tmpdir(), "target-"));
+  let ws;
+  try {
+    put(target, ".touchstone.json", JSON.stringify({ pack: "web" }));
+    put(target, "oracle/answer.txt");
+    put(target, "app.js");
+    ws = makeWorkspace(target + "/");
+    assert.ok(existsSync(join(ws, "app.js")));
+    assert.ok(!existsSync(join(ws, "oracle")));
+  } finally {
+    rmSync(target, { recursive: true, force: true });
+    if (ws) rmSync(ws, { recursive: true, force: true });
+  }
+});
