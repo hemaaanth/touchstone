@@ -6,3 +6,5 @@ here.
 
 | What | From | License | Where in our repo |
 |------|------|---------|-------------------|
+| forge-std (test library, vendored) | https://github.com/foundry-rs/forge-std | MIT or Apache-2.0 | `spike/packs/keys/lab/lib/forge-std/` |
+| forge-std (test library, vendored) | https://github.com/foundry-rs/forge-std | MIT or Apache-2.0 | `spike/packs/chain-watch/lab/lib/forge-std/` |
