@@ -14,9 +14,14 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
 - **The run chat is assistant-ui.** `run-chat.tsx` drives an
   `ExternalStoreRuntime`: we own the state (the SSE step stream reduced into
   `RunState`) and the look (base-nova classes + our own tool-part renderer).
-  Keep using the headless primitives (`ThreadPrimitive`, `MessagePrimitive`,
-  `ComposerPrimitive`); do not pull in the pre-styled assistant-ui registry
-  components — they drag in a second component kit.
+  Build structure from the headless primitives (`ThreadPrimitive`,
+  `MessagePrimitive`, `ComposerPrimitive`). For styled leaves, use the
+  assistant-ui **Elements** we vendored and restyled base-nova in
+  `@/components/assistant-ui/elements/*` (`AgentStatus`, `ShimmerLabel`, the
+  reasoning/tool `surfaces`, `agent-handoff`, `subagent-list`, etc.) — extend
+  those rather than re-styling a leaf from scratch. Do not pull in the full
+  assistant-ui thread template or registry wholesale; it drags in a second
+  component kit that fights base-nova.
 - The backend is a vite middleware (`server/api.mjs`) over the pi-durable
   engine. `bun run dev` serves the app and `/api/` from one process.
 - **Information architecture.** Left sidebar = runs list + Projects / Modules /
