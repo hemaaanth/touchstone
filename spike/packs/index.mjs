@@ -9,10 +9,12 @@ import surface from "./surface/pack.mjs";
 import keys from "./keys/pack.mjs";
 import chainWatch from "./chain-watch/pack.mjs";
 import web from "./web/pack.mjs";
+import peopleBrand from "./people-brand/pack.mjs";
 
 export const PACKS = {
   [contracts.id]: contracts, [supplyChain.id]: supplyChain, [domains.id]: domains, [surface.id]: surface,
   [keys.id]: keys, [chainWatch.id]: chainWatch, [web.id]: web,
+  [peopleBrand.id]: peopleBrand,
 };
 
 export function packFor(cfg = {}) {

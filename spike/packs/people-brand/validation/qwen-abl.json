@@ -1,0 +1,703 @@
+{
+  "result": {
+    "alias": "qwen-abl",
+    "approveMode": "auto",
+    "ms": 135929,
+    "status": "done",
+    "pack": "people-brand",
+    "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+    "leads": [
+      {
+        "id": "4db92bc5eafc846f",
+        "check": "github-two-factor-not-required",
+        "where": "astralharbor",
+        "severity": "high",
+        "impact": "High",
+        "description": "The original Legitify policy two_factor_authentication_not_required_for_org fails on the pinned organization export. This proves only the exported setting.",
+        "signals": [],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "Legitify/OPA"
+      },
+      {
+        "id": "508947765af2b47d",
+        "check": "lookalike-identity",
+        "where": "support:astralharb0r_help",
+        "severity": "high",
+        "impact": "High",
+        "description": "Captured support identity resembles an approved handle but is not in the registry. Its support text requests recovery material.",
+        "signals": [
+          {
+            "check": "unapproved-support-contact",
+            "detail": "Only pinned profile fields were compared. No account was contacted."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "e44a025eee9dc578",
+        "check": "impersonation-domain",
+        "where": "astralharb0r.test",
+        "severity": "high",
+        "impact": "High",
+        "description": "Unapproved brand-related host in the pinned snapshot. Review the grouped signals. Neither a certificate nor a similar name proves criminal ownership.",
+        "signals": [
+          {
+            "check": "lookalike-domain",
+            "detail": "A generated or Unicode-normalized lookalike occurs in the pinned DNS, certificate, or page capture."
+          },
+          {
+            "check": "captured-dns",
+            "detail": "The snapshot contains a successful DNS answer. This is not a live lookup."
+          },
+          {
+            "check": "captured-certificate",
+            "detail": "A pinned certificate SAN contains this exact ASCII hostname."
+          },
+          {
+            "check": "blocklist-match",
+            "detail": "The pinned list Touchstone made-up lab list matches this host or a parent label. Lab list matches are synthetic, not vendor detections."
+          },
+          {
+            "check": "copied-dapp-address-swap",
+            "detail": "The captured page matches the official tag sequence and DOM text but its contract literal is outside the approved address registry."
+          },
+          {
+            "check": "copied-dapp-address-swap",
+            "detail": "The captured page matches the official tag sequence and DOM text but its spender literal is outside the approved address registry."
+          },
+          {
+            "check": "off-brand-walletconnect-id",
+            "detail": "The captured JavaScript has a projectId outside the approved WalletConnect registry. Project IDs are public identifiers, not secrets."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "25b7db38c5e9a1fc",
+        "check": "lookalike-identity",
+        "where": "social:mira_astralharb0r",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "Captured social identity resembles an approved handle but is not in the registry.",
+        "signals": [
+          {
+            "check": "unapproved-social-identity",
+            "detail": "Only pinned profile fields were compared. No account was contacted."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "3bf00ed25f0a0982",
+        "check": "address-poisoning-docs",
+        "where": "https://astralharbor.test/docs/treasury",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "The published document contains a different address with the same first six and last four hex digits as an approved address. No transfer or chain lookup was made.",
+        "signals": [],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "541a0c9db81ec9df",
+        "check": "lookalike-identity",
+        "where": "social:astralharb0r",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "Captured social identity resembles an approved handle but is not in the registry.",
+        "signals": [
+          {
+            "check": "unapproved-social-identity",
+            "detail": "Only pinned profile fields were compared. No account was contacted."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "5ea07fa8960b8021",
+        "check": "lookalike-identity",
+        "where": "github:astralharb0r",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "Captured github identity resembles an approved handle but is not in the registry.",
+        "signals": [
+          {
+            "check": "unapproved-github-identity",
+            "detail": "Only pinned profile fields were compared. No account was contacted."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "b612082ade03c147",
+        "check": "lookalike-identity",
+        "where": "npm:@astralharb0r",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "Captured npm identity resembles an approved handle but is not in the registry.",
+        "signals": [
+          {
+            "check": "unapproved-npm-identity",
+            "detail": "Only pinned profile fields were compared. No account was contacted."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "f8f65d03ae92f310",
+        "check": "impersonation-domain",
+        "where": "xn--astralhrbor-4ij.test",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "Unapproved brand-related host in the pinned snapshot. Review the grouped signals. Neither a certificate nor a similar name proves criminal ownership.",
+        "signals": [
+          {
+            "check": "lookalike-domain",
+            "detail": "A generated or Unicode-normalized lookalike occurs in the pinned DNS, certificate, or page capture."
+          },
+          {
+            "check": "captured-dns",
+            "detail": "The snapshot contains a successful DNS answer. This is not a live lookup."
+          },
+          {
+            "check": "captured-certificate",
+            "detail": "A pinned certificate SAN contains this exact ASCII hostname."
+          },
+          {
+            "check": "unapproved-claim-page",
+            "detail": "A captured off-brand page advertises the project and a claim or airdrop absent from the approved campaign registry."
+          },
+          {
+            "check": "drainer-kit-pattern",
+            "reviewOnly": true,
+            "detail": "Three script names match a published Inferno deployment pattern. Names alone do not prove malware."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "fdb8ee13760fe997",
+        "check": "official-link-off-brand",
+        "where": "https://astralharbor.test/support#link=https://astralharb0r.test/support",
+        "severity": "medium",
+        "impact": "Medium",
+        "description": "A link labeled as an official brand destination leaves the approved domain and link registry.",
+        "signals": [],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      },
+      {
+        "id": "91068112ab9e45f7",
+        "check": "impersonation-domain",
+        "where": "astralharbro.test",
+        "severity": "low",
+        "impact": "Low",
+        "description": "Unapproved brand-related host in the pinned snapshot. Review the grouped signals. Neither a certificate nor a similar name proves criminal ownership.",
+        "signals": [
+          {
+            "check": "lookalike-domain",
+            "detail": "A generated or Unicode-normalized lookalike occurs in the pinned DNS, certificate, or page capture."
+          },
+          {
+            "check": "captured-certificate",
+            "detail": "A pinned certificate SAN contains this exact ASCII hostname."
+          }
+        ],
+        "reviewOnly": false,
+        "file": "snapshot.json",
+        "lines": [],
+        "engine": "people-brand"
+      }
+    ],
+    "coverage": {
+      "permutations": 9366,
+      "certificates": 1,
+      "publicLists": [
+        {
+          "name": "MetaMask pinned subset",
+          "entries": 32,
+          "source": "https://github.com/MetaMask/eth-phishing-detect/blob/8402334d5d506e9e303bf50b7785a56cfaaf5ccb/src/config.json"
+        },
+        {
+          "name": "BlocklistProject pinned subset",
+          "entries": 32,
+          "source": "https://raw.githubusercontent.com/blocklistproject/Lists/main/phishing.txt"
+        }
+      ],
+      "unparsedScripts": 0,
+      "missingOrgFields": []
+    },
+    "pocRuns": 0,
+    "findings": [
+      {
+        "n": 1,
+        "title": "impersonation-domain",
+        "severity": "high",
+        "poc": "e44a025eee9dc578",
+        "explanation": "Unapproved host astralharb0r.test resolves in the pinned snapshot and holds a matching certificate. The captured page copies the official tag sequence and DOM text, but its contract and spender literals are outside the approved address registry. Its WalletConnect projectId is also off-registry. All signals sit on one host, so they form one finding. The blocklist match is the synthetic lab list, not a vendor detection. A similar name and a certificate do not prove criminal ownership. Fix: Review ownership of astralharb0r.test, block it at the proxy and link registry, and pursue an authorized takedown. Do not claim or register the domain.",
+        "evidence": {
+          "check": "impersonation-domain",
+          "where": "astralharb0r.test",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "impersonation-domain",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 2,
+        "title": "lookalike-identity",
+        "severity": "high",
+        "poc": "508947765af2b47d",
+        "explanation": "A support identity astralharb0r_help resembles the approved handle but is not in the registry. Its support text requests recovery material. Only pinned profile fields were compared and no account was contacted. A similar handle does not prove malicious ownership. Recovery phrases must never be shared, even with an approved support contact. Fix: Pin the approved support handle in the registry, point official support links only at it, and pursue an authorized takedown of the lookalike if ownership review confirms it is unapproved.",
+        "evidence": {
+          "check": "lookalike-identity",
+          "where": "support:astralharb0r_help",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "lookalike-identity",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 3,
+        "title": "github-two-factor-not-required",
+        "severity": "high",
+        "poc": "4db92bc5eafc846f",
+        "explanation": "The pinned organization export fails the Legitify policy two_factor_authentication_not_required_for_org. This proves only the exported setting, and the exported value shows 2FA not required at the organization level. Missing export fields would not be treated as proof of a disabled control. Fix: Enforce required 2FA at the organization level, then re-run the pinned export to verify the exported setting.",
+        "evidence": {
+          "check": "github-two-factor-not-required",
+          "where": "astralharbor",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "github-two-factor-not-required",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 4,
+        "title": "impersonation-domain",
+        "severity": "medium",
+        "poc": "f8f65d03ae92f310",
+        "explanation": "The Unicode homograph xn--astralhrbor-4ij.test resolves in the pinned snapshot and holds a matching certificate. A captured off-brand page advertises the project plus a claim or airdrop absent from the approved campaign registry. A similar name and a certificate do not prove criminal ownership. Three script names match a published Inferno pattern, but names alone do not prove malware and that signal is review-only, so it is not the root cause. Fix: Review ownership of xn--astralhrbor-4ij.test, block the host, withdraw or reconcile the unapproved claim/airdrop offer, and pursue an authorized takedown. Do not claim or register the domain.",
+        "evidence": {
+          "check": "impersonation-domain",
+          "where": "xn--astralhrbor-4ij.test",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "impersonation-domain",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 5,
+        "title": "address-poisoning-docs",
+        "severity": "medium",
+        "poc": "3bf00ed25f0a0982",
+        "explanation": "The published document at astralharbor.test/docs/treasury shows an address that differs from the approved address but shares its first six and last four hex digits. That pattern can mislead visual copying of addresses. No transfer or chain lookup was made. Fix: Correct the document to the approved address and add a pre-publish check that flags addresses sharing a first/last digit pattern with approved addresses.",
+        "evidence": {
+          "check": "address-poisoning-docs",
+          "where": "https://astralharbor.test/docs/treasury",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "address-poisoning-docs",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 6,
+        "title": "official-link-off-brand",
+        "severity": "medium",
+        "poc": "fdb8ee13760fe997",
+        "explanation": "The official support page contains a link labeled as an official brand destination that points to astralharb0r.test/support. That host is outside the approved domain and link registry and is itself an unapproved lookalike host in the pinned snapshot. Fix: Repoint the link to the approved support domain and add a link-registry check to the publishing pipeline so off-registry targets are flagged.",
+        "evidence": {
+          "check": "official-link-off-brand",
+          "where": "https://astralharbor.test/support#link=https://astralharb0r.test/support",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "official-link-off-brand",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 7,
+        "title": "lookalike-identity",
+        "severity": "medium",
+        "poc": "541a0c9db81ec9df",
+        "explanation": "The captured social identity astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved social handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved.",
+        "evidence": {
+          "check": "lookalike-identity",
+          "where": "social:astralharb0r",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "lookalike-identity",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 8,
+        "title": "lookalike-identity",
+        "severity": "medium",
+        "poc": "25b7db38c5e9a1fc",
+        "explanation": "The captured social identity mira_astralharb0r resembles an approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved social handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved.",
+        "evidence": {
+          "check": "lookalike-identity",
+          "where": "social:mira_astralharb0r",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "lookalike-identity",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 9,
+        "title": "lookalike-identity",
+        "severity": "medium",
+        "poc": "5ea07fa8960b8021",
+        "explanation": "The captured GitHub identity astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved GitHub handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved.",
+        "evidence": {
+          "check": "lookalike-identity",
+          "where": "github:astralharb0r",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "lookalike-identity",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 10,
+        "title": "lookalike-identity",
+        "severity": "medium",
+        "poc": "b612082ade03c147",
+        "explanation": "The captured npm scope @astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved npm scope in the registry, review the lookalike via ownership review, and pursue an authorized takedown if confirmed unapproved.",
+        "evidence": {
+          "check": "lookalike-identity",
+          "where": "npm:@astralharb0r",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "lookalike-identity",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 11,
+        "title": "impersonation-domain",
+        "severity": "low",
+        "poc": "91068112ab9e45f7",
+        "explanation": "The transposed-letter host astralharbro.test appears in the pinned snapshot and a pinned certificate SAN contains the exact hostname. A similar name and a certificate do not prove criminal ownership. Fix: Review ownership of astralharbro.test, add it to the domain registry, and pursue an authorized takedown. Do not claim or register the domain.",
+        "evidence": {
+          "check": "impersonation-domain",
+          "where": "astralharbro.test",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "impersonation-domain",
+          "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      }
+    ],
+    "findingSubmitted": true,
+    "finding": {
+      "title": "impersonation-domain",
+      "severity": "high",
+      "poc": "e44a025eee9dc578"
+    },
+    "pocProved": true,
+    "proof": {
+      "kind": "evidence",
+      "status": "pass",
+      "check": "impersonation-domain",
+      "snapshotHash": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0",
+      "detail": "Allowlisted detector confirmed the pinned evidence."
+    },
+    "decision": "approved",
+    "recorded": true,
+    "calls": [
+      "snapshot_leads",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding"
+    ],
+    "final": "\n\nAll 11 supported roots submitted, worst first. Every submission passed evidence checks against snapshot `3f39f3f8…`.\n\n**Submitted (11)**\n- High: `e44a025eee9dc578` (astralharb0r.test impersonation: copied DOM with swapped contract/spender literals, off-registry WalletConnect projectId), `508947765af2b47d` (support lookalike requesting recovery material), `4db92bc5eafc846f` (org export shows 2FA not required).\n- Medium: `f8f65d03ae92f310` (homograph host with unapproved claim/airdrop page), `3bf00ed25f0a0982` (address-poisoning doc pattern), `fdb8ee13760fe997` (official link off-registry to astralharb0r.test), plus four lookalike identities (social ×2, GitHub, npm).\n- Low: `91068112ab9e45f7` (astralharbro.test).\n\n**Not submitted:** nothing was refused at the lead level. The only review-only item was the drainer-kit signal inside `f8f65d03ae92f310`; script names alone don't prove a drainer, so it informed context but not a root cause.\n\n**Coverage**\n- 9,366 permutations scanned; 1 certificate pinned; 0 unparsed scripts; `missingOrgFields` empty, so the org export is complete and the 2FA lead rests on an exported value, not a missing field.\n- Blocklists are pinned subsets: MetaMask (",
+    "usage": {
+      "usd": 0.01050767,
+      "models": {
+        "near/Qwen/Qwen3.8-27B-abliterated": {
+          "in": 5348,
+          "out": 7625,
+          "reasoning": 5435
+        }
+      }
+    },
+    "reports": []
+  },
+  "transcript": {
+    "calls": [
+      {
+        "name": "snapshot_leads",
+        "args": {}
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "e44a025eee9dc578",
+          "explanation": "Unapproved host astralharb0r.test resolves in the pinned snapshot and holds a matching certificate. The captured page copies the official tag sequence and DOM text, but its contract and spender literals are outside the approved address registry. Its WalletConnect projectId is also off-registry. All signals sit on one host, so they form one finding. The blocklist match is the synthetic lab list, not a vendor detection. A similar name and a certificate do not prove criminal ownership. Fix: Review ownership of astralharb0r.test, block it at the proxy and link registry, and pursue an authorized takedown. Do not claim or register the domain."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "508947765af2b47d",
+          "explanation": "A support identity astralharb0r_help resembles the approved handle but is not in the registry. Its support text requests recovery material. Only pinned profile fields were compared and no account was contacted. A similar handle does not prove malicious ownership. Recovery phrases must never be shared, even with an approved support contact. Fix: Pin the approved support handle in the registry, point official support links only at it, and pursue an authorized takedown of the lookalike if ownership review confirms it is unapproved."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "4db92bc5eafc846f",
+          "explanation": "The pinned organization export fails the Legitify policy two_factor_authentication_not_required_for_org. This proves only the exported setting, and the exported value shows 2FA not required at the organization level. Missing export fields would not be treated as proof of a disabled control. Fix: Enforce required 2FA at the organization level, then re-run the pinned export to verify the exported setting."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "f8f65d03ae92f310",
+          "explanation": "The Unicode homograph xn--astralhrbor-4ij.test resolves in the pinned snapshot and holds a matching certificate. A captured off-brand page advertises the project plus a claim or airdrop absent from the approved campaign registry. A similar name and a certificate do not prove criminal ownership. Three script names match a published Inferno pattern, but names alone do not prove malware and that signal is review-only, so it is not the root cause. Fix: Review ownership of xn--astralhrbor-4ij.test, block the host, withdraw or reconcile the unapproved claim/airdrop offer, and pursue an authorized takedown. Do not claim or register the domain."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "3bf00ed25f0a0982",
+          "explanation": "The published document at astralharbor.test/docs/treasury shows an address that differs from the approved address but shares its first six and last four hex digits. That pattern can mislead visual copying of addresses. No transfer or chain lookup was made. Fix: Correct the document to the approved address and add a pre-publish check that flags addresses sharing a first/last digit pattern with approved addresses."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "fdb8ee13760fe997",
+          "explanation": "The official support page contains a link labeled as an official brand destination that points to astralharb0r.test/support. That host is outside the approved domain and link registry and is itself an unapproved lookalike host in the pinned snapshot. Fix: Repoint the link to the approved support domain and add a link-registry check to the publishing pipeline so off-registry targets are flagged."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "541a0c9db81ec9df",
+          "explanation": "The captured social identity astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved social handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "25b7db38c5e9a1fc",
+          "explanation": "The captured social identity mira_astralharb0r resembles an approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved social handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "5ea07fa8960b8021",
+          "explanation": "The captured GitHub identity astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved GitHub handle in the registry, review the lookalike profile via ownership review, and pursue an authorized takedown if confirmed unapproved."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "b612082ade03c147",
+          "explanation": "The captured npm scope @astralharb0r resembles the approved handle and is not in the registry. Only pinned profile fields were compared and no account was contacted. Similarity alone does not prove malicious ownership. Fix: Pin the approved npm scope in the registry, review the lookalike via ownership review, and pursue an authorized takedown if confirmed unapproved."
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "lead_id": "91068112ab9e45f7",
+          "explanation": "The transposed-letter host astralharbro.test appears in the pinned snapshot and a pinned certificate SAN contains the exact hostname. A similar name and a certificate do not prove criminal ownership. Fix: Review ownership of astralharbro.test, add it to the domain registry, and pursue an authorized takedown. Do not claim or register the domain."
+        }
+      }
+    ],
+    "results": [
+      {
+        "name": "snapshot_leads",
+        "isError": false,
+        "text": "{\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"leads\":[{\"id\":\"4db92bc5eafc846f\",\"check\":\"github-two-factor-not-required\",\"where\":\"astralharbor\",\"severity\":\"high\",\"impact\":\"High\",\"description\":\"The original Legitify policy two_factor_authentication_not_required_fo"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":1,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"impersonation-domain\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":2,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"lookalike-identity\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":3,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"github-two-factor-not-required\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":4,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"impersonation-domain\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":5,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"address-poisoning-docs\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":6,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"official-link-off-brand\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":7,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"lookalike-identity\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":8,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"lookalike-identity\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":9,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"lookalike-identity\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":10,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"lookalike-identity\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "{\"recorded\":11,\"proof\":{\"kind\":\"evidence\",\"status\":\"pass\",\"check\":\"impersonation-domain\",\"snapshotHash\":\"3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0\",\"detail\":\"Allowlisted detector confirmed the pinned evidence.\"}}"
+      }
+    ],
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "\n\nSnapshot confirmed: 11 leads, hash 3f39f3f8…, none reviewOnly at the lead level (the drainer-kit signal inside the punycode host is review-only). Submitting all supported roots, worst first.\n\n\n\n\n\n\n\n\n\n\n\n",
+        "toolCalls": 11
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nAll 11 supported roots submitted, worst first. Every submission passed evidence checks against snapshot `3f39f3f8…`.\n\n**Submitted (11)**\n- High: `e44a025eee9dc578` (astralharb0r.test impersonation: copied DOM with swapped contract/spender literals, off-registry WalletConnect projectId), `508947765af2b47d` (support lookalike requesting recovery material), `4db92bc5eafc846f` (org export shows 2FA not required).\n- Medium: `f8f65d03ae92f310` (homograph host with unapproved claim/airdrop page), `3bf00ed25f0a0982` (address-poisoning doc pattern), `fdb8ee13760fe997` (official link off-registry to astralharb0r.test), plus four lookalike identities (social ×2, GitHub, npm).\n- Low: `91068112ab9e45f7` (astralharbro.test).\n\n**Not submitted:** nothing was refused at the lead level. The only review-only item was the drainer-kit signal inside `f8f65d03ae92f310`; script names alone don't prove a drainer, so it informed context but not a root cause.\n\n**Coverage**\n- 9,366 permutations scanned; 1 certificate pinned; 0 unparsed scripts; `missingOrgFields` empty, so the org export is complete and the 2FA lead rests on an exported value, not a missing field.\n- Blocklists are pinned subsets: MetaMask (32 entries, pinned commit) and BlocklistProject (32 entries), plus the synthetic Touchstone lab list. Lab-list matches are synthetic, not vendor detections.\n\n**Limits**\n- Fully passive: DNS answers and certificates are pinned captures, not live lookups. No page code was executed, no accounts contacted, no transactions sent.\n- Identity matches compare pinned profile fields only.\n- Similar handles, hostnames, or certificates indicate resemblance; they do not prove malicious ownership. Remediation is ownership review plus authorized takedown, not claiming or registering observed domains.\n- The 2FA finding is scoped to the exported setting and needs re-verification after enforcement.\n- The doc address finding is visual-pattern only; no chain lookup or transfer occurred.",
+        "toolCalls": 0
+      }
+    ],
+    "final": {
+      "stop": "stop",
+      "text": "\n\nAll 11 supported roots submitted, worst first. Every submission passed evidence checks against snapshot `3f39f3f8…`.\n\n**Submitted (11)**\n- High: `e44a025eee9dc578` (astralharb0r.test impersonation: copied DOM with swapped contract/spender literals, off-registry WalletConnect projectId), `508947765af2b47d` (support lookalike requesting recovery material), `4db92bc5eafc846f` (org export shows 2FA not required).\n- Medium: `f8f65d03ae92f310` (homograph host with unapproved claim/airdrop page), `3bf00ed25f0a0982` (address-poisoning doc pattern), `fdb8ee13760fe997` (official link off-registry to astralharb0r.test), plus four lookalike identities (social ×2, GitHub, npm).\n- Low: `91068112ab9e45f7` (astralharbro.test).\n\n**Not submitted:** nothing was refused at the lead level. The only review-only item was the drainer-kit signal inside `f8f65d03ae92f310`; script names alone don't prove a drainer, so it informed context but not a root cause.\n\n**Coverage**\n- 9,366 permutations scanned; 1 certificate pinned; 0 unparsed scripts; `missingOrgFields` empty, so the org export is complete and the 2FA lead rests on an exported value, not a missing field.\n- Blocklists are pinned subsets: MetaMask (32 entries, pinned commit) and BlocklistProject (32 entries), plus the synthetic Touchstone lab list. Lab-list matches are synthetic, not vendor detections.\n\n**Limits**\n- Fully passive: DNS answers and certificates are pinned captures, not live lookups. No page code was executed, no accounts contacted, no transactions sent.\n- Identity matches compare pinned profile fields only.\n- Similar handles, hostnames, or certificates indicate resemblance; they do not prove malicious ownership. Remediation is ownership review plus authorized takedown, not claiming or registering observed domains.\n- The 2FA finding is scoped to the exported setting and needs re-verification after enforcement.\n- The doc address finding is visual-pattern only; no chain lookup or transfer occurred.",
+      "toolCalls": 0
+    }
+  }
+}
