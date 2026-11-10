@@ -51,7 +51,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), touchstoneApi()],
   resolve: {
     alias: {
-      '@graphical': path.resolve(__dirname, './components/graphical'),
       '@': path.resolve(__dirname, './src'),
     },
   },

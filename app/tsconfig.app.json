@@ -25,17 +25,10 @@
     "paths": {
       "@/*": [
         "./src/*"
-      ],
-      "@graphical": [
-        "./components/graphical/index.ts"
-      ],
-      "@graphical/*": [
-        "./components/graphical/*"
       ]
     }
   },
   "include": [
-    "src",
-    "components"
+    "src"
   ]
 }

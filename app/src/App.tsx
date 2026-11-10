@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
 import type {
-  Finding,
   FindingSummary,
   ModelChoice,
   PendingApproval,
@@ -10,12 +9,13 @@ import type {
   SpendState,
   TargetChoice,
 } from "@/lib/types"
-import { dismissFinding, fetchFinding, fetchFindings, fetchModels, fetchRuns, startRun } from "@/lib/api"
-import { Sidebar } from "@/components/Sidebar"
-import { ActivityList, type Selection } from "@/components/ActivityList"
-import { RunLauncher } from "@/components/RunLauncher"
-import { RunView } from "@/components/RunView"
-import { FindingDrawer } from "@/components/FindingDrawer"
+import { fetchFindings, fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { SidebarProvider } from "@/components/ui/sidebar"
+import { AppSidebar, type View } from "@/components/app-sidebar"
+import { RunChat } from "@/components/run-chat"
+import { FindingsPanel } from "@/components/findings-panel"
+import { PageStub } from "@/components/page-stub"
+import { NewRunDialog } from "@/components/new-run-dialog"
 
 const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
 
@@ -26,13 +26,12 @@ export function App() {
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [findings, setFindings] = useState<FindingSummary[]>([])
-  const [selected, setSelected] = useState<Selection | null>(null)
-  const [detail, setDetail] = useState<Finding | null>(null)
-  const [scopeId, setScopeId] = useState("")
+  const [view, setView] = useState<View | null>(null)
+  const [selectedFinding, setSelectedFinding] = useState<string | null>(null)
 
+  const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const [dismissBusy, setDismissBusy] = useState(false)
 
   const refreshModels = useCallback(() => {
     fetchModels()
@@ -45,48 +44,26 @@ export function App() {
       .catch(() => {})
   }, [])
 
-  const refreshFindings = useCallback(
-    () => fetchFindings().then(setFindings).catch(() => {}),
-    [],
-  )
+  const refreshFindings = useCallback(() => fetchFindings().then(setFindings).catch(() => {}), [])
 
-  // Load everything once. Land on the newest live run if there is one, else the
-  // newest recorded finding, so the stage is never empty when there is work.
+  // Load everything once. Land on the newest live run so the stage is never
+  // empty when there is work in flight.
   useEffect(() => {
     let live = true
     refreshModels()
-    Promise.all([fetchRuns().catch(() => [] as RunSummary[]), fetchFindings().catch(() => [] as FindingSummary[])]).then(
-      ([runList, findingList]) => {
-        if (!live) return
-        setRuns(runList)
-        setFindings(findingList)
-        setSelected((cur) => {
-          if (cur) return cur
-          if (runList.length > 0) return { kind: "run", id: runList[0].id }
-          if (findingList.length > 0) return { kind: "finding", id: findingList[0].id }
-          return null
-        })
-      },
-    )
+    Promise.all([
+      fetchRuns().catch(() => [] as RunSummary[]),
+      fetchFindings().catch(() => [] as FindingSummary[]),
+    ]).then(([runList, findingList]) => {
+      if (!live) return
+      setRuns(runList)
+      setFindings(findingList)
+      setView((cur) => cur ?? (runList.length > 0 ? { kind: "run", id: runList[0].id } : null))
+    })
     return () => {
       live = false
     }
-  }, [refreshModels])
-
-  // Load the full proof for a selected recorded finding.
-  useEffect(() => {
-    if (selected?.kind !== "finding") {
-      setDetail(null)
-      return
-    }
-    let live = true
-    fetchFinding(selected.id)
-      .then((f) => live && setDetail(f))
-      .catch(() => {})
-    return () => {
-      live = false
-    }
-  }, [selected])
+  }, [refreshModels, refreshFindings])
 
   const onStart = useCallback(
     (alias: string, targetId?: string) => {
@@ -98,7 +75,8 @@ export function App() {
             { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
             ...prev.filter((r) => r.id !== run.id),
           ])
-          setSelected({ kind: "run", id: run.id })
+          setView({ kind: "run", id: run.id })
+          setDialogOpen(false)
           refreshModels()
         })
         .catch((err: unknown) => setStartError(err instanceof Error ? err.message : String(err)))
@@ -107,27 +85,8 @@ export function App() {
     [refreshModels],
   )
 
-  // Flip the open finding to dismissed (or restore it) and refresh so its row
-  // and the sidebar count follow. The proof is untouched — this is ledger only.
-  const onToggleDismiss = useCallback(
-    (next: boolean) => {
-      if (selected?.kind !== "finding") return
-      const id = selected.id
-      setDismissBusy(true)
-      dismissFinding(id, next)
-        .then(() => fetchFinding(id))
-        .then(setDetail)
-        .catch(() => {})
-        .finally(() => {
-          setDismissBusy(false)
-          refreshFindings()
-        })
-    },
-    [selected, refreshFindings],
-  )
-
-  // The selected run's live stream flows through RunView; it reports each status
-  // change here so the activity row, spend meter, and history stay current.
+  // The selected run's live stream flows through RunChat; it reports each status
+  // change here so the sidebar row, spend meter, and findings stay current.
   const onRunStatus = useCallback(
     (id: string, status: RunStatus, pending: PendingApproval | null) => {
       setRuns((prev) =>
@@ -145,55 +104,49 @@ export function App() {
     [refreshModels, refreshFindings],
   )
 
-  const activeDetail = detail && selected?.kind === "finding" && detail.id === selected.id ? detail : null
-
-  const runnableTargets = targets.filter((t) => t.runnable)
-  const nextScope = runnableTargets.find((t) => t.id === scopeId) ?? null
+  const activeRun = view?.kind === "run" ? runs.find((r) => r.id === view.id) ?? null : null
 
   return (
-    <div className="operator-shell">
-      <Sidebar
-        findingCount={findings.filter((f) => !f.dismissed).length}
+    <SidebarProvider>
+      <AppSidebar
+        runs={runs}
+        view={view}
+        onSelect={setView}
+        onNewRun={() => setDialogOpen(true)}
         spend={spend}
         provider={provider}
-        targets={runnableTargets}
-        scopeId={nextScope?.id ?? ""}
-        onScopeChange={setScopeId}
       />
-      <main className="operator-workspace" aria-label="Activity workspace">
-        <ActivityList
-          launcher={
-            <RunLauncher
-              models={models}
-              scope={nextScope}
-              hasTargets={runnableTargets.length > 0}
-              spend={spend}
-              busy={busy}
-              error={startError}
-              onStart={onStart}
+
+      <div className="flex h-svh min-w-0 flex-1">
+        <main className="flex min-w-0 flex-1 flex-col">
+          {activeRun ? (
+            <RunChat
+              key={activeRun.id}
+              run={activeRun}
+              onStatus={(status, pending) => onRunStatus(activeRun.id, status, pending)}
             />
-          }
-          runs={runs}
-          findings={findings}
-          selected={selected}
-          onSelect={setSelected}
-        />
-        {selected?.kind === "run" ? (
-          <RunView
-            key={selected.id}
-            runId={selected.id}
-            initialStatus={runs.find((r) => r.id === selected.id)?.status ?? null}
-            onStatus={(status, pending) => onRunStatus(selected.id, status, pending)}
-            onDismissChanged={refreshFindings}
-          />
-        ) : selected?.kind === "finding" ? (
-          <FindingDrawer finding={activeDetail} dismissBusy={dismissBusy} onToggleDismiss={onToggleDismiss} />
-        ) : (
-          <aside className="detail-pane grid place-items-center p-(--space-xl)">
-            <p className="type-xs text-(--cte-text-muted)">Start a run to watch the agent work.</p>
-          </aside>
-        )}
-      </main>
-    </div>
+          ) : view?.kind === "page" ? (
+            <PageStub id={view.id} />
+          ) : (
+            <div className="grid flex-1 place-items-center p-8">
+              <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
+            </div>
+          )}
+        </main>
+
+        <FindingsPanel findings={findings} selectedId={selectedFinding} onSelect={setSelectedFinding} />
+      </div>
+
+      <NewRunDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        models={models}
+        targets={targets}
+        spend={spend}
+        busy={busy}
+        error={startError}
+        onStart={onStart}
+      />
+    </SidebarProvider>
   )
 }

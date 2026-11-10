@@ -1,0 +1,65 @@
+import type { RunStatus, Severity } from "./types"
+
+// Relative time, compact. "just now" / "4m" / "2h" / "3d".
+export function ago(ts: number | null | undefined): string {
+  if (!ts) return ""
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 45) return "just now"
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  return `${d}d`
+}
+
+// A run is live while it is still doing work; terminal once it has settled.
+const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
+export const isTerminal = (s: RunStatus): boolean => TERMINAL.includes(s)
+
+// The one-word station a status reads as, for a sidebar row or header chip.
+export function statusLabel(s: RunStatus): string {
+  switch (s) {
+    case "starting":
+      return "Starting"
+    case "running":
+      return "Running"
+    case "awaiting-approval":
+      return "Awaiting proof"
+    case "deciding":
+      return "Recording"
+    case "recorded":
+      return "Proven"
+    case "denied":
+      return "Denied"
+    case "no-finding":
+      return "No finding"
+    case "error":
+      return "Error"
+    default:
+      return s
+  }
+}
+
+// Status → the dot/pill tone. "proven" is the only green; "error"/"denied" red;
+// everything in-flight is amber; a clean no-finding is neutral. One accent
+// meaning per restraint.md — green never shows until a replay proved something.
+export type Tone = "green" | "amber" | "red" | "neutral"
+export function statusTone(s: RunStatus): Tone {
+  if (s === "recorded") return "green"
+  if (s === "error" || s === "denied") return "red"
+  if (s === "no-finding") return "neutral"
+  return "amber"
+}
+
+export function severityTone(sev: Severity): Tone {
+  return sev === "critical" || sev === "high" ? "red" : sev === "medium" ? "amber" : "neutral"
+}
+
+// Tailwind classes for a small status dot, keyed by tone.
+export const DOT: Record<Tone, string> = {
+  green: "bg-emerald-500",
+  amber: "bg-amber-500",
+  red: "bg-destructive",
+  neutral: "bg-muted-foreground/60",
+}
