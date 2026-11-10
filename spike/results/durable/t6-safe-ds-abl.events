@@ -1,0 +1,11 @@
+{"t":1794198360663,"ev":"opened","mode":"run"}
+{"t":1794198360666,"ev":"submitted","id":8}
+{"t":1794198361407,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198361407,"ev":"tool-done","tool":"run_poc"}
+{"t":1794198362181,"ev":"tool-start","tool":"get_balance","address":"0x5FbDB2315678afecb367f032d93F642f64180aa3"}
+{"t":1794198363756,"ev":"opened","mode":"resume"}
+{"t":1794198363757,"ev":"inspect","tasks":2,"submissions":1}
+{"t":1794198363758,"ev":"submitted","id":8}
+{"t":1794198363762,"ev":"tool-start","tool":"get_balance","address":"0x5FbDB2315678afecb367f032d93F642f64180aa3"}
+{"t":1794198363762,"ev":"tool-done","tool":"get_balance"}
+{"t":1794198364595,"ev":"settled","status":"done","results":[{"name":"run_poc","isError":false,"text":"[PASS] test_vault_drain() (gas: 184211)\nattacker balance after: 12.5 ETH\n1 passed; 0 failed"},{"name":"get_balance","isError":false,"text":"12.5 ETH"}],"calls":["run_poc","get_balance"],"assistants":[{"stop":"toolUse","text":"I'll run the PoC and check the balance.\n\n","thinkingChars":0,"toolCalls":1},{"stop":"toolUse","text":"","thinkingChars":16,"toolCalls":1},{"stop":"stop","text":"The PoC `test_vault_drain` PASSED (attacker balance after: 12.5 ETH), and address 0x5FbDB2315678afecb367f032d93F642f64180aa3 holds 12.5 ETH.","thinkingChars":0,"toolCalls":0}],"usage":{"usd":0.0002748,"models":{"near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated":{"in":188,"out":182,"reasoning":4}}},"reports":[]}

@@ -1,0 +1,11 @@
+{"t":1794198353979,"ev":"opened","mode":"run"}
+{"t":1794198353985,"ev":"submitted","id":8}
+{"t":1794198355277,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198355277,"ev":"tool-start","tool":"get_balance","address":"0x5FbDB2315678afecb367f032d93F642f64180aa3"}
+{"t":1794198355277,"ev":"tool-done","tool":"get_balance"}
+{"t":1794198356850,"ev":"opened","mode":"resume"}
+{"t":1794198356851,"ev":"inspect","tasks":2,"submissions":1}
+{"t":1794198356852,"ev":"submitted","id":8}
+{"t":1794198357977,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198357977,"ev":"tool-done","tool":"run_poc"}
+{"t":1794198360575,"ev":"settled","status":"done","results":[{"name":"run_poc","isError":true,"text":"<harness>\n[error] Tool run_poc was interrupted and may have partially run\n</harness>"},{"name":"get_balance","isError":false,"text":"12.5 ETH"},{"name":"run_poc","isError":false,"text":"[PASS] test_vault_drain() (gas: 184211)\nattacker balance after: 12.5 ETH\n1 passed; 0 failed"}],"calls":["run_poc","get_balance","run_poc"],"assistants":[{"stop":"toolUse","text":"I'll run the PoC and check the balance.\n\n","thinkingChars":0,"toolCalls":2},{"stop":"toolUse","text":"The `run_poc` call was interrupted. Let me retry it once.\n\n","thinkingChars":153,"toolCalls":1},{"stop":"stop","text":"test_vault_drain PASSED (gas 184211, attacker balance after: 12.5 ETH, 1 passed / 0 failed — after one interrupted first attempt) and the fork balance of 0x5FbDB2315678afecb367f032d93F642f64180aa3 is 12.5 ETH.","thinkingChars":320,"toolCalls":0}],"usage":{"usd":0.0006138,"models":{"near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated":{"in":610,"out":359,"reasoning":115}}},"reports":[]}

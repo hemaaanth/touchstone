@@ -1,0 +1,2 @@
+{"t":1794266685944,"ev":"opened","mode":"run"}
+{"t":1794266685956,"ev":"settled","status":"unanswered","reason":"model_error","summary":{"calls":[],"results":[],"assistants":[]},"usage":{"usd":0,"models":{"near/Qwen/Qwen3.8-27B-abliterated":{"in":0,"out":0}}},"reports":[]}

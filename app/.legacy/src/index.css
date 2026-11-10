@@ -1,0 +1,158 @@
+/* Layer order. The Graphical stylesheet sits above Tailwind's preflight and
+   below Tailwind utilities, so a className on a themed part still wins. */
+@layer theme, base, graphical, components, utilities;
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./fonts.css";
+@import "../components/graphical/styles.css" layer(graphical);
+
+/* Dark follows the provider's data-color-mode, not a .dark class. */
+@custom-variant dark (&:where([data-color-mode="dark"], [data-color-mode="dark"] *));
+
+/* Drop Tailwind's default scales. Every value comes from the Graphical theme.
+   Use direct var() utilities at call sites, for example bg-(--neutral-2),
+   p-(--space-m), rounded-(--radius-m), shadow-(--shadow-m). */
+@theme {
+  --color-*: initial;
+  --font-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-*: initial;
+  --leading-*: initial;
+  --tracking-*: initial;
+  --font-weight-*: initial;
+}
+
+/* shadcn role names, pointed at the Graphical roles. These resolve inside
+   the provider scope and inside themed portals. */
+@theme inline {
+  --color-background: var(--cte-canvas);
+  --color-foreground: var(--cte-text);
+  --color-card: var(--cte-surface);
+  --color-card-foreground: var(--cte-text);
+  --color-popover: var(--cte-surface);
+  --color-popover-foreground: var(--cte-text);
+  --color-primary: var(--cte-accent);
+  --color-primary-foreground: var(--cte-accent-text);
+  --color-secondary: var(--cte-surface-muted);
+  --color-secondary-foreground: var(--cte-text);
+  --color-muted: var(--cte-surface-muted);
+  --color-muted-foreground: var(--cte-text-muted);
+  --color-accent: var(--navigation-active-background);
+  --color-accent-foreground: var(--navigation-active-foreground);
+  --color-destructive: var(--cte-danger);
+  --color-border: var(--cte-border);
+  --color-input: var(--cte-border);
+  --color-ring: var(--cte-focus);
+  --font-sans: var(--font-ui);
+}
+
+/* Type steps. Size, line height and letter spacing always travel together. */
+@utility type-xxs {
+  font-size: var(--size-xxs);
+  line-height: var(--line-xxs);
+  letter-spacing: var(--letter-spacing-xxs);
+}
+@utility type-xs {
+  font-size: var(--size-xs);
+  line-height: var(--line-xs);
+  letter-spacing: var(--letter-spacing-xs);
+}
+@utility type-s {
+  font-size: var(--size-s);
+  line-height: var(--line-s);
+  letter-spacing: var(--letter-spacing-s);
+}
+@utility type-m {
+  font-size: var(--size-m);
+  line-height: var(--line-m);
+  letter-spacing: var(--letter-spacing-m);
+}
+@utility type-l {
+  font-size: var(--size-l);
+  line-height: var(--line-l);
+  letter-spacing: var(--letter-spacing-l);
+}
+@utility type-xl {
+  font-size: var(--size-xl);
+  line-height: var(--line-xl);
+  letter-spacing: var(--letter-spacing-xl);
+}
+@utility type-xxl {
+  font-size: var(--size-xxl);
+  line-height: var(--line-xxl);
+  letter-spacing: var(--letter-spacing-xxl);
+}
+
+/* Weights from the UI role. */
+@utility weight-regular {
+  font-weight: var(--weight-ui-regular);
+}
+@utility weight-medium {
+  font-weight: var(--weight-ui-medium);
+}
+@utility weight-heavy {
+  font-weight: var(--weight-ui-heavy);
+}
+
+/* Data role: hashes, amounts, ids. No tabular figures here: in this font the
+   tnum feature also widens "-" to a digit width, so "--" reads as "- -".
+   Add tabular-nums where digits line up in a column. */
+@utility font-data {
+  font-family: var(--font-data);
+}
+
+/* A divider is a one-sided inset shadow. The theme draws no borders. */
+@utility divide-top {
+  box-shadow: inset 0 1px 0 0 var(--neutral-4);
+}
+@utility divide-bottom {
+  box-shadow: inset 0 -1px 0 0 var(--neutral-4);
+}
+@utility divide-right {
+  box-shadow: inset -1px 0 0 0 var(--neutral-4);
+}
+@utility divide-left {
+  box-shadow: inset 1px 0 0 0 var(--neutral-4);
+}
+
+/* The same focus ring the themed controls draw. Use on app links and rows. */
+@utility focus-ring {
+  outline: none;
+  &:focus-visible {
+    outline: var(
+      --focus-ring-outline,
+      max(2px, var(--border-m)) solid var(--cte-focus)
+    );
+    outline-offset: -2px;
+  }
+}
+
+@layer base {
+  /* The provider's div is the app shell. Inner panes scroll. */
+  .graphical-theme {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: var(--cte-canvas);
+    color: var(--cte-text);
+    font-family: var(--font-ui);
+    font-size: var(--size-m);
+    line-height: var(--line-m);
+    letter-spacing: var(--letter-spacing-m);
+    /* One reading width. A page centers its header and body in this, with
+       generous gutters on wide screens, so no screen stretches edge to edge. */
+    --canvas: 64rem;
+  }
+
+  /* Shared scope, including portalled parts. */
+  :where(.graphical-theme, .ui-positioner, [data-ui-component]) {
+    font-variation-settings: "STYL" 0, "ital" 0;
+    text-wrap: pretty;
+    -webkit-font-smoothing: antialiased;
+  }
+}

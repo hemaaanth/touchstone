@@ -1,0 +1,31 @@
+{"t":1794203861378,"ev":"opened","mode":"run"}
+{"t":1794203862468,"ev":"list_sources"}
+{"t":1794203863560,"ev":"read_source","file":"Vault.sol"}
+{"t":1794203976550,"ev":"read_source","file":"Vault.sol"}
+{"t":1794203993432,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794203993800,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204007228,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204007919,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204070307,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204070652,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204086600,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204087267,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204157450,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204157876,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204177122,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204177785,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204238643,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204239084,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204253370,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204253980,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204323797,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204324477,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":true,"failed":false,"timedOut":false}
+{"t":1794204354143,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204354843,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":false,"failed":true,"timedOut":false}
+{"t":1794204381344,"ev":"run_poc","contract":"VaultReentrancyDrainTest"}
+{"t":1794204381983,"ev":"run_poc-done","contract":"VaultReentrancyDrainTest","passed":true,"failed":false,"timedOut":false}
+{"t":1794204398150,"ev":"approval-pending","id":"d2a65aa4-c04c-41ca-8ff0-a4f97103173e","title":"Reentrancy in Vault.withdraw() allows a single attacker to drain the entire vault (CEI violation)","severity":"critical","poc":"VaultReentrancyDrainTest"}
+{"t":1794204399232,"ev":"opened","mode":"decide"}
+{"t":1794204399240,"ev":"approval-pending","id":"d2a65aa4-c04c-41ca-8ff0-a4f97103173e","title":"Reentrancy in Vault.withdraw() allows a single attacker to drain the entire vault (CEI violation)","severity":"critical","poc":"VaultReentrancyDrainTest"}
+{"t":1794204399635,"ev":"host-deciding","id":"d2a65aa4-c04c-41ca-8ff0-a4f97103173e","status":"denied"}
+{"t":1794204399637,"ev":"approval-decided","id":"d2a65aa4-c04c-41ca-8ff0-a4f97103173e","status":"denied"}

@@ -1,0 +1,11 @@
+{"t":1794198327369,"ev":"opened","mode":"run"}
+{"t":1794198327372,"ev":"submitted","id":8}
+{"t":1794198331630,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198331630,"ev":"tool-start","tool":"get_balance","address":"0x5FbDB2315678afecb367f032d93F642f64180aa3"}
+{"t":1794198331630,"ev":"tool-done","tool":"get_balance"}
+{"t":1794198333204,"ev":"opened","mode":"resume"}
+{"t":1794198333205,"ev":"inspect","tasks":2,"submissions":1}
+{"t":1794198333206,"ev":"submitted","id":8}
+{"t":1794198334597,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198334597,"ev":"tool-done","tool":"run_poc"}
+{"t":1794198337804,"ev":"settled","status":"done","results":[{"name":"run_poc","isError":true,"text":"<harness>\n[error] Tool run_poc was interrupted and may have partially run\n</harness>"},{"name":"get_balance","isError":false,"text":"12.5 ETH"},{"name":"run_poc","isError":false,"text":"[PASS] test_vault_drain() (gas: 184211)\nattacker balance after: 12.5 ETH\n1 passed; 0 failed"}],"calls":["run_poc","get_balance","run_poc"],"assistants":[{"stop":"toolUse","text":"\n\n\n","thinkingChars":330,"toolCalls":2},{"stop":"toolUse","text":"\n\n","thinkingChars":115,"toolCalls":1},{"stop":"stop","text":"\n\nPoC test_vault_drain: PASS (1 passed, 0 failed, gas 184211, attacker balance after: 12.5 ETH); balance of 0x5FbDB2315678afecb367f032d93F642f64180aa3: 12.5 ETH.","thinkingChars":232,"toolCalls":0}],"usage":{"usd":0.0006902400000000001,"models":{"near/Qwen/Qwen3.8-27B-abliterated":{"in":1866,"out":456,"reasoning":239}}},"reports":[]}

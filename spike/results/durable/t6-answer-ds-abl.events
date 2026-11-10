@@ -1,0 +1,11 @@
+{"t":1794198364682,"ev":"opened","mode":"run"}
+{"t":1794198364686,"ev":"submitted","id":8}
+{"t":1794198365683,"ev":"tool-start","tool":"run_poc","test":"test_vault_drain"}
+{"t":1794198365683,"ev":"tool-done","tool":"run_poc"}
+{"t":1794198365684,"ev":"tool-start","tool":"get_balance","address":"0x5FbDB2315678afecb367f032d93F642f64180aa3"}
+{"t":1794198365684,"ev":"tool-done","tool":"get_balance"}
+{"t":1794198366456,"ev":"settled","status":"done","results":[{"name":"run_poc","isError":false,"text":"[PASS] test_vault_drain() (gas: 184211)\nattacker balance after: 12.5 ETH\n1 passed; 0 failed"},{"name":"get_balance","isError":false,"text":"12.5 ETH"}],"calls":["run_poc","get_balance"],"assistants":[{"stop":"toolUse","text":"I'll run the PoC and check the balance.\n\n","thinkingChars":0,"toolCalls":2},{"stop":"stop","text":"PoC test_vault_drain passed (attacker balance after: 12.5 ETH) and the balance of 0x5FbDB2315678afecb367f032d93F642f64180aa3 is 12.5 ETH.","thinkingChars":35,"toolCalls":0}],"usage":{"usd":0.0002445,"models":{"near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated":{"in":123,"out":173,"reasoning":8}}},"reports":[]}
+{"t":1794198366533,"ev":"opened","mode":"resume"}
+{"t":1794198366533,"ev":"inspect","tasks":0,"submissions":0}
+{"t":1794198366534,"ev":"submitted","id":8}
+{"t":1794198366536,"ev":"settled","status":"done","results":[{"name":"run_poc","isError":false,"text":"[PASS] test_vault_drain() (gas: 184211)\nattacker balance after: 12.5 ETH\n1 passed; 0 failed"},{"name":"get_balance","isError":false,"text":"12.5 ETH"}],"calls":["run_poc","get_balance"],"assistants":[{"stop":"toolUse","text":"I'll run the PoC and check the balance.\n\n","thinkingChars":0,"toolCalls":2},{"stop":"stop","text":"PoC test_vault_drain passed (attacker balance after: 12.5 ETH) and the balance of 0x5FbDB2315678afecb367f032d93F642f64180aa3 is 12.5 ETH.","thinkingChars":35,"toolCalls":0}],"usage":{"usd":0.0002445,"models":{"near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated":{"in":123,"out":173,"reasoning":8}}},"reports":[]}

@@ -1,0 +1,158 @@
+{
+  "replay1369": [
+    {
+      "alias": "ds-abl",
+      "withReasoning": true,
+      "rep": 0,
+      "finish": "stop",
+      "content": "**Sum: 15.75 ETH**\n\n- `0x5FbDB2315678afecb367f032d93F642f64180aa3`: 12.5 ETH\n- `0xe7f1725E7734CE288F8367e1Bb143E90bb3F05",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds-abl",
+      "withReasoning": true,
+      "rep": 1,
+      "finish": "stop",
+      "content": "**15.75 ETH**\n\n- 0x5FbDB2315678afecb367f032d93F642f64180aa3: 12.5 ETH\n- 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512: 3.25",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds-abl",
+      "withReasoning": true,
+      "rep": 2,
+      "finish": "stop",
+      "content": "The sum is **15.75 ETH**\n\n- 0x5FbDB2315678afecb367f032d93F642f64180aa3: 12.5 ETH\n- 0xe7f1725E7734CE288F8367e1Bb143E90bb3",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds-abl",
+      "withReasoning": false,
+      "rep": 0,
+      "finish": "stop",
+      "content": "**12.5 ETH + 3.25 ETH = 15.75 ETH**\n\n- `0x5FbDB2315678afecb367f032d93F642f64180aa3`: 12.5 ETH\n- `0xe7f1725E7734CE288F836",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds",
+      "withReasoning": true,
+      "rep": 0,
+      "finish": "stop",
+      "content": "The sum is **15.75 ETH** (12.5 ETH + 3.25 ETH).",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds",
+      "withReasoning": true,
+      "rep": 1,
+      "finish": "stop",
+      "content": "The balances are 12.5 ETH and 3.25 ETH, so the sum is **15.75 ETH**.",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds",
+      "withReasoning": true,
+      "rep": 2,
+      "finish": "stop",
+      "content": "**12.5 ETH + 3.25 ETH = 15.75 ETH**\n\n- 0x5FbDB2315678afecb367f032d93F642f64180aa3: 12.5 ETH\n- 0xe7f1725E7734CE288F8367e1",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "ds",
+      "withReasoning": false,
+      "rep": 0,
+      "finish": "stop",
+      "content": "The balances are:\n\n- `0x5FbDB2315678afecb367f032d93F642f64180aa3`: **12.5 ETH**\n- `0xe7f1725E7734CE288F8367e1Bb143E90bb3",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "qwen-abl",
+      "withReasoning": true,
+      "rep": 0,
+      "finish": "stop",
+      "content": "\n\n15.75 ETH",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "qwen-abl",
+      "withReasoning": true,
+      "rep": 1,
+      "finish": "stop",
+      "content": "\n\nThe sum is 15.75 ETH.",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "qwen-abl",
+      "withReasoning": true,
+      "rep": 2,
+      "finish": "stop",
+      "content": "\n\nThe sum of their ETH balances is 15.75 ETH.",
+      "toolCalls": 0,
+      "pass": true
+    },
+    {
+      "alias": "qwen-abl",
+      "withReasoning": false,
+      "rep": 0,
+      "finish": "stop",
+      "content": "\n\nThe sum of the two balances is **15.75 ETH** (12.5 ETH + 3.25 ETH).",
+      "toolCalls": 0,
+      "pass": true
+    }
+  ],
+  "t3big": [
+    {
+      "rep": 0,
+      "finish": "stop",
+      "pass": true,
+      "completion": 7092,
+      "reasoning": 6894
+    },
+    {
+      "rep": 1,
+      "finish": "stop",
+      "pass": true,
+      "completion": 813,
+      "reasoning": 675
+    },
+    {
+      "rep": 2,
+      "finish": "stop",
+      "pass": true,
+      "completion": 5888,
+      "reasoning": 5703
+    }
+  ],
+  "messages": {
+    "status": 400,
+    "type": "error",
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The native Messages endpoint accepts Anthropic-backed models only\"}}"
+  },
+  "signature": {
+    "chatId": "6b2c305fc28d...",
+    "tries": [
+      {
+        "status": 200,
+        "keys": [
+          "text",
+          "signature",
+          "signing_address",
+          "signing_algo",
+          "signature_kind"
+        ],
+        "kind": "provider_tee",
+        "algo": "ecdsa",
+        "textShape": "Qwen/Qwen3.8-27B-abliterated:<sha256>:<sha256>"
+      }
+    ]
+  }
+}

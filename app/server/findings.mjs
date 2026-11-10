@@ -1,0 +1,299 @@
+// Reads the REAL recorded engine output and normalizes it into the shape the
+// UI renders. No invented values: every field here is lifted from a run the
+// engine actually produced (spike/results/agent/run-*.json). A finding is only
+// "proven" because a Foundry replay in a sandbox reproduced it.
+import { readdir, readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+// app/server -> repo root -> spike/results/agent
+const RESULTS_DIR = path.resolve(HERE, "../../spike/results/agent")
+
+const num = (s) => Number(String(s).replace(/,/g, ""))
+
+// Pull the per-run facts out of forge's stdout. These strings are the real
+// machine output the engine captured; we parse, we do not fabricate.
+function parsePocResult(text, index) {
+  const compiler = (text.match(/Solc\s+[\d.]+/) || [])[0] || null
+  const verdict = text.match(/\[(PASS|FAIL[^\]]*)\]\s+(\w+)\(\)\s+\(gas:\s*([\d,]+)\)/)
+  const counts = text.match(/(\d+)\s+passed;\s*(\d+)\s+failed/)
+  const pass = /\[PASS\]/.test(text) || /\bok\.\s/.test(text)
+  return {
+    n: index + 1,
+    pass,
+    test: verdict ? verdict[2] : null,
+    gas: verdict ? num(verdict[3]) : null,
+    passed: counts ? num(counts[1]) : null,
+    failed: counts ? num(counts[2]) : null,
+    compiler,
+    raw: text.trim(),
+  }
+}
+
+// The balance story is read straight from the assertions in the proving PoC.
+// Every number here is a literal the test itself asserts — we never invent a
+// figure. A row is shown ONLY when it genuinely moved: a before that equals its
+// after is not evidence of an exploit, so it is dropped. This keeps the "what
+// the exploit moved" panel honest across differently-shaped tests instead of
+// leaning on one test's exact variable names.
+function parseBalances(testSource) {
+  if (!testSource) return []
+  const rows = []
+  const nums = (re) => [...testSource.matchAll(re)].map((m) => Number(m[1]))
+
+  // Vault: it starts holding the deposits and ends drained. "before" is the
+  // largest deposit / totalAssets figure the test sets up; "after" is 0 when the
+  // test proves the vault's balance (or totalAssets) reached 0. This covers both
+  // the `totalAssets(), 0` shape and the `address(vault).balance, 0` shape.
+  const starts = [
+    ...nums(/totalAssets\(\),\s*(\d+)\s*ether/g),
+    ...nums(/\.deposit\{value:\s*(\d+)\s*ether\}/g),
+  ]
+  const drained = /vault\)\.balance,\s*0\b/i.test(testSource) || /totalAssets\(\),\s*0\b/.test(testSource)
+  if (starts.length && drained) {
+    rows.push({ label: "Vault balance", before: `${Math.max(...starts)} ETH`, after: "0 ETH" })
+  }
+
+  // Attacker held balance — the earlier test shape names it `drainer` and
+  // asserts a literal end balance. Shown only when the test states an exact
+  // post-drain figure; a symbolic profit (loot == before + vaultBefore) has no
+  // literal to show, so we let the vault-drain row and the assertions carry it.
+  const attackerPre = testSource.match(/drainer\)\.balance,\s*(\d+)\)/)
+  const attackerPost = testSource.match(/drainer\)\.balance,\s*(\d+)\s*ether/)
+  if (attackerPost) {
+    rows.push({
+      label: "Attacker ETH held",
+      before: `${attackerPre ? attackerPre[1] : "0"} ETH`,
+      after: `${attackerPost[1]} ETH`,
+    })
+  }
+
+  // Never show a row that did not move — that is not proof of a drain.
+  return rows.filter((r) => r.after && r.after !== r.before)
+}
+
+// The exact assertion lines that make the proof — real strings lifted from the
+// passing PoC. These are every condition the replay actually checked, so we take
+// the whole Foundry assert family (assertEq / assertGt / assertTrue / …), not
+// just assertEq, and we do not invent or paraphrase them — the failure message a
+// test passes as its last argument is kept, since it states what the check means.
+// Deduped and capped at 8 so the panel stays readable.
+function parseAssertions(testSource) {
+  if (!testSource) return []
+  const seen = new Set()
+  const out = []
+  for (const m of testSource.matchAll(/assert\w+\([^;]*?\);/g)) {
+    const line = m[0].replace(/\s+/g, " ").trim()
+    if (seen.has(line)) continue
+    seen.add(line)
+    out.push(line)
+    if (out.length >= 8) break
+  }
+  return out
+}
+
+function normalize(raw, id) {
+  const r = raw.result || {}
+  const t = raw.transcript || {}
+  const finding = r.finding || {}
+  // Pair each run_poc call with its result by position — the engine emits them
+  // in lockstep — so every run carries the contract name it actually ran. That
+  // pairing is what lets the proof bind to the SUBMITTED test, not any test.
+  const pocResults = (t.results || []).filter((x) => x.name === "run_poc")
+  const pocCalls = (t.calls || []).filter((x) => x.name === "run_poc")
+  const runs = pocResults.map((x, i) => ({
+    ...parsePocResult(x.text || "", i),
+    contract: pocCalls[i]?.args?.contract_name || null,
+  }))
+
+  // The proving run is the submitted test passing its OWN replay. A throwaway
+  // diagnostic that happens to pass never counts — if the submitted contract
+  // never passed, the run is simply not proven. (finding.poc is the contract
+  // name the agent submitted; the engine's submit gate already refused an
+  // unproven submission, so this re-derivation only mirrors that on read.)
+  const submittedContract = finding.poc || null
+  const provingIndex = submittedContract
+    ? runs.findIndex((x) => x.pass && x.contract === submittedContract)
+    : -1
+  const proving = provingIndex >= 0 ? runs[provingIndex] : null
+
+  // The exploit source shown and parsed is the proving run's own test — or, if
+  // nothing proved, the last attempt, so the report still shows what was tried.
+  const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
+  const testSource = sourceCall ? sourceCall.args.test_source : null
+  const submit = (t.calls || []).find((x) => x.name === "submit_finding")
+  const readSrc = (t.results || []).find((x) => x.name === "read_source")
+
+  const modelName = Object.keys((r.usage && r.usage.models) || {})[0] || null
+  const modelUsage = modelName ? r.usage.models[modelName] : null
+
+  // The static pre-pass that fed the agent its leads, if one ran. Only shown when
+  // it actually flagged something — an empty scan is not a story worth telling.
+  const staticScan = r.static && r.static.suspects > 0
+    ? {
+        tool: r.static.tool || "Slither",
+        suspects: r.static.suspects,
+        top: (Array.isArray(r.static.top) ? r.static.top : []).map((s) => ({
+          check: s.check || "",
+          impact: s.impact || "",
+          where: s.where || null,
+          line: s.line ?? null,
+        })),
+      }
+    : null
+
+  // The fuzz pre-pass that broke an invariant, if one did. Only shown when the
+  // fuzzer actually broke something — an empty or non-applicable scan is not a
+  // story worth telling.
+  const fuzzScan = r.fuzz && r.fuzz.suspects > 0
+    ? {
+        tool: r.fuzz.tool || "Echidna",
+        template: r.fuzz.template || null,
+        suspects: r.fuzz.suspects,
+        top: (Array.isArray(r.fuzz.top) ? r.fuzz.top : []).map((s) => ({
+          check: s.check || "",
+          impact: s.impact || "",
+          property: s.property || "",
+          where: s.where || null,
+          sequence: Array.isArray(s.sequence) ? s.sequence : [],
+        })),
+      }
+    : null
+
+  return {
+    id,
+    title: finding.title || null,
+    severity: finding.severity || null,
+    module: "Contracts",
+    target: (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
+    // Verdict ladder — each stage is reached only because the data shows it.
+    // A proven exploit is recorded automatically ("auto"); the operator may
+    // later dismiss it in the ledger, which is a judgement, not a disproof —
+    // so `proven` stays true and only the final stage reads "dismissed".
+    stages: {
+      hypothesis: Boolean(readSrc),
+      reproduced: runs.length > 0,
+      proven: Boolean(r.pocProved && proving && proving.pass),
+      accepted: r.dismissed
+        ? "dismissed"
+        : r.decision === "approved"
+          ? (r.approveMode === "auto" ? "auto" : true)
+          : false,
+    },
+    dismissed: Boolean(r.dismissed),
+    decision: r.decision || null,
+    recorded: Boolean(r.recorded),
+    proof: {
+      tool: "Foundry",
+      compiler: proving ? proving.compiler : null,
+      test: proving ? proving.test : finding.poc,
+      contract: finding.poc || null,
+      gas: proving ? proving.gas : null,
+      pass: Boolean(proving && proving.pass),
+      runs,
+      balances: parseBalances(testSource),
+      assertions: parseAssertions(testSource),
+      rerunCommand: proving && proving.test
+        ? `forge test --match-test ${proving.test}`
+        : null,
+      testSource,
+    },
+    staticScan,
+    fuzzScan,
+    hypothesis: readSrc ? (readSrc.text || "").trim() : null,
+    explanation: submit ? submit.args.explanation : null,
+    calls: r.calls || [],
+    model: modelName,
+    usage: {
+      usd: r.usage ? r.usage.usd : null,
+      in: modelUsage ? modelUsage.in : null,
+      out: modelUsage ? modelUsage.out : null,
+      reasoning: modelUsage ? modelUsage.reasoning : null,
+    },
+    ms: r.ms || null,
+  }
+}
+
+async function readRuns() {
+  let entries = []
+  try {
+    entries = await readdir(RESULTS_DIR)
+  } catch {
+    return []
+  }
+  const files = entries.filter((f) => f.startsWith("run-") && f.endsWith(".json")).sort()
+  const out = []
+  for (const file of files) {
+    try {
+      const raw = JSON.parse(await readFile(path.join(RESULTS_DIR, file), "utf8"))
+      if (!raw.result || !raw.result.finding) continue
+      const id = file.replace(/^run-/, "").replace(/\.json$/, "")
+      out.push(normalize(raw, id))
+    } catch {
+      // A malformed or partial file is skipped, never shown as a fake finding.
+    }
+  }
+  return out
+}
+
+export async function listFindings() {
+  const all = await readRuns()
+  // The list shows only the few fields a row needs.
+  return all.map((f) => ({
+    id: f.id,
+    title: f.title,
+    severity: f.severity,
+    module: f.module,
+    target: f.target,
+    stages: f.stages,
+    proven: f.stages.proven,
+    dismissed: f.dismissed,
+    ms: f.ms,
+  }))
+}
+
+// The agent's own step-by-step transcript, persisted beside the result as one
+// `EVENT`-shaped JSON object per line (run-<id>.events). The live run streams the
+// same objects; reading them back lets the history view replay the conversation
+// read-only, so a recorded finding is never a dead end with no way back to the
+// agent's work. Missing or torn lines are skipped, never shown as a fake step.
+async function readEvents(id) {
+  try {
+    const text = await readFile(path.join(RESULTS_DIR, `run-${id}.events`), "utf8")
+    return text
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => {
+        try {
+          return JSON.parse(l)
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+export async function getFinding(id) {
+  const all = await readRuns()
+  const finding = all.find((f) => f.id === id) || null
+  if (!finding) return null
+  return { ...finding, events: await readEvents(id) }
+}
+
+// Ledger override: mark a recorded finding dismissed (or restore it). This is a
+// human judgement written back onto the run's own record — it never re-runs the
+// engine and never touches the proof. The replay still happened; dismissal only
+// says "I don't count this as a finding I care about."
+export async function dismissFinding(id, dismissed) {
+  if (!/^[\w.-]+$/.test(id)) throw new Error("bad finding id")
+  const file = path.join(RESULTS_DIR, `run-${id}.json`)
+  const raw = JSON.parse(await readFile(file, "utf8"))
+  raw.result = raw.result || {}
+  raw.result.dismissed = Boolean(dismissed)
+  await writeFile(file, JSON.stringify(raw, null, 2))
+  return { id, dismissed: Boolean(dismissed) }
+}

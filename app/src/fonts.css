@@ -1,0 +1,9 @@
+/* Timeless Sans variable font. STYL 0 is the Grotesk cut.
+   License and source: public/fonts/timeless/README.md. */
+@font-face {
+  font-family: "Timeless Grotesk";
+  src: url("/fonts/timeless/TimelessSansVF.woff2") format("woff2");
+  font-weight: 300 800;
+  font-style: normal;
+  font-display: swap;
+}

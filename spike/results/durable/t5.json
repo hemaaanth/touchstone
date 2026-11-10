@@ -1,0 +1,577 @@
+[
+  {
+    "alias": "ds-abl",
+    "rep": 0,
+    "ms": 3690,
+    "pass": true,
+    "status": "done",
+    "turns": 3,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      0,
+      0
+    ],
+    "final": "Balances sum to 15.75 ETH (12.5 + 3.25), and test_vault_drain passed.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start by reading both balances in parallel.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "",
+        "thinkingChars": 0,
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "Balances sum to 15.75 ETH (12.5 + 3.25), and test_vault_drain passed.",
+        "thinkingChars": 0,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0006567,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": {
+          "in": 1393,
+          "out": 199,
+          "reasoning": 0
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "ds",
+    "rep": 0,
+    "ms": 4296,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      364
+    ],
+    "final": "Sum of both balances = **15.75 ETH** (12.5 + 3.25), and the PoC **passed** ([PASS] test_vault_drain, 1 passed / 0 failed).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start with the balance reads and the PoC run in parallel.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "Sum of both balances = **15.75 ETH** (12.5 + 3.25), and the PoC **passed** ([PASS] test_vault_drain, 1 passed / 0 failed).",
+        "thinkingChars": 364,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.00066,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+          "in": 984,
+          "out": 304,
+          "reasoning": 92
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "ds-abl",
+    "rep": 1,
+    "ms": 2853,
+    "pass": true,
+    "status": "done",
+    "turns": 3,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      11,
+      0
+    ],
+    "final": "Sum of both balances is 15.75 ETH, and the PoC test_vault_drain passed.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start with Step 1 — fetching both balances in parallel.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "Balances retrieved. Now running the PoC (Step 2).\n\n",
+        "thinkingChars": 11,
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "Sum of both balances is 15.75 ETH, and the PoC test_vault_drain passed.",
+        "thinkingChars": 0,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.000378,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": {
+          "in": 396,
+          "out": 216,
+          "reasoning": 5
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "ds",
+    "rep": 1,
+    "ms": 3611,
+    "pass": true,
+    "status": "done",
+    "turns": 3,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      16,
+      0
+    ],
+    "final": "Sum of balances = 12.5 + 3.25 = **15.75 ETH**, and the PoC `test_vault_drain` **passed**.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start by reading both balances.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "Balances: 12.5 ETH and 3.25 ETH. Now running the PoC.\n\n",
+        "thinkingChars": 16,
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "Sum of balances = 12.5 + 3.25 = **15.75 ETH**, and the PoC `test_vault_drain` **passed**.",
+        "thinkingChars": 0,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.00037410000000000004,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+          "in": 327,
+          "out": 230,
+          "reasoning": 6
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "ds-abl",
+    "rep": 2,
+    "ms": 3773,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      256
+    ],
+    "final": "Sum of both balances = 15.75 ETH (12.5 + 3.25), and the PoC `test_vault_drain` passed (1 passed, 0 failed; attacker ended with 12.5 ETH).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start with steps 1 and 2 — these are independent, so I'll run them together.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "Sum of both balances = 15.75 ETH (12.5 + 3.25), and the PoC `test_vault_drain` passed (1 passed, 0 failed; attacker ended with 12.5 ETH).",
+        "thinkingChars": 256,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0004401,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated": {
+          "in": 287,
+          "out": 295,
+          "reasoning": 73
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen-abl",
+    "rep": 0,
+    "ms": 11211,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      557,
+      66
+    ],
+    "final": "\n\nSum of both balances: 15.75 ETH; the test_vault_drain PoC passed (1 passed; 0 failed).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n\n",
+        "thinkingChars": 557,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nSum of both balances: 15.75 ETH; the test_vault_drain PoC passed (1 passed; 0 failed).",
+        "thinkingChars": 66,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0005977700000000001,
+      "models": {
+        "near/Qwen/Qwen3.8-27B-abliterated": {
+          "in": 668,
+          "out": 423,
+          "reasoning": 231
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "ds",
+    "rep": 2,
+    "ms": 3933,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      0,
+      359
+    ],
+    "final": "15.75 ETH total (12.5 + 3.25) and the PoC passed — [PASS] test_vault_drain, 1 passed, 0 failed.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start with steps 1 and 2 together since they're independent.\n\n",
+        "thinkingChars": 0,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "15.75 ETH total (12.5 + 3.25) and the PoC passed — [PASS] test_vault_drain, 1 passed, 0 failed.",
+        "thinkingChars": 359,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0004479,
+      "models": {
+        "near/deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+          "in": 281,
+          "out": 303,
+          "reasoning": 97
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen-abl",
+    "rep": 1,
+    "ms": 11673,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      384,
+      232
+    ],
+    "final": "\n\nThe combined balance is 15.75 ETH (12.5 + 3.25) and the PoC test_vault_drain passed (1 passed, 0 failed).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n\n",
+        "thinkingChars": 384,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nThe combined balance is 15.75 ETH (12.5 + 3.25) and the PoC test_vault_drain passed (1 passed, 0 failed).",
+        "thinkingChars": 232,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0006977600000000001,
+      "models": {
+        "near/Qwen/Qwen3.8-27B-abliterated": {
+          "in": 434,
+          "out": 504,
+          "reasoning": 301
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen",
+    "rep": 0,
+    "ms": 29871,
+    "pass": true,
+    "status": "done",
+    "turns": 3,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      4038,
+      84,
+      130
+    ],
+    "final": "\n\nSum of both balances: 15.75 ETH (12.5 + 3.25); the test_vault_drain PoC passed.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n",
+        "thinkingChars": 4038,
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "\n\n",
+        "thinkingChars": 84,
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nSum of both balances: 15.75 ETH (12.5 + 3.25); the test_vault_drain PoC passed.",
+        "thinkingChars": 130,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0017199900000000002,
+      "models": {
+        "near/Qwen/Qwen3.8-27B": {
+          "in": 2466,
+          "out": 1201,
+          "reasoning": 1004
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen-abl",
+    "rep": 2,
+    "ms": 7614,
+    "pass": true,
+    "status": "done",
+    "turns": 3,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      164,
+      58,
+      62
+    ],
+    "final": "\n\nThe sum of both balances is 15.75 ETH and the PoC passed (test_vault_drain: 1 passed, 0 failed).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n",
+        "thinkingChars": 164,
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "\n\n",
+        "thinkingChars": 58,
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nThe sum of both balances is 15.75 ETH and the PoC passed (test_vault_drain: 1 passed, 0 failed).",
+        "thinkingChars": 62,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.00041774,
+      "models": {
+        "near/Qwen/Qwen3.8-27B-abliterated": {
+          "in": 386,
+          "out": 298,
+          "reasoning": 102
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen",
+    "rep": 1,
+    "ms": 10936,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      844,
+      46
+    ],
+    "final": "\n\nThe two balances sum to **15.75 ETH** (12.5 + 3.25), and the PoC **passed** (test_vault_drain: 1 passed; 0 failed).",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n\n",
+        "thinkingChars": 844,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nThe two balances sum to **15.75 ETH** (12.5 + 3.25), and the PoC **passed** (test_vault_drain: 1 passed; 0 failed).",
+        "thinkingChars": 46,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.0006334600000000001,
+      "models": {
+        "near/Qwen/Qwen3.8-27B": {
+          "in": 1054,
+          "out": 438,
+          "reasoning": 229
+        }
+      }
+    },
+    "reports": []
+  },
+  {
+    "alias": "qwen",
+    "rep": 2,
+    "ms": 7840,
+    "pass": true,
+    "status": "done",
+    "turns": 2,
+    "calls": [
+      "get_balance",
+      "get_balance",
+      "run_poc"
+    ],
+    "toolErrors": [],
+    "emptyStopAfterTools": false,
+    "thinkingPerTurn": [
+      349,
+      79
+    ],
+    "final": "\n\nSum of both balances is 15.75 ETH and the PoC test_vault_drain passed.",
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "\n\n\n\n",
+        "thinkingChars": 349,
+        "toolCalls": 3
+      },
+      {
+        "stop": "stop",
+        "text": "\n\nSum of both balances is 15.75 ETH and the PoC test_vault_drain passed.",
+        "thinkingChars": 79,
+        "toolCalls": 0
+      }
+    ],
+    "usage": {
+      "usd": 0.00043461,
+      "models": {
+        "near/Qwen/Qwen3.8-27B": {
+          "in": 369,
+          "out": 311,
+          "reasoning": 126
+        }
+      }
+    },
+    "reports": []
+  }
+]

@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Secrets — never commit
+.env
+.env.local
+*.env.local
+.env.*.local
+
+# Build output
+app/dist/
+*.tsbuildinfo
+
+# Foundry build artifacts
+lab/*/out/
+lab/*/cache/
+
+# Per-run sandbox SQLite state (the app reads run-*.json / run-*.events only)
+spike/results/**/*.sqlite
+
+# Logs
+*.log
+
+# Reference clones — competitor/learning repos, not our code
+reference/
+
+# Large research corpus and design-exploration scratch (not the app)
+research/
+design-directions/
+
+# BB internal
+.bb/
+
+# OS
+.DS_Store

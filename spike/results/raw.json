@@ -1,0 +1,1595 @@
+[
+  {
+    "alias": "ds",
+    "case": "t1-auto",
+    "rep": 0,
+    "ms": 1367,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto",
+    "rep": 0,
+    "ms": 1614,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-auto",
+    "rep": 1,
+    "ms": 959,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto",
+    "rep": 1,
+    "ms": 991,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto",
+    "rep": 2,
+    "ms": 874,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-required",
+    "rep": 0,
+    "ms": 885,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-auto",
+    "rep": 2,
+    "ms": 2234,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-required",
+    "rep": 1,
+    "ms": 1021,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-required",
+    "rep": 0,
+    "ms": 867,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-required",
+    "rep": 1,
+    "ms": 1070,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-required",
+    "rep": 2,
+    "ms": 1758,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-required",
+    "rep": 2,
+    "ms": 1207,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-named",
+    "rep": 0,
+    "ms": 1544,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-named",
+    "rep": 0,
+    "ms": 2695,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-named",
+    "rep": 1,
+    "ms": 4008,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-named",
+    "rep": 1,
+    "ms": 2675,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-named",
+    "rep": 2,
+    "ms": 1804,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t1-named",
+    "rep": 2,
+    "ms": 1432,
+    "pass": true,
+    "finish": "stop",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 0,
+    "ms": 52,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds",
+    "case": "t1-auto-no-tools",
+    "rep": 0,
+    "ms": 52,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 1,
+    "ms": 51,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds",
+    "case": "t1-auto-no-tools",
+    "rep": 1,
+    "ms": 48,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 2,
+    "ms": 47,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds",
+    "case": "t1-auto-no-tools",
+    "rep": 2,
+    "ms": 49,
+    "pass": false,
+    "http": 400,
+    "error": "{\"error\":{\"message\":\"Provider failed for model 'deepseek-ai/DeepSeek-V4.1-Flash-1017': When using `tool_choice`, `tools` must be set. (parameter=tool_choice)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}"
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream",
+    "rep": 0,
+    "ms": 1110,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 13,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 6
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream",
+    "rep": 0,
+    "ms": 1106,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 12,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream",
+    "rep": 1,
+    "ms": 874,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 12,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream",
+    "rep": 1,
+    "ms": 992,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 17,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 6
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream",
+    "rep": 2,
+    "ms": 934,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 13,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 6
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream",
+    "rep": 2,
+    "ms": 894,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 13,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 6
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream-parallel",
+    "rep": 0,
+    "ms": 3312,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 6
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 5
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream-parallel",
+    "rep": 0,
+    "ms": 3633,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 6
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 5
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream-parallel",
+    "rep": 1,
+    "ms": 2811,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 6
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 5
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream-parallel",
+    "rep": 1,
+    "ms": 3935,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 5
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 6
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t2-stream-parallel",
+    "rep": 2,
+    "ms": 7085,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 5
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 6
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t2-stream-parallel",
+    "rep": 2,
+    "ms": 6420,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 6
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 5
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t3-json-schema",
+    "rep": 0,
+    "ms": 8246,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() Allows ETH Drain\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\": [\"Deploy Attacker contract with fall"
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto",
+    "rep": 0,
+    "ms": 45263,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto",
+    "rep": 0,
+    "ms": 45649,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t3-json-schema",
+    "rep": 0,
+    "ms": 15195,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() allows draining of ETH\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\": [\n    \"Call withdraw() as a ma"
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto",
+    "rep": 1,
+    "ms": 2383,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto",
+    "rep": 1,
+    "ms": 3369,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto",
+    "rep": 2,
+    "ms": 3958,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto",
+    "rep": 2,
+    "ms": 3099,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-required",
+    "rep": 0,
+    "ms": 7395,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-required",
+    "rep": 0,
+    "ms": 7073,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-required",
+    "rep": 1,
+    "ms": 2414,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-required",
+    "rep": 1,
+    "ms": 2316,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t3-json-schema",
+    "rep": 1,
+    "ms": 17821,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() Allows Draining of ETH\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\": [\"1. Attacker deploys a malici"
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-required",
+    "rep": 2,
+    "ms": 4900,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-required",
+    "rep": 2,
+    "ms": 5710,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "run_poc",
+        "args": {
+          "test_name": "test_reentrancy_drain",
+          "verbosity": 3
+        },
+        "raw": "{\"test_name\": \"test_reentrancy_drain\", \"verbosity\": 3}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-named",
+    "rep": 0,
+    "ms": 3751,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-named",
+    "rep": 0,
+    "ms": 4695,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-named",
+    "rep": 1,
+    "ms": 4437,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-named",
+    "rep": 1,
+    "ms": 4469,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-named",
+    "rep": 2,
+    "ms": 5032,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t3-json-schema",
+    "rep": 1,
+    "ms": 40959,
+    "pass": false,
+    "finish": "length",
+    "parsed": false,
+    "extraKeys": null,
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() Allows Full ETH Drain\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\": [\"0x5FbDB2315678afecb367f032d93"
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto-no-tools",
+    "rep": 0,
+    "ms": 1245,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-named",
+    "rep": 2,
+    "ms": 4542,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}"
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto-no-tools",
+    "rep": 1,
+    "ms": 1343,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 0,
+    "ms": 1339,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen",
+    "case": "t1-auto-no-tools",
+    "rep": 2,
+    "ms": 1069,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 1,
+    "ms": 1045,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t1-auto-no-tools",
+    "rep": 2,
+    "ms": 1328,
+    "pass": true,
+    "finish": "stop",
+    "text": "\n\nok"
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream",
+    "rep": 0,
+    "ms": 3453,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 79,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream",
+    "rep": 0,
+    "ms": 3315,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 73,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream",
+    "rep": 1,
+    "ms": 3636,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 78,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream",
+    "rep": 1,
+    "ms": 3616,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 77,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream",
+    "rep": 2,
+    "ms": 3238,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 73,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream",
+    "rep": 2,
+    "ms": 3108,
+    "pass": true,
+    "finish": "tool_calls",
+    "chunks": 71,
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "pending"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"pending\"}",
+        "deltas": 5
+      }
+    ],
+    "usage": true
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t3-json-schema",
+    "rep": 2,
+    "ms": 15952,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() allows draining of ETH\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\": [\n\n\n  \"address\",\n  \"0x5FbDB231"
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream-parallel",
+    "rep": 0,
+    "ms": 5230,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\"}",
+        "deltas": 4
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}",
+        "deltas": 4
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream-parallel",
+    "rep": 0,
+    "ms": 5463,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\", \"block\": \"latest\"}",
+        "deltas": 5
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+          "block": "latest"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\", \"block\": \"latest\"}",
+        "deltas": 5
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t4-long-context",
+    "rep": 0,
+    "ms": 9655,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7731-QX"
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t4-long-context",
+    "rep": 1,
+    "ms": 4559,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7732-QX"
+  },
+  {
+    "alias": "ds",
+    "case": "t3-json-schema",
+    "rep": 2,
+    "ms": 49802,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() Allows Draining of ETH\",\n  \"severity\": \"critical\",\n  \"contract\": \"Vault\",\n  \"steps\":[\"0x5FbDB2315678afecb367f032d93"
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream-parallel",
+    "rep": 1,
+    "ms": 15766,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\"}",
+        "deltas": 4
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}",
+        "deltas": 4
+      }
+    ]
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream-parallel",
+    "rep": 1,
+    "ms": 15862,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\"}",
+        "deltas": 4
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}",
+        "deltas": 4
+      }
+    ]
+  },
+  {
+    "alias": "qwen",
+    "case": "t2-stream-parallel",
+    "rep": 2,
+    "ms": 3877,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\"}",
+        "deltas": 4
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}",
+        "deltas": 4
+      }
+    ]
+  },
+  {
+    "alias": "ds-abl",
+    "case": "t4-long-context",
+    "rep": 2,
+    "ms": 9190,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7733-QX"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t2-stream-parallel",
+    "rep": 2,
+    "ms": 6364,
+    "pass": true,
+    "finish": "tool_calls",
+    "calls": [
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+        },
+        "raw": "{\"address\": \"0x5FbDB2315678afecb367f032d93F642f64180aa3\"}",
+        "deltas": 4
+      },
+      {
+        "name": "get_balance",
+        "args": {
+          "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+        },
+        "raw": "{\"address\": \"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512\"}",
+        "deltas": 4
+      }
+    ]
+  },
+  {
+    "alias": "ds",
+    "case": "t4-long-context",
+    "rep": 0,
+    "ms": 9606,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7731-QX"
+  },
+  {
+    "alias": "ds",
+    "case": "t4-long-context",
+    "rep": 1,
+    "ms": 6061,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7732-QX"
+  },
+  {
+    "alias": "ds",
+    "case": "t4-long-context",
+    "rep": 2,
+    "ms": 4762,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 163630,
+    "answer": "K-7733-QX"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t3-json-schema",
+    "rep": 0,
+    "ms": 19006,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw()\",\n  \"severity\": \"high\",\n  \"contract\": \"Vault\",\n  \"steps\": [\n    \"Open `Vault.sol` and locate `withdraw()`.\",\n    \"A"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t3-json-schema",
+    "rep": 1,
+    "ms": 12710,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in Vault.withdraw() allows repeated withdrawals\",\n  \"severity\": \"high\",\n  \"contract\": \"Vault\",\n  \"steps\": [\n    \"An attacker deploys a "
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t3-json-schema",
+    "rep": 2,
+    "ms": 23468,
+    "pass": true,
+    "finish": "stop",
+    "parsed": true,
+    "extraKeys": [],
+    "sample": "{\n  \"title\": \"Reentrancy in `Vault.withdraw()` sends ETH before zeroing the balance\",\n  \"severity\": \"high\",\n  \"contract\": \"Vault at 0x5FbDB2315678afecb367f032d9"
+  },
+  {
+    "alias": "qwen",
+    "case": "t3-json-schema",
+    "rep": 0,
+    "ms": 92149,
+    "pass": false,
+    "finish": "length",
+    "parsed": false,
+    "extraKeys": null,
+    "sample": ""
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t4-long-context",
+    "rep": 0,
+    "ms": 37545,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7731-QX"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t4-long-context",
+    "rep": 1,
+    "ms": 22682,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7732-QX"
+  },
+  {
+    "alias": "qwen-abl",
+    "case": "t4-long-context",
+    "rep": 2,
+    "ms": 21681,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7733-QX"
+  },
+  {
+    "alias": "qwen",
+    "case": "t3-json-schema",
+    "rep": 1,
+    "ms": 83408,
+    "pass": false,
+    "finish": "length",
+    "parsed": false,
+    "extraKeys": null,
+    "sample": ""
+  },
+  {
+    "alias": "qwen",
+    "case": "t3-json-schema",
+    "rep": 2,
+    "ms": 67616,
+    "pass": false,
+    "finish": "length",
+    "parsed": false,
+    "extraKeys": null,
+    "sample": ""
+  },
+  {
+    "alias": "qwen",
+    "case": "t4-long-context",
+    "rep": 0,
+    "ms": 39376,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7731-QX"
+  },
+  {
+    "alias": "qwen",
+    "case": "t4-long-context",
+    "rep": 1,
+    "ms": 22762,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7732-QX"
+  },
+  {
+    "alias": "qwen",
+    "case": "t4-long-context",
+    "rep": 2,
+    "ms": 23808,
+    "pass": true,
+    "finish": "stop",
+    "promptTokens": 227649,
+    "answer": "K-7733-QX"
+  }
+]

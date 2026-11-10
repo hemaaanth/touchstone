@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+# Tests include the oracle exploit so we can prove the lab is really vulnerable.
+# The agent run uses a config that excludes the oracle/ directory.

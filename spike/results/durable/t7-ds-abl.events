@@ -1,0 +1,12 @@
+{"t":1794198383987,"ev":"opened","mode":"run"}
+{"t":1794198383991,"ev":"submitted","id":8}
+{"t":1794198387322,"ev":"approval-pending","id":"6b2d770b-40fc-4960-a70b-c098267a924a"}
+{"t":1794198388389,"ev":"opened","mode":"approve"}
+{"t":1794198388390,"ev":"inspect","tasks":2,"submissions":1}
+{"t":1794198388393,"ev":"submitted","id":8}
+{"t":1794198388397,"ev":"approval-pending","id":"6b2d770b-40fc-4960-a70b-c098267a924a"}
+{"t":1794198392398,"ev":"host-approving","id":"6b2d770b-40fc-4960-a70b-c098267a924a","outputTokensWhileWaiting":0}
+{"t":1794198392399,"ev":"approval-decided","id":"6b2d770b-40fc-4960-a70b-c098267a924a","status":"approved"}
+{"t":1794198397038,"ev":"tool-start","tool":"get_balance","address":"0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"}
+{"t":1794198397038,"ev":"tool-done","tool":"get_balance"}
+{"t":1794198402113,"ev":"settled","status":"done","results":[{"name":"send_tx","isError":false,"text":"sent 1 ETH to 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512, tx 0x9f3c...e1"},{"name":"get_balance","isError":false,"text":"3.25 ETH"}],"calls":["send_tx","get_balance"],"assistants":[{"stop":"toolUse","text":"I'll send 1 ETH to that address now.\n\n","thinkingChars":288,"toolCalls":1},{"stop":"toolUse","text":"","thinkingChars":532,"toolCalls":1},{"stop":"stop","text":"Done — 1 ETH was sent to `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512`.\n\n**Transaction hash:** `0x9f3c...e1`\n\nOne caveat worth flagging: that's the hash exactly as the tool returned it, and it's **abbreviated** (the middle digits are elided). The `send_tx` tool doesn't expose the full 32-byte hash, a","thinkingChars":181,"toolCalls":0}],"pendingIds":["6b2d770b-40fc-4960-a70b-c098267a924a"],"usage":{"usd":0.0009252,"models":{"near/deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated":{"in":672,"out":603,"reasoning":242}}},"reports":[]}

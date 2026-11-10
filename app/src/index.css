@@ -1,0 +1,281 @@
+/* Layer order. The Graphical stylesheet sits above Tailwind's preflight and
+   below Tailwind utilities, so a className on a themed part still wins. */
+@layer theme, base, graphical, components, utilities;
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./fonts.css";
+@import "../components/graphical/styles.css" layer(graphical);
+
+/* Dark follows the provider's data-color-mode, not a .dark class. */
+@custom-variant dark (&:where([data-color-mode="dark"], [data-color-mode="dark"] *));
+
+/* Drop Tailwind's default scales. Every value comes from the Graphical theme.
+   Use direct var() utilities at call sites, for example bg-(--neutral-2),
+   p-(--space-m), rounded-(--radius-m), shadow-(--shadow-m). */
+@theme {
+  --color-*: initial;
+  --font-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-*: initial;
+  --leading-*: initial;
+  --tracking-*: initial;
+  --font-weight-*: initial;
+}
+
+/* shadcn role names, pointed at the Graphical roles. These resolve inside
+   the provider scope and inside themed portals. */
+@theme inline {
+  --color-background: var(--cte-canvas);
+  --color-foreground: var(--cte-text);
+  --color-card: var(--cte-surface);
+  --color-card-foreground: var(--cte-text);
+  --color-popover: var(--cte-surface);
+  --color-popover-foreground: var(--cte-text);
+  --color-primary: var(--cte-accent);
+  --color-primary-foreground: var(--cte-accent-text);
+  --color-secondary: var(--cte-surface-muted);
+  --color-secondary-foreground: var(--cte-text);
+  --color-muted: var(--cte-surface-muted);
+  --color-muted-foreground: var(--cte-text-muted);
+  --color-accent: var(--navigation-active-background);
+  --color-accent-foreground: var(--navigation-active-foreground);
+  --color-destructive: var(--cte-danger);
+  --color-border: var(--cte-border);
+  --color-input: var(--cte-border);
+  --color-ring: var(--cte-focus);
+  --font-sans: var(--font-ui);
+}
+
+/* Type steps. Size, line height and letter spacing always travel together. */
+@utility type-xxs {
+  font-size: var(--size-xxs);
+  line-height: var(--line-xxs);
+  letter-spacing: var(--letter-spacing-xxs);
+}
+@utility type-xs {
+  font-size: var(--size-xs);
+  line-height: var(--line-xs);
+  letter-spacing: var(--letter-spacing-xs);
+}
+@utility type-s {
+  font-size: var(--size-s);
+  line-height: var(--line-s);
+  letter-spacing: var(--letter-spacing-s);
+}
+@utility type-m {
+  font-size: var(--size-m);
+  line-height: var(--line-m);
+  letter-spacing: var(--letter-spacing-m);
+}
+@utility type-l {
+  font-size: var(--size-l);
+  line-height: var(--line-l);
+  letter-spacing: var(--letter-spacing-l);
+}
+@utility type-xl {
+  font-size: var(--size-xl);
+  line-height: var(--line-xl);
+  letter-spacing: var(--letter-spacing-xl);
+}
+@utility type-xxl {
+  font-size: var(--size-xxl);
+  line-height: var(--line-xxl);
+  letter-spacing: var(--letter-spacing-xxl);
+}
+
+/* Weights from the UI role. */
+@utility weight-regular {
+  font-weight: var(--weight-ui-regular);
+}
+@utility weight-medium {
+  font-weight: var(--weight-ui-medium);
+}
+@utility weight-heavy {
+  font-weight: var(--weight-ui-heavy);
+}
+
+/* Data role: hashes, amounts, ids. No tabular figures here: in this font the
+   tnum feature also widens "-" to a digit width, so "--" reads as "- -".
+   Add tabular-nums where digits line up in a column. */
+@utility font-data {
+  font-family: var(--font-data);
+}
+
+/* Code role: source snippets — inline `code` and fenced blocks. The theme's
+   data font is the UI sans, so code needs a genuine monospace to read as code
+   and to line columns up. System stack only; no font file to ship. */
+@utility font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* A divider is a one-sided inset shadow. The theme draws no borders. */
+@utility divide-top {
+  box-shadow: inset 0 1px 0 0 var(--neutral-4);
+}
+@utility divide-bottom {
+  box-shadow: inset 0 -1px 0 0 var(--neutral-4);
+}
+@utility divide-right {
+  box-shadow: inset -1px 0 0 0 var(--neutral-4);
+}
+@utility divide-left {
+  box-shadow: inset 1px 0 0 0 var(--neutral-4);
+}
+
+/* The same focus ring the themed controls draw. Use on app links and rows. */
+@utility focus-ring {
+  outline: none;
+  &:focus-visible {
+    outline: var(
+      --focus-ring-outline,
+      max(2px, var(--border-m)) solid var(--cte-focus)
+    );
+    outline-offset: -2px;
+  }
+}
+
+@layer components {
+  .operator-shell {
+    display: grid;
+    grid-template-columns: clamp(152px, 16vw, 220px) minmax(0, 1fr);
+    gap: var(--space-s);
+    width: 100%;
+    height: 100%;
+    padding: var(--space-s);
+  }
+
+  /* One outer frame. The detail is a surface step, not another floating card. */
+  .operator-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.35fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-radius: var(--radius-l);
+    background: var(--cte-surface);
+  }
+
+  .detail-pane {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    background: var(--neutral-3);
+    overflow-wrap: anywhere;
+  }
+
+  /* Syntax token colours for highlighted code (see src/lib/highlight.ts).
+     Plain text keeps --cte-text; only the classed spans recolour. */
+  .syntax-keyword {
+    color: var(--syntax-keyword);
+  }
+  .syntax-type {
+    color: var(--syntax-type);
+  }
+  .syntax-string {
+    color: var(--syntax-string);
+  }
+  .syntax-number {
+    color: var(--syntax-number);
+  }
+  .syntax-comment {
+    color: var(--syntax-comment);
+    font-style: italic;
+  }
+
+  /* Graphical's catalogue-sized scroll area must fill these real app panes. */
+  .workspace-scroll {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    border-radius: var(--radius-zero);
+    background: transparent;
+  }
+
+  .workspace-scroll .ui-scroll-content {
+    padding: var(--space-zero);
+  }
+}
+
+/* Narrow screens. Unlayered so it beats the component-layer grids above. The
+   sidebar's nav is mostly forward-looking, so it steps aside; the two work
+   panes stack — runs above, detail below — each with a bounded height so their
+   inner scroll areas still resolve against a real track. */
+@media (max-width: 760px) {
+  .operator-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .operator-shell > aside:first-child {
+    display: none;
+  }
+  .operator-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: clamp(168px, 34vh, 320px) minmax(0, 1fr);
+  }
+  /* The detail's divider sits between the stacked panes, not beside them. */
+  .activity-pane {
+    box-shadow: inset 0 -1px 0 0 var(--neutral-4);
+  }
+}
+
+@layer base {
+  /* The provider's div is the app shell. Inner panes scroll. */
+  .graphical-theme {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: var(--cte-canvas);
+    color: var(--cte-text);
+    font-family: var(--font-ui);
+    font-size: var(--size-m);
+    line-height: var(--line-m);
+    letter-spacing: var(--letter-spacing-m);
+    /* One reading width. A page centers its header and body in this, with
+       generous gutters on wide screens, so no screen stretches edge to edge. */
+    --canvas: 64rem;
+
+    /* Monospace for code. A system stack, resolved at the shell so every code
+       block and inline `code` picks it up. */
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code",
+      "Fira Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+    /* One material for all code — inline chips, fenced blocks, the rerun box.
+       Derived from the text colour, not a fixed neutral step, so it is always a
+       gentle wash over the reading surface: a faint grey in light, a faint
+       raise in dark. A fixed --neutral-N reversed direction across modes and
+       read as a hard black pill on the dark pane. */
+    --code-surface: color-mix(in oklab, var(--cte-text) 6%, transparent);
+    --code-border: color-mix(in oklab, var(--cte-text) 12%, transparent);
+
+    /* Syntax token palette (light). Muted, and deliberately free of red and
+       green so it never collides with the app's one red = proven/destructive
+       and green = replay-proven meanings. */
+    --syntax-keyword: #8250df;
+    --syntax-type: #0550ae;
+    --syntax-string: #1a6f8b;
+    --syntax-number: #8250df;
+    --syntax-comment: #6a737d;
+  }
+
+  /* Dark mode mirror — lighter tints that hold contrast on the dark code
+     surface, still red/green-free. */
+  [data-color-mode="dark"] {
+    --syntax-keyword: #d2a8ff;
+    --syntax-type: #79c0ff;
+    --syntax-string: #a5d6ff;
+    --syntax-number: #d2a8ff;
+    --syntax-comment: #8b949e;
+  }
+
+  /* Shared scope, including portalled parts. */
+  :where(.graphical-theme, .ui-positioner, [data-ui-component]) {
+    font-variation-settings: "STYL" 0, "ital" 0;
+    text-wrap: pretty;
+    -webkit-font-smoothing: antialiased;
+  }
+}
