@@ -37,18 +37,18 @@ test("targets carry a pack; built-in labs are Contracts", () => {
 
 test("a pack's lab is found, and filtering by pack picks only its labs", () => {
   withFakePack(() => {
-    const t = listTargets().find((t) => t.id === "_test-fake-lab")
+    const t = listTargets().find((t) => t.id === "fakepack/_test-fake-lab")
     assert.equal(t.pack, "fakepack")
     assert.equal(t.proofSurface.kind, "http")
-    for (let i = 0; i < 10; i++) assert.equal(pickTarget({ pack: "fakepack" }).id, "_test-fake-lab")
+    for (let i = 0; i < 10; i++) assert.equal(pickTarget({ pack: "fakepack" }).id, "fakepack/_test-fake-lab")
     for (let i = 0; i < 10; i++) assert.equal(pickTarget({}).pack ?? "contracts", "contracts")
   })
-  assert.equal(getTarget("_test-fake-lab"), null)
+  assert.equal(getTarget("fakepack/_test-fake-lab"), null)
 })
 
 test("pickTarget refuses a scope from another pack, and a pack with no labs", () => {
   withFakePack(() => {
-    assert.throws(() => pickTarget({ id: "_test-fake-lab", pack: "contracts" }), /belongs to pack "fakepack"/)
+    assert.throws(() => pickTarget({ id: "fakepack/_test-fake-lab", pack: "contracts" }), /belongs to pack "fakepack"/)
     assert.throws(() => pickTarget({ id: "vault-reentrancy", pack: "fakepack" }), /belongs to pack "contracts"/)
   })
   assert.throws(() => pickTarget({ pack: "fakepack" }), /no runnable targets/)
@@ -75,4 +75,50 @@ test("a non-Contracts lab keeps its own config and gets pack and modules", () =>
       assert.ok(existsSync(path.join(ws, "snapshot.json")))
     } finally { rmSync(ws, { recursive: true, force: true }) }
   })
+})
+
+// Make a lab dir holding a .touchstone.json for `pack`.
+function makeLab(dir, pack) {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, ".touchstone.json"), JSON.stringify({ pack }))
+}
+
+test("a pack's own lab/ dir is a lab when it holds .touchstone.json", () => {
+  const packDir = path.join(ROOT, "spike", "packs", "fakepack")
+  PACKS.fakepack = { id: "fakepack", title: "Fake pack", tier: "A", proof: "http" }
+  makeLab(path.join(packDir, "lab"), "fakepack")
+  try {
+    const t = getTarget("fakepack/lab")
+    assert.equal(t.pack, "fakepack")
+    assert.equal(t.dir, path.join("spike", "packs", "fakepack", "lab"))
+    assert.equal(pickTarget({ pack: "fakepack" }).id, "fakepack/lab")
+  } finally {
+    delete PACKS.fakepack
+    rmSync(packDir, { recursive: true, force: true })
+  }
+})
+
+test("two packs with a lab of the same name get different ids", () => {
+  const a = path.join(ROOT, "spike", "packs", "fakea")
+  const b = path.join(ROOT, "spike", "packs", "fakeb")
+  PACKS.fakea = { id: "fakea", proof: "http" }
+  PACKS.fakeb = { id: "fakeb", proof: "evidence" }
+  makeLab(path.join(a, "lab", "app"), "fakea")
+  makeLab(path.join(b, "lab", "app"), "fakeb")
+  try {
+    const ids = listTargets().filter((t) => t.pack === "fakea" || t.pack === "fakeb").map((t) => t.id).sort()
+    assert.deepEqual(ids, ["fakea/app", "fakeb/app"])
+    assert.equal(getTarget("fakea/app").pack, "fakea")
+    assert.equal(getTarget("fakeb/app").pack, "fakeb")
+    assert.throws(() => pickTarget({ id: "fakea/app", pack: "fakeb" }), /belongs to pack "fakea"/)
+  } finally {
+    delete PACKS.fakea
+    delete PACKS.fakeb
+    rmSync(a, { recursive: true, force: true })
+    rmSync(b, { recursive: true, force: true })
+  }
+})
+
+test("built-in Contracts lab ids are unchanged", () => {
+  assert.ok(getTarget("vault-reentrancy"))
 })

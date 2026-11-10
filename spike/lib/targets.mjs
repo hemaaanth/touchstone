@@ -93,26 +93,35 @@ const PROOF_NOTE = {
 
 function packLabs() {
   const found = []
-  const parents = [path.join(ROOT, "lab"), ...Object.keys(PACKS).map((id) => path.join(ROOT, "spike", "packs", id, "lab"))]
-  for (const parent of parents) {
-    let names = []
-    try { names = readdirSync(parent) } catch { continue }
-    for (const name of names.sort()) {
-      const dir = path.join(parent, name)
-      const cfg = readTouchstone(dir)
-      if (!cfg.pack || cfg.pack === "contracts" || !PACKS[cfg.pack]) continue
-      found.push({
-        id: name,
-        title: cfg.title ?? name,
-        kind: "lab",
-        pack: cfg.pack,
-        blurb: cfg.blurb ?? "",
-        entry: cfg.entry ?? null,
-        signal: null,
-        dir: path.relative(ROOT, dir),
-        proofSurface: { kind: PACKS[cfg.pack].proof, note: PROOF_NOTE[PACKS[cfg.pack].proof] ?? "" },
-      })
-    }
+  const seen = new Set()
+  const add = (dir, name) => {
+    const cfg = readTouchstone(dir)
+    if (!cfg.pack || cfg.pack === "contracts" || !PACKS[cfg.pack]) return
+    // Two packs may each ship a lab called "app", so a pack lab's id carries its pack.
+    const id = `${cfg.pack}/${name}`
+    if (seen.has(id)) return
+    seen.add(id)
+    found.push({
+      id,
+      title: cfg.title ?? name,
+      kind: "lab",
+      pack: cfg.pack,
+      blurb: cfg.blurb ?? "",
+      entry: cfg.entry ?? null,
+      signal: null,
+      dir: path.relative(ROOT, dir),
+      proofSurface: { kind: PACKS[cfg.pack].proof, note: PROOF_NOTE[PACKS[cfg.pack].proof] ?? "" },
+    })
+  }
+  const childrenOf = (parent) => {
+    try { return readdirSync(parent).sort() } catch { return [] }
+  }
+  for (const name of childrenOf(path.join(ROOT, "lab"))) add(path.join(ROOT, "lab", name), name)
+  for (const id of Object.keys(PACKS)) {
+    const parent = path.join(ROOT, "spike", "packs", id, "lab")
+    // The lab dir may itself be the lab, or hold one lab per child.
+    if (existsSync(path.join(parent, ".touchstone.json"))) add(parent, "lab")
+    for (const name of childrenOf(parent)) add(path.join(parent, name), name)
   }
   return found
 }
