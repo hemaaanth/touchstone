@@ -68,6 +68,16 @@ export const TARGETS = [
     dir: "lab/vault-accounting",
     proofSurface: SANDBOX_FOUNDRY,
   },
+  {
+    id: "vault-multi",
+    title: "FeeVault · full audit",
+    kind: "lab",
+    blurb: "A fee-charging ETH vault with an owner. It holds several bugs of different severity; a complete audit should prove every one, worst first.",
+    entry: "src/FeeVault.sol",
+    signal: "static",
+    dir: "lab/vault-multi",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
 ]
 
 // Resolve a target's workspace source directory to an absolute path. Only "lab"
