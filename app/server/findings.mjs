@@ -5,6 +5,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { modulesEvent } from "../../spike/lib/modules.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // app/server -> repo root -> spike/results/agent
@@ -188,6 +189,15 @@ function normalize(raw, id) {
     // Prefer the structured target from the library (new runs); fall back to the
     // transcript's own list_sources for older/CLI runs that predate it.
     target: r.target?.title || (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
+    // The structured scope and module plan this run used, kept so a reopened
+    // finding can show the same opening `scope` / `modules` the live run streamed.
+    // The orchestrator broadcasts those two events at run start, but they live in
+    // memory only — the persisted .events file holds the agent child's steps, not
+    // them. These fields match the live view() shape; getFinding replays them as
+    // opening events for parity. Older runs have a string target / no modules, so
+    // both are null and nothing false is shown.
+    scope: r.target && typeof r.target === "object" ? r.target : null,
+    modules: Array.isArray(r.modules) ? r.modules : null,
     // Verdict ladder — each stage is reached only because the data shows it.
     // A proven exploit is recorded automatically ("auto"); the operator may
     // later dismiss it in the ledger, which is a judgement, not a disproof —
@@ -316,7 +326,21 @@ export async function getFinding(id) {
   const all = await readRuns()
   const finding = all.find((f) => f.id === id) || null
   if (!finding) return null
-  return { ...finding, events: await readEvents(id) }
+  const events = await readEvents(id)
+  // Replay the opening `scope` and `modules` events a live run streams but the
+  // persisted .events file omits (the orchestrator broadcasts them in memory
+  // only). Built from the saved record so history matches a live run, and only
+  // when the stream does not already carry them — so we never double up if the
+  // write path later persists them, and old runs without a plan show nothing.
+  const t0 = events.find((e) => e.t)?.t ?? null
+  const opening = []
+  if (finding.scope && !events.some((e) => e.ev === "scope")) {
+    opening.push({ t: t0, ev: "scope", scope: finding.scope })
+  }
+  if (finding.modules && !events.some((e) => e.ev === "modules")) {
+    opening.push({ ...modulesEvent(finding.modules), t: t0 })
+  }
+  return { ...finding, events: [...opening, ...events] }
 }
 
 // Ledger override: mark a recorded finding dismissed (or restore it). This is a
