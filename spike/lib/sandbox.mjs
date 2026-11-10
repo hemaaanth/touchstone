@@ -5,9 +5,9 @@
 //   docker volume create foundry-svm
 //   docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm IMG -c 'chown 1000:1000 /svm'
 //   (cd lab/vault-reentrancy && docker run --rm -v foundry-svm:/home/foundry/.svm -v "$PWD":/work -w /work IMG 'forge build')
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 
@@ -48,14 +48,33 @@ function solcUse(ws) {
   return `--use ${cfg.solc || SOLC}`;
 }
 
-// Build an isolated workspace from a target repo. We copy only what the agent is
-// allowed to see: contract source, the vendored libs, and the build config. The
-// oracle/ directory is never copied, so the agent cannot read the reference exploit.
+// Build an isolated workspace from a target repo. The oracle/ directory is never
+// copied, so the agent cannot read the reference exploit.
+//
+// A Contracts target gets only what the agent may see: contract source, the
+// vendored libs, and the build config. A target whose .touchstone.json names
+// another pack gets a copy of the whole directory, with .git, because those packs
+// need no Foundry files and their proofs cite commits. Nothing is added to it.
+// In both cases the target's .touchstone.json, with its `pack`, goes into the
+// workspace, so the engine routes the run to the right pack.
+const SKIP_DIRS = new Set(["node_modules", "out", "cache", "oracle"]);
+
 export function makeWorkspace(targetDir) {
   const ws = mkdtempSync(join(tmpdir(), "redteam-run-"));
+  const cfgFile = join(targetDir, ".touchstone.json");
+  const cfg = existsSync(cfgFile) ? readTouchstone(targetDir) : {};
+  if (cfg.pack && cfg.pack !== "contracts") {
+    // Skip by top-level name only: a nested `out` or `cache` may be real source.
+    cpSync(targetDir, ws, {
+      recursive: true,
+      filter: (src) => !(dirname(src) === targetDir && SKIP_DIRS.has(basename(src))),
+    });
+    return ws;
+  }
   cpSync(join(targetDir, "src"), join(ws, "src"), { recursive: true });
   cpSync(join(targetDir, "lib"), join(ws, "lib"), { recursive: true });
   cpSync(join(targetDir, "foundry.toml"), join(ws, "foundry.toml"));
+  if (existsSync(cfgFile)) cpSync(cfgFile, join(ws, ".touchstone.json"));
   mkdirSync(join(ws, "test"), { recursive: true });
   return ws;
 }
