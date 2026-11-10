@@ -31,8 +31,12 @@ test("packList reads the loader", () => {
   withFakePack(() => assert.ok(packList().some((p) => p.id === "fakepack" && p.proof === "http")))
 })
 
-test("targets carry a pack; built-in labs are Contracts", () => {
-  for (const t of listTargets().filter((t) => t.kind === "lab" && !t.id.startsWith("_test"))) assert.equal(t.pack, "contracts")
+test("targets carry a pack; built-in labs are Contracts, pack labs name their pack", () => {
+  for (const t of listTargets().filter((t) => t.kind === "lab" && !t.id.includes("_test"))) {
+    // A pack lab's id is "<pack>/<name>". A built-in Contracts lab id has no slash.
+    if (t.id.includes("/")) assert.equal(t.pack, t.id.split("/")[0])
+    else assert.equal(t.pack, "contracts")
+  }
 })
 
 test("a pack's lab is found, and filtering by pack picks only its labs", () => {
