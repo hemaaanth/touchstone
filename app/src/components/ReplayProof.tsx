@@ -140,14 +140,20 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
 
       {/* The static pre-pass that pointed the agent here. A suspect list is only
           a lead — neutral, never green. The green verdict above is the replay's
-          alone. This section shows the feeder → proof story: Slither ranked it,
-          the replay proved it. */}
+          alone. This section shows the feeder → proof story: two independent
+          engines ranked it, the replay proved it. Where both engines agree on a
+          spot, we mark it — agreement raises rank, it never substitutes for the
+          replay. */}
       {finding.staticScan ? (
         <div className="flex flex-col gap-(--space-s)">
           <span className="type-s weight-medium text-(--cte-text)">Static analysis led here</span>
           <p className="type-xs text-(--cte-text-muted)">
             {finding.staticScan.tool} flagged {finding.staticScan.suspects} suspect
-            {finding.staticScan.suspects === 1 ? "" : "s"} before the agent started. A suspect is only a lead — the replay above is what proved it.
+            {finding.staticScan.suspects === 1 ? "" : "s"} before the agent started
+            {finding.staticScan.engines.length > 1
+              ? ` — ${finding.staticScan.engines.join(" and ")} ran as independent engines`
+              : ""}
+            . A suspect is only a lead — the replay above is what proved it.
           </p>
           <ul className="flex flex-col gap-(--space-xs)">
             {finding.staticScan.top.slice(0, 3).map((s, i) => (
@@ -158,6 +164,11 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
                   <span className="text-(--cte-text-muted)">
                     {s.where}
                     {s.line ? ` (line ${s.line})` : ""}
+                  </span>
+                ) : null}
+                {s.corroborated ? (
+                  <span className="text-(--cte-text-muted)" title={`Flagged independently by ${s.engines.join(" and ")}`}>
+                    · {s.engines.join(" + ")} agree
                   </span>
                 ) : null}
               </li>

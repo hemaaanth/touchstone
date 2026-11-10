@@ -24,7 +24,7 @@ import { obj, str } from "@earendil-works/pi-schema";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { cleanupWorkspace, forgeTest, makeWorkspace, writePoc } from "./lib/sandbox.mjs";
-import { slitherScan, staticBrief } from "./lib/static.mjs";
+import { staticScan, staticBrief } from "./lib/static.mjs";
 import { fuzzScan, fuzzBrief } from "./lib/fuzz.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
@@ -207,7 +207,7 @@ function tools(ws) {
   });
   const staticFindings = defineTool({
     name: "static_findings",
-    description: "Read the static analyzer (Slither) report for the target: a ranked list of suspect functions, each with the exact lines and the dangerous data flow Slither saw. Use it to decide what to try to exploit first. A suspect is only a lead — prove it with run_poc.",
+    description: "Read the static-analysis report for the target: a ranked list of suspect functions from two independent engines (Slither + Aderyn), each with the exact lines and the dangerous pattern they saw. Suspects both engines agree on are marked and ranked first. Use it to decide what to try to exploit first. A suspect is only a lead — prove it with run_poc.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => {
@@ -216,7 +216,14 @@ function tools(ws) {
       try { items = JSON.parse(process.env.STATIC_JSON || "[]"); } catch { items = []; }
       if (!items.length) return { output: [{ type: "text", text: "Static analysis reported no actionable suspects. Audit the source directly." }] };
       const text = items
-        .map((d, i) => `#${i + 1} [${d.impact}/${d.confidence}] ${d.check}${d.where ? ` at ${d.where}` : ""}${d.lines?.length ? ` (line ${d.lines[0]})` : ""}\n${d.description}`)
+        .map((d, i) => {
+          const engines = Array.isArray(d.engines) && d.engines.length ? d.engines.join(" + ") : "Slither";
+          const agree = d.corroborated ? ` — ${engines} AGREE here (stronger lead)` : ` — flagged by ${engines}`;
+          const loc = d.where ? ` at ${d.where}` : d.file ? ` in ${d.file}` : "";
+          const line = d.lines?.length ? ` (line ${d.lines[0]})` : "";
+          const checks = Array.isArray(d.checks) && d.checks.length > 1 ? `\ndetectors: ${d.checks.join(", ")}` : "";
+          return `#${i + 1} [${d.impact}${d.confidence ? "/" + d.confidence : ""}] ${d.check}${loc}${line}${agree}${checks}\n${d.description}`;
+        })
         .join("\n\n");
       return { output: [{ type: "text", text }] };
     },
@@ -390,20 +397,25 @@ async function main() {
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
-  // Static pre-pass: Slither scans the target and hands the agent a ranked list
-  // of suspects before it starts. A static alert is only a lead — the agent must
-  // still turn it into a passing PoC. This focuses the expensive deep run.
-  console.log(`\n== static analysis (Slither) ==`);
-  const scan = await slitherScan(ws);
+  // Static pre-pass: two independent engines (Slither + Aderyn) scan the target as
+  // one compilation unit and our ensemble layer merges them into a ranked suspect
+  // list before the agent starts. A static alert is only a lead — the agent must
+  // still turn it into a passing PoC. Where the two engines agree, the suspect is
+  // ranked higher; that agreement is a stronger hint, never a verdict.
+  console.log(`\n== static analysis (Slither + Aderyn) ==`);
+  const scan = await staticScan(ws);
   const brief = staticBrief(scan);
   const scanEvent = {
-    t: Date.now(), ev: "static-scan", tool: scan.tool,
+    t: Date.now(), ev: "static-scan", tool: scan.tool, engines: scan.engines,
     files: scan.files, analysed: scan.analysed, failed: scan.failed,
     suspects: scan.findings.length,
-    top: scan.findings.slice(0, 8).map((d) => ({ check: d.check, impact: d.impact, where: d.where, line: d.lines[0] ?? null })),
+    top: scan.findings.slice(0, 8).map((d) => ({
+      check: d.check, impact: d.impact, where: d.where, line: d.lines[0] ?? null,
+      engines: d.engines, corroborated: d.corroborated,
+    })),
   };
   appendFileSync(env.EVENTS_FILE, JSON.stringify(scanEvent) + "\n");
-  console.log("· static-scan " + JSON.stringify({ suspects: scanEvent.suspects, top: scanEvent.top.map((x) => `${x.impact}:${x.check}`) }));
+  console.log("· static-scan " + JSON.stringify({ mode: scan.mode, engines: scan.engines, suspects: scanEvent.suspects, top: scanEvent.top.map((x) => `${x.impact}:${x.check}${x.corroborated ? "*" : ""}`) }));
 
   // Fuzz pre-pass: a property fuzzer (Echidna) tries to break an invariant we
   // assert about the target, from ordinary deposits and withdrawals. It catches
@@ -458,7 +470,7 @@ async function main() {
     // The static pre-pass that fed the agent its leads. Kept in the record so the
     // report can show the feeder → proof story: a suspect Slither ranked, then
     // proven by replay. A suspect is never a finding on its own.
-    static: { tool: scan.tool, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: scanEvent.top },
+    static: { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: scanEvent.top },
     // The fuzz pre-pass that fed the agent its accounting leads. Same story as
     // static: a broken invariant is a suspect the fuzzer ranked, then proven by
     // replay. A suspect is never a finding on its own.

@@ -74,11 +74,20 @@ export interface StaticSuspect {
   impact: string
   where: string | null
   line: number | null
+  // Which independent engines flagged this spot. When more than one did, the
+  // suspect is corroborated and ranks higher — agreement sharpens attention, it
+  // never substitutes for the replay that makes a finding real.
+  engines: string[]
+  corroborated: boolean
 }
 
-// The static pre-pass summary: what the analyzer flagged that fed the agent.
+// The static pre-pass summary: what the analyzers flagged that fed the agent.
 export interface StaticScan {
   tool: string
+  // Which engines ran this pass (e.g. ["Slither", "Aderyn"]).
+  engines: string[]
+  // How the source was compiled: "unit" (one compilation unit) or "per-file".
+  mode: string | null
   suspects: number
   top: StaticSuspect[]
 }

@@ -69,17 +69,28 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       }
       case "static-scan": {
-        // The pre-pass: a static analyzer scans the target and hands the agent a
-        // ranked suspect list before it starts. A suspect is only a lead — it is
-        // never a finding until a replay proves it, so this gets a neutral mark.
+        // The pre-pass: two independent static engines scan the target and hand
+        // the agent a ranked suspect list before it starts. A suspect is only a
+        // lead — never a finding until a replay proves it — so this gets a neutral
+        // mark. Suspects both engines agree on rank first; we note how many.
         const n = num(e.suspects) ?? 0
+        const engines = Array.isArray(e.engines) && e.engines.length
+          ? (e.engines as unknown[]).map(str).filter(Boolean)
+          : ["Slither"]
+        const who = engines.join(" + ")
         const names = topChecks(e.top).slice(0, 3)
+        const agreed = Array.isArray(e.top)
+          ? (e.top as unknown[]).filter((x) => x && typeof x === "object" && (x as { corroborated?: unknown }).corroborated).length
+          : 0
+        const detailParts: string[] = []
+        if (names.length) detailParts.push(`${who}: ${names.join(", ")}`)
+        if (agreed > 0) detailParts.push(`${agreed} corroborated`)
         steps.push({
           key,
           kind: "scan",
           phase,
           label: n > 0 ? `Static scan — ${n} suspect${n === 1 ? "" : "s"}` : "Static scan — nothing flagged",
-          detail: names.length ? `Slither: ${names.join(", ")}` : undefined,
+          detail: detailParts.length ? detailParts.join(" · ") : undefined,
         })
         break
       }

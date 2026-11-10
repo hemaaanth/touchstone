@@ -21,8 +21,16 @@ spike/results/**/*.sqlite
 # Logs
 *.log
 
+# Mutating runtime spend trackers (regenerated per run)
+spike/spend.json
+spike/spend-openrouter.json
+
 # Reference clones — competitor/learning repos, not our code
 reference/
+
+# Static-engine binary — a build artifact, not our source. Fetched by
+# tools/install-aderyn.sh (pinned version). Keep it out of the tree.
+tools/bin/
 
 # Large research corpus and design-exploration scratch (not the app)
 research/

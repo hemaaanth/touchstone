@@ -133,12 +133,20 @@ function normalize(raw, id) {
   const staticScan = r.static && r.static.suspects > 0
     ? {
         tool: r.static.tool || "Slither",
+        // Which engines ran, and how the source was compiled ("unit" = one
+        // compilation unit, "per-file" = fallback). Older runs carry neither.
+        engines: Array.isArray(r.static.engines) ? r.static.engines : ["Slither"],
+        mode: r.static.mode || null,
         suspects: r.static.suspects,
         top: (Array.isArray(r.static.top) ? r.static.top : []).map((s) => ({
           check: s.check || "",
           impact: s.impact || "",
           where: s.where || null,
           line: s.line ?? null,
+          // Which engines flagged this suspect, and whether more than one did.
+          // Corroboration raises a suspect's rank; it never makes it a finding.
+          engines: Array.isArray(s.engines) && s.engines.length ? s.engines : ["Slither"],
+          corroborated: Boolean(s.corroborated),
         })),
       }
     : null
