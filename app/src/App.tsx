@@ -16,15 +16,24 @@ import { RunChat } from "@/components/run-chat"
 import { FindingsPanel } from "@/components/findings-panel"
 import { PageStub } from "@/components/page-stub"
 import { NewRunDialog } from "@/components/new-run-dialog"
+import { fixtureRuns } from "@/lib/fixtures"
 
 const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
+
+// DEV-only: canned fixture runs offered alongside real runs so the streaming
+// cognition UI can be built and visually verified without a server or a live
+// model. Their `fixture:` ids route useRun to its deterministic replay path.
+// Stamped with a live startedAt so the elapsed clock ticks. Stripped from prod.
+const DEV_FIXTURES: RunSummary[] = import.meta.env.DEV
+  ? fixtureRuns.map((r) => ({ ...r, startedAt: Date.now() }))
+  : []
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
   const [targets, setTargets] = useState<TargetChoice[]>([])
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
-  const [runs, setRuns] = useState<RunSummary[]>([])
+  const [runs, setRuns] = useState<RunSummary[]>(DEV_FIXTURES)
   const [findings, setFindings] = useState<FindingSummary[]>([])
   const [view, setView] = useState<View | null>(null)
   const [selectedFinding, setSelectedFinding] = useState<string | null>(null)
@@ -56,9 +65,10 @@ export function App() {
       fetchFindings().catch(() => [] as FindingSummary[]),
     ]).then(([runList, findingList]) => {
       if (!live) return
-      setRuns(runList)
+      const merged = [...DEV_FIXTURES, ...runList]
+      setRuns(merged)
       setFindings(findingList)
-      setView((cur) => cur ?? (runList.length > 0 ? { kind: "run", id: runList[0].id } : null))
+      setView((cur) => cur ?? (merged.length > 0 ? { kind: "run", id: merged[0].id } : null))
     })
     return () => {
       live = false

@@ -1,0 +1,159 @@
+import type { RunEvent, TargetScope } from "../types"
+
+// A canned run that exercises the whole streaming-cognition vocabulary end to
+// end: static pre-pass → read → streamed reasoning → streamed prose → a subagent
+// handoff → a failed PoC → an operator steer (pending → admitted) → a passing
+// replay → a recorded finding. It is the deterministic harness the streaming UI
+// is built and visually verified against, and doubles as the acceptance target
+// the real engine must reproduce. Every field here uses the exact keys pinned in
+// types.ts, so the engine and this fixture match by construction.
+//
+// The narrative is a textbook checks-effects-interactions bug proven in a
+// sandbox Foundry replay — never against live funds (NO-LIVE-HARM).
+
+const scope: TargetScope = {
+  id: "vault-local",
+  title: "Vault.sol — withdraw() path",
+  kind: "local-source",
+  blurb: "Operator's own staking vault. Prove any drain in a sandbox replay.",
+  entry: "src/Vault.sol",
+  signal: "static",
+  proofSurface: {
+    kind: "sandbox-foundry",
+    note: "Exploits run against a funded sandbox fork — never mainnet, never real funds.",
+  },
+}
+
+// Emit a growing snapshot of `full`, a few words at a time, so the reducer sees
+// a realistic throttled stream and the prose visibly types itself on screen.
+function grow(
+  ev: "thinking-delta" | "assistant-delta",
+  conv: string,
+  full: string,
+  attempt = 0,
+  step = 5,
+): RunEvent[] {
+  const words = full.split(" ")
+  const out: RunEvent[] = []
+  for (let i = step; i < words.length; i += step) {
+    out.push({ ev, conv, attempt, text: words.slice(0, i).join(" ") })
+  }
+  out.push({ ev, conv, attempt, text: full })
+  return out
+}
+
+const reasoning1 =
+  "Vault.withdraw() sends ETH with a low-level call before it zeroes the caller's " +
+  "balance — the balance write sits after the external call. That is the classic " +
+  "checks-effects-interactions violation: a contract that re-enters withdraw() from " +
+  "its receive() can call back in before its first balance update ever lands, and " +
+  "drain the pool against a single deposit. I want to confirm the state write is " +
+  "strictly after the transfer, then prove it with a re-entrant attacker."
+
+const prose1 =
+  "Found it. withdraw() transfers ETH before it updates balances, so a malicious " +
+  "receiver can re-enter and withdraw repeatedly against one deposit. I'll prove it " +
+  "with a Foundry attacker that re-enters until the vault is drained, running against " +
+  "a funded sandbox fork — no mainnet, no real funds at risk."
+
+const reasoning2 =
+  "The first attempt reverted: the attacker kept re-entering past the pool balance " +
+  "and underflowed. The operator is right — I should cap the re-entrancy depth to the " +
+  "funded balance so it stops one call before underflow, then assert the vault ends " +
+  "empty and the attacker ends richer."
+
+const prose2 =
+  "Capping the re-entrancy depth to the pool balance did it. The replay drains the " +
+  "sandbox vault from a single 1 ETH deposit and the attacker walks away with the " +
+  "whole pool. Recording it as a proven finding."
+
+export const streamingFixture: RunEvent[] = [
+  { ev: "scope", scope },
+  { ev: "opened", mode: "run" },
+  {
+    ev: "static-scan",
+    suspects: 3,
+    engines: ["Slither", "Aderyn"],
+    top: [
+      { check: "reentrancy-eth", corroborated: true },
+      { check: "unchecked-transfer" },
+      { check: "arbitrary-send-eth" },
+    ],
+  },
+  { ev: "list_sources" },
+  { ev: "read_source", file: "src/Vault.sol" },
+
+  ...grow("thinking-delta", "root", reasoning1),
+  ...grow("assistant-delta", "root", prose1),
+
+  {
+    ev: "subagent-spawned",
+    id: "sub-reentry",
+    parent: "root",
+    area: "re-entrancy",
+    title: "Draft the re-entrant attacker",
+  },
+  {
+    ev: "agent-graph",
+    nodes: [
+      { id: "root", parent: null, area: "Contracts", title: "Lead", state: "working" },
+      {
+        id: "sub-reentry",
+        parent: "root",
+        area: "re-entrancy",
+        title: "Draft the re-entrant attacker",
+        state: "working",
+      },
+    ],
+  },
+
+  { ev: "run_poc", attempt: 1, contract: "ReentryAttack" },
+  { ev: "run_poc-done", contract: "ReentryAttack", passed: false, failed: 1 },
+
+  { ev: "steer-pending", id: "st1", text: "Cap re-entrancy depth to the pool balance so it stops before underflow." },
+  ...grow("thinking-delta", "root", reasoning2, 1),
+  { ev: "operator-message", id: "st1", text: "Cap re-entrancy depth to the pool balance so it stops before underflow." },
+
+  { ev: "subagent-done", id: "sub-reentry", status: "done" },
+  {
+    ev: "agent-graph",
+    nodes: [
+      { id: "root", parent: null, area: "Contracts", title: "Lead", state: "working" },
+      {
+        id: "sub-reentry",
+        parent: "root",
+        area: "re-entrancy",
+        title: "Draft the re-entrant attacker",
+        state: "done",
+      },
+    ],
+  },
+
+  { ev: "run_poc", attempt: 2, contract: "ReentryAttack" },
+  { ev: "run_poc-done", contract: "ReentryAttack", passed: true },
+
+  ...grow("assistant-delta", "root", prose2, 1),
+
+  {
+    ev: "finding",
+    id: "f-reentry",
+    runId: "fixture:streaming",
+    title: "Re-entrancy drains Vault.withdraw()",
+    severity: "high",
+    module: "Contracts",
+    target: "src/Vault.sol",
+    proven: true,
+    ms: 48213,
+  },
+  {
+    ev: "approval-pending",
+    id: "ap1",
+    title: "Re-entrancy drains Vault.withdraw()",
+    severity: "high",
+    poc: "forge test --match-test testReentryDrain -vvv",
+  },
+  { ev: "host-deciding", status: "approved" },
+  { ev: "approval-decided", status: "approved" },
+  { ev: "run-complete", status: "recorded", findingId: "f-reentry" },
+  { ev: "closed" },
+]

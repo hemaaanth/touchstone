@@ -16,6 +16,10 @@ export interface FindingStages {
 
 export interface FindingSummary {
   id: string
+  // The run that produced this finding. Lets findings be scoped to their own
+  // run instead of a global rail. Optional for back-compat with recorded
+  // findings written before the engine stamped it (server/findings.mjs).
+  runId?: string
   title: string
   severity: Severity
   module: string
@@ -214,6 +218,68 @@ export interface RunEvent {
   t?: number
   ev: string
   [k: string]: unknown
+}
+
+// ---- The streaming cognition / subagent / finding / steering vocabulary.
+//
+// This is the ONE source of truth for the live event names the engine emits and
+// the reducer folds into RunState. The engine (spike/*) and the reducer
+// (lib/runModel.ts) are both built against THIS list, so they match by
+// construction. Fields a reducer reads are named here; the engine must emit them
+// under the same keys.
+//
+//   scope            { scope: TargetScope }                        header target
+//   opened           { mode: "run" | "decide" }                   session begins
+//   static-scan      { suspects, engines[], top[] }               static pre-pass
+//   fuzz-scan        { suspects, engines[], top[] }               fuzz pre-pass
+//   list_sources     {}                                           listed sources
+//   read_source      { file }                                     read a file
+//   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
+//   assistant-delta  { conv, attempt?, text }                     prose SNAPSHOT
+//   say              { conv, attempt?, text }                      finalized prose
+//   run_poc          { attempt, contract }                        exploit attempt
+//   run_poc-done     { contract, passed, failed?, timedOut? }     attempt resolves
+//   run_poc-capped   { attempts }                                 attempt budget hit
+//   subagent-spawned { id, parent?, area, title }                 child conversation
+//   subagent-done    { id, status }                               child settles
+//   agent-graph      { nodes: AgentNode[] }                       owner→child tree
+//   finding          { id, runId?, title, severity, module?,      a proven finding
+//                      target?, proven, stages? }                 lands in the run rail
+//   steer-pending    { id, text }                                 operator steer queued
+//   operator-message { id?, text }                                steer admitted to turn
+//   steer-rejected   { id, reason? }                              steer dropped
+//   approval-pending { id, title, severity, poc }                 proof gate
+//   host-deciding    { status }                                   recording / rejecting
+//   approval-decided { status }                                   gate settled
+//   no-finding       { final }                                    agent's closing words
+//   run-complete     { status, findingId? }                       run settled
+//   closed           {}                                           stream ends
+//
+// `-delta` events carry the FULL current text each time (a throttled snapshot of
+// the in-flight message), NOT an increment — the reducer REPLACES, keyed by
+// (conv, attempt), so a dropped tick never loses prose.
+
+// What the agent is visibly doing right now, derived from the latest cognition
+// event. Drives the live AgentStatus pill between the thread and the composer.
+export type Activity = "thinking" | "working" | "typing" | "idle"
+
+// One node in the owner→subagent tree (`agent-graph`). `area` is the module or
+// angle the child owns ("Contracts", "re-entrancy"); `state` tracks its life.
+export interface AgentNode {
+  id: string
+  parent: string | null
+  area: string
+  title: string
+  state: "spawning" | "working" | "done" | "failed"
+}
+
+// One operator steer across its two-phase life. "pending" — typed, shown as a
+// chip over the composer, not yet in the turn. "admitted" — the agent took it
+// in; it now reads as a normal operator message. "rejected" — dropped unused.
+export interface SteerEntry {
+  id: string
+  text: string
+  state: "pending" | "admitted" | "rejected"
 }
 
 export interface PendingApproval {
