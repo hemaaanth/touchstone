@@ -7,6 +7,7 @@ import { DismissControl, SeverityChip } from "./bits"
 import { RunTimeline } from "./RunTimeline"
 import { ReplayProof } from "./ReplayProof"
 import { Composer } from "./Composer"
+import { PipelineStrip } from "./PipelineStrip"
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   starting: "Starting",
@@ -197,6 +198,8 @@ export function RunView({
             {pending ? <SeverityChip severity={pending.severity} proven={stages.proven} /> : null}
           </div>
         </header>
+
+        <PipelineStrip run={run} finding={finding} />
 
         <div className="px-(--space-xl) pb-(--space-s)">
           <Tabs.List>

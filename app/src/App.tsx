@@ -28,6 +28,7 @@ export function App() {
   const [findings, setFindings] = useState<FindingSummary[]>([])
   const [selected, setSelected] = useState<Selection | null>(null)
   const [detail, setDetail] = useState<Finding | null>(null)
+  const [scopeId, setScopeId] = useState("")
 
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
@@ -146,15 +147,26 @@ export function App() {
 
   const activeDetail = detail && selected?.kind === "finding" && detail.id === selected.id ? detail : null
 
+  const runnableTargets = targets.filter((t) => t.runnable)
+  const nextScope = runnableTargets.find((t) => t.id === scopeId) ?? null
+
   return (
     <div className="operator-shell">
-      <Sidebar findingCount={findings.filter((f) => !f.dismissed).length} spend={spend} provider={provider} />
+      <Sidebar
+        findingCount={findings.filter((f) => !f.dismissed).length}
+        spend={spend}
+        provider={provider}
+        targets={runnableTargets}
+        scopeId={nextScope?.id ?? ""}
+        onScopeChange={setScopeId}
+      />
       <main className="operator-workspace" aria-label="Activity workspace">
         <ActivityList
           launcher={
             <RunLauncher
               models={models}
-              targets={targets}
+              scope={nextScope}
+              hasTargets={runnableTargets.length > 0}
               spend={spend}
               busy={busy}
               error={startError}

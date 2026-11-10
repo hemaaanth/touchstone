@@ -94,15 +94,17 @@ export function Fold({
   label,
   meta,
   defaultOpen = false,
+  className,
   children,
 }: {
   label: string
   meta?: string
   defaultOpen?: boolean
+  className?: string
   children: ReactNode
 }) {
   return (
-    <Collapsible.Root defaultOpen={defaultOpen}>
+    <Collapsible.Root defaultOpen={defaultOpen} className={className}>
       <Collapsible.Trigger className="focus-ring flex w-full items-center justify-start gap-(--space-xs) rounded-(--radius-s) py-(--space-xxs) type-xs weight-medium text-(--cte-text-muted) hover:text-(--cte-text) [&[data-panel-open]_.chev]:rotate-90">
         <span className="chev grid size-[16px] shrink-0 place-items-center transition-transform">
           <ThemedIcon name="chevronRight" />

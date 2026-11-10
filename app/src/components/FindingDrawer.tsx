@@ -5,6 +5,7 @@ import { reduceEvents } from "@/lib/runModel"
 import { DismissControl, SeverityChip } from "./bits"
 import { ReplayProof } from "./ReplayProof"
 import { RunTimeline } from "./RunTimeline"
+import { PipelineStrip } from "./PipelineStrip"
 
 // The detail panel for a recorded finding. It is a plain surface, not the modal
 // @graphical Drawer — the review lives beside the queue, always visible, never a
@@ -32,7 +33,8 @@ export function FindingDrawer({
     )
   }
 
-  const steps = reduceEvents(finding.events ?? []).steps
+  const run = reduceEvents(finding.events ?? [])
+  const { steps } = run
 
   return (
     <aside className="detail-pane flex-col" aria-label="Finding detail">
@@ -46,6 +48,8 @@ export function FindingDrawer({
             <SeverityChip severity={finding.severity} proven={finding.stages.proven} />
           </div>
         </header>
+
+        <PipelineStrip run={run} finding={finding} />
 
         <div className="px-(--space-xl) pb-(--space-s)">
           <Tabs.List>

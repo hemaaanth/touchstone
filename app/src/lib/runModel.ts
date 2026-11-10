@@ -23,6 +23,7 @@ export interface Step {
 }
 
 export interface RunState {
+  events: RunEvent[]
   steps: Step[]
   // The resource this run is pointed at, from the first `scope` event. Null
   // until it arrives (or on an old run that predates the event). The header
@@ -240,7 +241,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     accepted: (status as RunStatus) === "recorded" ? "auto" : false,
   }
 
-  return { steps, scope, status, pending, decision, error, finalText, closed, stages }
+  return { events, steps, scope, status, pending, decision, error, finalText, closed, stages }
 }
 
 // Subscribe to a run and keep the reduced state fresh. The server replays the
