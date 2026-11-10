@@ -10,10 +10,9 @@ From the checkout root:
 
 ```sh
 (cd spike && bun install)
-(cd spike/packs/supply-chain && bun install)
 ```
 
-The pack uses ethers 6.16.0 for offline secp256k1 and BIP-39 address derivation.
+The pack uses ethers 6.16.0 (a spike dependency) for offline secp256k1 and BIP-39 address derivation.
 It does not implement cryptography itself.
 No dependency in the target lab is installed.
 
