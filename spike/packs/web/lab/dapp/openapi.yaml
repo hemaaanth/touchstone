@@ -1,0 +1,92 @@
+openapi: "3.0.3"
+info:
+  title: touchstone-web-lab
+  version: "1.0.0"
+  description: >
+    Practice dApp backend for the Touchstone "Web and sign-in" / "APIs"
+    modules. Sign-in uses SIWE (EIP-4361): fetch a nonce, sign a SIWE message
+    with a wallet, verify it for a bearer session token.
+servers:
+  - url: http://lab:8080
+paths:
+  /siwe/nonce:
+    get:
+      summary: Issue a SIWE nonce to embed in the next signed message.
+      responses:
+        "200":
+          description: A fresh nonce.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nonce: { type: string }
+  /siwe/verify:
+    post:
+      summary: Verify a signed SIWE message and open a session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message, signature]
+              properties:
+                message: { type: string, description: "The EIP-4361 SIWE message text." }
+                signature: { type: string, description: "Hex-encoded personal_sign signature over `message`." }
+      responses:
+        "200":
+          description: Session opened.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+        "400":
+          description: Missing or malformed message/signature.
+        "401":
+          description: Domain/uri/chainId mismatch, unknown nonce, or bad signature.
+  /api/me:
+    get:
+      summary: The caller's own profile.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Own profile. }
+        "401": { description: No session. }
+  /api/users/{id}:
+    get:
+      summary: A user's profile, by id.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Profile for that id. }
+        "401": { description: No session. }
+        "404": { description: No such user. }
+  /api/users/{id}/wallet:
+    get:
+      summary: A user's wallet address and API key, by id.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Wallet info for that id. }
+        "401": { description: No session. }
+        "404": { description: No such user. }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
