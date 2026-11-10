@@ -18,6 +18,10 @@ lab/*/cache/
 # Per-run sandbox SQLite state (the app reads run-*.json / run-*.events only)
 spike/results/**/*.sqlite
 
+# Operator-configured scopes (briefs, local folders) — machine-local, not our
+# source. The labs that ship in this repo are built into targets.mjs instead.
+spike/data/
+
 # Logs
 *.log
 

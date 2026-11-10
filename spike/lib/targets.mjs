@@ -26,7 +26,9 @@
 // without touching callers.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
+import { makeWorkspace, makeBriefWorkspace, writeTouchstone } from "./sandbox.mjs"
+import { readScopes, getUserScope } from "./scopes-store.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..") // repo root
@@ -78,8 +80,10 @@ export function resolveTargetDir(target) {
 }
 
 // The summary shape the API serves — no filesystem paths leak to the client.
+// A brief also carries its links (the sources a run will fetch) so the UI can
+// show what a run pulls before it starts; the full markdown stays server-side.
 export function targetSummary(target) {
-  return {
+  const s = {
     id: target.id,
     title: target.title,
     kind: target.kind,
@@ -88,19 +92,34 @@ export function targetSummary(target) {
     signal: target.signal,
     proofSurface: target.proofSurface,
   }
+  if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
+  return s
 }
 
-// Every target the UI may offer, runnable ones first. A "lab" is runnable when
-// its directory is actually present on disk.
+// Whether a target can run right now. A lab needs its directory on disk; a brief
+// is always runnable (it fetches its code at run time); local-source is not wired
+// yet.
+function isRunnable(target) {
+  if (target.kind === "lab") return existsSync(path.join(ROOT, target.dir))
+  if (target.kind === "brief") return true
+  return false
+}
+
+// Every target the UI may offer, runnable ones first. Built-in labs come from
+// the registry here; operator-added scopes (briefs) come from the gitignored
+// scopes store. Both are summarized the same way.
 export function listTargets() {
-  return TARGETS.map((t) => ({
-    ...targetSummary(t),
-    runnable: t.kind === "lab" ? existsSync(path.join(ROOT, t.dir)) : false,
-  }))
+  const builtin = TARGETS.map((t) => ({ ...targetSummary(t), runnable: isRunnable(t) }))
+  const user = readScopes().map((s) => ({ ...targetSummary(s), runnable: isRunnable(s) }))
+  const all = [...builtin, ...user]
+  return all.sort((a, b) => Number(b.runnable) - Number(a.runnable))
 }
 
+// Resolve an id to the full target, checking the built-in labs first and then the
+// operator's scopes store. Returns the full object (with brief markdown/links),
+// not the summary.
 export function getTarget(id) {
-  return TARGETS.find((t) => t.id === id) ?? null
+  return TARGETS.find((t) => t.id === id) ?? getUserScope(id) ?? null
 }
 
 // Pick the target for a run. An explicit id wins; otherwise choose at random
@@ -111,10 +130,32 @@ export function pickTarget({ id } = {}) {
   if (id) {
     const t = getTarget(id)
     if (!t) throw new Error(`unknown target: ${id}`)
-    if (t.kind !== "lab") throw new Error(`target kind not yet runnable: ${t.kind}`)
+    if (!isRunnable(t)) throw new Error(`target kind not yet runnable: ${t.kind}`)
     return t
   }
   const labs = TARGETS.filter((t) => t.kind === "lab" && existsSync(path.join(ROOT, t.dir)))
   if (!labs.length) throw new Error("no runnable targets")
   return labs[Math.floor(Math.random() * labs.length)]
+}
+
+// Build the run's workspace for any runnable target, and write the per-workspace
+// .touchstone.json config every later step reads. A lab copies its prepared repo
+// and compiles with the pinned solc so its suspect lines line up. A brief starts
+// empty — its BRIEF.md is written in, its code is fetched into vendor/ at run
+// time — and compiles in "auto" solc so forge matches whatever the fetched code
+// pins. `modules` is the on/off plan for this run; it rides in the config so the
+// agent child and the decide child agree on which tools exist across a resume.
+export function prepareWorkspace(target, { modules = [] } = {}) {
+  if (target.kind === "lab") {
+    const ws = makeWorkspace(resolveTargetDir(target))
+    writeTouchstone(ws, { kind: "lab", solc: "0.8.38", modules })
+    return ws
+  }
+  if (target.kind === "brief") {
+    const ws = makeBriefWorkspace()
+    writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
+    writeTouchstone(ws, { kind: "brief", solc: "auto", modules })
+    return ws
+  }
+  throw new Error(`target kind not yet runnable: ${target.kind}`)
 }

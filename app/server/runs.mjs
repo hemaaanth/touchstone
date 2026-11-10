@@ -21,9 +21,11 @@ import { spawn } from "node:child_process"
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { makeWorkspace, cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
+import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
 import { guard, spent, MODELS, CAP_USD, PROVIDER_ID, PROVIDER_LABEL } from "../../spike/lib/inference.mjs"
-import { listTargets, pickTarget, resolveTargetDir, targetSummary } from "../../spike/lib/targets.mjs"
+import { listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { readScopes, addBriefScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { runPrepass } from "../../spike/lib/prepass.mjs"
 import { proofDelta } from "../../spike/lib/proof.mjs"
 
@@ -89,6 +91,24 @@ export function availableTargets() {
   return listTargets()
 }
 
+// Operator-configured scopes (briefs). Summarized like the target library, so the
+// brief markdown never leaves the server; the summary carries only the links a run
+// will fetch. These three back the /api/scopes routes.
+export function listScopes() {
+  return readScopes().map(targetSummary)
+}
+
+// Add a brief scope from pasted markdown. Returns its summary so the UI can select
+// it immediately. Throws (surfaced as 400) when the title or markdown is empty.
+export function addScope({ title, brief, blurb } = {}) {
+  return targetSummary(addBriefScope({ title, brief, blurb }))
+}
+
+// Remove an operator scope by id. Returns whether one was removed.
+export function deleteScope(id) {
+  return { removed: removeScope(id) }
+}
+
 // In-memory registry. The Vite dev server is one long-lived Node process, so a
 // Map plus per-run subscriber sets is all the live state we need.
 const runs = new Map()
@@ -123,6 +143,9 @@ function view(run) {
     // resource is under evaluation.
     target: run.target.title,
     scope: targetSummary(run.target),
+    // The module plan for this run — which parts of the pipeline are on and why,
+    // so a reconnecting client can render it without replaying the event stream.
+    modules: run.modules ?? null,
     status: run.status,
     startedAt: run.startedAt,
     events: run.events,
@@ -195,12 +218,17 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
+export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } = {}) {
   if (!MODELS[alias]) throw new Error(`unknown model alias: ${alias}`)
   // Pick the scope from the target library: an explicit choice, or random across
   // the labs so repeated Runs stop re-breaking one prepared bug. Throws on an
   // unknown id before anything is spent.
   const target = pickTarget({ id: targetId })
+  // Resolve the module plan from the scope and the operator's request. A module
+  // the scope cannot support (static/fuzz on a brief with no local source yet) is
+  // off with a reason, never silently dropped. The plan rides into the workspace
+  // config so the run child and the decide child agree on which tools exist.
+  const plan = planModules(target, modules)
   // Respect the hard spend cap before spending a cent of real inference.
   guard(0.02)
 
@@ -209,12 +237,13 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
   const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
   const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
   for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile]) rmSync(f, { force: true })
-  const ws = makeWorkspace(resolveTargetDir(target))
+  const ws = prepareWorkspace(target, { modules: plan })
 
   const run = {
     id,
     alias,
     target,
+    modules: plan,
     model: MODELS[alias].id,
     status: "starting",
     startedAt: Date.now(),
@@ -236,6 +265,9 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
   // resource this run is pointed at — the reason every run used to look the
   // same. It lands in run.events, so a late subscriber replays it too.
   broadcast(run, { t: Date.now(), ev: "scope", scope: targetSummary(run.target) })
+  // The module plan for this run — which parts of the pipeline are on, and the
+  // honest reason for any that are off. Also replayed to late subscribers.
+  broadcast(run, modulesEvent(plan))
 
   setRunStatus(run, "running")
   // Drive the full engine asynchronously: the pre-pass ensemble first (so the
@@ -267,6 +299,11 @@ async function startEngine(run) {
   let leads = {}
   try {
     const prep = await runPrepass(run.ws, {
+      // Gate each half on this run's module plan. A brief starts with no local
+      // source, so both are off and the scanners never spin up; the agent fetches
+      // the code and audits it directly.
+      runStatic: moduleOn(run.modules, "static"),
+      runFuzz: moduleOn(run.modules, "fuzz"),
       onStatic: (ev, scan) => {
         run.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: scan.findings.length, top: ev.top }
         broadcast(run, ev)
@@ -492,6 +529,9 @@ async function persistSettled(run, settled, verdict) {
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
     target: targetSummary(run.target),
+    // The module plan this run used — which parts of the pipeline were on, and the
+    // reason for any that were off — so history shows the honest configuration.
+    modules: run.modules ?? null,
     // The app has no manual gate: a proven run records itself. Mark approvals
     // "auto" so the ledger reads "Accepted · auto" rather than implying a click.
     approveMode: verdict === "deny" ? "deny" : "auto",

@@ -14,8 +14,8 @@
 // approves or denies it. The agent process can be fully down while waiting. This
 // is exactly milestone 3's shape: the UI server is the decider.
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
@@ -23,8 +23,10 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { obj, str } from "@earendil-works/pi-schema";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
-import { cleanupWorkspace, forgeTest, makeWorkspace, writePoc } from "./lib/sandbox.mjs";
+import { cleanupWorkspace, concreteSolc, forgeTest, makeWorkspace, readTouchstone, warmSolc, writePoc } from "./lib/sandbox.mjs";
 import { runPrepass } from "./lib/prepass.mjs";
+import { moduleOn } from "./lib/modules.mjs";
+import { fetchSource } from "./lib/fetch.mjs";
 import { proofDelta } from "./lib/proof.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
@@ -106,33 +108,158 @@ for any other language. End the fence with \`\`\`. End the whole write-up with a
 line that starts with "Fix:" describing the one-line change.
 Keep going without asking the operator questions. Work from the actual source.`;
 
+// A brief scope has no local source at the start. The code to audit lives behind
+// the links in BRIEF.md; the agent fetches it into vendor/ with fetch_source,
+// then audits and proves it the same way. The proof is still an offline Foundry
+// test that deploys the contracts in a local EVM — there is no forking and no
+// live chain, so a proof can never touch real funds.
+const SYSTEM_BRIEF = `You are an authorized offensive-security agent in an isolated sandbox.
+The operator has given you a brief — a markdown write-up of a target they own and
+have asked you to audit. Your job: find a real, exploitable vulnerability in the
+code the brief points at and PROVE it with a runnable Foundry test.
+
+How this scope works:
+- Read the brief first: read_source BRIEF.md. It describes the target and links
+  its source code.
+- The sandbox has no network, so you cannot open those links yourself. Instead
+  call fetch_source with a link's URL; the host fetches it for you into vendor/.
+  A GitHub repo or tree link is cloned into vendor/<repo>/; a single-file (blob)
+  link is saved under vendor/files/; any other page is returned as text. Fetch
+  the sources the brief names before you audit.
+- After fetching, use list_sources to see every file now under src/ and vendor/,
+  and read_source <path> to read any of them (pass the path list_sources shows).
+- Write a Foundry test (a contract that imports forge-std/Test.sol) that imports
+  the fetched contracts from vendor/, DEPLOYS them in setUp in the local EVM, and
+  demonstrates the exploit. There is no chain fork and no live network — prove the
+  bug against your own local deployment only. Run it with run_poc and iterate
+  until it passes.
+- forge-std is vendored. Solidity is chosen automatically to match each file's
+  pragma, so you do not pin a compiler version.
+- When your proof passes, call submit_finding exactly once with the vulnerability
+  class, severity, the name of your passing test contract, and a short explanation.
+  submit_finding needs a human approval before it is recorded.
+
+Write the explanation so a smart 15-year-old with no security or Solidity
+background can follow it. Use Simplified Technical English: short sentences, one
+idea per sentence, plain words, no jargon you do not define. Put identifiers in
+\`backticks\`, every multi-line snippet in a fenced block whose opening fence
+names the language, and end with a line that starts with "Fix:".
+Keep going without asking the operator questions. Work from the actual code.`;
+
+// Which system prompt a run uses, from the workspace config. A brief needs the
+// fetch-first instructions; a lab (local source) uses the standard one.
+function systemFor(ws) {
+  return readTouchstone(ws).kind === "brief" ? SYSTEM_BRIEF : SYSTEM;
+}
+
 const MAX_POC = Number(process.env.MAX_POC ?? 6); // bound runtime: qwen can iterate 2–11 times otherwise
 
+// Which workspace subtrees the agent may list and read. A lab's code is copied
+// into src/; a brief's fetched code lands under vendor/. Nothing else in the
+// workspace is exposed — not lib/ (the vendored forge-std), not out/ (build
+// artifacts), not .touchstone.json (the engine's own config).
+const READ_ROOTS = ["src", "vendor"];
+const FILE_READ_CAP = 512 * 1024; // 512 KB per read — a source file, not a blob
+
+// Every .sol file under the readable roots, as workspace-relative paths. Recursive
+// so a brief's cloned repo (vendor/<repo>/.../*.sol) is fully visible, not just a
+// flat src/. Skips build output and vendored git/npm noise.
+function listSol(ws) {
+  const out = [];
+  const walk = (rel) => {
+    let entries;
+    try { entries = readdirSync(join(ws, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name === ".git" || e.name === "node_modules" || e.name === "out") continue;
+      const childRel = join(rel, e.name);
+      if (e.isDirectory()) walk(childRel);
+      else if (e.name.endsWith(".sol")) out.push(childRel);
+    }
+  };
+  for (const root of READ_ROOTS) walk(root);
+  return out.sort();
+}
+
+// Resolve a path the agent asked to read to an absolute path inside an allowed
+// root, or null. Path-traversal guard: the resolved path must stay within ws and
+// under src/ or vendor/ (or be BRIEF.md at the workspace root). A bare name
+// ("Vault.sol") is also tried under src/, so a lab's flat reads keep working.
+function resolveReadable(ws, raw) {
+  const name = String(raw).trim();
+  for (const abs of [resolve(ws, name), resolve(ws, "src", name)]) {
+    const rel = relative(ws, abs);
+    if (!rel || rel.startsWith("..") || rel.startsWith(sep)) continue; // escaped ws
+    const top = rel.split(sep)[0];
+    if (top === "src" || top === "vendor" || rel === "BRIEF.md") {
+      try { if (statSync(abs).isFile()) return abs; } catch {}
+    }
+  }
+  return null;
+}
+
 function tools(ws) {
-  const src = join(ws, "src");
+  const modules = readTouchstone(ws).modules ?? [];
   let pocAttempts = 0;
   const listSources = defineTool({
     name: "list_sources",
-    description: "List the Solidity source files available under src/ in the target repo.",
+    description: "List every Solidity source file available to audit, as workspace-relative paths. A lab's code is under src/; a brief's fetched code is under vendor/ (fetch it first with fetch_source).",
     parameters: obj({}),
     replay: "safe",
     execute: async () => {
       event("list_sources");
-      return { output: [{ type: "text", text: readdirSync(src).filter((f) => f.endsWith(".sol")).join("\n") }] };
+      const files = listSol(ws);
+      const text = files.length ? files.join("\n") : "(no Solidity files yet — for a brief, call fetch_source on the links in BRIEF.md first)";
+      return { output: [{ type: "text", text }] };
     },
   });
   const readSource = defineTool({
     name: "read_source",
-    description: "Read one Solidity source file from src/. Pass the file name, e.g. Vault.sol.",
-    parameters: obj({ file: str({ description: "file name under src/, no path" }) }),
+    description: "Read one source file. Pass a path list_sources printed (e.g. Vault.sol or vendor/acme-vault/src/Vault.sol), or BRIEF.md to read the brief.",
+    parameters: obj({ file: str({ description: "a path from list_sources, under src/ or vendor/, or BRIEF.md" }) }),
     replay: "safe",
     execute: async (args) => {
-      const name = String(args.file).replace(/^.*\//, ""); // guard: no path traversal
-      event("read_source", { file: name });
+      const raw = String(args.file).trim();
+      event("read_source", { file: raw });
+      const abs = resolveReadable(ws, raw);
+      if (!abs) return { output: [{ type: "text", text: `No such readable file: ${raw}. Pass a path list_sources shows (under src/ or vendor/), or BRIEF.md.` }], isError: true };
       let text;
-      try { text = readFileSync(join(src, name), "utf8"); }
-      catch { return { output: [{ type: "text", text: `No such file: ${name}` }], isError: true }; }
+      try {
+        text = readFileSync(abs, "utf8");
+        if (text.length > FILE_READ_CAP) text = text.slice(0, FILE_READ_CAP) + `\n\n…[truncated at ${FILE_READ_CAP} bytes]`;
+      } catch { return { output: [{ type: "text", text: `Could not read: ${raw}` }], isError: true }; }
       return { output: [{ type: "text", text }] };
+    },
+  });
+  const fetchSourceTool = defineTool({
+    name: "fetch_source",
+    description: "Fetch a source link from the brief into the workspace so you can read and compile it. Pass one https link: a GitHub repo or tree link is cloned into vendor/<repo>/, a GitHub blob (single-file) link is saved under vendor/files/, any other page is returned as text. The fetch happens on the host; the proof still runs offline.",
+    parameters: obj({ url: str({ description: "one https:// link from the brief" }) }),
+    replay: "unsafe",
+    execute: async (args) => {
+      const url = String(args.url).trim();
+      event("fetch_source", { url });
+      let report;
+      try {
+        report = await fetchSource(ws, url);
+      } catch (e) {
+        event("fetch_source-done", { url, ok: false, error: String(e?.message ?? e).slice(0, 200) });
+        return { output: [{ type: "text", text: `Could not fetch ${url}: ${String(e?.message ?? e)}` }], isError: true };
+      }
+      // Pre-install the solc each fetched file pins into the shared cache, with
+      // network, so the later offline proof can compile them. Best-effort — a warm
+      // failure is not fatal; the proof just reports a clear compiler error if a
+      // version is truly unavailable.
+      const versions = new Set();
+      for (const f of report.files ?? []) for (const p of f.pragmas ?? []) { const v = concreteSolc(p); if (v) versions.add(v); }
+      const warmed = [];
+      for (const v of versions) { const w = await warmSolc(v); warmed.push(`${w.version}${w.ok ? "" : " (warm failed)"}`); }
+      event("fetch_source-done", { url, ok: true, kind: report.kind, files: (report.files ?? []).length, warmed });
+      const lines = [report.note];
+      if (report.files?.length) lines.push("", "Solidity files now available:", ...report.files.map((f) => `  ${f.path}${f.pragmas?.length ? `  (pragma ${f.pragmas.join(", ")})` : ""}`));
+      if (warmed.length) lines.push("", `Compiler versions prepared: ${warmed.join(", ")}.`);
+      if (report.text) lines.push("", report.text.slice(0, 8000));
+      lines.push("", "Use list_sources to see all files, then read_source to read them.");
+      return { output: [{ type: "text", text: lines.join("\n") }] };
     },
   });
   const runPoc = defineTool({
@@ -250,7 +377,19 @@ function tools(ws) {
       return { output: [{ type: "text", text }] };
     },
   });
-  return [listSources, readSource, staticFindings, fuzzFindings, runPoc, submitFinding];
+  // The tool set is gated on this run's module plan, so the agent holds only the
+  // tools the run actually enabled — and the run child and the decide child build
+  // the identical set from .touchstone.json, so the resume at the approval step
+  // sees the same tools the original run did (pi-durable requires a stable tool
+  // set across a resume). list_sources, read_source, run_poc and submit_finding
+  // are always present; static_findings and fuzz_findings exist only when their
+  // pre-pass module ran; fetch_source only for a brief that fetches its sources.
+  const out = [listSources, readSource];
+  if (moduleOn(modules, "static")) out.push(staticFindings);
+  if (moduleOn(modules, "fuzz")) out.push(fuzzFindings);
+  if (moduleOn(modules, "fetch")) out.push(fetchSourceTool);
+  out.push(runPoc, submitFinding);
+  return out;
 }
 
 async function openHarness(db, ws) {
@@ -264,7 +403,7 @@ async function openHarness(db, ws) {
     onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
   }, ctx);
   const root = await harness.root(ctx, {
-    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: SYSTEM },
+    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: systemFor(ws) },
   });
   return { harness, root, reports };
 }
@@ -321,7 +460,12 @@ async function child([, , , mode, db, ws]) {
   // Same requestId resumes the same submission after a restart.
   const staticBriefText = process.env.STATIC_BRIEF;
   const fuzzBriefText = process.env.FUZZ_BRIEF;
-  const base = "Audit the contract(s) under src/. Find an exploitable vulnerability, prove it with a passing Foundry PoC that moves funds to an attacker, then submit the finding.";
+  // A brief starts with no local source and no pre-pass leads — its first move is
+  // to read BRIEF.md and fetch the linked code; the proof deploys that code in a
+  // local EVM with no fork and no live chain. A lab's code is already under src/.
+  const base = readTouchstone(ws).kind === "brief"
+    ? "Read BRIEF.md first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Find an exploitable vulnerability and prove it with a passing Foundry PoC that deploys the code locally and moves funds to an attacker — no forking, no live chain — then submit the finding."
+    : "Audit the contract(s) under src/. Find an exploitable vulnerability, prove it with a passing Foundry PoC that moves funds to an attacker, then submit the finding.";
   const leadBlocks = [];
   if (staticBriefText) leadBlocks.push(`${staticBriefText}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
   if (fuzzBriefText) leadBlocks.push(`${fuzzBriefText}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);

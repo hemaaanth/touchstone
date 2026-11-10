@@ -50,35 +50,50 @@ export function fuzzScanEvent(fuzz) {
 // carries the leads into the run worker. Callbacks fire as each stage completes
 // so a caller can stream the event to a UI and/or append it to an events file;
 // the agent run must not start until this resolves, so the leads are ready.
-export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onFuzz } = {}) {
+// `runStatic` / `runFuzz` gate each half on the run's module plan. A scope with
+// no local source at start (a brief, before its code is fetched) turns both off:
+// there is nothing on disk to scan, so spinning up the scanners would be noise.
+// When a half is off it is skipped entirely — no docker, no callback, no env —
+// and the agent simply starts without that half's leads.
+export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onFuzz, runStatic = true, runFuzz = true } = {}) {
   // Static pre-pass: Slither + Aderyn as one compilation unit, merged into a
   // ranked suspect list. A static alert is only a lead.
-  onStaticStart?.();
-  const scan = await staticScan(ws);
-  const brief = staticBrief(scan);
-  const scanEvent = staticScanEvent(scan);
-  onStatic?.(scanEvent, scan, brief);
+  let scan = null, brief = "", scanEvent = null;
+  if (runStatic) {
+    onStaticStart?.();
+    scan = await staticScan(ws);
+    brief = staticBrief(scan);
+    scanEvent = staticScanEvent(scan);
+    onStatic?.(scanEvent, scan, brief);
+  }
 
   // Fuzz pre-pass: Echidna + Medusa drive the same generated harness against an
   // invariant we assert about the target. They catch accounting bugs the static
   // engines cannot — but only where a fuzz template fits; otherwise they honestly
   // find nothing. A broken invariant is a strong lead (it comes with the breaking
   // call sequence) but never a finding on its own.
-  onFuzzStart?.();
-  const fuzz = await fuzzScan(ws);
-  const fuzzBriefText = fuzzBrief(fuzz);
-  const fuzzEvent = fuzzScanEvent(fuzz);
-  onFuzz?.(fuzzEvent, fuzz, fuzzBriefText);
+  let fuzz = null, fuzzBriefText = "", fuzzEvent = null;
+  if (runFuzz) {
+    onFuzzStart?.();
+    fuzz = await fuzzScan(ws);
+    fuzzBriefText = fuzzBrief(fuzz);
+    fuzzEvent = fuzzScanEvent(fuzz);
+    onFuzz?.(fuzzEvent, fuzz, fuzzBriefText);
+  }
 
   // The leads, packaged as the env the run worker reads (see agent-run.mjs
   // child): the briefs frame the leads in the prompt; the JSON arrays back the
-  // static_findings / fuzz_findings tools with full detail on demand.
-  const runEnv = {
-    STATIC_BRIEF: brief,
-    STATIC_JSON: JSON.stringify(scan.findings),
-    FUZZ_BRIEF: fuzzBriefText,
-    FUZZ_JSON: JSON.stringify(fuzz.findings),
-  };
+  // static_findings / fuzz_findings tools with full detail on demand. A half that
+  // did not run contributes nothing, so its tool stays empty and is gated off.
+  const runEnv = {};
+  if (runStatic) {
+    runEnv.STATIC_BRIEF = brief;
+    runEnv.STATIC_JSON = JSON.stringify(scan.findings);
+  }
+  if (runFuzz) {
+    runEnv.FUZZ_BRIEF = fuzzBriefText;
+    runEnv.FUZZ_JSON = JSON.stringify(fuzz.findings);
+  }
 
   return { scan, brief, scanEvent, fuzz, fuzzBriefText, fuzzEvent, runEnv };
 }

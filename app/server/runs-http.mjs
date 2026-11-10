@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, decideRun, steerRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo } from "./runs.mjs"
+import { createRun, decideRun, steerRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 
 function send(res, status, json) {
@@ -39,11 +39,13 @@ export async function handleRuns(req, res) {
     return true
   }
 
-  // POST /api/runs — start a real agent run
+  // POST /api/runs — start a real agent run. `modules`, when given, is the set of
+  // toggleable module ids the operator left on; the orchestrator resolves it
+  // against the scope so an unsupported module is off with a reason, not dropped.
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, createRun({ alias: body.alias, targetId: body.targetId }))
+      send(res, 201, createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -128,6 +130,44 @@ export async function handleFindings(req, res) {
     }
     return true
   }
+  return false
+}
+
+// Operator-configured scopes (briefs). A (req,res) handler because POST takes a
+// body. Returns true when it handled the request.
+//   GET    /api/scopes        — list the operator's brief scopes (summaries)
+//   POST   /api/scopes        — add one from { title, brief, blurb }
+//   DELETE /api/scopes/:id     — remove one
+export async function handleScopes(req, res) {
+  const url = new URL(req.url, "http://localhost")
+  const parts = url.pathname.split("/").filter(Boolean) // ["api","scopes",...]
+  if (parts[0] !== "api" || parts[1] !== "scopes") return false
+
+  if (parts.length === 2 && req.method === "GET") {
+    send(res, 200, { scopes: listScopes() })
+    return true
+  }
+
+  if (parts.length === 2 && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 3 && req.method === "DELETE") {
+    const id = decodeURIComponent(parts[2])
+    try {
+      send(res, 200, deleteScope(id))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
   return false
 }
 
