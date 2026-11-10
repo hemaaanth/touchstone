@@ -9,7 +9,7 @@ with `--network none`, through `lib/wrap.mjs` `runTool()`.
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
 |------|------|------|------|------|------|------|------|------|------|------|------|
-| Foundry (forge) | MIT or Apache-2.0 | `ghcr.io/foundry-rs/foundry:latest` through `forgeTest` | Yes | Workspace with `test/` | `forge test --json -vvvv` | The proof itself | `forge`: the test replays green, shows the admin change, and the proxy loses ETH to another address | None | Cheatcodes (`vm.load`, `vm.prank`, `vm.getRecordedLogs`) | We add the harm oracle | wrap |
+| Foundry (forge) | MIT or Apache-2.0 | `ghcr.io/foundry-rs/foundry:latest` through `forgeTest` | Yes | Workspace with `test/` | `forge test --json -vvvv`, and `-vvvvv` for the proof replay (storage writes) | The proof itself | `forge`: the test replays green, and either the proxy loses ETH to another address (`funds`) or the replay changes the EIP-1967 implementation or admin slot or the owner (`control`) | None | Cheatcodes (`vm.load`, `vm.prank`, `vm.getRecordedLogs`) | We add the harm oracle: funds harm or control harm, read from the replay state diff (`lib/control-trace.mjs`, `packs/keys/control.mjs`) | wrap |
 | Anvil | MIT or Apache-2.0 | Binary in the tools image, started by `observe.mjs` | Yes | None, a fresh local chain | JSON-RPC on `127.0.0.1` inside the container | Blocks, logs and storage slots of the lab proxy | None | None | None | None | wrap |
 | Forta (`forta-agent` 0.1.48) | MIT | `runtime/monitor.mjs` in the tools image. `TransactionEvent.filterLog` decodes the logs | Yes. It does not call the Forta network | Raw logs from `eth_getLogs`, grouped per transaction | Decoded admin events: `Upgraded`, `AdminChanged`, `RoleGranted`, `RoleRevoked`, `OwnershipTransferred` | Event name, address, block, transaction hash | `forge` | Touchstone slot diff | The SDK is called. No bot code is copied | Reads logs only. It is blind to a change with no event | ensemble |
 | Touchstone slot diff (ours) | Ours | `observe.mjs` `chainWatch()` takes a snapshot per block. `common.mjs` `watchLeads` compares them | Yes | EIP-1967 implementation and admin slots, owner, role members, per block | Slot changes by block | `implementation-changed`, `admin-changed`, `owner-changed`, `role-granted`, `role-revoked`, and a note when the matching event is missing | `forge` | Forta | None | A silent upgrade (no `Upgraded` event) shows only here | own |
@@ -28,6 +28,9 @@ with `--network none`, through `lib/wrap.mjs` `runTool()`.
 - Role reads use one role mapping (`hasRole[role][account]`). Other role systems
   (OpenZeppelin `AccessControl` enumerable roles, Zodiac Roles, custom ACL) are not read.
 - No alert delivery. The leads go to the agent and the run record.
+- Control harm reads three fields of the lab proxy: the EIP-1967 implementation slot, the
+  EIP-1967 admin slot, and the owner at slot 0. Roles are not read as control.
+- `vm.store` writes, constructor writes and writes in reverted calls are not counted.
 
 ## Candidates from the research (03-capabilities.md M9, 04-crypto-coverage.md, 07-gap-5)
 

@@ -127,7 +127,7 @@ const hasImage = (() => {
 })();
 const LAB = new URL("../packs/chain-watch/lab", import.meta.url).pathname;
 
-test("chain-watch smoke: Forta and the slot diff agree, and the silent upgrade is proven", { skip: !hasImage && "image not built", timeout: 600_000 }, async () => {
+test("chain-watch smoke: Forta and the slot diff agree, funds and control harm prove, a probe fails", { skip: !hasImage && "image not built", timeout: 900_000 }, async () => {
   const ws = makeWorkspace(LAB);
   try {
     assert.equal(packFor(readTouchstone(ws)).id, "chain-watch");
@@ -146,9 +146,24 @@ test("chain-watch smoke: Forta and the slot diff agree, and the silent upgrade i
     writePoc(ws, source);
     const run = await forgeTest(ws, { matchContract: "SilentUpgradeTest" });
     assert.ok(run.passed && !run.failed, run.output);
-    const found = [{ n: 1, title: "Silent upgrade", severity: "critical", poc: "SilentUpgradeTest", explanation: "x", source }];
-    const proved = await chainWatch.prove(ws, found, [{ ev: "run_poc-done", passed: true, contract: "SilentUpgradeTest" }], () => {});
-    assert.equal(proved[0].proof.status, "pass");
-    assert.equal(proved[0].proof.harm.ok, true);
+    const pocs = ["SilentUpgradeTest", "UpgradeOnlyTest", "OwnerChangeTest", "ChainProbeTest"];
+    const found = [];
+    for (const poc of pocs) {
+      writePoc(ws, source);
+      const replay = await forgeTest(ws, { matchContract: poc });
+      assert.ok(replay.passed && !replay.failed, `${poc} should pass: ${replay.output}`);
+      found.push({ n: found.length + 1, title: poc, severity: "critical", poc, explanation: "x", source });
+    }
+    const proved = await chainWatch.prove(ws, found, pocs.map((contract) => ({ ev: "run_poc-done", passed: true, contract })), () => {});
+    const by = Object.fromEntries(proved.map((f) => [f.poc, f.proof]));
+    assert.equal(by.SilentUpgradeTest.status, "pass");
+    assert.equal(by.SilentUpgradeTest.harm.kind, "funds");
+    assert.equal(by.UpgradeOnlyTest.status, "pass");
+    assert.equal(by.UpgradeOnlyTest.harm.kind, "control");
+    assert.equal(by.UpgradeOnlyTest.harm.changes[0].field, "EIP-1967 implementation");
+    assert.equal(by.OwnerChangeTest.harm.kind, "control");
+    assert.equal(by.OwnerChangeTest.harm.changes[0].field, "owner");
+    assert.equal(by.ChainProbeTest.status, "fail");
+    assert.equal(by.ChainProbeTest.harm.ok, false);
   } finally { cleanupWorkspace(ws); }
 });

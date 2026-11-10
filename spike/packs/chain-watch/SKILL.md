@@ -72,13 +72,20 @@ misses it. The lead says so.
 ## Oracle
 
 `submit_finding` refuses a test that has not passed in this run. When the run
-settles, the engine replays each test once more. A finding is real only when:
+settles, the engine replays each test once more. A finding is real only when the test passes and the replay shows harm of one kind:
 
-- The test passes.
-- The proxy (a "Deployed contract" row) lost ETH.
-- Some other address gained ETH.
+- `funds`: the proxy (a "Deployed contract" row, or the lab proxy address) lost ETH,
+  and some other address gained ETH.
+- `control`: the replay changed the EIP-1967 implementation slot, the EIP-1967 admin
+  slot, or the owner (slot 0) of the lab proxy.
 
-An admin change with no path to harm is a note and not a finding.
+The engine reads control changes from the replay state diff (`forge test -vvvvv`
+storage writes). It does not read the test text. The result shows the field and the
+slot that changed. A write made while the test deploys the proxy, a write in a call
+that reverted, and `vm.store` do not count.
+
+A test that only reads state is marked failed. An admin change with no path to harm
+and no control change in the replay is a note and not a finding.
 
 ## Limits
 

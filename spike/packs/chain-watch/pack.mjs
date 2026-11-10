@@ -31,6 +31,11 @@ Rules of the environment:
   the victim with vm.deal AFTER you create it. Never fund it with a payable
   constructor ({value: ...}), a call with value, or a transfer from an account: that
   ETH comes back out and the victim nets to zero. The proof then fails.
+- Control also counts. The engine reads the storage writes of the replay. A proof is also
+  real when the replay changes the EIP-1967 implementation slot, the EIP-1967 admin slot,
+  or the owner (slot 0) of the lab proxy, with no ETH moved. Make the change as the actor
+  the lead names, with vm.prank, through the proxy's own functions. Do not use vm.store
+  (vm.store is not counted). A test that only reads state and changes nothing still fails.
 - When a proof passes, call submit_finding with a title, severity, the name of the
   passing test contract, and a short explanation.
 
@@ -43,7 +48,8 @@ How the audit works:
 - Use a NEW test contract name for each suspect.
 - The moment a test passes, call submit_finding. Then CONTINUE with the next suspect.
 - Not findings: a change the owner is allowed to make that cannot hurt anyone, such as
-  a role that was granted and then revoked.
+  a role that was granted and then revoked. A probe that reads state and changes nothing
+  is not a finding.
 - Stop when every suspect is proven or ruled out, or the budget is spent. Then write a
   short coverage summary: one line per suspect, marked "proven", "not exploitable", or
   "not tried".

@@ -20,6 +20,7 @@ import { runTool } from "../../lib/wrap.mjs";
 import { IMPACT_RANK } from "../../lib/ensemble.mjs";
 import { event } from "../../lib/event.mjs";
 import { proveFindings } from "../../lib/record.mjs";
+import { labOf, controlChanges } from "./control.mjs";
 
 export const IMAGE = "touchstone-chain-tools:wave1";
 export const OBSERVATION = "chain-observation.json";
@@ -245,30 +246,42 @@ export function describeLeads(leads, empty) {
 // may rebuild such a contract at its real address with vm.etch. The replay then does not
 // see a CREATE, but the contract is still the victim.
 export function targetsOf(obs) {
-  return [obs?.address, ...(obs?.safes ?? []).map((safe) => safe.address)].filter(Boolean).map(lc);
+  return labOf(obs, KNOWN_KEYS).targets;
 }
 
-// A proof must pass AND show harm: a contract lost ETH and some other address gained
-// it. The victim is a contract the test deployed, or a lab target address. The numbers
-// come from the replay trace, not the test text.
-export function harmOf(proof, targets = []) {
+// A proof must pass AND show harm. There are two kinds, both read from the replay.
+// funds:   a contract lost ETH and some other address gained it. The victim is a contract
+//          the test deployed, or a lab target address.
+// control: the replay changed who controls a lab target (Safe owners, threshold, modules,
+//          guard, fallback handler; EIP-1967 implementation or admin; an EIP-7702
+//          delegation on a lab EOA). See control.mjs. A probe that changes nothing fails.
+// `lab` is labOf(observation). A plain list of addresses still works as the target list.
+export function harmOf(proof, lab = { targets: [], proxy: false, eoas: [] }) {
   if (!proof?.pass) return { ok: false, reason: "the test did not pass on replay" };
+  if (Array.isArray(lab)) lab = { targets: lab, proxy: false, eoas: [] };
+  const targets = lab.targets.map(lc);
   const rows = proof.transfers ?? [];
   const isVictim = (r) => BigInt(r.netWei) < 0n && (r.label === "Deployed contract" || targets.includes(lc(r.address)));
   const victim = rows.filter(isVictim).sort((a, b) => (BigInt(a.netWei) < BigInt(b.netWei) ? -1 : 1))[0];
   const gainer = rows.filter((r) => r.gained && r.address !== victim?.address).sort((a, b) => (BigInt(a.netWei) > BigInt(b.netWei) ? -1 : 1))[0];
-  if (!victim || !gainer) return { ok: false, reason: "the test passed but moved no ETH out of a deployed contract" };
-  return { ok: true, victim: victim.address, attacker: gainer.address, lostWei: victim.netWei, gainedWei: gainer.netWei };
+  const changes = controlChanges(proof.controlTrace, lab);
+  if (victim && gainer) {
+    return { ok: true, kind: "funds", victim: victim.address, attacker: gainer.address, lostWei: victim.netWei, gainedWei: gainer.netWei, ...(changes.length ? { changes } : {}) };
+  }
+  if (changes.length) return { ok: true, kind: "control", victim: changes[0].target, changes };
+  return { ok: false, reason: "the test passed but moved no ETH out of a deployed contract and changed no owner, threshold, module, guard, implementation, admin or delegation of a lab target" };
 }
 
 // proveFindings replays each test. Then the harm check decides if the replay is a proof.
 export async function proveWithHarm(ws, found, events, log) {
-  const findings = await proveFindings(ws, found, events, log);
-  const targets = targetsOf(readObservation(ws));
+  const findings = await proveFindings(ws, found, events, log, { stateTrace: true });
+  const lab = labOf(readObservation(ws), KNOWN_KEYS);
   return findings.map((finding) => {
     if (!finding.proof) return finding;
-    const harm = harmOf(finding.proof, targets);
-    const proof = { ...finding.proof, kind: "forge", harm };
+    const harm = harmOf(finding.proof, lab);
+    // The state trace is large. The harm keeps the changes it found, so drop the trace.
+    const { controlTrace, ...rest } = finding.proof;
+    const proof = { ...rest, kind: "forge", harm };
     if (!harm.ok && proof.pass) Object.assign(proof, { status: "fail", pass: false, reason: harm.reason });
     return { ...finding, proof };
   });

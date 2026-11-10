@@ -14,6 +14,7 @@
 // gained, who was drained, by how much — computed by the engine from the replay,
 // with zero cooperation from the agent's test and no source-string guessing.
 import { writePoc, forgeTestJson } from "./sandbox.mjs";
+import { extractControlTrace } from "./control-trace.mjs";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -121,9 +122,9 @@ function findResult(parsed, contract) {
 // the submitted test contract. Returns null when the replay produced no parsable
 // JSON (e.g. the test no longer compiles) so the caller can fall back to the
 // source-derived view for older runs.
-export async function proofDelta(ws, { source, contract, timeoutMs = 180_000 } = {}) {
+export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, stateTrace = false } = {}) {
   if (source) writePoc(ws, source);
-  const { raw, timedOut } = await forgeTestJson(ws, { matchContract: contract, timeoutMs });
+  const { raw, timedOut } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace });
   let parsed = null;
   try { parsed = JSON.parse(raw); } catch { parsed = null; }
   if (!parsed) return null;
@@ -146,6 +147,8 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000 } =
     logs: Array.isArray(r.decoded_logs) ? r.decoded_logs : [],
     // The signed money-moved table, computed from the real trace.
     transfers,
+    // Only when asked: the replay state diff, for packs that judge control harm.
+    ...(stateTrace ? { controlTrace: extractControlTrace(r.traces) } : {}),
     timedOut,
   };
 }
