@@ -277,6 +277,16 @@ function tools(ws) {
         return { output: [{ type: "text", text: `PoC attempt budget exhausted (${MAX_POC} runs used). Stop iterating. If an earlier run passed, call submit_finding now with that test contract. Otherwise report that you could not prove an exploit.` }], isError: true };
       }
       event("run_poc", { contract: args.contract_name, attempt: pocAttempts });
+      // Surface the exact PoC source for this attempt as a versioned artifact, so
+      // the console's document pane shows v1/v2/v3 of the file the agent iterates
+      // on — one version per attempt, sharing a stable fileId — instead of a
+      // single card mutating in place. Purely additive telemetry: it drives no
+      // control flow and spends nothing. The id is unique per attempt (a new
+      // version); fileId groups the rewrites of the same test file.
+      const artId = `poc-${args.contract_name}-${pocAttempts}`;
+      event("artifact-open", { id: artId, fileId: `poc-${args.contract_name}`, title: `${args.contract_name}.t.sol`, kind: "poc", lang: "solidity", attempt: pocAttempts, contract: args.contract_name });
+      event("artifact-delta", { id: artId, text: args.test_source });
+      event("artifact-done", { id: artId });
       writePoc(ws, args.test_source);
       const r = await forgeTest(ws, { matchContract: args.contract_name });
       event("run_poc-done", { contract: args.contract_name, passed: r.passed, failed: r.failed, timedOut: r.timedOut });

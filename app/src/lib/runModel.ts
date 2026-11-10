@@ -6,6 +6,7 @@ import type {
   Activity,
   AgentNode,
   ArtifactDoc,
+  ArtifactVersion,
   FindingStages,
   FindingSummary,
   PendingApproval,
@@ -95,6 +96,10 @@ export interface RunState {
   // in order of first appearance. The artifact pane renders the open one; its
   // transcript chip links back to it. Empty on a run that wrote nothing.
   artifacts: ArtifactDoc[]
+  // The most recently opened file+version, so the pane can auto-follow a fresh
+  // write even when it is a new version of an older file (which does not move
+  // that file to the end of `artifacts`). Null until the first artifact opens.
+  latestArtifact: { fileId: string; versionId: string } | null
   // The finding the run settled on, from `run-complete`. Null until then.
   findingId: string | null
 }
@@ -114,6 +119,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const findings: FindingSummary[] = []
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
+  let latestArtifact: { fileId: string; versionId: string } | null = null
   let findingId: string | null = null
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -250,6 +256,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
             break
           }
         }
+        // Mark the PoC artifact version this attempt ran, so the pane's version
+        // switcher can show which rewrite actually passed its replay. Match the
+        // latest still-running version for this contract — attempts resolve one
+        // at a time, so the newest running one is this attempt's.
+        for (const a of artifacts) {
+          const v = [...a.versions].reverse().find((x) => x.contract === str(e.contract) && x.state === "running")
+          if (v) {
+            v.state = e.passed ? "pass" : "fail"
+            break
+          }
+        }
         break
       }
       case "run_poc-capped":
@@ -282,35 +299,67 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       }
       case "artifact-open": {
-        // The agent opens a workspace document — the PoC it is about to draft,
-        // the proof trace it will run. It gets a transcript chip (this step) that
-        // links to the live document held in `artifacts`, which the pane renders.
-        const id = str(e.id)
-        if (!id) break
-        if (!artifacts.some((a) => a.id === id)) {
-          const title = str(e.title) || "Document"
+        // The agent opens a version of a workspace document — the PoC it is about
+        // to draft (or redraft after a steer), the proof trace it will run. The
+        // version id is unique per write; `fileId` groups rewrites of the same
+        // file (defaulting to the version id when the engine sends none, so a
+        // one-shot doc is a single-version file). A brand-new file is pushed to
+        // `artifacts`; a rewrite appends a version to the file already there.
+        // Either way the version gets its own transcript chip (this step) — a
+        // rewrite reads as a new pill, not an older one silently changing.
+        const vid = str(e.id)
+        if (!vid) break
+        const fileId = str(e.fileId) || vid
+        const title = str(e.title) || "Document"
+        const attempt = num(e.attempt)
+        const contract = str(e.contract) || undefined
+        const version: ArtifactVersion = {
+          id: vid,
+          text: "",
+          writing: true,
+          ...(attempt != null ? { attempt, state: "running" } : {}),
+          ...(contract ? { contract } : {}),
+        }
+        const file = artifacts.find((a) => a.id === fileId)
+        if (file) {
+          if (!file.versions.some((v) => v.id === vid)) file.versions.push(version)
+        } else {
           artifacts.push({
-            id,
+            id: fileId,
             title,
             kind: (str(e.kind) || "report") as ArtifactDoc["kind"],
             lang: str(e.lang) || undefined,
-            text: "",
-            writing: true,
+            versions: [version],
           })
-          steps.push({ key, kind: "artifact", phase, label: title, detail: str(e.kind) || undefined, subId: id })
         }
+        latestArtifact = { fileId, versionId: vid }
+        steps.push({ key, kind: "artifact", phase, label: title, detail: str(e.kind) || undefined, subId: vid })
         activity = "working"
         break
       }
       case "artifact-delta": {
-        // A growing snapshot of the document's full text — REPLACE, keyed by id.
-        const a = artifacts.find((x) => x.id === str(e.id))
-        if (a) a.text = str(e.text)
+        // A growing snapshot of the version's full text — REPLACE, keyed by the
+        // version id (unique across files), so a rewrite never bleeds into an
+        // earlier version.
+        const vid = str(e.id)
+        for (const a of artifacts) {
+          const v = a.versions.find((x) => x.id === vid)
+          if (v) {
+            v.text = str(e.text)
+            break
+          }
+        }
         break
       }
       case "artifact-done": {
-        const a = artifacts.find((x) => x.id === str(e.id))
-        if (a) a.writing = false
+        const vid = str(e.id)
+        for (const a of artifacts) {
+          const v = a.versions.find((x) => x.id === vid)
+          if (v) {
+            v.writing = false
+            break
+          }
+        }
         break
       }
       case "subagent-spawned": {
@@ -487,6 +536,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     findings,
     steers,
     artifacts,
+    latestArtifact,
     findingId,
   }
 }

@@ -21,7 +21,7 @@ import {
   TerminalSquare,
   Loader2,
 } from "lucide-react"
-import type { Activity, ArtifactDoc, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
+import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { getFixtureFinding } from "@/lib/fixtures"
@@ -39,11 +39,13 @@ import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 
 // How a transcript chip — or the proof card — opens its document in the pane
-// beside the chat. buildMessages packs the artifact id into the part's args, but
-// the setter lives in RunChat and a tool-call part's args must stay
+// beside the chat. A file can have several versions, so the callback takes the
+// file id plus an optional version to land on (a chip opens its own version; the
+// proof card just opens the file). buildMessages packs the ids into the part's
+// args, but the setter lives in RunChat and a tool-call part's args must stay
 // serialisable, so the callback flows down as context instead. Default is a
 // no-op (nothing to open).
-const OpenArtifact = createContext<(id: string) => void>(() => {})
+const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>(() => {})
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -72,15 +74,32 @@ export function RunChat({
   // the last one). On a phone the pane is a full-screen overlay, so it never
   // opens by itself: the document drafts in its chat card and opens on a tap.
   const artifacts = state?.artifacts ?? []
-  const latestId = artifacts.length ? artifacts[artifacts.length - 1].id : null
+  // The pane opens a file at one version. `latestArtifact` names the most recent
+  // write (file + version); a new version of an older file still counts as the
+  // latest even though it does not move that file to the end of `artifacts`.
+  const latest = state?.latestArtifact ?? null
+  const latestFile = latest ? artifacts.find((a) => a.id === latest.fileId) ?? null : null
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
+  const [openVersionId, setOpenVersionId] = useState<string | null>(null)
+  // Open a file at a version. Omit the version to land on the file's latest.
+  const openArtifact = (fileId: string, versionId?: string) => {
+    setOpenArtifactId(fileId)
+    const file = artifacts.find((a) => a.id === fileId) ?? null
+    setOpenVersionId(versionId ?? file?.versions[file.versions.length - 1]?.id ?? null)
+  }
   const seenArtifact = useRef<string | null>(null)
   useEffect(() => {
-    if (latestId && latestId !== seenArtifact.current) {
-      seenArtifact.current = latestId
-      if (!isNarrow()) setOpenArtifactId(latestId)
+    const key = latest ? `${latest.fileId}:${latest.versionId}` : null
+    if (key && key !== seenArtifact.current) {
+      seenArtifact.current = key
+      // Desktop follows every fresh write — including a new version of a file
+      // already open, so the pane steps from v1 to v2 as the agent rewrites.
+      if (!isNarrow() && latest) {
+        setOpenArtifactId(latest.fileId)
+        setOpenVersionId(latest.versionId)
+      }
     }
-  }, [latestId])
+  }, [latest])
   const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
   // When the open document is the replay proof, it renders the recorded finding's
   // structured report in the pane. Resolve that finding only while the proof is
@@ -122,7 +141,7 @@ export function RunChat({
   })
 
   return (
-    <OpenArtifact.Provider value={setOpenArtifactId}>
+    <OpenArtifact.Provider value={openArtifact}>
       {/* The run splits into the chat and, when the agent writes one, the
           document pane. The chat flexes; the pane is a fixed-width column on
           desktop and a full-width overlay on mobile (so `relative` anchors it). */}
@@ -136,16 +155,16 @@ export function RunChat({
             <h1 className="min-w-0 truncate text-sm font-medium">
               {scope?.title ?? run.title ?? run.alias}
             </h1>
-            {latestId && !openDoc ? (
+            {latest && latestFile && !openDoc ? (
               <Button
                 variant="outline"
                 size="sm"
                 className="ml-auto h-7 shrink-0 gap-1.5"
-                onClick={() => setOpenArtifactId(latestId)}
+                onClick={() => openArtifact(latest.fileId, latest.versionId)}
               >
                 <FileCode2 className="size-3.5" />
                 <span className="max-w-[7rem] truncate md:max-w-[12rem]">
-                  {artifacts[artifacts.length - 1].title}
+                  {latestFile.title}
                 </span>
               </Button>
             ) : null}
@@ -166,9 +185,14 @@ export function RunChat({
           <ArtifactPane
             docs={artifacts}
             activeId={openDoc.id}
+            versionId={openVersionId}
             finding={finding}
-            onSelect={setOpenArtifactId}
-            onClose={() => setOpenArtifactId(null)}
+            onSelect={(id) => openArtifact(id)}
+            onSelectVersion={setOpenVersionId}
+            onClose={() => {
+              setOpenArtifactId(null)
+              setOpenVersionId(null)
+            }}
           />
         ) : null}
       </div>
@@ -375,12 +399,18 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     proven?: boolean
     proofArtifactId?: string | null
     artifact?: ArtifactDoc | null
+    version?: ArtifactVersion | null
+    vIndex?: number
+    vCount?: number
     tail?: boolean
   }
   if (a.pending)
     return <ProofCard pending={a.pending} proven={!!a.proven} proofArtifactId={a.proofArtifactId ?? null} />
   if (a.group) return <ToolGroupPart group={a.group} />
-  if (a.artifact) return <ArtifactChip doc={a.artifact} />
+  if (a.artifact && a.version)
+    return (
+      <ArtifactChip doc={a.artifact} version={a.version} vIndex={a.vIndex ?? 1} vCount={a.vCount ?? 1} />
+    )
   const step = a.step
   if (!step) return null
 
@@ -528,27 +558,42 @@ const KIND_LABEL: Record<ArtifactDoc["kind"], string> = {
   report: "Report",
 }
 
-function ArtifactChip({ doc }: { doc: ArtifactDoc }) {
+function ArtifactChip({
+  doc,
+  version,
+  vIndex,
+  vCount,
+}: {
+  doc: ArtifactDoc
+  version: ArtifactVersion
+  vIndex: number
+  vCount: number
+}) {
   const open = useContext(OpenArtifact)
-  const words = doc.text.trim() ? doc.text.trim().split(/\s+/).length : 0
-  const meta = doc.lang ? `${KIND_LABEL[doc.kind]} · ${doc.lang}` : KIND_LABEL[doc.kind]
+  const words = version.text.trim() ? version.text.trim().split(/\s+/).length : 0
+  const base = doc.lang ? `${KIND_LABEL[doc.kind]} · ${doc.lang}` : KIND_LABEL[doc.kind]
+  // When the file has more than one version this chip is one rewrite of it, so
+  // it names its own version — v1/v2/v3 — up front, keeping each attempt a
+  // distinct pill instead of one card changing under the operator.
+  const meta = vCount > 1 ? `v${vIndex} · ${base}` : base
+  const openThis = () => open(doc.id, version.id)
   return (
     <ArtifactCard
       role="button"
       tabIndex={0}
-      onClick={() => open(doc.id)}
+      onClick={openThis}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault()
-          open(doc.id)
+          openThis()
         }
       }}
       className="cursor-pointer"
       title={doc.title}
       meta={meta}
-      generating={doc.writing}
+      generating={version.writing}
       words={words}
-      preview={doc.writing ? <DraftTail text={doc.text} /> : null}
+      preview={version.writing ? <DraftTail text={version.text} /> : null}
     />
   )
 }
@@ -742,13 +787,28 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     // transcript entry point, so skip its plain chip and let that card (and the
     // pane tab) carry it — no redundant pointer stacked right above the card.
     if (step.kind === "artifact") {
-      const doc = state.artifacts.find((d) => d.id === step.subId) ?? null
-      if (doc?.kind === "proof") return
+      // step.subId is the VERSION id; find the file it belongs to and the index
+      // of that version, so the chip can label itself v1/v2/v3 and open the file
+      // at exactly its own version.
+      let file: ArtifactDoc | null = null
+      let version: ArtifactVersion | null = null
+      let vIndex = 0
+      for (const a of state.artifacts) {
+        const idx = a.versions.findIndex((v) => v.id === step.subId)
+        if (idx >= 0) {
+          file = a
+          version = a.versions[idx]
+          vIndex = idx
+          break
+        }
+      }
+      if (!file || !version) return
+      if (file.kind === "proof") return
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
         toolCallId: step.key,
         toolName: "artifact",
-        args: { artifact: doc },
+        args: { artifact: file, version, vIndex: vIndex + 1, vCount: file.versions.length },
         result: "done",
       })
       return

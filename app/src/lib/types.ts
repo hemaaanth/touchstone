@@ -237,9 +237,10 @@ export interface RunEvent {
 //   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
 //   assistant-delta  { conv, attempt?, text }                     prose SNAPSHOT
 //   say              { conv, attempt?, text }                      finalized prose
-//   artifact-open    { id, title, kind, lang? }                   doc opens in the pane
-//   artifact-delta   { id, text }                                 doc content SNAPSHOT
-//   artifact-done    { id }                                        doc finished writing
+//   artifact-open    { id, fileId?, title, kind, lang?,           a doc version opens
+//                      attempt?, contract? }                      in the pane
+//   artifact-delta   { id, text }                                 version content SNAPSHOT
+//   artifact-done    { id }                                       version finished writing
 //   run_poc          { attempt, contract }                        exploit attempt
 //   run_poc-done     { contract, passed, failed?, timedOut? }     attempt resolves
 //   run_poc-capped   { attempts }                                 attempt budget hit
@@ -286,21 +287,39 @@ export interface SteerEntry {
   state: "pending" | "admitted" | "rejected"
 }
 
+// One saved version of an artifact file — a single write the agent made. When
+// the agent rewrites the same PoC across attempts, each rewrite lands as its own
+// version of one file, so the operator sees v1, v2, v3 instead of a single card
+// mutating in place. `artifact-delta` carries the FULL text each tick (a
+// snapshot, like the cognition deltas), so the reducer REPLACES, keyed by the
+// version id. `writing` stays true until this version's `artifact-done` lands.
+// `attempt`/`contract` tie a PoC version to its run_poc attempt, so `state` can
+// mark the one rewrite that actually passed its replay.
+export interface ArtifactVersion {
+  id: string
+  text: string
+  writing: boolean
+  attempt?: number
+  contract?: string
+  state?: "running" | "pass" | "fail"
+}
+
 // A workspace document the agent writes while it works — the PoC contract it
 // drafts, the replay trace it proves with. It streams into the artifact pane
 // beside the chat instead of scrolling past in the transcript, so the operator
-// reads the whole file as it is written. `artifact-delta` carries the FULL text
-// each tick (a snapshot, like the cognition deltas), so the reducer REPLACES,
-// keyed by id. `writing` stays true until `artifact-done` lands.
+// reads the whole file as it is written. A file is version-controlled: each
+// `artifact-open` for the same `id` (the file id) appends a new version, so
+// rewriting the same PoC across attempts reads as v1/v2/v3 behind a switcher,
+// not one card quietly changing under the operator. The pane opens a file and
+// shows one selected version.
 export type ArtifactKind = "poc" | "proof" | "source" | "report"
 
 export interface ArtifactDoc {
-  id: string
+  id: string // the stable file id; the pane opens a file by this
   title: string
   kind: ArtifactKind
   lang?: string
-  text: string
-  writing: boolean
+  versions: ArtifactVersion[]
 }
 
 export interface PendingApproval {

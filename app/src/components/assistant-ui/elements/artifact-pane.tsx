@@ -1,7 +1,7 @@
 "use client";
 
-import { FileCode2, ShieldCheck, X } from "lucide-react";
-import type { ArtifactDoc, Finding } from "@/lib/types";
+import { Check, FileCode2, ShieldCheck, X } from "lucide-react";
+import type { ArtifactDoc, ArtifactVersion, Finding } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { codeScroll, codeSurface, ShimmerLabel } from "./surfaces";
 import { StreamingCode, StreamingText } from "./streaming-text";
@@ -34,24 +34,32 @@ function iconFor(doc: ArtifactDoc) {
 export function ArtifactPane({
   docs,
   activeId,
+  versionId,
   finding,
   onSelect,
+  onSelectVersion,
   onClose,
 }: {
   docs: ArtifactDoc[];
   activeId: string | null;
+  versionId: string | null;
   finding: Finding | null;
   onSelect: (id: string) => void;
+  onSelectVersion: (versionId: string) => void;
   onClose: () => void;
 }) {
   const doc = docs.find((d) => d.id === activeId) ?? docs[docs.length - 1];
   if (!doc) return null;
 
+  const version =
+    doc.versions.find((v) => v.id === versionId) ?? doc.versions[doc.versions.length - 1];
+  if (!version) return null;
+
   const multi = docs.length > 1;
   const Icon = iconFor(doc);
   const code = isCodeDoc(doc);
   const proof = doc.kind === "proof";
-  const words = doc.text.trim() ? doc.text.trim().split(/\s+/).length : 0;
+  const words = version.text.trim() ? version.text.trim().split(/\s+/).length : 0;
 
   return (
     <aside
@@ -97,7 +105,7 @@ export function ArtifactPane({
               <span className="truncate text-[11px] text-muted-foreground">
                 {proof ? (
                   KIND_META.proof
-                ) : doc.writing ? (
+                ) : version.writing ? (
                   <ShimmerLabel active>Writing · {words} words</ShimmerLabel>
                 ) : (
                   `${KIND_META[doc.kind]} · ${words} words`
@@ -115,6 +123,19 @@ export function ArtifactPane({
           <X className="size-4" />
         </button>
       </header>
+
+      {/* The version switcher: one chip per rewrite of this file, so the same PoC
+          iterated across attempts reads as v1/v2/v3 the operator can step
+          through. A passed version carries a quiet check; the proven green stays
+          inside the replay report, never on this chrome. Single-version files
+          (an unrevised doc, the proof) show no bar. */}
+      {doc.versions.length > 1 ? (
+        <VersionBar
+          versions={doc.versions}
+          activeId={version.id}
+          onSelect={onSelectVersion}
+        />
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {proof ? (
@@ -136,18 +157,61 @@ export function ArtifactPane({
               )}
             >
               <StreamingCode
-                text={doc.text}
+                text={version.text}
                 lang={doc.lang ?? null}
-                streaming={doc.writing}
+                streaming={version.writing}
               />
             </pre>
           </div>
         ) : (
           <pre className="whitespace-pre-wrap px-4 py-3 font-sans text-[12px] leading-relaxed text-foreground/90">
-            <StreamingText text={doc.text} streaming={doc.writing} />
+            <StreamingText text={version.text} streaming={version.writing} />
           </pre>
         )}
       </div>
     </aside>
+  );
+}
+
+// The row of version chips under the header. Each chip is one write of the file;
+// the active one is filled, the rest are quiet. A version whose replay passed
+// carries a small check so the operator can see at a glance which rewrite proved
+// out — monochrome, because the one green accent belongs to the finding.
+function VersionBar({
+  versions,
+  activeId,
+  onSelect,
+}: {
+  versions: ArtifactVersion[];
+  activeId: string;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b px-2 py-1.5">
+      {versions.map((v, i) => {
+        const active = v.id === activeId;
+        return (
+          <button
+            key={v.id}
+            type="button"
+            onClick={() => onSelect(v.id)}
+            aria-current={active}
+            title={v.state === "pass" ? "Replay passed" : v.state === "fail" ? "Replay failed" : undefined}
+            className={cn(
+              "flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] transition-colors",
+              active
+                ? "bg-muted font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+            )}
+          >
+            <span>v{i + 1}</span>
+            {v.state === "pass" ? <Check className="size-3 shrink-0" /> : null}
+            {v.writing ? (
+              <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" />
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
   );
 }

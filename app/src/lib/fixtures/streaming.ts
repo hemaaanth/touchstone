@@ -44,8 +44,9 @@ function grow(
 
 // Same growing-snapshot idea for a document that streams into the artifact pane,
 // but grown a few LINES at a time so a source file reads as it is typed. The
-// reducer REPLACES on each delta (keyed by id), so a later full revision of the
-// same file just re-streams in place.
+// reducer REPLACES on each delta (keyed by the version id). A rewrite of the
+// same file opens a NEW version id, so it streams as its own v2 rather than
+// overwriting v1 in place.
 function growDoc(id: string, full: string, step = 6): RunEvent[] {
   const lines = full.split("\n")
   const out: RunEvent[] = []
@@ -192,8 +193,11 @@ export const streamingFixture: RunEvent[] = [
     ],
   },
 
-  { ev: "artifact-open", id: "art-poc", title: "ReentryAttack.t.sol", kind: "poc", lang: "solidity" },
-  ...growDoc("art-poc", pocV1),
+  // V1 of the attacker — its own version of the poc-reentry file. It drafts,
+  // then its replay (attempt 1) underflows and fails.
+  { ev: "artifact-open", id: "poc-v1", fileId: "poc-reentry", title: "ReentryAttack.t.sol", kind: "poc", lang: "solidity", attempt: 1, contract: "ReentryAttack" },
+  ...growDoc("poc-v1", pocV1),
+  { ev: "artifact-done", id: "poc-v1" },
 
   { ev: "run_poc", attempt: 1, contract: "ReentryAttack" },
   { ev: "run_poc-done", contract: "ReentryAttack", passed: false, failed: 1 },
@@ -202,8 +206,11 @@ export const streamingFixture: RunEvent[] = [
   ...grow("thinking-delta", "root", reasoning2, 1),
   { ev: "operator-message", id: "st1", text: "Cap re-entrancy depth to the pool balance so it stops before underflow." },
 
-  ...growDoc("art-poc", pocV2),
-  { ev: "artifact-done", id: "art-poc" },
+  // V2 of the SAME file — the steer applied. A new version id, so it lands as a
+  // distinct chip and a v2 in the pane's switcher, not an overwrite of v1.
+  { ev: "artifact-open", id: "poc-v2", fileId: "poc-reentry", title: "ReentryAttack.t.sol", kind: "poc", lang: "solidity", attempt: 2, contract: "ReentryAttack" },
+  ...growDoc("poc-v2", pocV2),
+  { ev: "artifact-done", id: "poc-v2" },
 
   { ev: "subagent-done", id: "sub-reentry", status: "done" },
   {
