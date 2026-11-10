@@ -23,6 +23,7 @@ import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { event } from "./lib/event.mjs";
+import { unsentFinal } from "./lib/final-text.mjs";
 import { packFor } from "./packs/index.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 
@@ -93,11 +94,14 @@ async function summarize(root) {
 // overwriting the last. Without this a live run shows tool steps but no
 // cognition — exactly the gap the operator saw. Returns the watch handle so the
 // caller can stop it; a no-op if the harness has no live doc yet.
+let streamed = null;
 async function streamCognition(harness, base = 0) {
   const w = await harness.watchDoc(LiveDoc, ROOT_CONVERSATION_ID, ctx);
   if (!w) return undefined;
   let turn = -1;
   let lastSay = "", lastThink = "";
+  // The throttled LiveDoc can end one chunk short. flushFinal sends the rest.
+  streamed = { say: () => lastSay, turn: () => (turn < 0 ? base : turn) };
   // A resumed session still holds the last answer of the previous turn. Skip it
   // until a new answer starts, so old text does not show again as a new step.
   let stale = null;
@@ -133,6 +137,14 @@ async function streamCognition(harness, base = 0) {
   emit(w.value);
   w.start(async (call) => { if (call.kind === "value") emit(call.value); });
   return w;
+}
+
+// The last answer, whole, as one more `assistant-delta` before `settled`. Does
+// nothing when the stream already ended on the full text.
+function flushFinal(summary) {
+  if (!streamed) return;
+  const text = unsentFinal(streamed.say(), summary?.final?.text);
+  if (text) event("assistant-delta", { attempt: streamed.turn(), text });
 }
 
 // harness.usage() counts the whole session. A follow-up reopens a session that
@@ -201,6 +213,7 @@ async function chat({ harness, root, reports, state }) {
   event("operator-message", { text });
   const settled = await sub.wait(ctx);
   const s = await summarize(root);
+  flushFinal(s);
   const usage = await chargeUsage(harness, before);
   event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found.slice(prior), usage, reports });
 }
@@ -232,6 +245,7 @@ async function child([, , , mode, db, ws]) {
   if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
 
   const s = await summarize(root);
+  flushFinal(s);
   const usage = await chargeUsage(harness);
   event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found, usage, reports });
   await harness.close(ctx);

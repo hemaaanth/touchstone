@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prepassView, prepassFailed } from "../lib/prepass-view.mjs";
+import { prepassView, prepassFailed, prepassFromResult } from "../lib/prepass-view.mjs";
 
 test("a Contracts record shows static and fuzz as tools, worst lead first", () => {
   const v = prepassView({
@@ -69,4 +69,22 @@ test("a chain pack record with a top list becomes one tool named by its mode", (
   assert.equal(v.leads[0].where, "Safe 0xcd");
   assert.deepEqual(v.leads[0].tools, ["keys"]);
   assert.equal(v.total, 9);
+});
+
+test("a CLI record keeps its prepass at the top level; the fold is built from it", () => {
+  const cli = {
+    alias: "qwen-abl", status: "recorded", findings: [{ title: "x" }],
+    coverage: [{ engine: "gitleaks", status: "ok", leads: 1 }],
+    leads: [{ check: "leaked-key", impact: "high", where: "config.env", engine: "gitleaks" }],
+  };
+  const view = prepassView(prepassFromResult(cli));
+  assert.equal(view.total, 1);
+  assert.equal(view.tools[0].name, "gitleaks");
+  assert.equal(view.leads[0].check, "leaked-key");
+  // the chain packs' top list, an app record's own `prepass`, and a bare result
+  assert.equal(prepassView(prepassFromResult({ mode: "keys", top: [{ check: "a", impact: "low" }] })).tools[0].name, "keys");
+  const own = { leads: [{ check: "z" }] };
+  assert.equal(prepassFromResult({ prepass: own, leads: [{ check: "other" }] }), own);
+  assert.equal(prepassFromResult({ alias: "a", findings: [], pack: "domains" }), null);
+  assert.equal(prepassFromResult(null), null);
 });
