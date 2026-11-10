@@ -33,6 +33,13 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   and the file drafts inside its chat card instead. There is no global findings
   rail. Dark by default.
 - Do not upgrade existing dependencies (additive is fine). Use bun.
-- Competitor and reference repos are for reading only. Learn their patterns,
-  then write our own code. Never copy-paste their code, even when the license
-  allows it. Never run code from a cloned competitor repo.
+- Open-source code is ours to use when its license allows it. Touchstone is
+  open source too. Do not rebuild what a good open-source tool already does.
+  - Permissive (MIT, Apache-2.0, BSD, ISC, MPL file by file): copy or adapt
+    code, rules, prompts and workflows. Keep the license notice and add a line
+    to `THIRD_PARTY.md`.
+  - Copyleft (GPL, AGPL): run it as a separate program. Do not paste it into
+    our code.
+  - Non-commercial or no license: read it and run it as a separate program.
+    Do not paste it into our code. Flag it in the pack's TOOLS.md.
+  - Run third-party code in Docker, never on the host.

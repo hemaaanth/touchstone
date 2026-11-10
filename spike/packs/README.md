@@ -44,10 +44,14 @@ reads `found` when the run settles.
 
 1. **Wrap, do not rebuild.** Call the real tool as a separate binary in its own
    container. Parse its JSON or SARIF output. Turn each result into a lead.
-2. **Never copy or run competitor harness code.** Tools such as Slither or
-   TruffleHog are fine to run as binaries. Harnesses such as Strix, PentAGI, CAI
-   or ARTEX are for reading only (app/AGENTS.md). Learn the pattern, then write
-   our own code.
+   Also take its rule packs, detectors, prompts and workflows when the license
+   allows. Where two tools overlap, run both on the lab and keep the better one,
+   or merge them as an ensemble.
+2. **Use open source by its license.** Permissive code (MIT, Apache-2.0, BSD,
+   ISC) may be copied or adapted. Keep the notice and add a line to
+   `THIRD_PARTY.md`. GPL and AGPL code runs as a separate program only.
+   Non-commercial or unlicensed code is read, or run as a separate program, and
+   never pasted. All third-party code runs in Docker, never on the host.
 3. **Offline by default.** Every tool runs in Docker with `--network none`. A
    tool that needs the network says so in TOOLS.md. It runs only against a lab
    until the scope proxy and the grant exist (I tier).
@@ -55,8 +59,7 @@ reads `found` when the run settles.
    that the engine can replay. The `submit_finding` gate refuses anything else.
 5. **One finding per root cause.** One fix closes one finding.
 6. **Stable tools.** Build the tool list from `.touchstone.json` once per run.
-7. **Licenses.** GPL and AGPL tools stay separate binaries. We never link them
-   or vendor their source. Record the license in TOOLS.md.
+7. **Licenses.** Record every license in TOOLS.md. See rule 2.
 8. **No secrets in output.** A secret scanner's lead shows a redacted value and
    a hash. It never shows the full secret.
 
@@ -99,10 +102,12 @@ one row per tool:
 | Output    | JSON, SARIF, or text. Name the flag. |
 | Lead      | How one result maps to our lead shape (check, impact, where, detail). |
 | Proof     | Which proof kind turns a lead into a finding, and the oracle. |
-| Overlap   | Other tools that find the same thing. Pick one, or merge them as an ensemble. |
+| Overlap   | Other tools that find the same thing. Run them on the lab. Pick one, or merge them as an ensemble. |
+| Lift      | What we take besides the binary: rule packs, detectors, prompts, workflows, report shapes. Name the license. |
 | Crypto gap | What it misses for crypto targets, which we add as our own check. |
 | Verdict   | `wrap`, `ensemble`, `read only`, or `skip`, with one reason. |
 
 The `Crypto gap` column is the reason Touchstone exists. The union of the
-`wrap` rows is our coverage of the open-source market. The `Crypto gap` rows
-are what we add on top.
+`wrap` rows and the `Lift` column is our coverage of the open-source market.
+The `Crypto gap` rows are what we add on top. The goal is a superset of the
+open-source market, packaged for crypto teams.

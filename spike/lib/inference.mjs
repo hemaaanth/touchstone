@@ -17,7 +17,10 @@ export const PROVIDER_LABEL = PROVIDER.label;
 export const BASE_URL = PROVIDER.baseUrl;
 export const MODELS = PROVIDER.models;
 
-const LEDGER = new URL("../spend.json", import.meta.url);
+// SPEND_LEDGER points every worktree at one shared ledger. SPEND_CAP_USD stops a
+// call once the shared lifetime total would pass it (a wave budget).
+const LEDGER = process.env.SPEND_LEDGER || new URL("../spend.json", import.meta.url);
+const SPEND_CAP = process.env.SPEND_CAP_USD ? Number(process.env.SPEND_CAP_USD) : null;
 
 export function key() {
   const k = providerKey(PROVIDER);
@@ -37,6 +40,9 @@ export function spent() {
 }
 export function guard(estimateUsd = 0) {
   budget.guard(estimateUsd);
+  if (SPEND_CAP != null && spent() + estimateUsd > SPEND_CAP) {
+    throw new Error(`Spend cap reached: $${spent().toFixed(4)} of $${SPEND_CAP.toFixed(2)} (SPEND_CAP_USD).`);
+  }
 }
 export function costOf(modelId, inTok, outTok) {
   const m = Object.values(MODELS).find((x) => x.id === modelId);
