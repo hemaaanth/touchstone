@@ -24,6 +24,7 @@ import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { event } from "./lib/event.mjs";
 import { packFor } from "./packs/index.mjs";
+import { withProven } from "./lib/proof-view.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? defaultAlias(activeProvider());
@@ -291,7 +292,7 @@ async function main() {
   // test was written to assert. "Proven" binds to the submitted test only; a
   // throwaway diagnostic that happens to pass never turns a record green. Runs
   // before the workspace is torn down below.
-  const findings = await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)) ?? [];
+  const findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
   for (const f of findings) {
     console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
   }

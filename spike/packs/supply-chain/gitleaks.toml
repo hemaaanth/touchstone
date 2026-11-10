@@ -1,0 +1,10 @@
+# Adapted from gitleaks/gitleaks v8.30.1 config/gitleaks.toml.
+# MIT. Copyright (c) 2019 Zachary Rice. See LICENSE.gitleaks.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "private-key"
+description = "PEM private key in source"
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----'''
+keywords = ["-----begin"]

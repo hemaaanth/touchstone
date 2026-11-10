@@ -5,6 +5,7 @@ import type {
   RunSummary,
   SpendState,
   TargetChoice,
+  PackChoice,
 } from "@/lib/types"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
@@ -19,6 +20,7 @@ import { useStoredWidth } from "@/components/resize-handle"
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
   const [targets, setTargets] = useState<TargetChoice[]>([])
+  const [packs, setPacks] = useState<PackChoice[]>([])
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -31,9 +33,10 @@ export function App() {
 
   const refreshModels = useCallback(() => {
     fetchModels()
-      .then(({ models, targets, spend, provider }) => {
+      .then(({ models, targets, packs, spend, provider }) => {
         setModels(models)
         setTargets(targets)
+        setPacks(packs ?? [])
         setSpend(spend)
         setProvider(provider)
       })
@@ -61,10 +64,10 @@ export function App() {
   }, [refreshModels])
 
   const onStart = useCallback(
-    (alias: string, targetId?: string, budgetUsd?: number) => {
+    (alias: string, targetId?: string, budgetUsd?: number, pack?: string) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias, targetId, budgetUsd)
+      startRun(alias, targetId, budgetUsd, pack)
         .then((run) => {
           setRuns((prev) => [
             { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
@@ -169,6 +172,7 @@ export function App() {
         onOpenChange={setDialogOpen}
         models={models}
         targets={targets}
+        packs={packs}
         spend={spend}
         onScopesChanged={refreshModels}
         busy={busy}

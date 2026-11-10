@@ -1,0 +1,11 @@
+$ORIGIN touchstone.test.
+$TTL 60
+@ IN SOA ns.touchstone.test. hostmaster.touchstone.test. ( 1 60 60 3600 60 )
+@ IN NS ns.touchstone.test.
+ns IN A 172.30.44.53
+@ IN A 172.30.44.20
+www IN A 172.30.44.20
+cdn IN A 172.30.44.20
+rpc IN A 172.30.44.20
+old IN CNAME removed.touchstone.test.
+_rpc._tcp IN SRV 0 5 8080 rpc.touchstone.test.

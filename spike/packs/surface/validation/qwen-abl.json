@@ -1,0 +1,185 @@
+{
+  "alias": "qwen-abl",
+  "approveMode": "auto",
+  "ms": 40231,
+  "status": "done",
+  "pack": "surface",
+  "snapshotHash": "a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512",
+  "leads": [
+    {
+      "id": "450dc41abc046849",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "ns.touchstone.test",
+      "description": "Captured zone record: A",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "e45feeb65ae4e95b",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "touchstone.test",
+      "description": "Captured zone record: A",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "103818edbc907e4b",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "www.touchstone.test",
+      "description": "Captured zone record: A",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "3fcbfc72060a93cb",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "cdn.touchstone.test",
+      "description": "Captured zone record: A",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "0462eb4b4f288079",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "rpc.touchstone.test",
+      "description": "Captured zone record: A",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "db0ecd68d7584b63",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "old.touchstone.test",
+      "description": "Captured zone record: CNAME",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "b684d4b40c5faee8",
+      "check": "discovered-host",
+      "type": "host",
+      "where": "_rpc._tcp.touchstone.test",
+      "description": "Captured zone record: SRV",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "domains"
+    },
+    {
+      "id": "7b4af6c463860fbb",
+      "check": "discovered-service",
+      "type": "service",
+      "where": "http://touchstone.test:8080",
+      "description": "Captured HTTP status 200",
+      "engine": "httpx/capture",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "web"
+    },
+    {
+      "id": "88a00a27757a508a",
+      "check": "discovered-service",
+      "type": "service",
+      "where": "http://www.touchstone.test:8080",
+      "description": "Captured HTTP status 200",
+      "engine": "httpx/capture",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "web"
+    },
+    {
+      "id": "96c370ae39bb3cbc",
+      "check": "discovered-service",
+      "type": "service",
+      "where": "http://cdn.touchstone.test:8080",
+      "description": "Captured HTTP status 200",
+      "engine": "httpx/capture",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "web"
+    },
+    {
+      "id": "7b56355846c169a3",
+      "check": "discovered-service",
+      "type": "service",
+      "where": "http://rpc.touchstone.test:8080",
+      "description": "Captured HTTP status 200",
+      "engine": "httpx/capture",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "web"
+    },
+    {
+      "id": "549eb3a8c4a37b62",
+      "check": "discovered-service",
+      "type": "service",
+      "where": "tcp://rpc.touchstone.test:8080",
+      "description": "SRV record advertises this service. HTTP reachability is separate.",
+      "engine": "dns-zonefile",
+      "impact": "Informational",
+      "severity": "informational",
+      "scope": "lab",
+      "nextPack": "web"
+    }
+  ],
+  "retire": {
+    "version": "5.2.5",
+    "start": "2026-11-10T20:33:42.065Z",
+    "data": [],
+    "messages": [],
+    "errors": [],
+    "time": 0.023
+  },
+  "pocRuns": 0,
+  "findings": [],
+  "findingSubmitted": false,
+  "finding": null,
+  "pocProved": false,
+  "proof": null,
+  "decision": null,
+  "recorded": false,
+  "calls": [
+    "snapshot_leads"
+  ],
+  "final": "\n\nSnapshot verified (hash `a89e3256a1e5e6e27855035ec28d05c25c3fb8baaf99309e9a637d6bad508512`), no retire entries. Here is the typed inventory and handoff.\n\n## Discovered hosts — offline zone records (engine: dns-zonefile)\n\n| Host | Record | Evidence | Lead ID |\n|---|---|---|---|\n| `ns.touchstone.test` | A | Captured zone record | `450dc41abc046849` |\n| `touchstone.test` | A | Captured zone record | `e45feeb65ae4e95b` |\n| `www.touchstone.test` | A | Captured zone record | `103818edbc907e4b` |\n| `cdn.touchstone.test` | A | Captured zone record | `3fcbfc72060a93cb` |\n| `rpc.touchstone.test` | A | Captured zone record | `0462eb4b4f288079` |\n| `old.touchstone.test` | CNAME | Captured zone record | `db0ecd68d7584b63` |\n| `_rpc._tcp.touchstone.test` | SRV | Captured zone record | `b684d4b40c5faee8` |\n\nAll 7 → **nextPack: domains**, severity informational, scope lab.\n\n## Discovered services\n\n| Service | Evidence | Lead ID |\n|---|---|---|\n| `http://touchstone.test:8080` | Captured HTTP status 200 (httpx/capture) | `7b4af6c463860fbb` |\n| `http://www.touchstone.test:8080` | Captured HTTP status 200 (httpx/capture) | `88a00a27757a508a` |\n| `http://cdn.touchstone.test:8080` | Captured HTTP stat",
+  "usage": {
+    "usd": 0.00259398,
+    "models": {
+      "near/Qwen/Qwen3.8-27B-abliterated": {
+        "in": 3627,
+        "out": 1814,
+        "reasoning": 667
+      }
+    }
+  },
+  "reports": []
+}

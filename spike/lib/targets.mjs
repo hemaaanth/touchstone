@@ -26,8 +26,9 @@
 // without touching callers.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
-import { makeWorkspace, makeBriefWorkspace, writeTouchstone } from "./sandbox.mjs"
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
+import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
+import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles } from "./scopes-store.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -80,6 +81,54 @@ export const TARGETS = [
   },
 ]
 
+// Labs of the other packs. A pack's lab is a directory with a .touchstone.json
+// that names the pack. We look in lab/ and in spike/packs/<id>/lab/, so a new pack
+// that ships a lab shows up in the New run dialog with no change here. The file
+// may also carry `title`, `blurb` and `entry`.
+const PROOF_NOTE = {
+  http: "Proven by a request replayed in Docker on a private network with no internet.",
+  evidence: "Proven by checking the cited evidence again against the pinned snapshot in the run workspace.",
+  forge: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
+}
+
+function packLabs() {
+  const found = []
+  const seen = new Set()
+  const add = (dir, name) => {
+    const cfg = readTouchstone(dir)
+    if (!cfg.pack || cfg.pack === "contracts" || !PACKS[cfg.pack]) return
+    // Two packs may each ship a lab called "app", so a pack lab's id carries its pack.
+    const id = `${cfg.pack}/${name}`
+    if (seen.has(id)) return
+    seen.add(id)
+    found.push({
+      id,
+      title: cfg.title ?? name,
+      kind: "lab",
+      pack: cfg.pack,
+      blurb: cfg.blurb ?? "",
+      entry: cfg.entry ?? null,
+      signal: null,
+      dir: path.relative(ROOT, dir),
+      proofSurface: { kind: PACKS[cfg.pack].proof, note: PROOF_NOTE[PACKS[cfg.pack].proof] ?? "" },
+    })
+  }
+  const childrenOf = (parent) => {
+    try { return readdirSync(parent).sort() } catch { return [] }
+  }
+  for (const name of childrenOf(path.join(ROOT, "lab"))) add(path.join(ROOT, "lab", name), name)
+  for (const id of Object.keys(PACKS)) {
+    const parent = path.join(ROOT, "spike", "packs", id, "lab")
+    // The lab dir may itself be the lab, or hold one lab per child.
+    if (existsSync(path.join(parent, ".touchstone.json"))) add(parent, "lab")
+    for (const name of childrenOf(parent)) add(path.join(parent, name), name)
+  }
+  return found
+}
+
+// The pack a target belongs to. Built-in labs and operator scopes are Contracts.
+export const packOf = (target) => target?.pack ?? "contracts"
+
 // Resolve a target's workspace source directory to an absolute path. Only "lab"
 // targets have a repo-relative `dir`; the later kinds resolve differently and
 // will extend this.
@@ -97,6 +146,7 @@ export function targetSummary(target) {
     id: target.id,
     title: target.title,
     kind: target.kind,
+    pack: packOf(target),
     blurb: target.blurb,
     entry: target.entry,
     signal: target.signal,
@@ -121,7 +171,7 @@ function isRunnable(target) {
 // the registry here; operator-added scopes (briefs) come from the gitignored
 // scopes store. Both are summarized the same way.
 export function listTargets() {
-  const builtin = TARGETS.map((t) => ({ ...targetSummary(t), runnable: isRunnable(t) }))
+  const builtin = [...TARGETS, ...packLabs()].map((t) => ({ ...targetSummary(t), runnable: isRunnable(t) }))
   const user = readScopes().map((s) => ({ ...targetSummary(s), runnable: isRunnable(s) }))
   const all = [...builtin, ...user]
   return all.sort((a, b) => Number(b.runnable) - Number(a.runnable))
@@ -131,22 +181,25 @@ export function listTargets() {
 // operator's scopes store. Returns the full object (with brief markdown/links),
 // not the summary.
 export function getTarget(id) {
-  return TARGETS.find((t) => t.id === id) ?? getUserScope(id) ?? null
+  return TARGETS.find((t) => t.id === id) ?? packLabs().find((t) => t.id === id) ?? getUserScope(id) ?? null
 }
 
 // Pick the target for a run. An explicit id wins; otherwise choose at random
-// from the runnable labs so repeated Runs stop hammering one prepared bug.
-// Throws if an explicit id is unknown or not yet runnable, so a bad request
-// fails loudly instead of silently falling back.
-export function pickTarget({ id } = {}) {
+// from the runnable labs of the chosen pack (Contracts by default) so repeated
+// Runs stop hammering one prepared bug. Throws if an explicit id is unknown, not
+// yet runnable, or belongs to another pack, so a bad request fails loudly
+// instead of silently falling back.
+export function pickTarget({ id, pack } = {}) {
   if (id) {
     const t = getTarget(id)
     if (!t) throw new Error(`unknown target: ${id}`)
     if (!isRunnable(t)) throw new Error(`target kind not yet runnable: ${t.kind}`)
+    if (pack && packOf(t) !== pack) throw new Error(`target ${id} belongs to pack "${packOf(t)}", not "${pack}"`)
     return t
   }
-  const labs = TARGETS.filter((t) => t.kind === "lab" && existsSync(path.join(ROOT, t.dir)))
-  if (!labs.length) throw new Error("no runnable targets")
+  const want = pack ?? "contracts"
+  const labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && existsSync(path.join(ROOT, t.dir)))
+  if (!labs.length) throw new Error(`no runnable targets for pack "${want}"`)
   return labs[Math.floor(Math.random() * labs.length)]
 }
 
@@ -158,9 +211,17 @@ export function pickTarget({ id } = {}) {
 // pins. `modules` is the on/off plan for this run; it rides in the config so the
 // agent child and the decide child agree on which tools exist across a resume.
 export function prepareWorkspace(target, { modules = [] } = {}) {
+  const pack = packOf(target)
+  if (target.kind === "lab" && pack !== "contracts") {
+    // makeWorkspace keeps the lab's own .touchstone.json (pack config, snapshot
+    // paths). We add the run's modules on top and never overwrite what it has.
+    const ws = makeWorkspace(resolveTargetDir(target))
+    writeTouchstone(ws, { ...readTouchstone(ws), kind: "lab", pack, modules })
+    return ws
+  }
   if (target.kind === "lab") {
     const ws = makeWorkspace(resolveTargetDir(target))
-    writeTouchstone(ws, { kind: "lab", solc: "0.8.38", modules })
+    writeTouchstone(ws, { kind: "lab", solc: "0.8.38", pack, modules })
     return ws
   }
   if (target.kind === "local-source") {
@@ -171,13 +232,13 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       mkdirSync(path.dirname(dest), { recursive: true })
       writeFileSync(dest, f.content)
     }
-    writeTouchstone(ws, { kind: "local-source", solc: "auto", modules })
+    writeTouchstone(ws, { kind: "local-source", solc: "auto", pack, modules })
     return ws
   }
   if (target.kind === "brief") {
     const ws = makeBriefWorkspace()
     writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
-    writeTouchstone(ws, { kind: "brief", solc: "auto", modules })
+    writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules })
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)

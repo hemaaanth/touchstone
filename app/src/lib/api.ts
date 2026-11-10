@@ -10,6 +10,7 @@ import type {
   SettingsState,
   SpendState,
   TargetChoice,
+  PackChoice,
 } from "./types"
 
 async function getJson<T>(url: string): Promise<T> {
@@ -43,12 +44,17 @@ export function fetchFinding(id: string): Promise<Finding> {
 export async function fetchModels(): Promise<{
   models: ModelChoice[]
   targets: TargetChoice[]
+  packs: PackChoice[]
   spend: SpendState
   provider: ProviderInfo
 }> {
-  return getJson<{ models: ModelChoice[]; targets: TargetChoice[]; spend: SpendState; provider: ProviderInfo }>(
-    "/api/models",
-  )
+  return getJson<{
+    models: ModelChoice[]
+    targets: TargetChoice[]
+    packs: PackChoice[]
+    spend: SpendState
+    provider: ProviderInfo
+  }>("/api/models")
 }
 
 export async function fetchRuns(): Promise<RunSummary[]> {
@@ -58,8 +64,8 @@ export async function fetchRuns(): Promise<RunSummary[]> {
 
 // Start a run against a chosen scope. Omit targetId to let the server pick a
 // target at random from the library, so repeated Runs stop re-breaking one bug.
-export function startRun(alias: string, targetId?: string, budgetUsd?: number): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd })
+export function startRun(alias: string, targetId?: string, budgetUsd?: number, pack?: string): Promise<RunView> {
+  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack })
 }
 
 export function attachScope(body: { title: string; repo?: string; files?: { path: string; content: string }[] }): Promise<TargetChoice> {

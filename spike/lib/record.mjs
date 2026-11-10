@@ -28,7 +28,9 @@ export async function proveFindings(ws, submitted, events, log = () => {}) {
     let proof = null;
     if (pocProved && f.source) {
       try {
-        proof = await proofDelta(ws, { source: f.source, contract: f.poc });
+        const delta = await proofDelta(ws, { source: f.source, contract: f.poc });
+        // The kind names the replay that made this proof; the app picks its card from it.
+        proof = delta && { kind: "forge", ...delta };
       } catch (err) {
         log(`proof-delta failed for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);
       }

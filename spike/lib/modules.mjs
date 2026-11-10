@@ -30,6 +30,15 @@ export function planModules(target, requested) {
 
   mods.push({ id: "agent", on: true, fixed: true, available: true, reason: "The agent always runs." });
 
+  // A pack other than Contracts brings its own tools and its own proof. The
+  // Solidity static and fuzz engines do not apply, so the plan is just the agent
+  // and the pack's proof step. Pack tools that run before the agent report on
+  // their own events.
+  if (target.pack && target.pack !== "contracts") {
+    mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The pack's proof step is the only thing that makes a finding real." });
+    return mods;
+  }
+
   if (local) {
     mods.push({ id: "static", on: want("static", true), available: true, reason: null });
     mods.push({ id: "fuzz", on: want("fuzz", true), available: true, reason: null });

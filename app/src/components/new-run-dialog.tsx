@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
-import { ArrowUp, Check, ChevronDown, Cpu, FileCode2, FolderGit2, Loader2, Plus, Shuffle, X } from "lucide-react"
-import type { ModelChoice, SpendState, TargetChoice } from "@/lib/types"
+import { ArrowUp, Blocks, Check, ChevronDown, Cpu, FileCode2, FolderGit2, Loader2, Plus, Shuffle, X } from "lucide-react"
+import type { ModelChoice, PackChoice, SpendState, TargetChoice } from "@/lib/types"
 import { attachScope, removeScope } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 const RANDOM = "random"
+const DEFAULT_PACK = "contracts"
 
 // The New Run window, shaped like a composer. The body is the scope list: the
 // one real choice, shown in place. Each scope shows its name and its file,
@@ -27,6 +28,7 @@ export function NewRunDialog({
   onOpenChange,
   models,
   targets,
+  packs,
   spend,
   busy,
   error,
@@ -37,13 +39,18 @@ export function NewRunDialog({
   onOpenChange: (open: boolean) => void
   models: ModelChoice[]
   targets: TargetChoice[]
+  packs: PackChoice[]
   spend: SpendState | null
   busy: boolean
   error: string | null
-  onStart: (alias: string, targetId?: string, budgetUsd?: number) => void
+  onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string) => void
   onScopesChanged: () => void
 }) {
-  const runnable = targets.filter((t) => t.runnable)
+  // The module. Contracts unless the operator picks another; the server sends the
+  // list, so a new pack appears here by itself.
+  const [packPicked, setPackPicked] = useState("")
+  const pack = packs.some((p) => p.id === packPicked) ? packPicked : DEFAULT_PACK
+  const runnable = targets.filter((t) => t.runnable && (t.pack ?? DEFAULT_PACK) === pack)
   // The operator's pick, else the default model (the server lists it first).
   const [picked, setAlias] = useState("")
   const alias = picked || models[0]?.alias || ""
@@ -74,7 +81,7 @@ export function NewRunDialog({
 
   const submit = () => {
     if (!canStart) return
-    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN)
+    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack)
   }
 
   // Arrow keys move the selection (and focus) through the list. Enter starts.
@@ -92,12 +99,18 @@ export function NewRunDialog({
     listRef.current?.querySelector<HTMLElement>(`[data-id="${next}"]`)?.focus()
   }
 
+  // A scope belongs to one module, so a new module starts at Random scope.
+  const onPack = (id: string) => {
+    setPackPicked(id)
+    setScopeId(RANDOM)
+  }
+
   const notice = !budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : scopeError
       ? scopeError
       : runnable.length === 0
-        ? "No runnable scopes are available right now."
+        ? "No runnable scopes are available for this module right now."
         : error
 
   return (
@@ -138,16 +151,17 @@ export function NewRunDialog({
               />
             ))}
           </div>
-          <AddScope onAttached={onAttached} onError={setScopeError} />
+          {pack === DEFAULT_PACK ? <AddScope onAttached={onAttached} onError={setScopeError} /> : null}
         </div>
 
         {notice ? <p className="border-t border-border/60 px-4 py-2 text-xs text-bad">{notice}</p> : null}
 
-        <div className="flex items-center gap-2 border-t border-border/60 px-2 py-2">
+        <div className="flex min-w-0 items-center gap-2 border-t border-border/60 px-2 py-2">
+          <ModulePill packs={packs} pack={pack} onPack={onPack} />
           <ModelPill models={models} alias={alias} onAlias={setAlias} />
           <span className="flex-1" />
           <label
-            className="flex h-8 items-center rounded-full border border-border/60 pr-3 pl-3 text-xs text-muted-foreground focus-within:border-ring focus-within:text-foreground"
+            className="flex h-8 shrink-0 items-center rounded-full border border-border/60 pr-3 pl-3 text-xs text-muted-foreground focus-within:border-ring focus-within:text-foreground"
             title="Budget for this run. The run stops when it reaches it."
           >
             $
@@ -160,7 +174,7 @@ export function NewRunDialog({
               onKeyDown={(e) => e.key === "Enter" && submit()}
               aria-label="Budget for this run in USD"
             />
-            budget
+            <span className="max-sm:hidden">budget</span>
           </label>
           <Button
             size="icon"
@@ -168,7 +182,7 @@ export function NewRunDialog({
             disabled={!canStart}
             aria-label="Start run"
             title="Start run (Enter)"
-            className="rounded-full"
+            className="shrink-0 rounded-full"
           >
             {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
           </Button>
@@ -389,12 +403,12 @@ function ModelPill({
 }) {
   const current = models.find((m) => m.alias === alias)
   const pill =
-    "flex h-8 items-center gap-1.5 rounded-full border border-border/60 px-3 font-mono text-xs text-muted-foreground [&_svg]:size-3.5"
+    "flex h-8 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 px-3 font-mono text-xs text-muted-foreground [&_svg]:size-3.5"
   if (models.length <= 1) {
     return (
       <span className={pill} title={current?.id}>
         <Cpu />
-        {alias || "No model"}
+        <span className="truncate">{alias || "No model"}</span>
       </span>
     )
   }
@@ -404,7 +418,7 @@ function ModelPill({
         className={cn(pill, "outline-none hover:bg-muted hover:text-foreground aria-expanded:bg-muted")}
       >
         <Cpu />
-        {alias}
+        <span className="truncate">{alias}</span>
         <ChevronDown />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-64">
@@ -418,6 +432,52 @@ function ModelPill({
                   {m.abliterated ? " · abliterated" : ""}
                 </span>
               </span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+// The module (pack), as a pill beside the model. One module is a static label;
+// two or more open a menu. Same look as the model pill.
+function ModulePill({
+  packs,
+  pack,
+  onPack,
+}: {
+  packs: PackChoice[]
+  pack: string
+  onPack: (id: string) => void
+}) {
+  const current = packs.find((p) => p.id === pack)
+  const label = current?.title ?? pack
+  const pill =
+    "flex h-8 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 px-3 text-xs text-muted-foreground [&_svg]:size-3.5"
+  if (packs.length <= 1) {
+    return (
+      <span className={pill} title="Module">
+        <Blocks />
+        <span className="truncate">{label}</span>
+      </span>
+    )
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label="Module"
+        className={cn(pill, "outline-none hover:bg-muted hover:text-foreground aria-expanded:bg-muted")}
+      >
+        <Blocks />
+        <span className="truncate">{label}</span>
+        <ChevronDown />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-56">
+        <DropdownMenuRadioGroup value={pack} onValueChange={(v) => onPack(String(v))}>
+          {packs.map((p) => (
+            <DropdownMenuRadioItem key={p.id} value={p.id}>
+              {p.title}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
