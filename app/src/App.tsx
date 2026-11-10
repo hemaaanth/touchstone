@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type {
   ModelChoice,
-  PendingApproval,
   ProviderInfo,
-  RunStatus,
   RunSummary,
   SpendState,
   TargetChoice,
@@ -14,25 +12,17 @@ import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { PageStub } from "@/components/page-stub"
 import { NewRunDialog } from "@/components/new-run-dialog"
-import { fixtureRuns } from "@/lib/fixtures"
-
-const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
-
-// DEV-only: canned fixture runs offered alongside real runs so the streaming
-// cognition UI can be built and visually verified without a server or a live
-// model. Their `fixture:` ids route useRun to its deterministic replay path.
-// Stamped with a live startedAt so the elapsed clock ticks. Stripped from prod.
-const DEV_FIXTURES: RunSummary[] = import.meta.env.DEV
-  ? fixtureRuns.map((r) => ({ ...r, startedAt: Date.now() }))
-  : []
+import { loadRun, onRunSettled, useRunBriefs } from "@/lib/runModel"
+import { useStoredWidth } from "@/components/resize-handle"
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
   const [targets, setTargets] = useState<TargetChoice[]>([])
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
-  const [runs, setRuns] = useState<RunSummary[]>(DEV_FIXTURES)
+  const [runs, setRuns] = useState<RunSummary[]>([])
   const [view, setView] = useState<View | null>(null)
+  const [sidebarWidth, setSidebarWidth, sidebarDefault] = useStoredWidth("ts.sidebarWidth", 256, 208, 480)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -58,9 +48,11 @@ export function App() {
       .catch(() => [] as RunSummary[])
       .then((runList) => {
         if (!live) return
-        const merged = [...DEV_FIXTURES, ...runList]
-        setRuns(merged)
-        setView((cur) => cur ?? (merged.length > 0 ? { kind: "run", id: merged[0].id } : null))
+        setRuns(runList)
+        // Load every run up front, so switching to one is instant and live
+        // ones keep streaming in the background.
+        for (const r of runList) loadRun(r.id)
+        setView((cur) => cur ?? (runList.length > 0 ? { kind: "run", id: runList[0].id } : null))
       })
     return () => {
       live = false
@@ -87,28 +79,32 @@ export function App() {
     [refreshModels],
   )
 
-  // The selected run's live stream flows through RunChat; it reports each status
-  // change here so the sidebar row, spend meter, and findings stay current.
-  const onRunStatus = useCallback(
-    (id: string, status: RunStatus, pending: PendingApproval | null) => {
-      setRuns((prev) =>
-        prev.map((r) =>
-          r.id === id
-            ? { ...r, status, title: pending?.title ?? r.title, severity: pending?.severity ?? r.severity }
-            : r,
-        ),
-      )
-      if (TERMINAL.includes(status)) refreshModels()
-    },
-    [refreshModels],
+  // Each row shows the run's own state from the run store once it has loaded,
+  // and the server's list entry until then. Both say the same thing for a
+  // settled run, so a row never flickers when its run is opened.
+  const briefs = useRunBriefs()
+  const rows = useMemo(
+    () =>
+      runs.map((r) => {
+        const b = briefs[r.id]
+        if (!b) return r
+        return { ...r, status: b.status, title: b.pending?.title ?? r.title, severity: b.pending?.severity ?? r.severity }
+      }),
+    [runs, briefs],
   )
 
-  const activeRun = view?.kind === "run" ? runs.find((r) => r.id === view.id) ?? null : null
+  // A run that settles while we watch it changes spend and findings.
+  useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
+
+  const activeRun = view?.kind === "run" ? rows.find((r) => r.id === view.id) ?? null : null
 
   return (
-    <SidebarProvider>
+    <SidebarProvider style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
       <AppSidebar
-        runs={runs}
+        width={sidebarWidth}
+        onWidth={setSidebarWidth}
+        defaultWidth={sidebarDefault}
+        runs={rows}
         view={view}
         onSelect={setView}
         onNewRun={() => setDialogOpen(true)}
@@ -118,11 +114,7 @@ export function App() {
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat
-            key={activeRun.id}
-            run={activeRun}
-            onStatus={(status, pending) => onRunStatus(activeRun.id, status, pending)}
-          />
+          <RunChat key={activeRun.id} run={activeRun} />
         ) : view?.kind === "page" ? (
           <PageStub id={view.id} />
         ) : (

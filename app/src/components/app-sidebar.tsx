@@ -13,10 +13,10 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
+import { ResizeHandle } from "@/components/resize-handle"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
@@ -36,7 +36,13 @@ export function AppSidebar({
   onNewRun,
   spend,
   provider,
+  width,
+  onWidth,
+  defaultWidth,
 }: {
+  width: number
+  onWidth: (w: number) => void
+  defaultWidth: number
   runs: RunSummary[]
   view: View | null
   onSelect: (v: View) => void
@@ -114,12 +120,15 @@ export function AppSidebar({
           from the runs list above. Projects / Modules / Playbooks are
           destinations you leave the runs for, so they live down here by
           Settings rather than competing with the list. */}
-      <SidebarFooter className="gap-1 p-2">
-        <SidebarSeparator className="mx-0 mb-1" />
-        <SidebarMenu>
+      <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">
+        <SidebarMenu className="gap-px">
           {PAGES.map((p) => (
             <SidebarMenuItem key={p.id}>
-              <SidebarMenuButton isActive={isPage(p.id)} onClick={() => go({ kind: "page", id: p.id })}>
+              <SidebarMenuButton
+                className="h-7 text-[13px]"
+                isActive={isPage(p.id)}
+                onClick={() => go({ kind: "page", id: p.id })}
+              >
                 <p.icon className="size-4" />
                 <span>{p.label}</span>
               </SidebarMenuButton>
@@ -127,6 +136,7 @@ export function AppSidebar({
           ))}
           <SidebarMenuItem>
             <SidebarMenuButton
+              className="h-7 text-[13px]"
               isActive={isPage("settings")}
               onClick={() => go({ kind: "page", id: "settings" })}
             >
@@ -138,6 +148,7 @@ export function AppSidebar({
 
         {spend ? <SpendMeter spend={spend} provider={provider} /> : null}
       </SidebarFooter>
+      <ResizeHandle edge="right" width={width} onWidth={onWidth} initial={defaultWidth} label="Resize sidebar" />
     </Sidebar>
   )
 }
@@ -149,7 +160,7 @@ function SpendMeter({ spend, provider }: { spend: SpendState; provider: Provider
   const pct = spend.cap > 0 ? Math.min(100, (spend.usd / spend.cap) * 100) : 0
   const near = pct >= 90
   return (
-    <div className="rounded-md px-2 pt-1.5 pb-1">
+    <div className="mx-2 mt-2 border-t border-sidebar-border pt-2.5">
       <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
         <span className="min-w-0 truncate font-medium text-muted-foreground">
           {provider?.label ?? "Spend"}

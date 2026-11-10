@@ -348,8 +348,8 @@ export interface RunView {
   alias: string
   model: string
   // A label for back-compat; `scope` carries the structured target descriptor.
-  target: string
-  scope: TargetScope
+  target: string | null
+  scope: TargetScope | null
   status: RunStatus
   startedAt: number
   events: RunEvent[]

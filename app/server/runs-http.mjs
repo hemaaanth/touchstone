@@ -66,7 +66,9 @@ export async function handleRuns(req, res) {
     res.setHeader("connection", "keep-alive")
     res.flushHeaders?.()
     const write = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
-    const unsubscribe = subscribe(id, write)
+    // `since=N`: the client already loaded the first N events as a snapshot.
+    const since = Math.max(0, Number.parseInt(url.searchParams.get("since") ?? "0", 10) || 0)
+    const unsubscribe = subscribe(id, write, since)
     // Heartbeat so idle proxies (the bb Connect tunnel) keep the stream open.
     const beat = setInterval(() => res.write(": beat\n\n"), 15000)
     const close = () => {

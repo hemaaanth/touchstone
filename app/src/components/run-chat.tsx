@@ -26,7 +26,6 @@ import {
 import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { getFixtureFinding } from "@/lib/fixtures"
 import { elapsed, isTerminal } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
@@ -62,13 +61,7 @@ const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>
 // it arrives, and a subagent handoff reads as its own row. A live AgentStatus
 // pill above the composer names what the agent is doing right now.
 
-export function RunChat({
-  run,
-  onStatus,
-}: {
-  run: RunSummary
-  onStatus: (status: RunStatus, pending: PendingApproval | null) => void
-}) {
+export function RunChat({ run }: { run: RunSummary }) {
   const state = useRun(run.id)
   // The workspace documents the agent wrote, and which one the pane shows. On
   // desktop a new artifact auto-opens the pane and the pane follows to it;
@@ -110,20 +103,12 @@ export function RunChat({
   // A run can record several findings; each proof document names its own.
   const proofFindingId = openDoc?.findingId ?? state?.findingId ?? state?.findings[0]?.id ?? null
   const finding = useFinding(openDoc?.kind === "proof" ? proofFindingId : null)
-  // Flash fix: keep the sidebar's known status until this run's own stream has
-  // actually produced events. reduceEvents defaults to "starting", so reading
-  // state.status before any event would flash "Starting" on a settled run.
-  const status = state && state.events.length > 0 ? state.status : run.status
+  // Until the run store has loaded this run, trust the sidebar's status.
+  const status = state ? state.status : run.status
   const scope = state?.scope ?? null
   // Lock fix: steer only a connected, still-open run. Before the stream connects
   // state is null; once its terminal `closed` lands the composer settles.
   const live = !!state && !state.closed
-
-  // Report status + pending up so the sidebar row and spend meter follow live.
-  useEffect(() => {
-    if (state) onStatus(state.status, state.pending)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.status, state?.pending])
 
   const messages = useMemo(() => buildMessages(state, status, live), [state, status, live])
 
@@ -166,9 +151,10 @@ export function RunChat({
                 onClick={() => openArtifact(latest.fileId, latest.versionId)}
               >
                 <FileCode2 className="size-3.5" />
-                <span className="max-w-[7rem] truncate md:max-w-[12rem]">
-                  {latestFile.title}
-                </span>
+                <span>Artifacts</span>
+                {artifacts.length > 1 ? (
+                  <span className="tabular-nums text-muted-foreground">{artifacts.length}</span>
+                ) : null}
               </Button>
             ) : null}
           </header>
@@ -213,19 +199,14 @@ function isNarrow(): boolean {
 // so the composer only grabs focus on its own where there is a real pointer.
 const FINE_POINTER = typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches
 
-// Resolve the finding a proof document renders. In DEV the fixtures carry the
-// finding synchronously so the proof pane fills in the same tick it opens; a
-// real run fetches it from the API once. Returns null until one resolves, and
-// resets whenever the id changes so a stale proof never shows under a new one.
+// Resolve the finding a proof document renders, fetched once from the API.
+// Returns null until it loads, and resets whenever the id changes so a stale
+// proof never shows under a new one.
 function useFinding(findingId: string | null): Finding | null {
-  const fixture = useMemo(
-    () => (findingId && import.meta.env.DEV ? getFixtureFinding(findingId) : null),
-    [findingId],
-  )
   const [remote, setRemote] = useState<Finding | null>(null)
   useEffect(() => {
     setRemote(null)
-    if (!findingId || fixture) return
+    if (!findingId) return
     let live = true
     fetchFinding(findingId)
       .then((f) => live && setRemote(f))
@@ -233,8 +214,8 @@ function useFinding(findingId: string | null): Finding | null {
     return () => {
       live = false
     }
-  }, [findingId, fixture])
-  return fixture ?? remote
+  }, [findingId])
+  return remote
 }
 
 // A clock that ticks once a second while the run is live, so the AgentStatus

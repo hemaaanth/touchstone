@@ -2,7 +2,6 @@ import { useEffect, useState } from "react"
 import { ArrowLeft, Loader2 } from "lucide-react"
 import type { Finding, Severity } from "@/lib/types"
 import { fetchFinding, dismissFinding } from "@/lib/api"
-import { getFixtureFinding } from "@/lib/fixtures"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -32,23 +31,20 @@ function SeverityChip({ severity, proven }: { severity: Severity; proven: boolea
 
 // The quiet ledger override. A proven run records itself; this flips a recorded
 // finding to "not a finding I count" (or restores it). It never touches the
-// proof — only how the finding reads. For a fixture finding it toggles the label
-// locally; for a real one it persists through the API and rolls back on failure.
+// proof — only how the finding reads. It persists through the API and rolls
+// back on failure.
 function DismissControl({
   id,
-  fixture,
   dismissed,
   onChange,
 }: {
   id: string
-  fixture: boolean
   dismissed: boolean
   onChange: (next: boolean) => void
 }) {
   const [busy, setBusy] = useState(false)
   const toggle = (next: boolean) => {
     onChange(next)
-    if (fixture) return
     setBusy(true)
     dismissFinding(id, next)
       .catch(() => onChange(!next))
@@ -81,17 +77,9 @@ function DismissControl({
 export function FindingDetail({ findingId, onBack }: { findingId: string; onBack: () => void }) {
   const [finding, setFinding] = useState<Finding | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // A fixture id resolves to its canned finding and never hits the backend — the
-  // ledger write would 404. Real findings load (and dismiss) through the API.
-  const fixture = import.meta.env.DEV ? getFixtureFinding(findingId) : null
-
   useEffect(() => {
     setFinding(null)
     setError(null)
-    if (fixture) {
-      setFinding(fixture)
-      return
-    }
     let live = true
     fetchFinding(findingId)
       .then((f) => {
@@ -103,8 +91,6 @@ export function FindingDetail({ findingId, onBack }: { findingId: string; onBack
     return () => {
       live = false
     }
-    // fixture is derived from findingId; depending on findingId alone is correct.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findingId])
 
   return (
@@ -135,7 +121,6 @@ export function FindingDetail({ findingId, onBack }: { findingId: string; onBack
               <Separator />
               <DismissControl
                 id={finding.id}
-                fixture={!!fixture}
                 dismissed={finding.dismissed}
                 onChange={(next) => setFinding((f) => (f ? { ...f, dismissed: next } : f))}
               />

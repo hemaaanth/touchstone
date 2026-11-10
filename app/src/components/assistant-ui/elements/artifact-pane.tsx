@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { codeScroll, codeSurface, ShimmerLabel } from "./surfaces";
 import { StreamingCode, StreamingText } from "./streaming-text";
 import { ReplayProof } from "@/components/replay-proof";
+import { ResizeHandle, useStoredWidth } from "@/components/resize-handle";
 
 // The workspace pane beside the chat. The agent's live documents — the PoC it is
 // drafting, the replay proof it lands — open here instead of scrolling past in
@@ -48,6 +49,7 @@ export function ArtifactPane({
   onSelectVersion: (versionId: string) => void;
   onClose: () => void;
 }) {
+  const [width, setWidth, initialWidth] = useStoredWidth("ts.paneWidth", 432, 320, 1100);
   const doc = docs.find((d) => d.id === activeId) ?? docs[docs.length - 1];
   if (!doc) return null;
 
@@ -63,14 +65,17 @@ export function ArtifactPane({
 
   return (
     <aside
+      style={{ "--pane-width": `${width}px` } as React.CSSProperties}
       className={cn(
-        // Mobile: a full-width overlay above the chat, so a 27rem column never
+        // Mobile: a full-width overlay above the chat, so a narrow column never
         // squeezes the transcript off-screen or forces the code to wrap.
         "absolute inset-y-0 right-0 z-20 flex h-full w-full min-w-0 flex-col bg-background",
-        // Desktop: the fixed side column beside the chat.
-        "md:static md:z-auto md:w-[27rem] md:shrink-0 md:border-l md:bg-muted/20",
+        // Desktop: a side column beside the chat, as wide as the operator drags
+        // it, but never so wide the chat loses its own room.
+        "md:relative md:z-auto md:w-(--pane-width) md:max-w-[65%] md:shrink-0 md:border-l md:bg-muted/20",
       )}
     >
+      <ResizeHandle edge="left" width={width} onWidth={setWidth} initial={initialWidth} label="Resize document pane" />
       <header className="flex h-12 shrink-0 items-center gap-1 border-b pe-1.5 ps-1.5">
         {multi ? (
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">

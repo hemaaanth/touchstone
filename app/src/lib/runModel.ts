@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
-import { streamRun } from "./api"
+import { useCallback, useSyncExternalStore } from "react"
+import { fetchRun, streamRun } from "./api"
 import { isTerminal } from "./format"
-import { getFixture } from "./fixtures"
 import type {
   Activity,
   AgentNode,
@@ -601,42 +600,132 @@ export function reduceEvents(events: RunEvent[]): RunState {
   }
 }
 
-// Subscribe to a run and keep the reduced state fresh. The server replays the
-// whole history on connect, so we always start from an empty buffer.
+// ---------------------------------------------------------------------------
+// Run store. One entry per run, kept for the life of the page.
 //
-// A runId of `fixture:<name>` replays a canned `.events` sequence over timers
-// instead of opening the SSE — the deterministic, zero-cost harness the whole
-// streaming UI is built and visually verified against. It exercises the real
-// reduce → buildMessages → render path; only the transport is swapped. The DEV
-// shell is the only thing that ever hands useRun a `fixture:` id.
+// The first time a run is needed we load its full event list in one request
+// and reduce it once, so opening a run never replays it step by step. A run
+// that is still live then follows its SSE stream in the background (from the
+// first event the snapshot did not hold), even while another run is on screen.
+// Incoming events are batched, so a burst of deltas costs one render.
+
+interface RunEntry {
+  events: RunEvent[]
+  // Null until the snapshot has loaded. Never a guessed "starting" state.
+  state: RunState | null
+  listeners: Set<() => void>
+  loading: boolean
+}
+
+const entries = new Map<string, RunEntry>()
+const allListeners = new Set<() => void>()
+const settleListeners = new Set<(id: string) => void>()
+
+// Status and headline of every loaded run, for the sidebar. Replaced (never
+// mutated) on each change so useSyncExternalStore sees a new snapshot.
+export type RunBrief = { status: RunStatus; pending: PendingApproval | null }
+let briefs: Record<string, RunBrief> = {}
+
+function entryFor(id: string): RunEntry {
+  let en = entries.get(id)
+  if (!en) {
+    en = { events: [], state: null, listeners: new Set(), loading: false }
+    entries.set(id, en)
+  }
+  return en
+}
+
+function commit(id: string, en: RunEntry, events: RunEvent[]) {
+  const before = en.state
+  en.events = events
+  en.state = reduceEvents(events)
+  const s = en.state
+  if (!before || before.status !== s.status || before.pending !== s.pending) {
+    briefs = { ...briefs, [id]: { status: s.status, pending: s.pending } }
+    for (const l of allListeners) l()
+  }
+  // A run that settles while we watch it (not one that loaded settled).
+  if (before && !isTerminal(before.status) && isTerminal(s.status)) {
+    for (const l of settleListeners) l(id)
+  }
+  for (const l of en.listeners) l()
+}
+
+function follow(id: string, en: RunEntry) {
+  let queue: RunEvent[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flush = () => {
+    timer = null
+    if (!queue.length) return
+    const batch = queue
+    queue = []
+    commit(id, en, [...en.events, ...batch])
+  }
+  streamRun(
+    id,
+    (e) => {
+      queue.push(e)
+      timer ??= setTimeout(flush, 32)
+    },
+    en.events.length,
+    () => {
+      flush()
+      // The stream dropped before the run closed: load it fresh next time.
+      if (!en.state?.closed) en.loading = false
+    },
+  )
+}
+
+// Load a run into the store if it is not there yet. Safe to call often.
+export function loadRun(id: string) {
+  const en = entryFor(id)
+  if (en.loading) return
+  en.loading = true
+  fetchRun(id)
+    .then((view) => {
+      commit(id, en, view.events ?? [])
+      if (!en.state?.closed) follow(id, en)
+    })
+    .catch(() => {
+      en.loading = false
+    })
+}
+
+// The reduced state of one run. Null only until its snapshot first loads.
 export function useRun(runId: string | null): RunState | null {
-  const [events, setEvents] = useState<RunEvent[]>([])
-
-  useEffect(() => {
-    setEvents([])
-    if (!runId) return
-
-    if (runId.startsWith("fixture:")) {
-      const script = getFixture(runId.slice("fixture:".length))
-      let i = 0
-      let timer: ReturnType<typeof setTimeout>
-      const tick = () => {
-        if (i >= script.length) return
-        const e = script[i++]
-        setEvents((prev) => [...prev, e])
-        // Streamed snapshots land fast so prose and the drafting document
-        // visibly grow; discrete tool steps get a human beat between them.
-        const fast = e.ev === "thinking-delta" || e.ev === "assistant-delta" || e.ev === "artifact-delta"
-        const gap = fast ? 90 : 300
-        timer = setTimeout(tick, gap)
+  const subscribe = useCallback(
+    (cb: () => void) => {
+      if (!runId) return () => {}
+      const en = entryFor(runId)
+      en.listeners.add(cb)
+      loadRun(runId)
+      return () => {
+        en.listeners.delete(cb)
       }
-      timer = setTimeout(tick, 120)
-      return () => clearTimeout(timer)
-    }
+    },
+    [runId],
+  )
+  const get = useCallback(() => (runId ? (entries.get(runId)?.state ?? null) : null), [runId])
+  return useSyncExternalStore(subscribe, get)
+}
 
-    const stop = streamRun(runId, (e) => setEvents((prev) => [...prev, e]))
-    return stop
-  }, [runId])
+// Status and headline of every loaded run, keyed by run id.
+export function useRunBriefs(): Record<string, RunBrief> {
+  return useSyncExternalStore(
+    (cb) => {
+      allListeners.add(cb)
+      return () => {
+        allListeners.delete(cb)
+      }
+    },
+    () => briefs,
+  )
+}
 
-  return useMemo(() => (runId ? reduceEvents(events) : null), [runId, events])
+// Call `cb(id)` when a run settles while the page watches it.
+export function onRunSettled(cb: (id: string) => void): () => void {
+  settleListeners.add(cb)
+  return () => {
+    settleListeners.delete(cb)
+  }
 }

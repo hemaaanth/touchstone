@@ -78,19 +78,34 @@ export function dismissFinding(id: string, dismissed: boolean): Promise<{ id: st
   )
 }
 
-// Subscribe to a run's live event stream. Returns an unsubscribe function. The
-// server replays everything already seen on connect, so a subscriber attached
-// at any time catches up and then follows live.
-export function streamRun(id: string, onEvent: (e: RunEvent) => void): () => void {
-  const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/stream`)
-  source.onmessage = (msg) => {
-    try {
-      onEvent(JSON.parse(msg.data) as RunEvent)
-    } catch {
-      /* ignore a torn frame */
-    }
+// One run with its full event list, for the first load of a run.
+export function fetchRun(id: string): Promise<RunView> {
+  return getJson<RunView>(`/api/runs/${encodeURIComponent(id)}`)
+}
+
+// Follow a run's event stream from event index `since` on (the events before
+// it came from fetchRun). Returns an unsubscribe function. `onEnd` fires once
+// when the stream stops, for any reason.
+export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0, onEnd?: () => void): () => void {
+  const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/stream?since=${since}`)
+  let ended = false
+  const end = () => {
+    source.close()
+    if (ended) return
+    ended = true
+    onEnd?.()
   }
-  // The server closes the stream with a "closed" event; also stop on error.
-  source.onerror = () => source.close()
-  return () => source.close()
+  source.onmessage = (msg) => {
+    let e: RunEvent
+    try {
+      e = JSON.parse(msg.data) as RunEvent
+    } catch {
+      return
+    }
+    onEvent(e)
+    if (e.ev === "closed") end()
+  }
+  // The server ends the stream after "closed"; any other drop also ends it.
+  source.onerror = end
+  return end
 }

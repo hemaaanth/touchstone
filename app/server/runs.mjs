@@ -17,7 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
@@ -107,19 +107,32 @@ export function deleteScope(id) {
   return { removed: removeScope(id) }
 }
 
-// In-memory registry. The Vite dev server is one long-lived Node process, so a
-// Map plus per-run subscriber sets is all the live state we need.
+// Run registry. Live runs keep their subscribers here. Every event a run
+// broadcasts is also appended to `run-<id>.stream.jsonl`, so a server restart
+// loses nothing: at load, saved runs come back from disk (loadSavedRuns below).
 const runs = new Map()
 let seq = 0
+const TERMINAL = ["recorded", "denied", "error", "no-finding"]
 
 function monotonicId(alias) {
-  seq += 1
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(2, 12)
-  return `${alias}-${stamp}-${seq}`
+  let id
+  do {
+    seq += 1
+    id = `${alias}-${stamp}-${seq}`
+  } while (runs.has(id))
+  return id
 }
 
 function broadcast(run, event) {
   run.events.push(event)
+  if (run.streamFile) {
+    try {
+      appendFileSync(run.streamFile, JSON.stringify(event) + "\n")
+    } catch {
+      /* a full disk must not stop a live run */
+    }
+  }
   for (const send of run.subscribers) {
     try {
       send(event)
@@ -127,6 +140,12 @@ function broadcast(run, event) {
       run.subscribers.delete(send)
     }
   }
+}
+
+// A live run holds its target object; a run loaded from disk holds only the
+// scope summary its first event carried (or none, for a run older than scopes).
+function scopeOf(run) {
+  return run.target ? targetSummary(run.target) : (run.scope ?? null)
 }
 
 // Public view of a run: safe to serialize, no child handles or sockets.
@@ -139,8 +158,8 @@ function view(run) {
     // a hardcoded string. `target` stays a label for back-compat; `scope` carries
     // the structured descriptor so the UI can show kind, proof surface, and which
     // resource is under evaluation.
-    target: run.target.title,
-    scope: targetSummary(run.target),
+    target: scopeOf(run)?.title ?? null,
+    scope: scopeOf(run),
     // The module plan for this run — which parts of the pipeline are on and why,
     // so a reconnecting client can render it without replaying the event stream.
     modules: run.modules ?? null,
@@ -183,13 +202,14 @@ export function getRun(id) {
   return run ? view(run) : null
 }
 
-export function subscribe(id, send) {
+// `since` skips events the client already holds (it loaded a snapshot first).
+export function subscribe(id, send, since = 0) {
   const run = runs.get(id)
   if (!run) return null
   // Replay what already happened so a late subscriber is never behind.
-  for (const e of run.events) send(e)
+  for (const e of run.events.slice(since)) send(e)
   send({ ev: "status", status: run.status, pending: run.pending, decision: run.decision })
-  if (["recorded", "denied", "error", "no-finding"].includes(run.status)) {
+  if (TERMINAL.includes(run.status)) {
     send({ ev: "closed" })
     return () => {}
   }
@@ -239,7 +259,8 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
   const id = monotonicId(alias)
   const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
   const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
-  for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile]) rmSync(f, { force: true })
+  const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
+  for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
   const ws = prepareWorkspace(target, { modules: plan })
 
   const run = {
@@ -255,6 +276,7 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
     db,
     ws,
     eventsFile,
+    streamFile,
     pending: null,
     submitted: [],
     findingIds: [],
@@ -291,7 +313,9 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId, modules } 
 
 function setRunStatus(run, status) {
   run.status = status
-  broadcast(run, { ev: "status", status, pending: run.pending, decision: run.decision })
+  const e = { t: Date.now(), ev: "status", status, pending: run.pending, decision: run.decision }
+  if (run.error) e.error = run.error
+  broadcast(run, e)
 }
 
 // Run the pre-pass ensemble over the prepared workspace, then spawn the agent
@@ -520,3 +544,150 @@ function persistRun(run, findings) {
   }
   writeFileSync(path.join(RESULTS_DIR, `run-${run.id}.json`), JSON.stringify({ result, transcript: summary }, null, 2))
 }
+
+// ---------------------------------------------------------------------------
+// Saved runs. At load, every app run on disk comes back into the registry as a
+// settled run, so the sidebar lists real history and a restart loses nothing.
+//
+// A run started by this server has `run-<id>.stream.jsonl`: the exact events
+// it broadcast. An older app run has only the engine's `run-<id>.events` plus
+// its `run-<id>.json` record; we rebuild the same event shape from those two.
+// CLI runs (`run-<alias>.json`, no stamp) are not app runs and are skipped.
+const APP_RUN = /^run-([a-z0-9-]+-\d{10}-\d+)\.(stream\.jsonl|json)$/
+
+function readJsonl(file) {
+  const out = []
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue
+    try {
+      out.push(JSON.parse(line))
+    } catch {
+      /* a torn last line from a crash */
+    }
+  }
+  return out
+}
+
+// Rebuild the broadcast stream of an older app run from its record and its
+// engine events. Mirrors what createRun, startEngine and recordRun broadcast.
+function rebuildEvents(id, record, engineEvents) {
+  const r = record.result ?? {}
+  const t0 = engineEvents[0]?.t ?? Date.now()
+  const tN = engineEvents[engineEvents.length - 1]?.t ?? t0
+  const evs = []
+  if (r.target) evs.push({ t: t0, ev: "scope", scope: r.target })
+  if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
+  if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
+  if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
+  for (const e of engineEvents) if (e.ev !== "settled") evs.push(e)
+  evs.push({ t: tN, ev: "status", status: "deciding" })
+  // New records list every finding (ids `<runId>.<k>`); an older record has
+  // one finding whose id is the run id (see splitRun in findings.mjs).
+  const list = Array.isArray(r.findings) && r.findings.length
+    ? r.findings.map((f, k) => ({ id: `${id}.${k + 1}`, title: f.title, severity: f.severity, poc: f.poc, proven: !!f.pocProved }))
+    : r.finding
+      ? [{ id, title: r.finding.title, severity: r.finding.severity, poc: r.finding.poc, proven: !!r.pocProved }]
+      : []
+  for (const f of list) {
+    evs.push({ t: tN, ev: "finding", id: f.id, runId: id, title: f.title, severity: f.severity, poc: f.poc, proven: f.proven, target: r.target?.title ?? null })
+    if (!f.proven) continue
+    evs.push({ t: tN, ev: "artifact-open", id: `proof-${f.id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: f.id })
+    evs.push({ t: tN, ev: "artifact-done", id: `proof-${f.id}` })
+  }
+  const ids = list.map((f) => f.id)
+  if (ids.length) {
+    evs.push({ t: tN, ev: "status", status: "recorded", decision: "approve", findingId: ids[0], findingIds: ids })
+  } else if (r.final) {
+    evs.push({ t: tN, ev: "no-finding", final: r.final })
+    evs.push({ t: tN, ev: "status", status: "no-finding" })
+  } else {
+    evs.push({ t: tN, ev: "status", status: "error", error: "the run did not complete" })
+  }
+  evs.push({ t: tN, ev: "closed" })
+  return evs
+}
+
+// Turn a saved event list into a settled registry entry. Status, headline and
+// finding ids are read back from the events themselves.
+function savedRun(id, events, mtime) {
+  const alias = id.replace(/-\d{10}-\d+$/, "")
+  let status = "error"
+  let decision = null
+  let error = null
+  let findingIds = []
+  let scope = null
+  let modules = null
+  const submitted = []
+  for (const e of events) {
+    if (e.ev === "scope") scope = e.scope ?? null
+    if (e.ev === "modules") modules = e.modules ?? null
+    if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
+      submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc })
+    }
+    if (e.ev === "status") {
+      status = e.status ?? status
+      if (e.decision) decision = e.decision
+      if (Array.isArray(e.findingIds)) findingIds = e.findingIds
+      if (typeof e.error === "string") error = e.error
+    }
+  }
+  // A terminal status always lands in the stream file. Without one, the server
+  // stopped mid-run. Mark it in memory only: the file stays the true record.
+  if (!TERMINAL.includes(status)) {
+    status = "error"
+    error = "the server restarted during this run, so it stopped"
+    events.push({ t: Date.now(), ev: "status", status, error })
+  }
+  if (!events.some((e) => e.ev === "closed")) events.push({ t: Date.now(), ev: "closed" })
+  return {
+    id,
+    alias,
+    target: null,
+    scope,
+    modules,
+    model: MODELS[alias]?.id ?? alias,
+    status,
+    startedAt: events.find((e) => e.t)?.t ?? mtime,
+    events,
+    subscribers: new Set(),
+    pending: sortFindings(submitted)[0] ?? null,
+    submitted,
+    findingIds,
+    decision,
+    error,
+    child: null,
+    stderr: "",
+  }
+}
+
+function loadSavedRuns() {
+  if (!existsSync(RESULTS_DIR)) return
+  const ids = new Set()
+  for (const f of readdirSync(RESULTS_DIR)) {
+    const m = APP_RUN.exec(f)
+    if (m) ids.add(m[1])
+  }
+  for (const id of ids) {
+    try {
+      const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
+      const recordFile = path.join(RESULTS_DIR, `run-${id}.json`)
+      let events
+      let mtime
+      if (existsSync(streamFile)) {
+        events = readJsonl(streamFile)
+        mtime = statSync(streamFile).mtimeMs
+      } else {
+        const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
+        const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
+        events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
+        mtime = statSync(recordFile).mtimeMs
+      }
+      if (!events.length) continue
+      runs.set(id, savedRun(id, events, mtime))
+    } catch (err) {
+      console.warn(`[runs] skipped saved run ${id}: ${String(err?.message ?? err).slice(0, 200)}`)
+    }
+  }
+}
+
+loadSavedRuns()
