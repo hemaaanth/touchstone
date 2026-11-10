@@ -177,7 +177,7 @@ function SpendMeter({ spend, provider }: { spend: SpendState; provider: Provider
         <div
           className={cn(
             "h-full rounded-full transition-[width] duration-500",
-            near ? "bg-amber-500" : "bg-foreground/45",
+            near ? "bg-warn" : "bg-foreground/45",
           )}
           style={{ width: `${pct}%` }}
         />

@@ -17,23 +17,21 @@ import {
   FileCode2,
   GitBranch,
   PenLine,
-  ShieldCheck,
+  Play,
+  ShieldX,
   TerminalSquare,
   Loader2,
-  Clock,
-  CircleSlash,
 } from "lucide-react"
 import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { elapsed, isTerminal } from "@/lib/format"
+import { elapsed, INK, isTerminal, severityTone } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
-import { ShimmerLabel } from "@/components/assistant-ui/elements/surfaces"
+import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
 import { StreamingText } from "@/components/assistant-ui/elements/streaming-text"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
@@ -277,7 +275,7 @@ function Thread({
           <ThreadPrimitive.Messages components={{ Message }} />
 
           {error ? (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className={cn(card, "px-4 py-3 text-sm text-bad")}>
               {error}
             </div>
           ) : null}
@@ -389,9 +387,9 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     tail?: boolean
   }
   if (a.pending)
-    return <ProofCard pending={a.pending} state={a.card ?? "waiting"} proofArtifactId={a.proofArtifactId ?? null} />
+    return <FindingCard pending={a.pending} state={a.card ?? "waiting"} proofArtifactId={a.proofArtifactId ?? null} />
   if (a.group) return <ToolGroupPart group={a.group} />
-  if (a.artifact && a.version)
+  if (a.artifact && a.version && !a.step)
     return (
       <ArtifactChip doc={a.artifact} version={a.version} vIndex={a.vIndex ?? 1} vCount={a.vCount ?? 1} />
     )
@@ -401,19 +399,14 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   if (step.kind === "reasoning") return <ReasoningPart step={step} tail={!!a.tail} />
   if (step.kind === "say") return <SayPart step={step} tail={!!a.tail} />
   if (step.kind === "subagent") return <HandoffRow step={step} />
-  if (step.kind === "poc") return <PocRow step={step} />
+  if (step.kind === "poc")
+    return <AttemptCard step={step} file={a.artifact ?? null} version={a.version ?? null} vIndex={a.vIndex ?? 1} />
   if (step.kind === "decided")
     return (
-      <div
-        className={cn(
-          "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm",
-          step.state === "pass"
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-            : "border-destructive/40 bg-destructive/10 text-destructive",
-        )}
-      >
-        <ShieldCheck className="size-4" />
-        {step.label}
+      <div className={cn(card, "flex items-center gap-2.5 px-3.5 py-2.5 text-sm")}>
+        <ShieldX className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate font-medium">{step.label}</span>
+        <StatusMark className="ml-auto" mark="off" word="Denied" />
       </div>
     )
 
@@ -462,7 +455,7 @@ function ToolGroupPart({ group }: { group: Step[] }) {
 function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
   if (tail) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+      <div className={cn(card, "px-3.5 py-2.5")}>
         <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <Brain className="size-3.5" />
           <ShimmerLabel active>Thinking</ShimmerLabel>
@@ -502,30 +495,13 @@ function SayPart({ step, tail }: { step: Step; tail: boolean }) {
 // A subagent handoff: the lead delegated an angle to a child conversation. Reads
 // as a distinct dashed row with the child's area and live state.
 function HandoffRow({ step }: { step: Step }) {
-  const failed = step.subState === "failed"
-  const done = step.subState === "done" || failed
+  const mark: Mark = step.subState === "failed" ? "fail" : step.subState === "done" ? "done" : "running"
   return (
-    <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-border/70 bg-muted/20 px-3 py-2 text-sm">
+    <div className={cn(card, "flex items-center gap-2.5 px-3.5 py-2.5 text-sm")}>
       <GitBranch className="size-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate font-medium">{step.label}</span>
-      {step.detail ? (
-        <Badge variant="secondary" className="shrink-0 text-[11px]">
-          {step.detail}
-        </Badge>
-      ) : null}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-        {done ? (
-          failed ? (
-            <span className="text-destructive">failed</span>
-          ) : (
-            <span className="text-emerald-600 dark:text-emerald-400">done</span>
-          )
-        ) : (
-          <>
-            <Loader2 className="size-3.5 animate-spin" /> working
-          </>
-        )}
-      </span>
+      {step.detail ? <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{step.detail}</span> : null}
+      <StatusMark className="ml-auto" mark={mark} />
     </div>
   )
 }
@@ -598,58 +574,105 @@ function DraftTail({ text }: { text: string }) {
   )
 }
 
-function PocRow({ step }: { step: Step }) {
-  const tone =
-    step.state === "pass"
-      ? "border-emerald-500/40 bg-emerald-500/10"
-      : step.state === "fail"
-        ? "border-destructive/40 bg-destructive/10"
-        : "border-amber-500/40 bg-amber-500/10"
+// One exploit attempt as one card: the test file the agent wrote, then the
+// Foundry run of that test. Every attempt has the same two rows, so attempt 2
+// reads exactly like attempt 1. The file row opens that version in the pane.
+function AttemptCard({
+  step,
+  file,
+  version,
+  vIndex,
+}: {
+  step: Step
+  file: ArtifactDoc | null
+  version: ArtifactVersion | null
+  vIndex: number
+}) {
+  const open = useContext(OpenArtifact)
+  const mark: Mark = step.state === "pass" ? "pass" : step.state === "fail" ? "fail" : "running"
+  const text = version?.text ?? ""
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0
+  const lines = text ? text.trimEnd().split("\n").length : 0
+  const openFile = file && version ? () => open(file.id, version.id) : null
+  const row = "flex w-full items-center gap-2.5 border-t border-border/60 px-3.5 py-2 text-left text-[13px]"
   return (
-    <div className={cn("rounded-lg border px-3 py-2.5", tone)}>
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <TerminalSquare className="size-4 shrink-0" />
-        <span className="shrink-0 whitespace-nowrap">{step.label}</span>
+    <div className={cn(card, "overflow-hidden")}>
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+        <TerminalSquare className="size-4 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 whitespace-nowrap text-sm font-medium">{step.label}</span>
         {step.contract ? (
-          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{step.contract}</span>
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{step.contract}</span>
         ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs">
-          {step.state === "running" ? (
-            <>
-              <Loader2 className="size-3.5 animate-spin" /> running
-            </>
-          ) : step.state === "pass" ? (
-            <span className="text-emerald-600 dark:text-emerald-400">passed</span>
-          ) : (
-            <span className="text-destructive">failed</span>
-          )}
+        <StatusMark className="ml-auto" mark={mark} />
+      </div>
+
+      {file && version ? (
+        <button
+          type="button"
+          onClick={openFile ?? undefined}
+          className={cn(row, "group transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:outline-none")}
+        >
+          <FileCode2 className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate">
+            {version.writing ? "Writing " : "Wrote "}
+            <span className="font-mono text-[12px]">{file.title}</span>
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums">
+            {version.writing ? (
+              <ShimmerLabel active>{words} words</ShimmerLabel>
+            ) : (
+              <>
+                {file.versions.length > 1 ? `v${vIndex} · ` : ""}
+                {lines} lines
+              </>
+            )}
+            <ChevronRight className="size-3.5 transition-colors group-hover:text-foreground" />
+          </span>
+        </button>
+      ) : null}
+      {version?.writing ? (
+        <div className="px-3.5 pb-2.5 md:hidden">
+          <DraftTail text={text} />
+        </div>
+      ) : null}
+
+      <div className={row}>
+        <Play className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate">Ran it in Foundry</span>
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+          {step.state === "running" ? (version?.writing ? "Waiting for the file" : "Running…") : step.detail}
         </span>
       </div>
-      {step.detail ? <p className="mt-1 pl-6 text-xs text-muted-foreground">{step.detail}</p> : null}
     </div>
   )
 }
 
-// The inline finding card. Amber while the replay runs; green once recorded.
-// A recorded finding opens its replay proof as a document in the pane beside the
-// chat — the same place the PoC opened, so the proof reads as another artifact.
-// The whole card becomes a button so it is keyboard reachable, with a hover ring
-// and an "Open replay proof" affordance so the click target reads as one. An
-// unproven card stays a plain, non-interactive div.
-// waiting: the test passed; the audit goes on and the final replay comes at the
-// end. replaying: the run is recording now. proven: the final replay held.
+// The finding the agent submitted. It is the same plain card as every other
+// one. Its state lives in the StatusMark; its severity is an overline word, red
+// or amber only once a replay proved it. A proven card opens its replay proof
+// in the pane, the same place the PoC opened.
+// waiting: the test passed; the final replay comes when the audit ends.
+// replaying: the run is recording now. proven: the final replay held.
 // unproven / dropped: the run settled without proving this one.
 type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
 
 const CARD_NOTE: Record<CardState, string> = {
-  waiting: "Test passed. The final replay runs when the audit ends.",
-  replaying: "Replaying to prove the exploit…",
-  proven: "Proven by replay — recorded as a finding.",
+  waiting: "The test passed. The final replay runs when the audit ends.",
+  replaying: "Replaying the test from a clean state.",
+  proven: "A clean Foundry replay reproduced the exploit.",
   unproven: "Recorded, but the final replay did not reproduce it.",
-  dropped: "Not recorded: the run ended before the final replay.",
+  dropped: "Not recorded. The run ended before the final replay.",
 }
 
-function ProofCard({
+const CARD_MARK: Record<CardState, { mark: Mark; word?: string }> = {
+  waiting: { mark: "waiting" },
+  replaying: { mark: "running", word: "Replaying" },
+  proven: { mark: "proven" },
+  unproven: { mark: "off", word: "Not reproduced" },
+  dropped: { mark: "off", word: "Not recorded" },
+}
+
+function FindingCard({
   pending,
   state,
   proofArtifactId,
@@ -660,34 +683,33 @@ function ProofCard({
 }) {
   const openArtifact = useContext(OpenArtifact)
   const proven = state === "proven"
-  const amber = state === "waiting" || state === "replaying"
   const clickable = proven && !!proofArtifactId
+  const sevInk = proven ? INK[severityTone(pending.severity)] : "text-muted-foreground"
+  const m = CARD_MARK[state]
   const body = (
     <>
-      <div className="flex items-center gap-2">
-        {proven ? (
-          <ShieldCheck className="size-4 shrink-0 text-emerald-500" />
-        ) : state === "replaying" ? (
-          <Loader2 className="size-4 shrink-0 animate-spin text-amber-500" />
-        ) : state === "waiting" ? (
-          <Clock className="size-4 shrink-0 text-amber-500" />
-        ) : (
-          <CircleSlash className="size-4 shrink-0 text-muted-foreground" />
-        )}
-        <span className="text-sm font-semibold">{pending.title}</span>
-        <Badge variant="outline" className="ml-auto capitalize">
-          {pending.severity}
-        </Badge>
+      <div className="px-4 pt-3.5 pb-3">
+        <div className="flex items-center gap-2 text-[11px] font-medium tracking-wide uppercase">
+          <span className="text-muted-foreground">Finding</span>
+          <span aria-hidden className="text-muted-foreground/50">·</span>
+          <span className={sevInk}>{pending.severity}</span>
+          <StatusMark className="ml-auto tracking-normal normal-case" mark={m.mark} word={m.word} />
+        </div>
+        <p className="mt-1.5 text-[15px] leading-snug font-semibold text-pretty">{pending.title}</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{CARD_NOTE[state]}</p>
       </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        {CARD_NOTE[state]}
-      </p>
-      {pending.poc ? <p className="mt-2 font-mono text-[11px] text-muted-foreground">{pending.poc}</p> : null}
-      {clickable ? (
-        <p className="mt-2.5 flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-          Open replay proof
-          <ChevronRight className="size-3.5" />
-        </p>
+      {pending.poc || clickable ? (
+        <div className="flex items-center gap-2 border-t border-border/60 px-4 py-2">
+          {pending.poc ? (
+            <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{pending.poc}</span>
+          ) : null}
+          {clickable ? (
+            <span className="ml-auto flex shrink-0 items-center gap-0.5 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
+              Open replay proof
+              <ChevronRight className="size-3.5" />
+            </span>
+          ) : null}
+        </div>
       ) : null}
     </>
   )
@@ -697,27 +719,13 @@ function ProofCard({
       <button
         type="button"
         onClick={() => openArtifact(proofArtifactId)}
-        className="block w-full rounded-xl border border-emerald-500/50 bg-emerald-500/5 p-4 text-left transition-colors hover:bg-emerald-500/10 focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
+        className={cn(card, cardInteractive, "group block w-full overflow-hidden text-left")}
       >
         {body}
       </button>
     )
   }
-
-  return (
-    <div
-      className={cn(
-        "rounded-xl border p-4",
-        proven
-          ? "border-emerald-500/50 bg-emerald-500/5"
-          : amber
-            ? "border-amber-500/50 bg-amber-500/5"
-            : "bg-muted/30",
-      )}
-    >
-      {body}
-    </div>
-  )
+  return <div className={cn(card, "overflow-hidden")}>{body}</div>
 }
 
 // Fold the reduced step stream into assistant-ui messages. Operator steps are
@@ -824,12 +832,40 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
       }
       if (!file || !version) return
       if (file.kind === "proof") return
+      // A PoC version that belongs to an attempt shows inside that attempt's
+      // card, not as its own chip.
+      if (file.kind === "poc" && version.attempt != null) return
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
         toolCallId: step.key,
         toolName: "artifact",
         args: { artifact: file, version, vIndex: vIndex + 1, vCount: file.versions.length },
         result: "done",
+      })
+      return
+    }
+    // An attempt card carries the test file it ran: the PoC version written for
+    // this attempt number and contract.
+    if (step.kind === "poc") {
+      let pocFile: ArtifactDoc | null = null
+      let pocVersion: ArtifactVersion | null = null
+      let vIndex = 0
+      for (const a of state.artifacts) {
+        if (a.kind !== "poc") continue
+        const idx = a.versions.findIndex((v) => v.attempt === step.attempt && v.contract === step.contract)
+        if (idx >= 0) {
+          pocFile = a
+          pocVersion = a.versions[idx]
+          vIndex = idx + 1
+          break
+        }
+      }
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: step.key,
+        toolName: "poc",
+        args: { step, artifact: pocFile, version: pocVersion, vIndex },
+        result: step.state ?? "done",
       })
       return
     }

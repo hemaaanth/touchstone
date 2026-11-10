@@ -260,12 +260,12 @@ export function reduceEvents(events: RunEvent[]): RunState {
           if (s.kind === "poc" && s.state === "running" && s.contract === str(e.contract)) {
             s.state = e.passed ? "pass" : "fail"
             s.detail = e.passed
-              ? "Replay passed"
+              ? "Test passed"
               : e.timedOut
-                ? "Replay timed out"
+                ? "Test timed out"
                 : num(e.failed) != null
                   ? `${num(e.failed)} test${num(e.failed) === 1 ? "" : "s"} failed`
-                  : "Replay did not pass"
+                  : "Test failed"
             break
           }
         }

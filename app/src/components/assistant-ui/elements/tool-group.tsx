@@ -3,7 +3,7 @@
 import type { ComponentProps } from "react";
 import { CheckIcon, ChevronRightIcon, Loader2Icon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { mono, paper } from "./surfaces";
+import { card, mono, StatusMark } from "./surfaces";
 
 export type GroupedToolState = "running" | "done" | "failed";
 
@@ -45,25 +45,15 @@ export function ToolGroup({
           open && "rotate-90",
         )}
       />
-      <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
-      {/* Reserve the count's width and right-align it so the running `3/5` → the
-          settled `5 done` swap never dances the trailing status icon. */}
-      <span
-        className={cn(mono, "min-w-[3.5rem] shrink-0 text-end text-muted-foreground tabular-nums")}
-      >
-        {running > 0
-          ? `${tools.length - running}/${tools.length}`
-          : failed > 0
-            ? `${failed} failed`
-            : `${tools.length} done`}
+      <span className="min-w-0 truncate text-[13.5px] font-medium">{label}</span>
+      <span className={cn(mono, "shrink-0 text-muted-foreground tabular-nums")}>
+        {tools.length} {tools.length === 1 ? "step" : "steps"}
       </span>
-      {running > 0 ? (
-        <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-      ) : failed > 0 ? (
-        <XIcon className="size-3.5 shrink-0 text-red-500" />
-      ) : (
-        <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
-      )}
+      <StatusMark
+        className="ml-auto"
+        mark={running > 0 ? "running" : failed > 0 ? "fail" : "done"}
+        word={running > 0 ? `Running ${tools.length - running}/${tools.length}` : undefined}
+      />
     </>
   );
 
@@ -71,8 +61,8 @@ export function ToolGroup({
     <div
       data-slot="tool-group"
       className={cn(
-        paper,
-        "flex w-full max-w-sm flex-col overflow-hidden rounded-2xl",
+        card,
+        "flex w-full max-w-sm flex-col overflow-hidden",
         className,
       )}
 
@@ -102,9 +92,9 @@ export function ToolGroup({
                 {tool.state === "running" ? (
                   <Loader2Icon className="text-muted-foreground size-3 animate-spin motion-reduce:animate-none" />
                 ) : tool.state === "failed" ? (
-                  <XIcon className="size-3 text-red-500" />
+                  <XIcon className="size-3 text-muted-foreground" />
                 ) : (
-                  <CheckIcon className="size-3 text-emerald-500" />
+                  <CheckIcon className="size-3 text-muted-foreground" />
                 )}
               </span>
               <span className={cn(mono, "text-muted-foreground shrink-0")}>

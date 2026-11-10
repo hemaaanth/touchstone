@@ -27,6 +27,9 @@
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
+    --color-ok: var(--ok);
+    --color-bad: var(--bad);
+    --color-warn: var(--warn);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -75,6 +78,11 @@
     --chart-4: oklch(0.828 0.189 84.429);
     --chart-5: oklch(0.769 0.188 70.08);
     --radius: 0.625rem;
+    /* Status tones. Low chroma on purpose: a status is read from its word and
+       icon, and the colour only confirms it. Never used as a card fill. */
+    --ok: oklch(0.52 0.075 165);
+    --bad: oklch(0.55 0.12 25);
+    --warn: oklch(0.6 0.09 70);
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -101,6 +109,9 @@
     --accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
+    --ok: oklch(0.8 0.07 165);
+    --bad: oklch(0.75 0.09 25);
+    --warn: oklch(0.83 0.08 80);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);

@@ -22,7 +22,7 @@ function SeverityChip({ severity, proven }: { severity: Severity; proven: boolea
   return (
     <Badge
       variant="outline"
-      className={cn(danger && "border-destructive/40 bg-destructive/10 text-destructive")}
+      className={cn(danger && "border-bad/30 text-bad")}
     >
       {SEV_LABEL[severity]}
     </Badge>

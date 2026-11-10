@@ -82,10 +82,18 @@ export function severityTone(sev: Severity): Tone {
   return sev === "critical" || sev === "high" ? "red" : sev === "medium" ? "amber" : "neutral"
 }
 
+// Text colour for a status word or icon, keyed by tone.
+export const INK: Record<Tone, string> = {
+  green: "text-ok",
+  amber: "text-warn",
+  red: "text-bad",
+  neutral: "text-muted-foreground",
+}
+
 // Tailwind classes for a small status dot, keyed by tone.
 export const DOT: Record<Tone, string> = {
-  green: "bg-emerald-500",
-  amber: "bg-amber-500",
-  red: "bg-destructive",
+  green: "bg-ok",
+  amber: "bg-warn",
+  red: "bg-bad",
   neutral: "bg-muted-foreground/60",
 }

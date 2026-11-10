@@ -203,15 +203,15 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
       {/* Hero verdict — green only because the replay passed on a sandbox fork. */}
       <div
         className={cn(
-          "flex flex-col gap-2 rounded-md p-4",
-          proven ? "bg-emerald-500/10" : "bg-muted",
+          "flex flex-col gap-2 rounded-xl border p-4",
+          proven ? "border-ok/25 bg-ok/[0.06]" : "border-border/60 bg-muted/40",
         )}
       >
         <div className="flex items-center gap-2">
           <span
             className={cn(
               "grid size-[22px] shrink-0 place-items-center rounded-full",
-              proven ? "bg-emerald-500 text-background" : "bg-muted-foreground/30 text-foreground",
+              proven ? "bg-ok/15 text-ok" : "bg-muted-foreground/20 text-muted-foreground",
             )}
           >
             {proven ? <Check className="size-3.5" /> : <Info className="size-3.5" />}
@@ -341,7 +341,7 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
           <ul className="flex flex-col gap-1.5">
             {proof.assertions.map((a) => (
               <li key={a} className="flex items-start gap-1.5 font-mono text-xs text-muted-foreground">
-                <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-500" />
+                <Check className="mt-0.5 size-3.5 shrink-0 text-ok" />
                 <span className="min-w-0 break-words">{a}</span>
               </li>
             ))}

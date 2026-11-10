@@ -2,10 +2,21 @@
 
 import type { ComponentProps } from "react";
 import { useRef, useState } from "react";
+import { CheckIcon, ClockIcon, Loader2Icon, MinusIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsomorphicLayoutEffect } from "../utils/useIsomorphicLayoutEffect";
 
 export const paper = "bg-background border border-border/60 dark:bg-popover";
+
+// Every card in the run transcript uses this one surface: the same radius,
+// border and fill. Status never tints a card. Its colour lives only in the
+// StatusMark, so a passed card and a failed card have the same shape.
+export const card = "bg-background border border-border/60 rounded-xl dark:bg-popover";
+
+// A card you can click. Hover only lifts the border and fill a little. It does
+// not move, scale or glow.
+export const cardInteractive =
+  "cursor-pointer transition-colors hover:border-foreground/20 hover:bg-foreground/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/15";
 
 export const floating = "bg-background border border-border/60 dark:bg-popover";
 
@@ -45,6 +56,64 @@ export const collapsePanel =
 export const live = "text-blue-500 dark:text-blue-400";
 
 export const mono = "font-mono text-[11px] tracking-tight";
+
+// The one way a card shows its state: a small icon and one word, top right.
+// Colour is rare (docs/restraint.md). Only "Proven" is green: a Foundry replay
+// proved the finding. A failed attempt is normal work, so it stays grey.
+export type Mark = "running" | "writing" | "done" | "pass" | "fail" | "proven" | "waiting" | "off";
+
+const MARK: Record<Mark, { word: string; ink: string }> = {
+  running: { word: "Running", ink: "text-muted-foreground" },
+  writing: { word: "Writing", ink: "text-muted-foreground" },
+  waiting: { word: "Waiting", ink: "text-warn" },
+  done: { word: "Done", ink: "text-muted-foreground" },
+  pass: { word: "Passed", ink: "text-foreground" },
+  proven: { word: "Proven", ink: "text-ok" },
+  fail: { word: "Failed", ink: "text-muted-foreground" },
+  off: { word: "Not proven", ink: "text-muted-foreground" },
+};
+
+export function StatusMark({
+  mark,
+  word,
+  className,
+}: {
+  mark: Mark;
+  /** Override the word, e.g. "Running 3/5". The icon and tone stay. */
+  word?: string;
+  className?: string;
+}) {
+  const m = MARK[mark];
+  const Icon =
+    mark === "running" || mark === "writing"
+      ? Loader2Icon
+      : mark === "fail"
+        ? XIcon
+        : mark === "waiting"
+          ? ClockIcon
+          : mark === "off"
+            ? MinusIcon
+            : CheckIcon;
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-1 text-xs font-medium",
+        m.ink,
+        className,
+      )}
+    >
+      <Icon
+        aria-hidden
+        className={cn(
+          "size-3.5",
+          (mark === "running" || mark === "writing") &&
+            "animate-spin motion-reduce:animate-none",
+        )}
+      />
+      {word ?? m.word}
+    </span>
+  );
+}
 
 export function ShimmerLabel({
   active = true,

@@ -201,7 +201,7 @@ function VersionBar({
             type="button"
             onClick={() => onSelect(v.id)}
             aria-current={active}
-            title={v.state === "pass" ? "Replay passed" : v.state === "fail" ? "Replay failed" : undefined}
+            title={v.state === "pass" ? "Test passed" : v.state === "fail" ? "Test failed" : undefined}
             className={cn(
               "flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] transition-colors",
               active

@@ -579,7 +579,23 @@ function rebuildEvents(id, record, engineEvents) {
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
-  for (const e of engineEvents) if (e.ev !== "settled") evs.push(e)
+  // Older engines did not stream each PoC as a file. The settled summary still
+  // holds every run_poc call in order, so give each attempt its file back.
+  const settled = engineEvents.find((e) => e.ev === "settled")
+  const sources = (settled?.summary?.calls ?? []).filter((c) => c.name === "run_poc" && c.args?.test_source)
+  const hasFile = new Set(engineEvents.filter((e) => e.ev === "artifact-open" && e.kind === "poc").map((e) => `${e.contract}#${e.attempt}`))
+  for (const e of engineEvents) {
+    if (e.ev === "settled") continue
+    evs.push(e)
+    if (e.ev !== "run_poc" || !e.contract) continue
+    const k = sources.findIndex((c) => c.args.contract_name === e.contract)
+    const call = k >= 0 ? sources.splice(k, 1)[0] : null
+    if (!call || hasFile.has(`${e.contract}#${e.attempt}`)) continue
+    const artId = `poc-${e.contract}-${e.attempt}`
+    evs.push({ t: e.t, ev: "artifact-open", id: artId, fileId: `poc-${e.contract}`, title: `${e.contract}.t.sol`, kind: "poc", lang: "solidity", attempt: e.attempt, contract: e.contract })
+    evs.push({ t: e.t, ev: "artifact-delta", id: artId, text: call.args.test_source })
+    evs.push({ t: e.t, ev: "artifact-done", id: artId })
+  }
   evs.push({ t: tN, ev: "status", status: "deciding" })
   // New records list every finding (ids `<runId>.<k>`); an older record has
   // one finding whose id is the run id (see splitRun in findings.mjs).

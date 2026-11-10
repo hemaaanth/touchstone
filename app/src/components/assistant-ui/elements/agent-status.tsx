@@ -36,9 +36,9 @@ export function AgentStatus({
       {...props}
     >
       {state === "done" ? (
-        <CheckIcon aria-hidden className="size-3 shrink-0 text-emerald-500" />
+        <CheckIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
       ) : state === "failed" ? (
-        <XIcon aria-hidden className="text-destructive size-3 shrink-0" />
+        <XIcon aria-hidden className="size-3 shrink-0 text-muted-foreground" />
       ) : (
         <span
           aria-hidden
