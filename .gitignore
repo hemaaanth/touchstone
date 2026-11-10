@@ -45,3 +45,4 @@ design-directions/
 
 # OS
 .DS_Store
+spike/bun.lock
