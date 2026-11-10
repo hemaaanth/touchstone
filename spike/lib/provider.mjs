@@ -2,9 +2,53 @@
 // Provider-agnostic: id, base URL, key and the model list all come from the
 // active provider (see providers.mjs). Every provider here speaks the OpenAI
 // Chat Completions format.
-import { createModels, createProvider } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, createModels, createProvider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { activeProvider, providerKey } from "./providers.mjs";
+import { charge, guard, runSpend } from "./inference.mjs";
+import { event } from "./event.mjs";
+
+// Charge each response before the harness can start another call, including
+// retries and subagents. Forward the final event only after accounting.
+export function budgetedApi(api) {
+  const wrap = (method) => (model, context, options) => {
+    const output = createAssistantMessageEventStream();
+    (async () => {
+      try {
+        const check = () => {
+          try { guard(); }
+          catch (err) { event("budget-reached", { ...runSpend(), error: err.message }); throw err; }
+        };
+        check();
+        const source = api[method](model, context, {
+          ...options,
+          onPayload: async (payload, m) => {
+            check();
+            return options?.onPayload ? options.onPayload(payload, m) : undefined;
+          },
+        });
+        for await (const e of source) {
+          if (e.type === "done" || e.type === "error") {
+            const message = e.type === "done" ? e.message : e.error;
+            if (message.usage) {
+              charge(model.id, message.usage);
+              event("spend", runSpend());
+            }
+          }
+          output.push(e);
+        }
+      } catch (err) {
+        output.push({ type: "error", reason: "error", error: {
+          role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: "error", errorMessage: String(err?.message ?? err), timestamp: Date.now(),
+        } });
+      } finally { output.end(); }
+    })();
+    return output;
+  };
+  return { stream: wrap("stream"), streamSimple: wrap("streamSimple") };
+}
 
 // Api-key auth that reads the key saved in Settings, else the provider's env var.
 function settingsKeyAuth(P) {
@@ -40,7 +84,7 @@ export function inferenceModels() {
     baseUrl: P.baseUrl,
     auth: { apiKey: settingsKeyAuth(P) },
     models: list,
-    api: openAICompletionsApi(),
+    api: budgetedApi(openAICompletionsApi()),
   }));
   return models;
 }

@@ -6,7 +6,7 @@
 // findings router.
 import { createRun, steerRun, archiveRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setCap, discoverModels } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -17,7 +17,10 @@ function send(res, status, json) {
 function readBody(req) {
   return new Promise((resolve) => {
     let raw = ""
-    req.on("data", (d) => (raw += d))
+    req.on("data", (d) => {
+      raw += d
+      if (Buffer.byteLength(raw) > 4 * 1024 * 1024) req.destroy()
+    })
     req.on("end", () => {
       if (!raw) return resolve({})
       try {
@@ -46,7 +49,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules }))
+      send(res, 201, createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -164,7 +167,7 @@ export async function handleScopes(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb }))
+      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -198,7 +201,7 @@ export function handleModels(req, res) {
 //   DELETE /api/settings/providers/:id     — remove a saved provider
 //   POST   /api/settings/discover          — list a gateway's models { id?, baseUrl?, apiKey? }
 //   POST   /api/settings/default           — { provider, model } for new runs
-//   POST   /api/settings/cap               — { capUsd }
+//   POST   /api/settings/budget            — { budgetUsd } default per-run budget
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
@@ -210,7 +213,7 @@ export async function handleSettings(req, res) {
     if (parts.length === 4 && route === "DELETE providers") return send(res, 200, deleteProvider(decodeURIComponent(parts[3]))), true
     if (parts.length === 3 && route === "POST discover") return send(res, 200, await discoverModels(await readBody(req))), true
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
-    if (parts.length === 3 && route === "POST cap") return send(res, 200, setCap((await readBody(req)).capUsd)), true
+    if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true

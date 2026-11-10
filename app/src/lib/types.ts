@@ -178,9 +178,10 @@ export interface ModelChoice {
   abliterated: boolean
 }
 
+// Total spent across all runs, and the default budget for one run.
 export interface SpendState {
   usd: number
-  cap: number
+  budgetUsd: number
 }
 
 // Where a finding for a target may be proven WITHOUT real-world harm. "kind"
@@ -200,6 +201,8 @@ export interface TargetScope {
   kind: "lab" | "local-source" | "brief"
   blurb: string
   entry: string
+  files?: string[]
+  links?: string[]
   signal: string
   proofSurface: ProofSurface
 }

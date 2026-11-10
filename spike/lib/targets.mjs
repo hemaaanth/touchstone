@@ -26,9 +26,9 @@
 // without touching callers.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { makeWorkspace, makeBriefWorkspace, writeTouchstone } from "./sandbox.mjs"
-import { readScopes, getUserScope } from "./scopes-store.mjs"
+import { readScopes, getUserScope, sourceFiles } from "./scopes-store.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..") // repo root
@@ -103,6 +103,7 @@ export function targetSummary(target) {
     proofSurface: target.proofSurface,
   }
   if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
+  if (target.kind === "local-source") s.files = (target.files ?? []).map((f) => f.path)
   return s
 }
 
@@ -112,6 +113,7 @@ export function targetSummary(target) {
 function isRunnable(target) {
   if (target.kind === "lab") return existsSync(path.join(ROOT, target.dir))
   if (target.kind === "brief") return true
+  if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
   return false
 }
 
@@ -159,6 +161,17 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
   if (target.kind === "lab") {
     const ws = makeWorkspace(resolveTargetDir(target))
     writeTouchstone(ws, { kind: "lab", solc: "0.8.38", modules })
+    return ws
+  }
+  if (target.kind === "local-source") {
+    const files = sourceFiles(target.files)
+    const ws = makeBriefWorkspace()
+    for (const f of files) {
+      const dest = path.join(ws, "src", f.path)
+      mkdirSync(path.dirname(dest), { recursive: true })
+      writeFileSync(dest, f.content)
+    }
+    writeTouchstone(ws, { kind: "local-source", solc: "auto", modules })
     return ws
   }
   if (target.kind === "brief") {

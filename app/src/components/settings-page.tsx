@@ -1,36 +1,24 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, KeyRound, Loader2, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react"
+import { Check, Loader2, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
-import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setSpendCap } from "@/lib/api"
+import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
 import { formatUsd } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
-const SELECT =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30"
-
-// The Settings page. For now it holds the inference providers, the default
-// provider and model for new runs, and the spend cap. Every provider speaks the
-// OpenAI Chat Completions format: a base URL, a key, and a list of models.
-// A key goes to the server once and never comes back; the page shows only its
-// last 4 characters.
 export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<SettingsState | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState<string | null>(null) // provider id, "new", or null
-
-  useEffect(() => {
-    fetchSettings().then(setSettings, (e) => setError(String(e?.message ?? e)))
-  }, [])
-
-  const apply = (s: SettingsState) => {
-    setSettings(s)
-    setError(null)
-    onChanged()
+  const [editing, setEditing] = useState<string | null>(null)
+  useEffect(() => { fetchSettings().then(setSettings, (e) => setError(String(e.message))) }, [])
+  const apply = (s: SettingsState) => { setSettings(s); setError(null); onChanged() }
+  const attempt = async (fn: () => Promise<SettingsState>) => {
+    try { apply(await fn()); return true }
+    catch (e) { setError(String((e as Error).message)); return false }
   }
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b px-5 py-3">
@@ -39,66 +27,36 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
         <h1 className="text-sm font-semibold">Settings</h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!settings ? (
-          <p className="p-5 text-sm text-muted-foreground">{error ?? "Loading…"}</p>
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col divide-y">
-            {error ? <p className="px-5 py-3 text-sm text-destructive md:px-8">{error}</p> : null}
-            <DefaultSection settings={settings} onSaved={apply} onError={setError} />
-            <SpendSection settings={settings} onSaved={apply} onError={setError} />
-            <section className="px-5 py-5 md:px-8">
-              <SectionHead
-                title="Providers"
-                blurb="Any OpenAI-compatible API: a base URL that serves /chat/completions and /models, and a key. Prices are USD per 1M tokens."
-              />
-              <ul className="mt-3 divide-y border-y">
+        {!settings ? <p className="p-5 text-sm text-muted-foreground">{error ?? "Loading…"}</p> : (
+          <div className="mx-auto max-w-3xl px-5 py-8 md:px-8 md:py-10">
+            {error ? <p role="alert" className="mb-4 text-sm">{error}</p> : null}
+            <section aria-labelledby="providers-title">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">Choose the provider and model for new runs.</p>
+                </div>
+                <Button variant="outline" size="sm" disabled={editing === "new"} onClick={() => setEditing("new")}><Plus /> Add provider</Button>
+              </div>
+              {settings.envOverride ? <p className="mb-3 text-xs text-muted-foreground">The server fixes the provider to {settings.envOverride}. Restart without PROVIDER to change it.</p> : null}
+              <ul className="divide-y border-y">
                 {settings.providers.map((p) => (
                   <li key={p.id}>
-                    <ProviderRow
-                      provider={p}
-                      isDefault={settings.default.provider === p.id}
-                      editing={editing === p.id}
+                    <ProviderRow provider={p} isDefault={settings.default.provider === p.id} defaultModel={settings.default.model}
+                      locked={Boolean(settings.envOverride)} editing={editing === p.id}
                       onEdit={() => setEditing(editing === p.id ? null : p.id)}
-                      onDelete={async () => {
-                        const what = p.builtIn ? `Reset ${p.label} to its built-in setup? The saved key is removed.` : `Remove ${p.label}?`
-                        if (!window.confirm(what)) return
-                        try {
-                          apply(await deleteProvider(p.id))
-                          setEditing(null)
-                        } catch (e) {
-                          setError(String((e as Error).message))
-                        }
-                      }}
-                    />
-                    {editing === p.id ? (
-                      <ProviderEditor
-                        provider={p}
-                        onSaved={(s) => {
-                          apply(s)
-                          setEditing(null)
-                        }}
-                        onCancel={() => setEditing(null)}
-                      />
-                    ) : null}
+                      onMakeDefault={(model) => attempt(() => setDefaultModel(p.id, model))} />
+                    {editing === p.id ? <ProviderEditor provider={p} onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)}
+                      onDelete={p.saved ? async () => {
+                        if (!window.confirm(p.builtIn ? `Reset ${p.label}? This removes its saved key and models.` : `Remove ${p.label}?`)) return
+                        if (await attempt(() => deleteProvider(p.id))) setEditing(null)
+                      } : undefined} /> : null}
                   </li>
                 ))}
               </ul>
-              {editing === "new" ? (
-                <div className="border-b">
-                  <ProviderEditor
-                    onSaved={(s) => {
-                      apply(s)
-                      setEditing(null)
-                    }}
-                    onCancel={() => setEditing(null)}
-                  />
-                </div>
-              ) : (
-                <Button variant="outline" size="sm" className="mt-3" onClick={() => setEditing("new")}>
-                  <Plus /> Add provider
-                </Button>
-              )}
+              {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
             </section>
+            <BudgetSection settings={settings} onSave={(n) => attempt(() => setRunBudget(n))} />
           </div>
         )}
       </div>
@@ -106,167 +64,75 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   )
 }
 
-function SectionHead({ title, blurb }: { title: string; blurb: string }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <h2 className="text-sm font-semibold">{title}</h2>
-      <p className="text-xs text-muted-foreground">{blurb}</p>
-    </div>
-  )
-}
-
-function keyLabel(p: ProviderSetting): string {
-  if (!p.key.set) return "No key"
-  if (p.key.source === "env") return `Key from ${p.key.envName ?? "env"}`
-  return p.key.last4 ? `Key …${p.key.last4}` : "Key saved"
-}
-
-// ---- Default provider and model for new runs.
-function DefaultSection({
-  settings,
-  onSaved,
-  onError,
-}: {
-  settings: SettingsState
-  onSaved: (s: SettingsState) => void
-  onError: (e: string) => void
+function ProviderRow({ provider: p, isDefault, defaultModel, locked, editing, onEdit, onMakeDefault }: {
+  provider: ProviderSetting; isDefault: boolean; defaultModel: string | null; locked: boolean; editing: boolean
+  onEdit: () => void; onMakeDefault: (model: string) => Promise<boolean>
 }) {
-  const ready = settings.providers.filter((p) => p.key.set && p.models.length > 0)
-  const [providerId, setProviderId] = useState(settings.default.provider)
-  const provider = settings.providers.find((p) => p.id === providerId)
-  const [model, setModel] = useState(settings.default.model ?? "")
-  const modelOk = provider?.models.some((m) => m.alias === model)
-  const chosenModel = modelOk ? model : provider?.models[0]?.alias ?? ""
-  const current = settings.providers.find((p) => p.id === settings.default.provider)
-  const currentModel = current?.models.find((m) => m.alias === settings.default.model)
-  const dirty = providerId !== settings.default.provider || chosenModel !== settings.default.model
   const [busy, setBusy] = useState(false)
-
-  const save = async () => {
-    setBusy(true)
-    try {
-      onSaved(await setDefaultModel(providerId, chosenModel))
-    } catch (e) {
-      onError(String((e as Error).message))
-    } finally {
-      setBusy(false)
-    }
-  }
-
+  const ready = p.key.set && p.models.length > 0
+  const choose = async (model: string) => { setBusy(true); await onMakeDefault(model); setBusy(false) }
+  const current = p.models.find((m) => m.alias === defaultModel) ?? p.models[0]
+  const items = p.models.map((m) => ({ value: m.alias, label: m.id }))
   return (
-    <section className="px-5 py-5 md:px-8">
-      <SectionHead title="Default for new runs" blurb="Every new run uses this provider and model. A run keeps its provider for follow-ups." />
-      <p className="mt-3 text-sm">
-        Now: <span className="font-medium">{current?.label ?? settings.default.provider}</span>
-        {currentModel ? <span className="font-mono text-xs text-muted-foreground"> · {currentModel.id}</span> : null}
-      </p>
-      {settings.envOverride ? (
-        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          The server was started with PROVIDER={settings.envOverride}. That overrides the choice here until it restarts without it.
-        </p>
-      ) : null}
-      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1.5fr_auto]">
-        <select className={SELECT} value={providerId} onChange={(e) => setProviderId(e.target.value)} aria-label="Provider">
-          {settings.providers.map((p) => (
-            <option key={p.id} value={p.id} disabled={!ready.includes(p)}>
-              {p.label}
-              {ready.includes(p) ? "" : p.key.set ? " (no models)" : " (no key)"}
-            </option>
-          ))}
-        </select>
-        <select className={SELECT} value={chosenModel} onChange={(e) => setModel(e.target.value)} aria-label="Model">
-          {provider?.models.map((m) => (
-            <option key={m.alias} value={m.alias}>
-              {m.id}
-            </option>
-          ))}
-        </select>
-        <Button size="default" disabled={!dirty || busy || !provider?.key.set || !chosenModel} onClick={save}>
-          {busy ? <Loader2 className="animate-spin" /> : <Check />} Use
-        </Button>
-      </div>
-    </section>
-  )
-}
-
-// ---- Spend cap.
-function SpendSection({
-  settings,
-  onSaved,
-  onError,
-}: {
-  settings: SettingsState
-  onSaved: (s: SettingsState) => void
-  onError: (e: string) => void
-}) {
-  const [cap, setCap] = useState(String(settings.spend.cap))
-  const dirty = Number(cap) !== settings.spend.cap
-  const left = Math.max(0, settings.spend.cap - settings.spend.usd)
-  return (
-    <section className="px-5 py-5 md:px-8">
-      <SectionHead title="Spend cap" blurb="One cap across all providers. A run will not start once spend reaches it." />
-      <p className="mt-3 text-sm">
-        {formatUsd(settings.spend.usd)} spent of {formatUsd(settings.spend.cap)}. {formatUsd(left)} left.
-      </p>
-      <div className="mt-3 flex max-w-xs items-center gap-2">
-        <span className="text-sm text-muted-foreground">$</span>
-        <Input type="number" min="1" step="1" inputMode="decimal" value={cap} onChange={(e) => setCap(e.target.value)} aria-label="Spend cap in USD" />
-        <Button
-          variant="outline"
-          disabled={!dirty || !(Number(cap) > 0)}
-          onClick={async () => {
-            try {
-              onSaved(await setSpendCap(Number(cap)))
-            } catch (e) {
-              onError(String((e as Error).message))
-            }
-          }}
-        >
-          Save
-        </Button>
-      </div>
-    </section>
-  )
-}
-
-function ProviderRow({
-  provider: p,
-  isDefault,
-  editing,
-  onEdit,
-  onDelete,
-}: {
-  provider: ProviderSetting
-  isDefault: boolean
-  editing: boolean
-  onEdit: () => void
-  onDelete: () => void
-}) {
-  return (
-    <div className="flex items-start gap-3 py-3">
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-4 sm:grid-cols-[minmax(8rem,1fr)_minmax(0,1.3fr)_11rem]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-sm font-medium">{p.label}</span>
-          {isDefault ? <span className="text-[11px] font-medium text-primary">Default</span> : null}
-          {p.builtIn ? <span className="text-[11px] text-muted-foreground">Built in</span> : null}
+          {isDefault ? <span className="text-[11px] text-muted-foreground">Default</span> : null}
         </div>
-        <span className="truncate font-mono text-xs text-muted-foreground">{p.baseUrl}</span>
-        <span className="flex items-center gap-1 text-xs text-muted-foreground">
-          <KeyRound className={cn("size-3", p.key.set ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/60")} />
-          {keyLabel(p)} · {p.models.length} {p.models.length === 1 ? "model" : "models"}
-        </span>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{p.key.set ? "Key connected" : "No API key"}{p.key.set && p.key.last4 ? ` · …${p.key.last4}` : ""}</p>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button variant={editing ? "secondary" : "ghost"} size="sm" onClick={onEdit}>
-          {editing ? "Close" : "Edit"}
-        </Button>
-        {p.saved ? (
-          <Button variant="ghost" size="icon-sm" aria-label={p.builtIn ? `Reset ${p.label}` : `Remove ${p.label}`} onClick={onDelete}>
-            <Trash2 />
-          </Button>
-        ) : null}
+      <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+        {isDefault && items.length > 1 ? (
+          <Select items={items} value={current?.alias ?? null} onValueChange={(v) => { if (v && v !== current?.alias) void choose(String(v)) }}>
+            <SelectTrigger className="w-full min-w-0 bg-transparent text-xs" aria-label={`Default model for ${p.label}`} disabled={busy || !ready}>
+              <SelectValue className="min-w-0 truncate" />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false} align="end" className="max-w-[calc(100vw-2rem)] p-1">
+              {items.map((m) => <SelectItem key={m.value} value={m.value} className="text-xs"><span className="truncate">{m.label}</span></SelectItem>)}
+            </SelectContent>
+          </Select>
+        ) : isDefault && current ? <p className="truncate text-xs text-muted-foreground" title={current.id}>{current.id}</p>
+          : <span className="text-xs text-muted-foreground">{p.models.length} {p.models.length === 1 ? "model" : "models"}</span>}
+      </div>
+      <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 sm:col-start-3">
+        {!isDefault && ready && !locked ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void choose(p.models[0].alias)}>{busy ? <Loader2 className="animate-spin" /> : null}Make default</Button> : null}
+        <Button variant={editing ? "secondary" : "ghost"} size="sm" onClick={onEdit} aria-label={`${editing ? "Close" : "Edit"} ${p.label}`}>{editing ? "Close" : "Edit"}</Button>
       </div>
     </div>
+  )
+}
+
+function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: (n: number) => Promise<boolean> }) {
+  const saved = settings.spend.budgetUsd
+  const [value, setValue] = useState(String(saved))
+  const [busy, setBusy] = useState(false)
+  const n = Number(value)
+  const valid = Number.isFinite(n) && n >= 0.01 && n <= 1000
+  return (
+    <section className="mt-9" aria-labelledby="budget-title">
+      <h2 id="budget-title" className="text-sm font-semibold">Run budget</h2>
+      <div className="mt-4 flex flex-wrap items-start justify-between gap-4 border-y py-4">
+        <div className="min-w-48 flex-1">
+          <p className="text-sm">Default per run</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Set a different amount in New run.</p>
+        </div>
+        <form className="flex items-center gap-2" onSubmit={async (e) => {
+          e.preventDefault()
+          if (!valid || n === saved || busy) return
+          setBusy(true); await onSave(n); setBusy(false)
+        }}>
+          <label className="relative flex items-center">
+            <span className="pointer-events-none absolute left-2.5 text-xs text-muted-foreground">$</span>
+            <Input className="w-24 pl-6 text-xs tabular-nums" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Default budget per run in USD" aria-invalid={!valid} />
+          </label>
+          <Button type="submit" variant="outline" disabled={!valid || n === saved || busy}>{busy ? <Loader2 className="animate-spin" /> : "Save"}</Button>
+        </form>
+      </div>
+      {!valid ? <p role="alert" className="mt-2 text-xs">Enter $0.01 to $1,000.</p> : null}
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Checked between model calls. The final call may exceed the budget.</p>
+      <p className="mt-5 text-xs text-muted-foreground">Total spent <span className="ml-1 tabular-nums text-foreground/80">{formatUsd(settings.spend.usd)}</span></p>
+    </section>
   )
 }
 
@@ -283,10 +149,12 @@ function ProviderEditor({
   provider,
   onSaved,
   onCancel,
+  onDelete,
 }: {
   provider?: ProviderSetting
   onSaved: (s: SettingsState) => void
   onCancel: () => void
+  onDelete?: () => void
 }) {
   const [label, setLabel] = useState(provider?.label ?? "")
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "")
@@ -352,52 +220,64 @@ function ProviderEditor({
 
   const keyHint = provider?.key.set
     ? provider.key.source === "env"
-      ? `Using ${provider.key.envName}. Paste a key to save one here instead.`
-      : `Saved key ends …${provider.key.last4 ?? "····"}. Leave blank to keep it.`
+      ? "Leave blank to keep the connected key"
+      : `Leave blank to keep …${provider.key.last4 ?? "····"}`
     : "Paste the API key"
 
   return (
-    <div className="flex flex-col gap-3 bg-muted/30 px-3 py-4 sm:px-4">
+    <div className="flex flex-col gap-4 border-t border-border/50 bg-background/40 px-4 py-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium">Name</span>
+          <span className="text-xs text-muted-foreground">Name</span>
           <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Lyber" disabled={Boolean(provider)} />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium">Base URL</span>
-          <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" className="font-mono" spellCheck={false} autoCapitalize="off" />
+          <span className="text-xs text-muted-foreground">Base URL</span>
+          <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" spellCheck={false} autoCapitalize="off" />
         </label>
       </div>
       <label className="flex flex-col gap-1">
-        <span className="text-xs font-medium">API key</span>
+        <span className="text-xs text-muted-foreground">API key</span>
         <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={keyHint} autoComplete="off" spellCheck={false} />
       </label>
 
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium">Models</span>
-          <span className="text-xs text-muted-foreground">{chosen.length} chosen</span>
-          <Button variant="outline" size="sm" className="ml-auto" disabled={!baseUrl || busy !== null} onClick={fetchList}>
+          <span className="text-xs text-muted-foreground">Models · {chosen.length} on</span>
+          <Button variant="ghost" size="sm" className="ml-auto" disabled={!baseUrl || busy !== null} onClick={fetchList}>
             {busy === "fetch" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Fetch models
           </Button>
         </div>
         {(found?.length ?? 0) > 8 ? <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter, e.g. abliterated" /> : null}
         {rows.length > 0 ? (
-          <ul className="max-h-80 divide-y overflow-y-auto border-y bg-background">
+          <ul className="max-h-80 overflow-y-auto rounded-lg bg-muted/40 py-1">
             {rows.map(({ id, on }) => {
               const d = chosen.find((m) => m.id === id)
               return (
-                <li key={id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1.5">
-                  <label className="flex min-w-0 flex-1 items-center gap-2">
-                    <input type="checkbox" checked={on} onChange={() => toggle(id)} className="size-3.5 accent-primary" />
-                    <span className="truncate font-mono text-xs">{id}</span>
-                  </label>
+                <li key={id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 py-1">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={on}
+                    onClick={() => toggle(id)}
+                    className="flex min-w-0 flex-1 basis-full items-center gap-2 rounded-md py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:basis-0"
+                  >
+                    <span
+                      className={cn(
+                        "flex size-4 shrink-0 items-center justify-center rounded-[5px] transition-colors",
+                        on ? "bg-foreground text-background" : "bg-foreground/10",
+                      )}
+                    >
+                      {on ? <Check className="size-3" strokeWidth={3} /> : null}
+                    </span>
+                    <span className={cn("truncate font-mono text-xs", !on && "text-muted-foreground")}>{id}</span>
+                  </button>
                   {d ? (
                     <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
                       in $
-                      <input className="h-6 w-14 rounded border border-input bg-transparent px-1 text-xs" inputMode="decimal" value={d.input} placeholder="?" onChange={(e) => setPrice(id, "input", e.target.value)} aria-label={`${id} input price per 1M`} />
+                      <input className="h-6 w-14 rounded-md bg-background/60 px-1.5 text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50" inputMode="decimal" value={d.input} placeholder="?" onChange={(e) => setPrice(id, "input", e.target.value)} aria-label={`${id} input price per 1M`} />
                       out $
-                      <input className="h-6 w-14 rounded border border-input bg-transparent px-1 text-xs" inputMode="decimal" value={d.output} placeholder="?" onChange={(e) => setPrice(id, "output", e.target.value)} aria-label={`${id} output price per 1M`} />
+                      <input className="h-6 w-14 rounded-md bg-background/60 px-1.5 text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50" inputMode="decimal" value={d.output} placeholder="?" onChange={(e) => setPrice(id, "output", e.target.value)} aria-label={`${id} output price per 1M`} />
                       /1M
                     </span>
                   ) : null}
@@ -411,7 +291,7 @@ function ProviderEditor({
         <div className="flex gap-2">
           <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="Add a model id by hand" className="font-mono" spellCheck={false} autoCapitalize="off" />
           <Button
-            variant="outline"
+            variant="ghost"
             disabled={!manual.trim() || chosen.some((m) => m.id === manual.trim())}
             onClick={() => {
               setChosen([...chosen, { id: manual.trim(), input: "", output: "", context: null }])
@@ -421,7 +301,7 @@ function ProviderEditor({
             Add
           </Button>
         </div>
-        <p className="text-[11px] text-muted-foreground">A model with no price is billed at a high fallback price, so the spend cap trips early.</p>
+        <p className="text-[11px] text-muted-foreground">Prices are USD per 1M tokens. A model with no price is charged a high fallback price.</p>
       </div>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -432,6 +312,11 @@ function ProviderEditor({
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
+        {onDelete ? (
+          <Button variant="ghost" className="ml-auto text-muted-foreground hover:text-destructive" onClick={onDelete}>
+            <Trash2 /> {provider?.builtIn ? "Reset" : "Remove"}
+          </Button>
+        ) : null}
       </div>
     </div>
   )

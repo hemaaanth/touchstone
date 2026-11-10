@@ -2,10 +2,13 @@
 //
 // BASE_URL, MODELS and the key come from the provider active when this module
 // loads: PROVIDER=<id>, else the Settings default. Each engine run is a fresh
-// process, so this snapshot is that run's provider. The cap is read on every
-// guard() call, so a Settings change applies at once.
+// process, so this snapshot is that run's provider and budget.
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { FALLBACK_PRICE, activeProvider, capUsd, providerKey } from "./providers.mjs";
+import { FALLBACK_PRICE, activeProvider, runBudgetUsd, providerKey } from "./providers.mjs";
+import { createRunBudget } from "./run-budget.mjs";
+
+const budget = createRunBudget(process.env.RUN_BUDGET_USD ?? runBudgetUsd(), process.env.RUN_SPENT_USD ?? 0);
+export const runSpend = () => ({ usd: budget.usd, budgetUsd: budget.limit });
 
 const PROVIDER = activeProvider();
 
@@ -25,7 +28,7 @@ export function key() {
 }
 
 // ---- Spend ledger. One global ledger across providers; every paid call goes
-// through charge(), and guard() runs before each call. The cap is project-wide.
+// through charge(). The lifetime ledger is a summary, never a launch gate.
 function readLedger() {
   return existsSync(LEDGER) ? JSON.parse(readFileSync(LEDGER, "utf8")) : { totalUsd: 0, calls: 0, byModel: {} };
 }
@@ -33,11 +36,7 @@ export function spent() {
   return readLedger().totalUsd;
 }
 export function guard(estimateUsd = 0) {
-  const total = spent();
-  const cap = capUsd();
-  if (total + estimateUsd >= cap) {
-    throw new Error(`Spend cap: $${total.toFixed(4)} spent, next call estimate $${estimateUsd.toFixed(4)}, cap $${cap}`);
-  }
+  budget.guard(estimateUsd);
 }
 export function costOf(modelId, inTok, outTok) {
   const m = Object.values(MODELS).find((x) => x.id === modelId);
@@ -53,6 +52,7 @@ export function charge(modelId, usage) {
   const inTok = usage?.prompt_tokens ?? usage?.input ?? 0;
   const outTok = usage?.completion_tokens ?? usage?.output ?? 0;
   const usd = costOf(modelId, inTok, outTok);
+  budget.charge(usd);
   const l = readLedger();
   l.totalUsd += usd;
   l.calls += 1;

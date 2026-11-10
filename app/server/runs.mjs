@@ -21,10 +21,11 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdir
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
-import { guard, spent } from "../../spike/lib/inference.mjs"
-import { activeProvider, allProviders, capUsd, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
+import { spent } from "../../spike/lib/inference.mjs"
+import { activeProvider, allProviders, defaultAlias, readConfig, runBudgetUsd } from "../../spike/lib/providers.mjs"
+import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
-import { readScopes, addBriefScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { runPrepass } from "../../spike/lib/prepass.mjs"
 import { proveFindings, sortFindings } from "../../spike/lib/record.mjs"
@@ -77,7 +78,7 @@ export function availableModels() {
 }
 
 export function spendState() {
-  return { usd: spent(), cap: capUsd() }
+  return { usd: spent(), budgetUsd: runBudgetUsd() }
 }
 
 // The active inference provider, so the UI can show which gateway a run drives.
@@ -109,8 +110,9 @@ export function listScopes() {
 
 // Add a brief scope from pasted markdown. Returns its summary so the UI can select
 // it immediately. Throws (surfaced as 400) when the title or markdown is empty.
-export function addScope({ title, brief, blurb } = {}) {
-  return targetSummary(addBriefScope({ title, brief, blurb }))
+export function addScope({ title, brief, blurb, files, repo } = {}) {
+  const scope = files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
+  return { ...targetSummary(scope), runnable: true }
 }
 
 // Remove an operator scope by id. Returns whether one was removed.
@@ -263,7 +265,7 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias, targetId, modules } = {}) {
+export function createRun({ alias, targetId, modules, budgetUsd } = {}) {
   const cfg = readConfig()
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
@@ -277,8 +279,8 @@ export function createRun({ alias, targetId, modules } = {}) {
   // off with a reason, never silently dropped. The plan rides into the workspace
   // config, so the run worker builds exactly the tools this plan enables.
   const plan = planModules(target, modules)
-  // Respect the hard spend cap before spending a cent of real inference.
-  guard(0.02)
+  // Each run has its own budget. The worker stops the run when it is spent.
+  const budget = budgetUsd == null || budgetUsd === "" ? runBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 
   mkdirSync(RESULTS_DIR, { recursive: true })
   const id = monotonicId(alias)
@@ -318,6 +320,7 @@ export function createRun({ alias, targetId, modules } = {}) {
   // resource this run is pointed at — the reason every run used to look the
   // same. It lands in run.events, so a late subscriber replays it too.
   broadcast(run, { t: Date.now(), ev: "scope", scope: targetSummary(run.target) })
+  broadcast(run, { t: Date.now(), ev: "budget", usd: budget })
   // The module plan for this run — which parts of the pipeline are on, and the
   // honest reason for any that are off. Also replayed to late subscribers.
   broadcast(run, modulesEvent(plan))
@@ -386,6 +389,7 @@ async function startEngine(run) {
 // follow-up worker.
 function engineEvents(run) {
   return (e) => {
+    if (e.ev === "budget-reached") run.error = e.error
     if (e.ev === "settled") {
       // Internal: carries the summary and every finding with its passing
       // source. Persistence reads it on exit; it is not a UI step.
@@ -412,10 +416,18 @@ function engineEvents(run) {
   }
 }
 
+// The run's budget and what it has spent so far, from its own events. A
+// follow-up carries the spent amount forward, so the budget covers the whole run.
+function budgetEnv(run) {
+  const set = run.events.findLast((e) => e.ev === "budget")
+  const spend = run.events.findLast((e) => e.ev === "spend")
+  return { RUN_BUDGET_USD: String(set?.usd ?? runBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+}
+
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
-  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...leads }
+  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -550,7 +562,8 @@ function ensureFiles(run) {
 // the run's saved agent session in a fresh workspace, answers, and exits. Any
 // finding it proves is replayed and added to the run record.
 function followUp(run, text) {
-  guard(0.02)
+  const money = budgetEnv(run)
+  if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("this run has no saved agent session to resume")
   const target = run.target ?? (run.scope?.id ? getTarget(run.scope.id) : null)
@@ -572,6 +585,7 @@ function followUp(run, text) {
       ALIAS: run.alias,
       EVENTS_FILE: run.eventsFile,
       MAX_POC,
+      ...money,
       FOLLOWUP: text,
       PRIOR_FOUND: JSON.stringify(prior),
       ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),

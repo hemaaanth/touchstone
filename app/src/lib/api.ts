@@ -58,8 +58,17 @@ export async function fetchRuns(): Promise<RunSummary[]> {
 
 // Start a run against a chosen scope. Omit targetId to let the server pick a
 // target at random from the library, so repeated Runs stop re-breaking one bug.
-export function startRun(alias: string, targetId?: string): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias, targetId })
+export function startRun(alias: string, targetId?: string, budgetUsd?: number): Promise<RunView> {
+  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd })
+}
+
+export function attachScope(body: { title: string; repo?: string; files?: { path: string; content: string }[] }): Promise<TargetChoice> {
+  return postJson<TargetChoice>("/api/scopes", body)
+}
+
+export async function removeScope(id: string): Promise<void> {
+  const res = await fetch(`/api/scopes/${encodeURIComponent(id)}`, { method: "DELETE" })
+  if (!res.ok) throw new Error(`delete -> ${res.status}`)
 }
 
 // Message a run. While the agent works, the text is injected into its current
@@ -154,6 +163,6 @@ export function setDefaultModel(provider: string, model: string): Promise<Settin
   return postJson<SettingsState>("/api/settings/default", { provider, model })
 }
 
-export function setSpendCap(capUsd: number): Promise<SettingsState> {
-  return postJson<SettingsState>("/api/settings/cap", { capUsd })
+export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
 }

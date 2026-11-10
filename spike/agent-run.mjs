@@ -18,7 +18,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
+import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -137,8 +137,8 @@ async function streamCognition(harness, base = 0) {
 }
 
 // harness.usage() counts the whole session. A follow-up reopens a session that
-// was already charged, so it passes the usage it saw at start as `base` and only
-// the difference is charged.
+// was already charged. The provider charges each response; this only summarizes
+// the new usage for the run record.
 async function chargeUsage(harness, base = {}) {
   const u = await harness.usage(ctx);
   let usd = 0;
@@ -148,7 +148,7 @@ async function chargeUsage(harness, base = {}) {
     const b = base[key] ?? {};
     const d = { input: v.input - (b.input ?? 0), output: v.output - (b.output ?? 0), reasoning: (v.reasoning ?? 0) - (b.reasoning ?? 0) };
     if (d.input <= 0 && d.output <= 0) continue;
-    usd += charge(key.replace(prefix, ""), { input: d.input, output: d.output });
+    usd += costOf(key.replace(prefix, ""), d.input, d.output);
     models[key] = { in: d.input, out: d.output, reasoning: d.reasoning };
   }
   return { usd, models };
@@ -262,7 +262,7 @@ function runChild(mode, db, ws, env) {
 }
 
 async function main() {
-  guard(0.25); // one agent run, checked against the project spend cap
+  guard(); // stop before starting if this run has already spent its budget
   const db = `${DIR}run-${ALIAS}.sqlite`;
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   const ws = makeWorkspace(TARGET);

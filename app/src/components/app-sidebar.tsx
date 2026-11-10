@@ -215,35 +215,15 @@ function RunRow({
   )
 }
 
-// The run budget, read at a glance: who is paying, how much of the cap is gone,
-// and a bar that fills as spend climbs — amber only as it nears the ceiling.
-// Neutral fill otherwise, so it never borrows the proven-finding green/red.
+// Who is paying for new runs, and the total spent so far. Each run has its own
+// budget, so there is no global bar to fill.
 function SpendMeter({ spend, provider }: { spend: SpendState; provider: ProviderInfo | null }) {
-  const pct = spend.cap > 0 ? Math.min(100, (spend.usd / spend.cap) * 100) : 0
-  const near = pct >= 90
   return (
-    <div className="mx-2 mt-2 border-t border-sidebar-border pt-2.5">
-      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
-        <span className="min-w-0 truncate font-medium text-muted-foreground">
-          {provider?.label ?? "Spend"}
-        </span>
-        {/* The live spend ticks up as the run burns budget. tabular-nums keeps
-            the digits still and the reserved width absorbs the $9 → $10 rollover,
-            so the number updating never nudges the label or the meter. */}
-        <span className="shrink-0 tabular-nums text-foreground/80">
-          <span className="inline-block min-w-[2.9rem] text-end">{formatUsd(spend.usd)}</span>
-          <span className="text-muted-foreground"> / {formatUsd(spend.cap)}</span>
-        </span>
-      </div>
-      <div className="h-1 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-500",
-            near ? "bg-warn" : "bg-foreground/45",
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+    <div className="mx-2 mt-2 flex items-center justify-between gap-2 border-t border-sidebar-border pt-2.5 text-[11px]">
+      <span className="min-w-0 truncate font-medium text-muted-foreground">{provider?.label ?? "Spend"}</span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">
+        <span className="text-foreground/80">{formatUsd(spend.usd)}</span> spent
+      </span>
     </div>
   )
 }

@@ -16,8 +16,10 @@
 // provider even when the default changes later.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-// The project-wide spend cap, unless Settings saves another one.
-export const DEFAULT_CAP_USD = 25.0;
+import { DEFAULT_RUN_BUDGET_USD, validateRunBudget } from "./run-budget.mjs";
+
+// Legacy CLI callers may still import this name. It is now a per-run limit.
+export const DEFAULT_CAP_USD = DEFAULT_RUN_BUDGET_USD;
 
 // Conservative fallback when a provider has not published per-token prices yet.
 // Assume expensive so the spend cap trips early rather than letting a run bleed
@@ -151,10 +153,11 @@ export function defaultAlias(p, cfg = readConfig()) {
   return Object.keys(p.models ?? {})[0] ?? null;
 }
 
-export function capUsd(cfg = readConfig()) {
-  const c = Number(cfg.capUsd);
-  return Number.isFinite(c) && c > 0 ? c : DEFAULT_CAP_USD;
+export function runBudgetUsd(cfg = readConfig()) {
+  return cfg.runBudgetUsd == null ? DEFAULT_RUN_BUDGET_USD : validateRunBudget(cfg.runBudgetUsd);
 }
+
+export const capUsd = runBudgetUsd;
 
 // A filename-safe alias for a model id. Run ids and file names start with it.
 export function aliasFor(modelId) {

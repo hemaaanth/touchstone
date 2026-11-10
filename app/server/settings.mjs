@@ -11,13 +11,14 @@ import {
   aliasFor,
   allProviders,
   activeId,
-  capUsd,
+  runBudgetUsd,
   defaultAlias,
   providerKey,
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
+import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 
 function keyState(p) {
   const k = providerKey(p)
@@ -55,7 +56,7 @@ export function getSettings() {
     default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
-    spend: { usd: spent(), cap: capUsd(cfg) },
+    spend: { usd: spent(), budgetUsd: runBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
   }
 }
@@ -153,11 +154,10 @@ export function setDefault({ provider, model } = {}) {
   return getSettings()
 }
 
-export function setCap(capUsdValue) {
-  const n = Number(capUsdValue)
-  if (!Number.isFinite(n) || n <= 0 || n > 1000) throw new Error("cap must be between $0 and $1000")
+export function setRunBudget(value) {
+  const n = validateRunBudget(value)
   const cfg = readConfig()
-  cfg.capUsd = n
+  cfg.runBudgetUsd = n
   writeConfig(cfg)
   return getSettings()
 }

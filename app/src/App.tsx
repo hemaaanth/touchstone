@@ -61,10 +61,10 @@ export function App() {
   }, [refreshModels])
 
   const onStart = useCallback(
-    (alias: string, targetId?: string) => {
+    (alias: string, targetId?: string, budgetUsd?: number) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias, targetId)
+      startRun(alias, targetId, budgetUsd)
         .then((run) => {
           setRuns((prev) => [
             { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
@@ -143,7 +143,7 @@ export function App() {
         runs={rows}
         view={view}
         onSelect={setView}
-        onNewRun={() => setDialogOpen(true)}
+        onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
         spend={spend}
         provider={provider}
@@ -164,11 +164,13 @@ export function App() {
       </main>
 
       <NewRunDialog
+        key={dialogOpen ? "open" : "closed"}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         models={models}
         targets={targets}
         spend={spend}
+        onScopesChanged={refreshModels}
         busy={busy}
         error={startError}
         onStart={onStart}

@@ -105,6 +105,52 @@ export function addBriefScope({ title, brief, blurb } = {}) {
   return scope;
 }
 
+// Only Solidity source is attached. Never accept host paths, build hooks,
+// credentials, or a supplied Foundry config. The sandbox uses our own config.
+export function sourceFiles(files) {
+  if (!Array.isArray(files) || !files.length || files.length > 200) throw new Error("Attach 1 to 200 Solidity files.");
+  let bytes = 0;
+  const seen = new Set();
+  return files.map((f) => {
+    const name = typeof f?.path === "string" ? f.path : "";
+    const parts = name.split("/");
+    if (!name || name.length > 240 || !name.endsWith(".sol") || parts.some((p) => !p || p === "." || p === ".." || p.startsWith(".") || /[:\\\x00-\x1f]/.test(p))) {
+      throw new Error("Use relative Solidity file paths without hidden folders.");
+    }
+    if (typeof f.content !== "string" || f.content.includes("\u0000")) throw new Error("Attach text source files only.");
+    bytes += Buffer.byteLength(f.content);
+    if (bytes > 2 * 1024 * 1024) throw new Error("Source files must be under 2 MB in total.");
+    if (seen.has(name)) throw new Error(`Duplicate file: ${name}`);
+    seen.add(name);
+    return { path: name, content: f.content };
+  });
+}
+
+export function addSourceScope({ title, files } = {}) {
+  const t = String(title || "").trim();
+  if (!t || t.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
+  const sources = sourceFiles(files);
+  const scope = {
+    id: `source-${slugify(t)}-${randomUUID().slice(0, 8)}`,
+    kind: "local-source", title: t, blurb: "", entry: sources[0].path,
+    signal: "static", files: sources, proofSurface: SANDBOX_FOUNDRY, createdAt: Date.now(),
+  };
+  const all = readScopes();
+  all.unshift(scope);
+  writeScopes(all);
+  return scope;
+}
+
+export function addRepoScope({ title, repo } = {}) {
+  let u;
+  try { u = new URL(repo); } catch { throw new Error("Enter a GitHub repository URL."); }
+  if (u.protocol !== "https:" || u.hostname !== "github.com" || u.username || u.password || u.port || !/^\/[\w.-]+\/[\w.-]+(?:\/(?:tree|blob)\/.+)?\/?$/.test(u.pathname)) {
+    throw new Error("Use an HTTPS GitHub repository, folder, or file URL.");
+  }
+  u.search = ""; u.hash = "";
+  return addBriefScope({ title: title || u.pathname.split("/")[2], brief: `Audit the Solidity code at ${u.href}.`, blurb: "" });
+}
+
 export function getUserScope(id) {
   return readScopes().find((s) => s.id === id) ?? null;
 }
