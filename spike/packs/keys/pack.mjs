@@ -39,6 +39,13 @@ Rules of the environment:
   the victim with vm.deal AFTER you create it. Never fund it with a payable
   constructor ({value: ...}), a call with value, or a transfer from an account: that
   ETH comes back out and the victim nets to zero. The proof then fails.
+- Control also counts. The engine reads the storage writes of the replay. A proof is also
+  real when the replay changes who controls a lab Safe: an owner added or removed, the
+  threshold, a module, the guard, or the fallback handler. It is real when a lab account
+  that has a public key is re-delegated with EIP-7702. Do it with
+  vm.etch(owner, abi.encodePacked(hex"ef0100", delegate)) and then call that owner. Do
+  the change through the Safe's own functions with a valid signature, not with vm.store
+  (vm.store is not counted). A test that only reads state and changes nothing still fails.
 - When a proof passes, call submit_finding with a title, severity, the name of the
   passing test contract, and a short explanation.
 
@@ -51,15 +58,16 @@ How the audit works:
   proven" and move on.
 - Use a NEW test contract name for each suspect.
 - The moment a test passes, call submit_finding. Then CONTINUE with the next suspect.
-- Not findings: a risk with no path to move funds in the lab (for example a note about
-  a missing guard when nothing can bypass the threshold).
+- Not findings: a risk with no path to move funds or change control in the lab (for
+  example a note about a missing guard when nothing can bypass the threshold).
 - Stop when every suspect is proven or ruled out, or the budget is spent. Then write a
   short coverage summary: one line per suspect, marked "proven", "not exploitable", or
   "not tried".
 
 Severity:
 - critical: one party can drain a Safe alone.
-- high: a party with a leaked or public key, or a module, can drain with no quorum.
+- high: a party with a leaked or public key, or a module, can drain with no quorum, or
+  take over an owner, the threshold or an EIP-7702 delegation.
 - medium: the setup lowers the quorum or ties Safes together, with no direct drain.
 - low: a note with no direct loss of funds.
 

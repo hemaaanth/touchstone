@@ -21,14 +21,14 @@ export function sortFindings(list) {
 // submitted: [{ n, title, severity, poc, explanation, source }] from the engine.
 // events: every engine event, used to check that the named test really passed.
 // Returns the findings worst first, each with its own replay proof (or null).
-export async function proveFindings(ws, submitted, events, log = () => {}) {
+export async function proveFindings(ws, submitted, events, log = () => {}, { stateTrace = false } = {}) {
   const out = [];
   for (const f of sortFindings(submitted ?? [])) {
     const pocProved = events.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === f.poc);
     let proof = null;
     if (pocProved && f.source) {
       try {
-        const delta = await proofDelta(ws, { source: f.source, contract: f.poc });
+        const delta = await proofDelta(ws, { source: f.source, contract: f.poc, stateTrace });
         // The kind names the replay that made this proof; the app picks its card from it.
         proof = delta && { kind: "forge", ...delta };
       } catch (err) {

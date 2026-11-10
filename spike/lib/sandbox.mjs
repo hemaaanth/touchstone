@@ -202,8 +202,9 @@ export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {})
 // real pass/fail, gas, decoded logs, and the full call trace with every ETH
 // value transfer — the machine-truth the proof-delta reader turns into a signed
 // money-moved table. We never distill; the raw JSON is parsed by lib/proof.mjs.
-export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000 } = {}) {
-  let cmd = `forge test --offline ${solcUse(ws)} -vvvv --json`;
+export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, stateTrace = false } = {}) {
+  // -vvvvv adds a storage_change to every EVM step: the replay state diff. It is large, so opt in.
+  let cmd = `forge test --offline ${solcUse(ws)} ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
   if (matchContract) cmd += ` --match-contract ${matchContract}`;
   const args = [
     "run", "--rm", "--network", "none",

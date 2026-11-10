@@ -21,3 +21,33 @@ contract SilentUpgradeTest is Test {
         assertEq(address(proxy).balance, 0);
     }
 }
+
+// Control harm with no ETH moved: anyone swaps the implementation. Nothing is drained.
+contract UpgradeOnlyTest is Test {
+    bytes32 constant IMPLEMENTATION = bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+
+    function test_upgradeOnly() public {
+        ChainWatchLab proxy = new ChainWatchLab(address(new BenignImplementation()));
+        address drain = address(new DrainImplementation());
+        vm.prank(address(0xBAD));
+        proxy.upgradeTo(drain, false);
+        assertEq(address(uint160(uint256(vm.load(address(proxy), IMPLEMENTATION)))), drain);
+    }
+}
+
+// Control harm: the owner slot changes hands. No ETH moves.
+contract OwnerChangeTest is Test {
+    function test_ownerChange() public {
+        ChainWatchLab proxy = new ChainWatchLab(address(new BenignImplementation()));
+        proxy.transferOwnership(address(0xBAD));
+        assertEq(proxy.owner(), address(0xBAD));
+    }
+}
+
+// A probe: it only reads the proxy. It passes, and it must not count as harm.
+contract ChainProbeTest is Test {
+    function test_probe() public {
+        ChainWatchLab proxy = new ChainWatchLab(address(new BenignImplementation()));
+        assertEq(proxy.owner(), address(this));
+    }
+}

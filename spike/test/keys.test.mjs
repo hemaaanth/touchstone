@@ -186,7 +186,7 @@ const hasImage = (() => {
 })();
 const LAB = new URL("../packs/keys/lab", import.meta.url).pathname;
 
-test("keys smoke: the lab world is observed and both oracle exploits prove harm", { skip: !hasImage && "image not built", timeout: 600_000 }, async () => {
+test("keys smoke: the lab world is observed, funds and control harm prove, a probe fails", { skip: !hasImage && "image not built", timeout: 900_000 }, async () => {
   const ws = makeWorkspace(LAB);
   try {
     assert.equal(packFor(readTouchstone(ws)).id, "keys");
@@ -199,10 +199,13 @@ test("keys smoke: the lab world is observed and both oracle exploits prove harm"
     assert.match(prep.env.CHAIN_BRIEF, /module-enabled/);
     assert.match(prep.env.CHAIN_BRIEF, /signer-reuse/);
     assert.equal(events[0].ev, "chain-scan");
-    const source = readFileSync(join(LAB, "oracle", "KeysOracle.t.sol"), "utf8");
+    const sourceOf = readFileSync(join(LAB, "oracle", "KeysOracle.t.sol"), "utf8");
+    const setupSource = readFileSync(join(LAB, "oracle", "DelegatedSetupTest.t.sol"), "utf8");
     const found = [];
     const runs = [];
-    for (const poc of ["KnownKeyTest", "ModuleBypassTest"]) {
+    const pocs = ["KnownKeyTest", "ModuleBypassTest", "OwnerTakeoverTest", "ReDelegationTest", "ProbeOnlyTest", "DelegatedSetupTest"];
+    for (const poc of pocs) {
+      const source = poc === "DelegatedSetupTest" ? setupSource : sourceOf;
       writePoc(ws, source);
       const run = await forgeTest(ws, { matchContract: poc });
       assert.ok(run.passed && !run.failed, `${poc} should pass: ${run.output}`);
@@ -210,11 +213,26 @@ test("keys smoke: the lab world is observed and both oracle exploits prove harm"
       runs.push({ ev: "run_poc-done", passed: run.passed, contract: poc });
     }
     const proved = await keys.prove(ws, found, runs, () => {});
-    assert.equal(proved.length, 2);
-    for (const finding of proved) {
-      assert.equal(finding.proof.status, "pass", finding.poc);
-      assert.equal(finding.proof.kind, "forge");
-      assert.equal(finding.proof.harm.ok, true);
+    assert.equal(proved.length, pocs.length);
+    const by = Object.fromEntries(proved.map((f) => [f.poc, f.proof]));
+    for (const poc of ["KnownKeyTest", "ModuleBypassTest"]) {
+      assert.equal(by[poc].status, "pass", poc);
+      assert.equal(by[poc].kind, "forge");
+      assert.equal(by[poc].harm.kind, "funds", poc);
     }
+    assert.equal(by.OwnerTakeoverTest.status, "pass");
+    assert.equal(by.OwnerTakeoverTest.harm.kind, "control");
+    assert.ok(by.OwnerTakeoverTest.harm.changes.some((c) => /^Safe owner list/.test(c.field)));
+    assert.ok(by.OwnerTakeoverTest.harm.changes.some((c) => c.field === "Safe owner count"));
+    assert.equal(by.ReDelegationTest.status, "pass");
+    assert.equal(by.ReDelegationTest.harm.kind, "control");
+    assert.equal(by.ReDelegationTest.harm.changes[0].field, "EIP-7702 delegation");
+    // Found by the live agent: setup() on a lab 7702 account that has no Safe state yet.
+    assert.equal(by.DelegatedSetupTest.status, "pass");
+    assert.equal(by.DelegatedSetupTest.harm.kind, "control");
+    assert.ok(by.DelegatedSetupTest.harm.changes.some((c) => c.field === "Safe owner count"));
+    assert.equal(by.ProbeOnlyTest.status, "fail");
+    assert.equal(by.ProbeOnlyTest.harm.ok, false);
+    for (const proof of Object.values(by)) assert.equal(proof.controlTrace, undefined, "the large state trace is not stored");
   } finally { cleanupWorkspace(ws); }
 });

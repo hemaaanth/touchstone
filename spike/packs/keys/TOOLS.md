@@ -9,7 +9,7 @@ image `touchstone-chain-tools:wave1` (built from `runtime/Dockerfile`), with
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
 |------|------|------|------|------|------|------|------|------|------|------|------|
-| Foundry (forge) | MIT or Apache-2.0 | `ghcr.io/foundry-rs/foundry:latest` through `forgeTest` | Yes | Workspace with `test/` | `forge test --json -vvvv` | The proof itself | `forge`: the test replays green and a Safe loses ETH to another address | None | Cheatcodes (`vm.sign`, `vm.getCode`, `vm.prank`) | We add the harm oracle: the Safe must lose ETH and another address must gain it | wrap |
+| Foundry (forge) | MIT or Apache-2.0 | `ghcr.io/foundry-rs/foundry:latest` through `forgeTest` | Yes | Workspace with `test/` | `forge test --json -vvvv`, and `-vvvvv` for the proof replay (storage writes) | The proof itself | `forge`: the test replays green, and either a Safe loses ETH to another address (`funds`) or the replay changes a lab owner, threshold, module, guard, fallback handler or EIP-7702 delegation (`control`) | None | Cheatcodes (`vm.sign`, `vm.getCode`, `vm.prank`) | We add the harm oracle: funds harm or control harm, read from the replay state diff (`lib/control-trace.mjs`, `control.mjs`) | wrap |
 | Anvil | MIT or Apache-2.0 | Binary in the tools image, started by `observe.mjs` | Yes | None, a fresh local chain | JSON-RPC on `127.0.0.1` inside the container | Chain state of the deployed Safes | None | None | None | None | wrap |
 | Safe contracts 1.4.1 (`@safe-global/safe-contracts`) | LGPL-3.0 | Build artifacts only (`Safe.json`, `SafeProxy.json`, support contracts). The pre-pass writes them into the workspace from the npm package. They are loaded with `vm.getCode`. Nothing from Safe is stored in our repo | Yes | Constructor args | Deployed Safe | The target itself | The lab target | None | Artifacts used as bytes, not as source | We pick weak setups on purpose | wrap (artifacts, separate bytecode) |
 | Safe protocol-kit (`@safe-global/protocol-kit`) | MIT | `observe.mjs` in the tools image, `Safe.init` on the local RPC | Yes, with contract addresses passed in `contractNetworks` | Safe address and RPC | owners, threshold, modules, nonce, version | Second reader. A fact both readers return makes the lead `corroborated` | `forge` | Touchstone ethers reader | The SDK is called, not copied | We run our checks over what the SDK reads | ensemble |
@@ -28,6 +28,16 @@ image `touchstone-chain-tools:wave1` (built from `runtime/Dockerfile`), with
   string. The lab has no old singleton to exploit.
 - The blind-signing check (hash shown to signers against the call executed) needs
   the Safe Transaction Service. No tool in this pack can run it offline yet.
+
+- Control harm reads Safe 1.4.1 slots only: singleton, owner count, threshold, guard,
+  fallback handler, and the owner and module list entries. Other slots are not control.
+- EIP-7702 is proven by `vm.etch` of an `ef0100` designator on a lab account, then a call
+  to it. The vendored forge-std has no `signAndAttachDelegation`. The lab accounts are
+  owners with a public key, and owners that already have delegation code.
+- `vm.store` writes are not counted. Writes in a constructor, in a reverted call, or in
+  Safe `setup` on a Safe the test made or a lab Safe it rebuilt are not counted. Safe
+  `setup` on a lab account (an owner with a public key or delegation code) is counted: it
+  is the takeover of an uninitialised 7702 account. The live run found this path.
 
 ## Candidates from the research (03-capabilities.md M12, 04-crypto-coverage.md, 07-gap-5)
 

