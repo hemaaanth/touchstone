@@ -60,8 +60,16 @@ const PER_SUSPECT = 3;
 const AUDIT = `How the audit works:
 - A contract can have SEVERAL vulnerabilities. Your job is to find and prove ALL
   of them, not just the first one.
-- Plan first. Before you write any test, list every suspect you see, ranked worst
-  first. Include suspects the analyzers did not flag. Write the list in your reply.
+- One finding per ROOT CAUSE. A root cause is one code change that fixes it. If
+  fixing bug A also stops attack B, then B is not a new finding: it is part of A's
+  impact, so describe it in A's explanation. This covers bigger or smaller drains,
+  the insolvency a drain leaves behind, other ways to trigger the same flaw, and a
+  chain of two bugs you already have. Do not write tests for these.
+- Not findings: design choices that let no attacker take or lock anyone else's
+  funds (for example, no receive() function, or ETH sent by mistake staying put).
+- Plan first. Before you write any test, list every suspect root cause you see,
+  ranked worst first. Include suspects the analyzers did not flag. Write the list
+  in your reply.
 - Work down the list, worst first. Spend at most ${PER_SUSPECT} run_poc attempts on one
   suspect. If it still fails, mark it "not proven" and move on.
 - Use a NEW test contract name for each suspect (for example \`ReentrancyTest\`,
@@ -70,8 +78,9 @@ const AUDIT = `How the audit works:
   next suspect. Submitting a finding never ends the audit. A low or medium finding
   never means you can skip a worse suspect.
 - Submit each passing test once. One finding per test contract.
-- You have ${MAX_POC} run_poc attempts in total. Plan for them.
-- Stop only when every suspect is proven or ruled out, or the budget is spent.
+- You have ${MAX_POC} run_poc attempts in total. That is a limit, not a target.
+  Unused attempts are fine. A contract with one bug should give one finding.
+- Stop when every suspect root cause is proven or ruled out, or the budget is spent.
   Then write a short coverage summary: one line per suspect, marked "proven",
   "not exploitable", or "not tried".
 
@@ -327,7 +336,7 @@ function tools(ws, state) {
   });
   const submitFinding = defineTool({
     name: "submit_finding",
-    description: "Record one proven vulnerability. Call it as soon as a test passes, once per passing test contract. It returns at once; then continue the audit with the next suspect.",
+    description: "Record one proven vulnerability: one root cause, meaning one code fix. Call it as soon as a test passes. Never submit a second finding for the same root cause. It returns at once; then continue the audit with the next suspect.",
     parameters: obj({
       title: str(), severity: str({ description: "critical | high | medium | low" }),
       poc_contract: str({ description: "name of your passing test contract" }),
@@ -352,7 +361,7 @@ function tools(ws, state) {
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
       event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
       const left = Math.max(0, MAX_POC - state.poc);
-      return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect on your list, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
   const staticFindings = defineTool({
@@ -553,7 +562,7 @@ async function child([, , , mode, db, ws]) {
     event("audit-continue", { found: state.found.length, left });
     const more = await root.submit({
       type: "input", requestId: "continue1",
-      content: `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit each new passing test as its own finding. If no suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`,
+      content: `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause, one that the fixes for the findings above would not already stop. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`,
     }, ctx);
     settled = await more.wait(ctx);
   }
