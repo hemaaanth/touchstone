@@ -185,7 +185,9 @@ function normalize(raw, id) {
     title: finding.title || null,
     severity: finding.severity || null,
     module: "Contracts",
-    target: (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
+    // Prefer the structured target from the library (new runs); fall back to the
+    // transcript's own list_sources for older/CLI runs that predate it.
+    target: r.target?.title || (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
     // Verdict ladder — each stage is reached only because the data shows it.
     // A proven exploit is recorded automatically ("auto"); the operator may
     // later dismiss it in the ledger, which is a judgement, not a disproof —

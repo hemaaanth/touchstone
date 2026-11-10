@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, decideRun, steerRun, getRun, listRuns, subscribe, availableModels, spendState, providerInfo } from "./runs.mjs"
+import { createRun, decideRun, steerRun, getRun, listRuns, subscribe, availableModels, availableTargets, spendState, providerInfo } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 
 function send(res, status, json) {
@@ -43,7 +43,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, createRun({ alias: body.alias }))
+      send(res, 201, createRun({ alias: body.alias, targetId: body.targetId }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -135,6 +135,6 @@ export async function handleFindings(req, res) {
 export function handleModels(req, res) {
   const url = new URL(req.url, "http://localhost")
   if (url.pathname !== "/api/models" || req.method !== "GET") return false
-  send(res, 200, { models: availableModels(), spend: spendState(), provider: providerInfo() })
+  send(res, 200, { models: availableModels(), targets: availableTargets(), spend: spendState(), provider: providerInfo() })
   return true
 }

@@ -176,6 +176,32 @@ export interface SpendState {
   cap: number
 }
 
+// Where a finding for a target may be proven WITHOUT real-world harm. "kind"
+// names the surface ("sandbox-foundry" today); "note" is the human sentence the
+// UI shows so the operator can see a run can never touch live funds.
+export interface ProofSurface {
+  kind: string
+  note: string
+}
+
+// One scope from the target library. `kind` is lab | local-source | brief;
+// `signal` names the submodule expected to surface the lead first (static /
+// fuzz / agent) — descriptive, never the thing that makes a finding real.
+export interface TargetScope {
+  id: string
+  title: string
+  kind: "lab" | "local-source" | "brief"
+  blurb: string
+  entry: string
+  signal: string
+  proofSurface: ProofSurface
+}
+
+// A target as the launcher offers it: a scope plus whether it can run right now.
+export interface TargetChoice extends TargetScope {
+  runnable: boolean
+}
+
 // The active inference gateway (NEAR / Boundless / Lyber), so the UI can label
 // the spend meter with whichever provider a run will actually drive.
 export interface ProviderInfo {
@@ -201,7 +227,9 @@ export interface RunView {
   id: string
   alias: string
   model: string
+  // A label for back-compat; `scope` carries the structured target descriptor.
   target: string
+  scope: TargetScope
   status: RunStatus
   startedAt: number
   events: RunEvent[]

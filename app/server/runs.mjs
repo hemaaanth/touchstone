@@ -23,6 +23,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { makeWorkspace, cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
 import { guard, spent, MODELS, CAP_USD, PROVIDER_ID, PROVIDER_LABEL } from "../../spike/lib/inference.mjs"
+import { listTargets, pickTarget, resolveTargetDir, targetSummary } from "../../spike/lib/targets.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -58,7 +59,6 @@ const loadedKeys = loadEnvLocal()
 if (loadedKeys > 0) console.log(`[runs] loaded ${loadedKeys} key(s) from spike/.env.local`)
 const ENGINE = path.join(SPIKE, "agent-run.mjs")
 const RESULTS_DIR = path.join(SPIKE, "results", "agent")
-const TARGET = path.join(ROOT, "lab", "vault-reentrancy")
 const MAX_POC = process.env.MAX_POC ?? "6"
 const KILL_GRACE_MS = 1500 // let the pending approval commit land before SIGKILL
 
@@ -80,6 +80,11 @@ export function spendState() {
 // which gateway a run will drive.
 export function providerInfo() {
   return { id: PROVIDER_ID, label: PROVIDER_LABEL }
+}
+
+// The target library the UI picks a scope from. No filesystem paths leak out.
+export function availableTargets() {
+  return listTargets()
 }
 
 // In-memory registry. The Vite dev server is one long-lived Node process, so a
@@ -110,7 +115,12 @@ function view(run) {
     id: run.id,
     alias: run.alias,
     model: run.model,
-    target: "Contracts · Vault.sol",
+    // The real scope this run is pointed at, from the target library — no longer
+    // a hardcoded string. `target` stays a label for back-compat; `scope` carries
+    // the structured descriptor so the UI can show kind, proof surface, and which
+    // resource is under evaluation.
+    target: run.target.title,
+    scope: targetSummary(run.target),
     status: run.status,
     startedAt: run.startedAt,
     events: run.events,
@@ -177,8 +187,12 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export function createRun({ alias = Object.keys(MODELS)[0] } = {}) {
+export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
   if (!MODELS[alias]) throw new Error(`unknown model alias: ${alias}`)
+  // Pick the scope from the target library: an explicit choice, or random across
+  // the labs so repeated Runs stop re-breaking one prepared bug. Throws on an
+  // unknown id before anything is spent.
+  const target = pickTarget({ id: targetId })
   // Respect the hard spend cap before spending a cent of real inference.
   guard(0.02)
 
@@ -187,11 +201,12 @@ export function createRun({ alias = Object.keys(MODELS)[0] } = {}) {
   const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
   const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
   for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile]) rmSync(f, { force: true })
-  const ws = makeWorkspace(TARGET)
+  const ws = makeWorkspace(resolveTargetDir(target))
 
   const run = {
     id,
     alias,
+    target,
     model: MODELS[alias].id,
     status: "starting",
     startedAt: Date.now(),
@@ -382,6 +397,9 @@ function persistSettled(run, settled, verdict) {
 
   const result = {
     alias: run.alias,
+    // The scope this run was pointed at, from the target library, so history and
+    // the findings ledger can show which resource was under evaluation.
+    target: targetSummary(run.target),
     // The app has no manual gate: a proven run records itself. Mark approvals
     // "auto" so the ledger reads "Accepted · auto" rather than implying a click.
     approveMode: verdict === "deny" ? "deny" : "auto",

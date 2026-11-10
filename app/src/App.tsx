@@ -8,6 +8,7 @@ import type {
   RunStatus,
   RunSummary,
   SpendState,
+  TargetChoice,
 } from "@/lib/types"
 import { dismissFinding, fetchFinding, fetchFindings, fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { Sidebar } from "@/components/Sidebar"
@@ -20,6 +21,7 @@ const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
+  const [targets, setTargets] = useState<TargetChoice[]>([])
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -33,8 +35,9 @@ export function App() {
 
   const refreshModels = useCallback(() => {
     fetchModels()
-      .then(({ models, spend, provider }) => {
+      .then(({ models, targets, spend, provider }) => {
         setModels(models)
+        setTargets(targets)
         setSpend(spend)
         setProvider(provider)
       })
@@ -85,10 +88,10 @@ export function App() {
   }, [selected])
 
   const onStart = useCallback(
-    (alias: string) => {
+    (alias: string, targetId?: string) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias)
+      startRun(alias, targetId)
         .then((run) => {
           setRuns((prev) => [
             { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
@@ -151,6 +154,7 @@ export function App() {
           launcher={
             <RunLauncher
               models={models}
+              targets={targets}
               spend={spend}
               busy={busy}
               error={startError}

@@ -7,6 +7,7 @@ import type {
   RunSummary,
   RunView,
   SpendState,
+  TargetChoice,
 } from "./types"
 
 async function getJson<T>(url: string): Promise<T> {
@@ -39,10 +40,13 @@ export function fetchFinding(id: string): Promise<Finding> {
 
 export async function fetchModels(): Promise<{
   models: ModelChoice[]
+  targets: TargetChoice[]
   spend: SpendState
   provider: ProviderInfo
 }> {
-  return getJson<{ models: ModelChoice[]; spend: SpendState; provider: ProviderInfo }>("/api/models")
+  return getJson<{ models: ModelChoice[]; targets: TargetChoice[]; spend: SpendState; provider: ProviderInfo }>(
+    "/api/models",
+  )
 }
 
 export async function fetchRuns(): Promise<RunSummary[]> {
@@ -50,8 +54,10 @@ export async function fetchRuns(): Promise<RunSummary[]> {
   return data.runs
 }
 
-export function startRun(alias: string): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias })
+// Start a run against a chosen scope. Omit targetId to let the server pick a
+// target at random from the library, so repeated Runs stop re-breaking one bug.
+export function startRun(alias: string, targetId?: string): Promise<RunView> {
+  return postJson<RunView>("/api/runs", { alias, targetId })
 }
 
 // Steer a run that is in flight. The text is injected into the agent's current
