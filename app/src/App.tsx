@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
 import type {
-  FindingSummary,
   ModelChoice,
   PendingApproval,
   ProviderInfo,
@@ -9,11 +8,10 @@ import type {
   SpendState,
   TargetChoice,
 } from "@/lib/types"
-import { fetchFindings, fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
-import { FindingsPanel } from "@/components/findings-panel"
 import { PageStub } from "@/components/page-stub"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { fixtureRuns } from "@/lib/fixtures"
@@ -34,9 +32,7 @@ export function App() {
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
   const [runs, setRuns] = useState<RunSummary[]>(DEV_FIXTURES)
-  const [findings, setFindings] = useState<FindingSummary[]>([])
   const [view, setView] = useState<View | null>(null)
-  const [selectedFinding, setSelectedFinding] = useState<string | null>(null)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -53,27 +49,23 @@ export function App() {
       .catch(() => {})
   }, [])
 
-  const refreshFindings = useCallback(() => fetchFindings().then(setFindings).catch(() => {}), [])
-
   // Load everything once. Land on the newest live run so the stage is never
   // empty when there is work in flight.
   useEffect(() => {
     let live = true
     refreshModels()
-    Promise.all([
-      fetchRuns().catch(() => [] as RunSummary[]),
-      fetchFindings().catch(() => [] as FindingSummary[]),
-    ]).then(([runList, findingList]) => {
-      if (!live) return
-      const merged = [...DEV_FIXTURES, ...runList]
-      setRuns(merged)
-      setFindings(findingList)
-      setView((cur) => cur ?? (merged.length > 0 ? { kind: "run", id: merged[0].id } : null))
-    })
+    fetchRuns()
+      .catch(() => [] as RunSummary[])
+      .then((runList) => {
+        if (!live) return
+        const merged = [...DEV_FIXTURES, ...runList]
+        setRuns(merged)
+        setView((cur) => cur ?? (merged.length > 0 ? { kind: "run", id: merged[0].id } : null))
+      })
     return () => {
       live = false
     }
-  }, [refreshModels, refreshFindings])
+  }, [refreshModels])
 
   const onStart = useCallback(
     (alias: string, targetId?: string) => {
@@ -106,12 +98,9 @@ export function App() {
             : r,
         ),
       )
-      if (TERMINAL.includes(status)) {
-        refreshModels()
-        if (status === "recorded") refreshFindings()
-      }
+      if (TERMINAL.includes(status)) refreshModels()
     },
-    [refreshModels, refreshFindings],
+    [refreshModels],
   )
 
   const activeRun = view?.kind === "run" ? runs.find((r) => r.id === view.id) ?? null : null
@@ -127,25 +116,21 @@ export function App() {
         provider={provider}
       />
 
-      <div className="flex h-svh min-w-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
-          {activeRun ? (
-            <RunChat
-              key={activeRun.id}
-              run={activeRun}
-              onStatus={(status, pending) => onRunStatus(activeRun.id, status, pending)}
-            />
-          ) : view?.kind === "page" ? (
-            <PageStub id={view.id} />
-          ) : (
-            <div className="grid flex-1 place-items-center p-8">
-              <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
-            </div>
-          )}
-        </main>
-
-        <FindingsPanel findings={findings} selectedId={selectedFinding} onSelect={setSelectedFinding} />
-      </div>
+      <main className="flex h-svh min-w-0 flex-1 flex-col">
+        {activeRun ? (
+          <RunChat
+            key={activeRun.id}
+            run={activeRun}
+            onStatus={(status, pending) => onRunStatus(activeRun.id, status, pending)}
+          />
+        ) : view?.kind === "page" ? (
+          <PageStub id={view.id} />
+        ) : (
+          <div className="grid flex-1 place-items-center p-8">
+            <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
+          </div>
+        )}
+      </main>
 
       <NewRunDialog
         open={dialogOpen}
