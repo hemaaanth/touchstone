@@ -1,0 +1,5 @@
+apiVersion: v2
+name: validator-lab
+version: 0.1.0
+description: Throwaway validator chart. Never deploy.
+type: application

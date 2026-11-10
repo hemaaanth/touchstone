@@ -1,0 +1,2 @@
+FROM toniblyx/prowler:5.48.0@sha256:18c46f938c19f0409be29a0b39b33ac43187e6d0eabaf6371d7468cc682d875b
+ENTRYPOINT ["/home/prowler/.venv/bin/python"]

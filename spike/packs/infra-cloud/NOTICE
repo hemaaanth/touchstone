@@ -1,0 +1,23 @@
+Infra-cloud uses upstream tools as separate programs in Docker.
+
+rule-catalog.json contains rule IDs, static rule titles and severity classifications
+extracted from the pinned Trivy, Checkov, KICS and Kubescape SARIF reports.
+It does not contain detector source, source snippets, or secret values.
+The shared sarifLeads helper supplies the severity classification.
+These projects distribute their code and rules under Apache-2.0.
+See LICENSE.upstream for the license text.
+
+Sources:
+https://github.com/aquasecurity/trivy/tree/v0.76.2
+https://github.com/bridgecrewio/checkov/tree/3.4.3
+https://github.com/Checkmarx/kics/tree/v2.2.1
+https://github.com/kubescape/kubescape/tree/v4.0.20
+
+Dockerfile.kubescape fetches the unmodified WorkloadScan framework, control
+inputs and exceptions from Kubescape regolibrary v2. Each asset has an explicit
+SHA-256 checksum. The files remain in the comparison image, not the target.
+Source: https://github.com/kubescape/regolibrary/releases/tag/v2
+License: Apache-2.0; Kubescape regolibrary contributors.
+
+Trivy, Checkov, KICS and Kubescape rule logic stays upstream. Touchstone adds
+crypto-specific relationships and evidence gates in checks.mjs and pack.mjs.

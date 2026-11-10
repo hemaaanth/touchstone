@@ -1,0 +1,6 @@
+{
+  "name": "touchstone-infra-cloud",
+  "private": true,
+  "type": "module",
+  "dependencies": { "yaml": "2.8.1" }
+}

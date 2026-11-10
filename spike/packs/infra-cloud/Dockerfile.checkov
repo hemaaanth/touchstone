@@ -1,0 +1,2 @@
+FROM bridgecrew/checkov:3.4.3@sha256:bfe9d70bb7f044aba49bd99675813445f106dee6072da583f51008cb667f3a63
+ENTRYPOINT ["checkov"]
