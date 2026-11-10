@@ -18,7 +18,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync,
 import { join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, Harness, LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { obj, str } from "@earendil-works/pi-schema";
 import { MODELS, PROVIDER_ID, charge, guard, spent } from "./lib/inference.mjs";
@@ -276,17 +276,20 @@ function tools(ws) {
         event("run_poc-capped", { contract: args.contract_name, attempts: pocAttempts });
         return { output: [{ type: "text", text: `PoC attempt budget exhausted (${MAX_POC} runs used). Stop iterating. If an earlier run passed, call submit_finding now with that test contract. Otherwise report that you could not prove an exploit.` }], isError: true };
       }
-      event("run_poc", { contract: args.contract_name, attempt: pocAttempts });
       // Surface the exact PoC source for this attempt as a versioned artifact, so
       // the console's document pane shows v1/v2/v3 of the file the agent iterates
       // on — one version per attempt, sharing a stable fileId — instead of a
       // single card mutating in place. Purely additive telemetry: it drives no
       // control flow and spends nothing. The id is unique per attempt (a new
-      // version); fileId groups the rewrites of the same test file.
+      // version); fileId groups the rewrites of the same test file. Emitted
+      // BEFORE run_poc so the file chip lands above its "Exploit attempt N" step
+      // in the transcript (the reducer orders steps by event order), matching the
+      // "draft, then run it" reading of the demo fixture.
       const artId = `poc-${args.contract_name}-${pocAttempts}`;
       event("artifact-open", { id: artId, fileId: `poc-${args.contract_name}`, title: `${args.contract_name}.t.sol`, kind: "poc", lang: "solidity", attempt: pocAttempts, contract: args.contract_name });
       event("artifact-delta", { id: artId, text: args.test_source });
       event("artifact-done", { id: artId });
+      event("run_poc", { contract: args.contract_name, attempt: pocAttempts });
       writePoc(ws, args.test_source);
       const r = await forgeTest(ws, { matchContract: args.contract_name });
       event("run_poc-done", { contract: args.contract_name, passed: r.passed, failed: r.failed, timedOut: r.timedOut });
@@ -436,6 +439,40 @@ async function summarize(root) {
   return { calls, results, assistants, final: assistants.at(-1) };
 }
 
+// Stream the agent's live thinking and prose to the UI. pi-durable commits a
+// throttled partial of the in-flight response into the root conversation's
+// LiveDoc (`generation.message`), so we watch that doc and, on every commit,
+// re-derive the full text and reasoning of the current answer. The reducer
+// REPLACES a streamed step by (conv, attempt), so emitting the growing snapshot
+// types the text on screen. We key `attempt` on the run's tool-round index
+// (`run.turns`), so each round's prose lands as its own step instead of
+// overwriting the last. Without this a live run shows tool steps but no
+// cognition — exactly the gap the operator saw. Returns the watch handle so the
+// caller can stop it; a no-op if the harness has no live doc yet.
+async function streamCognition(harness) {
+  const w = await harness.watchDoc(LiveDoc, ROOT_CONVERSATION_ID, ctx);
+  if (!w) return undefined;
+  let turn = -1;
+  let lastSay = "", lastThink = "";
+  const emit = (live) => {
+    const msg = live?.generation?.message;
+    if (!msg || !Array.isArray(msg.content)) return;
+    const t = live?.run?.turns ?? 0;
+    // A new tool round resets the partial; start a fresh step and dedupe baseline.
+    if (t !== turn) { turn = t; lastSay = ""; lastThink = ""; }
+    let say = "", think = "";
+    for (const b of msg.content) {
+      if (b?.type === "text" && typeof b.text === "string") say += b.text;
+      else if (b?.type === "thinking" && typeof b.thinking === "string") think += b.thinking;
+    }
+    if (think && think !== lastThink) { lastThink = think; event("thinking-delta", { attempt: turn, text: think }); }
+    if (say && say !== lastSay) { lastSay = say; event("assistant-delta", { attempt: turn, text: say }); }
+  };
+  emit(w.value);
+  w.start(async (call) => { if (call.kind === "value") emit(call.value); });
+  return w;
+}
+
 async function chargeUsage(harness) {
   const u = await harness.usage(ctx);
   let usd = 0;
@@ -492,6 +529,8 @@ async function child([, , , mode, db, ws]) {
   // transcript shows a message exactly when it actually landed. In CLI mode stdin
   // is /dev/null, so this reader simply never fires.
   if (mode === "run") {
+    // Stream the agent's thinking and prose to the UI for the whole live turn.
+    await streamCognition(harness);
     let steerSeq = 0;
     let stdinBuf = "";
     process.stdin.setEncoding("utf8");

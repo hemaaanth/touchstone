@@ -468,6 +468,17 @@ export function decideRun(id, verdict) {
       if (settled) await persistSettled(run, settled, verdict)
       const recorded = verdict === "approve"
       run.status = recorded ? "recorded" : "denied"
+      // A recorded finding opens its replay proof as a pane document, the same
+      // way the CLI fixture does. The proof body is fetched by the finding id
+      // (this run's id) via /api/findings/:id — persistSettled wrote that record
+      // above — so this artifact only needs to exist to give the finding card its
+      // "Open replay proof" target and to swing the pane to the proof. Emitted
+      // before the recorded status so the doc is present when the card turns green.
+      if (recorded) {
+        const title = run.pending?.poc ? `Replay proof — ${run.pending.poc}` : "Replay proof"
+        broadcast(run, { ev: "artifact-open", id: `proof-${run.id}`, title, kind: "proof" })
+        broadcast(run, { ev: "artifact-done", id: `proof-${run.id}` })
+      }
       broadcast(run, { ev: "status", status: run.status, decision: verdict, findingId: recorded ? run.id : null })
     } catch (err) {
       run.error = String(err?.message ?? err)

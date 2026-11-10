@@ -495,6 +495,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (typeof e.status === "string") status = e.status as RunStatus
         if (e.pending) pending = e.pending as PendingApproval
         if (e.decision === "approve" || e.decision === "deny") decision = e.decision
+        // The live server records a finding by broadcasting a terminal `status`
+        // (not the CLI's `run-complete`), stamping the recorded run's id here. We
+        // resolve it so the proof pane can fetch that finding by id — without it a
+        // live recorded run has no findingId and the replay proof never loads.
+        if (typeof e.findingId === "string") findingId = e.findingId
         if (typeof e.error === "string") error = e.error
         break
       case "closed":
