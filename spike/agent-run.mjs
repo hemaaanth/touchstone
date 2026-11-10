@@ -66,7 +66,9 @@ const AUDIT = `How the audit works:
   the insolvency a drain leaves behind, other ways to trigger the same flaw, and a
   chain of two bugs you already have. Do not write tests for these.
 - Not findings: design choices that let no attacker take or lock anyone else's
-  funds (for example, no receive() function, or ETH sent by mistake staying put).
+  funds. Examples: no receive() function, ETH sent by mistake staying put, or a
+  user who can only lose their own funds through their own setup (such as a
+  depositor contract that cannot receive ETH).
 - Plan first. Before you write any test, list every suspect root cause you see,
   ranked worst first. Include suspects the analyzers did not flag. Write the list
   in your reply.
