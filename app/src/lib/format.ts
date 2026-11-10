@@ -13,6 +13,19 @@ export function ago(ts: number | null | undefined): string {
   return `${d}d`
 }
 
+// Elapsed wall-clock since a start instant, compact. "0s" / "9s" / "1m 20s" /
+// "2h 03m". Used by live cognition surfaces (agent-status, tool-group) that tick
+// while an attempt runs, so it reads whole seconds up and stays monotonic.
+export function elapsed(startedAt: number | null | undefined, now: number = Date.now()): string {
+  if (!startedAt) return ""
+  const s = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${String(m % 60).padStart(2, "0")}m`
+}
+
 // A run is live while it is still doing work; terminal once it has settled.
 const TERMINAL: RunStatus[] = ["recorded", "denied", "no-finding", "error"]
 export const isTerminal = (s: RunStatus): boolean => TERMINAL.includes(s)
