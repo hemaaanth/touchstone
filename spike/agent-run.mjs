@@ -26,6 +26,7 @@ import { inferenceModels } from "./lib/provider.mjs";
 import { cleanupWorkspace, forgeTest, makeWorkspace, writePoc } from "./lib/sandbox.mjs";
 import { staticScan, staticBrief } from "./lib/static.mjs";
 import { fuzzScan, fuzzBrief } from "./lib/fuzz.mjs";
+import { proofDelta } from "./lib/proof.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? Object.keys(MODELS)[0];
@@ -472,6 +473,38 @@ async function main() {
     ? all.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === provenContract)
     : false;
 
+  // Structured proof delta — the engine's own reading of the proven exploit.
+  // When a finding proved, re-run its exact test ONE more time in JSON trace mode
+  // and read the real money the EVM moved, per address, straight from the trace.
+  // This replaces source-regex guesswork with machine truth: the proof panel shows
+  // what the chain DID, not what the test was written to assert. We reconstruct
+  // the proving source from the agent's last run_poc call for the proven contract,
+  // and run it before the workspace is torn down below.
+  let proof = null;
+  if (pocPassed && provenContract) {
+    const pocCalls = (settled?.summary?.calls ?? []).filter(
+      (c) => c.name === "run_poc" && c.args?.contract_name === provenContract && c.args?.test_source,
+    );
+    const source = pocCalls.at(-1)?.args?.test_source ?? null;
+    if (source) {
+      try {
+        proof = await proofDelta(ws, { source, contract: provenContract });
+      } catch (err) {
+        console.log("· proof-delta failed:", String(err?.message || err).slice(0, 200));
+      }
+    }
+    if (proof) {
+      console.log(
+        "· proof-delta " +
+          JSON.stringify({
+            status: proof.status,
+            gas: proof.gasUsed,
+            transfers: proof.transfers.map((t) => `${t.label}:${t.net}`),
+          }),
+      );
+    }
+  }
+
   const result = {
     alias: ALIAS, approveMode: APPROVE, ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
@@ -484,6 +517,10 @@ async function main() {
     // replay. A suspect is never a finding on its own.
     fuzz: { tool: fuzz.tool, engines: fuzz.engines, template: fuzz.template, applicable: fuzz.applicable, suspects: fuzz.findings.length, top: fuzzEvent.top },
     pocRuns, pocProved: pocPassed,
+    // The engine's structured proof delta for the proven exploit: real pass/fail,
+    // gas, decoded logs, and the signed money-moved table read from the trace.
+    // Null when nothing proved or the replay produced no parsable JSON.
+    proof,
     findingSubmitted: !!pendingEv, finding: pendingEv ? { title: pendingEv.title, severity: pendingEv.severity, poc: pendingEv.poc } : null,
     decision: decided?.status ?? null,
     recorded: decided?.status === "approved",

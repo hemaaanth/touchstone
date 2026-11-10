@@ -118,6 +118,11 @@ function normalize(raw, id) {
     : -1
   const proving = provingIndex >= 0 ? runs[provingIndex] : null
 
+  // The engine's structured proof delta, present only on runs recorded after the
+  // engine began emitting it and only when something proved. We require a parsable
+  // transfers array so a malformed or null delta falls back to the source parse.
+  const engineProof = r.proof && Array.isArray(r.proof.transfers) ? r.proof : null
+
   // The exploit source shown and parsed is the proving run's own test — or, if
   // nothing proved, the last attempt, so the report still shows what was tried.
   const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
@@ -201,11 +206,25 @@ function normalize(raw, id) {
     proof: {
       tool: "Foundry",
       compiler: proving ? proving.compiler : null,
-      test: proving ? proving.test : finding.poc,
+      test: engineProof ? engineProof.test : proving ? proving.test : finding.poc,
       contract: finding.poc || null,
-      gas: proving ? proving.gas : null,
+      gas: proving ? proving.gas : engineProof ? engineProof.gasUsed : null,
       pass: Boolean(proving && proving.pass),
       runs,
+      // The money the exploit actually moved. Preferred source is the engine's
+      // structured proof delta: real signed ETH deltas per address, read from the
+      // Foundry trace of the proving replay — machine truth, not source text.
+      // `balances` (regex over the test source) stays as the fallback for older
+      // runs recorded before the engine emitted a delta.
+      transfers: engineProof ? engineProof.transfers.map((x) => ({
+        label: x.label,
+        address: x.address,
+        net: x.net,
+        gained: Boolean(x.gained),
+      })) : [],
+      // The real runtime log lines the proving test emitted (decoded by forge),
+      // verbatim machine output — empty for older runs.
+      logs: engineProof && Array.isArray(engineProof.logs) ? engineProof.logs : [],
       balances: parseBalances(testSource),
       assertions: parseAssertions(testSource),
       rerunCommand: proving && proving.test

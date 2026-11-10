@@ -46,6 +46,16 @@ export interface Balance {
   after: string | null
 }
 
+// A signed net-ETH delta for one address, read by the engine from the real
+// Foundry trace of the proving replay. `net` is the display string ("+1 ETH");
+// `gained` is true when that address ended richer.
+export interface Transfer {
+  label: string
+  address: string
+  net: string
+  gained: boolean
+}
+
 export interface Proof {
   tool: string
   compiler: string | null
@@ -54,6 +64,11 @@ export interface Proof {
   gas: number | null
   pass: boolean
   runs: PocRun[]
+  // Engine-read money-moved table (real trace deltas). Empty for older runs that
+  // predate the structured proof delta — those fall back to `balances`.
+  transfers: Transfer[]
+  // Real runtime log lines the proving test emitted. Empty for older runs.
+  logs: string[]
   balances: Balance[]
   assertions: string[]
   rerunCommand: string | null

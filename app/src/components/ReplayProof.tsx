@@ -37,6 +37,23 @@ function BalanceDelta({ label, before, after }: { label: string; before: string;
   )
 }
 
+// One address's signed net ETH move, read by the engine from the real trace of
+// the proving replay. The +/- in `net` carries the direction, so the figure
+// stays monochrome; the party that ended richer gets weight so the eye lands on
+// where the money went. The address rides along quietly as the ground truth.
+function TransferDelta({ label, address, net, gained }: { label: string; address: string; net: string; gained: boolean }) {
+  const shortAddr = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address
+  return (
+    <div className="flex flex-col gap-(--space-xxs)">
+      <span className="type-xxs text-(--cte-text-muted)">{label}</span>
+      <span className={`font-data type-s tabular-nums ${gained ? "weight-medium text-(--cte-text)" : "text-(--cte-text-muted)"}`}>
+        {net}
+      </span>
+      <span className="font-mono type-xxs text-(--cte-text-muted)">{shortAddr}</span>
+    </div>
+  )
+}
+
 // Render a prose line's inline markdown (`code`, **bold**, *italic*) so none
 // of it reaches the screen as raw markers. Inline `code` reads as code the way
 // Slack's does: a real monospace, set a touch smaller, in an outlined chip so
@@ -217,8 +234,24 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
         </div>
       ) : null}
 
-      {/* Real on-chain deltas the exploit produced. */}
-      {proof.balances.length > 0 ? (
+      {/* What the exploit moved. Preferred source is the engine's structured proof
+          delta: the real signed net ETH per address, read straight from the
+          Foundry trace of the proving replay — machine truth, not source text.
+          Older runs that predate the delta fall back to the source-derived
+          before→after balances. */}
+      {proof.transfers.length > 0 ? (
+        <div className="flex flex-col gap-(--space-s)">
+          <span className="type-s weight-medium text-(--cte-text)">What the exploit moved</span>
+          <p className="type-xs text-(--cte-text-muted)">
+            Net ETH each address moved, read from the real replay trace — not the test's source.
+          </p>
+          <div className="flex flex-wrap gap-(--space-xl)">
+            {proof.transfers.map((t) => (
+              <TransferDelta key={t.address} {...t} />
+            ))}
+          </div>
+        </div>
+      ) : proof.balances.length > 0 ? (
         <div className="flex flex-col gap-(--space-s)">
           <span className="type-s weight-medium text-(--cte-text)">What the exploit moved</span>
           <div className="flex flex-wrap gap-(--space-xl)">
@@ -226,6 +259,22 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
               <BalanceDelta key={b.label} {...b} />
             ))}
           </div>
+        </div>
+      ) : null}
+
+      {/* The real runtime lines the proving test logged, decoded by forge from the
+          replay — the exploit's own words on what it did. Machine output, shown
+          only when the replay proved. */}
+      {proven && proof.logs.length > 0 ? (
+        <div className="flex flex-col gap-(--space-s)">
+          <span className="type-s weight-medium text-(--cte-text)">Replay logged</span>
+          <ul className="flex flex-col gap-(--space-xxs)">
+            {proof.logs.map((line, i) => (
+              <li key={i} className="font-mono type-xs text-(--cte-text-muted)">
+                {line}
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 

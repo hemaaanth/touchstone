@@ -81,3 +81,22 @@ export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {})
   const failed = /[1-9]\d* failed/.test(raw) || /compilation failed|Compilation failed|Error \(\d+\)|Error:/i.test(raw);
   return { output: distill(raw), passed, failed, timedOut: r.timedOut };
 }
+
+// Run the SAME test again in JSON mode at full trace verbosity. This is the
+// engine's structured proof pass: `--json -vvvv` makes forge emit, per test, the
+// real pass/fail, gas, decoded logs, and the full call trace with every ETH
+// value transfer — the machine-truth the proof-delta reader turns into a signed
+// money-moved table. We never distill; the raw JSON is parsed by lib/proof.mjs.
+export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000 } = {}) {
+  let cmd = `forge test --offline --use ${SOLC} -vvvv --json`;
+  if (matchContract) cmd += ` --match-contract ${matchContract}`;
+  const args = [
+    "run", "--rm", "--network", "none",
+    "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
+    "-v", `${ws}:/work`, "-w", "/work",
+    IMG, cmd,
+  ];
+  const r = await run(args, timeoutMs);
+  // forge prints the JSON object on stdout; warnings/errors go to stderr.
+  return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut };
+}
