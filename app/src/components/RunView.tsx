@@ -148,7 +148,22 @@ export function RunView({
 
   if (!run) return null
 
-  const { steps, pending, error, finalText } = run
+  const { steps, scope, pending, error, finalText } = run
+
+  // What resource is this run pointed at? A live run learns it from its `scope`
+  // event; a recorded finding reopened later (whose saved transcript predates
+  // that event) falls back to the stored target label. Never the old hardcoded
+  // "Vault.sol" — that was the same-for-every-run lie we are removing.
+  const KIND_LABEL: Record<string, string> = {
+    lab: "Lab",
+    "local-source": "Local source",
+    brief: "Brief",
+  }
+  const resourceLine = scope
+    ? `${KIND_LABEL[scope.kind] ?? "Scope"} · ${scope.entry} · ${runId}`
+    : finding
+      ? `${finding.target} · ${runId}`
+      : runId
   const status: RunStatus = run.status === "starting" && initialStatus ? initialStatus : run.status
   const stages = finding ? finding.stages : run.stages
   const steerable = status === "running"
@@ -172,7 +187,7 @@ export function RunView({
       >
         <header className="flex flex-col gap-(--space-s) p-(--space-xl) pb-(--space-m)">
           <span className="font-data type-xxs text-(--cte-text-muted)">
-            Contracts · Vault.sol · {runId}
+            {resourceLine}
           </span>
           <h2 className="type-l weight-medium text-(--cte-text)">
             {pending?.title ?? finding?.title ?? "Live run"}

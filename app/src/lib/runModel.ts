@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { streamRun } from "./api"
-import type { FindingStages, PendingApproval, RunEvent, RunStatus, Severity, Verdict } from "./types"
+import type { FindingStages, PendingApproval, RunEvent, RunStatus, Severity, TargetScope, Verdict } from "./types"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -24,6 +24,10 @@ export interface Step {
 
 export interface RunState {
   steps: Step[]
+  // The resource this run is pointed at, from the first `scope` event. Null
+  // until it arrives (or on an old run that predates the event). The header
+  // reads this so a live run names its real target instead of a hardcoded one.
+  scope: TargetScope | null
   status: RunStatus
   pending: PendingApproval | null
   decision: Verdict | null
@@ -45,6 +49,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let finalText: string | null = null
   let closed = false
   let phase: "run" | "decide" = "run"
+  let scope: TargetScope | null = null
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
   const str = (v: unknown) => (typeof v === "string" ? v : "")
@@ -58,6 +63,12 @@ export function reduceEvents(events: RunEvent[]): RunState {
   events.forEach((e, i) => {
     const key = `${i}-${e.ev}`
     switch (e.ev) {
+      case "scope": {
+        // The run's opening event: which resource it is pointed at. Carries no
+        // visible step — it sets the header, not the transcript.
+        if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
+        break
+      }
       case "opened": {
         phase = e.mode === "decide" ? "decide" : "run"
         // The "decide" pass is the app's own automatic record step — it reopens
@@ -229,7 +240,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     accepted: (status as RunStatus) === "recorded" ? "auto" : false,
   }
 
-  return { steps, status, pending, decision, error, finalText, closed, stages }
+  return { steps, scope, status, pending, decision, error, finalText, closed, stages }
 }
 
 // Subscribe to a run and keep the reduced state fresh. The server replays the

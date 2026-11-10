@@ -231,6 +231,12 @@ export function createRun({ alias = Object.keys(MODELS)[0], targetId } = {}) {
   }
   runs.set(id, run)
 
+  // The first event names the scope under evaluation. RunView only sees the
+  // event stream, not the run object, so without this it cannot show which
+  // resource this run is pointed at — the reason every run used to look the
+  // same. It lands in run.events, so a late subscriber replays it too.
+  broadcast(run, { t: Date.now(), ev: "scope", scope: targetSummary(run.target) })
+
   setRunStatus(run, "running")
   // Drive the full engine asynchronously: the pre-pass ensemble first (so the
   // agent starts with leads), then the agent worker. This takes minutes — docker
