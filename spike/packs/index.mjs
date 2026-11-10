@@ -3,8 +3,9 @@
 // for the whole run, as pi-durable requires. A run with no `pack` field is a
 // Contracts run, so every older workspace keeps working.
 import contracts from "./contracts/pack.mjs";
+import supplyChain from "./supply-chain/pack.mjs";
 
-export const PACKS = { [contracts.id]: contracts };
+export const PACKS = { [contracts.id]: contracts, [supplyChain.id]: supplyChain };
 
 export function packFor(cfg = {}) {
   const id = cfg.pack ?? "contracts";
