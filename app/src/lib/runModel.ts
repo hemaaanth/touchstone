@@ -5,6 +5,7 @@ import { getFixture } from "./fixtures"
 import type {
   Activity,
   AgentNode,
+  ArtifactDoc,
   FindingStages,
   FindingSummary,
   PendingApproval,
@@ -40,6 +41,7 @@ export type StepKind =
   | "reasoning"
   | "say"
   | "subagent"
+  | "artifact"
 
 export interface Step {
   key: string
@@ -55,6 +57,8 @@ export interface Step {
   // so a snapshot delta REPLACES the right growing block instead of appending.
   conv?: string
   // Subagent step: the child's id/area, so a handoff row can show its state.
+  // Also carries an artifact id on an "artifact" step, so its transcript chip
+  // can look the live document up in RunState.artifacts.
   subId?: string
   subState?: AgentNode["state"]
 }
@@ -87,6 +91,10 @@ export interface RunState {
   findings: FindingSummary[]
   // Operator steers across their two-phase life (pending chip → admitted msg).
   steers: SteerEntry[]
+  // Workspace documents the agent wrote (the PoC it drafts, the proof it runs),
+  // in order of first appearance. The artifact pane renders the open one; its
+  // transcript chip links back to it. Empty on a run that wrote nothing.
+  artifacts: ArtifactDoc[]
   // The finding the run settled on, from `run-complete`. Null until then.
   findingId: string | null
 }
@@ -105,6 +113,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let agents: AgentNode[] = []
   const findings: FindingSummary[] = []
   const steers: SteerEntry[] = []
+  const artifacts: ArtifactDoc[] = []
   let findingId: string | null = null
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -270,6 +279,38 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // after, the deltas). Same block key, so it just lands the final text.
         streamStep("say", str(e.conv) || "root", num(e.attempt), str(e.text))
         activity = "typing"
+        break
+      }
+      case "artifact-open": {
+        // The agent opens a workspace document — the PoC it is about to draft,
+        // the proof trace it will run. It gets a transcript chip (this step) that
+        // links to the live document held in `artifacts`, which the pane renders.
+        const id = str(e.id)
+        if (!id) break
+        if (!artifacts.some((a) => a.id === id)) {
+          const title = str(e.title) || "Document"
+          artifacts.push({
+            id,
+            title,
+            kind: (str(e.kind) || "report") as ArtifactDoc["kind"],
+            lang: str(e.lang) || undefined,
+            text: "",
+            writing: true,
+          })
+          steps.push({ key, kind: "artifact", phase, label: title, detail: str(e.kind) || undefined, subId: id })
+        }
+        activity = "working"
+        break
+      }
+      case "artifact-delta": {
+        // A growing snapshot of the document's full text — REPLACE, keyed by id.
+        const a = artifacts.find((x) => x.id === str(e.id))
+        if (a) a.text = str(e.text)
+        break
+      }
+      case "artifact-done": {
+        const a = artifacts.find((x) => x.id === str(e.id))
+        if (a) a.writing = false
         break
       }
       case "subagent-spawned": {
@@ -445,6 +486,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     agents,
     findings,
     steers,
+    artifacts,
     findingId,
   }
 }
@@ -472,9 +514,10 @@ export function useRun(runId: string | null): RunState | null {
         if (i >= script.length) return
         const e = script[i++]
         setEvents((prev) => [...prev, e])
-        // Streamed snapshots land fast so prose visibly grows; discrete tool
-        // steps get a human beat between them.
-        const gap = e.ev === "thinking-delta" || e.ev === "assistant-delta" ? 90 : 300
+        // Streamed snapshots land fast so prose and the drafting document
+        // visibly grow; discrete tool steps get a human beat between them.
+        const fast = e.ev === "thinking-delta" || e.ev === "assistant-delta" || e.ev === "artifact-delta"
+        const gap = fast ? 90 : 300
         timer = setTimeout(tick, gap)
       }
       timer = setTimeout(tick, 120)

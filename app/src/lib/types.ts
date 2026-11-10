@@ -237,6 +237,9 @@ export interface RunEvent {
 //   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
 //   assistant-delta  { conv, attempt?, text }                     prose SNAPSHOT
 //   say              { conv, attempt?, text }                      finalized prose
+//   artifact-open    { id, title, kind, lang? }                   doc opens in the pane
+//   artifact-delta   { id, text }                                 doc content SNAPSHOT
+//   artifact-done    { id }                                        doc finished writing
 //   run_poc          { attempt, contract }                        exploit attempt
 //   run_poc-done     { contract, passed, failed?, timedOut? }     attempt resolves
 //   run_poc-capped   { attempts }                                 attempt budget hit
@@ -257,7 +260,8 @@ export interface RunEvent {
 //
 // `-delta` events carry the FULL current text each time (a throttled snapshot of
 // the in-flight message), NOT an increment — the reducer REPLACES, keyed by
-// (conv, attempt), so a dropped tick never loses prose.
+// (conv, attempt) for cognition and by id for an artifact, so a dropped tick
+// never loses prose.
 
 // What the agent is visibly doing right now, derived from the latest cognition
 // event. Drives the live AgentStatus pill between the thread and the composer.
@@ -280,6 +284,23 @@ export interface SteerEntry {
   id: string
   text: string
   state: "pending" | "admitted" | "rejected"
+}
+
+// A workspace document the agent writes while it works — the PoC contract it
+// drafts, the replay trace it proves with. It streams into the artifact pane
+// beside the chat instead of scrolling past in the transcript, so the operator
+// reads the whole file as it is written. `artifact-delta` carries the FULL text
+// each tick (a snapshot, like the cognition deltas), so the reducer REPLACES,
+// keyed by id. `writing` stays true until `artifact-done` lands.
+export type ArtifactKind = "poc" | "proof" | "source" | "report"
+
+export interface ArtifactDoc {
+  id: string
+  title: string
+  kind: ArtifactKind
+  lang?: string
+  text: string
+  writing: boolean
 }
 
 export interface PendingApproval {

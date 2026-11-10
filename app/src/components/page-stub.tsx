@@ -1,4 +1,5 @@
 import { FolderGit2, Boxes, BookMarked, Settings2 } from "lucide-react"
+import { SidebarTrigger } from "@/components/ui/sidebar"
 
 type PageId = "projects" | "modules" | "playbooks" | "settings"
 
@@ -34,6 +35,9 @@ export function PageStub({ id }: { id: PageId }) {
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b px-5 py-3">
+        {/* On mobile the sidebar is a Sheet with no always-visible rail, so a
+            stub page needs its own trigger to get back to the nav. */}
+        <SidebarTrigger className="-ml-1 md:hidden" />
         <Icon className="size-4" />
         <h1 className="text-sm font-semibold">{meta.label}</h1>
       </header>

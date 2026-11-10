@@ -51,14 +51,25 @@ export function AgentStatus({
         />
       )}
       <span className="sr-only">{state}</span>
+      {/* The pill is centered by its parent, so any width change jumps it. The
+          label reserves the width of the longest activity word ("Thinking") and
+          stays left-aligned, so swapping Thinking/Working/Writing/Idle never
+          shifts the pill. */}
       <span
         key={label}
-        className="fade-in blur-in-[2px] animate-in max-w-44 truncate text-xs duration-300 motion-reduce:animate-none"
+        className="fade-in blur-in-[2px] animate-in inline-block min-w-[3.75rem] max-w-44 truncate text-start text-xs duration-300 motion-reduce:animate-none"
       >
         {label}
       </span>
       {elapsed !== undefined && state !== "done" && state !== "failed" && (
-        <span className={cn(mono, "text-muted-foreground tabular-nums")}>
+        // tabular-nums keeps the digits from dancing; the reserved width keeps a
+        // minute rollover (0:59 → 1:00 → 10:00) from nudging the pill.
+        <span
+          className={cn(
+            mono,
+            "inline-block min-w-[2.75rem] text-end text-muted-foreground tabular-nums",
+          )}
+        >
           {elapsed}
         </span>
       )}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react"
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react"
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -14,31 +14,36 @@ import {
   ArrowDown,
   Brain,
   ChevronRight,
+  FileCode2,
   GitBranch,
   PenLine,
   ShieldCheck,
   TerminalSquare,
   Loader2,
 } from "lucide-react"
-import type { Activity, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
+import type { Activity, ArtifactDoc, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
 import { useRun, type RunState, type Step } from "@/lib/runModel"
-import { steerRun } from "@/lib/api"
+import { steerRun, fetchFinding } from "@/lib/api"
+import { getFixtureFinding } from "@/lib/fixtures"
 import { elapsed } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
 import { ShimmerLabel } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
 import { StreamingText } from "@/components/assistant-ui/elements/streaming-text"
-import { FindingDetail } from "./finding-detail"
+import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
+import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 
-// How the proof card reaches the run's detail navigation. buildMessages packs a
-// finding id into the proof part's args, but the click handler lives in RunChat;
-// a tool-call part's args must stay serialisable, so the callback flows down as
-// context instead. Default is a no-op (card not clickable).
-const OpenFinding = createContext<(id: string) => void>(() => {})
+// How a transcript chip — or the proof card — opens its document in the pane
+// beside the chat. buildMessages packs the artifact id into the part's args, but
+// the setter lives in RunChat and a tool-call part's args must stay
+// serialisable, so the callback flows down as context instead. Default is a
+// no-op (nothing to open).
+const OpenArtifact = createContext<(id: string) => void>(() => {})
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -49,9 +54,9 @@ const OpenFinding = createContext<(id: string) => void>(() => {})
 // renderer reads `step.state`, so green only ever shows for a proven PoC.
 //
 // Beyond tool steps the thread now surfaces the agent's own cognition — streamed
-// reasoning folds into a collapsible "thinking" block, streamed prose types
-// itself with a live caret, and a subagent handoff reads as its own row. A live
-// AgentStatus pill above the composer names what the agent is doing right now.
+// reasoning folds into a collapsible "thinking" block, streamed prose fades in as
+// it arrives, and a subagent handoff reads as its own row. A live AgentStatus
+// pill above the composer names what the agent is doing right now.
 
 export function RunChat({
   run,
@@ -61,10 +66,26 @@ export function RunChat({
   onStatus: (status: RunStatus, pending: PendingApproval | null) => void
 }) {
   const state = useRun(run.id)
-  // When a proven finding's card is clicked, its detailed replay report takes
-  // over this column; `onBack` returns to the chat. Navigation stays inside the
-  // one workspace — the conversation sits one click behind the report.
-  const [detailId, setDetailId] = useState<string | null>(null)
+  // The workspace documents the agent wrote, and which one the pane shows. A new
+  // artifact auto-opens the pane and the pane follows to it; closing it sticks
+  // until a newer document arrives (or the header chip reopens the last one).
+  const artifacts = state?.artifacts ?? []
+  const latestId = artifacts.length ? artifacts[artifacts.length - 1].id : null
+  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
+  const seenArtifact = useRef<string | null>(null)
+  useEffect(() => {
+    if (latestId && latestId !== seenArtifact.current) {
+      seenArtifact.current = latestId
+      setOpenArtifactId(latestId)
+    }
+  }, [latestId])
+  const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
+  // When the open document is the replay proof, it renders the recorded finding's
+  // structured report in the pane. Resolve that finding only while the proof is
+  // actually on screen; the id comes from the run-complete stamp, or the finding
+  // event that lands a little earlier.
+  const proofFindingId = state?.findingId ?? state?.findings[0]?.id ?? null
+  const finding = useFinding(openDoc?.kind === "proof" ? proofFindingId : null)
   // Flash fix: keep the sidebar's known status until this run's own stream has
   // actually produced events. reduceEvents defaults to "starting", so reading
   // state.status before any event would flash "Starting" on a settled run.
@@ -98,31 +119,83 @@ export function RunChat({
     },
   })
 
-  if (detailId) {
-    return <FindingDetail findingId={detailId} onBack={() => setDetailId(null)} />
-  }
-
   return (
-    <div className="flex h-full min-w-0 flex-col">
-      {/* T3-style top bar: the target, nothing else. Status lives in the live
-          pill and the sidebar row, not here. */}
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <h1 className="truncate text-sm font-medium">{scope?.title ?? run.title ?? run.alias}</h1>
-      </header>
+    <OpenArtifact.Provider value={setOpenArtifactId}>
+      {/* The run splits into the chat and, when the agent writes one, the
+          document pane. The chat flexes; the pane is a fixed-width column on
+          desktop and a full-width overlay on mobile (so `relative` anchors it). */}
+      <div className="relative flex h-full min-w-0">
+        <div className="flex h-full min-w-0 flex-1 flex-col">
+          {/* T3-style top bar: the sidebar toggle (mobile only — the sidebar is
+              a Sheet there and unreachable otherwise), the target, then one
+              trailing chip to reopen the document pane once it has been closed. */}
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+            <SidebarTrigger className="-ml-1 md:hidden" />
+            <h1 className="min-w-0 truncate text-sm font-medium">
+              {scope?.title ?? run.title ?? run.alias}
+            </h1>
+            {latestId && !openDoc ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto h-7 shrink-0 gap-1.5"
+                onClick={() => setOpenArtifactId(latestId)}
+              >
+                <FileCode2 className="size-3.5" />
+                <span className="max-w-[12rem] truncate">
+                  {artifacts[artifacts.length - 1].title}
+                </span>
+              </Button>
+            ) : null}
+          </header>
 
-      <AssistantRuntimeProvider runtime={runtime}>
-        <OpenFinding.Provider value={setDetailId}>
-          <Thread
-            live={live}
-            empty={messages.length === 0}
-            error={status === "error" ? state?.error ?? null : null}
-            activity={state?.activity ?? "working"}
-            startedAt={run.startedAt}
+          <AssistantRuntimeProvider runtime={runtime}>
+            <Thread
+              live={live}
+              empty={messages.length === 0}
+              error={status === "error" ? state?.error ?? null : null}
+              activity={state?.activity ?? "working"}
+              startedAt={run.startedAt}
+            />
+          </AssistantRuntimeProvider>
+        </div>
+
+        {openDoc ? (
+          <ArtifactPane
+            docs={artifacts}
+            activeId={openDoc.id}
+            finding={finding}
+            onSelect={setOpenArtifactId}
+            onClose={() => setOpenArtifactId(null)}
           />
-        </OpenFinding.Provider>
-      </AssistantRuntimeProvider>
-    </div>
+        ) : null}
+      </div>
+    </OpenArtifact.Provider>
   )
+}
+
+// Resolve the finding a proof document renders. In DEV the fixtures carry the
+// finding synchronously so the proof pane fills in the same tick it opens; a
+// real run fetches it from the API once. Returns null until one resolves, and
+// resets whenever the id changes so a stale proof never shows under a new one.
+function useFinding(findingId: string | null): Finding | null {
+  const fixture = useMemo(
+    () => (findingId && import.meta.env.DEV ? getFixtureFinding(findingId) : null),
+    [findingId],
+  )
+  const [remote, setRemote] = useState<Finding | null>(null)
+  useEffect(() => {
+    setRemote(null)
+    if (!findingId || fixture) return
+    let live = true
+    fetchFinding(findingId)
+      .then((f) => live && setRemote(f))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [findingId, fixture])
+  return fixture ?? remote
 }
 
 // A clock that ticks once a second while the run is live, so the AgentStatus
@@ -288,11 +361,14 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     group?: Step[]
     pending?: PendingApproval
     proven?: boolean
-    findingId?: string | null
+    proofArtifactId?: string | null
+    artifact?: ArtifactDoc | null
     tail?: boolean
   }
-  if (a.pending) return <ProofCard pending={a.pending} proven={!!a.proven} findingId={a.findingId ?? null} />
+  if (a.pending)
+    return <ProofCard pending={a.pending} proven={!!a.proven} proofArtifactId={a.proofArtifactId ?? null} />
   if (a.group) return <ToolGroupPart group={a.group} />
+  if (a.artifact) return <ArtifactChip doc={a.artifact} />
   const step = a.step
   if (!step) return null
 
@@ -355,8 +431,8 @@ function ToolGroupPart({ group }: { group: Step[] }) {
 }
 
 // Streamed reasoning. While it is the live tail it stays open with a shimmering
-// "Thinking" header and a caret; once the agent moves on it folds into a quiet
-// "Thought it through" the operator can reopen.
+// "Thinking" header and its fresh text fading in; once the agent moves on it
+// folds into a quiet "Thought it through" the operator can reopen.
 function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
   if (tail) {
     return (
@@ -388,7 +464,7 @@ function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
 }
 
 // Streamed assistant prose. While it is the live tail each incoming chunk fades
-// in and a caret trails the text; once settled it is plain prose.
+// in; once settled it is plain prose.
 function SayPart({ step, tail }: { step: Step; tail: boolean }) {
   return (
     <div className="whitespace-pre-wrap text-sm leading-relaxed">
@@ -428,6 +504,42 @@ function HandoffRow({ step }: { step: Step }) {
   )
 }
 
+// The agent opened a workspace document. It reads as a compact paper chip in the
+// transcript — "Writing · N words" while it streams — that opens the full file in
+// the pane when clicked. The live document (text, writing, word count) comes from
+// RunState.artifacts, packed into this part by buildMessages, so the chip updates
+// as the file is written.
+const KIND_LABEL: Record<ArtifactDoc["kind"], string> = {
+  poc: "Proof of concept",
+  proof: "Replay proof",
+  source: "Source",
+  report: "Report",
+}
+
+function ArtifactChip({ doc }: { doc: ArtifactDoc }) {
+  const open = useContext(OpenArtifact)
+  const words = doc.text.trim() ? doc.text.trim().split(/\s+/).length : 0
+  const meta = doc.lang ? `${KIND_LABEL[doc.kind]} · ${doc.lang}` : KIND_LABEL[doc.kind]
+  return (
+    <ArtifactCard
+      role="button"
+      tabIndex={0}
+      onClick={() => open(doc.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          open(doc.id)
+        }
+      }}
+      className="cursor-pointer"
+      title={doc.title}
+      meta={meta}
+      generating={doc.writing}
+      words={words}
+    />
+  )
+}
+
 function PocRow({ step }: { step: Step }) {
   const tone =
     step.state === "pass"
@@ -459,21 +571,22 @@ function PocRow({ step }: { step: Step }) {
 }
 
 // The inline finding card. Amber while the replay runs; green once recorded.
-// A recorded finding with an id is clickable — it opens the detailed replay
-// report in this column. The whole card becomes a button so it is keyboard
-// reachable, with a hover ring and a "View replay proof" affordance so the click
-// target reads as one. An unproven card stays a plain, non-interactive div.
+// A recorded finding opens its replay proof as a document in the pane beside the
+// chat — the same place the PoC opened, so the proof reads as another artifact.
+// The whole card becomes a button so it is keyboard reachable, with a hover ring
+// and an "Open replay proof" affordance so the click target reads as one. An
+// unproven card stays a plain, non-interactive div.
 function ProofCard({
   pending,
   proven,
-  findingId,
+  proofArtifactId,
 }: {
   pending: PendingApproval
   proven: boolean
-  findingId: string | null
+  proofArtifactId: string | null
 }) {
-  const openFinding = useContext(OpenFinding)
-  const clickable = proven && !!findingId
+  const openArtifact = useContext(OpenArtifact)
+  const clickable = proven && !!proofArtifactId
   const body = (
     <>
       <div className="flex items-center gap-2">
@@ -493,7 +606,7 @@ function ProofCard({
       {pending.poc ? <p className="mt-2 font-mono text-[11px] text-muted-foreground">{pending.poc}</p> : null}
       {clickable ? (
         <p className="mt-2.5 flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-          View replay proof
+          Open replay proof
           <ChevronRight className="size-3.5" />
         </p>
       ) : null}
@@ -504,7 +617,7 @@ function ProofCard({
     return (
       <button
         type="button"
-        onClick={() => openFinding(findingId)}
+        onClick={() => openArtifact(proofArtifactId)}
         className="block w-full rounded-xl border border-emerald-500/50 bg-emerald-500/5 p-4 text-left transition-colors hover:bg-emerald-500/10 focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
       >
         {body}
@@ -530,7 +643,7 @@ function ProofCard({
 // handoffs and tool cards alike. The agent's closing prose and the live proof
 // card trail the final assistant message. Keying each message by its first step
 // id keeps rows and scroll stable as the stream grows. `tail` marks the single
-// cognition block being written right now so only it shows a typing caret.
+// cognition block being written right now so only it fades its fresh text in.
 function buildMessages(state: RunState | null, status: RunStatus, live: boolean): ThreadMessageLike[] {
   if (!state) return []
   const msgs: ThreadMessageLike[] = []
@@ -592,6 +705,23 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     }
     // A cognition/outcome step ends the current group and renders on its own.
     flushGroup()
+    // An artifact step carries only the document id; pack the live document so
+    // its transcript chip shows the current writing state and word count. The
+    // replay proof is the exception: the green finding card below is its
+    // transcript entry point, so skip its plain chip and let that card (and the
+    // pane tab) carry it — no redundant pointer stacked right above the card.
+    if (step.kind === "artifact") {
+      const doc = state.artifacts.find((d) => d.id === step.subId) ?? null
+      if (doc?.kind === "proof") return
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: step.key,
+        toolName: "artifact",
+        args: { artifact: doc },
+        result: "done",
+      })
+      return
+    }
     ;(buf.parts as unknown[]).push({
       type: "tool-call",
       toolCallId: step.key,
@@ -609,13 +739,16 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
   }
 
   // The live proof card: pending approval, turning green only once recorded.
+  // Once proven it links to the replay-proof document in the pane, so hand it
+  // that artifact's id (the engine opens one when it records the finding).
   if (state.pending) {
     if (!buf) buf = { id: "proof", parts: [] }
+    const proofArtifactId = state.artifacts.find((a) => a.kind === "proof")?.id ?? null
     ;(buf.parts as unknown[]).push({
       type: "tool-call",
       toolCallId: "proof",
       toolName: "proof",
-      args: { pending: state.pending, proven: status === "recorded", findingId: state.findingId },
+      args: { pending: state.pending, proven: status === "recorded", proofArtifactId },
       result: status === "recorded" ? "proven" : "pending",
     })
   }

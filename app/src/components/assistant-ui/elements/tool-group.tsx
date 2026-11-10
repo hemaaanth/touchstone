@@ -46,7 +46,11 @@ export function ToolGroup({
         )}
       />
       <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
-      <span className={cn(mono, "text-muted-foreground shrink-0 tabular-nums")}>
+      {/* Reserve the count's width and right-align it so the running `3/5` → the
+          settled `5 done` swap never dances the trailing status icon. */}
+      <span
+        className={cn(mono, "min-w-[3.5rem] shrink-0 text-end text-muted-foreground tabular-nums")}
+      >
         {running > 0
           ? `${tools.length - running}/${tools.length}`
           : failed > 0

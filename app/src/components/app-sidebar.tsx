@@ -138,10 +138,15 @@ function SpendMeter({ spend, provider }: { spend: SpendState; provider: Provider
   const near = pct >= 90
   return (
     <div className="rounded-md px-2 pt-1.5 pb-1">
-      <div className="mb-1.5 flex items-center justify-between text-[11px]">
-        <span className="font-medium text-muted-foreground">{provider?.label ?? "Spend"}</span>
-        <span className="tabular-nums text-foreground/80">
-          {formatUsd(spend.usd)}
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+        <span className="min-w-0 truncate font-medium text-muted-foreground">
+          {provider?.label ?? "Spend"}
+        </span>
+        {/* The live spend ticks up as the run burns budget. tabular-nums keeps
+            the digits still and the reserved width absorbs the $9 → $10 rollover,
+            so the number updating never nudges the label or the meter. */}
+        <span className="shrink-0 tabular-nums text-foreground/80">
+          <span className="inline-block min-w-[2.9rem] text-end">{formatUsd(spend.usd)}</span>
           <span className="text-muted-foreground"> / {formatUsd(spend.cap)}</span>
         </span>
       </div>
