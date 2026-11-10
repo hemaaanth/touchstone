@@ -169,7 +169,7 @@ export function NewRunDialog({
               className="min-w-3 max-w-16 field-sizing-content bg-transparent px-0.5 tabular-nums text-foreground outline-none placeholder:text-muted-foreground"
               inputMode="decimal"
               value={budget}
-              placeholder={spend ? String(spend.budgetUsd) : "5"}
+              placeholder={spend ? String(spend.budgetUsd) : "1"}
               onChange={(e) => setBudget(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()}
               aria-label="Budget for this run in USD"

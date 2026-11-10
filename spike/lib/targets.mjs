@@ -26,7 +26,7 @@
 // without touching callers.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles } from "./scopes-store.mjs"
@@ -103,7 +103,8 @@ function packLabs() {
     seen.add(id)
     found.push({
       id,
-      title: cfg.title ?? name,
+      // No title in the lab's config: say which pack it belongs to, not its folder name.
+      title: cfg.title ?? `${PACKS[cfg.pack].title ?? cfg.pack} lab`,
       kind: "lab",
       pack: cfg.pack,
       blurb: cfg.blurb ?? "",
@@ -123,6 +124,27 @@ function packLabs() {
     if (existsSync(path.join(parent, ".touchstone.json"))) add(parent, "lab")
     for (const name of childrenOf(parent)) add(path.join(parent, name), name)
   }
+  // A pack may also generate its lab on every run: `lab: { title, blurb, make }`
+  // in its manifest. `make()` returns a fresh directory. It is one target,
+  // `<pack>/lab`, and a lab folder of the same id wins. `generated` marks it; the
+  // function itself stays in the manifest, so the target stays plain data.
+  for (const pack of Object.values(PACKS)) {
+    const id = `${pack.id}/lab`
+    if (seen.has(id) || pack.id === "contracts" || typeof pack.lab?.make !== "function") continue
+    seen.add(id)
+    found.push({
+      id,
+      title: pack.lab.title ?? `${pack.title ?? pack.id} lab`,
+      kind: "lab",
+      pack: pack.id,
+      blurb: pack.lab.blurb ?? "",
+      entry: null,
+      signal: null,
+      generated: true,
+      dir: null,
+      proofSurface: { kind: pack.proof, note: PROOF_NOTE[pack.proof] ?? "" },
+    })
+  }
   return found
 }
 
@@ -134,6 +156,7 @@ export const packOf = (target) => target?.pack ?? "contracts"
 // will extend this.
 export function resolveTargetDir(target) {
   if (!target) throw new Error("no target")
+  if (target.generated) throw new Error(`target ${target.id} is generated per run: use prepareRunWorkspace`)
   if (target.kind === "lab") return path.join(ROOT, target.dir)
   throw new Error(`target kind not yet runnable: ${target.kind}`)
 }
@@ -161,6 +184,7 @@ export function targetSummary(target) {
 // is always runnable (it fetches its code at run time); local-source is not wired
 // yet.
 function isRunnable(target) {
+  if (target.generated) return true
   if (target.kind === "lab") return existsSync(path.join(ROOT, target.dir))
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
@@ -198,7 +222,7 @@ export function pickTarget({ id, pack } = {}) {
     return t
   }
   const want = pack ?? "contracts"
-  const labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && existsSync(path.join(ROOT, t.dir)))
+  const labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && isRunnable(t))
   if (!labs.length) throw new Error(`no runnable targets for pack "${want}"`)
   return labs[Math.floor(Math.random() * labs.length)]
 }
@@ -242,4 +266,23 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)
+}
+
+// Build the workspace for one run, for every target the run start may get. A
+// generated lab calls its pack's `make()` once, so each run gets its own fresh
+// directory. That directory is the run's workspace: the run's own cleanup removes
+// it. It must live outside the repo tree, so a lab can never be committed by
+// accident. Every other target goes through prepareWorkspace.
+export async function prepareRunWorkspace(target, { modules = [] } = {}) {
+  if (!target?.generated) return prepareWorkspace(target, { modules })
+  const pack = packOf(target)
+  const make = PACKS[pack]?.lab?.make
+  if (typeof make !== "function") throw new Error(`target ${target.id} has no lab generator`)
+  const ws = path.resolve(await make())
+  if (ws === ROOT || ws.startsWith(ROOT + path.sep)) {
+    rmSync(ws, { recursive: true, force: true })
+    throw new Error(`the generated lab for ${target.id} is inside the repository: refused`)
+  }
+  writeTouchstone(ws, { ...readTouchstone(ws), kind: "lab", pack, modules })
+  return ws
 }

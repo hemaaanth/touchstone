@@ -25,7 +25,8 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react"
-import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
+import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassView, ProofKind, RunStatus, RunSummary } from "@/lib/types"
+import { PrepassFold } from "@/components/prepass"
 import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { INK, isTerminal, severityTone } from "@/lib/format"
@@ -208,6 +209,7 @@ export function RunChat({
             <Thread
               live={live}
               empty={messages.length === 0}
+              prepass={state?.prepass ?? null}
               error={status === "error" ? state?.error ?? null : null}
               archived={archived}
               sendError={sendError}
@@ -370,12 +372,14 @@ function RunActions({
 function Thread({
   live,
   empty,
+  prepass,
   error,
   archived,
   sendError,
 }: {
   live: boolean
   empty: boolean
+  prepass: PrepassView | null
   error: string | null
   archived: boolean
   sendError: string | null
@@ -387,6 +391,8 @@ function Thread({
     >
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
         <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-3 px-5 py-6">
+          {prepass ? <PrepassFold prepass={prepass} /> : null}
+
           {empty ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
@@ -488,6 +494,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     group?: Step[]
     pending?: PendingApproval
     card?: CardState
+    proofKind?: ProofKind
     proofArtifactId?: string | null
     artifact?: ArtifactDoc | null
     version?: ArtifactVersion | null
@@ -496,7 +503,12 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     tail?: boolean
   }
   if (a.pending)
-    return <FindingCard pending={a.pending} state={a.card ?? "waiting"} proofArtifactId={a.proofArtifactId ?? null} />
+    return <FindingCard
+        pending={a.pending}
+        state={a.card ?? "waiting"}
+        proofKind={a.proofKind ?? "forge"}
+        proofArtifactId={a.proofArtifactId ?? null}
+      />
   if (a.group) return <ToolGroupPart group={a.group} />
   if (a.artifact && a.version && !a.step)
     return (
@@ -753,12 +765,37 @@ function AttemptCard({
 // unproven / dropped: the run settled without proving this one.
 type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
 
-const CARD_NOTE: Record<CardState, string> = {
-  waiting: "The test passed. The final replay runs when the audit ends.",
-  replaying: "Replaying the test from a clean state.",
-  proven: "A clean Foundry replay reproduced the exploit.",
-  unproven: "Recorded, but the final replay did not reproduce it.",
-  dropped: "Not recorded. The run ended before the final replay.",
+// The note under a finding card says what the replay did, so it follows the
+// proof kind: a Foundry test, a request, or pinned evidence.
+const CARD_NOTE: Record<ProofKind, Record<CardState, string>> = {
+  forge: {
+    waiting: "The test passed. The final replay runs when the audit ends.",
+    replaying: "Replaying the test from a clean state.",
+    proven: "A clean Foundry replay reproduced the exploit.",
+    unproven: "Recorded, but the final replay did not reproduce it.",
+    dropped: "Not recorded. The run ended before the final replay.",
+  },
+  http: {
+    waiting: "The request showed the harm. The final replay runs when the audit ends.",
+    replaying: "Replaying the request on a private network.",
+    proven: "A clean replay of the request showed the harm.",
+    unproven: "Recorded, but the final replay did not show the harm.",
+    dropped: "Not recorded. The run ended before the final replay.",
+  },
+  evidence: {
+    waiting: "The evidence check passed. The final replay runs when the audit ends.",
+    replaying: "Checking the pinned evidence again.",
+    proven: "The pinned evidence replayed and the check still holds.",
+    unproven: "Recorded, but the pinned evidence did not replay.",
+    dropped: "Not recorded. The run ended before the final replay.",
+  },
+}
+
+// The proof kind of a submitted finding: what the scope's proof surface says,
+// else Foundry (older records have no surface).
+function proofKindOf(state: RunState): ProofKind {
+  const surface = state.scope?.proofSurface?.kind
+  return surface === "http" || surface === "evidence" ? surface : "forge"
 }
 
 const CARD_MARK: Record<CardState, { mark: Mark; word?: string }> = {
@@ -772,10 +809,12 @@ const CARD_MARK: Record<CardState, { mark: Mark; word?: string }> = {
 function FindingCard({
   pending,
   state,
+  proofKind,
   proofArtifactId,
 }: {
   pending: PendingApproval
   state: CardState
+  proofKind: ProofKind
   proofArtifactId: string | null
 }) {
   const openArtifact = useContext(OpenArtifact)
@@ -793,7 +832,7 @@ function FindingCard({
           <StatusMark className="ml-auto tracking-normal normal-case" mark={m.mark} word={m.word} />
         </div>
         <p className="mt-1.5 text-[15px] leading-snug font-semibold text-pretty">{pending.title}</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{CARD_NOTE[state]}</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{CARD_NOTE[proofKind][state]}</p>
       </div>
       {pending.poc || clickable ? (
         <div className="flex items-center gap-2 border-t border-border/60 px-4 py-2">
@@ -891,12 +930,12 @@ function buildMessages(state: RunState | null, status: RunStatus, live: boolean)
     // A submitted finding renders its card right where the agent submitted it,
     // so a run with several findings reads in the order they landed.
     if (step.kind === "submitted" && step.finding) {
-      const { card, proofArtifactId } = cardFor(state, step.finding, status)
+      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status)
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
         toolCallId: step.key,
         toolName: "proof",
-        args: { pending: step.finding, card, proofArtifactId },
+        args: { pending: step.finding, card, proofKind, proofArtifactId },
         result: card,
       })
       return
@@ -988,20 +1027,21 @@ function cardFor(
   state: RunState,
   sub: PendingApproval,
   status: RunStatus,
-): { card: CardState; proofArtifactId: string | null } {
+): { card: CardState; proofKind: ProofKind; proofArtifactId: string | null } {
   const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
   const rec = legacy
     ? state.submitted.length === 1 && status === "recorded"
       ? state.findings[0]
       : undefined
     : state.findings.find((f) => f.poc === sub.poc)
+  const proofKind = proofKindOf(state)
   if (rec) {
-    if (!rec.proven) return { card: "unproven", proofArtifactId: null }
+    if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
     const proofs = state.artifacts.filter((a) => a.kind === "proof")
     const doc = proofs.find((a) => a.findingId === rec.id) ?? (legacy ? proofs[0] : undefined)
-    return { card: "proven", proofArtifactId: doc?.id ?? null }
+    return { card: "proven", proofKind, proofArtifactId: doc?.id ?? null }
   }
-  if (status === "deciding") return { card: "replaying", proofArtifactId: null }
-  if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofArtifactId: null }
-  return { card: "waiting", proofArtifactId: null }
+  if (status === "deciding") return { card: "replaying", proofKind, proofArtifactId: null }
+  if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofKind, proofArtifactId: null }
+  return { card: "waiting", proofKind, proofArtifactId: null }
 }
