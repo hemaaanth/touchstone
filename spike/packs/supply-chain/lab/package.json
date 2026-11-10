@@ -1,0 +1,6 @@
+{
+  "name": "throwaway-supply-chain-lab",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "lodash": "4.17.20", "ethres": "1.0.0", "@solana/web3.j": "1.0.0" }
+}
