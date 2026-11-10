@@ -23,7 +23,7 @@ import {
   Loader2,
 } from "lucide-react"
 import type { Activity, ArtifactDoc, ArtifactVersion, Finding, PendingApproval, RunStatus, RunSummary } from "@/lib/types"
-import { useRun, type RunState, type Step } from "@/lib/runModel"
+import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { elapsed, INK, isTerminal, severityTone } from "@/lib/format"
 import { cn } from "cn"
@@ -33,7 +33,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status"
 import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
 import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
-import { StreamingText } from "@/components/assistant-ui/elements/streaming-text"
+import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 
@@ -104,16 +104,18 @@ export function RunChat({ run }: { run: RunSummary }) {
   // Until the run store has loaded this run, trust the sidebar's status.
   const status = state ? state.status : run.status
   const scope = state?.scope ?? null
-  // Lock fix: steer only a connected, still-open run. Before the stream connects
-  // state is null; once its terminal `closed` lands the composer settles.
+  // Live: a worker is running, so a message steers it. Idle: a message starts a
+  // follow-up on the saved session. Only an archived run takes no messages.
   const live = !!state && !state.closed
+  const archived = !!state?.archived
+  const [sendError, setSendError] = useState<string | null>(null)
 
   const messages = useMemo(() => buildMessages(state, status, live), [state, status, live])
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
     isRunning: live,
-    isDisabled: !live,
+    isDisabled: !state || archived,
     convertMessage: (m) => m,
     onNew: async (message) => {
       const text = message.content
@@ -121,8 +123,15 @@ export function RunChat({ run }: { run: RunSummary }) {
         .map((p) => p.text)
         .join("")
         .trim()
-      if (!text || !live) return
-      await steerRun(run.id, text)
+      if (!text || !state || archived) return
+      setSendError(null)
+      try {
+        const res = await steerRun(run.id, text)
+        // An idle run keeps no stream. Fetch it again to follow the reply.
+        if (res.followUp) reloadRun(run.id)
+      } catch (err) {
+        setSendError(err instanceof Error ? err.message : String(err))
+      }
     },
   })
 
@@ -163,7 +172,9 @@ export function RunChat({ run }: { run: RunSummary }) {
               empty={messages.length === 0}
               error={status === "error" ? state?.error ?? null : null}
               activity={state?.activity ?? "working"}
-              startedAt={run.startedAt}
+              startedAt={state?.replyStartedAt ?? run.startedAt}
+              archived={archived}
+              sendError={sendError}
             />
           </AssistantRuntimeProvider>
         </div>
@@ -249,12 +260,16 @@ function Thread({
   error,
   activity,
   startedAt,
+  archived,
+  sendError,
 }: {
   live: boolean
   empty: boolean
   error: string | null
   activity: Activity
   startedAt: number
+  archived: boolean
+  sendError: string | null
 }) {
   const now = useNow(live)
   const agentState: AgentState = "working"
@@ -305,35 +320,37 @@ function Thread({
         </div>
       ) : null}
 
-      <Composer live={live} />
+      <Composer live={live} archived={archived} error={sendError} />
     </ThreadPrimitive.Root>
   )
 }
 
 // The composer floats under the thread — no divider, no helper line. A single
-// rounded pill with the send button tucked inside; disabled (not bordered-off)
-// once the run settles, so a closed run reads as quiet rather than broken.
-function Composer({ live }: { live: boolean }) {
+// rounded pill with the send button tucked inside. It is always open, except on
+// an archived run, which reads as quiet rather than broken. A failed send (spend
+// cap, no saved session) shows one line above it.
+function Composer({ live, archived, error }: { live: boolean; archived: boolean; error: string | null }) {
   return (
     <div className="px-5 pb-4 pt-1">
       <div className="mx-auto max-w-(--thread-max-width)">
+        {error ? <p className="mb-1.5 px-3 text-xs text-bad">{error}</p> : null}
         <ComposerPrimitive.Root
           className={cn(
             "flex items-end gap-2 rounded-2xl border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur",
             "transition-colors focus-within:border-border focus-within:ring-2 focus-within:ring-ring/25",
-            !live && "opacity-70",
+            archived && "opacity-70",
           )}
         >
           <ComposerPrimitive.Input
             autoFocus={FINE_POINTER}
-            disabled={!live}
+            disabled={archived}
             rows={1}
             submitOnEnter
-            placeholder={live ? "Steer the agent…" : "This run has settled."}
+            placeholder={archived ? "This run is archived." : live ? "Steer the agent…" : "Message the agent…"}
             className="min-h-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
           <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-7 shrink-0 rounded-full" disabled={!live}>
+            <Button size="icon" className="size-7 shrink-0 rounded-full" disabled={archived}>
               <ArrowUp className="size-4" />
             </Button>
           </ComposerPrimitive.Send>
@@ -365,9 +382,7 @@ function Message() {
   )
 }
 
-const Text: TextMessagePartComponent = ({ text }) => (
-  <div className="text-sm leading-relaxed whitespace-pre-wrap">{text}</div>
-)
+const Text: TextMessagePartComponent = ({ text }) => <Markdown text={text} className="text-sm leading-relaxed" />
 
 // Our own renderer for every part we pack as a tool-call. It reads the Step we
 // packed into `args`, so the PoC pass/fail tone and the proof card come from
@@ -397,7 +412,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   if (!step) return null
 
   if (step.kind === "reasoning") return <ReasoningPart step={step} tail={!!a.tail} />
-  if (step.kind === "say") return <SayPart step={step} tail={!!a.tail} />
+  if (step.kind === "say") return <SayPart step={step} />
   if (step.kind === "subagent") return <HandoffRow step={step} />
   if (step.kind === "poc")
     return <AttemptCard step={step} file={a.artifact ?? null} version={a.version ?? null} vIndex={a.vIndex ?? 1} />
@@ -449,20 +464,20 @@ function ToolGroupPart({ group }: { group: Step[] }) {
   )
 }
 
-// Streamed reasoning. While it is the live tail it stays open with a shimmering
-// "Thinking" header and its fresh text fading in; once the agent moves on it
-// folds into a quiet "Thought it through" the operator can reopen.
+// Streamed reasoning. Live and finished thinking share one shape: a header and
+// a side rail. While it is the live tail the header shimmers "Thinking" and the
+// rail stays open; once the agent moves on it folds into "Thought it through",
+// which the operator can reopen.
 function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
+  const body = <Markdown text={step.label} className={RAIL} />
   if (tail) {
     return (
-      <div className={cn(card, "px-3.5 py-2.5")}>
-        <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Brain className="size-3.5" />
           <ShimmerLabel active>Thinking</ShimmerLabel>
         </div>
-        <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
-          <StreamingText text={step.label} streaming />
-        </p>
+        {body}
       </div>
     )
   }
@@ -473,23 +488,16 @@ function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
         Thought it through
         <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]:rotate-90" />
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <p className="mt-1.5 whitespace-pre-wrap border-l-2 border-border pl-3 text-[13px] leading-relaxed text-muted-foreground">
-          {step.label}
-        </p>
-      </CollapsibleContent>
+      <CollapsibleContent>{body}</CollapsibleContent>
     </Collapsible>
   )
 }
 
-// Streamed assistant prose. While it is the live tail each incoming chunk fades
-// in; once settled it is plain prose.
-function SayPart({ step, tail }: { step: Step; tail: boolean }) {
-  return (
-    <div className="whitespace-pre-wrap text-sm leading-relaxed">
-      <StreamingText text={step.label} streaming={tail} />
-    </div>
-  )
+const RAIL = "mt-1.5 border-l-2 border-border pl-3 text-[13px] leading-relaxed text-muted-foreground"
+
+// Streamed assistant prose, rendered as Markdown.
+function SayPart({ step }: { step: Step }) {
+  return <Markdown text={step.label} className="text-sm leading-relaxed" />
 }
 
 // A subagent handoff: the lead delegated an angle to a child conversation. Reads

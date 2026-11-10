@@ -361,6 +361,10 @@ export interface RunView {
   submitted?: PendingApproval[]
   findingIds?: string[]
   error: string | null
+  // Archived runs are locked: they take no more messages.
+  archived?: boolean
+  // A follow-up worker is answering an operator message right now.
+  replying?: boolean
 }
 
 export interface RunSummary {
@@ -370,6 +374,7 @@ export interface RunSummary {
   startedAt: number
   title: string | null
   severity: Severity | null
+  archived?: boolean
 }
 
 export type Verdict = "approve" | "deny"

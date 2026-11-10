@@ -4,7 +4,8 @@ import { Check, FileCode2, ShieldCheck, X } from "lucide-react";
 import type { ArtifactDoc, ArtifactVersion, Finding } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { codeScroll, codeSurface, ShimmerLabel } from "./surfaces";
-import { StreamingCode, StreamingText } from "./streaming-text";
+import { StreamingCode } from "./streaming-text";
+import { Markdown } from "@/components/markdown";
 import { ReplayProof } from "@/components/replay-proof";
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle";
 
@@ -169,9 +170,10 @@ export function ArtifactPane({
             </pre>
           </div>
         ) : (
-          <pre className="whitespace-pre-wrap px-4 py-3 font-sans text-[12px] leading-relaxed text-foreground/90">
-            <StreamingText text={version.text} streaming={version.writing} />
-          </pre>
+          <Markdown
+            text={version.text}
+            className="px-4 py-3 text-[13px] leading-relaxed text-foreground/90"
+          />
         )}
       </div>
     </aside>

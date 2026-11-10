@@ -22,7 +22,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace } from "../../spike/lib/sandbox.mjs"
 import { guard, spent, MODELS, CAP_USD, PROVIDER_ID, PROVIDER_LABEL } from "../../spike/lib/inference.mjs"
-import { listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { runPrepass } from "../../spike/lib/prepass.mjs"
@@ -114,6 +114,12 @@ const runs = new Map()
 let seq = 0
 const TERMINAL = ["recorded", "denied", "error", "no-finding"]
 
+// No worker is running for this run: the audit is over and no follow-up is
+// being answered. The operator can still message it unless it is archived.
+function idle(run) {
+  return TERMINAL.includes(run.status) && !run.replying
+}
+
 function monotonicId(alias) {
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(2, 12)
   let id
@@ -164,6 +170,8 @@ function view(run) {
     // so a reconnecting client can render it without replaying the event stream.
     modules: run.modules ?? null,
     status: run.status,
+    archived: Boolean(run.archived),
+    replying: Boolean(run.replying),
     startedAt: run.startedAt,
     events: run.events,
     // The worst finding submitted so far, as the run's headline.
@@ -190,6 +198,7 @@ export function listRuns() {
       id: r.id,
       alias: r.alias,
       status: r.status,
+      archived: Boolean(r.archived),
       startedAt: r.startedAt,
       title: r.pending?.title ?? null,
       severity: r.pending?.severity ?? null,
@@ -209,7 +218,9 @@ export function subscribe(id, send, since = 0) {
   // Replay what already happened so a late subscriber is never behind.
   for (const e of run.events.slice(since)) send(e)
   send({ ev: "status", status: run.status, pending: run.pending, decision: run.decision })
-  if (TERMINAL.includes(run.status)) {
+  // An idle run has nothing more to stream. A follow-up message makes it busy
+  // again; the client then loads it fresh and follows the new stream.
+  if (idle(run)) {
     send({ ev: "closed" })
     return () => {}
   }
@@ -354,6 +365,36 @@ async function startEngine(run) {
   spawnAgent(run, leads)
 }
 
+// Handle one engine event for a run. Shared by the audit worker and the
+// follow-up worker.
+function engineEvents(run) {
+  return (e) => {
+    if (e.ev === "settled") {
+      // Internal: carries the summary and every finding with its passing
+      // source. Persistence reads it on exit; it is not a UI step.
+      run.settled = {
+        final: e.summary?.final?.text ?? null,
+        status: e.status ?? null,
+        reason: e.reason ?? null,
+        calls: (e.summary?.calls ?? []).length,
+        summary: e.summary ?? {},
+        findings: e.findings ?? [],
+        usage: e.usage ?? null,
+        reports: e.reports ?? [],
+      }
+      return
+    }
+    broadcast(run, e)
+    if (e.ev === "finding-submitted") {
+      // The agent proved one more bug and keeps going. Track it, and keep the
+      // worst one as the run's headline for the sidebar.
+      run.submitted.push({ n: e.n, title: e.title, severity: e.severity, poc: e.poc })
+      run.pending = sortFindings(run.submitted)[0]
+      broadcast(run, { ev: "status", status: run.status, pending: run.pending })
+    }
+  }
+}
+
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
@@ -369,37 +410,9 @@ function spawnAgent(run, leads) {
   child.stdin.on("error", () => {})
   run.child = child
 
-  pipeEvents(
-    child,
-    (e) => {
-      if (e.ev === "settled") {
-        // Internal: carries the summary and every finding with its passing
-        // source. Persistence reads it on exit; it is not a UI step.
-        run.settled = {
-          final: e.summary?.final?.text ?? null,
-          status: e.status ?? null,
-          reason: e.reason ?? null,
-          calls: (e.summary?.calls ?? []).length,
-          summary: e.summary ?? {},
-          findings: e.findings ?? [],
-          usage: e.usage ?? null,
-          reports: e.reports ?? [],
-        }
-        return
-      }
-      broadcast(run, e)
-      if (e.ev === "finding-submitted") {
-        // The agent proved one more bug and keeps going. Track it, and keep the
-        // worst one as the run's headline for the sidebar.
-        run.submitted.push({ n: e.n, title: e.title, severity: e.severity, poc: e.poc })
-        run.pending = sortFindings(run.submitted)[0]
-        broadcast(run, { ev: "status", status: run.status, pending: run.pending })
-      }
-    },
-    (line) => {
-      run.stderr += line + "\n"
-    },
-  )
+  pipeEvents(child, engineEvents(run), (line) => {
+    run.stderr += line + "\n"
+  })
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
@@ -436,6 +449,29 @@ function spawnAgent(run, leads) {
   })
 }
 
+// Broadcast one `finding` event, and one replay-proof document if it passed, per
+// recorded finding. `first` is the index of the first one in the run record.
+function announceFindings(run, findings, first) {
+  findings.forEach((f, k) => {
+    const id = run.findingIds[first + k]
+    broadcast(run, {
+      ev: "finding",
+      id,
+      runId: run.id,
+      title: f.title,
+      severity: f.severity,
+      poc: f.poc,
+      proven: f.pocProved,
+      target: scopeOf(run)?.title ?? null,
+    })
+    // Each proven finding's replay proof is a pane document. Its body is
+    // fetched by finding id via /api/findings/:id, which the record now holds.
+    if (!f.pocProved) return
+    broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: id })
+    broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
+  })
+}
+
 // Record every finding of a settled run. Replays each finding's test for its
 // proof delta (over the still-live workspace), writes the run record, then
 // broadcasts one `finding` and one replay-proof artifact per finding, worst
@@ -450,24 +486,7 @@ async function recordRun(run, found) {
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
-    findings.forEach((f, k) => {
-      const id = run.findingIds[k]
-      broadcast(run, {
-        ev: "finding",
-        id,
-        runId: run.id,
-        title: f.title,
-        severity: f.severity,
-        poc: f.poc,
-        proven: f.pocProved,
-        target: run.target.title,
-      })
-      // Each proven finding's replay proof is a pane document. Its body is
-      // fetched by finding id via /api/findings/:id, which persistRun just wrote.
-      if (!f.pocProved) return
-      broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc}`, kind: "proof", findingId: id })
-      broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
-    })
+    announceFindings(run, findings, 0)
     run.status = "recorded"
     run.decision = "approve"
     broadcast(run, { ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
@@ -481,20 +500,133 @@ async function recordRun(run, found) {
   }
 }
 
-// Steer a live run. The operator's message is written to the worker's stdin as
-// one JSON line; the worker injects it into the agent's in-flight turn (native
-// pi-durable steering) and echoes it back as an `operator-message` event once it
-// lands. Only valid while the worker is actually running — a settled run has no
-// turn to join.
+// Message a run. While a worker is running, the message is written to its
+// stdin as one JSON line; the worker injects it into the agent's in-flight turn
+// (native pi-durable steering) and echoes it back as an `operator-message`
+// event once it lands. When the run is idle, the message starts a follow-up
+// worker that reopens the saved session. Only an archived run refuses.
 export function steerRun(id, text) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
-  if (run.status !== "running") throw new Error(`run is ${run.status}, not accepting steering`)
+  if (run.archived) throw new Error("this run is archived")
   const msg = typeof text === "string" ? text.trim() : ""
-  if (!msg) throw new Error("empty steer message")
-  if (!run.child?.stdin?.writable) throw new Error("the run worker is not accepting input")
+  if (!msg) throw new Error("empty message")
+  if (idle(run)) return followUp(run, msg)
+  if (!run.child?.stdin?.writable) throw new Error(`the run is ${run.status}; try again in a moment`)
   run.child.stdin.write(JSON.stringify({ text: msg }) + "\n")
   return { ok: true }
+}
+
+// A run loaded from disk has no file paths on it yet. Set them from its id.
+// A run rebuilt from an older record has no stream file, so write its events
+// there first: new events must append to the full history, not replace it.
+function ensureFiles(run) {
+  run.db ??= path.join(RESULTS_DIR, `run-${run.id}.sqlite`)
+  run.eventsFile ??= path.join(RESULTS_DIR, `run-${run.id}.events`)
+  if (!run.streamFile) {
+    run.streamFile = path.join(RESULTS_DIR, `run-${run.id}.stream.jsonl`)
+    if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, run.events.map((e) => JSON.stringify(e) + "\n").join(""))
+  }
+}
+
+// Start a follow-up: one operator message to an idle run. The worker reopens
+// the run's saved agent session in a fresh workspace, answers, and exits. Any
+// finding it proves is replayed and added to the run record.
+function followUp(run, text) {
+  guard(0.02)
+  ensureFiles(run)
+  if (!existsSync(run.db)) throw new Error("this run has no saved agent session to resume")
+  const target = run.target ?? (run.scope?.id ? getTarget(run.scope.id) : null)
+  if (!target) throw new Error("this run's scope is no longer in the library")
+  run.target = target
+  run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
+  // Steps from earlier turns are keyed by attempt; start past the last one.
+  const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
+  const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
+  run.settled = null
+  run.replying = true
+  broadcast(run, { t: Date.now(), ev: "reply-start" })
+
+  const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
+    cwd: SPIKE,
+    env: {
+      ...process.env,
+      ALIAS: run.alias,
+      EVENTS_FILE: run.eventsFile,
+      MAX_POC,
+      FOLLOWUP: text,
+      PRIOR_FOUND: JSON.stringify(prior),
+      ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+  child.stdin.on("error", () => {})
+  run.child = child
+  pipeEvents(child, engineEvents(run), (line) => {
+    run.stderr += line + "\n"
+  })
+  child.stderr.on("data", (d) => {
+    run.stderr += d
+  })
+  child.on("exit", async () => {
+    const s = run.settled
+    try {
+      if (s?.findings?.length) await recordMore(run, s.findings)
+      else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
+    } catch (err) {
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
+    } finally {
+      cleanupWorkspace(run.ws)
+      run.child = null
+      run.replying = false
+      broadcast(run, { t: Date.now(), ev: "closed" })
+    }
+  })
+  return { ok: true, followUp: true }
+}
+
+// Add findings a follow-up proved to the run record, after the ones it holds,
+// so earlier finding ids stay the same.
+async function recordMore(run, found) {
+  const findings = await proveFindings(run.ws, found, run.events, (m) => {
+    run.stderr += `[proof-delta] ${m}\n`
+  })
+  const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
+  let first = 0
+  if (existsSync(file)) {
+    const rec = JSON.parse(readFileSync(file, "utf8"))
+    const r = rec.result
+    first = r.findings?.length ?? 0
+    r.findings = [...(r.findings ?? []), ...findings]
+    r.findingSubmitted = true
+    if (!r.finding) {
+      const worst = findings[0]
+      r.finding = { title: worst.title, severity: worst.severity, poc: worst.poc }
+      r.pocProved = worst.pocProved
+      r.proof = worst.proof ?? null
+    }
+    writeFileSync(file, JSON.stringify(rec, null, 2))
+  } else {
+    persistRun(run, findings)
+  }
+  run.findingIds = [...run.findingIds.slice(0, first), ...findings.map((_, k) => `${run.id}.${first + k + 1}`)]
+  announceFindings(run, findings, first)
+  run.status = "recorded"
+  run.decision = "approve"
+  broadcast(run, { t: Date.now(), ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
+}
+
+// Archive a run, or bring it back. An archived run is locked: it takes no more
+// messages. The flag is an event in the run's own stream file, so it survives
+// a restart with no second store.
+export function archiveRun(id, archived) {
+  const run = runs.get(id)
+  if (!run) throw new Error("no such run")
+  if (archived && !idle(run)) throw new Error("the agent is still working; archive it once it stops")
+  ensureFiles(run)
+  run.archived = Boolean(archived)
+  broadcast(run, { t: Date.now(), ev: "archived", archived: run.archived })
+  return { ok: true, archived: run.archived }
 }
 
 // Assemble the engine's canonical { result, transcript } record and write it
@@ -512,7 +644,7 @@ function persistRun(run, findings) {
     alias: run.alias,
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
-    target: targetSummary(run.target),
+    target: scopeOf(run),
     // The module plan this run used — which parts of the pipeline were on, and the
     // reason for any that were off — so history shows the honest configuration.
     modules: run.modules ?? null,
@@ -633,8 +765,10 @@ function savedRun(id, events, mtime) {
   let findingIds = []
   let scope = null
   let modules = null
+  let archived = false
   const submitted = []
   for (const e of events) {
+    if (e.ev === "archived") archived = Boolean(e.archived)
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
     if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
@@ -654,6 +788,12 @@ function savedRun(id, events, mtime) {
     error = "the server restarted during this run, so it stopped"
     events.push({ t: Date.now(), ev: "status", status, error })
   }
+  // Same for a follow-up the restart cut off: it started after the last close.
+  const lastClose = events.findLastIndex((e) => e.ev === "closed")
+  if (events.findLastIndex((e) => e.ev === "reply-start") > lastClose) {
+    events.push({ t: Date.now(), ev: "reply-error", error: "the server restarted during this reply, so it stopped" })
+    events.push({ t: Date.now(), ev: "closed" })
+  }
   if (!events.some((e) => e.ev === "closed")) events.push({ t: Date.now(), ev: "closed" })
   return {
     id,
@@ -663,6 +803,7 @@ function savedRun(id, events, mtime) {
     modules,
     model: MODELS[alias]?.id ?? alias,
     status,
+    archived,
     startedAt: events.find((e) => e.t)?.t ?? mtime,
     events,
     subscribers: new Set(),

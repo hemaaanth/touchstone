@@ -60,12 +60,17 @@ export function startRun(alias: string, targetId?: string): Promise<RunView> {
   return postJson<RunView>("/api/runs", { alias, targetId })
 }
 
-// Steer a run that is in flight. The text is injected into the agent's current
-// turn (native pi-durable steering, whenBusy:"steer") and echoed back as an
-// `operator-message` event so it lands in the transcript. Only valid while the
-// run is still "running"; the server rejects a steer once the agent has settled.
-export function steerRun(id: string, text: string): Promise<{ ok: true }> {
-  return postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text })
+// Message a run. While the agent works, the text is injected into its current
+// turn (native pi-durable steering). When the run is idle, the server starts a
+// follow-up that reopens the saved session (`followUp: true`). Either way the
+// text comes back as an `operator-message` event. Only an archived run refuses.
+export function steerRun(id: string, text: string): Promise<{ ok: true; followUp?: boolean }> {
+  return postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text })
+}
+
+// Archive a run, or bring it back. An archived run takes no more messages.
+export function archiveRun(id: string, archived: boolean): Promise<{ ok: true; archived: boolean }> {
+  return postJson<{ ok: true; archived: boolean }>(`/api/runs/${encodeURIComponent(id)}/archive`, { archived })
 }
 
 // Ledger override. A proven exploit is recorded automatically; this flips a

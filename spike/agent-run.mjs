@@ -466,36 +466,116 @@ async function summarize(root) {
 // overwriting the last. Without this a live run shows tool steps but no
 // cognition — exactly the gap the operator saw. Returns the watch handle so the
 // caller can stop it; a no-op if the harness has no live doc yet.
-async function streamCognition(harness) {
+async function streamCognition(harness, base = 0) {
   const w = await harness.watchDoc(LiveDoc, ROOT_CONVERSATION_ID, ctx);
   if (!w) return undefined;
   let turn = -1;
   let lastSay = "", lastThink = "";
-  const emit = (live) => {
+  // A resumed session still holds the last answer of the previous turn. Skip it
+  // until a new answer starts, so old text does not show again as a new step.
+  let stale = null;
+  const read = (live) => {
     const msg = live?.generation?.message;
-    if (!msg || !Array.isArray(msg.content)) return;
-    const t = live?.run?.turns ?? 0;
-    // A new tool round resets the partial; start a fresh step and dedupe baseline.
-    if (t !== turn) { turn = t; lastSay = ""; lastThink = ""; }
+    if (!msg || !Array.isArray(msg.content)) return null;
     let say = "", think = "";
     for (const b of msg.content) {
       if (b?.type === "text" && typeof b.text === "string") say += b.text;
       else if (b?.type === "thinking" && typeof b.thinking === "string") think += b.thinking;
     }
+    return { say, think };
+  };
+  const emit = (live) => {
+    const r = read(live);
+    if (!r) return;
+    if (stale !== null) {
+      if (r.think + "\u0000" + r.say === stale) return;
+      stale = null;
+    }
+    // `base` keeps a follow-up's steps apart from the earlier turns' steps.
+    const t = base + (live?.run?.turns ?? 0);
+    // A new tool round resets the partial; start a fresh step and dedupe baseline.
+    if (t !== turn) { turn = t; lastSay = ""; lastThink = ""; }
+    const { say, think } = r;
     if (think && think !== lastThink) { lastThink = think; event("thinking-delta", { attempt: turn, text: think }); }
     if (say && say !== lastSay) { lastSay = say; event("assistant-delta", { attempt: turn, text: say }); }
   };
+  if (base > 0) {
+    const r = read(w.value);
+    if (r) stale = r.think + "\u0000" + r.say;
+  }
   emit(w.value);
   w.start(async (call) => { if (call.kind === "value") emit(call.value); });
   return w;
 }
 
-async function chargeUsage(harness) {
+// harness.usage() counts the whole session. A follow-up reopens a session that
+// was already charged, so it passes the usage it saw at start as `base` and only
+// the difference is charged.
+async function chargeUsage(harness, base = {}) {
   const u = await harness.usage(ctx);
   let usd = 0;
   const prefix = new RegExp("^" + PROVIDER_ID + "/");
-  for (const [key, v] of Object.entries(u.models ?? {})) usd += charge(key.replace(prefix, ""), { input: v.input, output: v.output });
-  return { usd, models: Object.fromEntries(Object.entries(u.models ?? {}).map(([k, v]) => [k, { in: v.input, out: v.output, reasoning: v.reasoning }])) };
+  const models = {};
+  for (const [key, v] of Object.entries(u.models ?? {})) {
+    const b = base[key] ?? {};
+    const d = { input: v.input - (b.input ?? 0), output: v.output - (b.output ?? 0), reasoning: (v.reasoning ?? 0) - (b.reasoning ?? 0) };
+    if (d.input <= 0 && d.output <= 0) continue;
+    usd += charge(key.replace(prefix, ""), { input: d.input, output: d.output });
+    models[key] = { in: d.input, out: d.output, reasoning: d.reasoning };
+  }
+  return { usd, models };
+}
+
+// Operator messages arrive on stdin, one JSON line ({"text":"…"}) each, while a
+// turn is in flight. Each one is injected into the agent's current turn with
+// whenBusy:"steer" (pi-durable native steering), so it rides into the running
+// generation instead of queuing a fresh run. "operator-message" is emitted only
+// once the steer is admitted, so the transcript shows it when it really landed.
+function readSteers(root) {
+  let steerSeq = 0;
+  let stdinBuf = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    stdinBuf += chunk;
+    let i;
+    while ((i = stdinBuf.indexOf("\n")) >= 0) {
+      const line = stdinBuf.slice(0, i);
+      stdinBuf = stdinBuf.slice(i + 1);
+      if (!line.trim()) continue;
+      let text;
+      try { text = JSON.parse(line).text; } catch { continue; }
+      if (typeof text !== "string" || !text.trim()) continue;
+      steerSeq += 1;
+      root.submit({ type: "input", requestId: `steer-${Date.now()}-${steerSeq}`, content: text, whenBusy: "steer" }, ctx)
+        .then(() => event("operator-message", { text }))
+        .catch((e) => event("steer-error", { text, error: String(e?.message ?? e) }));
+    }
+  });
+  process.stdin.on("error", () => {});
+  process.stdin.resume();
+}
+
+// ---- Follow-up worker: one operator message to a finished run. It reopens the
+// run's saved session, so the agent keeps the whole earlier conversation. The
+// workspace is new, so files the agent wrote or fetched before are gone; the
+// message says so. Findings it proves now continue the run's numbering.
+async function chat({ harness, root, reports, state }) {
+  const text = String(process.env.FOLLOWUP ?? "").trim();
+  if (!text) throw new Error("FOLLOWUP is empty");
+  for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
+  const prior = state.found.length;
+  const before = (await harness.usage(ctx)).models ?? {};
+  await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
+  readSteers(root);
+  const sub = await root.submit({
+    type: "input", requestId: `followup-${Date.now()}`,
+    content: `${text}\n\n(Operator follow-up. The sandbox was rebuilt since your last turn, so files you wrote or fetched before are gone. Rewrite or refetch any you need.)`,
+  }, ctx);
+  event("operator-message", { text });
+  const settled = await sub.wait(ctx);
+  const s = await summarize(root);
+  const usage = await chargeUsage(harness, before);
+  event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found.slice(prior), usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.
@@ -503,6 +583,11 @@ async function child([, , , mode, db, ws]) {
   const state = auditState();
   const { harness, root, reports } = await openHarness(db, ws, state);
   event("opened", { mode });
+  if (mode === "chat") {
+    await chat({ harness, root, reports, state });
+    await harness.close(ctx);
+    process.exit(0);
+  }
   const staticBriefText = process.env.STATIC_BRIEF;
   const fuzzBriefText = process.env.FUZZ_BRIEF;
   // A brief starts with no local source and no pre-pass leads — its first move is
@@ -519,37 +604,11 @@ async function child([, , , mode, db, ws]) {
     content: leadBlocks.length ? `${base}\n\n${leadBlocks.join("\n\n")}` : base,
   }, ctx);
 
-  // Native steering. While the run is in flight the UI server writes operator
-  // messages to our stdin, one JSON line ({"text":"…"}) each. We inject each into
-  // the agent's current turn with whenBusy:"steer" — pi-durable native steering,
-  // so the message rides into the running generation instead of queuing a fresh
-  // run. We emit "operator-message" only once the steer is admitted, so the
-  // transcript shows a message exactly when it actually landed. In CLI mode stdin
-  // is /dev/null, so this reader simply never fires.
   if (mode === "run") {
     // Stream the agent's thinking and prose to the UI for the whole live turn.
+    // In CLI mode stdin is /dev/null, so the steer reader never fires.
     await streamCognition(harness);
-    let steerSeq = 0;
-    let stdinBuf = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      stdinBuf += chunk;
-      let i;
-      while ((i = stdinBuf.indexOf("\n")) >= 0) {
-        const line = stdinBuf.slice(0, i);
-        stdinBuf = stdinBuf.slice(i + 1);
-        if (!line.trim()) continue;
-        let text;
-        try { text = JSON.parse(line).text; } catch { continue; }
-        if (typeof text !== "string" || !text.trim()) continue;
-        steerSeq += 1;
-        root.submit({ type: "input", requestId: `steer-${steerSeq}`, content: text, whenBusy: "steer" }, ctx)
-          .then(() => event("operator-message", { text }))
-          .catch((e) => event("steer-error", { text, error: String(e?.message ?? e) }));
-      }
-    });
-    process.stdin.on("error", () => {});
-    process.stdin.resume();
+    readSteers(root);
   }
 
   let settled = await sub.wait(ctx);

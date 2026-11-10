@@ -6,13 +6,13 @@ import type {
   SpendState,
   TargetChoice,
 } from "@/lib/types"
-import { fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { archiveRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { PageStub } from "@/components/page-stub"
 import { NewRunDialog } from "@/components/new-run-dialog"
-import { loadRun, onRunSettled, useRunBriefs } from "@/lib/runModel"
+import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
 
 export function App() {
@@ -88,10 +88,27 @@ export function App() {
       runs.map((r) => {
         const b = briefs[r.id]
         if (!b) return r
-        return { ...r, status: b.status, title: b.pending?.title ?? r.title, severity: b.pending?.severity ?? r.severity }
+        return {
+          ...r,
+          status: b.status,
+          archived: b.archived,
+          title: b.pending?.title ?? r.title,
+          severity: b.pending?.severity ?? r.severity,
+        }
       }),
     [runs, briefs],
   )
+
+  // Archive (or bring back) a run from the rail. The run store holds the flag,
+  // so the row moves and the composer locks once the run reloads.
+  const onArchive = useCallback((id: string, archived: boolean) => {
+    archiveRun(id, archived)
+      .then(() => {
+        setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, archived } : r)))
+        reloadRun(id)
+      })
+      .catch(() => {})
+  }, [])
 
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
@@ -108,6 +125,7 @@ export function App() {
         view={view}
         onSelect={setView}
         onNewRun={() => setDialogOpen(true)}
+        onArchive={onArchive}
         spend={spend}
         provider={provider}
       />

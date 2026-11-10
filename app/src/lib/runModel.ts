@@ -88,7 +88,14 @@ export interface RunState {
   decision: Verdict | null
   error: string | null
   finalText: string | null // the agent's words when it could not prove anything
+  // No worker is running. A follow-up message reopens the run (`reply-start`)
+  // and a later `closed` ends it again.
   closed: boolean
+  // A follow-up worker is answering, and when it started.
+  replying: boolean
+  replyStartedAt: number | null
+  // Archived runs are locked: they take no more messages.
+  archived: boolean
   // The verdict ladder, derived live from the step stream so the same four
   // stations the recorded finding shows are visible while the agent is still
   // working — the before and after views line up.
@@ -125,6 +132,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let error: string | null = null
   let finalText: string | null = null
   let closed = false
+  let replying = false
+  let replyStartedAt: number | null = null
+  let archived = false
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
   let activity: Activity = "working"
@@ -174,7 +184,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // the run only to replay it and record the proven finding. There is no
         // operator gate, so it gets no visible step here; the honest work of the
         // pass shows up as "Recording the finding" / "Finding recorded" below.
-        if (phase === "run")
+        // A follow-up ("chat") reopens the same session; the operator's message
+        // already marks where it starts, so it gets no second "started" row.
+        if (phase === "run" && e.mode !== "chat")
           steps.push({ key, kind: "open", phase, label: "Agent session started" })
         break
       }
@@ -557,6 +569,21 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       case "closed":
         closed = true
+        replying = false
+        break
+      // An operator message to an idle run starts a follow-up worker.
+      case "reply-start":
+        closed = false
+        replying = true
+        replyStartedAt = typeof e.t === "number" ? e.t : null
+        activity = "working"
+        error = null
+        break
+      case "reply-error":
+        steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
+        break
+      case "archived":
+        archived = Boolean(e.archived)
         break
       default:
         break
@@ -576,7 +603,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
 
   // Once the run has settled there is nothing in flight — the status pill, not
   // the activity pill, carries the outcome.
-  if (closed || isTerminal(status as RunStatus)) activity = "idle"
+  if (closed || (isTerminal(status as RunStatus) && !replying)) activity = "idle"
 
   return {
     events,
@@ -589,6 +616,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
     error,
     finalText,
     closed,
+    replying,
+    replyStartedAt,
+    archived,
     stages,
     activity,
     agents,
@@ -623,7 +653,7 @@ const settleListeners = new Set<(id: string) => void>()
 
 // Status and headline of every loaded run, for the sidebar. Replaced (never
 // mutated) on each change so useSyncExternalStore sees a new snapshot.
-export type RunBrief = { status: RunStatus; pending: PendingApproval | null }
+export type RunBrief = { status: RunStatus; pending: PendingApproval | null; archived: boolean }
 let briefs: Record<string, RunBrief> = {}
 
 function entryFor(id: string): RunEntry {
@@ -640,12 +670,13 @@ function commit(id: string, en: RunEntry, events: RunEvent[]) {
   en.events = events
   en.state = reduceEvents(events)
   const s = en.state
-  if (!before || before.status !== s.status || before.pending !== s.pending) {
-    briefs = { ...briefs, [id]: { status: s.status, pending: s.pending } }
+  if (!before || before.status !== s.status || before.pending !== s.pending || before.archived !== s.archived) {
+    briefs = { ...briefs, [id]: { status: s.status, pending: s.pending, archived: s.archived } }
     for (const l of allListeners) l()
   }
   // A run that settles while we watch it (not one that loaded settled).
-  if (before && !isTerminal(before.status) && isTerminal(s.status)) {
+  // A follow-up ending counts too: it may have spent and proven more.
+  if (before && ((!isTerminal(before.status) && isTerminal(s.status)) || (before.replying && !s.replying))) {
     for (const l of settleListeners) l(id)
   }
   for (const l of en.listeners) l()
@@ -689,6 +720,14 @@ export function loadRun(id: string) {
     .catch(() => {
       en.loading = false
     })
+}
+
+// Fetch a run again and follow it if it is open. Use after a message reopens
+// an idle run, or after it is archived: an idle run keeps no stream, so the
+// new events are only in a fresh snapshot.
+export function reloadRun(id: string) {
+  entryFor(id).loading = false
+  loadRun(id)
 }
 
 // The reduced state of one run. Null only until its snapshot first loads.
