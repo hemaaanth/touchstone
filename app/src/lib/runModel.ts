@@ -747,7 +747,15 @@ export function reduceEvents(events: RunEvent[]): RunState {
 export function threadSteps(steps: Step[], agentId: string | null): Step[] {
   const me = agentId ?? COORDINATOR
   return steps.filter((s) =>
-    s.kind === "message" ? s.from === me || s.to === me : agentId == null ? !s.agent : s.agent === agentId,
+    s.kind === "message"
+      ? s.from === me || s.to === me
+      : // A failed child's row (Retry / Reassign) belongs to the main chat,
+        // even though the engine tags the event with the child's id.
+        s.kind === "agent-error"
+        ? agentId == null
+        : agentId == null
+          ? !s.agent
+          : s.agent === agentId,
   )
 }
 
