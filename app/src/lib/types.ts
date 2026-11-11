@@ -514,3 +514,36 @@ export interface ModelDraft {
   output: string
   context: number | null
 }
+
+// ---- Module plan. One entry per pipeline step, from the `modules` event the
+// engine emits at run start (spike/lib/modules.mjs). `fixed` steps cannot be
+// turned off: the agent always runs, and the replay is always the gate. A step
+// that is off says why in `reason`.
+export interface ModulePlanEntry {
+  id: string
+  on: boolean
+  available: boolean
+  fixed: boolean
+  reason: string | null
+}
+
+// ---- Playbooks. A saved run recipe: a scope plus a module plan, so a proven
+// attack path is one click to repeat.
+// TODO(backend): no server store or route exists for playbooks yet. The
+// Playbooks screen renders against this shape with an empty list. Wire it as
+// GET /api/playbooks -> { playbooks: Playbook[] } and
+// POST /api/playbooks { fromRunId, title } -> Playbook.
+export interface Playbook {
+  id: string
+  title: string
+  // The module (pack) and the scope the recipe runs against.
+  pack: string
+  targetId: string
+  // Which toggleable pipeline steps are on (ModulePlanEntry ids).
+  modules: string[]
+  model: string | null
+  budgetUsd: number | null
+  // The proven run this recipe was saved from, if any.
+  fromRunId: string | null
+  createdAt: number
+}

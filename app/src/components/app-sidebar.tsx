@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, BookMarked, Boxes, ChevronRight, FolderGit2, Plus, Settings2, ShieldCheck } from "lucide-react"
+import { Archive, ArchiveRestore, BookMarked, Boxes, ChevronRight, FolderGit2, Network, Plus, Settings2, ShieldCheck } from "lucide-react"
 import type { ProviderInfo, RunSummary, SpendState } from "@/lib/types"
 import { ago, DOT, formatUsd, isTerminal, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "cn"
@@ -23,9 +23,10 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
   | { kind: "run"; id: string }
-  | { kind: "page"; id: "projects" | "modules" | "playbooks" | "settings" }
+  | { kind: "page"; id: "fleet" | "projects" | "modules" | "playbooks" | "settings" }
 
 const PAGES = [
+  { id: "fleet", label: "Operator console", icon: Network },
   { id: "projects", label: "Projects", icon: FolderGit2 },
   { id: "modules", label: "Modules", icon: Boxes },
   { id: "playbooks", label: "Playbooks", icon: BookMarked },
