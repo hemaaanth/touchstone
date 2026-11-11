@@ -435,6 +435,19 @@ export class Coordinator {
     this.session = opts.bulletin(opts.coordinatorId)
   }
 
+  // THE OUTPUT BOUNDARY. Nothing the coordinator retains — a lead in `this.leads`
+  // or `pending`, an agent in `this.registry`, a `RejectedPost` in `this.rejects`
+  // — is EVER handed out by reference. Every public method that returns a lead /
+  // agent / fleet / result routes its return value through here, so a consumer's
+  // mutation (the console is one) can never write back into coordinator state and
+  // thus can never smuggle a lead past the oracle. This is a CLASS invariant, not
+  // a per-site patch: a new return site is only correct if it, too, goes through
+  // `out()`. Deep clone (structuredClone) — a shallow copy would still share the
+  // nested `transitions`/`reactions` arrays that the bypass mutates.
+  private out<T>(x: T): T {
+    return structuredClone(x)
+  }
+
   // Plan: turn a run spec into shards. Pure delegation to `shardWork`, exposed on
   // the coordinator so the loop reads as plan → shard → spawn.
   plan(spec: RunSpec): Shard[] {
@@ -453,11 +466,14 @@ export class Coordinator {
       this.registry.set(spec.id, agent)
       agents.push(agent)
     }
-    return {
+    // The registry keeps the originals (the ONLY trusted source of each author's
+    // tier); the caller gets deep clones. Otherwise `fleet.agents[0].tier = 1`
+    // would rewrite the registry and defeat the tier-spoof check at its root.
+    return this.out({
       runId: this.runId,
       coordinatorId: this.coordinatorId,
       agents,
-    }
+    })
   }
 
   // One pass of the watch loop. Order matters:
@@ -490,7 +506,12 @@ export class Coordinator {
         this.cursors.set(lane, ev.seq)
       }
     }
-    return result
+    // Single output boundary: the result's proven/dismissed/stranded entries are
+    // live objects still held in `this.leads`/`pending`, and `rejected` aliases
+    // `this.rejects`. Deep-clone the whole result so NONE of them can be mutated
+    // back into coordinator state (a `{status:"proven"}` pushed onto a returned
+    // `stranded` lead must not promote on the next tick).
+    return this.out(result)
   }
 
   // Validate one event and, if it is a trustworthy lead, mark it `verifying` and
@@ -680,7 +701,7 @@ export class Coordinator {
   // would likewise rewrite coordinator state. So this is a read-only snapshot
   // that CANNOT write back into `this.leads` or `pending`.
   adjudicatedLeads(): Lead[] {
-    return [...this.leads.values()].map((l) => structuredClone(l))
+    return this.out([...this.leads.values()])
   }
 
   // Final report for the operator: fleet size + the terminal leads, split by the
@@ -689,23 +710,22 @@ export class Coordinator {
     const summary = fleetSummary(fleet)
     const proven: Lead[] = []
     const dismissed: Lead[] = []
-    // DEEP COPIES only — same invariant as adjudicatedLeads(): the report is a
-    // read-only snapshot, never a handle a consumer can mutate back into
-    // `this.leads` or `pending` (which would let a mutated "terminal" lead slip
-    // past the oracle on a later tick).
     for (const lead of this.leads.values()) {
       const s = leadStatus(lead)
-      if (s === "proven") proven.push(structuredClone(lead))
-      else if (s === "dismissed") dismissed.push(structuredClone(lead))
+      if (s === "proven") proven.push(lead)
+      else if (s === "dismissed") dismissed.push(lead)
     }
-    return {
+    // Single output boundary (same invariant as adjudicatedLeads/tick): the whole
+    // report is deep-cloned, so none of these live leads/rejects can be mutated
+    // back into `this.leads`/`pending`/`this.rejects`.
+    return this.out({
       runId: this.runId,
       agents: summary.agents,
       active: summary.active,
       proven,
       dismissed,
-      stranded: [...this.pending.values()].map((p) => structuredClone(p.lead)),
-      rejected: this.rejects.map((r) => structuredClone(r)),
-    }
+      stranded: [...this.pending.values()].map((p) => p.lead),
+      rejected: [...this.rejects],
+    })
   }
 }

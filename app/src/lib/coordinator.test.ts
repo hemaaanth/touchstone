@@ -465,3 +465,69 @@ test("mutating the projection cannot forge a promotion past the oracle", async (
   const trusted = await board.session("obs").bulletin_read(bulletinChannel(RUN, "bulletin"))
   assert.equal(trusted.events.length, 0)
 })
+
+// The SAME bypass, reached through tick().stranded instead of adjudicatedLeads().
+test("mutating tick().stranded cannot forge a promotion past the oracle", async () => {
+  let attempts = 0
+  const flaky: Oracle = {
+    async verify(): Promise<OracleVerdict> {
+      attempts++
+      if (attempts === 1) throw new Error("transient oracle fault")
+      return { proven: false, evidenceRef: null, at: 1, reason: "no harm reproduced" }
+    },
+  }
+  const { board, coord } = harness(flaky)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead())
+  const t1 = await coord.tick()
+  assert.equal(t1.stranded.length, 1)
+  // forge a harness proof onto the returned stranded lead.
+  t1.stranded[0].transitions.push({ status: "proven", at: 2, by: null })
+  const t2 = await coord.tick() // oracle now says NO
+  assert.equal(t2.proven.length, 0) // not promoted
+  assert.equal(t2.dismissed.length, 1)
+  const trusted = await board.session("obs").bulletin_read(bulletinChannel(RUN, "bulletin"))
+  assert.equal(trusted.events.length, 0)
+})
+
+// Mutating tick().dismissed must not leak a false `proven` into the projection
+// the console reads.
+test("mutating tick().dismissed does not leak a false proven into the projection", async () => {
+  const { board, coord } = harness(rejectingOracle)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead())
+  const t = await coord.tick()
+  assert.equal(t.dismissed.length, 1)
+  // attacker rewrites the dismissed lead to look proven + graduated.
+  t.dismissed[0].status = "proven"
+  t.dismissed[0].lane = "bulletin"
+  t.dismissed[0].transitions.push({ status: "proven", at: 3, by: null })
+  const proj = coord.adjudicatedLeads()
+  assert.equal(proj.length, 1)
+  assert.equal(leadStatus(proj[0]), "dismissed") // still the oracle's real verdict
+  assert.equal(proj[0].lane, "evidence") // still quarantined
+})
+
+// The trust root: mutating spawnFleet().agents must not rewrite the registry tier
+// that the tier-spoof check depends on.
+test("mutating spawnFleet().agents tier does not defeat the tier-spoof check", async () => {
+  const { board, coord } = harness(provingOracle())
+  const fleet = await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  // attacker flips the returned agent to Tier-1 to shed quarantine...
+  fleet.agents[0].tier = 1
+  // ...then posts a Tier-1-looking lead straight into the trusted lane.
+  await board
+    .session("h7")
+    .bulletin_post(toBulletinPost(bulletinChannel(RUN, "bulletin"), lead({ tier: 1, lane: "bulletin" })))
+  const res = await coord.tick()
+  // registry tier is unchanged (still Tier-2), so it is still a spoof.
+  assert.equal(res.proven.length, 0)
+  assert.equal(res.rejected.length, 1)
+  assert.equal(res.rejected[0].reason, "tier-spoof")
+})
