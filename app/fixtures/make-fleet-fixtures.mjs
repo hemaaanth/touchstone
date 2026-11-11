@@ -69,7 +69,7 @@ ev(1, "agent-message", { agent: "a-static", id: "m3", from: "a-static", to: C, t
 
 // Exploit-Epsilon fails.
 ev(2, "thinking-delta", { agent: "a-eps", conv: "conv-a-eps", text: "rescue() takes an address..." })
-ev(1, "subagent-done", { id: "a-eps", status: "failed", error: "Provider returned 503" })
+ev(1, "subagent-done", { agent: "a-eps", id: "a-eps", status: "failed", error: "Provider returned 503" })
 
 // Untrusted worker posts to the evidence lane.
 ev(2, "bulletin-post", { agent: "a-worker", id: "b4", author: "a-worker", kind: "lead", severity: "high", tags: ["trace-07"], text: "rescue(address(0)) burns the vault balance. Raw tx attached.", lane: "evidence" })
@@ -84,7 +84,7 @@ writeFileSync(path.join(here, "run-fleet-live-2611110900-1.stream.jsonl"), live.
 ev(5, "run_poc", { agent: "a-exploit", attempt: 1, contract: "ReentrancyDrainTest" })
 ev(5, "run_poc-done", { agent: "a-exploit", contract: "ReentrancyDrainTest", passed: true })
 ev(1, "agent-message", { agent: "a-exploit", id: "m4", from: "a-exploit", to: C, text: "PoC passes. withdrawAll() drains the vault in one call." })
-for (const [id] of fleet) if (id !== "a-eps") ev(1, "subagent-done", { id, status: "done" })
+for (const [id] of fleet) if (id !== "a-eps") ev(1, "subagent-done", { agent: id, id, status: "done" })
 ev(1, "finding-submitted", { n: 1, title: "Reentrancy in withdrawAll() drains the vault", severity: "high", poc: "ReentrancyDrainTest" })
 ev(1, "finding", { id: "fleet-done-2611110900-1.1", title: "Reentrancy in withdrawAll() drains the vault", severity: "high", module: "agent", proven: true, poc: "ReentrancyDrainTest" })
 ev(1, "say", { conv: "root", attempt: 2, text: "One proven finding: reentrancy in withdrawAll(). The rescue() lead stays unverified." })

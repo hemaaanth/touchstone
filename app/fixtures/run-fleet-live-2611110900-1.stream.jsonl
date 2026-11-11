@@ -30,7 +30,7 @@
 {"t":1794387633000,"ev":"bulletin-post","agent":"a-static","id":"b3","author":"a-static","kind":"lead","severity":"high","tags":["corroborated","reentrancy-eth"],"text":"Slither and Aderyn both flag withdrawAll() reentrancy.","lane":"trusted"}
 {"t":1794387634000,"ev":"agent-message","agent":"a-static","id":"m3","from":"a-static","to":"coordinator","text":"Both engines agree on withdrawAll(). The rest are low."}
 {"t":1794387636000,"ev":"thinking-delta","agent":"a-eps","conv":"conv-a-eps","text":"rescue() takes an address..."}
-{"t":1794387637000,"ev":"subagent-done","id":"a-eps","status":"failed","error":"Provider returned 503"}
+{"t":1794387637000,"ev":"subagent-done","agent":"a-eps","id":"a-eps","status":"failed","error":"Provider returned 503"}
 {"t":1794387639000,"ev":"bulletin-post","agent":"a-worker","id":"b4","author":"a-worker","kind":"lead","severity":"high","tags":["trace-07"],"text":"rescue(address(0)) burns the vault balance. Raw tx attached.","lane":"evidence"}
 {"t":1794387640000,"ev":"bulletin-post","id":"b5","author":"coordinator","kind":"note","text":"Focus on withdrawAll() first. rescue() waits for a replay.","lane":"trusted"}
 {"t":1794387641000,"ev":"assistant-delta","conv":"root","attempt":1,"text":"Exploit-Beta is building the reentrancy PoC. Exploit-Epsilon hit a provider error."}
