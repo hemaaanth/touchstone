@@ -22,7 +22,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
-import { activeProvider, allProviders, defaultAlias, readConfig, runBudgetUsd } from "../../spike/lib/providers.mjs"
+import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
+import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
@@ -80,7 +81,7 @@ export function availableModels() {
 }
 
 export function spendState() {
-  return { usd: spent(), budgetUsd: runBudgetUsd() }
+  return { usd: spent(), budgetUsd: appRunBudgetUsd() }
 }
 
 // The active inference provider, so the UI can show which gateway a run drives.
@@ -297,7 +298,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack } = 
   // config, so the run worker builds exactly the tools this plan enables.
   const plan = planModules(target, modules)
   // Each run has its own budget. The worker stops the run when it is spent.
-  const budget = budgetUsd == null || budgetUsd === "" ? runBudgetUsd(cfg) : validateRunBudget(budgetUsd)
+  const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 
   mkdirSync(RESULTS_DIR, { recursive: true })
   const id = monotonicId(alias)
@@ -439,7 +440,7 @@ function engineEvents(run) {
 function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   const spend = run.events.findLast((e) => e.ev === "spend")
-  return { RUN_BUDGET_USD: String(set?.usd ?? runBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
 }
 
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in

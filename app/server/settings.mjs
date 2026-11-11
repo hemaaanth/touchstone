@@ -20,6 +20,15 @@ import {
 import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 
+// The console's default per-run budget when Settings has none saved. The
+// engine's own default (spike/lib/run-budget.mjs) stays $1 for CLI runs; app
+// runs pass their budget to the worker as RUN_BUDGET_USD, so this one wins.
+export const APP_DEFAULT_RUN_BUDGET_USD = 5
+
+export function appRunBudgetUsd(cfg = readConfig()) {
+  return cfg.runBudgetUsd == null ? APP_DEFAULT_RUN_BUDGET_USD : runBudgetUsd(cfg)
+}
+
 function keyState(p) {
   const k = providerKey(p)
   if (!k) return { set: false, source: null, last4: null }
@@ -56,7 +65,7 @@ export function getSettings() {
     default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
-    spend: { usd: spent(), budgetUsd: runBudgetUsd(cfg) },
+    spend: { usd: spent(), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
   }
 }
