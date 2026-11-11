@@ -6,6 +6,7 @@ import type {
   Activity,
   AgentNode,
   ArtifactDoc,
+  BulletinNote,
   ArtifactVersion,
   FindingStages,
   FindingSummary,
@@ -20,6 +21,7 @@ import type {
   TargetScope,
   Verdict,
 } from "./types"
+import { COORDINATOR } from "./types"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -46,6 +48,8 @@ export type StepKind =
   | "say"
   | "subagent"
   | "artifact"
+  | "message"
+  | "agent-error"
   | "submitted"
 
 export interface Step {
@@ -69,6 +73,12 @@ export interface Step {
   // "submitted" step: the finding the agent submitted at this point. Its card
   // renders inline here, so several findings read in the order they landed.
   finding?: PendingApproval
+  // Fleet: the child that made this step. Absent = the coordinator.
+  agent?: string
+  // "message" step: who sent it and who got it (child id or COORDINATOR).
+  // The text is in `label`. The same step shows in both agents' threads.
+  from?: string
+  to?: string
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -130,6 +140,8 @@ export interface RunState {
   // The owner→subagent tree, latest `agent-graph` snapshot. Empty on a single
   // agent run that never fanned out.
   agents: AgentNode[]
+  // Fleet: the run's shared Bulletin, in post order. Empty without a fleet.
+  bulletin: BulletinNote[]
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
@@ -171,6 +183,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let scope: TargetScope | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
+  const bulletin: BulletinNote[] = []
   const findings: FindingSummary[] = []
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
@@ -196,8 +209,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
     }
     steps.push({ key: k, kind, phase, conv, label: text })
   }
+  // Fleet: update one child's node in place (by id). No-op for an unknown id.
+  const patchAgent = (id: string, patch: Partial<AgentNode>) => {
+    agents = agents.map((n) => (n.id === id ? { ...n, ...patch } : n))
+  }
   events.forEach((e, i) => {
     const key = `${i}-${e.ev}`
+    // Fleet: a child made this event. Its steps get tagged with the child's id,
+    // and its cognition moves the child's own activity, not the run's.
+    const who = str(e.agent) || null
+    const stepsBefore = steps.length
+    const activityBefore = activity
     switch (e.ev) {
       case "scope": {
         // The run's opening event: which resource it is pointed at. Carries no
@@ -302,20 +324,20 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "thinking-delta": {
         // The agent's reasoning, streamed as a growing snapshot. Updates the
         // live "Thinking…" status and the collapsible reasoning block.
-        streamStep("reasoning", str(e.conv) || "root", num(e.attempt), str(e.text))
+        streamStep("reasoning", str(e.conv) || who || "root", num(e.attempt), str(e.text))
         activity = "thinking"
         break
       }
       case "assistant-delta": {
         // The agent's prose answer, streamed as a growing snapshot.
-        streamStep("say", str(e.conv) || "root", num(e.attempt), str(e.text))
+        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text))
         activity = "typing"
         break
       }
       case "say": {
         // A finalized assistant message (the engine may emit this instead of, or
         // after, the deltas). Same block key, so it just lands the final text.
-        streamStep("say", str(e.conv) || "root", num(e.attempt), str(e.text))
+        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text))
         activity = "typing"
         break
       }
@@ -403,7 +425,23 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         // Seed the node if the next agent-graph snapshot has not landed yet.
         if (id && !agents.some((n) => n.id === id))
-          agents = [...agents, { id, parent: str(e.parent) || null, area, title, state: "working" }]
+          agents = [
+            ...agents,
+            {
+              id,
+              parent: str(e.parent) || null,
+              area,
+              title,
+              state: "working",
+              name: str(e.name) || undefined,
+              tier: e.tier === "T2" ? "T2" : "T1",
+              conv: str(e.conv) || undefined,
+              activity: "working",
+              spendUsd: null,
+              startedAt: num(e.t),
+              endedAt: null,
+            },
+          ]
         activity = "working"
         break
       }
@@ -418,16 +456,59 @@ export function reduceEvents(events: RunEvent[]): RunState {
             break
           }
         }
-        agents = agents.map((n) =>
-          n.id === id ? { ...n, state: e.status === "failed" ? "failed" : "done" } : n,
-        )
+        const failed = e.status === "failed"
+        patchAgent(id, {
+          state: failed ? "failed" : "done",
+          activity: "idle",
+          endedAt: num(e.t),
+          ...(failed ? { error: str(e.error) || "Stopped with an error" } : {}),
+        })
+        // A failed child gets its own row in the main chat (Retry / Reassign).
+        if (failed)
+          steps.push({ key, kind: "agent-error", phase, label: str(e.error) || "Stopped with an error", subId: id })
         break
       }
       case "agent-graph": {
+        // A snapshot of the tree. Keep the fleet fields we already know, since
+        // a snapshot may not repeat them.
         if (Array.isArray(e.nodes))
           agents = (e.nodes as unknown[])
             .filter((n): n is AgentNode => !!n && typeof n === "object" && "id" in n)
-            .map((n) => n)
+            .map((n) => ({ ...agents.find((a) => a.id === n.id), ...n }))
+        break
+      }
+      case "agent-status": {
+        const st = e.state === "idle" ? "idle" : "working"
+        patchAgent(str(e.id), { state: st, ...(st === "idle" ? { activity: "idle" as const } : {}) })
+        break
+      }
+      case "agent-message": {
+        const from = str(e.from) || who || COORDINATOR
+        const to = str(e.to) || COORDINATOR
+        steps.push({ key, kind: "message", phase, label: str(e.text), from, to, subId: str(e.id) || undefined })
+        break
+      }
+      case "bulletin-post": {
+        const author = str(e.author) || who || COORDINATOR
+        const sev = str(e.severity).toLowerCase()
+        const authorTier = agents.find((n) => n.id === author)?.tier
+        bulletin.push({
+          id: str(e.id) || key,
+          author,
+          t: num(e.t),
+          text: str(e.text),
+          kind: e.kind === "lead" ? "lead" : "note",
+          ...(sev in SEV_RANK ? { severity: sev as Severity } : {}),
+          tags: Array.isArray(e.tags) ? e.tags.filter((x): x is string => typeof x === "string") : [],
+          // A T2 author can never post to the trusted lane, whatever it says.
+          lane: e.lane === "evidence" || authorTier === "T2" ? "evidence" : "trusted",
+          stepKey: key,
+        })
+        break
+      }
+      case "agent-spend": {
+        const usd = num(e.usd)
+        if (usd != null) patchAgent(str(e.id), { spendUsd: usd })
         break
       }
       case "finding": {
@@ -597,6 +678,21 @@ export function reduceEvents(events: RunEvent[]): RunState {
       default:
         break
     }
+    if (who) {
+      // Tag the steps this child event added, and keep the run's activity on
+      // the coordinator. The child's own activity lives on its node.
+      for (let j = stepsBefore; j < steps.length; j++) steps[j].agent ??= who
+      // A cognition delta updates an existing block in place; tag it too.
+      if (e.ev === "thinking-delta" || e.ev === "assistant-delta" || e.ev === "say") {
+        const conv = str(e.conv) || who
+        for (const s of steps) if (s.conv === conv) s.agent ??= who
+      }
+      if (activity !== activityBefore) {
+        const childActivity = activity
+        activity = activityBefore
+        patchAgent(who, { activity: childActivity, ...(childActivity !== "idle" ? { state: "working" } : {}) })
+      }
+    }
   })
 
   const stages: FindingStages = {
@@ -633,6 +729,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     stages,
     activity,
     agents,
+    bulletin,
     findings,
     steers,
     artifacts,
@@ -641,6 +738,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
     prepass,
     modules,
   }
+}
+
+// Fleet: the steps one thread shows. `null` is the main chat (the
+// coordinator). A child id is that child's thread. A message step shows in
+// both the sender's and the receiver's thread, under the same key, so a pill
+// can jump from one thread to the same message in the other.
+export function threadSteps(steps: Step[], agentId: string | null): Step[] {
+  const me = agentId ?? COORDINATOR
+  return steps.filter((s) =>
+    s.kind === "message" ? s.from === me || s.to === me : agentId == null ? !s.agent : s.agent === agentId,
+  )
 }
 
 // ---------------------------------------------------------------------------

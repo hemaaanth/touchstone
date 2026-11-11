@@ -341,9 +341,15 @@ export interface RunEvent {
 //   run_poc          { attempt, contract }                        exploit attempt
 //   run_poc-done     { contract, passed, failed?, timedOut? }     attempt resolves
 //   run_poc-capped   { attempts }                                 attempt budget hit
-//   subagent-spawned { id, parent?, area, title }                 child conversation
-//   subagent-done    { id, status }                               child settles
+//   subagent-spawned { id, parent?, area, title,                 child conversation
+//                      name?, tier?, conv? }                      (fleet fields below)
+//   subagent-done    { id, status, error? }                       child settles
 //   agent-graph      { nodes: AgentNode[] }                       owner→child tree
+//   agent-status     { id, state }                                fleet: child's lifecycle
+//   agent-message    { id, from, to, text }                       fleet: one agent → another
+//   bulletin-post    { id, author, text, kind?, severity?,        fleet: a Bulletin note
+//                      tags?, lane? }
+//   agent-spend      { id, usd }                                  fleet: child's spend SNAPSHOT
 //   finding-submitted { n, title, severity, poc }                 agent submits one of
 //                                                                 many; audit goes on
 //   submit-rejected  { poc, reason }                              not passed / duplicate
@@ -361,6 +367,39 @@ export interface RunEvent {
 //   run-complete     { status, findingId? }                       run settled
 //   closed           {}                                           stream ends
 //
+// ---- Fleet contract (multi-agent runs).
+//
+// One coordinator talks to the operator. It spawns child agents. Children work
+// in parallel, message each other, and post to a shared Bulletin.
+//
+// 1. ANY event may carry `agent: <child id>`. It means "a child did this". No
+//    `agent` field means the coordinator did it. Tool events (`read_source`,
+//    `run_poc`, `artifact-open`, ...) and cognition deltas from a child MUST
+//    carry it. A child's cognition deltas also carry the child's own `conv`.
+// 2. `subagent-spawned` is emitted by the coordinator (no `agent` field).
+//    `id` is the child id. Every later event about that child uses it.
+//    `name` is the display name ("Recon-Alpha"). `title` is its task in one
+//    line. `area` is the module or angle. `tier` is "T1" (trusted) or "T2"
+//    (untrusted attacker worker). Missing `tier` means "T1".
+// 3. `agent-status { id, state }` moves a child between "working" and "idle"
+//    (waiting for a message). `subagent-done { id, status: "done"|"failed",
+//    error? }` ends it. `error` is the plain failure text ("Provider returned
+//    503"). A failed child adds an "agent-error" step to the main chat.
+// 4. `agent-message { id, from, to, text }`: `from` and `to` are a child id or
+//    "coordinator". `id` is unique per message. Emit it ONCE, from the sender.
+//    The reducer shows the one step in both agents' threads, so its step key
+//    is the shared jump target.
+// 5. `bulletin-post { id, author, text, kind: "note"|"lead", severity?, tags?,
+//    lane: "trusted"|"evidence" }`. `author` is a child id or "coordinator".
+//    T2 authors post to "evidence" only. Nothing in "evidence" is trusted
+//    until a replay proves it.
+// 6. `agent-spend { id, usd }` is the child's cumulative spend so far. The
+//    run's total spend stays where it is today.
+//
+// The main chat shows coordinator steps plus messages to or from the
+// coordinator. A child's thread shows its own steps plus messages to or from
+// it. See `threadSteps` in runModel.ts.
+//
 // `-delta` events carry the FULL current text each time (a throttled snapshot of
 // the in-flight message), NOT an increment — the reducer REPLACES, keyed by
 // (conv, attempt) for cognition and by id for an artifact, so a dropped tick
@@ -377,7 +416,33 @@ export interface AgentNode {
   parent: string | null
   area: string
   title: string
-  state: "spawning" | "working" | "done" | "failed"
+  state: "spawning" | "working" | "idle" | "done" | "failed"
+  // Fleet fields. Older runs and plain subagents lack them.
+  name?: string // display name, "Recon-Alpha"; falls back to title
+  tier?: "T1" | "T2" // T2 = untrusted attacker worker
+  conv?: string // the child's conversation id
+  activity?: Activity // what the child is doing right now
+  error?: string // why it failed, when state is "failed"
+  spendUsd?: number | null // cumulative; null = unknown
+  startedAt?: number | null
+  endedAt?: number | null
+}
+
+// The coordinator's id in `agent-message` and `bulletin-post`.
+export const COORDINATOR = "coordinator"
+
+// One note on the run's Bulletin. `lane: "evidence"` is the quarantined lane
+// for T2 posts: it is never trusted until a replay proves it.
+export interface BulletinNote {
+  id: string
+  author: string // child id or COORDINATOR
+  t: number | null
+  text: string
+  kind: "note" | "lead"
+  severity?: Severity
+  tags: string[]
+  lane: "trusted" | "evidence"
+  stepKey: string // key of the event that posted it, for linking back
 }
 
 // One operator steer across its two-phase life. "pending" — typed, shown as a
