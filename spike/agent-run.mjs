@@ -120,7 +120,7 @@ async function chargeUsage(harness, base = {}) {
   return { usd, models };
 }
 
-// Operator messages arrive on stdin, one JSON line ({"text":"…"}) each, while a
+// Operator messages arrive on stdin, one JSON line ({"text":"…","id":"…"}) each, while a
 // turn is in flight. Each one is injected into the agent's current turn with
 // whenBusy:"steer" (pi-durable native steering), so it rides into the running
 // generation instead of queuing a fresh run. "operator-message" is emitted only
@@ -136,13 +136,16 @@ function readSteers(root) {
       const line = stdinBuf.slice(0, i);
       stdinBuf = stdinBuf.slice(i + 1);
       if (!line.trim()) continue;
-      let text;
-      try { text = JSON.parse(line).text; } catch { continue; }
+      let text, id;
+      try { ({ text, id } = JSON.parse(line)); } catch { continue; }
       if (typeof text !== "string" || !text.trim()) continue;
+      // The UI's id for this message. The echo carries it back, so the UI can
+      // swap its instant copy for the real one.
+      const tag = typeof id === "string" && id ? { id } : {};
       steerSeq += 1;
       root.submit({ type: "input", requestId: `steer-${Date.now()}-${steerSeq}`, content: text, whenBusy: "steer" }, ctx)
-        .then(() => event("operator-message", { text }))
-        .catch((e) => event("steer-error", { text, error: String(e?.message ?? e) }));
+        .then(() => event("operator-message", { text, ...tag }))
+        .catch((e) => event("steer-error", { text, ...tag, error: String(e?.message ?? e) }));
     }
   });
   process.stdin.on("error", () => {});
@@ -165,7 +168,7 @@ async function chat({ harness, root, reports, state, fleet }) {
     type: "input", requestId: `followup-${Date.now()}`,
     content: `${text}\n\n(Operator follow-up. The sandbox was rebuilt since your last turn, so files you wrote or fetched before are gone. Rewrite or refetch any you need.)`,
   }, ctx);
-  event("operator-message", { text });
+  event("operator-message", { text, ...(process.env.FOLLOWUP_ID ? { id: process.env.FOLLOWUP_ID } : {}) });
   let settled = await sub.wait(ctx);
   settled = await fleet?.drain(ctx, { enforce: false }) ?? settled;
   const s = await summarize(root);

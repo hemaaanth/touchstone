@@ -697,17 +697,19 @@ async function endWorkspace(ws) {
 // Message a run. While a worker is running, the message is written to its
 // stdin as one JSON line; the worker injects it into the agent's in-flight turn
 // (native pi-durable steering) and echoes it back as an `operator-message`
-// event once it lands. When the run is idle, the message starts a follow-up
+// event once it lands. The echo carries the UI's id for the message, if sent. When the run is idle, the message starts a follow-up
 // worker that reopens the saved session. Only an archived run refuses.
-export function steerRun(id, text) {
+export function steerRun(id, text, clientId) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
   if (run.archived) throw new Error("this run is archived")
   const msg = typeof text === "string" ? text.trim() : ""
   if (!msg) throw new Error("empty message")
-  if (idle(run)) return followUp(run, msg)
+  // The UI's id for the message. The echo carries it back unchanged.
+  const tag = typeof clientId === "string" && /^[\w-]{1,64}$/.test(clientId) ? clientId : undefined
+  if (idle(run)) return followUp(run, msg, tag)
   if (!run.child?.stdin?.writable) throw new Error(`the run is ${run.status}; try again in a moment`)
-  run.child.stdin.write(JSON.stringify({ text: msg }) + "\n")
+  run.child.stdin.write(JSON.stringify({ text: msg, id: tag }) + "\n")
   return { ok: true }
 }
 
@@ -754,7 +756,7 @@ function ensureFiles(run) {
 // Start a follow-up: one operator message to an idle run. The worker reopens
 // the run's saved agent session in a fresh workspace, answers, and exits. Any
 // finding it proves is replayed and added to the run record.
-function followUp(run, text) {
+function followUp(run, text, clientId) {
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)
@@ -787,6 +789,7 @@ function followUp(run, text) {
       ...money,
       ...fleetEnv(run),
       FOLLOWUP: text,
+      ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
       PRIOR_FOUND: JSON.stringify(prior),
       ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),
     },

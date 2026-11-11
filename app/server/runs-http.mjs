@@ -88,7 +88,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 4 && parts[3] === "steer" && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 200, steerRun(id, body.text))
+      send(res, 200, steerRun(id, body.text, body.id))
     } catch (err) {
       send(res, 409, { error: String(err?.message ?? err) })
     }

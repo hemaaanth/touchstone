@@ -1,6 +1,7 @@
 import { useContext, useState } from "react"
 import {
   AuiIf,
+  useAuiState,
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
@@ -323,6 +324,7 @@ function Message() {
         <div className="ml-auto max-w-[70%] rounded-[14px] bg-muted px-4 py-3 text-sm leading-5 text-foreground [overflow-wrap:anywhere]">
           <MessagePrimitive.Parts components={parts} />
         </div>
+        <Queued />
       </MessagePrimitive.If>
       <MessagePrimitive.If user={false}>
         <div className="flex flex-col gap-2.5">
@@ -330,6 +332,18 @@ function Message() {
         </div>
       </MessagePrimitive.If>
     </MessagePrimitive.Root>
+  )
+}
+
+// A steer the agent has not read yet. It reads it when its current step ends.
+// The hint waits a second, so a steer that lands at once never flashes it.
+function Queued() {
+  const queued = useAuiState((s) => s.message.metadata.custom?.queued === true)
+  if (!queued) return null
+  return (
+    <span className="ml-auto mt-1 pr-1 text-xs text-muted-foreground animate-in fade-in duration-300 [animation-delay:1s] [animation-fill-mode:backwards]">
+      Queued until the agent's next step
+    </span>
   )
 }
 

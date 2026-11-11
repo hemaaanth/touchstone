@@ -10,6 +10,7 @@ import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, 
 import type { Finding, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
+import { messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
@@ -162,24 +163,62 @@ export function RunChat({
 
   // Send one operator message. Live, it steers the worker. Idle, the server
   // starts a follow-up, so fetch the run again to follow the reply.
-  // The composer clears as it sends. If the server refuses the message, put
-  // the text back so the operator does not lose it, unless they already
-  // started a new one or sent another message since.
+  //
+  // The message shows at once, as a local copy (`sent`). The real message is
+  // the agent's `operator-message` echo, which comes when the agent reads it.
+  // The echo carries the copy's id, so the copy steps aside the moment it
+  // lands, in the same place. The server stays the only record: the copy is
+  // never saved, and a reload shows only what the agent really got.
+  // If the message does not reach the agent, the copy goes, the error shows,
+  // and the text goes back in the composer, unless the operator already
+  // started a new one.
   const runtimeRef = useRef<ReturnType<typeof useExternalStoreRuntime> | null>(null)
-  const sends = useRef(0)
+  const [sent, setSent] = useState<Sent[]>([])
+  // What happened to each copy so far: echoed, or an error. A settled copy
+  // stays in `sent` until the next send prunes it, so this is pure.
+  const events = state?.events
+  const outcomes = useMemo(() => settleSent(sent, events ?? []), [sent, events])
+  const settled = useRef(outcomes)
+  useEffect(() => {
+    settled.current = outcomes
+  })
+  const giveBack = (text: string) => {
+    const composer = runtimeRef.current?.thread.composer
+    if (composer && !composer.getState().text) composer.setText(text)
+  }
   const send = async (text: string, restore = true) => {
     if (!text || !state || archived) return
     setSendError(null)
-    const mine = ++sends.current
+    const id = messageId()
+    const base = state.events.length
+    setSent((xs) => [...xs.filter((x) => !settled.current.has(x.id)), { id, text, base, mode: "sending", restore }])
     try {
-      const res = await steerRun(run.id, text)
+      const res = await steerRun(run.id, text, id)
+      setSent((xs) => xs.map((x) => (x.id === id ? { ...x, mode: res.followUp ? "follow-up" : "steer" } : x)))
       if (res.followUp) reloadRun(run.id)
     } catch (err) {
+      setSent((xs) => xs.filter((x) => x.id !== id))
       setSendError(err instanceof Error ? err.message : String(err))
-      const composer = runtimeRef.current?.thread.composer
-      if (restore && mine === sends.current && composer && !composer.getState().text) composer.setText(text)
+      if (restore) giveBack(text)
     }
   }
+
+  // A copy the agent never read: its text goes back in the composer once.
+  const restored = useRef(new Set<string>())
+  useEffect(() => {
+    for (const x of sent) {
+      const out = outcomes.get(x.id)
+      if (!out || out === "echoed" || restored.current.has(x.id)) continue
+      restored.current.add(x.id)
+      if (x.restore) giveBack(x.text)
+    }
+  })
+  // The error under the composer: a refused send, or the last lost copy.
+  const lostError = sent.reduce<string | null>((e, x) => {
+    const out = outcomes.get(x.id)
+    return out && out !== "echoed" ? out : e
+  }, null)
+  const composerError = sendError ?? lostError
 
   // Retry a run that failed before proving anything. The saved session is still
   // on disk, so one steer message reopens it and the agent resumes the audit
@@ -197,10 +236,20 @@ export function RunChat({
     () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
     [state, fleet],
   )
-  const messages = useMemo(
-    () => buildMessages(state, mainSteps, status, live, fleet, null),
-    [state, mainSteps, status, live, fleet],
-  )
+  const messages = useMemo(() => {
+    const ms = buildMessages(state, mainSteps, status, live, fleet, null)
+    // The local copies trail the thread until their echoes land.
+    for (const x of sent) {
+      if (outcomes.has(x.id)) continue
+      ms.push({
+        role: "user",
+        id: `sent:${x.id}`,
+        content: [{ type: "text", text: x.text }],
+        metadata: { custom: { queued: x.mode === "steer" } },
+      })
+    }
+    return ms
+  }, [state, mainSteps, status, live, fleet, sent, outcomes])
 
   // assistant-ui blocks Send while a run is live unless the runtime has a
   // queue. The server is the queue here: a message to a live run steers it, and
@@ -402,7 +451,7 @@ export function RunChat({
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
-                  sendError={sendError}
+                  sendError={composerError}
                   context={state ? mainContext(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                 />

@@ -103,9 +103,10 @@ export async function removeScope(id: string): Promise<void> {
 // Message a run. While the agent works, the text is injected into its current
 // turn (native pi-durable steering). When the run is idle, the server starts a
 // follow-up that reopens the saved session (`followUp: true`). Either way the
-// text comes back as an `operator-message` event. Only an archived run refuses.
-export function steerRun(id: string, text: string): Promise<{ ok: true; followUp?: boolean }> {
-  return postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text })
+// text comes back as an `operator-message` event, with `clientId` as its id.
+// Only an archived run refuses.
+export function steerRun(id: string, text: string, clientId?: string): Promise<{ ok: true; followUp?: boolean }> {
+  return postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text, id: clientId })
 }
 
 // Stop the run's live work: the audit, or a follow-up reply. The run ends as
