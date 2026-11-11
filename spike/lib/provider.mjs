@@ -6,14 +6,14 @@ import { createAssistantMessageEventStream, createModels, createProvider } from 
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
-import { event } from "./event.mjs";
+import { event, withAgent } from "./event.mjs";
 
 // Charge each response before the harness can start another call, including
 // retries and subagents. Forward the final event only after accounting.
-export function budgetedApi(api) {
+export function budgetedApi(api, agentForSession = () => undefined) {
   const wrap = (method) => (model, context, options) => {
     const output = createAssistantMessageEventStream();
-    (async () => {
+    withAgent(agentForSession(options?.sessionId), async () => {
       try {
         const check = () => {
           try { guard(); }
@@ -44,7 +44,7 @@ export function budgetedApi(api) {
           stopReason: "error", errorMessage: String(err?.message ?? err), timestamp: Date.now(),
         } });
       } finally { output.end(); }
-    })();
+    });
     return output;
   };
   return { stream: wrap("stream"), streamSimple: wrap("streamSimple") };
@@ -62,7 +62,7 @@ function settingsKeyAuth(P) {
   };
 }
 
-export function inferenceModels() {
+export function inferenceModels({ agentForSession } = {}) {
   const P = activeProvider();
   const list = Object.values(P.models).map((m) => ({
     id: m.id,
@@ -90,7 +90,7 @@ export function inferenceModels() {
     baseUrl: P.baseUrl,
     auth: { apiKey: settingsKeyAuth(P) },
     models: list,
-    api: budgetedApi(openAICompletionsApi()),
+    api: budgetedApi(openAICompletionsApi(), agentForSession),
   }));
   return models;
 }

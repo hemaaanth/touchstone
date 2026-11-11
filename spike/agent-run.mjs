@@ -16,14 +16,15 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, Harness, LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { event } from "./lib/event.mjs";
-import { unsentFinal } from "./lib/final-text.mjs";
+import { watchCognition } from "./lib/cognition.mjs";
+import { COORDINATOR_INSTRUCTIONS, createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 
@@ -52,10 +53,13 @@ function auditState() {
 async function openHarness(db, ws, state) {
   const pack = packFor(readTouchstone(ws));
   const registry = createRegistry();
-  registry.install(defineExtension({ name: pack.id, tools: pack.tools(ws, state) }));
+  const fleet = createFleet({ system: pack.system(ws), costOf });
+  const tools = pack.tools(ws, state);
+  registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
+  if (fleet) registry.install(fleet.extension);
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
-    models: inferenceModels(),
+    models: inferenceModels({ agentForSession: fleet?.agentForSession }),
     registry,
     // maxRetries 5 (baseDelayMs 2s, exponential, capped 60s) rides out a flaky
     // gateway: transient 5xx/timeout/overload/rate-limit errors are retried with
@@ -64,10 +68,11 @@ async function openHarness(db, ws, state) {
     settings: { retry: { maxRetries: 5 }, stream: { timeoutMs: 180_000 } },
     onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
   }, ctx);
+  await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, {
-    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: pack.system(ws) },
+    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: pack.system(ws) + (fleet ? `\n\n${COORDINATOR_INSTRUCTIONS}` : "") },
   });
-  return { harness, root, reports, pack };
+  return { harness, root, reports, pack, fleet };
 }
 
 async function summarize(root) {
@@ -88,67 +93,13 @@ async function summarize(root) {
   return { calls, results, assistants, final: assistants.at(-1) };
 }
 
-// Stream the agent's live thinking and prose to the UI. pi-durable commits a
-// throttled partial of the in-flight response into the root conversation's
-// LiveDoc (`generation.message`), so we watch that doc and, on every commit,
-// re-derive the full text and reasoning of the current answer. The reducer
-// REPLACES a streamed step by (conv, attempt), so emitting the growing snapshot
-// types the text on screen. We key `attempt` on the run's tool-round index
-// (`run.turns`), so each round's prose lands as its own step instead of
-// overwriting the last. Without this a live run shows tool steps but no
-// cognition — exactly the gap the operator saw. Returns the watch handle so the
-// caller can stop it; a no-op if the harness has no live doc yet.
-let streamed = null;
+let streamed;
 async function streamCognition(harness, base = 0) {
-  const w = await harness.watchDoc(LiveDoc, ROOT_CONVERSATION_ID, ctx);
-  if (!w) return undefined;
-  let turn = -1;
-  let lastSay = "", lastThink = "";
-  // The throttled LiveDoc can end one chunk short. flushFinal sends the rest.
-  streamed = { say: () => lastSay, turn: () => (turn < 0 ? base : turn) };
-  // A resumed session still holds the last answer of the previous turn. Skip it
-  // until a new answer starts, so old text does not show again as a new step.
-  let stale = null;
-  const read = (live) => {
-    const msg = live?.generation?.message;
-    if (!msg || !Array.isArray(msg.content)) return null;
-    let say = "", think = "";
-    for (const b of msg.content) {
-      if (b?.type === "text" && typeof b.text === "string") say += b.text;
-      else if (b?.type === "thinking" && typeof b.thinking === "string") think += b.thinking;
-    }
-    return { say, think };
-  };
-  const emit = (live) => {
-    const r = read(live);
-    if (!r) return;
-    if (stale !== null) {
-      if (r.think + "\u0000" + r.say === stale) return;
-      stale = null;
-    }
-    // `base` keeps a follow-up's steps apart from the earlier turns' steps.
-    const t = base + (live?.run?.turns ?? 0);
-    // A new tool round resets the partial; start a fresh step and dedupe baseline.
-    if (t !== turn) { turn = t; lastSay = ""; lastThink = ""; }
-    const { say, think } = r;
-    if (think && think !== lastThink) { lastThink = think; event("thinking-delta", { attempt: turn, text: think }); }
-    if (say && say !== lastSay) { lastSay = say; event("assistant-delta", { attempt: turn, text: say }); }
-  };
-  if (base > 0) {
-    const r = read(w.value);
-    if (r) stale = r.think + "\u0000" + r.say;
-  }
-  emit(w.value);
-  w.start(async (call) => { if (call.kind === "value") emit(call.value); });
-  return w;
+  streamed = await watchCognition(harness, ROOT_CONVERSATION_ID, { base, skipStale: base > 0, uniqueTurns: process.env.FLEET !== "0" }, ctx);
 }
 
-// The last answer, whole, as one more `assistant-delta` before `settled`. Does
-// nothing when the stream already ended on the full text.
 function flushFinal(summary) {
-  if (!streamed) return;
-  const text = unsentFinal(streamed.say(), summary?.final?.text);
-  if (text) event("assistant-delta", { attempt: streamed.turn(), text });
+  streamed?.flush(summary?.final?.text);
 }
 
 // harness.usage() counts the whole session. A follow-up reopens a session that
@@ -202,7 +153,7 @@ function readSteers(root) {
 // run's saved session, so the agent keeps the whole earlier conversation. The
 // workspace is new, so files the agent wrote or fetched before are gone; the
 // message says so. Findings it proves now continue the run's numbering.
-async function chat({ harness, root, reports, state }) {
+async function chat({ harness, root, reports, state, fleet }) {
   const text = String(process.env.FOLLOWUP ?? "").trim();
   if (!text) throw new Error("FOLLOWUP is empty");
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
@@ -215,7 +166,8 @@ async function chat({ harness, root, reports, state }) {
     content: `${text}\n\n(Operator follow-up. The sandbox was rebuilt since your last turn, so files you wrote or fetched before are gone. Rewrite or refetch any you need.)`,
   }, ctx);
   event("operator-message", { text });
-  const settled = await sub.wait(ctx);
+  let settled = await sub.wait(ctx);
+  settled = await fleet?.drain(ctx) ?? settled;
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
@@ -225,10 +177,11 @@ async function chat({ harness, root, reports, state }) {
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
   const state = auditState();
-  const { harness, root, reports, pack } = await openHarness(db, ws, state);
+  const { harness, root, reports, pack, fleet } = await openHarness(db, ws, state);
   event("opened", { mode });
   if (mode === "chat") {
-    await chat({ harness, root, reports, state });
+    await chat({ harness, root, reports, state, fleet });
+    await fleet?.close();
     await harness.close(ctx);
     process.exit(0);
   }
@@ -242,16 +195,19 @@ async function child([, , , mode, db, ws]) {
   }
 
   let settled = await sub.wait(ctx);
+  settled = await fleet?.drain(ctx) ?? settled;
 
   // One nudge, owned by the pack: ask a model that stopped early to work the
   // suspects it has not tried. Only after a clean end of turn.
   const more = settled.status === "done" ? pack.nudge(state) : null;
   if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
+  settled = await fleet?.drain(ctx) ?? settled;
 
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness);
   event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
+  await fleet?.close();
   await harness.close(ctx);
   process.exit(0);
 }
