@@ -20,7 +20,7 @@ core claim ("a finding is real only when a replay proves it").
 
 - **Tier 0 — Operator ↔ Coordinator** (trusted). The only conversational surface.
 - **Tier 1 — Coordinator + hunter/analyst agents** (trusted orchestration). They plan the
-  run, shard work, triage leads, and dispatch verification. Run as `bb agents` / Pi.
+  run, shard work, triage leads, and dispatch verification. Run as Pi sub-agents.
 - **Tier 2 — Attacker workers** (UNTRUSTED). NEAR AI abliterated models in offline
   sandboxes that write the PoC / signed raw-tx. **Their bulletin posts are evidence
   submissions, not control messages.** They never get trusted-peer messaging. They post to
@@ -28,27 +28,40 @@ core claim ("a finding is real only when a replay proves it").
   to the shared bulletin. This keeps an untrusted model's words out of the trusted control
   plane.
 
-## 3. Bulletin — primary comms, on BB channels (durable)
+> **Runtime boundary (this is load-bearing).** Touchstone ships as a self-contained product.
+> Its agent engine is **Pi** (open-source `omp` / pi-mono), which can be bundled, so a stranger
+> runs Touchstone with no accounts and no BB. **BB is only the dev harness used to BUILD
+> Touchstone; it is never a product runtime dependency.** Earlier drafts of this section said
+> "BB channels" — that was wrong and is corrected below.
 
-- **Substrate: `bb agents channel` / the `channel_*` tools.** Persisted history,
-  searchable, reactions, survives restarts. Durability is preserved precisely because the
-  bulletin is a persisted BB channel, not an ephemeral in-process bus.
-- **One channel per RUN:** `run:<id>:bulletin` (trusted lane) + `run:<id>:evidence`
-  (quarantined Tier-2 lane).
+## 3. Bulletin — primary comms, on the `pi-bulletin` extension (durable)
+
+- **Substrate: the `pi-bulletin` Pi extension** (community, blackboard pattern — "cheap
+  eventing + batched digests + reconcile-on-conflict"). Core Pi spawns parallel sub-agents but
+  they cannot talk mid-run; `pi-bulletin` is the shared board that fills that gap. We **vendor
+  and wrap** it, we do not rebuild a message bus. Durability comes from the extension's
+  persisted board, not an in-process bus. (License check + THIRD_PARTY.md entry before vendoring.)
+- **One board per RUN, two topics/lanes:** `run:<id>:bulletin` (trusted lane) +
+  `run:<id>:evidence` (quarantined Tier-2 lane). Topic naming owned by
+  `bulletinChannel()` in `app/src/lib/fleet.ts`.
 - **Lead message schema:**
   `{ id, author(agentId), tier, module, toolkit, claim, mechanism, evidenceRef,
      severity, status: proposed|corroborated|verifying|proven|dismissed, replyTo }`
-- **Posting rules:** Tier-1 posts leads / triage / dispatch freely to the bulletin. Tier-2
-  posts ONLY to the evidence lane; promotion to the shared bulletin requires harness
-  validation (the oracle / replay proof).
+- **Posting rules (THIS is the only bespoke layer we write on top of `pi-bulletin`):** Tier-1
+  posts leads / triage / dispatch freely to the bulletin. Tier-2 posts ONLY to the evidence
+  lane; promotion to the shared bulletin requires harness validation (the oracle / replay
+  proof). The board is Pi's; the "nothing graduates without a proof" rule is Touchstone's
+  domain logic and does not exist in `pi-bulletin` — it is ours to enforce.
 - **Corroboration:** this is the live form of the ensemble model already in the harness
   (`sarifLeads` → "leads merge and corroborate in the ensemble"). One hunter's recon feeds
   another's exploit.
 
-## 4. Messenger — secondary, direct handoffs
+## 4. Messenger — secondary, direct handoffs (the `pi-messenger` extension)
 
-`SendMessage` / `bb thread tell` for directed Tier-1 handoffs ("you verify my finding",
-"take module X"). Not available to Tier-2. Kept thin; the bulletin is the spine.
+The `pi-messenger` Pi extension (tiered parallel sub-agents, `@mentions`, loop guard, file
+locks, context broker) for directed Tier-1 handoffs ("you verify my finding", "take module X").
+Also vendored/wrapped, not rebuilt. Not available to Tier-2. Kept thin; the bulletin is the
+spine. (Its file-lock + loop-guard features are a bonus for the parallel hunters.)
 
 ## 5. Coordinator loop
 
@@ -123,8 +136,8 @@ registry-derived `Tier`, and neutral `AgentStatus`.
 
 ## 7. Durability
 
-Bulletin = persisted BB channel. Fleet/agent registry lives in persisted run state. The
-coordinator is a durable `bb agents` thread. Worker sandboxes are ephemeral, but their
+Bulletin = the persisted `pi-bulletin` board. Fleet/agent registry lives in persisted run state. The
+coordinator is a durable Pi session. Worker sandboxes are ephemeral, but their
 evidence is written to the run's evidence store before teardown. On restart the coordinator
 re-reads channel history + run state and resumes.
 
@@ -143,7 +156,7 @@ attacker isolation twice.
 
 1. Data model + types in `app/src/lib` — `Lead` / `Fleet` / `HunterAgent`. New files, low
    conflict with the console tracks.
-2. Bulletin service on BB channels — create / post / read / promote, with the quarantined
+2. Bulletin policy layer over `pi-bulletin` — Lead validate / post / read / promote, with the quarantined
    evidence lane.
 3. Coordinator orchestration loop — spawn, shard, dispatch, promote.
 4. **Untrusted worker sandbox — shared with F1-R1.**

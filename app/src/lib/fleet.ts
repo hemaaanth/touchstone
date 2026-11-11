@@ -2,9 +2,12 @@
 //
 // The operator talks to ONE coordinator; the coordinator spins up parallel
 // hunter agents (the operator never chats with them). The agents coordinate
-// through a durable Bulletin (a persisted BB channel). This file is the shared
+// through a durable Bulletin — the `pi-bulletin` Pi extension's persisted board
+// (blackboard pattern), NOT any BB/dev-harness feature. Touchstone ships with Pi
+// bundled and depends on nothing external at runtime. This file is the shared
 // contract between the harness (which runs the fleet) and the console (which
-// visualizes it). Types + pure derivations only — no behavior, no I/O.
+// visualizes it): the Lead shape plus Touchstone's own trust/quarantine policy,
+// which pi-bulletin does not provide. Types + pure derivations only — no I/O.
 
 import type { Severity } from "./types"
 
@@ -123,8 +126,8 @@ export interface FleetSummary {
   active: number
 }
 
-// The BB channel name for a run's bulletin lane. One place owns the convention
-// so the harness and console never drift (docs §3).
+// The pi-bulletin topic/board name for a run's lane. One place owns the
+// convention so the harness and console never drift (docs §3).
 export function bulletinChannel(runId: string, lane: BulletinLane): string {
   return `run:${runId}:${lane}`
 }
