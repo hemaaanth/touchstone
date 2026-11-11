@@ -92,17 +92,18 @@ export function RunChat({
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
-  // The workspace documents the agent wrote, and which one the pane shows. On
-  // desktop a new artifact auto-opens the pane and the pane follows to it;
-  // closing it sticks until a newer document arrives (or the Files panel opens
-  // one). On a phone the pane is a full-screen overlay, so it never
-  // opens by itself: the document drafts in its chat card and opens on a tap.
+  // The workspace documents the agent wrote, and which one the pane shows. The
+  // pane is closed until the operator opens a document (a chat card or the
+  // Files panel). Each chat keeps its own pane: the open file is saved per run,
+  // so a chat comes back as it was left. A chat with nothing saved opens
+  // closed. On desktop an open pane follows new writes. On a phone the pane is
+  // a full-screen overlay, so it never opens by itself.
   const artifacts = state?.artifacts ?? []
   // The pane opens a file at one version. `latestArtifact` names the most recent
   // write (file + version); a new version of an older file still counts as the
   // latest even though it does not move that file to the end of `artifacts`.
   const latest = state?.latestArtifact ?? null
-  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
+  const [openArtifactId, setOpenArtifactId] = useState<string | null>(() => (isNarrow() ? null : storedPane(run.id)))
   const [openVersionId, setOpenVersionId] = useState<string | null>(null)
   const [filesOpen, setFilesOpen] = useStoredFlag("ts.filesOpen", false)
   // Open a file at a version. Omit the version to land on the file's latest.
@@ -111,19 +112,21 @@ export function RunChat({
     const file = artifacts.find((a) => a.id === fileId) ?? null
     setOpenVersionId(versionId ?? file?.versions[file.versions.length - 1]?.id ?? null)
   }
-  const seenArtifact = useRef<string | null>(null)
+  useEffect(() => storePane(run.id, openArtifactId), [run.id, openArtifactId])
+  // The first write we see is history, not news, so it only sets the mark.
+  const seenArtifact = useRef<string | null | undefined>(undefined)
   useEffect(() => {
     const key = latest ? `${latest.fileId}:${latest.versionId}` : null
-    if (key && key !== seenArtifact.current) {
-      seenArtifact.current = key
-      // Desktop follows every fresh write — including a new version of a file
-      // already open, so the pane steps from v1 to v2 as the agent rewrites.
-      if (!isNarrow() && latest) {
-        setOpenArtifactId(latest.fileId)
-        setOpenVersionId(latest.versionId)
-      }
+    if (!key || key === seenArtifact.current) return
+    const fresh = seenArtifact.current !== undefined
+    seenArtifact.current = key
+    // An open pane on desktop follows each fresh write, including a new version
+    // of the open file, so it steps from v1 to v2 as the agent rewrites.
+    if (fresh && openArtifactId && !isNarrow() && latest) {
+      setOpenArtifactId(latest.fileId)
+      setOpenVersionId(latest.versionId)
     }
-  }, [latest])
+  }, [latest, openArtifactId])
   const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
   // When the open document is the replay proof, it renders the recorded finding's
   // structured report in the pane. Resolve that finding only while the proof is
@@ -257,6 +260,32 @@ export function RunChat({
       </div>
     </OpenArtifact.Provider>
   )
+}
+
+// Which file each chat's pane shows, saved by run id. A run with no entry has
+// its pane closed. Closing the pane removes the entry.
+const PANE_KEY = "ts.artifactPane"
+
+function readPanes(): Record<string, string> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANE_KEY) ?? "{}")
+    return saved && typeof saved === "object" ? saved : {}
+  } catch {
+    return {}
+  }
+}
+
+function storedPane(runId: string): string | null {
+  const id = readPanes()[runId]
+  return typeof id === "string" ? id : null
+}
+
+function storePane(runId: string, fileId: string | null) {
+  const panes = readPanes()
+  if ((panes[runId] ?? null) === fileId) return
+  if (fileId) panes[runId] = fileId
+  else delete panes[runId]
+  localStorage.setItem(PANE_KEY, JSON.stringify(panes))
 }
 
 // Read at call time, not from state: the first artifact can land before a

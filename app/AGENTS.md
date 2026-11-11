@@ -28,9 +28,11 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   Playbooks / Settings. Center = the agent run chat; findings are scoped to
   their run. Files the agent writes (PoC code, the replay proof) are artifacts
   in a closable right pane, tabbed. Clicking a proven finding's proof card opens
-  its replay-proof artifact there. On desktop a new artifact auto-opens the
-  pane; on a phone the pane is a full-screen overlay, so it only opens on a tap
-  and the file drafts inside its chat card instead. There is no global findings
+  its replay-proof artifact there. The pane is closed by default and each chat
+  saves its own pane state (closed when nothing is saved); it never auto-opens.
+  On desktop an open pane follows new writes. On a phone the pane is a
+  full-screen overlay, so it only opens on a tap and the file drafts inside its
+  chat card instead. There is no global findings
   rail. Dark by default.
 - Do not upgrade existing dependencies (additive is fine). Use bun.
 - Open-source code is ours to use when its license allows it. Touchstone is
