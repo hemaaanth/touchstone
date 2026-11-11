@@ -379,6 +379,17 @@ interface PendingLead {
 //   determined one with write access to another session's env. This does NOT
 //   weaken the core claim: nothing reaches `proven` without the harness oracle,
 //   regardless of who posted. Hardening identity is an extension-level concern.
+//
+//   F10 (bare-id collisions across lanes) — dedup is keyed `${lane}:${id}` so the
+//   same bare `id` can exist once per lane (one `evidence:L1`, one `bulletin:L1`),
+//   and dedup is per-lane so a Tier-2 poster who grabs `evidence:L1` first blocks
+//   a LATER Tier-2 post reusing `L1` in the same lane regardless of author. Both
+//   are acknowledged follow-ups: a globally-unique lead id (author-qualified, or
+//   minted by the coordinator on ingest) would remove the cross-lane ambiguity
+//   and the cross-author block. The display-layer id collision is also handled on
+//   the console side. Neither affects the gate — promotion still requires the
+//   oracle — and the trusted projection now returns deep copies, so a collision
+//   cannot leak one lead's mutable state into another's view.
 // ---------------------------------------------------------------------------
 
 export class Coordinator {
@@ -559,12 +570,18 @@ export class Coordinator {
       ]) }
     }
 
-    // SANITIZE inbound history. A poster-supplied `transitions`/`evidenceRef` is
-    // untrusted — a hunter could inject a fake `proven`/`by:null` transition that
-    // the console (which renders recorded transitions) would show as a harness
-    // proof. We rebuild the timeline from scratch: a single baseline transition
-    // stamped from TRUSTED board metadata (the post's own seq time and verified
-    // author), then only the coordinator's and oracle's own recorded actions.
+    // SANITIZE inbound history + social fields. A poster-supplied
+    // `transitions`/`evidenceRef` is untrusted — a hunter could inject a fake
+    // `proven`/`by:null` transition that the console (which renders recorded
+    // transitions) would show as a harness proof. Likewise `reactions`/`replyTo`
+    // are a social endorsement surface: a Tier-2 post carrying
+    // `reactions:[{emoji:"✅",by:["a1","coord"]}]` or a `replyTo` would DISPLAY a
+    // forged Tier-1/coordinator approval even though it can never promote. We
+    // rebuild from scratch: a single baseline transition stamped from TRUSTED
+    // board metadata (the post's own seq time and verified author), then only the
+    // coordinator's and oracle's own recorded actions, and drop all poster-set
+    // endorsement fields. Reactions can only ever be added later by the
+    // coordinator/oracle round, never carried in on a submission.
     const posted = leadStatus(lead)
     const baseline: LeadTransition = { status: posted, at: ev.at, by: ev.agent }
     const clean: Lead = {
@@ -572,6 +589,8 @@ export class Coordinator {
       evidenceRef: null, // never trust a poster's evidence handle
       status: posted,
       transitions: [baseline],
+      reactions: [], // drop forged endorsements
+      replyTo: null, // drop a forged thread link
     }
 
     // Record verifying bookkeeping (the coordinator's own action) and register
@@ -650,10 +669,18 @@ export class Coordinator {
   // This exists so the UI seam does NOT have to re-read the raw pi-bulletin board
   // (bulletin_read → fromBulletinClaim), which still holds rejected posts and the
   // quarantined evidence copy — reading that would let a forged entry reach the
-  // Trusted region. Consume THIS instead. Pure read: a fresh array over immutable
-  // leads, no mutation of coordinator state.
+  // Trusted region. Consume THIS instead.
+  //
+  // Returns DEEP COPIES, never the live lead objects. The leads held in
+  // `this.leads` are not frozen, and the console is a mutating consumer: handed a
+  // reference, it could `projection[0].transitions.push({status:"proven",...})`,
+  // and the next tick's `applyOracleVerdict` would see an already-terminal lead,
+  // return it unchanged, and promote it (proven=1 + a trusted-lane post) with the
+  // oracle never saying yes — a proof-gate bypass. A `projection[0].claim = …`
+  // would likewise rewrite coordinator state. So this is a read-only snapshot
+  // that CANNOT write back into `this.leads` or `pending`.
   adjudicatedLeads(): Lead[] {
-    return [...this.leads.values()]
+    return [...this.leads.values()].map((l) => structuredClone(l))
   }
 
   // Final report for the operator: fleet size + the terminal leads, split by the
@@ -662,10 +689,14 @@ export class Coordinator {
     const summary = fleetSummary(fleet)
     const proven: Lead[] = []
     const dismissed: Lead[] = []
+    // DEEP COPIES only — same invariant as adjudicatedLeads(): the report is a
+    // read-only snapshot, never a handle a consumer can mutate back into
+    // `this.leads` or `pending` (which would let a mutated "terminal" lead slip
+    // past the oracle on a later tick).
     for (const lead of this.leads.values()) {
       const s = leadStatus(lead)
-      if (s === "proven") proven.push(lead)
-      else if (s === "dismissed") dismissed.push(lead)
+      if (s === "proven") proven.push(structuredClone(lead))
+      else if (s === "dismissed") dismissed.push(structuredClone(lead))
     }
     return {
       runId: this.runId,
@@ -673,8 +704,8 @@ export class Coordinator {
       active: summary.active,
       proven,
       dismissed,
-      stranded: [...this.pending.values()].map((p) => p.lead),
-      rejected: [...this.rejects],
+      stranded: [...this.pending.values()].map((p) => structuredClone(p.lead)),
+      rejected: this.rejects.map((r) => structuredClone(r)),
     }
   }
 }

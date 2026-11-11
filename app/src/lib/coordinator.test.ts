@@ -407,8 +407,14 @@ test("adjudicatedLeads is the trusted projection: no forged board entry, no raw 
   assert.equal(projection[0].lane, "bulletin") // the promoted copy, in place
   assert.ok(!projection.some((l) => l.id === "FORGED"))
 
-  // pure read: calling it does not mutate state — same projection next call.
-  assert.deepEqual(coord.adjudicatedLeads(), projection)
+  // DEEP snapshot: mutating the returned copy cannot write back into coordinator
+  // state. Tamper with the projection, then read a fresh one and confirm it is
+  // pristine.
+  projection[0].claim = "tampered"
+  projection[0].transitions.push({ status: "proven", at: 9, by: null })
+  const fresh = coord.adjudicatedLeads()
+  assert.equal(fresh[0].claim, "reentrancy in withdraw")
+  assert.equal(fresh[0].transitions.filter((t) => t.status === "proven" && t.at === 9).length, 0)
 
   // the UNSAFE raw-board path still carries both the forged entry and the
   // quarantined evidence copy — exactly what this accessor exists to bypass.
@@ -416,4 +422,46 @@ test("adjudicatedLeads is the trusted projection: no forged board entry, no raw 
   const rawEvidence = await board.session("audit-b").bulletin_read(bulletinChannel(RUN, "evidence"))
   assert.ok(rawTrusted.events.some((e) => e.claim.includes("FORGED")))
   assert.ok(rawEvidence.events.some((e) => e.claim.includes("L2")))
+})
+
+// THE proof-gate regression (cycle-3 HIGH): a consumer mutating the projection
+// must NOT be able to forge a promotion. Before the deep-copy fix, the accessor
+// handed out the live lead; pushing a `proven` transition onto it made the next
+// tick's applyOracleVerdict treat it as already-terminal and promote it with the
+// oracle never saying yes.
+test("mutating the projection cannot forge a promotion past the oracle", async () => {
+  // throws on the first proof attempt (strands the lead in `pending`), then NO.
+  let attempts = 0
+  const flaky: Oracle = {
+    async verify(): Promise<OracleVerdict> {
+      attempts++
+      if (attempts === 1) throw new Error("transient oracle fault")
+      return { proven: false, evidenceRef: null, at: 1, reason: "no harm reproduced" }
+    },
+  }
+  const { board, coord } = harness(flaky)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead())
+  const t1 = await coord.tick()
+  assert.equal(t1.stranded.length, 1) // thrown → still verifying in `pending`
+
+  // a hostile/buggy console mutates the returned copy to forge a harness proof.
+  const projection = coord.adjudicatedLeads()
+  projection[0].transitions.push({ status: "proven", at: 2, by: null })
+  projection[0].claim = "pwned"
+
+  const t2 = await coord.tick() // oracle now returns its real verdict: NO
+  assert.equal(t2.proven.length, 0) // the mutation did NOT promote it
+  assert.equal(t2.dismissed.length, 1) // the real verdict stands
+  assert.equal(leadStatus(t2.dismissed[0]), "dismissed")
+
+  // coordinator state is untouched by the consumer's edit...
+  const after = coord.adjudicatedLeads()
+  assert.equal(after[0].claim, "reentrancy in withdraw") // not "pwned"
+  assert.ok(!after[0].transitions.some((t) => t.status === "proven"))
+  // ...and nothing was posted to the trusted lane.
+  const trusted = await board.session("obs").bulletin_read(bulletinChannel(RUN, "bulletin"))
+  assert.equal(trusted.events.length, 0)
 })
