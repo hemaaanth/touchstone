@@ -59,9 +59,10 @@ export function NewRunDialog({
   const listRef = useRef<HTMLDivElement>(null)
   const [scopeError, setScopeError] = useState<string | null>(null)
 
-  // A scope can be added under any module. The engine runs operator scopes
-  // under their own pack (Contracts today), so the dialog moves there and
-  // selects the new scope; it never starts a run the server would refuse.
+  // A scope can be added under any module. The server files it under the pack
+  // that fits its content (Contracts for Solidity, else Code review), so the
+  // dialog moves there and selects the new scope; it never starts a run the
+  // server would refuse.
   const onAttached = (scope: TargetChoice) => {
     setScopeError(null)
     setPackPicked(packOf(scope))
@@ -156,7 +157,7 @@ export function NewRunDialog({
               />
             ))}
           </div>
-          <AddScope onAttached={onAttached} onError={setScopeError} />
+          <AddScope pack={pack} onAttached={onAttached} onError={setScopeError} />
         </div>
 
         {notice ? <p className="border-t border-border/60 px-4 py-2 text-xs text-bad">{notice}</p> : null}
@@ -197,10 +198,12 @@ export function NewRunDialog({
   )
 }
 
-// A scope's kind, as an icon: a lab, local folders, or linked repos.
+// A scope's kind, as an icon: a lab, local folders, or linked repos. A mixed
+// scope with any repo shows the repo icon, else the folder icon.
 export function ScopeIcon({ target: t }: { target: Pick<TargetChoice, "kind" | "links"> }) {
   if (t.kind === "lab") return <FlaskConical />
   if (t.kind === "local-source") return <Folder />
+  if (t.kind === "scope") return t.links?.length ? <FolderGit2 /> : <Folder />
   return t.links?.length ? <FolderGit2 /> : <FileCode2 />
 }
 
@@ -272,23 +275,74 @@ function ScopeRow({
   )
 }
 
-// Folders that hold dependencies or build output, not the code under audit.
-const SKIP_DIRS = new Set(["lib", "node_modules", "out", "cache", "broadcast", "artifacts"])
+// Which files of a picked folder are sent. This mirrors classifyPath in
+// spike/lib/scopes-store.mjs, and the server checks again. It runs on the path
+// alone, before any file is read, so a secret file is never read or sent.
+const SKIP_DIRS = new Set([
+  "node_modules", "out", "cache", "broadcast", "artifacts", "build", "dist",
+  "target", "coverage", "venv", "__pycache__", "bower_components", "vendor",
+])
+const SOURCE_EXT = new Set([
+  "sol", "vy", "move", "cairo", "fe", "huff", "yul",
+  "rs", "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "py", "rb", "java", "kt", "kts",
+  "swift", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "cs", "fs", "php", "scala", "ex", "exs", "erl",
+  "hs", "ml", "mli", "zig", "nim", "lua", "dart", "clj", "r", "jl", "sh", "bash", "zsh", "ps1", "sql",
+  "html", "htm", "css", "scss", "sass", "less", "vue", "svelte", "astro", "graphql", "gql",
+  "json", "jsonc", "json5", "yaml", "yml", "toml", "xml", "ini", "cfg", "conf", "proto", "md", "mdx",
+  "txt", "rst", "tf", "hcl", "nix", "gradle", "mod", "sum", "lock", "csv",
+])
+const SOURCE_NAMES = new Set(["Dockerfile", "Makefile", "Gemfile", "Procfile", "Rakefile", "Justfile", "LICENSE", "README", "CODEOWNERS"])
+const SECRET_NAME = [
+  /^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
+  /\.(pem|key|p12|pfx|jks|keystore|kdbx|ovpn|gpg|asc|crt|cer|der)$/i,
+  /^(secrets?|credentials?|service[-_]?account)(\.[\w-]+)?\.(json|ya?ml|toml|txt|ini)$/i,
+  /^(secrets?|credentials?)$/i,
+  /^wallet\.dat$/i,
+  /^(keystore|mnemonic|seed)(\.[\w-]+)?\.(json|txt)$/i,
+  /^env$/i,
+  /\.env$/i,
+]
+const SANDBOX_CONFIG = new Set(["foundry.toml", "remappings.txt"])
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/
+const MAX_FILES = 200
+const MAX_BYTES = 2 * 1024 * 1024
 
-// Read a picked folder into { path, content }, keeping only Solidity source.
-// The folder's own name is dropped from each path and becomes its label.
-async function readFolder(list: FileList) {
+// Keep one path? Foundry keeps dependencies in a top-level lib/, so lib/ is
+// skipped only in a folder that has Solidity.
+function keepPath(rel: string, solidity: boolean) {
+  const parts = rel.split("/")
+  const base = parts[parts.length - 1]
+  if (parts.some((p) => !p || p.startsWith("."))) return false
+  if (parts.slice(0, -1).some((p) => SKIP_DIRS.has(p)) || (solidity && parts.length > 1 && parts[0] === "lib")) return false
+  if (SANDBOX_CONFIG.has(base) || SECRET_NAME.some((re) => re.test(base))) return false
+  const dot = base.lastIndexOf(".")
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : ""
+  return ext ? SOURCE_EXT.has(ext) : SOURCE_NAMES.has(base)
+}
+
+// Read a picked folder into { path, content }, keeping only source text in any
+// language. Paths are checked first; only kept files are read. The folder's own
+// name is dropped from each path and becomes its label. Returns an error string
+// when the kept files are over the scope limits, before reading any of them.
+async function readFolder(list: FileList): Promise<{ name: string; files: { path: string; content: string }[] } | string> {
   const all = Array.from(list)
   const first = all[0]?.webkitRelativePath ?? ""
   const root = first.includes("/") ? first.split("/")[0] : ""
+  const rel = (f: File) => (root ? f.webkitRelativePath.slice(root.length + 1) : f.name)
+  const solidity = all.some((f) => rel(f).endsWith(".sol"))
+  const keep = all.filter((f) => keepPath(rel(f), solidity))
+  if (keep.length > MAX_FILES) return `${root || "This folder"} has ${keep.length} source files. A scope takes up to ${MAX_FILES}.`
+  if (keep.reduce((n, f) => n + f.size, 0) > MAX_BYTES) return `${root || "This folder"} is over 2 MB of source. Pick a smaller folder.`
   const files: { path: string; content: string }[] = []
-  for (const f of all) {
-    const rel = root ? f.webkitRelativePath.slice(root.length + 1) : f.name
-    const parts = rel.split("/")
-    if (!rel.endsWith(".sol") || parts.some((p) => p.startsWith(".") || SKIP_DIRS.has(p))) continue
-    files.push({ path: rel, content: await f.text() })
+  for (const f of keep) {
+    const content = await f.text()
+    // A key block in an ordinary file: drop it here, so it never leaves the browser.
+    if (PRIVATE_KEY_BLOCK.test(content) || content.includes("\u0000")) continue
+    files.push({ path: rel(f), content })
   }
-  return { name: root || "folder", files }
+  // The server takes folder names of letters, digits, "-", "_" and ".".
+  const name = root.replace(/[^\w.-]+/g, "-").replace(/^[.]+/, "").slice(0, 64) || "folder"
+  return { name, files }
 }
 
 // The server takes only HTTPS GitHub repo, folder, or file URLs. Check here
@@ -322,28 +376,13 @@ type Source =
 const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : `folder:${s.name}`)
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.name)
 
-// What POST /api/scopes gets for a list of sources. One repo is a repo scope.
-// Several repos are one brief that links each of them. Folders are one source
-// scope; with more than one folder, each path keeps its folder name. The
-// scope store has no kind for repos and folders together, so that mix is
-// refused here with a reason.
-function scopeBody(sources: Source[], name: string): Parameters<typeof attachScope>[0] | string {
-  const repos = sources.flatMap((s) => (s.kind === "repo" ? [s.url] : []))
-  const folders = sources.flatMap((s) => (s.kind === "folder" ? [s] : []))
-  if (repos.length && folders.length) return "Repos and folders cannot share a scope yet."
+// What POST /api/scopes gets for a list of sources: one members array, repos
+// and folders mixed, in any language. The server picks the pack from the
+// content. `pack` is the module the scope was added under; it counts only for
+// repos, whose content the server does not know until a run fetches it.
+function scopeBody(sources: Source[], name: string, pack?: string): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
-  if (repos.length === 1) return { title, repo: repos[0] }
-  if (repos.length) {
-    return {
-      title,
-      brief: `Audit the Solidity code in these repositories as one unit:\n\n${repos.map((r) => `- ${r}`).join("\n")}\n`,
-    }
-  }
-  const files =
-    folders.length === 1
-      ? folders[0].files
-      : folders.flatMap((f) => f.files.map((x) => ({ path: `${f.name}/${x.path}`, content: x.content })))
-  return { title, files }
+  return { title, members: sources, ...(pack ? { pack } : {}) }
 }
 
 // The add row under a scope list. Closed, it is one quiet row. Open, the same
@@ -351,9 +390,11 @@ function scopeBody(sources: Source[], name: string): Parameters<typeof attachSco
 // nothing moves. A scope holds one or more GitHub repos or local folders; each
 // one added shows in a list under the row, and the scope is saved as one unit.
 export function AddScope({
+  pack,
   onAttached,
   onError,
 }: {
+  pack?: string
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
 }) {
@@ -365,8 +406,7 @@ export function AddScope({
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const body = sources.length ? scopeBody(sources, name.trim()) : null
-  const blocked = typeof body === "string" ? body : null
+  const body = sources.length ? scopeBody(sources, name.trim(), pack) : null
 
   const close = () => {
     setOpen(false)
@@ -386,7 +426,7 @@ export function AddScope({
     setUrl("")
   }
   const save = () => {
-    if (!body || typeof body === "string" || busy) return
+    if (!body || busy) return
     setBusy(true)
     onError(null)
     attachScope(body)
@@ -401,10 +441,11 @@ export function AddScope({
   const onFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const list = e.target.files
     if (!list?.length) return
-    const { name: folder, files } = await readFolder(list)
+    const read = await readFolder(list)
     e.target.value = ""
-    if (!files.length) return onError(`No Solidity files found in ${folder}.`)
-    add({ kind: "folder", name: folder, files })
+    if (typeof read === "string") return onError(read)
+    if (!read.files.length) return onError(`No source files found in ${read.name}.`)
+    add({ kind: "folder", name: read.name, files: read.files })
     inputRef.current?.focus()
   }
 
@@ -529,9 +570,9 @@ export function AddScope({
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
             <span className="shrink-0 text-[11px] text-muted-foreground">
-              {blocked ?? `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
+              {`${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy || !!blocked} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
               Add scope
             </Button>
           </div>
