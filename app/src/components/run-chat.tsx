@@ -24,10 +24,16 @@ import {
   TerminalSquare,
   Trash2,
   Loader2,
+  TriangleAlert,
+  CreditCard,
+  Gauge,
+  CloudOff,
+  Scissors,
+  RefreshCw,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassView, ProofKind, RunStatus, RunSummary } from "@/lib/types"
 import { PrepassFold } from "@/components/prepass"
-import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
+import { reloadRun, useRun, type RunState, type RunFailure, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { INK, isTerminal, severityTone } from "@/lib/format"
 import { cn } from "cn"
@@ -136,6 +142,24 @@ export function RunChat({
   const live = !!state && !state.closed
   const archived = !!state?.archived
   const [sendError, setSendError] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
+
+  // Retry a run that failed before proving anything. The saved session is still
+  // on disk, so one steer message reopens it and the agent resumes the audit
+  // from where the model error cut it off — no new scope, no lost context.
+  const onRetry = async () => {
+    if (!state || archived || retrying) return
+    setSendError(null)
+    setRetrying(true)
+    try {
+      const res = await steerRun(run.id, "Continue the audit from where it stopped.")
+      if (res.followUp) reloadRun(run.id)
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRetrying(false)
+    }
+  }
 
   const messages = useMemo(() => buildMessages(state, status, live), [state, status, live])
 
@@ -211,6 +235,9 @@ export function RunChat({
               empty={messages.length === 0}
               prepass={state?.prepass ?? null}
               error={status === "error" ? state?.error ?? null : null}
+              errorInfo={status === "error" ? state?.errorInfo ?? null : null}
+              onRetry={onRetry}
+              retrying={retrying}
               archived={archived}
               sendError={sendError}
             />
@@ -369,11 +396,95 @@ function RunActions({
 
 // The thread body + composer, styled in base-nova. Headless assistant-ui
 // primitives do the scroll-stickiness, message iteration and compose state.
+// The icon per failure kind. Amber throughout — red stays reserved for a proven
+// finding and destructive controls, so an error never reads as a finding.
+const ERROR_ICON: Record<RunFailure["kind"], typeof TriangleAlert> = {
+  transient: CloudOff,
+  account: CreditCard,
+  budget: Gauge,
+  cutoff: Scissors,
+  model: TriangleAlert,
+  crash: TriangleAlert,
+  unknown: TriangleAlert,
+}
+
+// The run failed before it proved anything. This is the one place the operator
+// learns why — honestly: what went wrong, what it actually cost, and the single
+// next step. A transient fault leads with "Run again"; a billing fault does not
+// pretend retrying helps. The real engine error is folded away, present but not
+// shouting. No red: an error is not a finding.
+function RunErrorCard({
+  info,
+  fallback,
+  onRetry,
+  retrying,
+  archived,
+}: {
+  info: RunFailure | null
+  fallback: string | null
+  onRetry: () => void
+  retrying: boolean
+  archived: boolean
+}) {
+  const kind = info?.kind ?? "unknown"
+  const Icon = ERROR_ICON[kind] ?? TriangleAlert
+  const title = info?.title ?? "The run did not complete"
+  const hint = info?.hint ?? fallback ?? "Try starting the run again."
+  const detail = info?.detail?.trim() || (info ? null : fallback) || null
+  const spent = info?.spentUsd ?? 0
+  const retryable = (info?.retryable ?? true) && !archived
+
+  return (
+    <div className={cn(card, "overflow-hidden")}>
+      <div className="flex gap-3 px-4 py-3.5">
+        <Icon className="mt-0.5 size-5 shrink-0 text-warn" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="text-sm font-medium text-foreground">{title}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">{hint}</p>
+          <p className="text-xs text-muted-foreground/70">
+            {spent > 0
+              ? `About $${spent.toFixed(4)} was spent on the work that did run.`
+              : "Nothing was spent on this run."}
+          </p>
+          {detail ? (
+            <Collapsible>
+              <CollapsibleTrigger className="group flex items-center gap-1 pt-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+                <ChevronRight className="size-3 transition-transform group-data-[state=open]:rotate-90" />
+                Technical details
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                  {detail}
+                </pre>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
+          {retryable ? (
+            <div className="pt-1.5">
+              <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
+                {retrying ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-3.5" />
+                )}
+                Run again
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Thread({
   live,
   empty,
   prepass,
   error,
+  errorInfo,
+  onRetry,
+  retrying,
   archived,
   sendError,
 }: {
@@ -381,6 +492,9 @@ function Thread({
   empty: boolean
   prepass: PrepassView | null
   error: string | null
+  errorInfo: RunFailure | null
+  onRetry: () => void
+  retrying: boolean
   archived: boolean
   sendError: string | null
 }) {
@@ -402,10 +516,14 @@ function Thread({
 
           <ThreadPrimitive.Messages components={{ Message }} />
 
-          {error ? (
-            <div className={cn(card, "px-4 py-3 text-sm text-bad")}>
-              {error}
-            </div>
+          {error || errorInfo ? (
+            <RunErrorCard
+              info={errorInfo}
+              fallback={error}
+              onRetry={onRetry}
+              retrying={retrying}
+              archived={archived}
+            />
           ) : null}
         </div>
 

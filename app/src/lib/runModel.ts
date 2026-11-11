@@ -9,7 +9,9 @@ import type {
   ArtifactVersion,
   FindingStages,
   FindingSummary,
+  ModulePlanEntry,
   PendingApproval,
+  PrepassTool,
   PrepassView,
   RunEvent,
   RunStatus,
@@ -75,6 +77,21 @@ const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low:
 export const severityRank = (s: string | undefined) => SEV_RANK[String(s ?? "").toLowerCase()] ?? 4
 
 
+// A classified, operator-readable run failure from the server. `kind` picks the
+// tone and icon of the error card; `retryable` decides whether "Run again" is
+// the headline action; `detail` is the real engine/gateway error text; `hint`
+// is the one concrete next step; `spentUsd` is what the run actually cost.
+export interface RunFailure {
+  kind: "transient" | "account" | "budget" | "cutoff" | "model" | "crash" | "unknown"
+  title: string
+  hint: string
+  detail: string
+  message: string
+  retryable: boolean
+  spentUsd: number
+  reason?: string
+}
+
 export interface RunState {
   events: RunEvent[]
   steps: Step[]
@@ -89,6 +106,9 @@ export interface RunState {
   submitted: PendingApproval[]
   decision: Verdict | null
   error: string | null
+  // The structured, classified failure behind `error`. Null unless the run ended
+  // in an error state. Drives the error card; `error` stays the plain fallback.
+  errorInfo: RunFailure | null
   finalText: string | null // the agent's words when it could not prove anything
   // No worker is running. A follow-up message reopens the run (`reply-start`)
   // and a later `closed` ends it again.
@@ -126,6 +146,9 @@ export interface RunState {
   // What the pack's tools found before the agent started. Null when the pack
   // has no prepass or it has not finished.
   prepass: PrepassView | null
+  // The run's pipeline plan, from the `modules` event at run start. Null on a
+  // run that predates the event.
+  modules: ModulePlanEntry[] | null
 }
 
 export function reduceEvents(events: RunEvent[]): RunState {
@@ -135,6 +158,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const submitted: PendingApproval[] = []
   let decision: Verdict | null = null
   let error: string | null = null
+  let errorInfo: RunFailure | null = null
   let finalText: string | null = null
   let closed = false
   let replying = false
@@ -150,6 +174,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let latestArtifact: { fileId: string; versionId: string } | null = null
   let findingId: string | null = null
   let prepass: PrepassView | null = null
+  let modules: ModulePlanEntry[] | null = null
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
   const str = (v: unknown) => (typeof v === "string" ? v : "")
@@ -175,6 +200,12 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // The run's opening event: which resource it is pointed at. Carries no
         // visible step — it sets the header, not the transcript.
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
+        break
+      }
+      case "modules": {
+        // The pipeline plan. It shows on the Modules page, not in the
+        // transcript, so it adds no step.
+        if (Array.isArray(e.modules)) modules = e.modules as ModulePlanEntry[]
         break
       }
       case "opened": {
@@ -535,6 +566,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // live recorded run has no findingId and the replay proof never loads.
         if (typeof e.findingId === "string") findingId = e.findingId
         if (typeof e.error === "string") error = e.error
+        // The classified failure the server attached to a terminal error status.
+        if (e.errorInfo && typeof e.errorInfo === "object") errorInfo = e.errorInfo as RunFailure
         break
       case "closed":
         closed = true
@@ -547,6 +580,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         replyStartedAt = typeof e.t === "number" ? e.t : null
         activity = "working"
         error = null
+        errorInfo = null
         break
       case "reply-error":
         steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
@@ -583,6 +617,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     submitted,
     decision,
     error,
+    errorInfo,
     finalText,
     closed,
     replying,
@@ -597,6 +632,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     latestArtifact,
     findingId,
     prepass,
+    modules,
   }
 }
 
@@ -621,10 +657,48 @@ const entries = new Map<string, RunEntry>()
 const allListeners = new Set<() => void>()
 const settleListeners = new Set<(id: string) => void>()
 
-// Status and headline of every loaded run, for the sidebar. Replaced (never
-// mutated) on each change so useSyncExternalStore sees a new snapshot.
-export type RunBrief = { status: RunStatus; pending: PendingApproval | null; archived: boolean }
+// Status and headline of every loaded run, for the sidebar, plus what the
+// Modules and Projects pages count: the scope the run attacked, how many
+// findings it proved, its pipeline plan and the tools its prepass ran.
+// Replaced (never mutated) on each change so useSyncExternalStore sees a new
+// snapshot.
+export type RunBrief = {
+  status: RunStatus
+  pending: PendingApproval | null
+  archived: boolean
+  scope: TargetScope | null
+  proven: number
+  modules: ModulePlanEntry[] | null
+  tools: PrepassTool[] | null
+}
 let briefs: Record<string, RunBrief> = {}
+
+function briefOf(s: RunState): RunBrief {
+  return {
+    status: s.status,
+    pending: s.pending,
+    archived: s.archived,
+    scope: s.scope,
+    proven: s.findings.filter((f) => f.proven && !f.dismissed).length,
+    modules: s.modules,
+    tools: s.prepass?.tools ?? null,
+  }
+}
+
+// The reducer rebuilds every object on each commit, so compare by content.
+// The plan and the tools list are small; JSON is enough.
+function sameBrief(a: RunBrief | undefined, b: RunBrief): boolean {
+  return (
+    !!a &&
+    a.status === b.status &&
+    a.pending === b.pending &&
+    a.archived === b.archived &&
+    a.scope?.id === b.scope?.id &&
+    a.proven === b.proven &&
+    JSON.stringify(a.modules) === JSON.stringify(b.modules) &&
+    JSON.stringify(a.tools) === JSON.stringify(b.tools)
+  )
+}
 
 function entryFor(id: string): RunEntry {
   let en = entries.get(id)
@@ -640,8 +714,9 @@ function commit(id: string, en: RunEntry, events: RunEvent[]) {
   en.events = events
   en.state = reduceEvents(events)
   const s = en.state
-  if (!before || before.status !== s.status || before.pending !== s.pending || before.archived !== s.archived) {
-    briefs = { ...briefs, [id]: { status: s.status, pending: s.pending, archived: s.archived } }
+  const brief = briefOf(s)
+  if (!sameBrief(briefs[id], brief)) {
+    briefs = { ...briefs, [id]: brief }
     for (const l of allListeners) l()
   }
   // A run that settles while we watch it (not one that loaded settled).

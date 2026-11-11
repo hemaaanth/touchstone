@@ -1,25 +1,46 @@
 // The `http` proof: a practice web/API service runs in Docker on a private,
 // `--internal` network with no route to the internet. A finding's request
-// script runs in a second, throwaway container on that same network. An
-// independent oracle reads the recorded request/response transcript -- never
-// the script's own console output or claims -- to decide whether the harm is
-// real. Any pack whose `proof` is `"http"` (Web and sign-in, APIs, and later
-// Nodes/RPC, AI/MCP, Infra/cloud) shares this file. See packs/README.md
-// "Proof kinds".
+// script runs in a second, throwaway container that can reach the lab ONLY
+// through a recording reverse proxy. An independent oracle reads the proxy's
+// out-of-band transcript -- never the script's own console output, return
+// values, or claims -- to decide whether the harm is real. Any pack whose
+// `proof` is `"http"` (Web and sign-in, APIs, and later Nodes/RPC, AI/MCP,
+// Infra/cloud) shares this file. See packs/README.md "Proof kinds".
+//
+// Why a proxy, not an in-script transcript. The finding's script is attacker
+// code: it is concatenated into the same process we run, so anything that
+// process can see, it can forge -- it could push fabricated entries onto an
+// in-memory transcript, monkeypatch `fetch`, or print the transcript marker
+// itself. So the transcript must be recorded at a trust boundary the script's
+// process cannot write to. The proxy is a separate container on a network
+// segment the script cannot reach directly; it records every real exchange to
+// ITS OWN stdout, which the harness reads with `docker logs`. The script can
+// still LIE in its console output, but the oracle never reads that -- it reads
+// only what actually crossed the wire. This mirrors the "never trust the
+// agent's own test" rule lib/proof.mjs enforces for Foundry, and the
+// out-of-band ground-truth capture used by production red-team harnesses
+// (XBOW/Mako): "either the effect shows up in the real traffic, or it does not."
+//
+// Network topology (two `--internal` networks, no internet on either):
+//   netInner:  lab (alias "origin")  <--+
+//                                        |  proxy forwards + records
+//   netOuter:  proxy (alias "lab")  <----+----  script container
+// The script joins netOuter ONLY, so it can reach "lab" (the proxy) but has no
+// route to "origin" (the lab). The proxy is the one and only bridge, so every
+// request the script makes is forced through the recorder.
 //
 // Two lifetimes:
-//   - A pack's prepass starts ONE lab and keeps it running for the whole
-//     agent session (the agent explores it live through a pack tool). That
-//     handle is persisted to a file under the run workspace (see
+//   - A pack's prepass starts ONE lab (+proxy) and keeps it running for the
+//     whole agent session (the agent explores it live through a pack tool).
+//     That handle is persisted to a file under the run workspace (see
 //     writeLabHandle/readLabHandle/teardownPersistedLab) because prepass and
 //     the agent session run in different processes (the agent is a spawned
 //     child); only a value on disk survives that boundary reliably.
 //   - prove() replays each finding against a FRESH lab, independent of
-//     whatever the live session mutated, mirroring lib/proof.mjs's "never
-//     trust the agent's own test" rule for Foundry. httpProof() does this in
-//     one call: start, run the script, stop, ask the oracle.
+//     whatever the live session mutated. httpProof() does this in one call:
+//     start, run the script, read the proxy transcript, stop, ask the oracle.
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -37,18 +58,82 @@ function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {})
   });
 }
 
-// Start a lab: an isolated internal Docker network with no gateway (so the
-// container inside it has no route out), plus the lab image running detached
-// on it, reachable by the other containers we put on the same network under
-// `alias` (default "lab" -- match this in the pack's openapi.yaml `servers`
-// url and BRIEF.md). There is no host port publish: Docker does not forward
-// ports on a `--internal` network at all (confirmed by testing -- a `-p`
-// flag on one is silently accepted but never bound; `docker inspect` shows
-// the container port mapped to null). So a live agent process, same as a
-// finding's replay, always reaches the lab from a throwaway container on
-// `net` via runRequestScript() -- one mechanism for every reach, no
-// publish-vs-isolation tradeoff to get wrong. Returns a handle; the caller
-// must eventually call stopLab(handle).
+const PROXY_PORT = 8080;          // the port the proxy listens on (what scripts call)
+const ORIGIN_ALIAS = "origin";    // the lab's alias on the inner network
+const REC_MARKER = "__TOUCHSTONE_REC__";
+const PROXY_IMAGE = "node:20-slim";
+
+// The recording reverse proxy, run in its own container with built-in `http`
+// only (no dependencies). It forwards every request to the real lab
+// (ORIGIN_BASE_URL) and writes one REC_MARKER-prefixed JSON line per exchange
+// to its OWN stdout, in the transcript shape the oracle reads.
+//
+// Readiness probes carry `x-touchstone-probe: <PROBE_SECRET>` and are the ONLY
+// requests skipped from the recording. The secret is a per-lab random value the
+// proxy learns from its own environment; the attacker's script container never
+// receives it, so a script cannot set the header to make a real (state-changing)
+// request go unrecorded -- every request a script makes IS recorded, no matter
+// what headers it sets. The header is also stripped before forwarding, so the
+// lab never sees it. (Without this, a script could sign in a second account or
+// mutate state under a self-declared "probe" tag and forge a clean-looking
+// transcript -- the exact hole this proxy exists to close.)
+//
+// Hop-by-hop headers are stripped on the way out (fetch sets its own), and the
+// response's content-encoding/length are stripped on the way back because
+// undici has already decoded the body we re-send.
+const RECORDER = `
+import http from "node:http";
+const ORIGIN = process.env.ORIGIN_BASE_URL;
+const PROBE_SECRET = process.env.PROBE_SECRET || "";
+const HOP = new Set(["host","connection","content-length","transfer-encoding","keep-alive","upgrade","te","proxy-connection","proxy-authorization"]);
+const strip = (h) => { const o = {}; for (const [k, v] of Object.entries(h || {})) if (!HOP.has(String(k).toLowerCase())) o[k] = v; return o; };
+const parse = (s) => { try { return JSON.parse(s); } catch { return s; } };
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", async () => {
+    const reqBuf = Buffer.concat(chunks);
+    // Only a request carrying the per-lab secret is a readiness probe. A missing
+    // secret ("") never matches, so every script request is recorded.
+    const probe = PROBE_SECRET !== "" && String(req.headers["x-touchstone-probe"] || "") === PROBE_SECRET;
+    const method = req.method;
+    const noBody = method === "GET" || method === "HEAD";
+    let resText = "", resHeaders = {}, status = 502;
+    try {
+      const fwd = strip(req.headers);
+      delete fwd["x-touchstone-probe"];   // never leak the probe tag to the lab
+      const up = await fetch(ORIGIN + req.url, { method, headers: fwd, body: noBody ? undefined : reqBuf, redirect: "manual" });
+      resText = await up.text();
+      resHeaders = Object.fromEntries(up.headers.entries());
+      status = up.status;
+    } catch (e) {
+      resText = "proxy upstream error: " + String((e && e.message) || e);
+    }
+    if (!probe) {
+      const entry = {
+        method, path: req.url, url: ORIGIN + req.url,
+        reqHeaders: req.headers, reqBody: reqBuf.length ? parse(reqBuf.toString("utf8")) : null,
+        status, resHeaders, resBody: parse(resText),
+      };
+      process.stdout.write(${JSON.stringify(REC_MARKER)} + JSON.stringify(entry) + "\\n");
+    }
+    const out = strip(resHeaders);
+    delete out["content-encoding"];
+    res.writeHead(status, out);
+    res.end(resText);
+  });
+}).listen(${PROXY_PORT}, "0.0.0.0");
+`;
+
+// Start a lab behind a recording proxy (see the topology diagram at the top).
+// The lab runs on an internal network as ORIGIN_ALIAS; the proxy bridges that
+// to a second internal network where it answers as `alias` (default "lab" --
+// match this in the pack's openapi.yaml `servers` url and BRIEF.md). There is
+// no host port publish and no internet route on either network. A live agent
+// process, same as a finding's replay, always reaches the lab from a throwaway
+// container on the outer network via runRequestScript(), which forces every
+// request through the proxy. Returns a handle; the caller must eventually call
+// stopLab(handle).
 export async function startLab({
   image,
   alias = "lab",
@@ -58,28 +143,77 @@ export async function startLab({
   readyTimeoutMs = 20_000,
 }) {
   const tag = randomBytes(4).toString("hex");
-  const net = `touchstone-net-${tag}`;
-  const name = `touchstone-lab-${tag}`;
-  const created = await docker(["network", "create", "--internal", net]);
-  if (created.code !== 0) {
-    throw new Error(`startLab: docker network create failed: ${created.stderr.trim().slice(0, 500)}`);
-  }
-  const args = [
-    "run", "-d", "--rm", "--name", name,
-    "--network", net, "--network-alias", alias,
+  // Per-lab secret that marks a readiness probe. Known only to the proxy (via
+  // its env) and to waitReady; never given to a script container, so a script
+  // cannot forge the probe tag to hide a request from the recorder.
+  const probeSecret = randomBytes(16).toString("hex");
+  const netInner = `touchstone-inner-${tag}`;
+  const netOuter = `touchstone-outer-${tag}`;
+  const labName = `touchstone-lab-${tag}`;
+  const proxyName = `touchstone-proxy-${tag}`;
+  const nets = [];
+  let proxyDir = null;
+  const cleanup = async () => {
+    await docker(["rm", "-f", proxyName]);
+    await docker(["rm", "-f", labName]);
+    for (const n of nets) await docker(["network", "rm", n]);
+    if (proxyDir) { try { rmSync(proxyDir, { recursive: true, force: true }); } catch {} }
+  };
+  const fail = async (msg) => { await cleanup(); throw new Error(`startLab: ${msg}`); };
+
+  const ni = await docker(["network", "create", "--internal", netInner]);
+  if (ni.code !== 0) return fail(`inner network create failed: ${ni.stderr.trim().slice(0, 500)}`);
+  nets.push(netInner);
+  const no = await docker(["network", "create", "--internal", netOuter]);
+  if (no.code !== 0) return fail(`outer network create failed: ${no.stderr.trim().slice(0, 500)}`);
+  nets.push(netOuter);
+
+  // Lab on the inner network ONLY. The script never joins this network, so it
+  // cannot reach the lab except through the proxy.
+  const labArgs = [
+    "run", "-d", "--rm", "--name", labName,
+    "--network", netInner, "--network-alias", ORIGIN_ALIAS,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "256", "--memory", "512m",
   ];
-  for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
-  args.push(image);
-  const started = await docker(args, { timeoutMs: 30_000 });
-  if (started.code !== 0) {
-    await docker(["network", "rm", net]);
-    throw new Error(`startLab: docker run failed: ${started.stderr.trim().slice(0, 500)}`);
-  }
-  const handle = { net, name, alias, image, containerPort, netBaseUrl: `http://${alias}:${containerPort}` };
+  for (const [k, v] of Object.entries(env)) labArgs.push("-e", `${k}=${v}`);
+  labArgs.push(image);
+  const labRun = await docker(labArgs, { timeoutMs: 30_000 });
+  if (labRun.code !== 0) return fail(`lab run failed: ${labRun.stderr.trim().slice(0, 500)}`);
+
+  // Proxy: start on the inner network (so it can reach the lab), then also
+  // connect it to the outer network as `alias` (what the script calls). It is
+  // the only container on both networks, and the only bridge between them.
+  proxyDir = mkdtempSync(join(tmpdir(), "touchstone-proxy-"));
+  writeFileSync(join(proxyDir, "recorder.mjs"), RECORDER);
+  // mkdtemp makes the dir 0700. The proxy runs node:20-slim as root, and
+  // --cap-drop ALL removes CAP_DAC_OVERRIDE, so that root cannot read a dir
+  // owned by the host user unless it is world-readable. (The script container
+  // avoids this only because the lab image happens to run as uid 1000.)
+  chmodSync(proxyDir, 0o755);
+  const proxyArgs = [
+    "run", "-d", "--name", proxyName,
+    "--network", netInner,
+    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    "--pids-limit", "128", "--memory", "256m",
+    "-v", `${proxyDir}:/app/_proxy:ro`,
+    "-e", `ORIGIN_BASE_URL=http://${ORIGIN_ALIAS}:${containerPort}`,
+    "-e", `PROBE_SECRET=${probeSecret}`,
+    "--entrypoint", "node", PROXY_IMAGE, "/app/_proxy/recorder.mjs",
+  ];
+  const proxyRun = await docker(proxyArgs, { timeoutMs: 30_000 });
+  if (proxyRun.code !== 0) return fail(`proxy run failed: ${proxyRun.stderr.trim().slice(0, 500)}`);
+  const conn = await docker(["network", "connect", "--alias", alias, netOuter, proxyName]);
+  if (conn.code !== 0) return fail(`proxy network connect failed: ${conn.stderr.trim().slice(0, 500)}`);
+
+  const handle = {
+    netInner, netOuter, labName, proxyName, proxyDir,
+    image, containerPort, alias, proxyPort: PROXY_PORT,
+    net: netOuter,                                 // the network scripts join
+    netBaseUrl: `http://${alias}:${PROXY_PORT}`,   // scripts point here (the proxy)
+  };
   try {
-    await waitReady(handle, { readyPath, timeoutMs: readyTimeoutMs });
+    await waitReady(handle, { readyPath, timeoutMs: readyTimeoutMs, probeSecret });
   } catch (err) {
     await stopLab(handle);
     throw err;
@@ -87,14 +221,17 @@ export async function startLab({
   return handle;
 }
 
-async function waitReady(handle, { readyPath, timeoutMs, intervalMs = 300 }) {
+// Ready when a probe (tagged so the proxy does not record it) reaches the lab
+// THROUGH the proxy from the outer network -- this confirms the whole chain:
+// outer DNS, the proxy process, the bridge to the inner network, and the lab.
+async function waitReady(handle, { readyPath, timeoutMs, probeSecret, intervalMs = 300 }) {
   const url = `${handle.netBaseUrl}${readyPath}`;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const r = await docker([
       "run", "--rm", "--network", handle.net,
-      "node:20-slim", "node", "-e",
-      `fetch(${JSON.stringify(url)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+      PROXY_IMAGE, "node", "-e",
+      `fetch(${JSON.stringify(url)},{headers:{"x-touchstone-probe":${JSON.stringify(probeSecret)}}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
     ], { timeoutMs: 8_000 });
     if (r.code === 0) return;
     if (Date.now() >= deadline) throw new Error(`startLab: ${handle.alias} did not answer ${readyPath} within ${timeoutMs}ms`);
@@ -104,8 +241,34 @@ async function waitReady(handle, { readyPath, timeoutMs, intervalMs = 300 }) {
 
 export async function stopLab(handle) {
   if (!handle) return;
-  await docker(["rm", "-f", handle.name], { timeoutMs: 15_000 });
-  await docker(["network", "rm", handle.net], { timeoutMs: 15_000 });
+  if (handle.proxyName) await docker(["rm", "-f", handle.proxyName], { timeoutMs: 15_000 });
+  if (handle.labName) await docker(["rm", "-f", handle.labName], { timeoutMs: 15_000 });
+  if (handle.netOuter) await docker(["network", "rm", handle.netOuter], { timeoutMs: 15_000 });
+  if (handle.netInner) await docker(["network", "rm", handle.netInner], { timeoutMs: 15_000 });
+  if (handle.proxyDir) { try { rmSync(handle.proxyDir, { recursive: true, force: true }); } catch {} }
+}
+
+// --- Read the proxy's out-of-band transcript. `docker logs` returns the
+// proxy's full stdout history; we parse every REC_MARKER line into an entry.
+// The script's process cannot write to the proxy's stdout, so these records
+// are authoritative. (Request order: the proxy writes a record the moment an
+// exchange completes, before it answers the script, so by the time the script
+// container exits every record is already flushed -- no race.)
+async function readRecords(handle) {
+  const r = await docker(["logs", handle.proxyName], { timeoutMs: 10_000, maxBuffer: 64 * 1024 * 1024 });
+  // Fail closed: if the log read errored (proxy gone, or the buffer overflowed in
+  // a very long live session), do NOT return a partial/empty list -- that would
+  // silently shift the baseCount slice or read as "no harm". Surface it instead.
+  if (r.code !== 0) {
+    throw new Error(`readRecords: docker logs ${handle.proxyName} failed (code ${r.code}): ${r.stderr.trim().slice(0, 300)}`);
+  }
+  const out = [];
+  for (const line of r.stdout.split("\n")) {
+    const idx = line.indexOf(REC_MARKER);
+    if (idx === -1) continue;
+    try { out.push(JSON.parse(line.slice(idx + REC_MARKER.length))); } catch {}
+  }
+  return out;
 }
 
 // --- Persist a live lab handle across the prepass -> agent session -> prove
@@ -143,14 +306,14 @@ export async function teardownPersistedLab(ws) {
 
 // --- Request scripts.
 //
-// A finding's "request script" is a body of JS that calls two injected
-// helpers -- it does not get the network any other way:
+// A finding's "request script" is a body of JS that calls injected helpers --
+// it does not get the network any other way:
 //   await request(method, path, { headers, body })
-//     Makes one real HTTP call to the lab and returns
-//     { method, path, status, reqHeaders, reqBody, resHeaders, resBody }.
-//     Every call is appended to a transcript the script cannot see or edit;
-//     the oracle reads only that transcript, never the script's own
-//     console.log claims about what happened.
+//     Makes one real HTTP call to the lab (through the proxy) and returns
+//     { method, path, status, reqHeaders, reqBody, resHeaders, resBody } so the
+//     script can branch on the response. This return value is for the script's
+//     own logic only -- the oracle never sees it. What the oracle sees is the
+//     proxy's independent recording of the same exchange.
 //   signPersonal(privateKeyHex, message) -> signature hex
 //     EIP-191 personal_sign, via ethers (already a dependency of the lab
 //     image this runs in). Needed to sign SIWE messages as a test wallet.
@@ -161,7 +324,6 @@ const HARNESS = `
 import { Wallet } from "ethers";
 import { SiweMessage } from "siwe";
 const BASE_URL = process.env.TOUCHSTONE_BASE_URL;
-const __transcript = [];
 globalThis.request = async function request(method, path, opts = {}) {
   const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
   const hasBody = opts.body !== undefined;
@@ -170,12 +332,10 @@ globalThis.request = async function request(method, path, opts = {}) {
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch {}
-  const entry = {
+  return {
     method, path, url: BASE_URL + path, reqHeaders: headers, reqBody: hasBody ? opts.body : null,
     status: res.status, resHeaders: Object.fromEntries(res.headers.entries()), resBody: json ?? text,
   };
-  __transcript.push(entry);
-  return entry;
 };
 globalThis.signPersonal = async function signPersonal(privateKey, message) {
   return new Wallet(privateKey).signMessage(message);
@@ -183,45 +343,62 @@ globalThis.signPersonal = async function signPersonal(privateKey, message) {
 globalThis.buildSiwe = function buildSiwe(fields) {
   return new SiweMessage(fields).prepareMessage();
 };
-process.on("exit", () => {
-  process.stdout.write("\\n__TOUCHSTONE_TRANSCRIPT__" + JSON.stringify(__transcript) + "\\n");
-});
 `;
 
 // Run a finding's request script in a fresh, throwaway container on
-// `handle.net`, so it reaches the lab only as `handle.alias`. Mounted under
-// /app/_run inside the SAME image the lab runs (handle.image), so the
-// script's `import ... from "ethers"|"siwe"` resolves against that image's
-// already-installed node_modules without needing its own network access.
-// Returns the independently-recorded transcript, never the script's own
-// stdout as truth (that is returned too, but only for a human to read).
+// `handle.net` (the outer network), so it reaches the lab only as
+// `handle.alias` -- the proxy. Mounted under /app/_run inside the SAME image
+// the lab runs (handle.image), so the script's `import ... from "ethers"|"siwe"`
+// resolves against that image's already-installed node_modules without needing
+// its own network access. Returns the proxy's independently-recorded transcript
+// for THIS run (the records that appeared while the script ran), never the
+// script's own stdout as truth (that is returned too, but only for a human to
+// read).
+// Serialize runs against the SAME persisted lab. The baseCount/slice below is
+// only correct if no other run writes records to this proxy's log between the
+// two readRecords() calls. prove() uses a fresh lab per finding, so those never
+// contend; this guards the live tool against overlapping run_request_script
+// calls in one session. (Per-process by design: the only writer to a persisted
+// lab is its own agent-session process; prove's fresh labs have distinct keys.)
+const runQueues = new Map();  // proxyName -> tail promise
+function serialize(key, fn) {
+  const prev = runQueues.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);  // run after prev settles, success or not
+  runQueues.set(key, next.then(() => {}, () => {}));
+  return next;
+}
+
 export async function runRequestScript(handle, script, { timeoutMs = 20_000 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "touchstone-script-"));
-  try {
-    const wrapped = `${HARNESS}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e && e.stack || e)); process.exitCode = 1; });\n`;
-    writeFileSync(join(dir, "run.mjs"), wrapped);
-    const args = [
-      "run", "--rm", "--network", handle.net,
-      "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-      "--pids-limit", "128", "--memory", "256m",
-      "-v", `${dir}:/app/_run:ro`,
-      "-e", `TOUCHSTONE_BASE_URL=${handle.netBaseUrl}`,
-      "-w", "/app",
-      "--entrypoint", "node",
-      handle.image, "/app/_run/run.mjs",
-    ];
-    const r = await docker(args, { timeoutMs });
-    const marker = "__TOUCHSTONE_TRANSCRIPT__";
-    const idx = r.stdout.lastIndexOf(marker);
-    let transcript = [];
-    if (idx !== -1) {
-      try { transcript = JSON.parse(r.stdout.slice(idx + marker.length)); } catch { transcript = []; }
+  return serialize(handle.proxyName, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "touchstone-script-"));
+    try {
+      const wrapped = `${HARNESS}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e && e.stack || e)); process.exitCode = 1; });\n`;
+      writeFileSync(join(dir, "run.mjs"), wrapped);
+      // The proxy's log accumulates across every run against a persisted lab, so
+      // take only the records that appear after this run starts.
+      const baseCount = (await readRecords(handle)).length;
+      const args = [
+        // --init runs tini as PID 1. The attacker script runs as a child of tini,
+        // not as PID 1, so a run that never exits (e.g. a dangling setInterval) is
+        // killed when docker run's timeout sends SIGTERM: PID 1 (node) would ignore
+        // SIGTERM, but tini forwards it and reaps the child. Without this a hung
+        // script would stall every later run on this lab via the serialize() queue.
+        "run", "--rm", "--init", "--network", handle.net,
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--pids-limit", "128", "--memory", "256m",
+        "-v", `${dir}:/app/_run:ro`,
+        "-e", `TOUCHSTONE_BASE_URL=${handle.netBaseUrl}`,
+        "-w", "/app",
+        "--entrypoint", "node",
+        handle.image, "/app/_run/run.mjs",
+      ];
+      const r = await docker(args, { timeoutMs });
+      const transcript = (await readRecords(handle)).slice(baseCount);
+      return { transcript, stdout: r.stdout.trim(), stderr: r.stderr.trim(), code: r.code, timedOut: r.timedOut };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    const stdout = idx === -1 ? r.stdout : r.stdout.slice(0, idx);
-    return { transcript, stdout: stdout.trim(), stderr: r.stderr.trim(), code: r.code, timedOut: r.timedOut };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 }
 
 // One transcript entry, in the shape spike/lib/proof-view.mjs's proofView()
@@ -239,9 +416,9 @@ function exchange(e, i) {
   };
 }
 
-// The full http proof for one finding: a fresh lab, independent of the live
-// session's mutated state, the script replayed against it, the lab torn
-// down, then the named oracle's own read of the transcript -- never the
+// The full http proof for one finding: a fresh lab (+proxy), independent of the
+// live session's mutated state, the script replayed against it, the lab torn
+// down, then the named oracle's own read of the proxy transcript -- never the
 // script's exit code or console output -- decides pass/fail.
 //   labOpts  passed to startLab(); labOpts.image is required
 //   script   the finding's request script source (see HARNESS above)

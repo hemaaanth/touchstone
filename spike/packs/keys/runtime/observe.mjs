@@ -16,7 +16,10 @@ import { monitorLogs } from './monitor.mjs';
 const require = createRequire(import.meta.url);
 const RPC = 'http://127.0.0.1:8545';
 const provider = new JsonRpcProvider(RPC, 31337, { staticNetwork: true, cacheTimeout: -1 });
-const node = spawn('anvil', ['--host', '127.0.0.1', '--chain-id', '31337', '--silent'], { stdio: 'ignore' });
+// Default 127.0.0.1 keeps the lab Anvil private (monitor.mjs runs in-container). The
+// fork-proof path sets ANVIL_HOST=0.0.0.0 so a separate PoC container can fork this
+// chain over an internal Docker network and attack the real deployed target by address.
+const node = spawn('anvil', ['--host', process.env.ANVIL_HOST || '127.0.0.1', '--chain-id', '31337', '--silent'], { stdio: 'ignore' });
 const rpc = (method, ...params) => provider.send(method, params);
 const slotOf = name => toBeHex(BigInt(id(name)) - 1n, 32);
 const SENTINEL = '0x0000000000000000000000000000000000000001';

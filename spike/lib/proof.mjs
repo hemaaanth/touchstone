@@ -35,7 +35,7 @@ function readGas(kind) {
 // value-bearing call, per address. The callee gains value; the caller loses it.
 // Returns a map address -> net wei (BigInt), plus the set of addresses that were
 // CREATEd during execution and the top-level test contract, for labelling.
-function netFlows(traces) {
+export function netFlows(traces) {
   const net = new Map();
   const created = new Set();
   let testContract = null;
@@ -49,15 +49,23 @@ function netFlows(traces) {
     const label = Array.isArray(entry) ? entry[0] : null;
     const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
     if (!Array.isArray(arena)) continue;
+    // A transfer is real only if the WHOLE parent chain returned. A sub-call can
+    // succeed and still be rolled back when an ancestor reverts; the EVM undoes
+    // its value move, so we must not count it. (Mirrors control-trace.mjs `ok`.)
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
     arena.forEach((node, i) => {
       const t = node?.trace ?? {};
       const addr = (t.address || "").toLowerCase();
       const caller = (t.caller || "").toLowerCase();
       if (label === "Execution" && i === 0 && addr) testContract = addr;
       if (t.kind === "CREATE" && addr) created.add(addr);
+      // Only CALL and CREATE move fresh ETH. A DELEGATECALL/CALLCODE/STATICCALL
+      // node carries the inherited msg.value of the frame it runs in, which was
+      // already counted at the parent CALL — counting it again fabricates flow.
+      if (t.kind !== "CALL" && t.kind !== "CREATE" && t.kind !== "CREATE2") return;
       let wei = 0n;
       try { wei = BigInt(t.value ?? "0x0"); } catch { wei = 0n; }
-      if (wei > 0n && t.success) { add(addr, wei); add(caller, -wei); }
+      if (wei > 0n && t.success && ok(i)) { add(addr, wei); add(caller, -wei); }
     });
   }
   return { net, created, testContract };

@@ -6,12 +6,16 @@ import type {
   SpendState,
   TargetChoice,
   PackChoice,
+  Playbook,
 } from "@/lib/types"
+import type { CatalogState } from "@/lib/catalog"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
-import { PageStub } from "@/components/page-stub"
+import { ModulesPage } from "@/components/modules-page"
+import { ProjectsPage } from "@/components/projects-page"
+import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
@@ -23,6 +27,8 @@ export function App() {
   const [packs, setPacks] = useState<PackChoice[]>([])
   const [spend, setSpend] = useState<SpendState | null>(null)
   const [provider, setProvider] = useState<ProviderInfo | null>(null)
+  // Whether /api/models has answered, so a page can tell "none" from "unknown".
+  const [catalog, setCatalog] = useState<CatalogState>("loading")
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [view, setView] = useState<View | null>(null)
   const [sidebarWidth, setSidebarWidth, sidebarDefault] = useStoredWidth("ts.sidebarWidth", 256, 208, 480)
@@ -39,8 +45,9 @@ export function App() {
         setPacks(packs ?? [])
         setSpend(spend)
         setProvider(provider)
+        setCatalog("ready")
       })
-      .catch(() => {})
+      .catch(() => setCatalog("error"))
   }, [])
 
   // Load everything once. Land on the newest live run so the stage is never
@@ -70,7 +77,7 @@ export function App() {
       startRun(alias, targetId, budgetUsd, pack)
         .then((run) => {
           setRuns((prev) => [
-            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
+            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, target: run.target ?? run.scope?.title ?? null, severity: null },
             ...prev.filter((r) => r.id !== run.id),
           ])
           setView({ kind: "run", id: run.id })
@@ -97,6 +104,7 @@ export function App() {
           status: b.status,
           archived: b.archived,
           title: b.pending?.title ?? r.title,
+          target: b.scope?.title ?? r.target,
           severity: b.pending?.severity ?? r.severity,
         }
       }),
@@ -135,7 +143,17 @@ export function App() {
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
 
+  // Start a run from a playbook with the same call New run makes.
+  // TODO(backend): startRun takes no module list, so a playbook's pipeline
+  // choice is not sent yet; the server plans the modules from the scope.
+  const onRunPlaybook = useCallback(
+    (p: Playbook) => onStart(p.model ?? models[0]?.alias ?? "", p.targetId, p.budgetUsd ?? undefined, p.pack),
+    [onStart, models],
+  )
+  const openRun = useCallback((id: string) => setView({ kind: "run", id }), [])
+
   const activeRun = view?.kind === "run" ? rows.find((r) => r.id === view.id) ?? null : null
+  const page = view?.kind === "page" ? view.id : null
 
   return (
     <SidebarProvider style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
@@ -155,10 +173,31 @@ export function App() {
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
           <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onDelete={onDelete} />
-        ) : view?.kind === "page" && view.id === "settings" ? (
+        ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
-        ) : view?.kind === "page" ? (
-          <PageStub id={view.id} />
+        ) : page === "modules" ? (
+          <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
+        ) : page === "projects" ? (
+          <ProjectsPage
+            catalog={catalog}
+            packs={packs}
+            targets={targets}
+            runs={rows}
+            briefs={briefs}
+            onOpenRun={openRun}
+            onChanged={refreshModels}
+          />
+        ) : page === "playbooks" ? (
+          <PlaybooksPage
+            packs={packs}
+            targets={targets}
+            runs={rows}
+            briefs={briefs}
+            busy={busy}
+            error={dialogOpen ? null : startError}
+            onOpenRun={openRun}
+            onRun={onRunPlaybook}
+          />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
             <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>

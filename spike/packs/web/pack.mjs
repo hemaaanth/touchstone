@@ -67,24 +67,49 @@ function nonceReplayOracle() {
 // Bug 2 (API/authorization): a route that takes a user id in the path checks
 // only that SOME session is valid, never that it is the caller's OWN id. A
 // session for one user can read another user's profile, wallet address and
-// API key. Reads the caller's own id from the /siwe/verify response body
-// (not from the script's claims), so this works for any signed-in user.
+// API key.
+//
+// The harm is proven only when the LEAKING call's own bearer token belongs to a
+// different user than the id in the path. We map each token to its user id from
+// the /siwe/verify responses (server-issued, not the script's claims), then
+// require the leak call to carry a token whose user != the path id. Without this
+// binding, a script could sign in as BOTH users and read user 2's data with user
+// 2's own token -- a legitimate self-read that is not an IDOR -- and the first
+// verify's id would make it look like a cross-user read. Requiring the token's
+// own id closes that forgery.
 function bolaOracle() {
+  const bearer = (e) => {
+    const h = e.reqHeaders || {};
+    const raw = h.authorization ?? h.Authorization ?? "";
+    const m = /^Bearer\s+(.+)$/i.exec(String(raw).trim());
+    return m ? m[1].trim() : null;
+  };
   return {
     name: "bola-wallet-idor",
     check(transcript) {
-      const verify = transcript.find((e) => e.path === "/siwe/verify" && e.status === 200 && e.resBody?.user?.id != null);
-      if (!verify) return { pass: false, detail: "no successful /siwe/verify call recorded, so there is no signed-in session to test the authorization check against" };
-      const selfId = Number(verify.resBody.user.id);
-      const leak = transcript.find((e) => {
+      // token -> the user id the server minted it for.
+      const tokenUser = new Map();
+      for (const e of transcript) {
+        if (e.path === "/siwe/verify" && e.status === 200 && e.resBody?.token != null && e.resBody?.user?.id != null) {
+          tokenUser.set(String(e.resBody.token), Number(e.resBody.user.id));
+        }
+      }
+      if (tokenUser.size === 0) return { pass: false, detail: "no successful /siwe/verify call recorded, so there is no signed-in session to test the authorization check against" };
+      let found = null;
+      for (const e of transcript) {
         const m = /^\/api\/users\/(\d+)(?:\/wallet)?$/.exec(e.path);
-        if (!m) return false;
-        const otherId = Number(m[1]);
-        return otherId !== selfId && e.status === 200 && e.resBody && (e.resBody.wallet || e.resBody.apiKey);
-      });
-      if (!leak) return { pass: false, detail: `no call returned another user's profile or wallet while signed in as user ${selfId}` };
-      const otherId = /^\/api\/users\/(\d+)/.exec(leak.path)[1];
-      return { pass: true, detail: `signed in as user ${selfId}, a call to ${leak.path} read user ${otherId}'s data with no ownership check: ${JSON.stringify(leak.resBody)}` };
+        if (!m) continue;
+        if (!(e.status === 200 && e.resBody && (e.resBody.wallet || e.resBody.apiKey))) continue;
+        const pathId = Number(m[1]);
+        const token = bearer(e);
+        const callerId = token != null ? tokenUser.get(token) : undefined;
+        // A real IDOR: a known signed-in caller reading a DIFFERENT user's data
+        // with their own token. (callerId undefined => the leak call carried no
+        // session we saw minted, so we cannot attribute it -- not a proven IDOR.)
+        if (callerId != null && callerId !== pathId) { found = { e, pathId, callerId }; break; }
+      }
+      if (!found) return { pass: false, detail: "no call read another user's wallet/profile under a session token whose own user id differs from the id in the path" };
+      return { pass: true, detail: `signed in as user ${found.callerId}, a call to ${found.e.path} read user ${found.pathId}'s data with no ownership check: ${JSON.stringify(found.e.resBody)}` };
     },
   };
 }

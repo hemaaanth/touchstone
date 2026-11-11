@@ -75,7 +75,13 @@ export function inferenceModels() {
     cost: { input: m.input, output: m.output, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.context,
     maxTokens: Math.min(20000, m.maxOut ?? 20000), // reasoning-on turns burn ~13k; too low and the turn ends mid-think with no answer
-    compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, thinkingFormat: "openai" },
+    // supportsStore:false — the openai-completions adapter otherwise sends
+    // `store:false` on every call, and some OpenAI-compatible gateways (Lyber)
+    // reject it with `400 unsupported_parameter: store`, which the harness maps
+    // to a `model_error` that fails the whole run before any inference. `store`
+    // is only a "don't persist this completion" hint, so dropping it is a no-op
+    // on gateways that do accept it (NEAR, Boundless).
+    compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, thinkingFormat: "openai", supportsStore: false },
   }));
   const models = createModels();
   models.setProvider(createProvider({

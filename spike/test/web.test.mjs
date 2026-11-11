@@ -44,8 +44,8 @@ test("siwe-nonce-replay: two different messages, or one failed verify, is not a 
   assert.equal(nonceReplay.check([]).pass, false);
 });
 
-test("bola-wallet-idor: signed in as user 1, reading user 2's wallet is a pass", () => {
-  const t = [verify(), { path: "/api/users/2/wallet", status: 200, resBody: { id: 2, wallet: "0xabc", apiKey: "tk_bob" } }];
+test("bola-wallet-idor: signed in as user 1, reading user 2's wallet with user 1's token is a pass", () => {
+  const t = [verify(), { path: "/api/users/2/wallet", status: 200, reqHeaders: { authorization: "Bearer t1" }, resBody: { id: 2, wallet: "0xabc", apiKey: "tk_bob" } }];
   const v = bola.check(t);
   assert.equal(v.pass, true);
   assert.match(v.detail, /user 1/);
@@ -53,12 +53,27 @@ test("bola-wallet-idor: signed in as user 1, reading user 2's wallet is a pass",
 });
 
 test("bola-wallet-idor: reading your own profile, or no session, is not a pass", () => {
-  const own = [verify(), { path: "/api/users/1", status: 200, resBody: { id: 1, wallet: "0xabc" } }];
+  const own = [verify(), { path: "/api/users/1", status: 200, reqHeaders: { authorization: "Bearer t1" }, resBody: { id: 1, wallet: "0xabc" } }];
   assert.equal(bola.check(own).pass, false);
   const noSession = [{ path: "/api/users/2/wallet", status: 200, resBody: { id: 2, wallet: "0xabc" } }];
   assert.equal(bola.check(noSession).pass, false);
-  const blocked = [verify(), { path: "/api/users/2/wallet", status: 403, resBody: { error: "forbidden" } }];
+  const blocked = [verify(), { path: "/api/users/2/wallet", status: 403, reqHeaders: { authorization: "Bearer t1" }, resBody: { error: "forbidden" } }];
   assert.equal(bola.check(blocked).pass, false);
+});
+
+test("bola-wallet-idor: signing in as BOTH users and reading user 2's wallet with user 2's OWN token is not a pass", () => {
+  // Forgery the recording proxy surfaces but the oracle must still reject: two
+  // real sign-ins, then a legitimate self-read. The leaking call's token belongs
+  // to user 2, so it is not a cross-user read even though a user-1 session exists.
+  const t = [
+    verify(), // alice: token t1 -> user 1
+    { path: "/siwe/verify", status: 200, resBody: { token: "t2", user: { id: 2, name: "bob" } } },
+    { path: "/api/users/2/wallet", status: 200, reqHeaders: { authorization: "Bearer t2" }, resBody: { id: 2, wallet: "0xabc", apiKey: "tk_bob" } },
+  ];
+  assert.equal(bola.check(t).pass, false);
+  // But user 1's token reading user 2 in the same transcript IS the IDOR.
+  const real = [...t, { path: "/api/users/2/wallet", status: 200, reqHeaders: { authorization: "Bearer t1" }, resBody: { id: 2, wallet: "0xabc", apiKey: "tk_bob" } }];
+  assert.equal(bola.check(real).pass, true);
 });
 
 test("debug-route-signer-key-leak: any 200 response carrying a signerPrivateKey is a pass", () => {

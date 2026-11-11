@@ -189,7 +189,7 @@ function RunRow({
         >
           <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
           <span className="flex min-w-0 flex-col">
-            <span className="truncate text-[13px] leading-snug">{(r.title ?? r.alias).replaceAll("`", "")}</span>
+            <span className="truncate text-[13px] leading-snug">{(r.target ?? r.title ?? r.alias).replaceAll("`", "")}</span>
             <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span>{statusLabel(r.status)}</span>
               <span aria-hidden>·</span>

@@ -57,7 +57,11 @@ async function openHarness(db, ws, state) {
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
     models: inferenceModels(),
     registry,
-    settings: { retry: { maxRetries: 2 }, stream: { timeoutMs: 180_000 } },
+    // maxRetries 5 (baseDelayMs 2s, exponential, capped 60s) rides out a flaky
+    // gateway: transient 5xx/timeout/overload/rate-limit errors are retried with
+    // ~2+4+8+16+32s of backoff before a call is allowed to fail the whole run.
+    // Non-retryable errors (quota/billing/bad-request) still fail fast.
+    settings: { retry: { maxRetries: 5 }, stream: { timeoutMs: 180_000 } },
     onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
   }, ctx);
   const root = await harness.root(ctx, {
@@ -215,7 +219,7 @@ async function chat({ harness, root, reports, state }) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
-  event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found.slice(prior), usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.
@@ -247,7 +251,7 @@ async function child([, , , mode, db, ws]) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness);
-  event("settled", { status: settled.status, reason: settled.reason, summary: s, findings: state.found, usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
   await harness.close(ctx);
   process.exit(0);
 }

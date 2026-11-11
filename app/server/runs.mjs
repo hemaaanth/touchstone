@@ -205,6 +205,9 @@ function view(run) {
     findingId: run.status === "recorded" ? (run.findingIds?.[0] ?? null) : null,
     findingIds: run.findingIds ?? [],
     error: run.error,
+    // Structured failure for the error card: kind, retryable, real detail, spend
+    // and a next step. Null unless the run ended in error.
+    errorInfo: run.errorInfo ?? null,
     // The pre-pass ensemble's ranked suspects (static then fuzz) and the proven
     // exploit's structured proof delta — the feeder → proof story, same shape the
     // CLI persists. Null until each stage has run. A suspect is never a finding.
@@ -227,6 +230,9 @@ export function listRuns() {
       archived: Boolean(r.archived),
       startedAt: r.startedAt,
       title: r.pending?.title ?? null,
+      // The target this run audits — its stable headline, so the sidebar shows a
+      // real name from the first second instead of the model alias.
+      target: scopeOf(r)?.title ?? null,
       severity: r.pending?.severity ?? null,
       findings: r.submitted.length,
     }))
@@ -363,6 +369,7 @@ function setRunStatus(run, status) {
   run.status = status
   const e = { t: Date.now(), ev: "status", status, pending: run.pending, decision: run.decision }
   if (run.error) e.error = run.error
+  if (run.errorInfo) e.errorInfo = run.errorInfo
   broadcast(run, e)
 }
 
@@ -412,6 +419,9 @@ function engineEvents(run) {
         final: e.summary?.final?.text ?? null,
         status: e.status ?? null,
         reason: e.reason ?? null,
+        // The engine's real failure text (the gateway/model error message), so
+        // the UI can show what actually went wrong instead of a canned line.
+        detail: e.detail ?? null,
         calls: (e.summary?.calls ?? []).length,
         summary: e.summary ?? {},
         findings: e.findings ?? [],
@@ -440,6 +450,82 @@ function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   const spend = run.events.findLast((e) => e.ev === "spend")
   return { RUN_BUDGET_USD: String(set?.usd ?? runBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+}
+
+// A transient provider fault: the gateway was busy, slow, or briefly down. The
+// engine already retried it with backoff; another run usually just works.
+const TRANSIENT_ERR = /overload|server[_ ]?busy|rate.?limit|\b(429|500|502|503|504|520|524)\b|timeout|timed out|network|connection|terminated|fetch.?failed|socket hang up|econnreset|etimedout|eai_again|unavailable/i
+// A genuine account fault: the request will keep failing until the operator
+// fixes billing/quota or the key, so retrying is pointless.
+const ACCOUNT_ERR = /quota|billing|insufficient|payment|credit|usage[_ ]?limit|invalid.?api.?key|unauthorized|forbidden|\b401\b|\b403\b/i
+
+// Turn a settled-but-nothing-proved run into an honest, operator-readable
+// failure. The engine's `detail` is the real gateway/model error text; we use
+// it to tell a transient fault (just retry) from a genuine one (fix config),
+// report the spend that ACTUALLY happened (never "nothing was spent" when it
+// did), and give one concrete next step. The structured shape drives the UI's
+// error card; `message` stays a plain string for older clients and logs.
+function failureInfo(run) {
+  const s = run.settled
+  const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
+  const detail = String(s?.detail ?? "").trim()
+  const reason = s?.reason ?? s?.status ?? "unknown"
+  const spentNote =
+    spentUsd > 0 ? `About $${spentUsd.toFixed(4)} was spent on the work it did complete.` : "Nothing was spent."
+
+  // The budget guard fired: not an error, a ceiling. run.error is set from the
+  // budget-reached event; keep that text but classify it so the UI is calm.
+  if (reason === "budget-reached" || /budget/i.test(detail) || /budget/i.test(run.error ?? "")) {
+    return {
+      kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
+      title: "Run stopped at its budget",
+      hint: "This run reached the spend cap before it proved a finding. Raise the per-run budget in Settings, or narrow the scope, then start a new run.",
+      message: `the run reached its budget cap before proving a finding — ${spentNote}`,
+    }
+  }
+
+  // The agent was cut short (operator restart, interrupt) rather than the model
+  // failing. Nothing is broken; the run can simply be started again.
+  if (reason === "aborted" || reason === "interrupted" || reason === "faulted" || reason === "restart_limit") {
+    return {
+      kind: "cutoff", retryable: true, reason, spentUsd, detail,
+      title: "Run was cut off before it finished",
+      hint: "The run was stopped mid-way (a restart or interruption), not a model failure. Start it again — your scope and settings are unchanged.",
+      message: `the run was cut off before it finished (${reason}) — ${spentNote}`,
+    }
+  }
+
+  if (reason === "model_error") {
+    if (ACCOUNT_ERR.test(detail)) {
+      return {
+        kind: "account", retryable: false, reason, spentUsd, detail,
+        title: "The provider rejected the request",
+        hint: "This is an account problem — billing, quota, or the API key — so retrying will not help. Check the provider's balance and key in Settings, or switch to another provider, then start a new run.",
+        message: `the provider rejected the request (account/billing) — ${spentNote}`,
+      }
+    }
+    if (TRANSIENT_ERR.test(detail) || !detail) {
+      return {
+        kind: "transient", retryable: true, reason, spentUsd, detail,
+        title: "The model gateway had a temporary hiccup",
+        hint: "This was a transient provider fault — the engine already retried it several times with backoff and it still did not clear. It almost always works on the next run. Press Run again; your scope and settings are unchanged.",
+        message: `a transient model-gateway error ended the run after automatic retries — ${spentNote}`,
+      }
+    }
+    return {
+      kind: "model", retryable: true, reason, spentUsd, detail,
+      title: "The model call failed",
+      hint: "The model returned an error the run could not recover from. Try again; if it repeats, check the provider and model in Settings. The exact error is shown below.",
+      message: `the model call failed — ${spentNote}`,
+    }
+  }
+
+  return {
+    kind: "unknown", retryable: true, reason, spentUsd, detail,
+    title: "The run did not complete",
+    hint: "The run ended before proving a finding. Try again; if it repeats, check the provider and model in Settings.",
+    message: `the run did not complete (${reason}) — ${spentNote}`,
+  }
 }
 
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
@@ -482,14 +568,25 @@ function spawnAgent(run, leads) {
       setRunStatus(run, "no-finding")
     } else if (s) {
       // Settled "unanswered" — the inference did not complete. Report the real
-      // reason rather than pretending the agent chose not to find anything.
-      run.error =
-        s.reason === "model_error"
-          ? "the model call failed (model_error) — no inference completed, nothing was spent"
-          : `the run did not complete (${s.reason ?? s.status ?? "unknown"})`
+      // reason (classified, with the actual spend and a next step) rather than
+      // pretending the agent chose not to find anything, or that nothing ran.
+      const info = failureInfo(run)
+      run.errorInfo = info
+      run.error = info.message
       setRunStatus(run, "error")
     } else {
-      run.error = run.stderr.slice(-800) || "the agent exited before proving a finding"
+      // The worker died before it settled anything. The tail of its stderr is
+      // the best evidence; present it as an unexpected-crash card.
+      const tail = run.stderr.slice(-800).trim()
+      run.errorInfo = {
+        kind: "crash", retryable: true, reason: "no-settle",
+        spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+        detail: tail,
+        title: "The run stopped unexpectedly",
+        hint: "The engine exited before it could report a result. Start the run again; if it keeps happening, the error output below is the place to look.",
+        message: tail || "the agent exited before proving a finding",
+      }
+      run.error = run.errorInfo.message
       setRunStatus(run, "error")
     }
     broadcast(run, { ev: "closed" })
@@ -596,6 +693,8 @@ function followUp(run, text) {
   const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
+  run.error = null
+  run.errorInfo = null
   run.replying = true
   broadcast(run, { t: Date.now(), ev: "reply-start" })
 
