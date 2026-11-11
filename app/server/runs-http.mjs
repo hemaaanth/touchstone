@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, archiveRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
@@ -106,6 +106,17 @@ export async function handleRuns(req, res) {
     return true
   }
 
+  // POST /api/runs/:id/rename — set the run's name ({name}); empty clears it
+  if (parts.length === 4 && parts[3] === "rename" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      send(res, 200, renameRun(id, body.name))
+    } catch (err) {
+      send(res, 409, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
   // POST /api/runs/:id/delete — move the run's files to trash and drop it
   if (parts.length === 4 && parts[3] === "delete" && req.method === "POST") {
     try {
@@ -151,8 +162,10 @@ export async function handleFindings(req, res) {
 
 // Operator-configured scopes (briefs). A (req,res) handler because POST takes a
 // body. Returns true when it handled the request.
-//   GET    /api/scopes        — list the operator's brief scopes (summaries)
-//   POST   /api/scopes        — add one from { title, brief, blurb }
+//   GET    /api/scopes        — list the operator's scopes (summaries)
+//   POST   /api/scopes        — add one from { title, members, pack? } (repos and
+//                                folders, mixed), or a legacy { title, files },
+//                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
 export async function handleScopes(req, res) {
   const url = new URL(req.url, "http://localhost")
@@ -167,7 +180,7 @@ export async function handleScopes(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo }))
+      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

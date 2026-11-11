@@ -1,10 +1,9 @@
 import { useMemo, useState } from "react"
-import { ChevronRight, FileCode2, FlaskConical, FolderGit2, Trash2 } from "lucide-react"
+import { ChevronRight, FolderGit2, Trash2 } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
 import { removeScope } from "@/lib/api"
 import {
-  DEFAULT_PACK,
   isOwnScope,
   packOf,
   plural,
@@ -16,15 +15,17 @@ import {
 } from "@/lib/catalog"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { AddScope } from "@/components/new-run-dialog"
+import { AddScope, ScopeIcon } from "@/components/new-run-dialog"
 import { Empty, Label, PageBody, PageHeader, RunLinks, UncountedNote } from "@/components/page-parts"
 
-// The codebases and other resources in scope. One row per target the server's
-// library lists (GET /api/models `targets`), grouped by the module that
-// attacks it. Each is a checkout the agent attacks inside a sandbox; the row
+// The scopes: every codebase or project the agent can test, each tested as
+// one unit. A scope can hold several GitHub repos or several local folders.
+// One row per target the server's library lists (GET /api/models `targets`),
+// grouped by the module that attacks it. Adding a scope does not depend on
+// a module, so the add row sits above the groups. Each is a checkout the agent attacks inside a sandbox; the row
 // says where its proof may run, so the operator can see a run never touches
 // anything live. Runs and proven findings come from the recorded runs.
-export function ProjectsPage({
+export function ScopesPage({
   catalog,
   packs,
   targets,
@@ -54,8 +55,7 @@ export function ProjectsPage({
       if (seen.has(id)) continue
       seen.add(id)
       const list = targets.filter((t) => packOf(t) === id)
-      // Contracts always shows, so there is a place to add a project.
-      if (list.length || id === DEFAULT_PACK) out.push({ id, title: packs.find((p) => p.id === id)?.title ?? id, targets: list })
+      if (list.length) out.push({ id, title: packs.find((p) => p.id === id)?.title ?? id, targets: list })
     }
     return out
   }, [packs, targets])
@@ -68,44 +68,39 @@ export function ProjectsPage({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader icon={FolderGit2} title="Projects" />
+      <PageHeader icon={FolderGit2} title="Scopes" />
       <PageBody>
         {error ? <p role="alert" className="mb-4 text-xs text-bad">{error}</p> : null}
         {catalog === "loading" ? (
           <Empty>Loading…</Empty>
         ) : catalog === "error" && targets.length === 0 ? (
-          <Empty>The server did not answer, so the project list is unknown.</Empty>
+          <Empty>The server did not answer, so the scope list is unknown.</Empty>
         ) : (
           <div className="flex flex-col gap-9">
+            {/* Adding a scope does not depend on a module. The server files it
+                under the pack that fits its content; the new row shows there. */}
+            <div className="-mx-2.5 -mb-3">
+              <AddScope onAttached={() => { setError(null); onChanged() }} onError={setError} />
+            </div>
+            {groups.length === 0 ? <Empty>No scopes yet. Add GitHub repositories or local folders.</Empty> : null}
             {groups.map((g) => (
-              <section key={g.id} aria-labelledby={`projects-${g.id}`}>
+              <section key={g.id} aria-labelledby={`scopes-${g.id}`}>
                 <div className="mb-3 flex items-baseline justify-between gap-3">
-                  <h2 id={`projects-${g.id}`} className="text-sm font-semibold">{g.title}</h2>
-                  <span className="text-[11px] text-muted-foreground tabular-nums">{plural(g.targets.length, "project")}</span>
+                  <h2 id={`scopes-${g.id}`} className="text-sm font-semibold">{g.title}</h2>
+                  <span className="text-[11px] text-muted-foreground tabular-nums">{plural(g.targets.length, "scope")}</span>
                 </div>
-                {g.targets.length ? (
-                  <ul className="divide-y border-y">
-                    {g.targets.map((t) => (
-                      <li key={t.id}>
-                        <ProjectRow
-                          target={t}
-                          runs={scoped.filter((r) => r.brief.scope?.id === t.id)}
-                          onOpenRun={onOpenRun}
-                          onRemove={isOwnScope(t.id) ? () => onRemove(t) : undefined}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <Empty>No projects yet. Add a GitHub repository, a folder, or Solidity files.</Empty>
-                )}
-                {/* New scopes are Contracts scopes (POST /api/scopes), so the
-                    add row lives in that group only. */}
-                {g.id === DEFAULT_PACK ? (
-                  <div className="mt-2 -mx-2.5">
-                    <AddScope onAttached={() => { setError(null); onChanged() }} onError={setError} />
-                  </div>
-                ) : null}
+                <ul className="divide-y border-y">
+                  {g.targets.map((t) => (
+                    <li key={t.id}>
+                      <ScopeRow
+                        target={t}
+                        runs={scoped.filter((r) => r.brief.scope?.id === t.id)}
+                        onOpenRun={onOpenRun}
+                        onRemove={isOwnScope(t.id) ? () => onRemove(t) : undefined}
+                      />
+                    </li>
+                  ))}
+                </ul>
               </section>
             ))}
           </div>
@@ -116,9 +111,7 @@ export function ProjectsPage({
   )
 }
 
-const KIND_ICON = { lab: FlaskConical, "local-source": FileCode2, brief: FolderGit2 } as const
-
-function ProjectRow({
+function ScopeRow({
   target: t,
   runs,
   onOpenRun,
@@ -129,7 +122,6 @@ function ProjectRow({
   onOpenRun: (id: string) => void
   onRemove?: () => void
 }) {
-  const Icon = KIND_ICON[t.kind] ?? FolderGit2
   const proven = runs.reduce((n, r) => n + r.brief.proven, 0)
   const files = t.files ?? []
 
@@ -137,7 +129,9 @@ function ProjectRow({
     <Collapsible>
       <CollapsibleTrigger className="group flex w-full items-center gap-3 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[panel-open]:rotate-90" />
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
+          <ScopeIcon target={t} />
+        </span>
         <div className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{t.title}</span>
           <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{scopeMeta(t)}</span>
@@ -204,7 +198,7 @@ function ProjectRow({
           {onRemove ? (
             <div>
               <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground hover:text-destructive" onClick={onRemove}>
-                <Trash2 /> Remove project
+                <Trash2 /> Remove scope
               </Button>
             </div>
           ) : null}

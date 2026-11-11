@@ -9,14 +9,15 @@ import type {
   Playbook,
 } from "@/lib/types"
 import type { CatalogState } from "@/lib/catalog"
-import { archiveRun, deleteRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { ModulesPage } from "@/components/modules-page"
-import { ProjectsPage } from "@/components/projects-page"
+import { ScopesPage } from "@/components/scopes-page"
 import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
+import { FleetConsole } from "@/components/fleet-console"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
@@ -77,7 +78,7 @@ export function App() {
       startRun(alias, targetId, budgetUsd, pack)
         .then((run) => {
           setRuns((prev) => [
-            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, target: run.target ?? run.scope?.title ?? null, severity: null },
+            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
             ...prev.filter((r) => r.id !== run.id),
           ])
           setView({ kind: "run", id: run.id })
@@ -104,7 +105,6 @@ export function App() {
           status: b.status,
           archived: b.archived,
           title: b.pending?.title ?? r.title,
-          target: b.scope?.title ?? r.target,
           severity: b.pending?.severity ?? r.severity,
         }
       }),
@@ -120,6 +120,17 @@ export function App() {
         reloadRun(id)
       })
       .catch(() => {})
+  }, [])
+
+  // Rename a run from the rail or its top bar. The list holds the name, so the
+  // rail and the top bar change together, at once. An empty name clears it.
+  // On failure, fetch the list again so the old name comes back.
+  const onRename = useCallback((id: string, name: string) => {
+    const clean = name.replace(/\s+/g, " ").trim().slice(0, 120) || null
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, name: clean } : r)))
+    renameRun(id, clean ?? "")
+      .then(() => reloadRun(id))
+      .catch(() => fetchRuns().then(setRuns).catch(() => {}))
   }, [])
 
   // Delete a run from its top bar. The row leaves the list, and the view moves
@@ -166,19 +177,22 @@ export function App() {
         onSelect={setView}
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
+        onRename={onRename}
         spend={spend}
         provider={provider}
       />
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onDelete={onDelete} />
+          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
+        ) : page === "fleet" ? (
+          <FleetConsole />
         ) : page === "modules" ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
-        ) : page === "projects" ? (
-          <ProjectsPage
+        ) : page === "scopes" ? (
+          <ScopesPage
             catalog={catalog}
             packs={packs}
             targets={targets}

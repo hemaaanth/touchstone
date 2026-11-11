@@ -1,0 +1,33 @@
+# Out-of-process attacker sandbox — isolation proof (F1 R1)
+
+host sandbox capability: OK — bwrap containment verified: no docker socket, engine unreachable, fresh /proc, host fs invisible, empty netns
+
+Starting REAL Anvil lab in the R1-vulnerable posture (published on host loopback)...
+lab container touchstone-r1lab-e9a0e1b9, Anvil cheat RPC on host loopback http://127.0.0.1:32820 (un-authed)
+
+## A. BASELINE (in-process, no sandbox) — reproduce R1
+  victim balance 0x21e19e0c9bab2400000 -> 0x0 via anvil_setBalance (no real vulnerability)
+  [PASS] in-process attacker reaches the lab on host loopback
+  [PASS] in-process attacker forges a credited drain (R1 vector) — this is exactly what the sandbox must make impossible
+
+broker: AF_UNIX read-only relay at /home/hemanth/.cache/tmp/r1-broker-jGKKLG/lab.sock -> lab (host side only)
+
+## B. SANDBOXED (bwrap: own pid+mount+net ns, pivot_root, caps dropped, fresh /proc)
+  containment: {"contained":true,"failures":[],"detail":{"umount":"blocked:umount: /run: No such file or directory","dockerSockPresent":[],"engine":{"/run/docker.sock":"ENOENT","/var/run/docker.sock":"ENOENT"},"pid1":"bwrap --unshare-all --unshare-net --new-session --die-with-p","visiblePids":["1","2"],"hostPathsVisible":[],"repoWritable":"no:ENOENT","nonLoopbackNics":[]}}
+  lab probes:  {"loopbackDrain":{"reached":false,"error":"ECONNREFUSED"},"brokerRead":{"reached":true,"chainId":"0x7a69"},"brokerDrain":{"drained":false,"rejected":true,"rejection":"lab broker: method not allowed: anvil_setBalance","before":"0x21e19e0c9bab2400000","after":"0x21e19e0c9bab2400000"}}
+  [PASS] sandbox containment holds (no host reach by any path) — docker socket absent+unreachable, fresh /proc, host fs invisible, empty netns
+  [PASS]   · docker socket is absent inside the sandbox
+  [PASS]   · docker engine is unreachable over its socket — connect results: {"/run/docker.sock":"ENOENT","/var/run/docker.sock":"ENOENT"}
+  [PASS]   · /proc is fresh (host procfs not leaked, no /proc/<pid>/root escape) — pid1=bwrap --unshare-all --unshare-net --new-session --die-with-p, visiblePids=["1","2"]
+  [PASS]   · the mount mask cannot be removed (umount blocked, caps dropped) — blocked:umount: /run: No such file or directory
+  [PASS]   · host filesystem is invisible and the judge is unwritable — visible=[], repoWritable=no:ENOENT
+  [PASS] sandboxed attacker CANNOT reach the lab on host loopback — connect error ECONNREFUSED — R1 drain impossible
+  [PASS] sandboxed attacker CAN reach the lab through the brokered IPC socket — eth_chainId = 0x7a69
+  [PASS] the broker rejects a forged drain (read-only policy at the boundary) — lab broker: method not allowed: anvil_setBalance
+  [PASS] lab state is unmutated after the sandboxed run (no drain reached it) — victim balance still 0x21e19e0c9bab2400000
+
+# Result: ALL PASS — R1 CLOSED
+The attacker is contained out-of-process: it cannot reach the docker socket, the host
+procfs, the host filesystem or the host network by any path, and the in-process loopback
+drain (R1) is impossible. The only path to the lab is a read-only brokered unix socket.
+R1 is closed for Tier-2 workers and F1 raw-tx replay alike — one sandbox, shared.

@@ -263,19 +263,28 @@ export interface ProofSurface {
   note: string
 }
 
-// One scope from the target library. `kind` is lab | local-source | brief;
+// One member of an operator scope, as the server summarizes it. No file
+// content. `proof` is how this member's findings can be proven under the
+// scope's pack: "forge" for Solidity under Contracts, else "none".
+export type TargetScopeMember =
+  | { kind: "repo"; url: string; proof: string }
+  | { kind: "folder"; name: string; files: number; proof: string }
+
+// One scope from the target library. `kind` is lab | local-source | brief |
+// scope (repos and folders mixed, any language);
 // `signal` names the submodule expected to surface the lead first (static /
 // fuzz / agent) — descriptive, never the thing that makes a finding real.
 export interface TargetScope {
   id: string
   title: string
-  kind: "lab" | "local-source" | "brief"
+  kind: "lab" | "local-source" | "brief" | "scope"
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
   blurb: string
   entry: string
   files?: string[]
   links?: string[]
+  members?: TargetScopeMember[]
   signal: string
   proofSurface: ProofSurface
 }
@@ -448,6 +457,8 @@ export interface RunView {
   error: string | null
   // Archived runs are locked: they take no more messages.
   archived?: boolean
+  // The operator's name for the run, or null.
+  name?: string | null
   // A follow-up worker is answering an operator message right now.
   replying?: boolean
 }
@@ -458,12 +469,12 @@ export interface RunSummary {
   status: RunStatus
   startedAt: number
   title: string | null
-  // The target/scope this run audits (e.g. "Wallet · CDN without SRI"). This is
-  // the run's stable identity from the moment it starts, so both the sidebar and
-  // the chat header show it first and never fall back to the model-looking alias.
-  target: string | null
   severity: Severity | null
   archived?: boolean
+  // The operator's name for the run (POST /api/runs/:id/rename), or null.
+  name?: string | null
+  // The title of the scope the run attacks, for runs with no name or finding.
+  scopeTitle?: string | null
 }
 
 export type Verdict = "approve" | "deny"

@@ -16,8 +16,17 @@
 
 // Does this scope ship local source the static/fuzz engines can scan at run
 // start? A lab does; a local-source folder will; a brief does not (it fetches).
+// A scope does when one of its folders has Solidity: those are the only files
+// the Solidity engines can scan.
 function hasLocalSource(target) {
+  if (target.kind === "scope") return (target.members ?? []).some((m) => m.kind === "folder" && m.files?.some((f) => String(f.path ?? f).endsWith(".sol")));
   return target.kind === "lab" || target.kind === "local-source";
+}
+
+// Does the run fetch code at run time? A brief fetches its links; a scope
+// fetches its repo members.
+function fetches(target) {
+  return target.kind === "brief" || (target.kind === "scope" && (target.links ?? []).length > 0);
 }
 
 // Compute the plan. `requested`, when given, is the set of toggleable module ids
@@ -34,6 +43,14 @@ export function planModules(target, requested) {
   // Solidity static and fuzz engines do not apply, so the plan is just the agent
   // and the pack's proof step. Pack tools that run before the agent report on
   // their own events.
+  // The review pack has no replay oracle that fits its code. Say so: replay is
+  // off and cannot be turned on, so no finding from this run is ever proven.
+  if (target.pack === "review") {
+    if (fetches(target)) mods.push({ id: "fetch", on: true, fixed: true, available: true, reason: "fetches the scope's repos into the workspace" });
+    mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "No replay oracle fits this code, so no finding can be proven. The run reports leads only." });
+    return mods;
+  }
+
   if (target.pack && target.pack !== "contracts") {
     mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The pack's proof step is the only thing that makes a finding real." });
     return mods;
@@ -47,8 +64,8 @@ export function planModules(target, requested) {
     mods.push({ id: "fuzz", on: false, available: false, reason: "no local source at start — there is nothing to fuzz until the brief's code is fetched" });
   }
 
-  if (target.kind === "brief") {
-    mods.push({ id: "fetch", on: true, available: true, reason: "fetches the brief's linked sources into the workspace" });
+  if (fetches(target)) {
+    mods.push({ id: "fetch", on: true, available: true, reason: target.kind === "scope" ? "fetches the scope's repos into the workspace" : "fetches the brief's linked sources into the workspace" });
   }
 
   mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "A Foundry replay is the only thing that makes a finding real." });

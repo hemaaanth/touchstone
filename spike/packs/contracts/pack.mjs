@@ -16,7 +16,8 @@ import { moduleOn } from "../../lib/modules.mjs";
 import { fetchSource } from "../../lib/fetch.mjs";
 import { event } from "../../lib/event.mjs";
 import { runPrepass } from "../../lib/prepass.mjs";
-import { proveFindings } from "../../lib/record.mjs";
+import { gate, proveFindings } from "../../lib/record.mjs";
+import { proofDelta } from "../../lib/proof.mjs";
 
 // Total run_poc attempts for the whole audit. A comprehensive audit proves
 // several findings, so this is larger than a one-bug run needs. The prompt tells
@@ -63,7 +64,10 @@ Severity:
 - low: no direct loss of funds.
 
 A proof is a test that passes AND shows the harm: funds move to the attacker, or
-other users' funds are locked or lost.`;
+other users' funds are locked or lost. The engine checks this on a replay: the
+test must call a contract deployed from the audited code (src/ or vendor/), and
+that call must move ETH out of it or change its storage. A test that only
+asserts, only reads, or only touches contracts the test file defines is refused.`;
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a Solidity smart contract the operator owns and has asked you to audit.
@@ -117,10 +121,14 @@ How this scope works:
 - Read the brief first: read_source BRIEF.md. It describes the target and links
   its source code.
 - The sandbox has no network, so you cannot open those links yourself. Instead
-  call fetch_source with a link's URL; the host fetches it for you into vendor/.
-  A GitHub repo or tree link is cloned into vendor/<repo>/; a single-file (blob)
-  link is saved under vendor/files/; any other page is returned as text. Fetch
-  the sources the brief names before you audit.
+  call fetch_source with a GitHub link exactly as the brief lists it; the host
+  fetches it for you into vendor/. A repo or tree link is cloned into
+  vendor/<owner>__<repo>/ (with "@<ref>" for a tree link); a single-file (blob)
+  link is saved under vendor/files/<owner>__<repo>@<ref>/<its path>. Only the
+  brief's own GitHub links can be fetched; other URLs are refused. Fetch the
+  sources the brief names before you audit.
+- Only Solidity from the brief's sources can be proven. Until a fetch brings
+  Solidity into vendor/, run_poc and submit_finding are closed.
 - After fetching, use list_sources to see every file now under src/ and vendor/,
   and read_source <path> to read any of them (pass the path list_sources shows).
 - Write a Foundry test (a contract that imports forge-std/Test.sol) that imports
@@ -156,7 +164,7 @@ const READ_ROOTS = ["src", "vendor"];
 const FILE_READ_CAP = 512 * 1024; // 512 KB per read — a source file, not a blob
 
 // Every .sol file under the readable roots, as workspace-relative paths. Recursive
-// so a brief's cloned repo (vendor/<repo>/.../*.sol) is fully visible, not just a
+// so a brief's cloned repo (vendor/<owner>__<repo>/.../*.sol) is fully visible, not just a
 // flat src/. Skips build output and vendored git/npm noise.
 function listSol(ws) {
   const out = [];
@@ -173,6 +181,17 @@ function listSol(ws) {
   for (const root of READ_ROOTS) walk(root);
   return out.sort();
 }
+
+// Content gate (the proof surface comes from content, never from a UI hint). A
+// run may prove only when Solidity from the scope itself is in the workspace:
+// a lab's or folder's src/, or a member fetched into vendor/. A scope added
+// under Contracts whose repos turn out to hold no Solidity keeps run_poc,
+// submit_finding and prove closed, so it can only report leads, like Review.
+// The agent cannot add such a file: run_poc writes only test/AgentPoc.t.sol.
+export function proofOpen(ws) {
+  return listSol(ws).length > 0;
+}
+const PROOF_CLOSED = "No Solidity from this scope is in the workspace yet (nothing under src/ or vendor/), so nothing can be proven. Fetch the GitHub links BRIEF.md lists with fetch_source first. If they hold no Solidity, this scope has no Foundry proof: report what you found as leads only.";
 
 // Resolve a path the agent asked to read to an absolute path inside an allowed
 // root, or null. Path-traversal guard: the resolved path must stay within ws and
@@ -207,7 +226,7 @@ function tools(ws, state) {
   });
   const readSource = defineTool({
     name: "read_source",
-    description: "Read one source file. Pass a path list_sources printed (e.g. Vault.sol or vendor/acme-vault/src/Vault.sol), or BRIEF.md to read the brief.",
+    description: "Read one source file. Pass a path list_sources printed (e.g. Vault.sol or vendor/acme__vault/src/Vault.sol), or BRIEF.md to read the brief.",
     parameters: obj({ file: str({ description: "a path from list_sources, under src/ or vendor/, or BRIEF.md" }) }),
     replay: "safe",
     execute: async (args) => {
@@ -225,8 +244,8 @@ function tools(ws, state) {
   });
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch a source link from the brief into the workspace so you can read and compile it. Pass one https link: a GitHub repo or tree link is cloned into vendor/<repo>/, a GitHub blob (single-file) link is saved under vendor/files/, any other page is returned as text. The fetch happens on the host; the proof still runs offline.",
-    parameters: obj({ url: str({ description: "one https:// link from the brief" }) }),
+    description: "Fetch one of the brief's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as BRIEF.md lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host; the proof still runs offline.",
+    parameters: obj({ url: str({ description: "one GitHub link exactly as BRIEF.md lists it" }) }),
     replay: "unsafe",
     execute: async (args) => {
       const url = String(args.url).trim();
@@ -264,6 +283,10 @@ function tools(ws, state) {
     }),
     replay: "unsafe",
     execute: async (args) => {
+      if (!proofOpen(ws)) {
+        event("run_poc-closed", { contract: args.contract_name });
+        return { output: [{ type: "text", text: PROOF_CLOSED }], isError: true };
+      }
       const pocAttempts = ++state.poc;
       if (pocAttempts > MAX_POC) {
         event("run_poc-capped", { contract: args.contract_name, attempts: pocAttempts });
@@ -309,8 +332,12 @@ function tools(ws, state) {
     replay: "safe",
     execute: async (args) => {
       const poc = String(args.poc_contract ?? "").trim();
-      // Hard gate: a finding is real ONLY when its own Foundry test passed. An
-      // unproven claim is refused here and can never be recorded.
+      if (!proofOpen(ws)) {
+        event("submit-rejected", { poc, reason: "no-solidity" });
+        return { output: [{ type: "text", text: PROOF_CLOSED }], isError: true };
+      }
+      // Hard gate: a finding is real ONLY when its own Foundry test passed AND
+      // its replay shows harm to a scope target. Otherwise it is refused here.
       const source = state.passed.get(poc);
       if (!source) {
         event("submit-rejected", { poc, reason: "not-passed" });
@@ -320,6 +347,19 @@ function tools(ws, state) {
       if (dup) {
         event("submit-rejected", { poc, reason: "duplicate" });
         return { output: [{ type: "text", text: `\`${poc}\` is already recorded as finding #${dup.n} ("${dup.title}"). Each finding needs its own test contract. If this is a different bug, write a new test with a new contract name. Otherwise continue with the next suspect.` }], isError: true };
+      }
+      // Harm gate: passing is not enough. Replay the exact passing source and
+      // read the trace. It must call a scope target and drain its ETH or write
+      // its storage (lib/proof.mjs judgeHarm). A tautology is refused here.
+      let proof = null;
+      try {
+        const delta = await proofDelta(ws, { source, contract: poc });
+        proof = delta && gate({ kind: "forge", ...delta });
+      } catch { proof = null; }
+      if (!proof?.pass) {
+        const why = proof?.harm?.reason ?? proof?.reason ?? "the replay produced no result";
+        event("submit-rejected", { poc, reason: "no-harm", detail: String(why).slice(0, 200) });
+        return { output: [{ type: "text", text: `Cannot record this finding: the replay of \`${poc}\` passed but shows no harm (${why}). A proof must call a contract deployed from the audited code and, in that call, move ETH out of it or change its storage. Rewrite the test so it performs the real attack, run it with run_poc, then call submit_finding again.` }], isError: true };
       }
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
@@ -438,5 +478,6 @@ export default {
   kickoff,
   nudge,
   prepass,
-  prove: proveFindings,
+  // The content gate holds at record time too: no scope Solidity, no proof.
+  prove: (ws, ...rest) => (proofOpen(ws) ? proveFindings(ws, ...rest) : []),
 };

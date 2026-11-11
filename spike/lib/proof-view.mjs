@@ -15,9 +15,16 @@ export function proofKind(finding) {
 }
 
 // True only when the pack's own replay passed.
+// For forge, pocProved is already harm-gated (lib/record.mjs). A proof that says
+// the replay failed or showed no harm is never proven, even if pocProved is set.
+// A record made before the harm gate has no proof.harm and reads as recorded.
 export function isProven(finding) {
   if (!finding) return false;
-  if (proofKind(finding) === "forge") return Boolean(finding.pocProved);
+  if (proofKind(finding) === "forge") {
+    const p = finding.proof;
+    if (p && (p.pass === false || p.status === "fail" || (p.harm && p.harm.ok !== true))) return false;
+    return finding.pocProved === true;
+  }
   return finding.proof?.status === "pass";
 }
 

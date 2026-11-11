@@ -68,7 +68,23 @@ export function startRun(alias: string, targetId?: string, budgetUsd?: number, p
   return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack })
 }
 
-export function attachScope(body: { title: string; repo?: string; files?: { path: string; content: string }[] }): Promise<TargetChoice> {
+// One member of a scope: a GitHub repo, or a local folder with its files.
+export type ScopeMember =
+  | { kind: "repo"; url: string }
+  | { kind: "folder"; name: string; files: { path: string; content: string }[] }
+
+// One scope per call. `members` is the main shape: repos and folders mixed, in
+// any language. The server picks the pack from the content; `pack` is a hint
+// that counts only for repos, whose content is not known until the run fetches
+// it. The other fields are the older single-member bodies.
+export function attachScope(body: {
+  title: string
+  members?: ScopeMember[]
+  pack?: string
+  repo?: string
+  brief?: string
+  files?: { path: string; content: string }[]
+}): Promise<TargetChoice> {
   return postJson<TargetChoice>("/api/scopes", body)
 }
 
@@ -88,6 +104,12 @@ export function steerRun(id: string, text: string): Promise<{ ok: true; followUp
 // Archive a run, or bring it back. An archived run takes no more messages.
 export function archiveRun(id: string, archived: boolean): Promise<{ ok: true; archived: boolean }> {
   return postJson<{ ok: true; archived: boolean }>(`/api/runs/${encodeURIComponent(id)}/archive`, { archived })
+}
+
+// Name a run. An empty name clears it; the run then shows its finding or
+// scope title again.
+export function renameRun(id: string, name: string): Promise<{ ok: true; name: string | null }> {
+  return postJson<{ ok: true; name: string | null }>(`/api/runs/${encodeURIComponent(id)}/rename`, { name })
 }
 
 // Delete a run. The server moves its files to a trash folder and drops it from

@@ -273,16 +273,14 @@ export function harmOf(proof, lab = { targets: [], proxy: false, eoas: [] }) {
 }
 
 // proveFindings replays each test. Then the harm check decides if the replay is a proof.
+// This pack's harmOf replaces the generic verdict, so pocProved is gated on it.
 export async function proveWithHarm(ws, found, events, log) {
-  const findings = await proveFindings(ws, found, events, log, { stateTrace: true });
   const lab = labOf(readObservation(ws), KNOWN_KEYS);
+  const findings = await proveFindings(ws, found, events, log, { stateTrace: true, judge: (proof) => harmOf(proof, lab) });
   return findings.map((finding) => {
     if (!finding.proof) return finding;
-    const harm = harmOf(finding.proof, lab);
     // The state trace is large. The harm keeps the changes it found, so drop the trace.
-    const { controlTrace, ...rest } = finding.proof;
-    const proof = { ...rest, kind: "forge", harm };
-    if (!harm.ok && proof.pass) Object.assign(proof, { status: "fail", pass: false, reason: harm.reason });
+    const { controlTrace, ...proof } = finding.proof;
     return { ...finding, proof };
   });
 }

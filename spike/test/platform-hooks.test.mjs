@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeTouchstone } from "../lib/sandbox.mjs";
@@ -37,10 +37,19 @@ test("Contracts hooks preserve prepass events, leads, and existing record fields
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test("Contracts proof keeps severity order and does not prove an unrun test", async () => {
+test("Contracts proof keeps severity order and proves nothing without a harm replay", async () => {
   const found = [{ n: 1, title: "low", severity: "low", poc: "Unrun" }, { n: 2, title: "high", severity: "high", poc: "Passed" }];
   const events = [{ ev: "run_poc-done", contract: "Passed", passed: true }];
-  const findings = await contracts.prove("unused", found, events);
-  assert.deepEqual(findings, await proveFindings("unused", found, events));
-  assert.deepEqual(findings.map((f) => [f.title, f.pocProved, f.proof]), [["high", true, null], ["low", false, null]]);
+  const ws = mkdtempSync(join(tmpdir(), "contracts-prove-"));
+  try {
+    // No Solidity from the scope on disk: the proof surface is closed.
+    assert.deepEqual(await contracts.prove(ws, found, events), []);
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src/V.sol"), "contract V {}\n");
+    const findings = await contracts.prove(ws, found, events);
+    assert.deepEqual(findings, await proveFindings(ws, found, events));
+    // Foundry passed "Passed", but there is no replay (no source), so no harm verdict:
+    // forgePassed stays true for the UI, pocProved is false.
+    assert.deepEqual(findings.map((f) => [f.title, f.forgePassed, f.pocProved, f.proof]), [["high", true, false, null], ["low", false, false, null]]);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
 });

@@ -2,7 +2,7 @@ import type { PackChoice, RunSummary, TargetScope } from "./types"
 import type { RunBrief } from "./runModel"
 
 // Words for the module (pack) catalog, shared by the New run dialog and the
-// Modules and Projects pages. Every sentence here restates what the engine
+// Modules and Scopes pages. Every sentence here restates what the engine
 // already does (spike/packs/*, spike/lib/modules.mjs). None of it is data.
 
 // A scope saved before modules existed has no pack. It is a Contracts scope.
@@ -23,6 +23,10 @@ export const PROOF_KIND: Record<string, { label: string; detail: string }> = {
   evidence: {
     label: "Evidence re-check",
     detail: "The replay checks the cited evidence again against the pinned snapshot.",
+  },
+  none: {
+    label: "No proof",
+    detail: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
   },
 }
 
@@ -50,10 +54,17 @@ export const SCOPE_KIND: Record<TargetScope["kind"], string> = {
   lab: "Lab",
   "local-source": "Local source",
   brief: "Repository",
+  scope: "Scope",
 }
 
 // What a scope row shows on the right: its file, its file count, or its repo.
+// A scope with several members counts its repos and files.
 export function scopeMeta(t: TargetScope): string {
+  if ((t.members?.length ?? 0) > 1) {
+    const repos = t.links?.length ?? 0
+    const files = t.files?.length ?? 0
+    return [repos && `${repos} repo${repos === 1 ? "" : "s"}`, files && `${files} file${files === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
+  }
   if (t.files?.length) return t.files.length === 1 ? t.files[0] : `${t.files.length} files`
   if (t.links?.length) return t.links[0].replace(/^https?:\/\/(www\.)?(github\.com\/)?/, "")
   return t.entry
@@ -61,10 +72,10 @@ export function scopeMeta(t: TargetScope): string {
 
 // Scopes the operator added (as opposed to the built-in labs) can be removed.
 export function isOwnScope(id: string) {
-  return id.startsWith("source-") || id.startsWith("brief-")
+  return id.startsWith("source-") || id.startsWith("brief-") || id.startsWith("scope-")
 }
 
-// A run plus its loaded brief, for the per-module and per-project counts.
+// A run plus its loaded brief, for the per-module and per-scope counts.
 export interface ScopedRun {
   run: RunSummary
   brief: RunBrief

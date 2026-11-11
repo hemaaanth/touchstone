@@ -22,10 +22,11 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
-import { activeProvider, allProviders, defaultAlias, readConfig, runBudgetUsd } from "../../spike/lib/providers.mjs"
+import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
+import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, addBriefScope, addSourceScope, addRepoScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -80,7 +81,7 @@ export function availableModels() {
 }
 
 export function spendState() {
-  return { usd: spent(), budgetUsd: runBudgetUsd() }
+  return { usd: spent(), budgetUsd: appRunBudgetUsd() }
 }
 
 // The active inference provider, so the UI can show which gateway a run drives.
@@ -116,10 +117,18 @@ export function listScopes() {
   return readScopes().map(targetSummary)
 }
 
-// Add a brief scope from pasted markdown. Returns its summary so the UI can select
-// it immediately. Throws (surfaced as 400) when the title or markdown is empty.
-export function addScope({ title, brief, blurb, files, repo } = {}) {
-  const scope = files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
+// Add an operator scope. Returns its summary so the UI can select it at once.
+// Throws (surfaced as 400) on a bad body.
+//   { title, members: [{ kind:"repo", url } | { kind:"folder", name, files }], pack? }
+//       the main shape: repos and folders mixed, any language. `pack` is a hint
+//       that counts only for repos; the content decides (scopes-store scopePack).
+//   { title, files }   one folder (legacy)
+//   { title, repo }    one GitHub repo, audited as Solidity (legacy)
+//   { title, brief }   pasted markdown with links (legacy)
+export function addScope({ title, brief, blurb, files, repo, members, pack } = {}) {
+  const scope = members !== undefined
+    ? addMembersScope({ title, members, pack, blurb })
+    : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
   return { ...targetSummary(scope), runnable: true }
 }
 
@@ -194,6 +203,8 @@ function view(run) {
     modules: run.modules ?? null,
     status: run.status,
     archived: Boolean(run.archived),
+    // The operator's own name for the run, or null. Set by renameRun.
+    name: run.name ?? null,
     replying: Boolean(run.replying),
     startedAt: run.startedAt,
     events: run.events,
@@ -229,6 +240,8 @@ export function listRuns() {
       status: r.status,
       archived: Boolean(r.archived),
       startedAt: r.startedAt,
+      name: r.name ?? null,
+      scopeTitle: scopeOf(r)?.title ?? null,
       title: r.pending?.title ?? null,
       // The target this run audits — its stable headline, so the sidebar shows a
       // real name from the first second instead of the model alias.
@@ -303,7 +316,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack } = 
   // config, so the run worker builds exactly the tools this plan enables.
   const plan = planModules(target, modules)
   // Each run has its own budget. The worker stops the run when it is spent.
-  const budget = budgetUsd == null || budgetUsd === "" ? runBudgetUsd(cfg) : validateRunBudget(budgetUsd)
+  const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 
   mkdirSync(RESULTS_DIR, { recursive: true })
   const id = monotonicId(alias)
@@ -449,7 +462,7 @@ function engineEvents(run) {
 function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   const spend = run.events.findLast((e) => e.ev === "spend")
-  return { RUN_BUDGET_USD: String(set?.usd ?? runBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
 }
 
 // A transient provider fault: the gateway was busy, slow, or briefly down. The
@@ -782,6 +795,21 @@ export function archiveRun(id, archived) {
   return { ok: true, archived: run.archived }
 }
 
+// Name a run. The name is the operator's label for the sidebar and the top
+// bar; it changes nothing the agent sees. It is a `renamed` event in the
+// run's stream, so it survives a restart like `archived`. An empty name
+// clears it, and the run falls back to its finding or scope title.
+export function renameRun(id, name) {
+  const run = runs.get(id)
+  if (!run) throw new Error("no such run")
+  const clean = String(name ?? "").replace(/\s+/g, " ").trim()
+  if (clean.length > 120) throw new Error("use a name of up to 120 characters")
+  ensureFiles(run)
+  run.name = clean || null
+  broadcast(run, { t: Date.now(), ev: "renamed", name: run.name })
+  return { ok: true, name: run.name }
+}
+
 // Delete a run. Its files (stream, record, engine log, session) move to a
 // trash folder beside them rather than being erased, so a mistake can be put
 // back by hand. The run's findings live in its record, so they leave the
@@ -950,9 +978,11 @@ function savedRun(id, events, mtime) {
   let provider = null
   let model = null
   let archived = false
+  let name = null
   const submitted = []
   for (const e of events) {
     if (e.ev === "archived") archived = Boolean(e.archived)
+    if (e.ev === "renamed") name = typeof e.name === "string" && e.name ? e.name : null
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
     if (e.ev === "provider") ({ provider = null, model = null } = e)
@@ -990,6 +1020,7 @@ function savedRun(id, events, mtime) {
     model: model ?? Object.values(allProviders()).find((p) => p.models?.[alias])?.models[alias].id ?? alias,
     status,
     archived,
+    name,
     startedAt: events.find((e) => e.t)?.t ?? mtime,
     events,
     subscribers: new Set(),

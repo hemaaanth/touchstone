@@ -6,13 +6,21 @@
 // offline sandbox compile and prove against them. The proof still happens with no
 // network and no live chain — fetching is just how the code gets onto disk.
 //
-// WHY THE GUARDS. The links come from a brief the operator pasted, so a link can
-// point anywhere. Three guards keep a fetch from reaching into the machine or
-// running away:
-//   - TLS only, and the resolved host must be a public address. A link that
-//     resolves to localhost, a private LAN range, link-local, or an IPv6 ULA is
-//     refused, so a brief cannot make the engine probe the operator's own network
-//     (SSRF).
+// WHY THE GUARDS. The agent picks the URL, so the URL is untrusted. These guards
+// keep a fetch from reaching into the machine or running away:
+//   - Member binding. A URL is fetched only when it is one of the run's member
+//     links in .touchstone.json, compared after normalization. The agent cannot
+//     name a URL of its own.
+//   - Host allowlist. Only github.com (clone) and raw.githubusercontent.com
+//     (single file) are ever contacted, over TLS. No other host, so a DNS answer
+//     for an attacker-chosen name never matters (no DNS rebinding). The resolved
+//     address of an allowlisted host must still be public, redirects are refused,
+//     and git does not follow redirects.
+//   - Collision-free paths. Each member lands in its own folder, named by its
+//     full owner/repo and ref, so two members never overwrite each other.
+//   - Content filters and caps. A clone is pruned like an uploaded folder
+//     (dependency and build folders, non-source, secret names and secret
+//     content), then the scope's fetched code must fit the same caps as uploads.
 //   - Size and time caps on every path, so a huge repo or a slow host cannot hang
 //     or fill the disk.
 //   - git runs with prompts disabled, hooks disabled, and only the https
@@ -21,11 +29,14 @@
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { classifyPath, githubRepoUrl, safeRelPath, secretContent, MAX_BYTES, MAX_FILES, MAX_MEMBERS } from "./scopes-store.mjs";
+
+// The only hosts a fetch ever contacts.
+const ALLOWED_HOSTS = new Set(["github.com", "raw.githubusercontent.com"]);
 
 const FILE_CAP = 2 * 1024 * 1024; // 2 MB — a single source file
-const PAGE_CAP = 100 * 1024; // 100 KB of stripped page text
 const REPO_CAP = 300 * 1024 * 1024; // 300 MB — a cloned repo on disk
 const FETCH_TIMEOUT_MS = 20_000;
 const CLONE_TIMEOUT_MS = 90_000;
@@ -67,6 +78,7 @@ function isBlockedAddress(addr) {
 // against a DNS answer that mixes a public and a private address). A bare IP
 // hostname is checked directly without a lookup.
 async function assertPublicHost(hostname) {
+  if (!ALLOWED_HOSTS.has(hostname)) throw new Error(`refused host ${hostname}: only github.com and raw.githubusercontent.com are fetched`);
   if (isIP(hostname)) {
     if (isBlockedAddress(hostname)) throw new Error(`refused non-public address: ${hostname}`);
     return;
@@ -100,7 +112,7 @@ function parseUrl(raw) {
 //   https://github.com/<owner>/<repo>                       -> repo (default branch)
 //   https://github.com/<owner>/<repo>/tree/<ref>[/...]      -> repo at ref
 //   https://github.com/<owner>/<repo>/blob/<ref>/<path>     -> single file
-// Anything else on github.com, or any other host, is handled as a plain page.
+// Anything else is refused.
 function parseGithub(u) {
   if (u.hostname !== "github.com") return null;
   const seg = u.pathname.split("/").filter(Boolean);
@@ -116,6 +128,48 @@ function parseGithub(u) {
     return { kind: "blob", owner, repo, ref, filePath };
   }
   return null;
+}
+
+// --- member binding -----------------------------------------------------------
+
+// One canonical form for a member URL: the scopes-store GitHub form (https,
+// github.com, no credentials, port, query or fragment), with no trailing "/" or
+// ".git". Returns null for anything that is not a GitHub repo, tree or blob URL.
+export function memberUrl(raw) {
+  try {
+    return githubRepoUrl(String(raw ?? "").trim()).replace(/\/+$/, "").replace(/\.git$/, "");
+  } catch {
+    return null;
+  }
+}
+
+// The run's member links, from .touchstone.json, normalized. At most
+// MAX_MEMBERS, in the order the scope lists them.
+export function memberLinks(ws) {
+  let cfg = {};
+  try { cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")); } catch {}
+  const links = Array.isArray(cfg.links) ? cfg.links : [];
+  return [...new Set(links.map(memberUrl).filter(Boolean))].slice(0, MAX_MEMBERS);
+}
+
+// A ref or owner/repo part that is safe as one path segment.
+const SEGMENT = /^[A-Za-z0-9_][\w.-]*$/;
+
+// Where a member lands, relative to the workspace. Named by full owner/repo and
+// ref, so two members that share a repo name or a file name never collide:
+//   repo  -> vendor/<owner>__<repo>[@<ref>]
+//   blob  -> vendor/files/<owner>__<repo>[@<ref>]/<path in the repo>
+// GitHub owners have no "_" and repo names have no "@", so the name is unique.
+export function memberDest(gh) {
+  for (const part of [gh.owner, gh.repo, ...(gh.ref ? [gh.ref] : [])]) {
+    if (!SEGMENT.test(part)) throw new Error(`refused an unsafe repo name or ref: ${part}`);
+  }
+  const slot = `${gh.owner}__${gh.repo}${gh.ref ? `@${gh.ref}` : ""}`;
+  if (gh.kind === "blob") {
+    if (!safeRelPath(gh.filePath)) throw new Error(`refused an unsafe file path: ${gh.filePath}`);
+    return path.posix.join("vendor", "files", slot, gh.filePath);
+  }
+  return path.posix.join("vendor", slot);
 }
 
 // --- helpers -----------------------------------------------------------------
@@ -135,9 +189,9 @@ function dirSizeOver(dir, cap) {
   const walk = (d) => {
     for (const name of readdirSync(d)) {
       const p = path.join(d, name);
-      const st = statSync(p);
+      const st = lstatSync(p); // never follow a link out of the clone
       if (st.isDirectory()) walk(p);
-      else total += st.size;
+      else if (st.isFile()) total += st.size;
       if (total > cap) throw new Error("over cap");
     }
   };
@@ -146,6 +200,79 @@ function dirSizeOver(dir, cap) {
     return false;
   } catch {
     return true;
+  }
+}
+
+// Remove what a run must never read from a fresh clone. Uses lstat, so it never
+// follows a link. Dropped:
+//   - symlinks (they can point out of the workspace) and hidden entries (.env,
+//     .npmrc, .github, ...);
+//   - every file an uploaded folder would drop (classifyPath): dependency and
+//     build folders, our sandbox config, secret names, non-source files;
+//   - text whose content looks like a secret (a private key block, a cloud key,
+//     a token), and binary content.
+// Returns how many entries it removed.
+export function pruneClone(dir) {
+  let removed = 0;
+  const files = [];
+  const walk = (d) => {
+    for (const name of readdirSync(d)) {
+      const p = path.join(d, name);
+      const st = lstatSync(p);
+      if (st.isSymbolicLink() || name.startsWith(".") || (!st.isFile() && !st.isDirectory())) {
+        rmSync(p, { recursive: true, force: true });
+        removed++;
+      } else if (st.isDirectory()) walk(p);
+      else files.push(p);
+    }
+  };
+  walk(dir);
+  const rels = files.map((p) => path.relative(dir, p).split(path.sep).join("/"));
+  const solidity = rels.some((r) => r.endsWith(".sol"));
+  files.forEach((p, i) => {
+    let drop = classifyPath(rels[i], { solidity }) !== "keep";
+    if (!drop) {
+      // Over the per-file cap is dropped unread; the scope cap counts the rest.
+      if (statSync(p).size > FILE_CAP) drop = true;
+      else {
+        const body = readFileSync(p, "utf8");
+        drop = body.includes("\u0000") || secretContent(body);
+      }
+    }
+    if (drop) {
+      rmSync(p, { force: true });
+      removed++;
+    }
+  });
+  return removed;
+}
+
+// The files and bytes of everything fetched into vendor/ plus the scope's own
+// folders under src/. This is the scope total the caps apply to.
+export function scopeUsage(ws) {
+  const use = { files: 0, bytes: 0 };
+  const walk = (d) => {
+    let names;
+    try { names = readdirSync(d); } catch { return; }
+    for (const name of names) {
+      const p = path.join(d, name);
+      const st = lstatSync(p);
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile()) { use.files++; use.bytes += st.size; }
+    }
+  };
+  walk(path.join(ws, "src"));
+  walk(path.join(ws, "vendor"));
+  return use;
+}
+
+// Refuse (and remove) a fetch that pushes the scope over the upload caps.
+function enforceCaps(ws, dest, label) {
+  const use = scopeUsage(ws);
+  if (use.files > MAX_FILES || use.bytes > MAX_BYTES) {
+    rmSync(dest, { recursive: true, force: true });
+    const what = use.files > MAX_FILES ? `${use.files} source files (the cap is ${MAX_FILES})` : `${(use.bytes / 1024 / 1024).toFixed(1)} MB of source (the cap is ${MAX_BYTES / 1024 / 1024} MB)`;
+    throw new Error(`${label} would bring this scope to ${what} after filtering — refused`);
   }
 }
 
@@ -185,13 +312,14 @@ function reportSolFiles(ws, dir, cap = 200) {
 
 async function fetchRepo(ws, gh) {
   await assertPublicHost("github.com");
-  const dest = path.join(ws, "vendor", gh.repo);
+  const dest = path.join(ws, memberDest(gh));
   rmSync(dest, { recursive: true, force: true });
   const cloneUrl = `https://github.com/${gh.owner}/${gh.repo}.git`;
   const args = [
     "-c", "protocol.allow=never",
     "-c", "protocol.https.allow=always",
     "-c", "core.hooksPath=/dev/null",
+    "-c", "http.followRedirects=false",
     "clone", "--depth", "1", "--no-tags", "--single-branch",
   ];
   if (gh.ref) args.push("--branch", gh.ref);
@@ -206,19 +334,24 @@ async function fetchRepo(ws, gh) {
     const why = r.timedOut ? "clone timed out" : r.stderr.trim().split("\n").slice(-1)[0] || "clone failed";
     throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why}`);
   }
-  // Drop .git before the size check — we keep the tree, not its history.
+  // Drop .git first — we keep the tree, not its history. A raw clone over the
+  // disk cap is refused before we read it. Then prune it like an uploaded folder
+  // and hold the scope to the upload caps.
   rmSync(path.join(dest, ".git"), { recursive: true, force: true });
   if (dirSizeOver(dest, REPO_CAP)) {
     rmSync(dest, { recursive: true, force: true });
     throw new Error(`clone of ${gh.owner}/${gh.repo} exceeds the ${Math.round(REPO_CAP / 1024 / 1024)}MB cap — refused`);
   }
+  const dropped = pruneClone(dest);
+  enforceCaps(ws, dest, `${gh.owner}/${gh.repo}`);
   const files = reportSolFiles(ws, dest);
   return {
     kind: "repo",
     where: path.relative(ws, dest),
     ref: gh.ref ?? "default branch",
     files,
-    note: `Cloned ${gh.owner}/${gh.repo} into ${path.relative(ws, dest)}/ (${files.length} Solidity file${files.length === 1 ? "" : "s"}).`,
+    dropped,
+    note: `Cloned ${gh.owner}/${gh.repo} into ${path.relative(ws, dest)}/ (${files.length} Solidity file${files.length === 1 ? "" : "s"}; ${dropped} dependency, build, non-source or secret entr${dropped === 1 ? "y" : "ies"} dropped).`,
   };
 }
 
@@ -259,13 +392,17 @@ async function httpGet(url, cap) {
 }
 
 async function fetchBlob(ws, gh) {
+  const base = path.posix.basename(gh.filePath);
+  if (classifyPath(gh.filePath) !== "keep") throw new Error(`refused to fetch ${gh.filePath}: it is not a source file, or it looks like a secret, dependency or build file`);
+  const rel = memberDest(gh);
   const raw = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${gh.ref}/${gh.filePath}`;
   const { buf } = await httpGet(raw, FILE_CAP);
   const body = buf.toString("utf8");
-  const rel = path.join("vendor", "files", `${gh.owner}__${gh.repo}__${path.basename(gh.filePath)}`);
+  if (body.includes("\u0000") || secretContent(body)) throw new Error(`refused to save ${base}: its content is binary or looks like a secret`);
   const dest = path.join(ws, rel);
   mkdirSync(path.dirname(dest), { recursive: true });
   writeFileSync(dest, body);
+  enforceCaps(ws, dest, gh.filePath);
   const pragmas = gh.filePath.endsWith(".sol") ? pragmaVersions(body) : [];
   return {
     kind: "file",
@@ -275,38 +412,20 @@ async function fetchBlob(ws, gh) {
   };
 }
 
-// A non-GitHub page, or an unrecognized GitHub path: fetch it, strip tags, and
-// return capped text. NOT saved to disk — it is context for the agent to read,
-// not a source file to compile.
-async function fetchPage(url) {
-  const { buf } = await httpGet(url, PAGE_CAP);
-  const html = buf.toString("utf8");
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+\n/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { kind: "page", where: null, text, files: [], note: `Fetched page text from ${new URL(url).hostname} (not saved).` };
-}
-
-// Fetch one source link into the workspace. Dispatches on the URL shape:
-// GitHub repo/tree -> clone, GitHub blob -> single file, anything else -> page
-// text. Returns a small report the caller turns into a tool result. Throws on a
-// refused or failed fetch; the caller surfaces that to the agent as a tool error.
+// Fetch one of the run's member links into the workspace. The URL must equal a
+// member link (memberLinks) after normalization; anything else is refused before
+// any network call. A GitHub repo or tree URL is cloned; a blob URL is saved as
+// one file. Returns a small report the caller turns into a tool result. Throws
+// on a refused or failed fetch; the caller surfaces that to the agent.
 export async function fetchSource(ws, url) {
-  const u = parseUrl(url);
-  const gh = parseGithub(u);
+  const want = memberUrl(url);
+  if (!want) throw new Error(`refused ${String(url).slice(0, 200)}: only GitHub repo, tree or file URLs that this scope lists are fetched`);
+  if (!memberLinks(ws).includes(want)) throw new Error(`refused ${want}: it is not one of this scope's members. Fetch only a URL BRIEF.md lists`);
+  const gh = parseGithub(parseUrl(want));
   if (gh?.kind === "repo") return fetchRepo(ws, gh);
   if (gh?.kind === "blob") return fetchBlob(ws, gh);
-  return fetchPage(u.href);
+  throw new Error(`refused ${want}: not a GitHub repo, tree or file URL`);
 }
 
 // Exposed for tests.
-export const _internal = { isBlockedAddress, parseGithub, extract: pragmaVersions };
+export const _internal = { isBlockedAddress, parseGithub, assertPublicHost, extract: pragmaVersions };

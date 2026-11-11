@@ -112,8 +112,8 @@ test("Supply chain lists its generated lab with one manifest line", () => {
   assert.equal(typeof PACKS["supply-chain"].lab.make, "function")
 })
 
-test("the default run budget is $1", () => {
-  assert.equal(DEFAULT_RUN_BUDGET_USD, 1)
+test("the default run budget is $5", () => {
+  assert.equal(DEFAULT_RUN_BUDGET_USD, 5)
 })
 
 test("a pack lab without a title in its config is named by its pack, not its folder", () => {
