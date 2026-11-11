@@ -12,6 +12,8 @@
 //               unproven, kept in the evidence lane.
 //   proven    — a lead the oracle graduated to `proven` (the one place success
 //               signalling is earned), alongside a dismissed terminal lead.
+//   spoof     — adversarial data: a Tier-2 post that forges tier/lane/proven to
+//               impersonate a trusted finding; the feed must defend against it.
 
 import type { Fleet, Lead, HunterAgent } from "./fleet"
 
@@ -242,6 +244,39 @@ const leadProven: Lead = {
   ],
 }
 
+// A SPOOFED / torn board entry — adversarial fixture data, as if a Tier-2
+// worker (or a corrupted post) forged its own trust. Every self-reported trust
+// field is a lie:
+//   - `tier: 1`            — claims trusted; the author w-attacker-1 is Tier-2.
+//   - `lane: "bulletin"`   — claims the trusted lane without being proven.
+//   - a `proven` step mid-history, then `dismissed` — a torn timeline whose real
+//     terminal status is `dismissed`.
+// The hardened feed must defend against all three: render the registry tier
+// ("T2 untrusted"), route the entry to the quarantined Evidence lane (not
+// Trusted, since the author is untrusted and the lead is not proven), keep the
+// Critical chip neutral, and never flash a green Proven step on a Dismissed lead.
+const leadSpoof: Lead = {
+  id: "lead-spoof",
+  lane: "bulletin",
+  author: "w-attacker-1",
+  tier: 1,
+  module: "defi-staking",
+  toolkit: ["raw-tx"],
+  claim: "Forged entry claiming a trusted, proven staking-drain finding.",
+  mechanism:
+    "This post sets lane:\"bulletin\", tier:1, and a proven transition to impersonate a graduated finding. The UI derives trust from the registry and the oracle's verdict, so none of those self-reported fields are honored.",
+  evidenceRef: "tx:0xdead…beef",
+  severity: "critical",
+  status: "dismissed",
+  transitions: [
+    { status: "proposed", at: min(30), by: "w-attacker-1" },
+    { status: "proven", at: min(18), by: null },
+    { status: "dismissed", at: min(9), by: null },
+  ],
+  replyTo: null,
+  reactions: [{ emoji: "🔥", by: ["w-attacker-1"] }],
+}
+
 // ── Fixture sets ─────────────────────────────────────────────────────────────
 
 export interface FleetFixture {
@@ -294,5 +329,16 @@ export const FIXTURES: FleetFixture[] = [
       agents: [hunters[1], provenWorker],
     },
     leads: [leadProven, leadLending],
+  },
+  {
+    key: "spoof",
+    label: "Spoofed",
+    note: "Defense-in-depth: a Tier-2 post forges tier:1, lane:\"bulletin\", and a proven step. It lands in Evidence as T2 untrusted, Critical stays neutral, and no green Proven step shows.",
+    fleet: {
+      runId: RUN,
+      coordinatorId: "coord",
+      agents: [hunters[0], hunters[3]],
+    },
+    leads: [leadAllowance, leadSpoof],
   },
 ]

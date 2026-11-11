@@ -30,8 +30,20 @@ function tierLabel(tier: Tier): string {
 
 export function BulletinFeed({ fleet, leads }: { fleet: Fleet; leads: Lead[] }) {
   const nameOf = (id: string) => fleet.agents.find((a) => a.id === id)?.name ?? id
-  const trusted = leads.filter((l) => l.lane === "bulletin")
-  const evidence = leads.filter((l) => l.lane === "evidence")
+  // Defense-in-depth: never trust the author's self-reported tier. Derive it
+  // from the registry (fleet.agents) by matching the lead's author id. An author
+  // the registry doesn't know is treated as untrusted (Tier-2) — a torn or
+  // spoofed board entry can't mint itself a trusted label.
+  const tierOf = (id: string): Tier => fleet.agents.find((a) => a.id === id)?.tier ?? 2
+  // A lead renders in the TRUSTED region only when it is posted to the bulletin
+  // lane AND either its author is registry-trusted (Tier 0/1) or the lead has
+  // been graduated to `proven` by the oracle. Everything else — including a
+  // Tier-2 post that forged lane:"bulletin" — lands in Evidence, never Trusted.
+  // This is the one legitimate Tier-2-in-trusted case: a proven, graduated
+  // finding; it keys on earnsSuccessSignal, not on the post-controlled lane.
+  const inTrusted = (l: Lead) => l.lane === "bulletin" && (tierOf(l.author) <= 1 || earnsSuccessSignal(l))
+  const trusted = leads.filter(inTrusted)
+  const evidence = leads.filter((l) => !inTrusted(l))
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -54,7 +66,7 @@ export function BulletinFeed({ fleet, leads }: { fleet: Fleet; leads: Lead[] }) 
             {trusted.length === 0 ? (
               <p className="border-b px-4 py-5 text-xs text-muted-foreground">No trusted leads yet.</p>
             ) : (
-              trusted.map((l) => <LeadEntry key={l.id} lead={l} nameOf={nameOf} />)
+              trusted.map((l) => <LeadEntry key={l.id} lead={l} tier={tierOf(l.author)} quarantined={false} nameOf={nameOf} />)
             )}
 
             <LaneHeading
@@ -66,7 +78,7 @@ export function BulletinFeed({ fleet, leads }: { fleet: Fleet; leads: Lead[] }) 
             {evidence.length === 0 ? (
               <p className="border-b px-4 py-5 text-xs text-muted-foreground">No evidence submissions.</p>
             ) : (
-              evidence.map((l) => <LeadEntry key={l.id} lead={l} nameOf={nameOf} />)
+              evidence.map((l) => <LeadEntry key={l.id} lead={l} tier={tierOf(l.author)} quarantined nameOf={nameOf} />)
             )}
           </>
         )}
@@ -123,19 +135,31 @@ function SeverityChip({ severity, proven }: { severity: Severity; proven: boolea
   )
 }
 
-function LeadEntry({ lead, nameOf }: { lead: Lead; nameOf: (id: string) => string }) {
+function LeadEntry({
+  lead,
+  tier,
+  quarantined,
+  nameOf,
+}: {
+  lead: Lead
+  // Registry-derived tier for the author (NOT lead.tier, which the post controls).
+  tier: Tier
+  // Whether this entry sits in the quarantined Evidence region (the partition in
+  // BulletinFeed decides; it is not read from the post's own lane field).
+  quarantined: boolean
+  nameOf: (id: string) => string
+}) {
   const status = leadStatus(lead)
   const proven = earnsSuccessSignal(lead)
-  const quarantined = lead.lane === "evidence"
 
   return (
     <article className="border-b px-4 py-3">
       {/* Author / tier line. */}
       <div className="flex items-center gap-2">
         <span className="text-xs font-medium">{nameOf(lead.author)}</span>
-        <Chip className={cn(lead.tier === 2 && "text-foreground/80")}>{tierLabel(lead.tier)}</Chip>
+        <Chip className={cn(tier === 2 && "text-foreground/80")}>{tierLabel(tier)}</Chip>
         {quarantined ? <Chip>quarantined</Chip> : null}
-        <StatusWord status={status} />
+        <StatusWord status={status} proven={proven} />
         <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
           {ago(lead.transitions[lead.transitions.length - 1]?.at)}
         </span>
@@ -157,7 +181,7 @@ function LeadEntry({ lead, nameOf }: { lead: Lead; nameOf: (id: string) => strin
       <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{lead.mechanism}</p>
 
       {/* Status timeline — RECORDED transitions only, never inferred. */}
-      <StatusTimeline transitions={lead.transitions} nameOf={nameOf} />
+      <StatusTimeline transitions={lead.transitions} proven={proven} nameOf={nameOf} />
 
       {/* Evidence link + reactions. */}
       <div className="mt-2 flex items-center gap-3">
@@ -183,8 +207,10 @@ function LeadEntry({ lead, nameOf }: { lead: Lead; nameOf: (id: string) => strin
   )
 }
 
-function StatusWord({ status }: { status: LeadStatus }) {
-  const proven = status === "proven"
+// The current-status word. `proven` is the lead's authoritative success signal
+// (earnsSuccessSignal), passed in so the proven rule lives in one place rather
+// than being re-derived from a post-controlled status string here.
+function StatusWord({ status, proven }: { status: LeadStatus; proven: boolean }) {
   return (
     <span
       className={cn(
@@ -199,20 +225,26 @@ function StatusWord({ status }: { status: LeadStatus }) {
 
 function StatusTimeline({
   transitions,
+  proven,
   nameOf,
 }: {
   transitions: LeadTransition[]
+  // Whether the LEAD is terminally proven. A `proven` step only reads green when
+  // the lead itself earned the success signal, so a forged
+  // [proposed → proven → dismissed] history can never flash a green Proven step
+  // on a lead whose real terminal status is Dismissed.
+  proven: boolean
   nameOf: (id: string) => string
 }) {
   if (transitions.length === 0) return null
   return (
     <ol className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-[10px] text-muted-foreground">
       {transitions.map((t, i) => {
-        const proven = t.status === "proven"
+        const stepProven = proven && t.status === "proven"
         return (
           <li key={`${t.status}-${t.at}`} className="flex items-center gap-1">
             {i > 0 ? <span className="text-muted-foreground/40">→</span> : null}
-            <span className={cn("rounded px-1 py-px", proven ? "bg-ok/10 font-medium text-ok" : "bg-muted")}>
+            <span className={cn("rounded px-1 py-px", stepProven ? "bg-ok/10 font-medium text-ok" : "bg-muted")}>
               {STATUS_LABEL[t.status]}
             </span>
             <span className="text-muted-foreground/60 tabular-nums">
