@@ -21,7 +21,7 @@ import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 
 // The console's default per-run budget when Settings has none saved. The
-// engine's own default (spike/lib/run-budget.mjs) stays $1 for CLI runs; app
+// engine's own default for CLI runs (spike/lib/run-budget.mjs) is also $5; app
 // runs pass their budget to the worker as RUN_BUDGET_USD, so this one wins.
 export const APP_DEFAULT_RUN_BUDGET_USD = 5
 
