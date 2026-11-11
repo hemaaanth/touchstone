@@ -19,6 +19,9 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str, int, bool, arr, opt, oneOf } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Cbm, resolveCbmBinary } from "../../lib/cbm.mjs";
 
 const text = (value) => ({ output: [{ type: "text", text: JSON.stringify(value) }] });
@@ -31,6 +34,30 @@ const UNAVAILABLE =
 // call in one run so the index is built once and reused.
 const projectName = (ws) => `src-${createHash("sha256").update(ws).digest("hex").slice(0, 12)}`;
 
+// A PRIVATE per-run cache dir for the engine, never the operator's default
+// ~/.cache/codebase-memory-mcp. The default cache (a) is shared with the
+// operator's own engine state and (b) comes up with the loopback UI/admin HTTP
+// server enabled, so every short-lived engine call would serve a filesystem
+// browse endpoint on 127.0.0.1:9749. A fresh private cache that we harden
+// (ui_enabled=false, watcher off) before any engine call closes both.
+const cacheDirs = [];
+function privateCacheDir() {
+  const dir = mkdtempSync(join(tmpdir(), "touchstone-cbm-")); // mode 0700
+  cacheDirs.push(dir);
+  return dir;
+}
+// Best-effort cleanup of the private caches on process exit (sync; no async fs
+// in an 'exit' handler).
+process.once("exit", () => {
+  for (const dir of cacheDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+});
+
 // One index per workspace, built lazily on the first query and memoized. The
 // binary is RUN, never committed; if it is missing the whole pack degrades to
 // "unavailable" (the aderyn.mjs pattern) instead of failing the run. A failed
@@ -42,9 +69,11 @@ function ensureIndexed(ws) {
     job = (async () => {
       const bin = await resolveCbmBinary();
       if (!bin) return { unavailable: true };
-      // No cacheDir: let the engine use its own offline cache
-      // (~/.cache/codebase-memory-mcp). No account, no network, no key.
-      const cbm = new Cbm({ bin });
+      // Private, hardened cache: no listener, no watcher, no shared state. The
+      // binary's sha256 is verified by the wrapper before its first exec.
+      const cacheDir = privateCacheDir();
+      const cbm = new Cbm({ bin, cacheDir });
+      await cbm.hardenCache(); // disable UI server + watcher BEFORE any index/query
       const project = projectName(ws);
       await cbm.index(ws, { name: project, mode: "fast" });
       return { cbm, project };
@@ -81,23 +110,24 @@ const lookupProps = {
   parent_class: opt(str({ description: "Keep only members of this class." })),
   route_path: opt(str({ description: "For routes: the route path to match." })),
   route_method: opt(str({ description: "For routes: the HTTP method to match, e.g. GET." })),
-  limit: opt(int({ minimum: 1, maximum: 100, description: "Max candidates to consider (default 20)." })),
   include_metadata: opt(bool({ description: "Return the full raw candidate record instead of the compact one." })),
 };
+// NOTE: there is deliberately no `limit` on the resolve/read path. Candidate
+// breadth is a fixed internal bound in the wrapper; a caller must not be able
+// to narrow the set and slip a multi-match past read_symbol's fail-closed gate.
 
 // One symbol request inside read_symbols: the same disambiguators, per entry.
-const symbolRequest = obj(
-  {
-    name: opt(str()),
-    qualified_name: opt(str()),
-    file_path: opt(str()),
-    parent_class: opt(str()),
-    label: opt(str()),
-    route_path: opt(str()),
-    route_method: opt(str()),
-  },
-  { open: true },
-);
+// Closed (no `open: true`): an undeclared key — e.g. a smuggled `limit` — is
+// rejected, so nothing a caller invents reaches the resolution path.
+const symbolRequest = obj({
+  name: opt(str()),
+  qualified_name: opt(str()),
+  file_path: opt(str()),
+  parent_class: opt(str()),
+  label: opt(str()),
+  route_path: opt(str()),
+  route_method: opt(str()),
+});
 
 function tools(ws) {
   return [
@@ -105,7 +135,7 @@ function tools(ws) {
       name: "resolve_symbol",
       description:
         "Resolve a symbol to its candidate locations in the indexed workspace. Give name or qualified_name, plus any disambiguators (file_path, parent_class, label, route_path, route_method). Returns candidates with file path and line range; it does not return source. Read-only.",
-      parameters: obj(lookupProps, { open: true }),
+      parameters: obj(lookupProps),
       replay: "safe",
       execute: async (args) => query(ws, "resolveSymbol", args),
     }),
@@ -119,7 +149,6 @@ function tools(ws) {
           neighbors: opt(oneOf(["callers", "callees", "both"], { description: "Also return the symbol's callers, callees, or both." })),
           neighbor_limit: opt(int({ minimum: 1, maximum: 50, description: "Max neighbors per direction (default 10)." })),
         },
-        { open: true },
       ),
       replay: "safe",
       execute: async (args) => query(ws, "readSymbol", args),
@@ -134,7 +163,6 @@ function tools(ws) {
           max_concurrency: opt(int({ minimum: 1, maximum: 16 })),
           include_neighbors: opt(bool({ description: "Include each symbol's callers and callees." })),
         },
-        { open: true },
       ),
       replay: "safe",
       execute: async (args) => query(ws, "getCodeSnippets", args),
@@ -149,7 +177,6 @@ function tools(ws) {
           max_concurrency: opt(int({ minimum: 1, maximum: 12 })),
           include_metadata: opt(bool()),
         },
-        { open: true },
       ),
       replay: "safe",
       execute: async (args) => query(ws, "readSymbols", args),
@@ -170,7 +197,6 @@ function tools(ws) {
           max_concurrency: opt(int({ minimum: 1, maximum: 16 })),
           include_metadata: opt(bool()),
         },
-        { open: true },
       ),
       replay: "safe",
       execute: async (args) => query(ws, "searchAndReadSymbols", args),

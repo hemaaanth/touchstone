@@ -16,6 +16,8 @@
 // ONLY query tools pi-cbm defines and nothing destructive. Everything here
 // uses Node built-ins only, so it is testable without the pi-durable runtime.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -115,6 +117,39 @@ export async function resolveCbmBinary(env = process.env) {
     if (await isExecutable(p)) return p;
   }
   return null;
+}
+
+// sha256 of the EXTRACTED v0.12.1 linux-amd64 portable engine binary (the file
+// tools/fetch-cbm-bin.sh installs — not the release archive). We hash the
+// resolved binary and refuse to exec anything that does not match this pin, so
+// a $PATH/env-planted or untested-newer build cannot slip in. A different
+// platform build requires updating this pin AND the fetch script together.
+export const PINNED_CBM_SHA256 = "77745491f0a9c346d6da23eed4d92b5feaa31a27a883c9faa4fa9f47c8183705";
+
+function sha256File(path) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(path);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+// Fail-closed binary identity check: hash the file (no exec) and compare to the
+// pin. Returns { ok, sha256?, message? }; ok:false means do not run it.
+export async function verifyCbmBinary(binPath) {
+  try {
+    const sha256 = await sha256File(binPath);
+    if (sha256 === PINNED_CBM_SHA256) return { ok: true, sha256 };
+    return {
+      ok: false,
+      sha256,
+      message: `codebase-memory-mcp binary at ${binPath} has sha256 ${sha256}, which does not match the pinned ${PINNED_CBM_SHA256} (v0.12.1 linux-amd64 portable). Refusing to run. Reinstall with tools/fetch-cbm-bin.sh.`,
+    };
+  } catch (e) {
+    return { ok: false, message: `cannot hash codebase-memory-mcp binary at ${binPath}: ${errorText(e)}` };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +287,42 @@ function normalizeCbmData(value) {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_STDIO_BYTES = 50 * 1024 * 1024;
 
+// A GLOBAL cap on concurrently running engine processes, across every Cbm
+// instance. The engine is a heavyweight one-shot binary (~330 MB resident per
+// process). A single read_symbols call fans out `concurrency × search-variants`
+// spawns (e.g. 4 × 3 = up to 12), and the whole batch would otherwise cold-start
+// at once — storming the host's memory/CPU AND the one private cache's lock, so
+// some processes block past the per-call timeout and die by SIGTERM. Funnelling
+// every exec through one bounded queue (a) keeps the engine reliable under batch
+// fan-out and (b) bounds resource use so a crafted batch cannot fork-bomb the
+// host. Override with PI_CBM_MAX_PROCS; the default is deliberately small since a
+// single query is ~0.7 s and throughput past a few procs only adds contention.
+const MAX_ENGINE_PROCS = Math.max(1, Number(process.env.PI_CBM_MAX_PROCS) || 3);
+let engineInFlight = 0;
+const engineWaiters = [];
+function acquireEngineSlot() {
+  if (engineInFlight < MAX_ENGINE_PROCS) {
+    engineInFlight += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => engineWaiters.push(resolve));
+}
+function releaseEngineSlot() {
+  const next = engineWaiters.shift();
+  if (next) next(); // hand the slot straight to a waiter; in-flight count unchanged
+  else engineInFlight -= 1;
+}
+
+// The ONLY environment the engine subprocess receives. Everything else —
+// provider API keys, tokens, unrelated secrets in process.env — is withheld; a
+// pure offline engine does not need them. CBM_CACHE_DIR is added separately
+// from the instance's (private) cacheDir.
+const CHILD_ENV_ALLOW = [
+  "HOME", "PATH", "TMPDIR", "TMP", "TEMP",
+  "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE",
+  "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+];
+
 export class Cbm {
   // bin: resolved binary path. cacheDir: forwarded as CBM_CACHE_DIR so the
   // index stays in one known offline location. skipVersionCheck honors
@@ -267,9 +338,22 @@ export class Cbm {
   }
 
   childEnv() {
-    const e = { ...this.env };
+    const e = {};
+    for (const k of CHILD_ENV_ALLOW) if (this.env[k] !== undefined) e[k] = this.env[k];
     if (this.cacheDir) e.CBM_CACHE_DIR = this.cacheDir;
     return e;
+  }
+
+  // Verify the binary's sha256 against the pin exactly once, before the FIRST
+  // exec of this instance. Fail-closed: a mismatch throws and nothing runs.
+  async #ensureVerified() {
+    if (this._verified) return;
+    if (!this._verifying)
+      this._verifying = verifyCbmBinary(this.bin).then((r) => {
+        if (!r.ok) throw new Error(r.message);
+        this._verified = true;
+      });
+    return this._verifying;
   }
 
   // One --version probe per instance; short-circuited by PI_CBM_SKIP_VERSION_CHECK.
@@ -281,7 +365,24 @@ export class Cbm {
     return this._version;
   }
 
+  // Every exec goes through here, so the sha256 pin is enforced before any
+  // child process starts (including --version and config).
   _spawn(argv, stdin, timeoutMs) {
+    return this.#ensureVerified().then(() => this.#rawSpawn(argv, stdin, timeoutMs));
+  }
+
+  // Acquire a global engine slot, then spawn; always release the slot. The gate
+  // bounds how many engine processes exist at once (see MAX_ENGINE_PROCS).
+  async #rawSpawn(argv, stdin, timeoutMs) {
+    await acquireEngineSlot();
+    try {
+      return await this.#execSpawn(argv, stdin, timeoutMs);
+    } finally {
+      releaseEngineSlot();
+    }
+  }
+
+  #execSpawn(argv, stdin, timeoutMs) {
     return new Promise((resolve, reject) => {
       const child = spawn(this.bin, argv, {
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -363,6 +464,29 @@ export class Cbm {
     return r.data;
   }
 
+  // Run an engine `config` subcommand. This is NOT a `cli --json` tool; it is a
+  // top-level subcommand that prints plain text and persists into this
+  // instance's (private) CBM_CACHE_DIR via childEnv.
+  async config(args, { timeoutMs = 15_000 } = {}) {
+    const { code, signal, stdout, stderr } = await this._spawn(["config", ...args], undefined, timeoutMs);
+    if (signal) throw new Error(`codebase-memory-mcp config terminated by ${signal}`);
+    if (code !== 0) throw new Error(`codebase-memory-mcp config ${args.join(" ")} failed (exit ${code}): ${(stderr || stdout).trim()}`);
+    return stdout;
+  }
+
+  // Turn off every served/background surface in this private cache BEFORE any
+  // index or query. In a FRESH cache the engine serves its loopback UI/admin
+  // HTTP server on 127.0.0.1:9749 by default (despite the --help text claiming
+  // ui_enabled defaults false) and runs an auto-reindex watcher thread. A
+  // query-only hunter needs neither; disabling them keeps the engine to pure
+  // one-shot reads with no listener and no background writes. Idempotent.
+  async hardenCache() {
+    await this.config(["set", "ui_enabled", "false"]);
+    await this.config(["set", "watcher_enabled", "false"]);
+    await this.config(["set", "auto_watch", "false"]);
+    await this.config(["set", "auto_index", "false"]);
+  }
+
   // ---- the five read-only query tools (pi-cbm src/domain/symbols.ts) ----
 
   async resolveSymbol(params) {
@@ -427,7 +551,7 @@ export class Cbm {
     if (!hasSearchInput(params))
       throw new Error("search_and_read_symbols requires query, name_pattern, qn_pattern, file_pattern, or semantic_query.");
     const project = requireProject(params);
-    const searchLimit = clampInt(params.search_limit ?? params.limit, 12, 1, 50);
+    const searchLimit = clampInt(params.search_limit, 12, 1, 50);
     const readLimit = clampInt(params.read_limit, Math.min(searchLimit, 8), 1, 20);
     const concurrency = clampInt(params.max_concurrency, 6, 1, 16);
     const includeMetadata = params.include_metadata === true;
@@ -482,7 +606,6 @@ export class Cbm {
     const project = requireProject(params);
     const name = typeof params.name === "string" ? params.name.trim() : "";
     const qualifiedName = typeof params.qualified_name === "string" ? params.qualified_name.trim() : "";
-    const limit = clampInt(params.limit, 20, 1, 100);
 
     const searches = [];
     if (qualifiedName) searches.push({ qn_pattern: `.*${escapeRegExp(qualifiedName)}.*` });
@@ -495,7 +618,10 @@ export class Cbm {
 
     const results = await Promise.all(
       searches.map((search) =>
-        this.callTool("search_graph", removeUndefined({ project, limit: Math.max(limit, 20), fields: SEARCH_GRAPH_FIELDS, ...search }), {
+        // Search breadth is a FIXED internal bound, never caller-controlled: a
+        // caller must not be able to shrink the candidate set to slip past the
+        // ambiguity gate (read_symbol fails closed on >1 match). See below.
+        this.callTool("search_graph", removeUndefined({ project, limit: RESOLVE_SEARCH_BREADTH, fields: SEARCH_GRAPH_FIELDS, ...search }), {
           allowError: true,
         }),
       ),
@@ -505,7 +631,9 @@ export class Cbm {
 
     const candidates = results.flatMap((r) => (r.ok ? allSearchCandidates(r.data) : []));
     const deduped = dedupeCandidates(candidates);
-    const filtered = filterCandidates(deduped, params).slice(0, limit);
+    // Ambiguity is judged on the FULL filtered set — no limit slice here. The
+    // caller cannot pass a limit to collapse a multi-match down to one.
+    const filtered = filterCandidates(deduped, params);
     const enriched = await this.#enrichLocations(filtered, project, params);
     return { project, query: symbolQuery(params), candidates: enriched, consideredCandidates: deduped.length };
   }
@@ -592,6 +720,9 @@ export class Cbm {
 // ---------------------------------------------------------------------------
 
 const SEARCH_GRAPH_FIELDS = ["signature", "parent_class", "start_line", "end_line"];
+// Fixed breadth for resolve/read symbol graph searches. NOT caller-controlled —
+// the ambiguity gate must see every match, so a caller cannot narrow it away.
+const RESOLVE_SEARCH_BREADTH = 100;
 
 function requireProject(params) {
   const p = typeof params.project === "string" ? params.project.trim() : "";

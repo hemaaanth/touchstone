@@ -8,16 +8,21 @@
 # API key. See spike/packs/source-nav/TOOLS.md.
 #
 # Usage:  tools/fetch-cbm-bin.sh
-# Idempotent: re-running verifies the checksum and reinstalls.
+# Idempotent: re-running verifies the installed binary's sha256 and reinstalls
+# only if it is missing or fails the checksum.
 set -euo pipefail
 
 # --- Pin ----------------------------------------------------------------------
 REPO="DeusData/codebase-memory-mcp"
 VERSION="0.12.1"
 ASSET="codebase-memory-mcp-linux-amd64-portable.tar.gz"
-# sha256 of the release ARCHIVE above (from the release's checksums.txt). The
-# extracted binary is large and platform-built; we pin the archive we download.
+# sha256 of the release ARCHIVE above (from the release's checksums.txt), and of
+# the EXTRACTED binary it contains. We verify BOTH: the archive after download,
+# and the installed/extracted binary itself — so "already installed" never means
+# "trusted without checking". BINARY_SHA256 must match spike/lib/cbm.mjs's
+# PINNED_CBM_SHA256 (the runtime gate hashes the binary before every exec).
 ARCHIVE_SHA256="8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
+BINARY_SHA256="77745491f0a9c346d6da23eed4d92b5feaa31a27a883c9faa4fa9f47c8183705"
 URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
 
 # --- Install location ---------------------------------------------------------
@@ -26,10 +31,14 @@ BIN="${DEST}/codebase-memory-mcp"
 
 echo "codebase-memory-mcp ${VERSION} -> ${BIN}"
 
-# Already installed and intact? The engine's own --version is the cheapest check.
-if [ -x "${BIN}" ] && "${BIN}" --version 2>/dev/null | grep -q "${VERSION}"; then
-  echo "already installed (${BIN}); nothing to do."
-  exit 0
+# Already installed? Trust it only if its sha256 matches the pin — not its
+# self-reported --version (a planted binary can print anything).
+if [ -x "${BIN}" ]; then
+  if echo "${BINARY_SHA256}  ${BIN}" | sha256sum -c - >/dev/null 2>&1; then
+    echo "already installed and sha256-verified (${BIN}); nothing to do."
+    exit 0
+  fi
+  echo "installed binary at ${BIN} failed checksum; reinstalling." >&2
 fi
 
 # --- Download + verify + extract (build-time network) -------------------------
@@ -57,6 +66,10 @@ if [ -z "${SRC_BIN}" ]; then
   exit 1
 fi
 SRC_DIR="$(dirname "${SRC_BIN}")"
+
+# Verify the extracted binary itself before trusting it on disk.
+echo "verifying extracted binary sha256"
+echo "${BINARY_SHA256}  ${SRC_BIN}" | sha256sum -c -
 
 # --- Install (binary + provenance) --------------------------------------------
 mkdir -p "${DEST}"
