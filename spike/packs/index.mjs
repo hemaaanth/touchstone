@@ -12,6 +12,7 @@ import web from "./web/pack.mjs";
 import peopleBrand from "./people-brand/pack.mjs";
 import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
+import sourceNav from "./source-nav/pack.mjs";
 
 export const PACKS = {
   [contracts.id]: contracts, [supplyChain.id]: supplyChain, [domains.id]: domains, [surface.id]: surface,
@@ -20,6 +21,7 @@ export const PACKS = {
   [infraCloud.id]: infraCloud,
   // Read-only review for operator scopes with no fitting replay oracle.
   [review.id]: review,
+  [sourceNav.id]: sourceNav,
 };
 
 export function packFor(cfg = {}) {
