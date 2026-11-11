@@ -23,10 +23,10 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
   | { kind: "run"; id: string }
-  | { kind: "page"; id: "projects" | "modules" | "playbooks" | "settings" }
+  | { kind: "page"; id: "scopes" | "modules" | "playbooks" | "settings" }
 
 const PAGES = [
-  { id: "projects", label: "Projects", icon: FolderGit2 },
+  { id: "scopes", label: "Scopes", icon: FolderGit2 },
   { id: "modules", label: "Modules", icon: Boxes },
   { id: "playbooks", label: "Playbooks", icon: BookMarked },
 ] as const
@@ -126,7 +126,7 @@ export function AppSidebar({
       </SidebarContent>
 
       {/* Workspace nav + account controls sit together at the base, divided
-          from the runs list above. Projects / Modules / Playbooks are
+          from the runs list above. Scopes / Modules / Playbooks are
           destinations you leave the runs for, so they live down here by
           Settings rather than competing with the list. */}
       <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">

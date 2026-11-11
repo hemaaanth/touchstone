@@ -635,7 +635,7 @@ const allListeners = new Set<() => void>()
 const settleListeners = new Set<(id: string) => void>()
 
 // Status and headline of every loaded run, for the sidebar, plus what the
-// Modules and Projects pages count: the scope the run attacked, how many
+// Modules and Scopes pages count: the scope the run attacked, how many
 // findings it proved, its pipeline plan and the tools its prepass ran.
 // Replaced (never mutated) on each change so useSyncExternalStore sees a new
 // snapshot.

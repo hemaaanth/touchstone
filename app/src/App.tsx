@@ -14,7 +14,7 @@ import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { ModulesPage } from "@/components/modules-page"
-import { ProjectsPage } from "@/components/projects-page"
+import { ScopesPage } from "@/components/scopes-page"
 import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
@@ -176,8 +176,8 @@ export function App() {
           <SettingsPage onChanged={refreshModels} />
         ) : page === "modules" ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
-        ) : page === "projects" ? (
-          <ProjectsPage
+        ) : page === "scopes" ? (
+          <ScopesPage
             catalog={catalog}
             packs={packs}
             targets={targets}

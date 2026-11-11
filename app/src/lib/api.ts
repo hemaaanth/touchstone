@@ -68,7 +68,15 @@ export function startRun(alias: string, targetId?: string, budgetUsd?: number, p
   return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack })
 }
 
-export function attachScope(body: { title: string; repo?: string; files?: { path: string; content: string }[] }): Promise<TargetChoice> {
+// One scope per call. `repo` is one GitHub URL; `brief` is markdown whose
+// https links are the sources (several repos as one scope); `files` is local
+// Solidity source (one or more folders).
+export function attachScope(body: {
+  title: string
+  repo?: string
+  brief?: string
+  files?: { path: string; content: string }[]
+}): Promise<TargetChoice> {
   return postJson<TargetChoice>("/api/scopes", body)
 }
 

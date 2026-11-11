@@ -24,7 +24,7 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   component kit that fights base-nova.
 - The backend is a vite middleware (`server/api.mjs`) over the pi-durable
   engine. `bun run dev` serves the app and `/api/` from one process.
-- **Information architecture.** Left sidebar = runs list + Projects / Modules /
+- **Information architecture.** Left sidebar = runs list + Scopes / Modules /
   Playbooks / Settings. Center = the agent run chat; findings are scoped to
   their run. Files the agent writes (PoC code, the replay proof) are artifacts
   in a closable right pane, tabbed. Clicking a proven finding's proof card opens
