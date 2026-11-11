@@ -1,86 +1,70 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { ArrowRightIcon, BotIcon } from "lucide-react";
+import { ArrowRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { field, mono } from "./surfaces";
 
+// One message between two agents in a fleet: who sent it, who got it, when,
+// and the text. Each name is a pill. A pill with a click handler opens that
+// agent's thread; a pill without one is inert (it names the thread you are in).
+// `highlighted` marks the card a pill just jumped to. The highlight fades out
+// when the caller clears it.
 export function AgentHandoff({
   from,
   to,
-  reason,
-  carried,
-  settled,
+  time,
+  text,
+  onFrom,
+  onTo,
+  highlighted,
   className,
   ...props
-}: Omit<
-  ComponentProps<"div">,
-  "children" | "from" | "to" | "reason" | "carried" | "settled"
-> & {
+}: Omit<ComponentProps<"div">, "children" | "onToggle"> & {
   from: string;
   to: string;
-  reason: string;
-  carried: readonly string[];
-  settled: boolean;
+  time?: string;
+  text: string;
+  onFrom?: () => void;
+  onTo?: () => void;
+  highlighted?: boolean;
 }) {
   return (
     <div
       data-slot="agent-handoff"
-      className={cn("flex w-full max-w-sm flex-col gap-2", className)}
-
+      className={cn(
+        "flex w-full max-w-160 flex-col gap-2 rounded-[10px] border bg-background px-3 py-2.5 transition-colors duration-700",
+        highlighted && "border-foreground/15 bg-muted duration-150",
+        className,
+      )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            field,
-            "text-muted-foreground flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-opacity duration-500",
-            settled && "opacity-45",
-          )}
-        >
-          <BotIcon className="size-3" />
-          {from}
-        </span>
-
-        <ArrowRightIcon
-          className={cn(
-            "size-3.5 shrink-0 transition-colors duration-500",
-            settled
-              ? "text-muted-foreground"
-              : "text-blue-500 dark:text-blue-400",
-          )}
-        />
-
-        <span
-          className={cn(
-            "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors duration-500",
-            settled
-              ? cn(field, "text-foreground/80")
-              : "bg-blue-500/12 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300",
-          )}
-        >
-          <BotIcon className="size-3" />
-          {to}
-        </span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Pill name={from} onClick={onFrom} />
+        <ArrowRightIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+        <Pill name={to} onClick={onTo} />
+        {time ? <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground tabular-nums">{time}</span> : null}
       </div>
-
-      <p className="text-muted-foreground text-xs leading-relaxed">{reason}</p>
-
-      {carried.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className={cn(mono, "text-muted-foreground")}>
-            carried over
-          </span>
-          {carried.map((item) => (
-            <span
-              key={item}
-              className="text-foreground/60 border-foreground/12 border-s ps-2.5 text-xs leading-relaxed"
-            >
-              {item}
-            </span>
-          ))}
-        </div>
-      )}
+      <p className="text-[13px] leading-[19px] text-foreground [overflow-wrap:anywhere]">{text}</p>
     </div>
+  );
+}
+
+const pill =
+  "min-w-0 truncate rounded-full border bg-background px-[9px] py-[3px] text-xs leading-[15px] font-medium text-foreground";
+
+function Pill({ name, onClick }: { name: string; onClick?: () => void }) {
+  if (!onClick) return <span className={pill}>{name}</span>;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Open ${name}`}
+      className={cn(
+        pill,
+        "cursor-pointer transition-colors outline-none hover:border-foreground/15 hover:bg-muted focus-visible:ring-2 focus-visible:ring-foreground/15",
+      )}
+    >
+      {name}
+    </button>
   );
 }
