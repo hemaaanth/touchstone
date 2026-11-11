@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { ArrowUp, Blocks, Check, ChevronDown, Cpu, FileCode2, FolderGit2, Loader2, Plus, Shuffle, X } from "lucide-react"
 import type { ModelChoice, PackChoice, SpendState, TargetChoice } from "@/lib/types"
 import { attachScope, removeScope } from "@/lib/api"
+import { DEFAULT_PACK, isOwnScope, packOf, scopeMeta } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -14,7 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 const RANDOM = "random"
-const DEFAULT_PACK = "contracts"
 
 // The New Run window, shaped like a composer. The body is the scope list: the
 // one real choice, shown in place. Each scope shows its name and its file,
@@ -50,7 +50,7 @@ export function NewRunDialog({
   // list, so a new pack appears here by itself.
   const [packPicked, setPackPicked] = useState("")
   const pack = packs.some((p) => p.id === packPicked) ? packPicked : DEFAULT_PACK
-  const runnable = targets.filter((t) => t.runnable && (t.pack ?? DEFAULT_PACK) === pack)
+  const runnable = targets.filter((t) => t.runnable && packOf(t) === pack)
   // The operator's pick, else the default model (the server lists it first).
   const [picked, setAlias] = useState("")
   const alias = picked || models[0]?.alias || ""
@@ -192,18 +192,6 @@ export function NewRunDialog({
   )
 }
 
-// What a scope row shows on the right: its file, its file count, or its repo.
-function scopeMeta(t: TargetChoice): string {
-  if (t.files?.length) return t.files.length === 1 ? t.files[0] : `${t.files.length} files`
-  if (t.links?.length) return t.links[0].replace(/^https?:\/\/(www\.)?(github\.com\/)?/, "")
-  return t.entry
-}
-
-// Scopes the operator added (as opposed to the built-in labs) can be removed.
-function isOwnScope(id: string) {
-  return id.startsWith("source-") || id.startsWith("brief-")
-}
-
 // One scope: its name and, when it has one, its file. The check column has a
 // fixed width so rows do not shift on selection. The remove button is a
 // sibling of the radio, not a child, and shows on hover.
@@ -295,7 +283,7 @@ async function readSolidity(list: FileList) {
 // The last row of the list: add your own scope. Closed, it is one quiet row.
 // Open, it takes a GitHub URL (Enter), a folder, or Solidity files. The name
 // comes from the repo or folder; there is nothing else to fill in.
-function AddScope({
+export function AddScope({
   onAttached,
   onError,
 }: {
