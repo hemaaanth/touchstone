@@ -76,6 +76,55 @@ reads `found` when the run settles.
 
 Use these. Do not write a second Docker runner or SARIF parser in a pack.
 
+## Fleet runs
+
+`agent-run.mjs` adds `lib/fleet.mjs` beside the pack extension by default.
+The root conversation coordinates trusted T1 children. Each child gets the
+same model and pack tools, plus `message_agent`, `bulletin_post`, and
+`bulletin_read`. Only the root gets `spawn_agent`.
+
+- `spawn_agent({name, task, area})` starts one child in a background-owned
+  conversation. Use one clear angle per child. `FLEET_MAX` caps the number
+  of children in the run. The default is four.
+- `message_agent({to, text})` accepts a child name, child id, or
+  `coordinator`. It steers a busy child and starts a new turn for an idle
+  or failed child. To retry, message the same child. To reassign, read its
+  task from `bulletin_read` and send that task to another child.
+- `bulletin_post({text, kind, severity?, tags?})` saves a note or lead.
+  All current authors are T1, so all posts use the trusted lane.
+  `bulletin_read()` returns the posts and the child roster with tasks.
+- The roster, posts, delivery tasks, and child conversations are stored in
+  pi-durable. A follow-up can reopen them from the run's SQLite session.
+  Child failures produce `subagent-done` with plain error text. They do
+  not throw into the coordinator.
+
+`lib/event.mjs` is still the only event writer. Fleet wrappers use the tool's
+`api.conversationId` to set its async-local child tag. They do not depend on
+the spawn call's async context. The provider uses each conversation's saved
+session id to tag its spend and budget events. Child cognition watches the
+child's `LiveDoc`; spend snapshots watch its `UsageDoc`.
+
+Children share the pack state and workspace. Pack tool calls run one at a
+time so two proofs cannot overwrite the same file. Child model calls and
+fleet messages can run in parallel. Reports are drained before the worker
+emits `settled` or replays findings. Fleet cognition uses durable generation
+task ids for `attempt`, so retries do not replace an earlier answer.
+
+All responses, including child responses and failed attempts, go through
+the same `budgetedApi` and `createRunBudget`. Usage snapshots do not charge
+the budget a second time. The budget is checked between provider calls.
+Responses already in flight can exceed the amount left when they started.
+
+Set `FLEET=0` to omit the fleet extension, wrappers, and coordinator prompt.
+The original single-agent pack path remains in place. No T2 worker or new
+proof bypass is part of this implementation.
+
+Run the focused runtime checks with:
+
+```sh
+node --test spike/test/fleet.test.mjs
+```
+
 ## Proof kinds
 
 | Kind       | A finding is real when…                                             | Modules |
