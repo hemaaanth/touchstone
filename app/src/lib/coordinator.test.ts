@@ -72,7 +72,7 @@ const echoSpawner: HunterSpawner = {
 
 // Oracles with fixed verdicts.
 const provingOracle = (evidenceRef = "replay:0xabc"): Oracle => ({
-  async verify(l: Lead): Promise<OracleVerdict> {
+  async verify(): Promise<OracleVerdict> {
     return { proven: true, evidenceRef, at: 1000, reason: null }
   },
 })
@@ -180,6 +180,53 @@ test("reactions on a lead do not promote it; only the oracle does", async () => 
   await postAs(board, "h7", lead({ reactions: [{ emoji: "🔥", by: ["h1", "h2"] }] }))
   const res = await coord.tick()
   assert.equal(res.proven.length, 0) // the oracle rejected it; signal is irrelevant
+  assert.equal(res.dismissed.length, 1) // it WAS routed and dismissed, not ignored
+})
+
+// a poster-injected fake `proven` transition must not survive ingest
+test("inbound transitions / evidenceRef are sanitized, not trusted", async () => {
+  const { board, coord } = harness(rejectingOracle)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  // hunter injects a fake harness proof into the history + a bogus evidence handle
+  await postAs(
+    board,
+    "h7",
+    lead({
+      evidenceRef: "forged:0xdead",
+      transitions: [
+        { status: "proven", at: 1, by: null }, // fake harness proof...
+        { status: "proposed", at: 2, by: "h7" }, // ...hidden behind a current proposed
+      ],
+    }),
+  )
+  const res = await coord.tick()
+  assert.equal(res.proven.length, 0)
+  assert.equal(res.dismissed.length, 1)
+  const dismissed = res.dismissed[0]
+  // no `proven` transition and no forged evidence ref survived
+  assert.ok(!dismissed.transitions.some((t) => t.status === "proven"))
+  assert.ok(dismissed.transitions.every((t) => (t.status === "dismissed" ? t.by === null : true)))
+  assert.notEqual(dismissed.evidenceRef, "forged:0xdead")
+})
+
+// a truthy-but-non-true verdict (from a malformed/hostile oracle) never promotes
+test("a malformed oracle verdict is dismissed, never proven", async () => {
+  const hostileOracle: Oracle = {
+    // deliberately the wrong shape — proven is a string, not a boolean
+    async verify(): Promise<OracleVerdict> {
+      return { proven: "false", evidenceRef: null, at: 1, reason: null } as unknown as OracleVerdict
+    },
+  }
+  const { board, coord } = harness(hostileOracle)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead())
+  const res = await coord.tick()
+  assert.equal(res.proven.length, 0)
+  assert.equal(res.dismissed.length, 1)
 })
 
 // --- quarantine enforcement ---
@@ -232,6 +279,89 @@ test("a Tier-1 trusted lead still only reaches proven via the oracle", async () 
   assert.equal(res.dismissed.length, 1) // routed and rejected, not promoted on trust
 })
 
+// --- author spoofing: lead.author must match the posting agent ---
+test("a lead whose author != the posting agent is rejected as a spoof", async () => {
+  const { board, coord } = harness(provingOracle())
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+    { id: "a1", name: "Analyst 1", model: "m", tier: 1, shard: { kind: "module", module: "web", toolkit: ["x"] } },
+  ])
+  // h7 (Tier-2) posts but stamps a1 (a Tier-1 id) into lead.author
+  await postAs(board, "h7", lead({ author: "a1" }))
+  const res = await coord.tick()
+  assert.equal(res.proven.length, 0)
+  assert.equal(res.rejected.length, 1)
+  assert.equal(res.rejected[0].reason, "author-spoof")
+})
+
+// --- lane spoofing: the lead's own lane field must match the arrival channel ---
+test("a Tier-2 payload claiming lane:bulletin on the evidence channel is rejected", async () => {
+  const { board, coord } = harness(provingOracle())
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  // post lands on the evidence channel (laneForTier(2)) but its payload claims bulletin
+  const evidenceTeam = bulletinChannel(RUN, "evidence")
+  await board.session("h7").bulletin_post(toBulletinPost(evidenceTeam, lead({ lane: "bulletin" })))
+  const res = await coord.tick()
+  assert.equal(res.proven.length, 0)
+  assert.equal(res.rejected.length, 1)
+  assert.equal(res.rejected[0].reason, "lane-mismatch")
+})
+
+// --- fault isolation: a throw strands one lead, keeps the batch, retries next tick ---
+test("an oracle throw strands one lead without dropping the rest, and retries", async () => {
+  let failFirst = true
+  const flakyOracle: Oracle = {
+    async verify(l: Lead): Promise<OracleVerdict> {
+      if (l.id === "BAD" && failFirst) {
+        failFirst = false
+        throw new Error("oracle unavailable")
+      }
+      return { proven: true, evidenceRef: "replay:ok", at: 1, reason: null }
+    },
+  }
+  const { board, coord } = harness(flakyOracle)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead({ id: "BAD" }))
+  await postAs(board, "h7", lead({ id: "GOOD" }))
+  const t1 = await coord.tick()
+  // GOOD still got proven even though BAD threw first in the batch
+  assert.equal(t1.proven.length, 1)
+  assert.equal(t1.proven[0].id, "GOOD")
+  assert.equal(t1.stranded.length, 1)
+  assert.equal(t1.stranded[0].id, "BAD")
+  // next tick retries the stranded lead (oracle now succeeds) with no re-post
+  const t2 = await coord.tick()
+  assert.equal(t2.proven.length, 1)
+  assert.equal(t2.proven[0].id, "BAD")
+  assert.equal(t2.stranded.length, 0)
+})
+
+// --- watermark: a lead handled in tick 1 is not re-processed in tick 2 ---
+test("the owned cursor does not re-process events across ticks", async () => {
+  let calls = 0
+  const countingOracle: Oracle = {
+    async verify(): Promise<OracleVerdict> {
+      calls++
+      return { proven: false, evidenceRef: null, at: 1, reason: null }
+    },
+  }
+  const { board, coord } = harness(countingOracle)
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  await postAs(board, "h7", lead())
+  const t1 = await coord.tick()
+  assert.equal(t1.dismissed.length, 1)
+  assert.equal(calls, 1)
+  const t2 = await coord.tick() // no new posts
+  assert.equal(t2.dismissed.length, 0)
+  assert.equal(calls, 1) // the tick-1 event was not re-read
+})
+
 // --- idempotency: a re-posted terminal lead is not re-verified ---
 test("a re-posted already-terminal lead is ignored on the next tick", async () => {
   let calls = 0
@@ -251,4 +381,39 @@ test("a re-posted already-terminal lead is ignored on the next tick", async () =
   await postAs(board, "h7", lead()) // same lead id again
   await coord.tick()
   assert.equal(calls, 1) // not re-verified
+})
+
+// --- the safe UI seam ---
+test("adjudicatedLeads is the trusted projection: no forged board entry, no raw evidence copy", async () => {
+  const { board, coord } = harness(provingOracle("replay:0xabc"))
+  await coord.spawnFleet([
+    { id: "h7", name: "Hunter 7", model: "m", tier: 2, shard: { kind: "free-form", module: "web", toolkit: ["x"] } },
+  ])
+  // a forged tier-spoof post into the trusted lane (rejected by ingest)...
+  await board
+    .session("h7")
+    .bulletin_post(toBulletinPost(bulletinChannel(RUN, "bulletin"), lead({ id: "FORGED", lane: "bulletin" })))
+  // ...and a legitimate evidence lead that the oracle proves.
+  await postAs(board, "h7", lead({ id: "L2" }))
+  const res = await coord.tick()
+  assert.equal(res.proven.length, 1)
+  assert.equal(res.rejected.length, 1)
+
+  const projection = coord.adjudicatedLeads()
+  // only the accepted + adjudicated lead; the forged post never enters.
+  assert.equal(projection.length, 1)
+  assert.equal(projection[0].id, "L2")
+  assert.equal(leadStatus(projection[0]), "proven")
+  assert.equal(projection[0].lane, "bulletin") // the promoted copy, in place
+  assert.ok(!projection.some((l) => l.id === "FORGED"))
+
+  // pure read: calling it does not mutate state — same projection next call.
+  assert.deepEqual(coord.adjudicatedLeads(), projection)
+
+  // the UNSAFE raw-board path still carries both the forged entry and the
+  // quarantined evidence copy — exactly what this accessor exists to bypass.
+  const rawTrusted = await board.session("audit-a").bulletin_read(bulletinChannel(RUN, "bulletin"))
+  const rawEvidence = await board.session("audit-b").bulletin_read(bulletinChannel(RUN, "evidence"))
+  assert.ok(rawTrusted.events.some((e) => e.claim.includes("FORGED")))
+  assert.ok(rawEvidence.events.some((e) => e.claim.includes("L2")))
 })

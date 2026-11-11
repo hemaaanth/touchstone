@@ -21,12 +21,13 @@
 // Tier-2 posts are read from the `evidence` lane only and are treated as evidence
 // submissions, never as control messages.
 
-import type { Fleet, HunterAgent, Lead, Tier, BulletinLane } from "./fleet"
-import { bulletinChannel, fleetSummary, isTerminal, leadStatus } from "./fleet"
+import type { Fleet, HunterAgent, Lead, Tier, BulletinLane, LeadTransition } from "./fleet"
+import { bulletinChannel, fleetSummary, leadStatus } from "./fleet"
 import type { ClaimStatus, OracleVerdict, BulletinPostArgs } from "./fleet-policy"
 import {
   applyOracleVerdict,
   fromBulletinClaim,
+  isOracleVerdict,
   markVerifying,
   toBulletinPost,
   validateLeadPost,
@@ -308,9 +309,13 @@ export interface CoordinatorOptions {
 // Why a given inbound post was not routed to the oracle.
 export type RejectReason =
   | "unparseable" // not one of our JSON Lead payloads
+  | "non-finding" // a signal/message kind, audited not silently dropped
   | "unknown-author" // author id not in the fleet registry
+  | "author-spoof" // lead.author != the posting agent (PI_BULLETIN_AGENT)
   | "tier-spoof" // a Tier-2 author posting into the trusted lane
+  | "lane-mismatch" // the lead's own `lane` field != the channel it arrived on
   | "policy" // validateLeadPost rejected it
+  | "duplicate" // id already processed in this lane's trust scope
 
 export interface RejectedPost {
   seq: number
@@ -325,6 +330,10 @@ export interface TickResult {
   proven: Lead[]
   // Leads the oracle declined — now `dismissed`.
   dismissed: Lead[]
+  // Leads that were validated and marked `verifying` but whose oracle/post/
+  // resolve step threw. They are NOT dropped: they stay registered and are
+  // retried on the next tick. Surfaced here so a throw is never silent.
+  stranded: Lead[]
   // Posts that never reached the oracle, and why.
   rejected: RejectedPost[]
 }
@@ -335,13 +344,46 @@ export interface CoordinatorReport {
   active: number
   proven: Lead[]
   dismissed: Lead[]
+  // Leads still mid-flight (validated, verifying, awaiting a successful oracle
+  // round) at report time.
+  stranded: Lead[]
   rejected: RejectedPost[]
 }
+
+// Max events pulled from one lane per read, so a single tick is bounded.
+const READ_LIMIT = 256
+
+// A validated lead marked `verifying`, awaiting (or retrying) its oracle round.
+interface PendingLead {
+  key: string // trust-scoped dedup key
+  lead: Lead
+  lane: BulletinLane // the channel it arrived on (where we resolve it)
+  seq: number // the originating post's board sequence
+}
+
+// ---------------------------------------------------------------------------
+// Known limitations / real-runtime deltas (acknowledged, scoped follow-ups):
+//
+//   F9 (restart rehydration) — the Bulletin is durable, but this coordinator's
+//   `registry`, `leads`, `pending`, and `cursors` are in-memory. A restarted
+//   coordinator with an empty registry would reject its own prior promoted posts
+//   as `unknown-author` and re-read the whole board. Rehydration (replay the
+//   bulletin history + persisted run-state registry into these maps, seed the
+//   cursors past what was handled) is a SCOPED FOLLOW-UP, not done here. Spec §7
+//   describes the durable substrate; this file does not yet consume it on boot.
+//
+//   F8 (post authenticity) — trust rests on `ev.agent` (the pi-bulletin
+//   PI_BULLETIN_AGENT), an UNAUTHENTICATED env value over plain files. The real
+//   extension does not cryptographically bind a post to an agent, so the
+//   author-spoof check here defends against a buggy/confused poster, not a
+//   determined one with write access to another session's env. This does NOT
+//   weaken the core claim: nothing reaches `proven` without the harness oracle,
+//   regardless of who posted. Hardening identity is an extension-level concern.
+// ---------------------------------------------------------------------------
 
 export class Coordinator {
   private readonly runId: string
   private readonly coordinatorId: string
-  private readonly bulletin: BulletinSessionFactory
   private readonly spawner: HunterSpawner
   private readonly oracle: Oracle
   private readonly now: () => number
@@ -351,18 +393,31 @@ export class Coordinator {
   private readonly session: BulletinClient
 
   // The fleet registry — the ONLY source of an author's trust tier. A post's
-  // self-declared tier is checked against this, never trusted on its own.
+  // self-declared tier is checked against this, never trusted on its own. Keyed
+  // by the agent id that becomes its PI_BULLETIN_AGENT (spec.id).
   private readonly registry = new Map<string, HunterAgent>()
 
-  // Every lead we have processed, keyed by lead id, so a re-post (e.g. a
-  // corroboration repost) is not re-verified and the report is stable.
+  // Every lead we have processed, keyed by a TRUST-SCOPED key (lane + id), so an
+  // untrusted (evidence-lane) poster cannot squat a lead id and block a later
+  // trusted (bulletin-lane) lead with the same id. The map is also the source
+  // for the report.
   private readonly leads = new Map<string, Lead>()
+
+  // Leads marked `verifying` whose oracle round has not yet succeeded. Drained
+  // (retried) at the head of every tick so a transient oracle/board failure does
+  // not strand a lead forever.
+  private readonly pending = new Map<string, PendingLead>()
+
+  // Per-lane read cursor the coordinator OWNS, advanced only past events it has
+  // handled this tick. We do not rely on the board's own per-agent watermark so
+  // that a batch is processed deterministically and bounded by READ_LIMIT.
+  private readonly cursors = new Map<BulletinLane, number>()
+
   private readonly rejects: RejectedPost[] = []
 
   constructor(opts: CoordinatorOptions) {
     this.runId = opts.runId
     this.coordinatorId = opts.coordinatorId
-    this.bulletin = opts.bulletin
     this.spawner = opts.spawner
     this.oracle = opts.oracle
     this.now = opts.now
@@ -376,12 +431,15 @@ export class Coordinator {
   }
 
   // Spawn the hunters for a set of specs and build the Fleet. Each spawned agent
-  // is registered so its tier is known when its posts arrive.
+  // is registered under `spec.id` — the id the spawner sets as that session's
+  // PI_BULLETIN_AGENT, and therefore exactly the `agent` value that will appear
+  // on its posts. Registering under the returned record's own id instead would
+  // let a mismatched spawner silently de-register every post.
   async spawnFleet(specs: HunterSpec[]): Promise<Fleet> {
     const agents: HunterAgent[] = []
     for (const spec of specs) {
       const agent = await this.spawner.spawn(spec)
-      this.registry.set(agent.id, agent)
+      this.registry.set(spec.id, agent)
       agents.push(agent)
     }
     return {
@@ -391,110 +449,182 @@ export class Coordinator {
     }
   }
 
-  // One pass of the watch loop: drain NEW events on both lanes and route each
-  // valid, non-terminal lead through the proof gate. The evidence lane is read
-  // as untrusted submissions; a Tier-2 author appearing in the trusted lane is a
-  // spoof and is dropped, never acted on as a control message.
+  // One pass of the watch loop. Order matters:
+  //   1. Retry any lead left `verifying` by a previous tick's throw.
+  //   2. Drain NEW events on both lanes (evidence first so a Tier-2 submission is
+  //      never mistaken for a trusted lead) and route each valid lead through the
+  //      proof gate.
+  // Per-event handling is fault-isolated: one oracle/post/resolve throw strands
+  // that single lead (retried next tick) and never drops the rest of the batch,
+  // and leads adjudicated earlier in the tick still appear in the result.
   async tick(): Promise<TickResult> {
-    const result: TickResult = { proven: [], dismissed: [], rejected: [] }
+    const result: TickResult = { proven: [], dismissed: [], stranded: [], rejected: [] }
 
-    for (const lane of ["bulletin", "evidence"] as const) {
+    // (1) retry stranded leads from earlier ticks.
+    for (const p of [...this.pending.values()]) {
+      await this.finalize(p, result)
+    }
+
+    // (2) read and route new events. Evidence lane first.
+    for (const lane of ["evidence", "bulletin"] as const) {
       const team = bulletinChannel(this.runId, lane)
-      const { events } = await this.session.bulletin_read(team)
+      const from = this.cursors.get(lane) ?? 0
+      const { events } = await this.session.bulletin_read(team, from, READ_LIMIT)
       for (const ev of events) {
-        if (ev.kind !== "finding") continue // signals/messages are not leads
-        const outcome = await this.ingest(ev, lane)
-        if (!outcome) continue
-        if (outcome.rejected) {
-          result.rejected.push(outcome.rejected)
-          continue
-        }
-        if (!outcome.lead) continue
-        const status = leadStatus(outcome.lead)
-        if (status === "proven") result.proven.push(outcome.lead)
-        else if (status === "dismissed") result.dismissed.push(outcome.lead)
+        const ingested = this.ingest(ev, lane)
+        if (ingested.kind === "reject") result.rejected.push(ingested.rejected)
+        else if (ingested.kind === "verify") await this.finalize(ingested.pending, result)
+        // advance our cursor past every handled event, whatever its outcome —
+        // a stranded lead is retried via `pending`, not by re-reading.
+        this.cursors.set(lane, ev.seq)
       }
     }
     return result
   }
 
-  // Ingest one finding event. Returns a rejection, a processed lead, or null when
-  // there is nothing to do (already processed / already terminal).
-  private async ingest(
+  // Validate one event and, if it is a trustworthy lead, mark it `verifying` and
+  // register it for the proof round. PURE and synchronous — it never calls the
+  // oracle or the board, so it cannot throw mid-flight. Validation order is the
+  // security order: identity before dedup, so an untrusted poster can neither
+  // squat an id nor block a trusted lead.
+  private ingest(
     ev: BulletinEvent,
     lane: BulletinLane,
-  ): Promise<{ rejected?: RejectedPost; lead?: Lead } | null> {
-    const lead = fromBulletinClaim(ev.claim)
-    if (!lead) {
-      return { rejected: this.reject(ev, lane, "unparseable", ["claim is not a Lead payload"]) }
+  ):
+    | { kind: "reject"; rejected: RejectedPost }
+    | { kind: "skip" }
+    | { kind: "verify"; pending: PendingLead } {
+    // Our own promotions/digests echo back on the trusted lane — never re-ingest
+    // them as hunter submissions.
+    if (ev.agent === this.coordinatorId) return { kind: "skip" }
+
+    // Non-finding kinds (signal/message) are coordination chatter, not leads.
+    // Audited, not silently skipped.
+    if (ev.kind !== "finding") {
+      return { kind: "reject", rejected: this.reject(ev, lane, "non-finding", [`kind "${ev.kind}" is not a lead`]) }
     }
 
-    // Already handled? (duplicate / corroboration repost of a lead we verified.)
-    const seen = this.leads.get(lead.id)
-    if (seen && isTerminal(leadStatus(seen))) return null
+    const lead = fromBulletinClaim(ev.claim)
+    if (!lead) {
+      return { kind: "reject", rejected: this.reject(ev, lane, "unparseable", ["claim is not a Lead payload"]) }
+    }
 
     // Resolve the author's tier from the registry — the only trusted source.
     const author = ev.agent ? this.registry.get(ev.agent) : undefined
     if (!author) {
-      return { rejected: this.reject(ev, lane, "unknown-author", [
+      return { kind: "reject", rejected: this.reject(ev, lane, "unknown-author", [
         `author "${ev.agent ?? "<none>"}" is not in the fleet registry`,
       ]) }
     }
     const authorTier = author.tier
 
-    // Lane/tier guard. A Tier-2 (untrusted) author in the trusted bulletin lane
-    // is a spoofed control message — drop it. Tier-2 is only ever read from the
-    // quarantined evidence lane.
-    if (lane === "bulletin" && authorTier === 2) {
-      return { rejected: this.reject(ev, lane, "tier-spoof", [
-        "Tier-2 author posted into the trusted bulletin lane",
+    // Identity: the payload's self-declared `author` must match the posting
+    // agent (its PI_BULLETIN_AGENT). Otherwise a hunter is claiming another
+    // agent's id — e.g. a Tier-2 stamping a Tier-1 id into `author`.
+    if (lead.author !== ev.agent) {
+      return { kind: "reject", rejected: this.reject(ev, lane, "author-spoof", [
+        `lead.author "${lead.author}" != posting agent "${ev.agent}"`,
       ]) }
     }
 
-    // The policy gate — quarantine + no self-adjudication. Validate against the
-    // registry tier (not the lead's self-declared one). The lead's own `lane`
-    // field is checked here too, so a Tier-2 payload claiming the trusted lane is
-    // rejected even though it arrived on the evidence channel.
+    // Trust/lane guards. A Tier-2 author on the trusted bulletin channel is a
+    // spoofed control message. Otherwise the lead's own `lane` field must match
+    // the channel it actually arrived on (a Tier-2 payload claiming `bulletin`
+    // but posted to `evidence`, or vice-versa, is rejected).
+    if (lane === "bulletin" && authorTier === 2) {
+      return { kind: "reject", rejected: this.reject(ev, lane, "tier-spoof", [
+        "Tier-2 author posted into the trusted bulletin lane",
+      ]) }
+    }
+    if (lead.lane !== lane) {
+      return { kind: "reject", rejected: this.reject(ev, lane, "lane-mismatch", [
+        `lead.lane "${lead.lane}" != arrival lane "${lane}"`,
+      ]) }
+    }
+
+    // The policy gate — quarantine + no self-adjudication. Validated against the
+    // REGISTRY tier, never the lead's self-declared one.
     const check = validateLeadPost(lead, authorTier)
     if (!check.ok) {
-      return { rejected: this.reject(ev, lane, "policy", check.errors) }
+      return { kind: "reject", rejected: this.reject(ev, lane, "policy", check.errors) }
     }
 
-    // Valid lead → route through the proof gate. Record verifying bookkeeping,
-    // then apply the oracle's authoritative verdict. This is the ONLY promotion
-    // path; corroboration/reactions on the post are ignored here.
-    const verifying = markVerifying(lead, this.coordinatorId, this.now())
-    this.leads.set(lead.id, verifying)
-
-    const verdict = await this.oracle.verify(verifying)
-    const adjudicated = applyOracleVerdict(verifying, verdict)
-    this.leads.set(adjudicated.id, adjudicated)
-
-    // Promote / dismiss on the board, keyed by the lead's module ref.
-    const evidenceTeam = bulletinChannel(this.runId, "evidence")
-    const ref = adjudicated.module ?? "global"
-    if (leadStatus(adjudicated) === "proven") {
-      // Post the promoted lead into the trusted bulletin lane and mark the
-      // evidence ref resolved in favour of the proof.
-      await this.session.bulletin_post(
-        toBulletinPost(bulletinChannel(this.runId, "bulletin"), adjudicated),
-      )
-      await this.session.bulletin_resolve(
-        evidenceTeam,
-        ref,
-        "promoted",
-        verdict.evidenceRef,
-      )
-    } else {
-      await this.session.bulletin_resolve(
-        evidenceTeam,
-        ref,
-        "dismissed",
-        null,
-      )
+    // Dedup — AFTER identity + tier + policy, and scoped by trust lane so a
+    // Tier-2 squatting an id in `evidence` cannot block a Tier-1 lead with the
+    // same id in `bulletin`. Every drop is recorded, never silent.
+    const key = `${lane}:${lead.id}`
+    if (this.leads.has(key)) {
+      return { kind: "reject", rejected: this.reject(ev, lane, "duplicate", [
+        `lead id "${lead.id}" already processed in lane "${lane}"`,
+      ]) }
     }
 
-    return { lead: adjudicated }
+    // SANITIZE inbound history. A poster-supplied `transitions`/`evidenceRef` is
+    // untrusted — a hunter could inject a fake `proven`/`by:null` transition that
+    // the console (which renders recorded transitions) would show as a harness
+    // proof. We rebuild the timeline from scratch: a single baseline transition
+    // stamped from TRUSTED board metadata (the post's own seq time and verified
+    // author), then only the coordinator's and oracle's own recorded actions.
+    const posted = leadStatus(lead)
+    const baseline: LeadTransition = { status: posted, at: ev.at, by: ev.agent }
+    const clean: Lead = {
+      ...lead,
+      evidenceRef: null, // never trust a poster's evidence handle
+      status: posted,
+      transitions: [baseline],
+    }
+
+    // Record verifying bookkeeping (the coordinator's own action) and register
+    // for the proof round.
+    const verifying = markVerifying(clean, this.coordinatorId, this.now())
+    this.leads.set(key, verifying)
+    const pending: PendingLead = { key, lead: verifying, lane, seq: ev.seq }
+    this.pending.set(key, pending)
+    return { kind: "verify", pending }
+  }
+
+  // The proof round for one registered lead: ask the oracle, gate the verdict,
+  // apply it, then promote/dismiss on the board. May throw (the oracle and the
+  // board are I/O); a throw leaves the lead in `pending` for the next tick and
+  // surfaces it in `result.stranded` — it is NEVER dropped and NEVER stuck
+  // silently. On success the lead leaves `pending` and lands in proven/dismissed.
+  private async finalize(p: PendingLead, result: TickResult): Promise<void> {
+    try {
+      const raw = (await this.oracle.verify(p.lead)) as unknown
+      // Shape-guard the verdict BEFORE the gate. A malformed/hostile verdict
+      // (e.g. `{proven:"false"}`, a missing field, `proven:true` with no
+      // evidence) can NEVER promote — it becomes an authoritative dismissal.
+      const verdict: OracleVerdict = isOracleVerdict(raw)
+        ? raw
+        : { proven: false, evidenceRef: null, at: this.now(), reason: "malformed oracle verdict" }
+
+      const adjudicated = applyOracleVerdict(p.lead, verdict)
+      this.leads.set(p.key, adjudicated)
+
+      const team = bulletinChannel(this.runId, p.lane)
+      if (leadStatus(adjudicated) === "proven") {
+        // Post the promoted lead into the trusted bulletin lane, then resolve the
+        // ORIGINAL post on its own lane under a PER-LEAD ref (the lead id, not the
+        // shared module name) so one lead's dismissal cannot overwrite another's
+        // promotion. `supersedes` names the original post the proof replaces.
+        await this.session.bulletin_post(
+          toBulletinPost(bulletinChannel(this.runId, "bulletin"), adjudicated),
+        )
+        await this.session.bulletin_resolve(team, p.lead.id, "promoted", verdict.evidenceRef, [p.seq])
+      } else {
+        await this.session.bulletin_resolve(team, p.lead.id, "dismissed", null)
+      }
+
+      // Success → leave the retry queue.
+      this.pending.delete(p.key)
+      const status = leadStatus(adjudicated)
+      if (status === "proven") result.proven.push(adjudicated)
+      else if (status === "dismissed") result.dismissed.push(adjudicated)
+    } catch {
+      // Throw during the proof round → keep it pending (retried next tick) and
+      // surface it. The lead stays `verifying` in `this.leads`.
+      result.stranded.push(p.lead)
+    }
   }
 
   private reject(
@@ -506,6 +636,24 @@ export class Coordinator {
     const r: RejectedPost = { seq: ev.seq, author: ev.agent, lane, reason, errors }
     this.rejects.push(r)
     return r
+  }
+
+  // The TRUSTED projection the live console should consume. Returns only leads
+  // that cleared ingest + the policy gate and were recorded in run-state — the
+  // sanitized, trust-scoped versions in `this.leads`, each either `verifying`
+  // (mid-flight) or carrying an `applyOracleVerdict` outcome (`proven`/
+  // `dismissed`). It NEVER contains a rejected board entry (tier-spoof,
+  // author-spoof, duplicate, …) nor the pre-promotion evidence-lane copy of a
+  // now-proven lead: promotion overwrites the same trust-scoped key in place, so
+  // the forged/raw board records never surface here.
+  //
+  // This exists so the UI seam does NOT have to re-read the raw pi-bulletin board
+  // (bulletin_read → fromBulletinClaim), which still holds rejected posts and the
+  // quarantined evidence copy — reading that would let a forged entry reach the
+  // Trusted region. Consume THIS instead. Pure read: a fresh array over immutable
+  // leads, no mutation of coordinator state.
+  adjudicatedLeads(): Lead[] {
+    return [...this.leads.values()]
   }
 
   // Final report for the operator: fleet size + the terminal leads, split by the
@@ -525,6 +673,7 @@ export class Coordinator {
       active: summary.active,
       proven,
       dismissed,
+      stranded: [...this.pending.values()].map((p) => p.lead),
       rejected: [...this.rejects],
     }
   }
