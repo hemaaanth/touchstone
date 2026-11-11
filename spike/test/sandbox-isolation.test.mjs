@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { sandboxCapabilities, enter } from "../lib/sandbox/netns.mjs";
+import { sandboxCapabilities, enter } from "../lib/sandbox/jail.mjs";
 import { startBroker } from "../lib/sandbox/broker.mjs";
 import { rpc, labImagePresent } from "../lib/sandbox/lab.mjs";
 
@@ -51,8 +51,10 @@ test("sandbox blocks host loopback but reaches the brokered unix socket", { skip
   const dir = mkdtempSync(join(tmpdir(), "brk-"));
   const broker = await startBroker({ upstreamUrl: lab.url, socketPath: join(dir, "lab.sock") });
   // A one-liner worker run INSIDE the sandbox: try the lab's loopback URL, then the broker.
+  // It imports lab.mjs from /app (ro-bound) and reaches the broker socket at /lab/lab.sock
+  // (the broker dir is the ONLY host path bound in, read-write). Env is allowlisted, not host env.
   const worker = `
-    import { rpc } from ${JSON.stringify(join(HERE, "../lib/sandbox/lab.mjs"))};
+    import { rpc } from "/app/lab.mjs";
     const out = {};
     try { await rpc({ url: process.env.LOOP }, "eth_chainId"); out.loop = "REACHED"; }
     catch (e) { out.loop = e.code || String(e.message); }
@@ -61,19 +63,38 @@ test("sandbox blocks host loopback but reaches the brokered unix socket", { skip
     process.stdout.write(JSON.stringify(out));`;
   try {
     const run = await enter(["node", "--input-type=module", "-e", worker], {
-      env: { ...process.env, LOOP: lab.url, SOCK: broker.socketPath }, timeoutMs: 20_000,
+      setenv: { LOOP: lab.url, SOCK: "/lab/lab.sock" },
+      roBind: [[join(HERE, "../lib/sandbox/lab.mjs"), "/app/lab.mjs"]],
+      bind: [[dir, "/lab"]],
+      timeoutMs: 20_000,
     });
     const out = JSON.parse(run.stdout.trim());
-    assert.equal(out.loop, "ENETUNREACH", "host loopback must be unreachable from the sandbox");
+    // The sandbox netns is empty of the host's listeners: its own loopback is up but nothing
+    // listens there (ECONNREFUSED), and a non-loopback host IP has no route (ENETUNREACH).
+    // Either way the host lab is unreachable — that is the TCP fence R1 depends on.
+    assert.match(out.loop, /ECONNREFUSED|ENETUNREACH/, `host loopback must be unreachable from the sandbox (got ${out.loop})`);
     assert.equal(out.broker, "0x7a69", "the brokered unix socket must still reach the lab");
   } finally {
     await broker.close(); await lab.close(); rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("the sandbox has no docker socket", { skip: skipCaps }, async () => {
+test("the sandbox has no docker socket on any path", { skip: skipCaps }, async () => {
   const run = await enter(["sh", "-c", '[ -e /run/docker.sock ] || [ -e /var/run/docker.sock ] && echo PRESENT || echo ABSENT'], { timeoutMs: 10_000 });
   assert.equal(run.stdout.trim(), "ABSENT");
+});
+
+test("sandbox containment holds from inside (no host reach by any path)", { skip: skipCaps }, async () => {
+  const run = await enter(["node", "/app/probe.mjs"], {
+    roBind: [[join(HERE, "../lib/sandbox/probe.mjs"), "/app/probe.mjs"]], timeoutMs: 15_000,
+  });
+  const r = JSON.parse(run.stdout.trim());
+  assert.equal(r.contained, true, `containment failures: ${JSON.stringify(r.failures)}`);
+  assert.equal(r.detail.dockerSockPresent.length, 0, "docker socket must be absent");
+  assert.ok(!/\/sbin\/init|systemd/.test(r.detail.pid1), "pid1 must not be host init (fresh /proc)");
+  assert.ok(String(r.detail.umount).startsWith("blocked"), "umount of the mask must be blocked");
+  assert.equal(r.detail.hostPathsVisible.length, 0, "host filesystem must be invisible");
+  assert.ok(String(r.detail.repoWritable).startsWith("no"), "the repo/judge must be unwritable");
 });
 
 const hasImage = await labImagePresent().catch(() => false);
