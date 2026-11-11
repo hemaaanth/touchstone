@@ -11,6 +11,7 @@ import {
   laneForTier,
   validateLeadPost,
   applyOracleVerdict,
+  isOracleVerdict,
   corroborate,
   markVerifying,
   earnsSuccessSignal,
@@ -28,7 +29,7 @@ const base = (over: Partial<Lead> = {}): Lead => ({
   claim: "reentrancy in withdraw",
   mechanism: "external call before state update",
   evidenceRef: null,
-  severity: "High",
+  severity: "high",
   status: "proposed",
   transitions: [],
   replyTo: null,
@@ -106,6 +107,33 @@ test("the gate is idempotent on a terminal lead", () => {
     applyOracleVerdict(proven, { proven: false, evidenceRef: null, at: 2, reason: "x" }),
     proven,
   )
+})
+
+// --- the proof gate is strict: only a real boolean `true` promotes ---
+test("a truthy-but-non-true verdict NEVER reaches proven", () => {
+  for (const bad of ["false", "true", 1, {}, [], "yes"] as unknown[]) {
+    const l = applyOracleVerdict(base(), {
+      // deliberately wrong-typed proven, as malformed cross-process JSON would be
+      proven: bad as unknown as boolean,
+      evidenceRef: "replay#1",
+      at: 1,
+      reason: null,
+    })
+    assert.equal(leadStatus(l), "dismissed", `truthy ${JSON.stringify(bad)} must not prove`)
+    assert.ok(!earnsSuccessSignal(l))
+  }
+})
+
+test("isOracleVerdict fails closed on malformed / hostile payloads", () => {
+  assert.ok(isOracleVerdict({ proven: true, evidenceRef: "r", at: 1, reason: null }))
+  assert.ok(isOracleVerdict({ proven: false, evidenceRef: null, at: 1, reason: "no harm" }))
+  assert.ok(!isOracleVerdict({ proven: "false", evidenceRef: "r", at: 1, reason: null }))
+  assert.ok(!isOracleVerdict({ proven: true, evidenceRef: null, at: 1, reason: null })) // proof w/o evidence
+  assert.ok(!isOracleVerdict({ proven: true, evidenceRef: "", at: 1, reason: null }))
+  assert.ok(!isOracleVerdict({ proven: true, at: 1, reason: null })) // missing evidenceRef
+  assert.ok(!isOracleVerdict({ proven: true, evidenceRef: "r", at: "1", reason: null }))
+  assert.ok(!isOracleVerdict(null))
+  assert.ok(!isOracleVerdict("proven"))
 })
 
 // --- board round-trip ---
