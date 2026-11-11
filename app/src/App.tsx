@@ -9,7 +9,7 @@ import type {
   Playbook,
 } from "@/lib/types"
 import type { CatalogState } from "@/lib/catalog"
-import { archiveRun, deleteRun, fetchModels, fetchRuns, startRun } from "@/lib/api"
+import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
@@ -121,6 +121,17 @@ export function App() {
       .catch(() => {})
   }, [])
 
+  // Rename a run from the rail or its top bar. The list holds the name, so the
+  // rail and the top bar change together, at once. An empty name clears it.
+  // On failure, fetch the list again so the old name comes back.
+  const onRename = useCallback((id: string, name: string) => {
+    const clean = name.replace(/\s+/g, " ").trim().slice(0, 120) || null
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, name: clean } : r)))
+    renameRun(id, clean ?? "")
+      .then(() => reloadRun(id))
+      .catch(() => fetchRuns().then(setRuns).catch(() => {}))
+  }, [])
+
   // Delete a run from its top bar. The row leaves the list, and the view moves
   // to the next run so the stage is never left on a run that is gone. Errors
   // go back to the caller, which shows them in its confirm dialog.
@@ -165,13 +176,14 @@ export function App() {
         onSelect={setView}
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
+        onRename={onRename}
         spend={spend}
         provider={provider}
       />
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onDelete={onDelete} />
+          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
         ) : page === "modules" ? (

@@ -97,3 +97,14 @@ export const DOT: Record<Tone, string> = {
   red: "bg-bad",
   neutral: "bg-muted-foreground/60",
 }
+
+// The one title a run shows, in the rail and in its top bar: the operator's
+// name, else the finding title, else the scope title, else the model alias.
+export function runTitle(r: {
+  name?: string | null
+  title?: string | null
+  scopeTitle?: string | null
+  alias: string
+}): string {
+  return (r.name || r.title || r.scopeTitle || r.alias).replaceAll("`", "")
+}

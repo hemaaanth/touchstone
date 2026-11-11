@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, archiveRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
@@ -100,6 +100,17 @@ export async function handleRuns(req, res) {
     const body = await readBody(req)
     try {
       send(res, 200, archiveRun(id, body.archived !== false))
+    } catch (err) {
+      send(res, 409, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  // POST /api/runs/:id/rename — set the run's name ({name}); empty clears it
+  if (parts.length === 4 && parts[3] === "rename" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      send(res, 200, renameRun(id, body.name))
     } catch (err) {
       send(res, 409, { error: String(err?.message ?? err) })
     }

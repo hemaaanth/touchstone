@@ -98,6 +98,12 @@ export function archiveRun(id: string, archived: boolean): Promise<{ ok: true; a
   return postJson<{ ok: true; archived: boolean }>(`/api/runs/${encodeURIComponent(id)}/archive`, { archived })
 }
 
+// Name a run. An empty name clears it; the run then shows its finding or
+// scope title again.
+export function renameRun(id: string, name: string): Promise<{ ok: true; name: string | null }> {
+  return postJson<{ ok: true; name: string | null }>(`/api/runs/${encodeURIComponent(id)}/rename`, { name })
+}
+
 // Delete a run. The server moves its files to a trash folder and drops it from
 // the list. Its findings leave the ledger with it. A busy run refuses.
 export function deleteRun(id: string): Promise<{ ok: true }> {

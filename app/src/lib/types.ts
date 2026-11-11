@@ -448,6 +448,8 @@ export interface RunView {
   error: string | null
   // Archived runs are locked: they take no more messages.
   archived?: boolean
+  // The operator's name for the run, or null.
+  name?: string | null
   // A follow-up worker is answering an operator message right now.
   replying?: boolean
 }
@@ -460,6 +462,10 @@ export interface RunSummary {
   title: string | null
   severity: Severity | null
   archived?: boolean
+  // The operator's name for the run (POST /api/runs/:id/rename), or null.
+  name?: string | null
+  // The title of the scope the run attacks, for runs with no name or finding.
+  scopeTitle?: string | null
 }
 
 export type Verdict = "approve" | "deny"

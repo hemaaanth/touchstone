@@ -100,6 +100,8 @@ export interface RunState {
   replyStartedAt: number | null
   // Archived runs are locked: they take no more messages.
   archived: boolean
+  // The operator's name for the run, from the latest `renamed` event.
+  name: string | null
   // The verdict ladder, derived live from the step stream so the same four
   // stations the recorded finding shows are visible while the agent is still
   // working — the before and after views line up.
@@ -145,6 +147,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let replying = false
   let replyStartedAt: number | null = null
   let archived = false
+  let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
   let activity: Activity = "working"
@@ -566,6 +569,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "archived":
         archived = Boolean(e.archived)
         break
+      case "renamed":
+        name = str(e.name) || null
+        break
       default:
         break
     }
@@ -600,6 +606,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     replying,
     replyStartedAt,
     archived,
+    name,
     stages,
     activity,
     agents,

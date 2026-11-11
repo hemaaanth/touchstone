@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react"
 import type { ScopedRun } from "@/lib/catalog"
-import { ago, DOT, statusLabel, statusTone } from "@/lib/format"
+import { ago, DOT, runTitle, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 
@@ -57,7 +57,7 @@ export function RunLinks({ runs, onOpen, limit = 5 }: { runs: ScopedRun[]; onOpe
             className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-2.5 rounded-md px-2 py-1.5 text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <span className={cn("size-1.5 shrink-0 rounded-full", DOT[statusTone(brief.status)])} />
-            <span className="min-w-0 flex-1 truncate text-xs">{(run.title ?? run.alias).replaceAll("`", "")}</span>
+            <span className="min-w-0 flex-1 truncate text-xs">{runTitle(run)}</span>
             {brief.proven > 0 ? <span className="shrink-0 text-[11px] text-ok tabular-nums">{brief.proven} proven</span> : null}
             <span className="shrink-0 text-[11px] text-muted-foreground">
               {statusLabel(brief.status)} · {ago(run.startedAt)}

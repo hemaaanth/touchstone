@@ -195,6 +195,8 @@ function view(run) {
     modules: run.modules ?? null,
     status: run.status,
     archived: Boolean(run.archived),
+    // The operator's own name for the run, or null. Set by renameRun.
+    name: run.name ?? null,
     replying: Boolean(run.replying),
     startedAt: run.startedAt,
     events: run.events,
@@ -227,6 +229,8 @@ export function listRuns() {
       status: r.status,
       archived: Boolean(r.archived),
       startedAt: r.startedAt,
+      name: r.name ?? null,
+      scopeTitle: scopeOf(r)?.title ?? null,
       title: r.pending?.title ?? null,
       severity: r.pending?.severity ?? null,
       findings: r.submitted.length,
@@ -684,6 +688,21 @@ export function archiveRun(id, archived) {
   return { ok: true, archived: run.archived }
 }
 
+// Name a run. The name is the operator's label for the sidebar and the top
+// bar; it changes nothing the agent sees. It is a `renamed` event in the
+// run's stream, so it survives a restart like `archived`. An empty name
+// clears it, and the run falls back to its finding or scope title.
+export function renameRun(id, name) {
+  const run = runs.get(id)
+  if (!run) throw new Error("no such run")
+  const clean = String(name ?? "").replace(/\s+/g, " ").trim()
+  if (clean.length > 120) throw new Error("use a name of up to 120 characters")
+  ensureFiles(run)
+  run.name = clean || null
+  broadcast(run, { t: Date.now(), ev: "renamed", name: run.name })
+  return { ok: true, name: run.name }
+}
+
 // Delete a run. Its files (stream, record, engine log, session) move to a
 // trash folder beside them rather than being erased, so a mistake can be put
 // back by hand. The run's findings live in its record, so they leave the
@@ -852,9 +871,11 @@ function savedRun(id, events, mtime) {
   let provider = null
   let model = null
   let archived = false
+  let name = null
   const submitted = []
   for (const e of events) {
     if (e.ev === "archived") archived = Boolean(e.archived)
+    if (e.ev === "renamed") name = typeof e.name === "string" && e.name ? e.name : null
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
     if (e.ev === "provider") ({ provider = null, model = null } = e)
@@ -892,6 +913,7 @@ function savedRun(id, events, mtime) {
     model: model ?? Object.values(allProviders()).find((p) => p.models?.[alias])?.models[alias].id ?? alias,
     status,
     archived,
+    name,
     startedAt: events.find((e) => e.t)?.t ?? mtime,
     events,
     subscribers: new Set(),

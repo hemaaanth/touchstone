@@ -29,9 +29,10 @@ import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassVie
 import { PrepassFold } from "@/components/prepass"
 import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { INK, isTerminal, severityTone } from "@/lib/format"
+import { INK, isTerminal, runTitle, severityTone } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
+import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
@@ -81,13 +82,16 @@ const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>
 export function RunChat({
   run,
   onArchive,
+  onRename,
   onDelete,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
+  onRename: (id: string, name: string) => void
   onDelete: (id: string) => Promise<void>
 }) {
   const state = useRun(run.id)
+  const [renaming, setRenaming] = useState(false)
   // The workspace documents the agent wrote, and which one the pane shows. On
   // desktop a new artifact auto-opens the pane and the pane follows to it;
   // closing it sticks until a newer document arrives (or the Files panel opens
@@ -131,6 +135,7 @@ export function RunChat({
   // Until the run store has loaded this run, trust the sidebar's status.
   const status = state ? state.status : run.status
   const scope = state?.scope ?? null
+  const title = runTitle({ ...run, scopeTitle: run.scopeTitle ?? scope?.title })
   // Live: a worker is running, so a message steers it. Idle: a message starts a
   // follow-up on the saved session. Only an archived run takes no messages.
   const live = !!state && !state.closed
@@ -193,9 +198,29 @@ export function RunChat({
               toggle shows on mobile only, where the sidebar is a Sheet. */}
           <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
             <SidebarTrigger className="-ml-1 md:hidden" />
-            <h1 className="min-w-0 truncate text-sm font-medium">
-              {scope?.title ?? run.title ?? run.alias}
-            </h1>
+            {/* The run's own name, the same one the rail shows. Click to rename. */}
+            {renaming ? (
+              <TitleInput
+                value={title}
+                onSave={(name) => {
+                  onRename(run.id, name)
+                  setRenaming(false)
+                }}
+                onCancel={() => setRenaming(false)}
+                className="h-7 w-full max-w-md text-sm font-medium"
+              />
+            ) : (
+              <h1 className="min-w-0 truncate text-sm font-medium">
+                <button
+                  type="button"
+                  title="Rename run"
+                  onClick={() => setRenaming(true)}
+                  className="max-w-full cursor-text truncate rounded-sm text-left outline-none hover:text-foreground/80 focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {title}
+                </button>
+              </h1>
+            )}
             <RunActions
               archived={archived}
               busy={live || !state}
