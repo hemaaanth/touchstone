@@ -1,26 +1,20 @@
-import { useState } from "react"
-import { Archive, ArchiveRestore, BookMarked, Boxes, ChevronRight, FolderGit2, Pencil, Plus, Settings2, ShieldCheck } from "lucide-react"
+import { useMemo } from "react"
+import { BookMarked, Boxes, FolderGit2, Settings2, ShieldCheck } from "lucide-react"
+import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import type { ProviderInfo, RunSummary, SpendState } from "@/lib/types"
 import { ago, DOT, formatUsd, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
-import { cn } from "cn"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { Button } from "@/components/ui/button"
 import { ResizeHandle } from "@/components/resize-handle"
-import { TitleInput } from "@/components/title-input"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
+import { ThreadList, type RunThreadCustom } from "@/components/assistant-ui/elements/thread-list"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
@@ -59,9 +53,8 @@ export function AppSidebar({
   provider: ProviderInfo | null
 }) {
   const isPage = (id: string) => view?.kind === "page" && view.id === id
-  const isRun = (id: string) => view?.kind === "run" && view.id === id
-  const open = runs.filter((r) => !r.archived)
-  const archived = runs.filter((r) => r.archived)
+  const open = useMemo(() => runs.filter((r) => !r.archived), [runs])
+  const archived = useMemo(() => runs.filter((r) => r.archived), [runs])
   // On a phone the rail is a sheet over the content. Picking a destination
   // closes it, so you land on the chat you chose instead of behind the menu.
   const { setOpenMobile } = useSidebar()
@@ -74,59 +67,44 @@ export function AppSidebar({
     onNewRun()
   }
 
+  // The runs list is the assistant-ui thread list element, fed from our runs
+  // through an external-store thread list. It has no chat of its own.
+  const threads = useMemo(() => open.map((r) => runThread(r, "regular" as const)), [open])
+  const archivedThreads = useMemo(() => archived.map((r) => runThread(r, "archived" as const)), [archived])
+  const runtime = useExternalStoreRuntime<ThreadMessageLike>({
+    messages: NO_MESSAGES,
+    convertMessage: (m) => m,
+    onNew: async () => {},
+    adapters: {
+      threadList: {
+        threadId: view?.kind === "run" ? view.id : undefined,
+        threads,
+        archivedThreads,
+        onSwitchToThread: (id) => go({ kind: "run", id }),
+        onSwitchToNewThread: newRun,
+        onRename: (id, title) => onRename(id, title),
+        onArchive: (id) => onArchive(id, true),
+        onUnarchive: (id) => onArchive(id, false),
+      },
+    },
+  })
+
   return (
     <Sidebar>
-      <SidebarHeader className="gap-3 p-3">
+      <SidebarHeader className="p-3">
         <div className="flex items-center gap-2 px-1">
           <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <ShieldCheck className="size-3.5" />
           </div>
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
         </div>
-        {/* The one primary action: a full-width button, not a chip. */}
-        <Button className="w-full justify-center gap-2" onClick={newRun}>
-          <Plus className="size-4" />
-          New run
-        </Button>
       </SidebarHeader>
 
-      {/* Runs are the whole point of the rail, so they own the scrolling body.
-          Archived runs sit in their own section below, collapsed by default. */}
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Runs</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {open.length === 0 ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground">No runs yet.</p>
-              ) : (
-                open.map((r) => <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} onRename={onRename} />)
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        {archived.length > 0 ? (
-          <Collapsible render={<SidebarGroup />}>
-            <SidebarGroupLabel
-              render={<CollapsibleTrigger />}
-              className="group/archived w-full cursor-default gap-1 hover:text-sidebar-foreground"
-            >
-              <ChevronRight className="size-3.5! transition-transform group-data-[panel-open]/archived:rotate-90" />
-              <span>Archived</span>
-              <span className="ml-auto tabular-nums">{archived.length}</span>
-            </SidebarGroupLabel>
-            <CollapsibleContent>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  {archived.map((r) => (
-                    <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} onRename={onRename} />
-                  ))}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </CollapsibleContent>
-          </Collapsible>
-        ) : null}
+      {/* Runs own the scrolling body. Archived runs fold up below them. */}
+      <SidebarContent className="px-2">
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadList />
+        </AssistantRuntimeProvider>
       </SidebarContent>
 
       {/* Workspace nav + account controls sit together at the base, divided
@@ -166,94 +144,19 @@ export function AppSidebar({
   )
 }
 
-// One run in the rail. Right-click (or long-press) opens Rename and Archive /
-// Unarchive. Double-click the title to rename it in place. A run that is still
-// working cannot be archived; it would cut the agent off.
-function RunRow({
-  run: r,
-  active,
-  onSelect,
-  onArchive,
-  onRename,
-}: {
-  run: RunSummary
-  active: boolean
-  onSelect: (v: View) => void
-  onArchive: (id: string, archived: boolean) => void
-  onRename: (id: string, name: string) => void
-}) {
-  const tone = statusTone(r.status)
-  const [editing, setEditing] = useState(false)
-  const title = runTitle(r)
-  // While editing, the row is a plain box with the input, so no input sits
-  // inside a button.
-  if (editing) {
-    return (
-      <SidebarMenuItem>
-        <div className="flex items-start gap-2 rounded-md bg-sidebar-accent px-2 py-1.5">
-          <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
-          <span className="flex min-w-0 flex-1 flex-col">
-            <TitleInput
-              value={title}
-              onSave={(name) => {
-                onRename(r.id, name)
-                setEditing(false)
-              }}
-              onCancel={() => setEditing(false)}
-              className="h-[1.375em] text-[13px] leading-snug"
-            />
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span>{statusLabel(r.status)}</span>
-              <span aria-hidden>·</span>
-              <span>{ago(r.startedAt)}</span>
-            </span>
-          </span>
-        </div>
-      </SidebarMenuItem>
-    )
+const NO_MESSAGES: ThreadMessageLike[] = []
+
+// One run as a thread list item. `custom` carries what the row shows.
+function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
+  const done = isTerminal(r.status)
+  const custom: RunThreadCustom = {
+    dot: DOT[statusTone(r.status)],
+    label: `${statusLabel(r.status)} · ${ago(r.startedAt)}`,
+    at: r.startedAt,
+    running: !done,
+    canArchive: done,
   }
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger
-        render={<SidebarMenuItem />}
-        className="data-popup-open:[&>[data-sidebar=menu-button]]:bg-sidebar-accent"
-      >
-        <SidebarMenuButton
-          isActive={active}
-          onClick={() => onSelect({ kind: "run", id: r.id })}
-          onDoubleClick={() => setEditing(true)}
-          className="h-auto items-start py-1.5"
-        >
-          <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
-          <span className="flex min-w-0 flex-col">
-            <span className="truncate text-[13px] leading-snug">{title}</span>
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span>{statusLabel(r.status)}</span>
-              <span aria-hidden>·</span>
-              <span>{ago(r.startedAt)}</span>
-            </span>
-          </span>
-        </SidebarMenuButton>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onClick={() => setEditing(true)}>
-          <Pencil />
-          Rename
-        </ContextMenuItem>
-        {r.archived ? (
-          <ContextMenuItem onClick={() => onArchive(r.id, false)}>
-            <ArchiveRestore />
-            Unarchive
-          </ContextMenuItem>
-        ) : (
-          <ContextMenuItem disabled={!isTerminal(r.status)} onClick={() => onArchive(r.id, true)}>
-            <Archive />
-            Archive
-          </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
-  )
+  return { status, id: r.id, title: runTitle(r), custom }
 }
 
 // Who is paying for new runs, and the total spent so far. Each run has its own
