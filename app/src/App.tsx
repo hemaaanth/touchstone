@@ -17,7 +17,6 @@ import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
 import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
-import { FleetConsole } from "@/components/fleet-console"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
@@ -187,8 +186,6 @@ export function App() {
           <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
-        ) : page === "fleet" ? (
-          <FleetConsole />
         ) : page === "modules" ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
         ) : page === "scopes" ? (
@@ -226,8 +223,6 @@ export function App() {
         models={models}
         targets={targets}
         packs={packs}
-        spend={spend}
-        onScopesChanged={refreshModels}
         busy={busy}
         error={startError}
         onStart={onStart}

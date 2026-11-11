@@ -1,53 +1,36 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react"
-import {
-  AssistantRuntimeProvider,
-  useExternalStoreRuntime,
-  ThreadPrimitive,
-  MessagePrimitive,
-  ComposerPrimitive,
-  type ThreadMessageLike,
-  type ToolCallMessagePartComponent,
-  type TextMessagePartComponent,
-} from "@assistant-ui/react"
-import {
-  Archive,
-  ArchiveRestore,
-  ArrowUp,
-  ArrowDown,
-  Brain,
-  ChevronRight,
-  FileCode2,
-  GitBranch,
-  MoreHorizontal,
-  Play,
-  ShieldX,
-  TerminalSquare,
-  Trash2,
-  Loader2,
-  TriangleAlert,
-  CreditCard,
-  Gauge,
-  CloudOff,
-  Scissors,
-  RefreshCw,
-} from "lucide-react"
-import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassView, ProofKind, RunStatus, RunSummary } from "@/lib/types"
-import { PrepassFold } from "@/components/prepass"
-import { reloadRun, useRun, type RunState, type RunFailure, type Step } from "@/lib/runModel"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
+import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
+import type { Finding, RunSummary } from "@/lib/types"
+import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { INK, isTerminal, runTitle, severityTone } from "@/lib/format"
+import { runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
-import { ToolGroup, type GroupedTool } from "@/components/assistant-ui/elements/tool-group"
-import { Markdown } from "@/components/markdown"
-import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { FilesPanel } from "@/components/assistant-ui/elements/files-panel"
-import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
+import { Thread } from "@/components/run-thread"
+import { buildMessages, OpenArtifact } from "@/components/thread-model"
+import { BulletinList, Count, FilesList, FleetDock, FleetList, TierTag, type DockTab } from "@/components/fleet-dock"
+import {
+  AGENT_WORD,
+  FleetContext,
+  ThreadOwner,
+  agentName,
+  dotClass,
+  fleetSpend,
+  isLiveAgent,
+  runBudget,
+  runEnd,
+  runStart,
+  span,
+  usd,
+  type FleetView,
+} from "@/components/fleet-view"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,14 +47,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-// How a transcript chip — or the proof card — opens its document in the pane
-// beside the chat. A file can have several versions, so the callback takes the
-// file id plus an optional version to land on (a chip opens its own version; the
-// proof card just opens the file). buildMessages packs the ids into the part's
-// args, but the setter lives in RunChat and a tool-call part's args must stay
-// serialisable, so the callback flows down as context instead. Default is a
-// no-op (nothing to open).
-const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>(() => {})
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -98,6 +73,9 @@ export function RunChat({
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
+  // A fleet run has child agents. It gets the dock, the peek and the fleet
+  // parts. A run with no agents renders exactly as before.
+  const fleet = !!state && state.agents.length > 0
   // The workspace documents the agent wrote, and which one the pane shows. The
   // pane is closed until the operator opens a document (a chat card or the
   // Files panel). Each chat keeps its own pane: the open file is saved per run,
@@ -119,6 +97,12 @@ export function RunChat({
     setOpenVersionId(versionId ?? file?.versions[file.versions.length - 1]?.id ?? null)
   }
   useEffect(() => storePane(run.id, openArtifactId), [run.id, openArtifactId])
+  // A child agent's write never moves the pane. Only the coordinator's own
+  // writes do, and only when the pane is already open.
+  const childWrite = useMemo(
+    () => !!latest && !!state?.steps.some((s) => s.kind === "artifact" && s.subId === latest.versionId && s.agent),
+    [latest, state],
+  )
   // The first write we see is history, not news, so it only sets the mark.
   const seenArtifact = useRef<string | null | undefined>(undefined)
   useEffect(() => {
@@ -128,11 +112,11 @@ export function RunChat({
     seenArtifact.current = key
     // An open pane on desktop follows each fresh write, including a new version
     // of the open file, so it steps from v1 to v2 as the agent rewrites.
-    if (fresh && openArtifactId && !isNarrow() && latest) {
+    if (fresh && openArtifactId && !isNarrow() && latest && !childWrite) {
       setOpenArtifactId(latest.fileId)
       setOpenVersionId(latest.versionId)
     }
-  }, [latest, openArtifactId])
+  }, [latest, openArtifactId, childWrite])
   const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
   // When the open document is the replay proof, it renders the recorded finding's
   // structured report in the pane. Resolve that finding only while the proof is
@@ -152,24 +136,42 @@ export function RunChat({
   const [sendError, setSendError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
 
+  // Send one operator message. Live, it steers the worker. Idle, the server
+  // starts a follow-up, so fetch the run again to follow the reply.
+  const send = async (text: string) => {
+    if (!text || !state || archived) return
+    setSendError(null)
+    try {
+      const res = await steerRun(run.id, text)
+      if (res.followUp) reloadRun(run.id)
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   // Retry a run that failed before proving anything. The saved session is still
   // on disk, so one steer message reopens it and the agent resumes the audit
   // from where the model error cut it off — no new scope, no lost context.
   const onRetry = async () => {
     if (!state || archived || retrying) return
-    setSendError(null)
     setRetrying(true)
-    try {
-      const res = await steerRun(run.id, "Continue the audit from where it stopped.")
-      if (res.followUp) reloadRun(run.id)
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setRetrying(false)
-    }
+    await send("Continue the audit from where it stopped.")
+    setRetrying(false)
   }
 
-  const messages = useMemo(() => buildMessages(state, status, live), [state, status, live])
+  // The main chat is the coordinator's own thread. On a run with no agents
+  // that is every step.
+  // A fleet's main chat is the coordinator's thread. Its "session started"
+  // marker says nothing there, so it is left out. A run without agents keeps
+  // every step, as before.
+  const mainSteps = useMemo(
+    () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
+    [state, fleet],
+  )
+  const messages = useMemo(
+    () => buildMessages(state, mainSteps, status, live, fleet, null),
+    [state, mainSteps, status, live, fleet],
+  )
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
@@ -182,110 +184,411 @@ export function RunChat({
         .map((p) => p.text)
         .join("")
         .trim()
-      if (!text || !state || archived) return
-      setSendError(null)
-      try {
-        const res = await steerRun(run.id, text)
-        // An idle run keeps no stream. Fetch it again to follow the reply.
-        if (res.followUp) reloadRun(run.id)
-      } catch (err) {
-        setSendError(err instanceof Error ? err.message : String(err))
-      }
+      await send(text)
     },
   })
 
+  // The peek: one child's thread over the chat. The stack holds the peeks a
+  // pill opened from inside another peek, so "‹ Name" can go back.
+  const [peekStack, setPeekStack] = useState<{ id: string; key?: string }[]>([])
+  const peek = peekStack[peekStack.length - 1] ?? null
+  const prev = peekStack[peekStack.length - 2] ?? null
+  const [dockTab, setDockTab] = useState<DockTab>("fleet")
+  const [mobileTab, setMobileTab] = useState<"chat" | DockTab>("chat")
+  // A pill jump scrolls to the same message in the other thread and marks it
+  // for a moment.
+  const [highlight, setHighlight] = useState<string | null>(null)
+  const [jump, setJump] = useState<{ where: "main" | "peek"; key: string; n: number } | null>(null)
+  const mainRef = useRef<HTMLDivElement>(null)
+  const peekRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!jump) return
+    const root = jump.where === "main" ? mainRef.current : peekRef.current
+    // Wait for the thread to render the new messages, then scroll. Try twice:
+    // a freshly opened thread scrolls itself to the bottom on mount.
+    const go = () =>
+      root
+        ?.querySelector(`[data-step-key="${CSS.escape(jump.key)}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "instant" })
+    const a = setTimeout(go, 60)
+    const b = setTimeout(go, 260)
+    const c = setTimeout(() => setHighlight(null), 1600)
+    return () => [a, b, c].forEach(clearTimeout)
+  }, [jump])
+
+  const openPeek = (id: string, key?: string, push = false) => {
+    setPeekStack((s) => {
+      const top = s[s.length - 1]
+      if (push && top && top.id !== id) return [...s, { id, key }]
+      return [{ id, key }]
+    })
+    if (key) {
+      setJump({ where: "peek", key, n: Date.now() })
+      setHighlight(key)
+    }
+  }
+  const closePeek = () => setPeekStack([])
+  const jumpMain = (key: string) => {
+    setPeekStack([])
+    setMobileTab("chat")
+    setJump({ where: "main", key, n: Date.now() })
+    setHighlight(key)
+  }
+
+  const fleetView: FleetView | null =
+    fleet && state ? { state, openPeek, jumpMain, highlight, steer: send, canSteer: !archived } : null
+
+  const peekAgent = peek && state ? state.agents.find((a) => a.id === peek.id) ?? null : null
+  const peekLive = live && !!peekAgent && isLiveAgent(peekAgent)
+  const peekMessages = useMemo(
+    () => (peek && state ? buildMessages(state, threadSteps(state.steps, peek.id), status, peekLive, true, peek.id) : []),
+    [peek, state, status, peekLive],
+  )
+  const peekRuntime = useExternalStoreRuntime<ThreadMessageLike>({
+    messages: peekMessages,
+    isRunning: peekLive,
+    isDisabled: true,
+    convertMessage: (m) => m,
+    onNew: async () => {},
+  })
+
+  const actions = (
+    <RunActions
+      compact={fleet}
+      archived={archived}
+      busy={live || !state}
+      findings={state?.findings.length ?? 0}
+      onArchive={() => onArchive(run.id, !archived)}
+      onDelete={() => onDelete(run.id)}
+    />
+  )
+  const titleNode = renaming ? (
+    <TitleInput
+      value={title}
+      onSave={(name) => {
+        onRename(run.id, name)
+        setRenaming(false)
+      }}
+      onCancel={() => setRenaming(false)}
+      className="h-7 w-full max-w-md text-sm font-medium"
+    />
+  ) : (
+    <h1 className="min-w-0 truncate text-sm font-medium">
+      <button
+        type="button"
+        title="Rename run"
+        onClick={() => setRenaming(true)}
+        className="max-w-full cursor-text truncate rounded-sm text-left outline-none hover:text-foreground/80 focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {title}
+      </button>
+    </h1>
+  )
+
   return (
     <OpenArtifact.Provider value={openArtifact}>
-      {/* The run splits into the chat and, when the agent writes one, the
-          document pane. The chat flexes; the pane is a fixed-width column on
-          desktop and a full-width overlay on mobile (so `relative` anchors it). */}
-      <div className="relative flex h-full min-w-0">
-        <div className="relative flex h-full min-w-0 flex-1 flex-col">
-          {/* The run's files float in the chat's top-right corner, under the top
-              bar. Folded, the panel is one line; open, it lists every file. */}
-          {artifacts.length ? (
-            <div className="pointer-events-none absolute top-14 right-3 z-10 flex max-h-[calc(100%-4rem)] justify-end">
-              <FilesPanel
-                docs={artifacts}
-                activeId={openDoc?.id ?? null}
-                activeVersionId={openVersionId}
-                open={filesOpen}
-                onOpenChange={setFilesOpen}
-                onOpen={(fileId, versionId) => {
-                  openArtifact(fileId, versionId)
-                  // On a phone the document covers the chat, so fold the list.
-                  if (isNarrow()) setFilesOpen(false)
-                }}
-              />
-            </div>
-          ) : null}
-          {/* The top bar holds the run's title and the actions on the run as a
-              whole: archive, and delete behind a menu. Both wait while the agent
-              works, because the server refuses to change a busy run. The sidebar
-              toggle shows on mobile only, where the sidebar is a Sheet. */}
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
-            <SidebarTrigger className="-ml-1 md:hidden" />
-            {/* The run's own name, the same one the rail shows. Click to rename. */}
-            {renaming ? (
-              <TitleInput
-                value={title}
-                onSave={(name) => {
-                  onRename(run.id, name)
-                  setRenaming(false)
-                }}
-                onCancel={() => setRenaming(false)}
-                className="h-7 w-full max-w-md text-sm font-medium"
-              />
-            ) : (
-              <h1 className="min-w-0 truncate text-sm font-medium">
-                <button
-                  type="button"
-                  title="Rename run"
-                  onClick={() => setRenaming(true)}
-                  className="max-w-full cursor-text truncate rounded-sm text-left outline-none hover:text-foreground/80 focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  {title}
-                </button>
-              </h1>
+      <FleetContext.Provider value={fleetView}>
+        {/* The run splits into the chat and, when the agent writes one, the
+            document pane. The chat flexes; the pane is a fixed-width column on
+            desktop and a full-width overlay on mobile (so `relative` anchors it).
+            A fleet run adds the dock on the right. */}
+        <div className="relative flex h-full min-w-0 flex-col">
+          {/* A fleet run's top bar spans the chat and the dock. */}
+          {fleet && state ? <FleetHeader state={state} live={live} title={titleNode} actions={actions} /> : null}
+          <div className="relative flex min-h-0 min-w-0 flex-1">
+          <div className="relative flex h-full min-w-0 flex-1 flex-col">
+            {/* The run's files float in the chat's top-right corner, under the top
+                bar. Folded, the panel is one line; open, it lists every file. A
+                fleet run lists them in the dock instead. */}
+            {artifacts.length && !fleet ? (
+              <div className="pointer-events-none absolute top-14 right-3 z-10 flex max-h-[calc(100%-4rem)] justify-end">
+                <FilesPanel
+                  docs={artifacts}
+                  activeId={openDoc?.id ?? null}
+                  activeVersionId={openVersionId}
+                  open={filesOpen}
+                  onOpenChange={setFilesOpen}
+                  onOpen={(fileId, versionId) => {
+                    openArtifact(fileId, versionId)
+                    // On a phone the document covers the chat, so fold the list.
+                    if (isNarrow()) setFilesOpen(false)
+                  }}
+                />
+              </div>
+            ) : null}
+            {/* The top bar holds the run's title and the actions on the run as a
+                whole: archive, and delete behind a menu. Both wait while the agent
+                works, because the server refuses to change a busy run. The sidebar
+                toggle shows on mobile only, where the sidebar is a Sheet. */}
+            {fleet ? null : (
+              <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
+                <SidebarTrigger className="-ml-1 md:hidden" />
+                {/* The run's own name, the same one the rail shows. Click to rename. */}
+                {titleNode}
+                {actions}
+              </header>
             )}
-            <RunActions
-              archived={archived}
-              busy={live || !state}
-              findings={state?.findings.length ?? 0}
-              onArchive={() => onArchive(run.id, !archived)}
-              onDelete={() => onDelete(run.id)}
-            />
-          </header>
 
-          <AssistantRuntimeProvider runtime={runtime}>
-            <Thread
+            {fleet && state ? (
+              <MobileTabs
+                state={state}
+                live={live}
+                tab={mobileTab}
+                onTab={setMobileTab}
+                selected={peek?.id ?? null}
+                onAgent={(id) => openPeek(id)}
+                openDoc={openDoc?.id ?? null}
+                onFile={(id) => openArtifact(id)}
+              />
+            ) : null}
+
+            <div
+              ref={mainRef}
+              className={cn("flex min-h-0 flex-1 flex-col", fleet && mobileTab !== "chat" && "max-md:hidden")}
+            >
+              <AssistantRuntimeProvider runtime={runtime}>
+                <Thread
+                  live={live}
+                  empty={messages.length === 0}
+                  prepass={state?.prepass ?? null}
+                  error={status === "error" ? state?.error ?? null : null}
+                  errorInfo={status === "error" ? state?.errorInfo ?? null : null}
+                  onRetry={onRetry}
+                  retrying={retrying}
+                  archived={archived}
+                  sendError={sendError}
+                  fleet={fleet}
+                />
+              </AssistantRuntimeProvider>
+            </div>
+
+            {/* The peek covers the chat from the right, up over the top bar, and
+                stops at the dock. Nothing under it moves; the chat only dims. On
+                a phone it fills the screen. */}
+            {fleet && state && peek ? (
+              <>
+                <div aria-hidden className="absolute inset-x-0 -top-[49px] bottom-0 z-20 bg-black/10 dark:bg-black/35 max-md:hidden" onClick={closePeek} />
+                <div
+                  ref={peekRef}
+                  role="dialog"
+                  aria-label={agentName(state, peek.id)}
+                  className="absolute -top-[49px] bottom-0 right-0 z-30 flex w-[552px] max-w-full flex-col bg-background shadow-[-10px_0_30px_#00000014] max-md:fixed max-md:inset-0 max-md:z-50 max-md:w-auto"
+                >
+                  <PeekHeader
+                    state={state}
+                    id={peek.id}
+                    prev={prev?.id ?? null}
+                    onBack={() => setPeekStack((s) => s.slice(0, -1))}
+                    onClose={closePeek}
+                  />
+                  <ThreadOwner.Provider value={peek.id}>
+                    <AssistantRuntimeProvider runtime={peekRuntime}>
+                      <Thread
+                        key={peek.id}
+                        live={peekLive}
+                        empty={peekMessages.length === 0}
+                        prepass={null}
+                        error={null}
+                        errorInfo={null}
+                        onRetry={() => {}}
+                        retrying={false}
+                        archived={archived}
+                        sendError={null}
+                        fleet
+                        readOnly
+                      />
+                    </AssistantRuntimeProvider>
+                  </ThreadOwner.Provider>
+                </div>
+              </>
+            ) : null}
+          </div>
+
+          {openDoc ? (
+            <ArtifactPane
+              doc={openDoc}
+              versionId={openVersionId}
+              finding={finding}
+              onSelectVersion={setOpenVersionId}
+              onClose={() => {
+                setOpenArtifactId(null)
+                setOpenVersionId(null)
+              }}
+            />
+          ) : null}
+
+          {fleet && state ? (
+            <FleetDock
+              state={state}
               live={live}
-              empty={messages.length === 0}
-              prepass={state?.prepass ?? null}
-              error={status === "error" ? state?.error ?? null : null}
-              errorInfo={status === "error" ? state?.errorInfo ?? null : null}
-              onRetry={onRetry}
-              retrying={retrying}
-              archived={archived}
-              sendError={sendError}
+              tab={dockTab}
+              onTab={setDockTab}
+              selected={peek?.id ?? null}
+              onAgent={(id) => openPeek(id)}
+              openDoc={openDoc?.id ?? null}
+              onFile={(id) => openArtifact(id)}
             />
-          </AssistantRuntimeProvider>
+          ) : null}
+          </div>
         </div>
-
-        {openDoc ? (
-          <ArtifactPane
-            doc={openDoc}
-            versionId={openVersionId}
-            finding={finding}
-            onSelectVersion={setOpenVersionId}
-            onClose={() => {
-              setOpenArtifactId(null)
-              setOpenVersionId(null)
-            }}
-          />
-        ) : null}
-      </div>
+      </FleetContext.Provider>
     </OpenArtifact.Provider>
+  )
+}
+
+// The fleet run's top bar: status dot, title, "Running · 6m", the quiet cost,
+// and the ⋯ menu.
+function FleetHeader({
+  state,
+  live,
+  title,
+  actions,
+}: {
+  state: RunState
+  live: boolean
+  title: React.ReactNode
+  actions: React.ReactNode
+}) {
+  const failed = state.status === "error"
+  const word = live ? "Running" : failed ? "Failed" : "Done"
+  const t0 = runStart(state)
+  const t1 = runEnd(state)
+  const budget = runBudget(state)
+  const spend = fleetSpend(state)
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
+      <SidebarTrigger className="-ml-1 md:hidden" />
+      <span
+        className={cn(
+          "size-[7px] shrink-0 rounded-full max-md:mt-[13px] max-md:self-start",
+          dotClass(live ? "working" : failed ? "failed" : "done"),
+        )}
+      />
+      {/* On a phone the status goes under the title, as in the mobile frame. */}
+      <div className="flex min-w-0 items-baseline gap-2.5 max-md:flex-col max-md:items-stretch max-md:gap-0">
+        {title}
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+          {word}
+          {t0 != null && t1 != null ? ` · ${span(t1 - t0)}` : ""}
+        </span>
+      </div>
+      <span
+        className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums"
+        title="What the agents report spending, against the run's budget"
+      >
+        <span className="text-foreground">{usd(spend)}</span>
+        {budget != null ? <span className="max-md:hidden"> / {usd(budget)}</span> : null}
+      </span>
+      {actions}
+    </header>
+  )
+}
+
+// The peek's top bar. "‹ Name" goes back to the peek this one was opened from.
+function PeekHeader({
+  state,
+  id,
+  prev,
+  onBack,
+  onClose,
+}: {
+  state: RunState
+  id: string
+  prev: string | null
+  onBack: () => void
+  onClose: () => void
+}) {
+  const a = state.agents.find((n) => n.id === id)
+  const from = a?.startedAt ?? runStart(state)
+  const to = a?.endedAt ?? runEnd(state)
+  return (
+    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
+      {prev ? (
+        <button
+          type="button"
+          onClick={onBack}
+          className="-ml-1 flex shrink-0 items-center gap-0.5 rounded-sm text-xs text-muted-foreground outline-none hover:text-foreground"
+        >
+          <ChevronLeft className="size-3.5" />
+          {agentName(state, prev)}
+        </button>
+      ) : null}
+      <span className={cn("size-[7px] shrink-0 rounded-full", dotClass(a?.state ?? "working"))} />
+      <span className="min-w-0 truncate text-sm font-medium">{agentName(state, id)}</span>
+      {a ? (
+        <span className={cn("shrink-0 text-xs tabular-nums", a.state === "failed" ? "text-bad" : "text-muted-foreground")}>
+          {AGENT_WORD[a.state]}
+          {from != null && to != null ? ` · ${span(to - from)}` : ""}
+        </span>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-2.5">
+        {a?.tier ? <TierTag tier={a.tier} /> : null}
+        {a?.spendUsd != null ? (
+          <span className="text-xs text-muted-foreground/60 tabular-nums">{usd(a.spendUsd)}</span>
+        ) : null}
+        <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Close" onClick={onClose}>
+          <X />
+        </Button>
+      </span>
+    </header>
+  )
+}
+
+// On a phone the dock becomes tabs under the top bar. The chat stays mounted
+// while another tab shows, so its scroll is kept.
+function MobileTabs({
+  state,
+  live,
+  tab,
+  onTab,
+  selected,
+  onAgent,
+  openDoc,
+  onFile,
+}: {
+  state: RunState
+  live: boolean
+  tab: "chat" | DockTab
+  onTab: (t: "chat" | DockTab) => void
+  selected: string | null
+  onAgent: (id: string) => void
+  openDoc: string | null
+  onFile: (id: string) => void
+}) {
+  const trigger = "h-full flex-none px-0 text-[13px] group-data-horizontal/tabs:after:bottom-[-1px]"
+  return (
+    <>
+      <Tabs value={tab} onValueChange={(v) => onTab(v as "chat" | DockTab)} className="shrink-0 gap-0 md:hidden">
+        <div className="flex h-11 items-center border-b px-4">
+          <TabsList variant="line" className="gap-5 p-0 group-data-horizontal/tabs:h-full">
+            <TabsTrigger value="chat" className={trigger}>
+              Chat
+            </TabsTrigger>
+            <TabsTrigger value="fleet" className={trigger}>
+              Fleet
+            </TabsTrigger>
+            <TabsTrigger value="bulletin" className={trigger}>
+              Bulletin
+              {state.bulletin.length ? <Count n={state.bulletin.length} /> : null}
+            </TabsTrigger>
+            <TabsTrigger value="files" className={trigger}>
+              Files
+            </TabsTrigger>
+          </TabsList>
+        </div>
+      </Tabs>
+      {tab !== "chat" ? (
+        <ScrollArea className="min-h-0 flex-1 md:hidden">
+          {tab === "fleet" ? (
+            <FleetList state={state} live={live} selected={selected} onAgent={onAgent} />
+          ) : tab === "bulletin" ? (
+            <BulletinList state={state} onAgent={onAgent} />
+          ) : (
+            <FilesList docs={state.artifacts} openDoc={openDoc} onFile={onFile} />
+          )}
+        </ScrollArea>
+      ) : null}
+    </>
   )
 }
 
@@ -321,9 +624,6 @@ function isNarrow(): boolean {
   return window.matchMedia("(max-width: 767px)").matches
 }
 
-// A touch device raises its on-screen keyboard whenever an input takes focus,
-// so the composer only grabs focus on its own where there is a real pointer.
-const FINE_POINTER = typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches
 
 // Resolve the finding a proof document renders, fetched once from the API.
 // Returns null until it loads, and resets whenever the id changes so a stale
@@ -362,12 +662,15 @@ function useStoredFlag(key: string, initial: boolean): [boolean, (v: boolean) =>
 // deleted run's files to a trash folder, so a mistake can still be recovered by
 // hand. Both wait while the agent works.
 function RunActions({
+  compact = false,
   archived,
   busy,
   findings,
   onArchive,
   onDelete,
 }: {
+  // Fleet runs keep the top bar quiet: Archive moves into the ⋯ menu.
+  compact?: boolean
   archived: boolean
   busy: boolean
   findings: number
@@ -379,7 +682,8 @@ function RunActions({
   const [error, setError] = useState<string | null>(null)
   const wait = busy ? "Wait for the agent to finish" : undefined
   return (
-    <div className="ml-auto flex shrink-0 items-center gap-0.5">
+    <div className={cn("flex shrink-0 items-center gap-0.5", !compact && "ml-auto")}>
+      {compact ? null : (
       <Button
         variant="ghost"
         size="sm"
@@ -391,6 +695,7 @@ function RunActions({
         {archived ? <ArchiveRestore /> : <Archive />}
         <span className="hidden sm:inline">{archived ? "Unarchive" : "Archive"}</span>
       </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger
           render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions" />}
@@ -398,6 +703,12 @@ function RunActions({
           <MoreHorizontal />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40">
+          {compact ? (
+            <DropdownMenuItem disabled={busy} onClick={onArchive}>
+              {archived ? <ArchiveRestore /> : <Archive />}
+              {archived ? "Unarchive" : "Archive"}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             variant="destructive"
             disabled={busy}
@@ -446,774 +757,4 @@ function RunActions({
       </Dialog>
     </div>
   )
-}
-
-// The thread body + composer, styled in base-nova. Headless assistant-ui
-// primitives do the scroll-stickiness, message iteration and compose state.
-// The icon per failure kind. Amber throughout — red stays reserved for a proven
-// finding and destructive controls, so an error never reads as a finding.
-const ERROR_ICON: Record<RunFailure["kind"], typeof TriangleAlert> = {
-  transient: CloudOff,
-  account: CreditCard,
-  budget: Gauge,
-  cutoff: Scissors,
-  model: TriangleAlert,
-  crash: TriangleAlert,
-  unknown: TriangleAlert,
-}
-
-// The run failed before it proved anything. This is the one place the operator
-// learns why — honestly: what went wrong, what it actually cost, and the single
-// next step. A transient fault leads with "Run again"; a billing fault does not
-// pretend retrying helps. The real engine error is folded away, present but not
-// shouting. No red: an error is not a finding.
-function RunErrorCard({
-  info,
-  fallback,
-  onRetry,
-  retrying,
-  archived,
-}: {
-  info: RunFailure | null
-  fallback: string | null
-  onRetry: () => void
-  retrying: boolean
-  archived: boolean
-}) {
-  const kind = info?.kind ?? "unknown"
-  const Icon = ERROR_ICON[kind] ?? TriangleAlert
-  const title = info?.title ?? "The run did not complete"
-  const hint = info?.hint ?? fallback ?? "Try starting the run again."
-  const detail = info?.detail?.trim() || (info ? null : fallback) || null
-  const spent = info?.spentUsd ?? 0
-  const retryable = (info?.retryable ?? true) && !archived
-
-  return (
-    <div className={cn(card, "overflow-hidden")}>
-      <div className="flex gap-3 px-4 py-3.5">
-        <Icon className="mt-0.5 size-5 shrink-0 text-warn" />
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <p className="text-sm font-medium text-foreground">{title}</p>
-          <p className="text-sm leading-relaxed text-muted-foreground">{hint}</p>
-          <p className="text-xs text-muted-foreground/70">
-            {spent > 0
-              ? `About $${spent.toFixed(4)} was spent on the work that did run.`
-              : "Nothing was spent on this run."}
-          </p>
-          {detail ? (
-            <Collapsible>
-              <CollapsibleTrigger className="group flex items-center gap-1 pt-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
-                <ChevronRight className="size-3 transition-transform group-data-[state=open]:rotate-90" />
-                Technical details
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                  {detail}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
-          ) : null}
-          {retryable ? (
-            <div className="pt-1.5">
-              <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
-                {retrying ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="size-3.5" />
-                )}
-                Run again
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Thread({
-  live,
-  empty,
-  prepass,
-  error,
-  errorInfo,
-  onRetry,
-  retrying,
-  archived,
-  sendError,
-}: {
-  live: boolean
-  empty: boolean
-  prepass: PrepassView | null
-  error: string | null
-  errorInfo: RunFailure | null
-  onRetry: () => void
-  retrying: boolean
-  archived: boolean
-  sendError: string | null
-}) {
-  return (
-    <ThreadPrimitive.Root
-      className="flex min-h-0 flex-1 flex-col bg-background"
-      style={{ ["--thread-max-width" as string]: "48rem" }}
-    >
-      <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
-        <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-3 px-5 py-6">
-          {prepass ? <PrepassFold prepass={prepass} /> : null}
-
-          {empty ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              Starting the agent session…
-            </div>
-          ) : null}
-
-          <ThreadPrimitive.Messages components={{ Message }} />
-
-          {error || errorInfo ? (
-            <RunErrorCard
-              info={errorInfo}
-              fallback={error}
-              onRetry={onRetry}
-              retrying={retrying}
-              archived={archived}
-            />
-          ) : null}
-        </div>
-
-        <ThreadPrimitive.ScrollToBottom asChild>
-          <Button
-            size="icon"
-            variant="outline"
-            className="absolute bottom-4 left-1/2 size-8 -translate-x-1/2 rounded-full disabled:invisible"
-          >
-            <ArrowDown className="size-4" />
-          </Button>
-        </ThreadPrimitive.ScrollToBottom>
-      </ThreadPrimitive.Viewport>
-
-      <Composer live={live} archived={archived} error={sendError} />
-    </ThreadPrimitive.Root>
-  )
-}
-
-// The composer floats under the thread — no divider, no helper line. A single
-// rounded pill with the send button tucked inside. It is always open, except on
-// an archived run, which reads as quiet rather than broken. A failed send (spend
-// cap, no saved session) shows one line above it.
-function Composer({ live, archived, error }: { live: boolean; archived: boolean; error: string | null }) {
-  return (
-    <div className="px-5 pb-4 pt-1">
-      <div className="mx-auto max-w-(--thread-max-width)">
-        {error ? <p className="mb-1.5 px-3 text-xs text-bad">{error}</p> : null}
-        <ComposerPrimitive.Root
-          className={cn(
-            "flex items-end gap-2 rounded-2xl border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur",
-            "transition-colors focus-within:border-border focus-within:ring-2 focus-within:ring-ring/25",
-            archived && "opacity-70",
-          )}
-        >
-          <ComposerPrimitive.Input
-            autoFocus={FINE_POINTER}
-            disabled={archived}
-            rows={1}
-            submitOnEnter
-            placeholder={archived ? "This run is archived." : live ? "Steer the agent…" : "Message the agent…"}
-            className="min-h-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
-          />
-          <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-7 shrink-0 rounded-full" disabled={archived}>
-              <ArrowUp className="size-4" />
-            </Button>
-          </ComposerPrimitive.Send>
-        </ComposerPrimitive.Root>
-      </div>
-    </div>
-  )
-}
-
-// One message. A user steer reads as the operator's own primary bubble, pinned
-// right; the agent's message is a plain column of prose, reasoning and tool-call
-// parts. MessageRoot emits no data-role, so we branch the layout with
-// MessagePrimitive.If (exactly one arm renders per message).
-function Message() {
-  const parts = { Text, tools: { Fallback: StepPart } }
-  return (
-    <MessagePrimitive.Root className="flex flex-col">
-      <MessagePrimitive.If user>
-        <div className="ml-auto max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3.5 py-2 text-sm leading-relaxed text-primary-foreground">
-          <MessagePrimitive.Parts components={parts} />
-        </div>
-      </MessagePrimitive.If>
-      <MessagePrimitive.If user={false}>
-        <div className="flex flex-col gap-2.5">
-          <MessagePrimitive.Parts components={parts} />
-        </div>
-      </MessagePrimitive.If>
-    </MessagePrimitive.Root>
-  )
-}
-
-const Text: TextMessagePartComponent = ({ text }) => <Markdown text={text} className="text-sm leading-relaxed" />
-
-// Our own renderer for every part we pack as a tool-call. It reads the Step we
-// packed into `args`, so the PoC pass/fail tone and the proof card come from
-// `step.state` — never from assistant-ui's generic running/done status. `tail`
-// is set only on the one cognition block currently being written on a live run.
-const StepPart: ToolCallMessagePartComponent = ({ args }) => {
-  const a = args as {
-    step?: Step
-    group?: Step[]
-    pending?: PendingApproval
-    card?: CardState
-    proofKind?: ProofKind
-    proofArtifactId?: string | null
-    artifact?: ArtifactDoc | null
-    version?: ArtifactVersion | null
-    vIndex?: number
-    vCount?: number
-    tail?: boolean
-  }
-  if (a.pending)
-    return <FindingCard
-        pending={a.pending}
-        state={a.card ?? "waiting"}
-        proofKind={a.proofKind ?? "forge"}
-        proofArtifactId={a.proofArtifactId ?? null}
-      />
-  if (a.group) return <ToolGroupPart group={a.group} />
-  if (a.artifact && a.version && !a.step)
-    return (
-      <ArtifactChip doc={a.artifact} version={a.version} vIndex={a.vIndex ?? 1} vCount={a.vCount ?? 1} />
-    )
-  const step = a.step
-  if (!step) return null
-
-  if (step.kind === "reasoning") return <ReasoningPart step={step} tail={!!a.tail} />
-  if (step.kind === "say") return <SayPart step={step} tail={!!a.tail} />
-  if (step.kind === "subagent") return <HandoffRow step={step} />
-  if (step.kind === "poc")
-    return <AttemptCard step={step} file={a.artifact ?? null} version={a.version ?? null} vIndex={a.vIndex ?? 1} />
-  if (step.kind === "decided")
-    return (
-      <div className={cn(card, "flex items-center gap-2.5 px-3.5 py-2.5 text-sm")}>
-        <ShieldX className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 truncate font-medium">{step.label}</span>
-        <StatusMark className="ml-auto" mark="off" word="Denied" />
-      </div>
-    )
-
-  // Every remaining kind (open/list/read/scan/note/cap) is grouped into a
-  // ToolGroup by buildMessages, so nothing else should reach here.
-  return null
-}
-
-// Short mono tool names for the grouped rows, so each reads as a tool call
-// (`read src/Vault.sol`) rather than a sentence.
-const TOOL_NAME: Partial<Record<Step["kind"], string>> = {
-  open: "init",
-  list: "ls",
-  read: "read",
-  scan: "scan",
-  note: "read",
-  cap: "cap",
-}
-
-// A contiguous run of the agent's non-cognition steps, folded into one card that
-// is collapsed by default — so recon no longer pops in row by row and jitters
-// the layout under the live stream. Expanding shows each call and its leads.
-function ToolGroupPart({ group }: { group: Step[] }) {
-  const [open, setOpen] = useState(false)
-  const tools: GroupedTool[] = group.map((s) => ({
-    id: s.key,
-    name: TOOL_NAME[s.kind] ?? s.kind,
-    target: s.detail ? `${s.label} — ${s.detail}` : s.label,
-    state: s.state === "fail" ? "failed" : "done",
-  }))
-  const label = group.length === 1 ? group[0].label : "Recon & static analysis"
-  return (
-    <ToolGroup
-      className="max-w-none"
-      label={label}
-      tools={tools}
-      open={open}
-      onOpenChange={setOpen}
-    />
-  )
-}
-
-// Streamed reasoning. This model thinks at length, so the block starts folded:
-// one quiet line that shimmers "Thinking…" while the agent thinks, then reads
-// "Thought it through". A click opens the side rail with the full text, live or
-// done, and the block keeps that choice when the agent moves on.
-function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
-        <Brain className="size-3.5" />
-        {tail ? <ShimmerLabel active>Thinking…</ShimmerLabel> : "Thought it through"}
-        <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]:rotate-90" />
-      </CollapsibleTrigger>
-      <CollapsibleContent>{open ? <ReasoningBody text={step.label} tail={tail} /> : null}</CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-// The rail mounts only while open, so folded thinking costs no Markdown parse.
-function ReasoningBody({ text, tail }: { text: string; tail: boolean }) {
-  return <Markdown text={useSmoothText(text, tail)} className={RAIL} />
-}
-
-const RAIL = "mt-1.5 border-l-2 border-border pl-3 text-[13px] leading-relaxed text-muted-foreground"
-
-// Streamed assistant prose, rendered as Markdown. While it streams, it reveals
-// word by word instead of in the uneven chunks the transport sends.
-function SayPart({ step, tail }: { step: Step; tail: boolean }) {
-  return <Markdown text={useSmoothText(step.label, tail)} className="text-sm leading-relaxed" />
-}
-
-// A subagent handoff: the lead delegated an angle to a child conversation. Reads
-// as a distinct dashed row with the child's area and live state.
-function HandoffRow({ step }: { step: Step }) {
-  const mark: Mark = step.subState === "failed" ? "fail" : step.subState === "done" ? "done" : "running"
-  return (
-    <div className={cn(card, "flex items-center gap-2.5 px-3.5 py-2.5 text-sm")}>
-      <GitBranch className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate font-medium">{step.label}</span>
-      {step.detail ? <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{step.detail}</span> : null}
-      <StatusMark className="ml-auto" mark={mark} />
-    </div>
-  )
-}
-
-// The agent opened a workspace document. It reads as a compact paper chip in the
-// transcript — "Writing · N words" while it streams — that opens the full file in
-// the pane when clicked. The live document (text, writing, word count) comes from
-// RunState.artifacts, packed into this part by buildMessages, so the chip updates
-// as the file is written.
-const KIND_LABEL: Record<ArtifactDoc["kind"], string> = {
-  poc: "Proof of concept",
-  proof: "Replay proof",
-  source: "Source",
-  report: "Report",
-}
-
-function ArtifactChip({
-  doc,
-  version,
-  vIndex,
-  vCount,
-}: {
-  doc: ArtifactDoc
-  version: ArtifactVersion
-  vIndex: number
-  vCount: number
-}) {
-  const open = useContext(OpenArtifact)
-  const words = version.text.trim() ? version.text.trim().split(/\s+/).length : 0
-  const base = doc.lang ? `${KIND_LABEL[doc.kind]} · ${doc.lang}` : KIND_LABEL[doc.kind]
-  // When the file has more than one version this chip is one rewrite of it, so
-  // it names its own version — v1/v2/v3 — up front, keeping each attempt a
-  // distinct pill instead of one card changing under the operator.
-  const meta = vCount > 1 ? `v${vIndex} · ${base}` : base
-  const openThis = () => open(doc.id, version.id)
-  return (
-    <ArtifactCard
-      role="button"
-      tabIndex={0}
-      onClick={openThis}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault()
-          openThis()
-        }
-      }}
-      className="cursor-pointer"
-      title={doc.title}
-      meta={meta}
-      generating={version.writing}
-      words={words}
-      preview={version.writing ? <DraftTail text={version.text} /> : null}
-    />
-  )
-}
-
-// Phone only: the last few lines of a file as it drafts, inside its chat card,
-// so you watch it being written without the pane covering the chat. The top
-// fades out, and long lines clip rather than wrap. Desktop has the live pane.
-function DraftTail({ text }: { text: string }) {
-  const tail = text.trimEnd().split("\n").slice(-5).join("\n")
-  if (!tail) return null
-  return (
-    <pre
-      aria-hidden
-      className="overflow-hidden rounded-lg bg-foreground/[0.04] px-2.5 py-2 font-mono text-[10.5px] leading-[1.45] whitespace-pre text-muted-foreground [mask-image:linear-gradient(to_bottom,transparent,black_45%)] md:hidden"
-    >
-      {tail}
-    </pre>
-  )
-}
-
-// One exploit attempt as one card: the test file the agent wrote, then the
-// Foundry run of that test. Every attempt has the same two rows, so attempt 2
-// reads exactly like attempt 1. The file row opens that version in the pane.
-function AttemptCard({
-  step,
-  file,
-  version,
-  vIndex,
-}: {
-  step: Step
-  file: ArtifactDoc | null
-  version: ArtifactVersion | null
-  vIndex: number
-}) {
-  const open = useContext(OpenArtifact)
-  const mark: Mark = step.state === "pass" ? "pass" : step.state === "fail" ? "fail" : "running"
-  const text = version?.text ?? ""
-  const words = text.trim() ? text.trim().split(/\s+/).length : 0
-  const lines = text ? text.trimEnd().split("\n").length : 0
-  const openFile = file && version ? () => open(file.id, version.id) : null
-  const row = "flex w-full items-center gap-2.5 border-t border-border/60 px-3.5 py-2 text-left text-[13px]"
-  return (
-    <div className={cn(card, "overflow-hidden")}>
-      <div className="flex items-center gap-2.5 px-3.5 py-2.5">
-        <TerminalSquare className="size-4 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 whitespace-nowrap text-sm font-medium">{step.label}</span>
-        {step.contract ? (
-          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{step.contract}</span>
-        ) : null}
-        <StatusMark className="ml-auto" mark={mark} />
-      </div>
-
-      {file && version ? (
-        <button
-          type="button"
-          onClick={openFile ?? undefined}
-          className={cn(row, "group transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:outline-none")}
-        >
-          <FileCode2 className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 truncate">
-            {version.writing ? "Writing " : "Wrote "}
-            <span className="font-mono text-[12px]">{file.title}</span>
-          </span>
-          <span className="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums">
-            {version.writing ? (
-              <ShimmerLabel active>{words} words</ShimmerLabel>
-            ) : (
-              <>
-                {file.versions.length > 1 ? `v${vIndex} · ` : ""}
-                {lines} lines
-              </>
-            )}
-            <ChevronRight className="size-3.5 transition-colors group-hover:text-foreground" />
-          </span>
-        </button>
-      ) : null}
-      {version?.writing ? (
-        <div className="px-3.5 pb-2.5 md:hidden">
-          <DraftTail text={text} />
-        </div>
-      ) : null}
-
-      <div className={row}>
-        <Play className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 truncate">Ran it in Foundry</span>
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          {step.state === "running" ? (version?.writing ? "Waiting for the file" : "Running…") : step.detail}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-// The finding the agent submitted. It is the same plain card as every other
-// one. Its state lives in the StatusMark; its severity is an overline word, red
-// or amber only once a replay proved it. A proven card opens its replay proof
-// in the pane, the same place the PoC opened.
-// waiting: the test passed; the final replay comes when the audit ends.
-// replaying: the run is recording now. proven: the final replay held.
-// unproven / dropped: the run settled without proving this one.
-type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
-
-// The note under a finding card says what the replay did, so it follows the
-// proof kind: a Foundry test, a request, or pinned evidence.
-const CARD_NOTE: Record<ProofKind, Record<CardState, string>> = {
-  forge: {
-    waiting: "The test passed. The final replay runs when the audit ends.",
-    replaying: "Replaying the test from a clean state.",
-    proven: "A clean Foundry replay reproduced the exploit.",
-    unproven: "Recorded, but the final replay did not reproduce it.",
-    dropped: "Not recorded. The run ended before the final replay.",
-  },
-  http: {
-    waiting: "The request showed the harm. The final replay runs when the audit ends.",
-    replaying: "Replaying the request on a private network.",
-    proven: "A clean replay of the request showed the harm.",
-    unproven: "Recorded, but the final replay did not show the harm.",
-    dropped: "Not recorded. The run ended before the final replay.",
-  },
-  evidence: {
-    waiting: "The evidence check passed. The final replay runs when the audit ends.",
-    replaying: "Checking the pinned evidence again.",
-    proven: "The pinned evidence replayed and the check still holds.",
-    unproven: "Recorded, but the pinned evidence did not replay.",
-    dropped: "Not recorded. The run ended before the final replay.",
-  },
-}
-
-// The proof kind of a submitted finding: what the scope's proof surface says,
-// else Foundry (older records have no surface).
-function proofKindOf(state: RunState): ProofKind {
-  const surface = state.scope?.proofSurface?.kind
-  return surface === "http" || surface === "evidence" ? surface : "forge"
-}
-
-const CARD_MARK: Record<CardState, { mark: Mark; word?: string }> = {
-  waiting: { mark: "waiting" },
-  replaying: { mark: "running", word: "Replaying" },
-  proven: { mark: "proven" },
-  unproven: { mark: "off", word: "Not reproduced" },
-  dropped: { mark: "off", word: "Not recorded" },
-}
-
-function FindingCard({
-  pending,
-  state,
-  proofKind,
-  proofArtifactId,
-}: {
-  pending: PendingApproval
-  state: CardState
-  proofKind: ProofKind
-  proofArtifactId: string | null
-}) {
-  const openArtifact = useContext(OpenArtifact)
-  const proven = state === "proven"
-  const clickable = proven && !!proofArtifactId
-  const sevInk = proven ? INK[severityTone(pending.severity)] : "text-muted-foreground"
-  const m = CARD_MARK[state]
-  const body = (
-    <>
-      <div className="px-4 pt-3.5 pb-3">
-        <div className="flex items-center gap-2 text-[11px] font-medium tracking-wide uppercase">
-          <span className="text-muted-foreground">Finding</span>
-          <span aria-hidden className="text-muted-foreground/50">·</span>
-          <span className={sevInk}>{pending.severity}</span>
-          <StatusMark className="ml-auto tracking-normal normal-case" mark={m.mark} word={m.word} />
-        </div>
-        <p className="mt-1.5 text-[15px] leading-snug font-semibold text-pretty">{pending.title}</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{CARD_NOTE[proofKind][state]}</p>
-      </div>
-      {pending.poc || clickable ? (
-        <div className="flex items-center gap-2 border-t border-border/60 px-4 py-2">
-          {pending.poc ? (
-            <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{pending.poc}</span>
-          ) : null}
-          {clickable ? (
-            <span className="ml-auto flex shrink-0 items-center gap-0.5 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-              Open replay proof
-              <ChevronRight className="size-3.5" />
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-    </>
-  )
-
-  if (clickable) {
-    return (
-      <button
-        type="button"
-        onClick={() => openArtifact(proofArtifactId)}
-        className={cn(card, cardInteractive, "group block w-full overflow-hidden text-left")}
-      >
-        {body}
-      </button>
-    )
-  }
-  return <div className={cn(card, "overflow-hidden")}>{body}</div>
-}
-
-// Fold the reduced step stream into assistant-ui messages. Operator steps are
-// the user's bubbles; each contiguous run of agent steps is one assistant
-// message whose parts carry the Step for our renderers — reasoning/prose/subagent
-// handoffs and tool cards alike. The agent's closing prose and the live proof
-// card trail the final assistant message. Keying each message by its first step
-// id keeps rows and scroll stable as the stream grows. `tail` marks the single
-// cognition block being written right now so only it reveals word by word.
-function buildMessages(state: RunState | null, status: RunStatus, live: boolean): ThreadMessageLike[] {
-  if (!state) return []
-  const msgs: ThreadMessageLike[] = []
-  let buf: { id: string; parts: ThreadMessageLike["content"] } | null = null
-
-  // The live tail is the block still streaming: the run's last step, when that
-  // step is reasoning or prose. Once a tool step follows, the block is done, so
-  // "Thinking…" never shimmers above a tool that is already running.
-  const lastIndex = state.steps.length - 1
-  const lastKind = state.steps[lastIndex]?.kind
-  const tailIndex = live && (lastKind === "say" || lastKind === "reasoning") ? lastIndex : -1
-
-  const flush = () => {
-    if (buf && buf.parts.length) msgs.push({ role: "assistant", id: buf.id, content: buf.parts })
-    buf = null
-  }
-
-  // A contiguous run of the agent's non-cognition steps collapses into one
-  // ToolGroup card instead of a row each, so recon stops jittering the layout.
-  let group: Step[] = []
-  const flushGroup = () => {
-    if (buf && group.length) {
-      ;(buf.parts as unknown[]).push({
-        type: "tool-call",
-        toolCallId: `group:${group[0].key}`,
-        toolName: "toolgroup",
-        args: { group },
-        result: "done",
-      })
-    }
-    group = []
-  }
-  const GROUPED = new Set<Step["kind"]>(["open", "list", "read", "scan", "note", "cap"])
-
-  state.steps.forEach((step, i) => {
-    if (step.kind === "operator") {
-      flushGroup()
-      flush()
-      msgs.push({ role: "user", id: step.key, content: [{ type: "text", text: step.label }] })
-      return
-    }
-    // The decide pass already shows up as the single proof card below, which
-    // carries its own replaying → proven state. Its bookkeeping rows ("Recording
-    // the finding", the approved "Finding recorded") stacked above that card and
-    // read as duplicates out of order — drop them. A denial has no green card to
-    // carry it, so its one red "Finding denied" row stays.
-    if (step.phase === "decide" && step.kind === "note") return
-    if (step.kind === "decided" && step.state === "pass") return
-
-    if (!buf) buf = { id: step.key, parts: [] }
-    if (GROUPED.has(step.kind)) {
-      group.push(step)
-      return
-    }
-    // A cognition/outcome step ends the current group and renders on its own.
-    flushGroup()
-    // A submitted finding renders its card right where the agent submitted it,
-    // so a run with several findings reads in the order they landed.
-    if (step.kind === "submitted" && step.finding) {
-      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status)
-      ;(buf.parts as unknown[]).push({
-        type: "tool-call",
-        toolCallId: step.key,
-        toolName: "proof",
-        args: { pending: step.finding, card, proofKind, proofArtifactId },
-        result: card,
-      })
-      return
-    }
-    // An artifact step carries only the document id; pack the live document so
-    // its transcript chip shows the current writing state and word count. The
-    // replay proof is the exception: the green finding card below is its
-    // transcript entry point, so skip its plain chip and let that card (and the
-    // pane tab) carry it — no redundant pointer stacked right above the card.
-    if (step.kind === "artifact") {
-      // step.subId is the VERSION id; find the file it belongs to and the index
-      // of that version, so the chip can label itself v1/v2/v3 and open the file
-      // at exactly its own version.
-      let file: ArtifactDoc | null = null
-      let version: ArtifactVersion | null = null
-      let vIndex = 0
-      for (const a of state.artifacts) {
-        const idx = a.versions.findIndex((v) => v.id === step.subId)
-        if (idx >= 0) {
-          file = a
-          version = a.versions[idx]
-          vIndex = idx
-          break
-        }
-      }
-      if (!file || !version) return
-      if (file.kind === "proof") return
-      // A PoC version that belongs to an attempt shows inside that attempt's
-      // card, not as its own chip.
-      if (file.kind === "poc" && version.attempt != null) return
-      ;(buf.parts as unknown[]).push({
-        type: "tool-call",
-        toolCallId: step.key,
-        toolName: "artifact",
-        args: { artifact: file, version, vIndex: vIndex + 1, vCount: file.versions.length },
-        result: "done",
-      })
-      return
-    }
-    // An attempt card carries the test file it ran: the PoC version written for
-    // this attempt number and contract.
-    if (step.kind === "poc") {
-      let pocFile: ArtifactDoc | null = null
-      let pocVersion: ArtifactVersion | null = null
-      let vIndex = 0
-      for (const a of state.artifacts) {
-        if (a.kind !== "poc") continue
-        const idx = a.versions.findIndex((v) => v.attempt === step.attempt && v.contract === step.contract)
-        if (idx >= 0) {
-          pocFile = a
-          pocVersion = a.versions[idx]
-          vIndex = idx + 1
-          break
-        }
-      }
-      ;(buf.parts as unknown[]).push({
-        type: "tool-call",
-        toolCallId: step.key,
-        toolName: "poc",
-        args: { step, artifact: pocFile, version: pocVersion, vIndex },
-        result: step.state ?? "done",
-      })
-      return
-    }
-    ;(buf.parts as unknown[]).push({
-      type: "tool-call",
-      toolCallId: step.key,
-      toolName: step.kind,
-      args: { step, tail: i === tailIndex },
-      result: step.state ?? "done",
-    })
-  })
-  flushGroup()
-
-  // Closing prose (the agent's words when nothing could be proven).
-  if (status === "no-finding" && state.finalText) {
-    if (!buf) buf = { id: "final", parts: [] }
-    ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
-  }
-
-  flush()
-  return msgs
-}
-
-// Match a submitted finding to its recorded one and its replay-proof document.
-// New runs match by test contract name. An old run recorded one finding with no
-// contract name, so its one submission maps to the run's one finding.
-function cardFor(
-  state: RunState,
-  sub: PendingApproval,
-  status: RunStatus,
-): { card: CardState; proofKind: ProofKind; proofArtifactId: string | null } {
-  const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
-  const rec = legacy
-    ? state.submitted.length === 1 && status === "recorded"
-      ? state.findings[0]
-      : undefined
-    : state.findings.find((f) => f.poc === sub.poc)
-  const proofKind = proofKindOf(state)
-  if (rec) {
-    if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
-    const proofs = state.artifacts.filter((a) => a.kind === "proof")
-    const doc = proofs.find((a) => a.findingId === rec.id) ?? (legacy ? proofs[0] : undefined)
-    return { card: "proven", proofKind, proofArtifactId: doc?.id ?? null }
-  }
-  if (status === "deciding") return { card: "replaying", proofKind, proofArtifactId: null }
-  if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofKind, proofArtifactId: null }
-  return { card: "waiting", proofKind, proofArtifactId: null }
 }

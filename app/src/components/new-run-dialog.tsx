@@ -1,196 +1,172 @@
 import { useRef, useState } from "react"
-import { ArrowUp, Blocks, Check, ChevronDown, Cpu, FileCode2, FlaskConical, Folder, FolderGit2, Loader2, Plus, Shuffle, X } from "lucide-react"
-import type { ModelChoice, PackChoice, SpendState, TargetChoice } from "@/lib/types"
-import { attachScope, removeScope } from "@/lib/api"
-import { DEFAULT_PACK, isOwnScope, packOf, scopeMeta } from "@/lib/catalog"
+import { FileCode2, FlaskConical, Folder, FolderGit2, Loader2, Plus, X } from "lucide-react"
+import type { ModelChoice, PackChoice, Playbook, TargetChoice } from "@/lib/types"
+import { attachScope } from "@/lib/api"
+import { DEFAULT_PACK, packOf } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 const RANDOM = "random"
+const NONE = "none"
+const DEFAULT_BUDGET = "5.00"
 
-// The New Run window, shaped like a composer. The body is the scope list: the
-// one real choice, shown in place. Each scope shows its name and its file,
-// nothing else. The last row adds a scope from GitHub URLs and local folders,
-// for any module. The toolbar holds the model, this run's budget, and the send
-// button. There is no free-text box: a run is autonomous, and the operator
-// steers it once it is live.
-// "Random" omits targetId, so the server picks and repeat runs do not
-// re-break one bug.
+// The New Run window. It has three fields: the scope, an optional playbook,
+// and the budget. The model is the server's default (the first in the list),
+// so there is no model picker. "Random" omits targetId, so the server picks
+// and repeat runs do not re-break one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
   open,
   onOpenChange,
   models,
   targets,
   packs,
-  spend,
+  playbooks = [],
   busy,
   error,
   onStart,
-  onScopesChanged,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   models: ModelChoice[]
   targets: TargetChoice[]
   packs: PackChoice[]
-  spend: SpendState | null
+  // Saved run recipes. There is no playbook store on the server yet, so this
+  // is empty and the field shows "None".
+  playbooks?: Playbook[]
   busy: boolean
   error: string | null
   onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string) => void
-  onScopesChanged: () => void
 }) {
-  // The module. Contracts unless the operator picks another; the server sends the
-  // list, so a new pack appears here by itself.
-  const [packPicked, setPackPicked] = useState("")
-  const pack = packs.some((p) => p.id === packPicked) ? packPicked : DEFAULT_PACK
-  const runnable = targets.filter((t) => t.runnable && packOf(t) === pack)
-  // The operator's pick, else the default model (the server lists it first).
-  const [picked, setAlias] = useState("")
-  const alias = picked || models[0]?.alias || ""
+  const alias = models[0]?.alias ?? ""
+  const runnable = targets.filter((t) => t.runnable && packs.some((p) => p.id === packOf(t)))
   const [scopeId, setScopeId] = useState(RANDOM)
-  const listRef = useRef<HTMLDivElement>(null)
-  const [scopeError, setScopeError] = useState<string | null>(null)
+  const [playbookId, setPlaybookId] = useState(NONE)
+  const [budget, setBudget] = useState(DEFAULT_BUDGET)
 
-  // A scope can be added under any module. The server files it under the pack
-  // that fits its content (Contracts for Solidity, else Code review), so the
-  // dialog moves there and selects the new scope; it never starts a run the
-  // server would refuse.
-  const onAttached = (scope: TargetChoice) => {
-    setScopeError(null)
-    setPackPicked(packOf(scope))
-    setScopeId(scope.id)
-    onScopesChanged()
-  }
-  const onRemove = (id: string) => {
-    removeScope(id)
-      .then(() => {
-        if (scopeId === id) setScopeId(RANDOM)
-        onScopesChanged()
-      })
-      .catch((e: Error) => setScopeError(e.message))
-  }
-
-  // This run's budget. Blank means the default from Settings.
-  const [budget, setBudget] = useState("")
-  const budgetN = budget.trim() === "" ? undefined : Number(budget)
-  const budgetOk = budgetN === undefined || (Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000)
+  const playbook = playbooks.find((p) => p.id === playbookId) ?? null
+  const scope = runnable.find((t) => t.id === scopeId) ?? null
+  const pack = playbook?.pack ?? (scope ? packOf(scope) : DEFAULT_PACK)
+  const budgetN = Number(budget.replace(/^\$/, "").trim())
+  const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
   const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk
-  const ids = [RANDOM, ...runnable.map((t) => t.id)]
+
+  // A playbook brings its own scope and budget. The operator can still change them.
+  const onPlaybook = (id: string) => {
+    setPlaybookId(id)
+    const p = playbooks.find((x) => x.id === id)
+    if (!p) return
+    if (runnable.some((t) => t.id === p.targetId)) setScopeId(p.targetId)
+    if (p.budgetUsd != null) setBudget(p.budgetUsd.toFixed(2))
+  }
 
   const submit = () => {
     if (!canStart) return
     onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack)
   }
 
-  // Arrow keys move the selection (and focus) through the list. Enter starts.
-  const onListKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      submit()
-      return
-    }
-    const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0
-    if (!step) return
-    e.preventDefault()
-    const next = ids[(ids.indexOf(scopeId) + step + ids.length) % ids.length]
-    setScopeId(next)
-    listRef.current?.querySelector<HTMLElement>(`[data-id="${next}"]`)?.focus()
-  }
-
-  // A scope belongs to one module, so a new module starts at Random scope.
-  const onPack = (id: string) => {
-    setPackPicked(id)
-    setScopeId(RANDOM)
-  }
+  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
+  const playbookItems = [{ value: NONE, label: "None" }, ...playbooks.map((p) => ({ value: p.id, label: p.title }))]
 
   const notice = !budgetOk
     ? "The budget must be between $0.01 and $1,000."
-    : scopeError
-      ? scopeError
+    : alias === ""
+      ? "No model is set up. Add a provider key in Settings."
       : runnable.length === 0
-        ? "No runnable scopes are available for this module right now."
+        ? "No runnable scopes are available right now."
         : error
+
+  const label = "text-[11px] leading-[15px] font-semibold tracking-[0.06em] text-muted-foreground"
+  const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="gap-0 overflow-hidden p-0 sm:max-w-lg"
-        initialFocus={() =>
-          listRef.current?.querySelector<HTMLElement>('[aria-checked="true"]') ?? null
-        }
-      >
-        <DialogTitle className="px-4 pt-3.5 pb-2 text-sm font-medium">New run</DialogTitle>
-
-        <div className="max-h-[min(24rem,60vh)] overflow-y-auto px-2 pb-2">
-          <div
-            ref={listRef}
-            role="radiogroup"
-            aria-label="Scope"
-            onKeyDown={onListKey}
-            className="flex flex-col gap-0.5"
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
+        <div className="flex h-12 items-center border-b px-5">
+          <DialogTitle className="text-sm font-semibold">New run</DialogTitle>
+          <DialogClose
+            render={<Button variant="ghost" size="icon-sm" className="-mr-2 ml-auto text-muted-foreground" />}
           >
-            <ScopeRow
-              id={RANDOM}
-              selected={scopeId === RANDOM}
-              onSelect={setScopeId}
-              icon={<Shuffle />}
-              title="Random scope"
-            />
-            {runnable.map((t) => (
-              <ScopeRow
-                key={t.id}
-                id={t.id}
-                selected={scopeId === t.id}
-                onSelect={setScopeId}
-                icon={<ScopeIcon target={t} />}
-                title={t.title}
-                meta={scopeMeta(t)}
-                onRemove={isOwnScope(t.id) ? () => onRemove(t.id) : undefined}
-              />
-            ))}
-          </div>
-          <AddScope pack={pack} onAttached={onAttached} onError={setScopeError} />
+            <X />
+            <span className="sr-only">Close</span>
+          </DialogClose>
         </div>
 
-        {notice ? <p className="border-t border-border/60 px-4 py-2 text-xs text-bad">{notice}</p> : null}
+        <form
+          className="flex flex-col gap-4 px-5 pt-4 pb-5"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit()
+          }}
+        >
+          <div className="flex flex-col gap-1.5">
+            <span className={label} id="new-run-scope">SCOPE</span>
+            <Select items={scopeItems} value={scopeId} onValueChange={(v) => v && setScopeId(String(v))}>
+              <SelectTrigger className={field} aria-labelledby="new-run-scope">
+                <SelectValue className="min-w-0 truncate" />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false} className="p-1">
+                {scopeItems.map((s) => (
+                  <SelectItem key={s.value} value={s.value} className="text-[13px]">
+                    <span className="truncate">{s.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-        <div className="flex min-w-0 items-center gap-2 border-t border-border/60 px-2 py-2">
-          <ModulePill packs={packs} pack={pack} onPack={onPack} />
-          <ModelPill models={models} alias={alias} onAlias={setAlias} />
-          <span className="flex-1" />
-          <label
-            className="flex h-8 shrink-0 items-center rounded-full border border-border/60 pr-3 pl-3 text-xs text-muted-foreground focus-within:border-ring focus-within:text-foreground"
-            title="Budget for this run. The run stops when it reaches it."
-          >
-            $
-            <input
-              className="min-w-3 max-w-16 field-sizing-content bg-transparent px-0.5 tabular-nums text-foreground outline-none placeholder:text-muted-foreground"
-              inputMode="decimal"
-              value={budget}
-              placeholder={spend ? String(spend.budgetUsd) : "5"}
-              onChange={(e) => setBudget(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              aria-label="Budget for this run in USD"
-            />
-            <span className="max-sm:hidden">budget</span>
+          <div className="flex flex-col gap-1.5">
+            <span className={label} id="new-run-playbook">
+              PLAYBOOK <span className="font-normal tracking-normal text-muted-foreground/60">· optional</span>
+            </span>
+            <Select items={playbookItems} value={playbookId} onValueChange={(v) => v && onPlaybook(String(v))}>
+              <SelectTrigger
+                className={field}
+                aria-labelledby="new-run-playbook"
+                disabled={!playbooks.length}
+                title={playbooks.length ? undefined : "No saved playbooks yet."}
+              >
+                <SelectValue className="min-w-0 truncate" />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false} className="p-1">
+                {playbookItems.map((p) => (
+                  <SelectItem key={p.value} value={p.value} className="text-[13px]">
+                    <span className="truncate">{p.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <label className="flex flex-col gap-1.5">
+            <span className={label}>BUDGET</span>
+            <span
+              className={cn(
+                "flex h-9 items-center rounded-lg border border-input bg-background px-3 text-[13px] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50",
+                !budgetOk && "border-bad",
+              )}
+            >
+              <span>$</span>
+              <input
+                className="min-w-0 flex-1 bg-transparent tabular-nums outline-none"
+                inputMode="decimal"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value)}
+                aria-label="Budget for this run in USD"
+              />
+              <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
+            </span>
           </label>
-          <Button
-            size="icon"
-            onClick={submit}
-            disabled={!canStart}
-            aria-label="Start run"
-            title="Start run (Enter)"
-            className="shrink-0 rounded-full"
-          >
-            {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
+
+          {notice ? <p className="text-xs text-bad">{notice}</p> : null}
+        </form>
+
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3.5">
+          <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+          <Button onClick={submit} disabled={!canStart}>
+            {busy ? <Loader2 className="animate-spin" /> : null}
+            Start run
           </Button>
         </div>
       </DialogContent>
@@ -205,74 +181,6 @@ export function ScopeIcon({ target: t }: { target: Pick<TargetChoice, "kind" | "
   if (t.kind === "local-source") return <Folder />
   if (t.kind === "scope") return t.links?.length ? <FolderGit2 /> : <Folder />
   return t.links?.length ? <FolderGit2 /> : <FileCode2 />
-}
-
-// One scope: its name and, when it has one, its file. The check column has a
-// fixed width so rows do not shift on selection. The remove button is a
-// sibling of the radio, not a child, and shows on hover.
-function ScopeRow({
-  id,
-  selected,
-  onSelect,
-  icon,
-  title,
-  meta,
-  onRemove,
-}: {
-  id: string
-  selected: boolean
-  onSelect: (id: string) => void
-  icon: React.ReactNode
-  title: string
-  meta?: string
-  onRemove?: () => void
-}) {
-  return (
-    <div className="group relative">
-      <button
-        type="button"
-        role="radio"
-        aria-checked={selected}
-        data-id={id}
-        tabIndex={selected ? 0 : -1}
-        onClick={() => onSelect(id)}
-        className={cn(
-          "flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors outline-none",
-          "focus-visible:ring-1 focus-visible:ring-foreground/15",
-          selected ? "bg-muted" : "hover:bg-muted/50",
-        )}
-      >
-        <span
-          className={cn(
-            "flex size-4 shrink-0 items-center justify-center [&_svg]:size-4",
-            selected ? "text-foreground" : "text-muted-foreground",
-          )}
-        >
-          {icon}
-        </span>
-        <span className="flex min-w-0 flex-1 items-baseline gap-3">
-          <span className="truncate text-[13.5px] font-medium">{title}</span>
-          {meta ? (
-            <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">{meta}</span>
-          ) : null}
-        </span>
-        <span className="flex size-4 shrink-0 items-center justify-center">
-          {selected ? <Check className="size-3.5" /> : null}
-        </span>
-      </button>
-      {onRemove ? (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${title}`}
-          title="Remove scope"
-          className="absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md bg-muted text-muted-foreground opacity-0 transition-opacity outline-none group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 [&_svg]:size-3.5"
-        >
-          <X />
-        </button>
-      ) : null}
-    </div>
-  )
 }
 
 // Which files of a picked folder are sent. This mirrors classifyPath in
@@ -582,98 +490,3 @@ export function AddScope({
   )
 }
 
-// The model, as a pill in the toolbar. With one model there is nothing to
-// choose, so it is a static label; with more it opens a menu.
-function ModelPill({
-  models,
-  alias,
-  onAlias,
-}: {
-  models: ModelChoice[]
-  alias: string
-  onAlias: (alias: string) => void
-}) {
-  const current = models.find((m) => m.alias === alias)
-  const pill =
-    "flex h-8 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 px-3 font-mono text-xs text-muted-foreground [&_svg]:size-3.5"
-  if (models.length <= 1) {
-    return (
-      <span className={pill} title={current?.id}>
-        <Cpu />
-        <span className="truncate">{alias || "No model"}</span>
-      </span>
-    )
-  }
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        className={cn(pill, "outline-none hover:bg-muted hover:text-foreground aria-expanded:bg-muted")}
-      >
-        <Cpu />
-        <span className="truncate">{alias}</span>
-        <ChevronDown />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-64">
-        <DropdownMenuRadioGroup value={alias} onValueChange={(v) => onAlias(String(v))}>
-          {models.map((m) => (
-            <DropdownMenuRadioItem key={m.alias} value={m.alias} className="items-start">
-              <span className="flex flex-col gap-0.5">
-                <span className="font-mono text-xs">{m.alias}</span>
-                <span className="text-xs text-muted-foreground">
-                  {m.id}
-                  {m.abliterated ? " · abliterated" : ""}
-                </span>
-              </span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-// The module (pack), as a pill beside the model. One module is a static label;
-// two or more open a menu. Same look as the model pill.
-function ModulePill({
-  packs,
-  pack,
-  onPack,
-}: {
-  packs: PackChoice[]
-  pack: string
-  onPack: (id: string) => void
-}) {
-  const current = packs.find((p) => p.id === pack)
-  const label = current?.title ?? pack
-  const pill =
-    "flex h-8 min-w-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 px-3 text-xs text-muted-foreground [&_svg]:size-3.5"
-  if (packs.length <= 1) {
-    return (
-      <span className={pill} title="Module">
-        <Blocks />
-        <span className="truncate">{label}</span>
-      </span>
-    )
-  }
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label="Module"
-        className={cn(pill, "outline-none hover:bg-muted hover:text-foreground aria-expanded:bg-muted")}
-      >
-        <Blocks />
-        <span className="truncate">{label}</span>
-        <ChevronDown />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-56">
-        <DropdownMenuRadioGroup value={pack} onValueChange={(v) => onPack(String(v))}>
-          {packs.map((p) => (
-            <DropdownMenuRadioItem key={p.id} value={p.id}>
-              {p.title}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
