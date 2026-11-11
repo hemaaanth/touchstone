@@ -35,8 +35,8 @@ export function visible(rel) {
   if (rel === "BRIEF.md") return true;
   const parts = rel.split(sep);
   if (parts.some((p) => !p || p.startsWith(".") || p === "..")) return false;
-  // Local folders sit under src/. A fetched repo sits at vendor/<repo>/ and a
-  // fetched blob at vendor/files/, so classify the path inside that folder.
+  // Local folders sit under src/. A fetched repo sits at vendor/<owner>__<repo>/
+  // and a fetched blob under vendor/files/, so classify the path inside that folder.
   if (parts[0] === "src" && parts.length >= 2) return classifyPath(parts.slice(1).join("/")) === "keep";
   if (parts[0] === "vendor" && parts.length >= 3) return classifyPath(parts.slice(2).join("/")) === "keep";
   return false;
@@ -169,7 +169,7 @@ export function tools(ws) {
 
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the scope's GitHub repos into vendor/<repo>/. Pass a repo URL exactly as BRIEF.md lists it. The fetch runs on the host; the review stays offline.",
+    description: "Fetch one of the scope's GitHub repos into vendor/<owner>__<repo>/. Pass a repo URL exactly as BRIEF.md lists it. The fetch runs on the host; the review stays offline.",
     parameters: obj({ url: str({ description: "a repo URL from BRIEF.md" }) }),
     replay: "unsafe",
     execute: async (args) => {

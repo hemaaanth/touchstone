@@ -13,6 +13,8 @@
 // real trace, per address. The result is the exploit's true economics — who
 // gained, who was drained, by how much — computed by the engine from the replay,
 // with zero cooperation from the agent's test and no source-string guessing.
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { writePoc, forgeTestJson } from "./sandbox.mjs";
 import { extractControlTrace } from "./control-trace.mjs";
 
@@ -122,9 +124,13 @@ function findResult(parsed, contract) {
 // the submitted test contract. Returns null when the replay produced no parsable
 // JSON (e.g. the test no longer compiles) so the caller can fall back to the
 // source-derived view for older runs.
+//
+// Every replay runs at full state verbosity (-vvvvv): the harm gate needs the
+// storage writes. `stateTrace` only decides whether the large controlTrace is
+// kept on the returned delta (packs that judge control harm themselves ask).
 export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, stateTrace = false } = {}) {
   if (source) writePoc(ws, source);
-  const { raw, timedOut } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace });
+  const { raw, timedOut } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace: true });
   let parsed = null;
   try { parsed = JSON.parse(raw); } catch { parsed = null; }
   if (!parsed) return null;
@@ -133,6 +139,8 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   const r = hit.result;
   const flows = netFlows(r.traces);
   const transfers = transferTable(flows, lowerKeys(r.labeled_addresses));
+  const controlTrace = extractControlTrace(r.traces);
+  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace });
   return {
     tool: "Foundry",
     source: "engine-replay",
@@ -147,8 +155,10 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
     logs: Array.isArray(r.decoded_logs) ? r.decoded_logs : [],
     // The signed money-moved table, computed from the real trace.
     transfers,
+    // The engine's harm verdict for this replay. See judgeHarm.
+    harm,
     // Only when asked: the replay state diff, for packs that judge control harm.
-    ...(stateTrace ? { controlTrace: extractControlTrace(r.traces) } : {}),
+    ...(stateTrace ? { controlTrace } : {}),
     timedOut,
   };
 }
@@ -157,4 +167,140 @@ function lowerKeys(obj) {
   const out = {};
   for (const [k, v] of Object.entries(obj || {})) out[k.toLowerCase()] = v;
   return out;
+}
+
+// ---------------------------------------------------------------- harm gate
+//
+// A passing test is not a proof. `assertTrue(true)` passes too. A forge finding
+// is proven only when the replay shows BOTH:
+//   1. the test made a successful call into a scope target, and
+//   2. a material adverse effect on a scope target, by EITHER channel:
+//      - funds:   a target's net ETH went DOWN during the test body, or
+//      - control: the test body made a real SSTORE in a target's storage.
+// Token drains (ERC-20/721) and access-control takeovers move no ETH. They show
+// up as a target storage write, so the control channel proves them.
+//
+// A scope target is a contract the replay CREATEd from code compiled out of the
+// scope: src/ (a lab) or vendor/ (fetched members). Contracts defined in the test
+// file, forge-std, the test contract and the cheatcode VM are never targets. A
+// target the test overwrote with vm.etch is no longer the scope's code, so it
+// stops being a target.
+//
+// Known limits, on purpose for this cycle:
+// - The funds channel sees native ETH only. A token-balance move that makes no
+//   target storage write (rare: balances live in the token's storage) is not
+//   seen. Measuring token balances is a later cycle.
+// - The control channel counts ANY target storage write in the test body, so a
+//   plain deposit also counts. The gate rejects tests that touch nothing; it
+//   does not judge intent. Packs with a lab model (keys, chain-watch) pass their
+//   own stricter judge to proveFindings.
+
+const lc = (v) => String(v ?? "").toLowerCase();
+const hex = (v) => lc(v).replace(/^0x/, "");
+const SCOPE_ROOTS = ["src/", "vendor/"];
+
+// The `out` directory named in foundry.toml, else "out".
+function outDir(ws) {
+  try {
+    const m = readFileSync(join(ws, "foundry.toml"), "utf8").match(/^\s*out\s*=\s*["']([^"']+)["']/m);
+    if (m && !m[1].includes("..")) return join(ws, m[1]);
+  } catch { /* default below */ }
+  return join(ws, "out");
+}
+
+// Creation bytecode of every contract compiled from the scope roots, read from
+// forge's build artifacts after the replay. Returns [{ name, path, code }], code
+// as lowercase hex without 0x. An empty list means no target can match, so the
+// gate fails closed.
+export function scopeCode(ws) {
+  const dir = outDir(ws);
+  const out = [];
+  if (!existsSync(dir)) return out;
+  const walk = (d, depth) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== "build-info" && depth < 4) walk(p, depth + 1); continue; }
+      if (!e.name.endsWith(".json")) continue;
+      let art;
+      try { art = JSON.parse(readFileSync(p, "utf8")); } catch { continue; }
+      const target = art?.metadata?.settings?.compilationTarget ?? {};
+      const [path, name] = Object.entries(target)[0] ?? [];
+      const code = hex(art?.bytecode?.object);
+      if (!path || !code || !SCOPE_ROOTS.some((r) => path.startsWith(r))) continue;
+      out.push({ name, path, code });
+    }
+  };
+  walk(dir, 0);
+  return out;
+}
+
+// True when `init` (CREATE input) starts with `code`. A library-link
+// placeholder (__$…$__, 40 hex chars) in `code` matches anything.
+function startsWithCode(init, code) {
+  if (init.length < code.length) return false;
+  for (let i = 0; i < code.length; i++) {
+    if (code.startsWith("__$", i)) { i += 39; continue; }
+    if (code[i] !== init[i]) return false;
+  }
+  return true;
+}
+
+// Walk one replay. Returns the scope targets it created, whether the test body
+// called one, and each target's net ETH over the test body only (Setup funding
+// is the fixture, not the exploit).
+function scanTargets(traces, scope) {
+  const targets = new Map(); // address -> contract name
+  const bodies = [];
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const label = Array.isArray(entry) ? entry[0] : null;
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    for (const node of arena) {
+      const t = node?.trace ?? {};
+      if (t.kind !== "CREATE" && t.kind !== "CREATE2") continue;
+      if (!t.success || !t.address) continue;
+      const init = hex(t.data);
+      const hit = scope.find((c) => startsWithCode(init, c.code));
+      if (hit) targets.set(lc(t.address), hit.name);
+    }
+    if (label === "Execution") bodies.push(arena);
+  }
+  let invoked = false;
+  const net = new Map();
+  for (const arena of bodies) {
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      const t = node?.trace ?? {};
+      if (t.kind === "CREATE" || t.kind === "CREATE2" || !ok(i)) return;
+      const to = lc(t.address), from = lc(t.caller);
+      if (targets.has(to)) invoked = true;
+      let wei = 0n;
+      try { wei = BigInt(t.value ?? "0x0"); } catch { wei = 0n; }
+      if (wei > 0n && t.kind === "CALL") {
+        if (targets.has(to)) net.set(to, (net.get(to) ?? 0n) + wei);
+        if (targets.has(from)) net.set(from, (net.get(from) ?? 0n) - wei);
+      }
+    });
+  }
+  return { targets, invoked, net };
+}
+
+// The generic harm verdict for one forge replay. Pure: traces + scope code in,
+// { ok, kind, targets, ... } out. `controlTrace` is extractControlTrace(traces).
+export function judgeHarm(traces, { scope = [], controlTrace = null } = {}) {
+  const { targets, invoked, net } = scanTargets(traces, scope);
+  for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
+  const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
+  if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
+  if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
+  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  const writes = (controlTrace?.writes ?? []).filter((w) => targets.has(lc(w.context)));
+  if (losses.length) {
+    const [victim, wei] = losses[0];
+    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names, ...(writes.length ? { writes: writes.length } : {}) };
+  }
+  if (writes.length) return { ok: true, kind: "control", victim: lc(writes[0].context), writes: writes.length, targets: names };
+  return { ok: false, reason: "the test called a scope target but moved no ETH out of it and changed none of its storage", targets: names };
 }

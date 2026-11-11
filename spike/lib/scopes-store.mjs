@@ -176,8 +176,16 @@ const SECRET_NAME = [
 // Never accept a supplied Foundry config. The sandbox uses our own.
 const SANDBOX_CONFIG = new Set(["foundry.toml", "remappings.txt"]);
 
-// A private key block in the content. Such a file is dropped, never stored.
-const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/;
+// Content that looks like a secret: a private key block, an AWS access key id,
+// or a GitHub token. Such a file is dropped, never stored. Used for uploaded
+// folders here and for fetched clones in fetch.mjs.
+const SECRET_CONTENT = [
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/,
+  /\b(AKIA|ASIA)[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{36,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{60,}\b/,
+];
+export const secretContent = (text) => SECRET_CONTENT.some((re) => re.test(text));
 
 // Is one relative path safe to write under a workspace? Refuses empty and long
 // paths, absolute and host paths (a leading "/", a drive "C:", a "\"), "." and
@@ -223,7 +231,7 @@ export function folderFiles(files, budget = { files: 0, bytes: 0 }) {
     seen.add(name);
     if (typeof f.content !== "string") throw new Error("Attach text source files only.");
     let why = classifyPath(name, { solidity });
-    if (why === "keep" && PRIVATE_KEY_BLOCK.test(f.content)) why = "secret file";
+    if (why === "keep" && secretContent(f.content)) why = "secret file";
     if (why !== "keep") {
       dropped[why] = (dropped[why] ?? 0) + 1;
       continue;
@@ -295,20 +303,28 @@ export const SCOPE_PACKS = {
   },
 };
 
-// The pack for a set of members. Folder content is known, so it decides:
-// any Solidity file means Contracts. A repo's content is not known until the run
-// fetches it, and we do not touch the network here, so a repo counts as
-// Solidity only when its URL is a .sol file or the operator added it under
-// Contracts (`declared`). Everything else is "review". There is no fallback to
-// Contracts: non-Solidity code never gets a Foundry proof.
+// Is Solidity known from content alone? A folder's files are stored, so we see
+// them. A repo URL that names a .sol file counts too. A repo or tree URL tells
+// us nothing about its content until the run fetches it.
+export function solidityKnown(members) {
+  return members.some((m) => (m.kind === "folder" ? m.files.some((f) => isSolidity(f.path)) : isSolidity(new URL(m.url).pathname)));
+}
+
+// The pack for a set of members. Content decides. Any known Solidity means
+// Contracts. A scope with no known Solidity is "review", with one tie-break:
+// when it has repos and the operator added it under Contracts (`declared`), it
+// runs under Contracts, because only a fetch can show what the repos hold. That
+// hint grants no proof surface. Such a run is content-gated (proofOpen in
+// packs/contracts/pack.mjs): run_poc, submit_finding and prove stay closed
+// until fetched member code holds Solidity. Non-Solidity code never gets a
+// Foundry proof.
 //
 // Why not web, supply-chain, and the rest: their replays are bound to their own
 // practice labs (web replays against its lab image; the evidence packs re-check
 // a pinned lab snapshot). Operator code is not that lab, so none of those
 // oracles fits it.
 export function scopePack(members, declared) {
-  const solFile = members.some((m) => (m.kind === "folder" ? m.files.some((f) => isSolidity(f.path)) : isSolidity(new URL(m.url).pathname)));
-  if (solFile) return "contracts";
+  if (solidityKnown(members)) return "contracts";
   if (declared === "contracts" && members.some((m) => m.kind === "repo")) return "contracts";
   return "review";
 }
@@ -333,7 +349,7 @@ export function scopeBrief(scope) {
   const several = scope.members.filter((m) => m.kind === "folder").length > 1;
   for (const m of scope.members) {
     const proof = memberProof(m, scope.pack) === "forge" ? "Solidity is proven by the Foundry replay" : "read only, no proof";
-    if (m.kind === "repo") lines.push(`- Repo ${m.url} — fetch it with fetch_source; it lands under vendor/. (${proof})`);
+    if (m.kind === "repo") lines.push(`- Repo ${m.url} — fetch it with fetch_source (pass this exact URL); it lands under vendor/. (${proof})`);
     else lines.push(`- Folder ${m.name} — ${m.files.length} file${m.files.length === 1 ? "" : "s"} under src/${several ? `${m.name}/` : ""}. (${proof})`);
   }
   return lines.join("\n") + "\n";

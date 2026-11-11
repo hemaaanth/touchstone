@@ -281,7 +281,8 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
   if (target.kind === "brief") {
     const ws = makeBriefWorkspace()
     writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
-    writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules })
+    // The links are the only URLs fetch_source may fetch (lib/fetch.mjs).
+    writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)
