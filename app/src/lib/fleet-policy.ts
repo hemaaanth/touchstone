@@ -143,6 +143,25 @@ export interface OracleVerdict {
   reason: string | null // why it did not prove, for a dismissal
 }
 
+// Strict shape guard for an oracle verdict that arrived from out-of-process (the
+// replay oracle sends JSON). The coordinator MUST pass every raw verdict through
+// this before `applyOracleVerdict`, so a malformed or hostile payload cannot
+// smuggle a non-boolean `proven` (or a missing field) into the gate. Fails
+// closed: anything that is not exactly the OracleVerdict shape is rejected.
+export function isOracleVerdict(v: unknown): v is OracleVerdict {
+  if (!v || typeof v !== "object") return false
+  const o = v as Record<string, unknown>
+  if (typeof o.proven !== "boolean") return false
+  if (!(o.evidenceRef === null || typeof o.evidenceRef === "string")) return false
+  if (typeof o.at !== "number" || !Number.isFinite(o.at)) return false
+  if (!(o.reason === null || typeof o.reason === "string")) return false
+  // A `proven` verdict with no evidence handle is not a proof. The whole claim is
+  // that proof produces a replayable record; `proven:true, evidenceRef:null` is a
+  // contradiction and is rejected here, not silently graduated.
+  if (o.proven === true && (o.evidenceRef === null || o.evidenceRef === "")) return false
+  return true
+}
+
 // Record that the coordinator has routed a proposed lead to the oracle. Moves
 // proposed/corroborated → verifying. `by` is the coordinator agent id. Idempotent
 // on terminal leads. This is bookkeeping, NOT proof.
@@ -179,7 +198,11 @@ export function corroborate(lead: Lead, by: string, byTier: Tier, at: number): L
 // Idempotent: an already-terminal lead is returned unchanged.
 export function applyOracleVerdict(lead: Lead, verdict: OracleVerdict): Lead {
   if (isTerminal(leadStatus(lead))) return lead
-  if (verdict.proven) {
+  // STRICT: only a real boolean `true` promotes. The oracle runs out-of-process
+  // and its verdict crosses the wire as JSON; a truthy-but-non-true value (the
+  // string "false", 1, "yes", {}) must NEVER graduate a lead to `proven`. This
+  // one line is the load-bearing core claim — keep it `=== true`, not truthy.
+  if (verdict.proven === true) {
     const status: LeadStatus = "proven"
     return {
       ...lead,
