@@ -229,14 +229,24 @@ export function RunChat({
     }
   }
   // Escape closes the drawer, unless a menu or dialog inside it takes the key.
+  // Focus moves into the drawer when it opens and back to the opener when it
+  // closes. The dimmed chat behind it is inert, so Tab stays out of it.
   const drawerOpen = drawer.length > 0
   useEffect(() => {
     if (!drawerOpen) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const drawerEl = peekRef.current
+    if (drawerEl && !drawerEl.contains(document.activeElement)) drawerEl.focus({ preventScroll: true })
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !e.defaultPrevented) setDrawer([])
     }
     window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      const active = document.activeElement
+      const lost = !active || active === document.body || drawerEl?.contains(active)
+      if (lost && opener?.isConnected) opener.focus({ preventScroll: true })
+    }
   }, [drawerOpen])
   const jumpMain = (key: string) => {
     setDrawer([])
@@ -316,25 +326,27 @@ export function RunChat({
     <OpenArtifact.Provider value={openFile(false)}>
       <FleetContext.Provider value={fleetView}>
         <div ref={rootRef} className="relative flex h-full min-w-0 flex-col overflow-hidden">
-          <RunHeader
-            state={state}
-            status={status}
-            live={live}
-            mode={mode}
-            title={titleNode}
-            actions={
-              <RunActions
-                archived={archived}
-                busy={live || !state}
-                findings={state?.findings.length ?? 0}
-                onArchive={() => onArchive(run.id, !archived)}
-                onDelete={() => onDelete(run.id)}
-              />
-            }
-          />
+          <div inert={drawerOpen} className="shrink-0">
+            <RunHeader
+              state={state}
+              status={status}
+              live={live}
+              mode={mode}
+              title={titleNode}
+              actions={
+                <RunActions
+                  archived={archived}
+                  busy={live || !state}
+                  findings={state?.findings.length ?? 0}
+                  onArchive={() => onArchive(run.id, !archived)}
+                  onDelete={() => onDelete(run.id)}
+                />
+              }
+            />
+          </div>
 
           <div className="relative flex min-h-0 flex-1 flex-col">
-            <div ref={mainRef} className="flex min-h-0 flex-1 flex-col">
+            <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>
                 <Thread
                   empty={messages.length === 0}
@@ -354,6 +366,7 @@ export function RunChat({
                 above the composer. Only the panel itself takes clicks. */}
             {state && mode ? (
               <div
+                inert={drawerOpen && !beside}
                 className={cn(
                   "pointer-events-none absolute top-3 right-3 bottom-28 flex items-start justify-end",
                   beside ? "z-30" : "z-10",
@@ -401,6 +414,7 @@ export function RunChat({
               <div
                 ref={peekRef}
                 role="dialog"
+                tabIndex={-1}
                 aria-label={top.kind === "agent" ? agentName(state, top.id) : openDoc?.title ?? "File"}
                 style={{ width: drawerWidth }}
                 className="absolute inset-y-0 right-0 z-40 flex max-w-full flex-col bg-background shadow-[-10px_0_30px_#00000014] max-md:fixed max-md:inset-0 max-md:z-50 max-md:!w-auto"
@@ -661,16 +675,19 @@ function useFinding(findingId: string | null): Finding | null {
 }
 
 // A yes/no setting kept in localStorage, so a panel stays as the operator left it.
+// The flag reloads when the key changes, as when the view crosses the phone width.
 function useStoredFlag(key: string, initial: boolean): [boolean, (v: boolean) => void] {
-  const [value, setValue] = useState(() => {
+  const read = () => {
     const saved = localStorage.getItem(key)
     return saved == null ? initial : saved === "1"
-  })
+  }
+  const [stored, setStored] = useState(() => ({ key, value: read() }))
+  if (stored.key !== key) setStored({ key, value: read() })
   const set = (v: boolean) => {
-    setValue(v)
+    setStored({ key, value: v })
     localStorage.setItem(key, v ? "1" : "0")
   }
-  return [value, set]
+  return [stored.key === key ? stored.value : read(), set]
 }
 
 // The actions on the whole run, at the end of the top bar. Archive is one tap

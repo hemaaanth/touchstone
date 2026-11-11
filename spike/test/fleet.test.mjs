@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage as answer, fauxProvider, fauxText, fauxThinking, fauxToolCall as call } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
-import { createFleet, COORDINATOR_INSTRUCTIONS } from "../lib/fleet.mjs";
+import { createFleet, COORDINATOR_INSTRUCTIONS, SPLIT_TURN } from "../lib/fleet.mjs";
 import { event, withAgent } from "../lib/event.mjs";
 
 const result = (blocks) => answer(blocks, { stopReason: "toolUse" });
@@ -45,9 +45,9 @@ async function runtime(t, route, { max = 4, budgeted = false, required = false, 
   await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? COORDINATOR_INSTRUCTIONS : "Audit the lab only." } });
   t.after(async () => { await fleet?.close(); await harness.close(ctx); });
-  async function run(content) {
+  async function run(content, drain) {
     let settled = await (await root.submit({ type: "input", content }, ctx)).wait(ctx);
-    settled = await fleet?.drain(ctx) ?? settled;
+    settled = await fleet?.drain(ctx, drain) ?? settled;
     assert.deepEqual(reports, []);
     return settled;
   }
@@ -157,6 +157,27 @@ test("a fleet run refuses coordinator pack work after the survey until it spawns
   assert.deepEqual(reads.map((m) => !!m.isError), [false, true, false]);
   assert.match(text(reads[1]), /fleet run/);
   assert.equal(r.events.filter((e) => e.ev === "subagent-spawned").length, 1);
+});
+
+test("a fleet run that answers without spawning gets one turn to split", { timeout: 15000 }, async (t) => {
+  const r = await runtime(t, (request) => {
+    const { last, system } = requestInfo(request);
+    if (system.includes("trusted child")) return answer("Child covered its area.");
+    if (text(last) === SPLIT_TURN) return result([call("spawn_agent", { name: "Alpha", task: "Read calls", area: "calls" })]);
+    return answer("Coverage complete.");
+  }, { required: true });
+  assert.equal((await r.run("start")).status, "done");
+  assert.equal(r.events.filter((e) => e.ev === "subagent-spawned").length, 1);
+  const asks = (await r.root.context(ctx)).messages.filter((m) => m.role === "user" && text(m) === SPLIT_TURN);
+  assert.equal(asks.length, 1);
+  // A second drain, as after the pack's nudge, does not ask again.
+  assert.equal((await r.run("more", {})).status, "done");
+});
+
+test("an operator follow-up never gets the split turn", { timeout: 15000 }, async (t) => {
+  const r = await runtime(t, () => answer("Answered."), { required: true });
+  assert.equal((await r.run("question", { enforce: false })).status, "done");
+  assert.equal((await r.root.context(ctx)).messages.filter((m) => text(m) === SPLIT_TURN).length, 0);
 });
 
 test("FLEET=0 keeps pack tools and does not install fleet tools", async (t) => {

@@ -167,7 +167,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   }, ctx);
   event("operator-message", { text });
   let settled = await sub.wait(ctx);
-  settled = await fleet?.drain(ctx) ?? settled;
+  settled = await fleet?.drain(ctx, { enforce: false }) ?? settled;
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);

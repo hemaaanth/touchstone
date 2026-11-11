@@ -23,6 +23,8 @@ A failed child is not a failed audit. Cover its angle another way if the budget 
 
 // Extra instructions for a run where the operator chose Fleet. The survey limit
 // is enforced by the pack tool wrapper below, not only by this text.
+export const SPLIT_TURN = "This is a fleet run, but you spawned no agents. Split the scope now: call spawn_agent once per area, sized to the scope. Then wait for their reports and give your final answer.";
+
 export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first, then split.
 1. Survey the scope: list its sources and read the leads. Do not start proof work yet.
 2. Split the scope into independent areas. An area is one component, asset, or attack class that one child can work alone.
@@ -42,6 +44,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
   // The coordinator's pack calls before its first spawn, for the fleet-run gate.
   let spawned = false;
   let surveyed = 0;
+  // The one extra turn a fleet run gets when it ends without spawning.
+  let split = false;
   const watches = new Map();
   const sessions = new Map();
 
@@ -243,18 +247,28 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
         if (provider) sessions.set(provider.sessionId, agent.id);
       }
     },
-    async drain(ctx) {
-      // Reports can start coordinator turns, which can create more children or messages.
+    // `enforce: false` is for operator follow-ups: they never get the split turn.
+    async drain(ctx, { enforce = true } = {}) {
+      let turn;
       for (;;) {
-        const before = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
-        await Promise.all(Object.values(before.jobs).map((id) => harness.waitForTask(id, ctx)));
+        // Reports can start coordinator turns, which can create more children or messages.
+        for (;;) {
+          const before = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
+          await Promise.all(Object.values(before.jobs).map((id) => harness.waitForTask(id, ctx)));
+          const root = await harness.conversation(ROOT_CONVERSATION_ID, ctx);
+          await root.waitForIdle(ctx);
+          const after = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
+          if (Object.keys(before.jobs).length === Object.keys(after.jobs).length) break;
+        }
+        const live = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
+        if (live?.runFailure) return { status: "unanswered", reason: live.runFailure.reason, detail: live.runFailure.detail };
+        if (turn && turn.status !== "done") return turn;
+        // A fleet run that answered inside its survey, without spawning, gets one turn to split.
+        if (!required || spawned || split || !enforce) return turn;
+        split = true;
         const root = await harness.conversation(ROOT_CONVERSATION_ID, ctx);
-        await root.waitForIdle(ctx);
-        const after = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
-        if (Object.keys(before.jobs).length === Object.keys(after.jobs).length) break;
+        turn = await (await root.submit({ type: "input", requestId: "fleet-split", content: SPLIT_TURN }, ctx)).wait(ctx);
       }
-      const live = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
-      if (live?.runFailure) return { status: "unanswered", reason: live.runFailure.reason, detail: live.runFailure.detail };
     },
     async close() {
       for (const pending of watches.values()) {
