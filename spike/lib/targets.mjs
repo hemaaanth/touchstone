@@ -21,20 +21,24 @@
 //   - "lab":          a prepared Foundry project that ships in this repo.
 //   - "local-source": a Foundry project on the operator's own disk (later).
 //   - "brief":        a pasted markdown brief whose linked sources the engine
-//                     fetches into a throwaway workspace (later).
-// Only "lab" is wired today; the shape is here so the later kinds slot in
-// without touching callers.
+//                     fetches into a throwaway workspace.
+//   - "scope":        an operator scope with members: GitHub repos and local
+//                     folders, mixed, in any language (scopes-store.mjs). Its
+//                     pack comes from its content: Solidity runs under
+//                     Contracts; code with no fitting replay oracle runs under
+//                     the read-only Review pack, whose proofSurface is "none".
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
-import { readScopes, getUserScope, sourceFiles } from "./scopes-store.mjs"
+import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath } from "./scopes-store.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..") // repo root
 
-export const TARGET_KINDS = ["lab", "local-source", "brief"]
+export const TARGET_KINDS = ["lab", "local-source", "brief", "scope"]
 
 // A Foundry workspace proven offline in its own per-run copy. No chain, no funds.
 const SANDBOX_FOUNDRY = {
@@ -89,6 +93,7 @@ const PROOF_NOTE = {
   http: "Proven by a request replayed in Docker on a private network with no internet.",
   evidence: "Proven by checking the cited evidence again against the pinned snapshot in the run workspace.",
   forge: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
+  none: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
 }
 
 function packLabs() {
@@ -148,7 +153,8 @@ function packLabs() {
   return found
 }
 
-// The pack a target belongs to. Built-in labs and operator scopes are Contracts.
+// The pack a target belongs to. Built-in labs and older operator scopes (brief,
+// local-source) have no pack field and are Contracts. A "scope" always has one.
 export const packOf = (target) => target?.pack ?? "contracts"
 
 // Resolve a target's workspace source directory to an absolute path. Only "lab"
@@ -177,6 +183,15 @@ export function targetSummary(target) {
   }
   if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
   if (target.kind === "local-source") s.files = (target.files ?? []).map((f) => f.path)
+  if (target.kind === "scope") {
+    const members = Array.isArray(target.members) ? target.members : []
+    s.links = Array.isArray(target.links) ? target.links : []
+    s.files = memberFilePaths(members).map((f) => f.path)
+    // Per member: what it is and how it is proven. No file content.
+    s.members = members.map((m) => (m.kind === "repo"
+      ? { kind: "repo", url: m.url, proof: memberProof(m, packOf(target)) }
+      : { kind: "folder", name: m.name, files: m.files.length, proof: memberProof(m, packOf(target)) }))
+  }
   return s
 }
 
@@ -188,6 +203,7 @@ function isRunnable(target) {
   if (target.kind === "lab") return existsSync(path.join(ROOT, target.dir))
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
+  if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
   return false
 }
 
@@ -222,7 +238,9 @@ export function pickTarget({ id, pack } = {}) {
     return t
   }
   const want = pack ?? "contracts"
-  const labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && isRunnable(t))
+  let labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && isRunnable(t))
+  // A pack with no labs (Review) picks from the operator's own scopes for it.
+  if (!labs.length) labs = readScopes().filter((t) => packOf(t) === want && isRunnable(t))
   if (!labs.length) throw new Error(`no runnable targets for pack "${want}"`)
   return labs[Math.floor(Math.random() * labs.length)]
 }
@@ -259,6 +277,7 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeTouchstone(ws, { kind: "local-source", solc: "auto", pack, modules })
     return ws
   }
+  if (target.kind === "scope") return prepareScopeWorkspace(target, { modules })
   if (target.kind === "brief") {
     const ws = makeBriefWorkspace()
     writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
@@ -266,6 +285,48 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)
+}
+
+// Write one scope file under <ws>/src. The stored path was checked when the
+// scope was added; check it again, and check the resolved destination stays
+// inside src/, so a hand-edited store cannot write outside the workspace.
+function writeScopeFile(ws, rel, content) {
+  if (!safeRelPath(rel)) throw new Error(`unsafe scope file path: ${rel}`)
+  const root = path.join(ws, "src")
+  const dest = path.resolve(root, rel)
+  if (!dest.startsWith(root + path.sep)) throw new Error(`scope file escapes the workspace: ${rel}`)
+  mkdirSync(path.dirname(dest), { recursive: true })
+  writeFileSync(dest, content)
+}
+
+// A scope's workspace. Folder files land under src/ (one folder keeps its own
+// layout; with several, each starts with its folder name). Repos are fetched at
+// run time into vendor/. BRIEF.md lists the members.
+//   - contracts: a Foundry workspace. Only the Solidity is ever proven, by the
+//     offline Foundry replay. "brief" kind when there are repos to fetch, so the
+//     pack uses its fetch-first prompt.
+//   - review: a plain workspace with no Foundry at all. Its pack cannot prove.
+function prepareScopeWorkspace(target, { modules }) {
+  const pack = packOf(target)
+  if (pack !== "contracts" && pack !== "review") throw new Error(`a scope cannot run under pack "${pack}"`)
+  let ws
+  if (pack === "contracts") ws = makeBriefWorkspace()
+  else {
+    ws = mkdtempSync(path.join(tmpdir(), "redteam-run-"))
+    mkdirSync(path.join(ws, "src"), { recursive: true })
+    mkdirSync(path.join(ws, "vendor"), { recursive: true })
+  }
+  try {
+    for (const f of memberFilePaths(target.members ?? [])) writeScopeFile(ws, f.path, f.content)
+    writeFileSync(path.join(ws, "BRIEF.md"), scopeBrief(target))
+  } catch (e) {
+    rmSync(ws, { recursive: true, force: true })
+    throw e
+  }
+  const links = Array.isArray(target.links) ? target.links : []
+  if (pack === "contracts") writeTouchstone(ws, { kind: links.length ? "brief" : "local-source", solc: "auto", pack, modules, links })
+  else writeTouchstone(ws, { kind: "scope", pack, modules, links })
+  return ws
 }
 
 // Build the workspace for one run, for every target the run start may get. A

@@ -21,8 +21,9 @@
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { classifyPath } from "./scopes-store.mjs";
 
 const FILE_CAP = 2 * 1024 * 1024; // 2 MB — a single source file
 const PAGE_CAP = 100 * 1024; // 100 KB of stripped page text
@@ -149,6 +150,26 @@ function dirSizeOver(dir, cap) {
   }
 }
 
+// Remove what a run must never read from a fresh clone: symlinks (they can point
+// out of the workspace), hidden entries (.env, .npmrc, .github, ...), and files
+// named like secrets (keys, keystores, credentials). Uses lstat, so it never
+// follows a link. Returns how many entries it removed.
+export function pruneClone(dir) {
+  let removed = 0;
+  const walk = (d) => {
+    for (const name of readdirSync(d)) {
+      const p = path.join(d, name);
+      const st = lstatSync(p);
+      if (st.isSymbolicLink() || name.startsWith(".") || (st.isFile() && classifyPath(name) === "secret file")) {
+        rmSync(p, { recursive: true, force: true });
+        removed++;
+      } else if (st.isDirectory()) walk(p);
+    }
+  };
+  walk(dir);
+  return removed;
+}
+
 function execFileP(cmd, args, opts) {
   return new Promise((resolve) => {
     execFile(cmd, args, opts, (err, stdout, stderr) =>
@@ -206,8 +227,10 @@ async function fetchRepo(ws, gh) {
     const why = r.timedOut ? "clone timed out" : r.stderr.trim().split("\n").slice(-1)[0] || "clone failed";
     throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why}`);
   }
-  // Drop .git before the size check — we keep the tree, not its history.
+  // Drop .git before the size check — we keep the tree, not its history. Then
+  // drop symlinks, hidden files, and secret-named files, so no tool can read them.
   rmSync(path.join(dest, ".git"), { recursive: true, force: true });
+  pruneClone(dest);
   if (dirSizeOver(dest, REPO_CAP)) {
     rmSync(dest, { recursive: true, force: true });
     throw new Error(`clone of ${gh.owner}/${gh.repo} exceeds the ${Math.round(REPO_CAP / 1024 / 1024)}MB cap — refused`);
@@ -259,6 +282,8 @@ async function httpGet(url, cap) {
 }
 
 async function fetchBlob(ws, gh) {
+  const base = path.posix.basename(gh.filePath);
+  if (base.startsWith(".") || classifyPath(base) === "secret file") throw new Error(`refused to fetch ${base}: it looks like a secret or hidden file`);
   const raw = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${gh.ref}/${gh.filePath}`;
   const { buf } = await httpGet(raw, FILE_CAP);
   const body = buf.toString("utf8");
