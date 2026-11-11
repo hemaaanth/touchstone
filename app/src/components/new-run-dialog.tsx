@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Loader2, Plus, X } from "lucide-react"
-import type { ModelChoice, PackChoice, Playbook, TargetChoice } from "@/lib/types"
+import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope } from "@/lib/api"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
@@ -12,8 +12,14 @@ const RANDOM = "random"
 const NONE = "none"
 const DEFAULT_BUDGET = "5.00"
 
-// The New Run window. It has three fields: the scope, an optional playbook,
-// and the budget. The model is the server's default (the first in the list),
+const MODES: { value: RunMode; label: string; hint: string }[] = [
+  { value: "fleet", label: "Fleet", hint: "The coordinator splits the scope across agents. More areas, more agents." },
+  { value: "solo", label: "Solo", hint: "One agent works the whole scope." },
+]
+const MODE_KEY = "ts.runMode"
+
+// The New Run window. It has four fields: the scope, an optional playbook,
+// Fleet or Solo, and the budget. The model is the server's default (the first in the list),
 // so there is no model picker. "Random" omits targetId, so the server picks
 // and repeat runs do not re-break one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
@@ -37,13 +43,19 @@ export function NewRunDialog({
   playbooks?: Playbook[]
   busy: boolean
   error: string | null
-  onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string) => void
+  onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => void
 }) {
   const alias = models[0]?.alias ?? ""
   const runnable = targets.filter((t) => t.runnable && packs.some((p) => p.id === packOf(t)))
   const [scopeId, setScopeId] = useState(RANDOM)
   const [playbookId, setPlaybookId] = useState(NONE)
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
+  // The last choice sticks, so an operator who runs fleets keeps getting one.
+  const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
+  const setMode = (m: RunMode) => {
+    setModeState(m)
+    localStorage.setItem(MODE_KEY, m)
+  }
 
   const playbook = playbooks.find((p) => p.id === playbookId) ?? null
   const scope = runnable.find((t) => t.id === scopeId) ?? null
@@ -63,7 +75,7 @@ export function NewRunDialog({
 
   const submit = () => {
     if (!canStart) return
-    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack)
+    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack, mode)
   }
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
@@ -137,6 +149,34 @@ export function NewRunDialog({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <span className={label} id="new-run-mode">AGENTS</span>
+            <div
+              role="radiogroup"
+              aria-labelledby="new-run-mode"
+              className="grid h-9 grid-cols-2 gap-0.5 rounded-lg border border-input bg-muted/40 p-0.5"
+            >
+              {MODES.map((m) => (
+                <button
+                  key={m.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={mode === m.value}
+                  onClick={() => setMode(m.value)}
+                  className={cn(
+                    "rounded-md text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                    mode === m.value
+                      ? "bg-background font-medium text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-muted-foreground">{MODES.find((m) => m.value === mode)?.hint}</span>
           </div>
 
           <label className="flex flex-col gap-1.5">

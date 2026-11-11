@@ -141,7 +141,6 @@ function RunErrorCard({
 }
 
 export function Thread({
-  live,
   empty,
   prepass,
   error,
@@ -150,10 +149,9 @@ export function Thread({
   retrying,
   archived,
   sendError,
-  fleet = false,
+  to = "the agent",
   readOnly = false,
 }: {
-  live: boolean
   empty: boolean
   prepass: PrepassView | null
   error: string | null
@@ -162,8 +160,8 @@ export function Thread({
   retrying: boolean
   archived: boolean
   sendError: string | null
-  // A fleet run: wider gaps between blocks and the fleet composer.
-  fleet?: boolean
+  // Who a message goes to: "coordinator" in a fleet run, "the agent" in a solo run.
+  to?: string
   // A peek: no composer, no prepass, no start line.
   readOnly?: boolean
 }) {
@@ -175,8 +173,7 @@ export function Thread({
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
         <div
           className={cn(
-            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-5 py-6",
-            fleet ? "gap-5" : "gap-3",
+            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-5 px-5 py-6",
           )}
         >
           {prepass && !readOnly ? <PrepassFold prepass={prepass} /> : null}
@@ -212,53 +209,16 @@ export function Thread({
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : fleet ? (
-        <FleetComposer archived={archived} error={sendError} />
-      ) : (
-        <Composer live={live} archived={archived} error={sendError} />
-      )}
+      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} />}
     </ThreadPrimitive.Root>
   )
 }
 
-// The composer floats under the thread — no divider, no helper line. A single
-// rounded pill with the send button tucked inside. It is always open, except on
-// an archived run, which reads as quiet rather than broken. A failed send (spend
-// cap, no saved session) shows one line above it.
-function Composer({ live, archived, error }: { live: boolean; archived: boolean; error: string | null }) {
-  return (
-    <div className="px-5 pb-4 pt-1">
-      <div className="mx-auto max-w-(--thread-max-width)">
-        {error ? <p className="mb-1.5 px-3 text-xs text-bad">{error}</p> : null}
-        <ComposerPrimitive.Root
-          className={cn(
-            "flex items-end gap-2 rounded-2xl border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur",
-            "transition-colors focus-within:border-border focus-within:ring-2 focus-within:ring-ring/25",
-            archived && "opacity-70",
-          )}
-        >
-          <ComposerPrimitive.Input
-            autoFocus={FINE_POINTER}
-            disabled={archived}
-            rows={1}
-            submitOnEnter
-            placeholder={archived ? "This run is archived." : live ? "Steer the agent…" : "Message the agent…"}
-            className="min-h-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
-          />
-          <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-7 shrink-0 rounded-full" disabled={archived}>
-              <ArrowUp className="size-4" />
-            </Button>
-          </ComposerPrimitive.Send>
-        </ComposerPrimitive.Root>
-      </div>
-    </div>
-  )
-}
-
-// The fleet composer. The operator talks to the coordinator, which passes work
-// on to the agents. A plain box with the send button inside, on the right.
-function FleetComposer({ archived, error }: { archived: boolean; error: string | null }) {
+// The composer. The operator talks to the coordinator, which passes work on to
+// the agents, or to the one agent of a solo run. A plain box with the send
+// button inside, on the right. A failed send (spend cap, no saved session)
+// shows one line above it. An archived run reads as quiet rather than broken.
+function Composer({ to, archived, error }: { to: string; archived: boolean; error: string | null }) {
   return (
     <div className="px-5 pt-2 pb-5">
       <div className="mx-auto max-w-(--thread-max-width)">
@@ -275,7 +235,7 @@ function FleetComposer({ archived, error }: { archived: boolean; error: string |
             disabled={archived}
             rows={1}
             submitOnEnter
-            placeholder={archived ? "This run is archived." : "Message coordinator…"}
+            placeholder={archived ? "This run is archived." : `Message ${to}…`}
             className="min-h-0 flex-1 resize-none bg-transparent py-[5px] text-sm leading-[18px] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
           <ComposerPrimitive.Send asChild>
@@ -295,18 +255,11 @@ function FleetComposer({ archived, error }: { archived: boolean; error: string |
 // MessagePrimitive.If (exactly one arm renders per message).
 function Message() {
   const parts = { Text, tools: { Fallback: StepPart } }
-  // A fleet run's operator bubble is quiet: muted fill, no accent.
-  const fleet = useContext(FleetContext) != null
+  // The operator's bubble is quiet: muted fill, no accent.
   return (
     <MessagePrimitive.Root className="flex flex-col">
       <MessagePrimitive.If user>
-        <div
-          className={
-            fleet
-              ? "ml-auto max-w-[70%] rounded-[14px] bg-muted px-4 py-3 text-sm leading-5 text-foreground [overflow-wrap:anywhere]"
-              : "ml-auto max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3.5 py-2 text-sm leading-relaxed text-primary-foreground"
-          }
-        >
+        <div className="ml-auto max-w-[70%] rounded-[14px] bg-muted px-4 py-3 text-sm leading-5 text-foreground [overflow-wrap:anywhere]">
           <MessagePrimitive.Parts components={parts} />
         </div>
       </MessagePrimitive.If>

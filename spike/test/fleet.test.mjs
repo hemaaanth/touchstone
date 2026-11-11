@@ -15,13 +15,13 @@ import { event, withAgent } from "../lib/event.mjs";
 const result = (blocks) => answer(blocks, { stopReason: "toolUse" });
 const text = (message) => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("");
 
-async function runtime(t, route, { max = 4, budgeted = false } = {}) {
+async function runtime(t, route, { max = 4, budgeted = false, required = false, survey } = {}) {
   const events = [], reports = [];
   t.mock.method(console, "log", (line) => { if (line.startsWith("EVENT ")) events.push(JSON.parse(line.slice(6))); });
   const faux = fauxProvider({ tokensPerSecond: 100000 });
   faux.setResponses(Array.from({ length: 150 }, () => route));
   const models = createModels();
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: (_model, input, output) => (input + output) / 1e6, max });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: (_model, input, output) => (input + output) / 1e6, max, required, survey });
   if (budgeted) {
     const { budgetedApi } = await import("../lib/provider.mjs");
     models.setProvider({ ...faux.provider, ...budgetedApi(faux.provider, fleet?.agentForSession) });
@@ -140,6 +140,23 @@ test("event ownership stays local across interleaved async work", async (t) => {
   event("list_sources");
   assert.deepEqual(events.slice(0, 4).map((e) => e.agent), ["a-one", "a-two", "a-two", "a-one"]);
   assert.equal(events[4].agent, undefined);
+});
+
+test("a fleet run refuses coordinator pack work after the survey until it spawns", { timeout: 15000 }, async (t) => {
+  const r = await runtime(t, (request) => {
+    const { last, system } = requestInfo(request);
+    if (system.includes("trusted child")) return answer("Child covered its area.");
+    if (text(last) === "start") return result([call("read_source", {}), call("read_source", {})]);
+    if (last.role === "toolResult" && last.toolName === "read_source" && last.isError) return result([call("spawn_agent", { name: "Alpha", task: "Read calls", area: "calls" })]);
+    if (last.role === "toolResult" && last.toolName === "spawn_agent") return result([call("read_source", {})]);
+    return answer("Coverage complete.");
+  }, { required: true, survey: 1 });
+  assert.equal((await r.run("start")).status, "done");
+  const view = await r.root.context(ctx);
+  const reads = view.messages.filter((m) => m.role === "toolResult" && m.toolName === "read_source");
+  assert.deepEqual(reads.map((m) => !!m.isError), [false, true, false]);
+  assert.match(text(reads[1]), /fleet run/);
+  assert.equal(r.events.filter((e) => e.ev === "subagent-spawned").length, 1);
 });
 
 test("FLEET=0 keeps pack tools and does not install fleet tools", async (t) => {

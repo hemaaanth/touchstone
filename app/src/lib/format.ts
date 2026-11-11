@@ -14,7 +14,7 @@ export function ago(ts: number | null | undefined): string {
 }
 
 // Elapsed wall-clock since a start instant, compact. "0s" / "9s" / "1m 20s" /
-// "2h 03m". Used by live cognition surfaces (agent-status, tool-group) that tick
+// "2h 03m". Used by live cognition surfaces (tool-group) that tick
 // while an attempt runs, so it reads whole seconds up and stays monotonic.
 export function elapsed(startedAt: number | null | undefined, now: number = Date.now()): string {
   if (!startedAt) return ""

@@ -1,18 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, FileCode2, FileText, Files, ShieldCheck } from "lucide-react";
+import { Check, ChevronRight, FileCode2, FileText, ShieldCheck } from "lucide-react";
 import type { ArtifactDoc, ArtifactKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ShimmerLabel } from "./surfaces";
 
-// The run's files, in a small panel that floats in the chat's top-right corner.
-// It replaces the old header chip and tab strip. Those showed every file at once
-// and ran out of room past a few files. Here the panel folds down to one line
-// ("Files 11"). Open, it lists each file once, grouped by kind. A file the agent
-// rewrote shows its versions under it, like a file tree. A click opens that one
-// file in the document pane. Inspired by the assistant-ui file tree and server
-// panel elements: one row per item, one expanded at a time.
+// The run's files, as a tree. Each file shows once, grouped by kind. A file the
+// agent rewrote shows its versions under it. A click opens that one file in
+// the drawer. Inspired by the assistant-ui file tree element: one row per item,
+// one file's versions expanded at a time. The run panel's Files section holds it.
 
 const GROUPS: { kind: ArtifactKind; label: string }[] = [
   { kind: "proof", label: "Replay proofs" },
@@ -27,76 +24,50 @@ function iconFor(doc: ArtifactDoc) {
   return FileCode2;
 }
 
-export function FilesPanel({
+export function FileTree({
   docs,
   activeId,
   activeVersionId,
-  open,
-  onOpenChange,
   onOpen,
 }: {
   docs: ArtifactDoc[];
   activeId: string | null;
   activeVersionId: string | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   onOpen: (fileId: string, versionId?: string) => void;
 }) {
   // One file shows its versions at a time. It follows the open file: when the
-  // pane moves to another file, that file's versions show here.
+  // drawer moves to another file, that file's versions show here.
   const [expanded, setExpanded] = useState<string | null>(activeId);
   const [seenActive, setSeenActive] = useState(activeId);
   if (activeId !== seenActive) {
     setSeenActive(activeId);
     if (activeId) setExpanded(activeId);
   }
-  const writing = docs.some((d) => d.versions.some((v) => v.writing));
   const groups = GROUPS.map((g) => ({ ...g, docs: docs.filter((d) => d.kind === g.kind) })).filter(
     (g) => g.docs.length,
   );
+  if (!docs.length) return <p className="px-3 py-2.5 text-xs text-muted-foreground">No files yet.</p>;
 
   return (
-    <div
-      className={cn(
-        "pointer-events-auto flex max-h-[min(28rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/90 shadow-lg backdrop-blur-md",
-        open ? "w-72 max-w-[calc(100vw-1.5rem)]" : "w-auto",
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        aria-expanded={open}
-        className="flex shrink-0 items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Files className="size-3.5 shrink-0" />
-        <span className="font-medium text-foreground">Files</span>
-        <span className="tabular-nums">{docs.length}</span>
-        {writing ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" /> : null}
-        <ChevronDown className={cn("ml-auto size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
-      </button>
-
-      {open ? (
-        <div className="min-h-0 overflow-y-auto border-t border-border/60 py-1">
-          {groups.map((g) => (
-            <div key={g.kind} className="py-0.5">
-              {groups.length > 1 ? (
-                <div className="px-3 pt-1.5 pb-1 text-[11px] text-muted-foreground">{g.label}</div>
-              ) : null}
-              {g.docs.map((d) => (
-                <FileRow
-                  key={d.id}
-                  doc={d}
-                  active={d.id === activeId}
-                  activeVersionId={d.id === activeId ? activeVersionId : null}
-                  expanded={expanded === d.id}
-                  onToggle={() => setExpanded((cur) => (cur === d.id ? null : d.id))}
-                  onOpen={onOpen}
-                />
-              ))}
-            </div>
+    <div className="py-1">
+      {groups.map((g) => (
+        <div key={g.kind} className="py-0.5">
+          {groups.length > 1 ? (
+            <div className="px-3 pt-1.5 pb-1 text-[11px] text-muted-foreground">{g.label}</div>
+          ) : null}
+          {g.docs.map((d) => (
+            <FileRow
+              key={d.id}
+              doc={d}
+              active={d.id === activeId}
+              activeVersionId={d.id === activeId ? activeVersionId : null}
+              expanded={expanded === d.id}
+              onToggle={() => setExpanded((cur) => (cur === d.id ? null : d.id))}
+              onOpen={onOpen}
+            />
           ))}
         </div>
-      ) : null}
+      ))}
     </div>
   );
 }

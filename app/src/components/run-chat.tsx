@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
-import type { Finding, RunSummary } from "@/lib/types"
+import type { Finding, RunMode, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
 import { runTitle } from "@/lib/format"
@@ -9,13 +9,11 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
-import { FilesPanel } from "@/components/assistant-ui/elements/files-panel"
 import { Thread } from "@/components/run-thread"
 import { buildMessages, OpenArtifact } from "@/components/thread-model"
-import { BulletinList, Count, FilesList, FleetDock, FleetList, TierTag, type DockTab } from "@/components/fleet-dock"
+import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
   AGENT_WORD,
   FleetContext,
@@ -26,6 +24,7 @@ import {
   isLiveAgent,
   runBudget,
   runEnd,
+  runMode,
   runStart,
   span,
   usd,
@@ -47,7 +46,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
 // so the Thread, tool-call cards and composer come from one maintained library
@@ -56,9 +54,17 @@ import {
 // library costs no backend protocol change and keeps the restraint rules: our
 // renderer reads `step.state`, so green only ever shows for a proven PoC.
 //
-// Beyond tool steps the thread now surfaces the agent's own cognition — streamed
-// reasoning folds into a collapsible "thinking" block, streamed prose fades in as
-// it arrives, and a subagent handoff reads as its own row.
+// Every run, fleet or solo, has one layout:
+// - the top bar: title, status, mode, spend and the ⋯ menu;
+// - the main chat: the coordinator's thread (a solo run's one agent);
+// - the run panel: Agents, Bulletin and Files, floating in the chat's corner;
+// - the drawer: a child agent's thread or a file, over the chat from the right.
+// The drawer never pushes the chat. It is a stack, so "‹ Name" goes back to
+// the page it was opened from.
+
+// One page in the drawer. A file's version is null until the operator picks
+// one, which means "the latest".
+type DrawerItem = { kind: "agent"; id: string; key?: string } | { kind: "file"; id: string; version: string | null }
 
 export function RunChat({
   run,
@@ -73,36 +79,47 @@ export function RunChat({
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
-  // A fleet run has child agents. It gets the dock, the peek and the fleet
-  // parts. A run with no agents renders exactly as before.
-  const fleet = !!state && state.agents.length > 0
-  // The workspace documents the agent wrote, and which one the pane shows. The
-  // pane is closed until the operator opens a document (a chat card or the
-  // Files panel). Each chat keeps its own pane: the open file is saved per run,
-  // so a chat comes back as it was left. A chat with nothing saved opens
-  // closed. On desktop an open pane follows new writes. On a phone the pane is
-  // a full-screen overlay, so it never opens by itself.
+  // The operator chose fleet or solo at start. A fleet's main chat is the
+  // coordinator's thread, with the fleet's message cards and spawn rows.
+  const mode = state ? runMode(state) : null
+  const fleet = mode === "fleet"
   const artifacts = state?.artifacts ?? []
-  // The pane opens a file at one version. `latestArtifact` names the most recent
-  // write (file + version); a new version of an older file still counts as the
-  // latest even though it does not move that file to the end of `artifacts`.
+  // `latestArtifact` names the most recent write (file + version). A new
+  // version of an older file still counts as the latest.
   const latest = state?.latestArtifact ?? null
-  const [openArtifactId, setOpenArtifactId] = useState<string | null>(() => (isNarrow() ? null : storedPane(run.id)))
-  const [openVersionId, setOpenVersionId] = useState<string | null>(null)
-  const [filesOpen, setFilesOpen] = useStoredFlag("ts.filesOpen", false)
-  // Open a file at a version. Omit the version to land on the file's latest.
-  const openArtifact = (fileId: string, versionId?: string) => {
-    setOpenArtifactId(fileId)
-    const file = artifacts.find((a) => a.id === fileId) ?? null
-    setOpenVersionId(versionId ?? file?.versions[file.versions.length - 1]?.id ?? null)
-  }
-  useEffect(() => storePane(run.id, openArtifactId), [run.id, openArtifactId])
-  // A child agent's write never moves the pane. Only the coordinator's own
-  // writes do, and only when the pane is already open.
+
+  // The drawer. Each chat saves its open file by run id, so a chat comes back
+  // as it was left. On a phone the drawer covers the screen, so it never opens
+  // by itself.
+  const [drawer, setDrawer] = useState<DrawerItem[]>(() => {
+    const id = isNarrow() ? null : storedPane(run.id)
+    return id ? [{ kind: "file", id, version: null }] : []
+  })
+  const top = drawer[drawer.length - 1] ?? null
+  const below = drawer[drawer.length - 2] ?? null
+  const topFile = top?.kind === "file" ? top : null
+  useEffect(() => storePane(run.id, topFile?.id ?? null), [run.id, topFile?.id])
+  const [drawerWidth, setDrawerWidth, drawerDefault] = useStoredWidth("ts.drawerWidth", 552, 360, 1100)
+
+  // Open a page. From the main chat or the panel it replaces the stack. From
+  // inside the drawer it goes on top, so "‹ Name" can come back.
+  const open = (item: DrawerItem, push: boolean) =>
+    setDrawer((s) => {
+      const t = s[s.length - 1]
+      if (t && t.kind === item.kind && t.id === item.id) return [...s.slice(0, -1), item]
+      return push && t ? [...s, item] : [item]
+    })
+  const openFile = (push: boolean) => (fileId: string, versionId?: string) =>
+    open({ kind: "file", id: fileId, version: versionId ?? null }, push)
+  const closeDrawer = () => setDrawer([])
+
+  // A child agent's write never moves the drawer. Only the coordinator's own
+  // writes do, and only when a file is the drawer's one page, on desktop.
   const childWrite = useMemo(
     () => !!latest && !!state?.steps.some((s) => s.kind === "artifact" && s.subId === latest.versionId && s.agent),
     [latest, state],
   )
+  const followFile = drawer.length === 1 && !!topFile
   // The first write we see is history, not news, so it only sets the mark.
   const seenArtifact = useRef<string | null | undefined>(undefined)
   useEffect(() => {
@@ -110,19 +127,16 @@ export function RunChat({
     if (!key || key === seenArtifact.current) return
     const fresh = seenArtifact.current !== undefined
     seenArtifact.current = key
-    // An open pane on desktop follows each fresh write, including a new version
-    // of the open file, so it steps from v1 to v2 as the agent rewrites.
-    if (fresh && openArtifactId && !isNarrow() && latest && !childWrite) {
-      setOpenArtifactId(latest.fileId)
-      setOpenVersionId(latest.versionId)
+    // It steps from v1 to v2 as the agent rewrites the open file.
+    if (fresh && followFile && !isNarrow() && latest && !childWrite) {
+      setDrawer([{ kind: "file", id: latest.fileId, version: latest.versionId }])
     }
-  }, [latest, openArtifactId, childWrite])
-  const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
-  // When the open document is the replay proof, it renders the recorded finding's
-  // structured report in the pane. Resolve that finding only while the proof is
-  // actually on screen; the id comes from the run-complete stamp, or the finding
-  // event that lands a little earlier.
-  // A run can record several findings; each proof document names its own.
+  }, [latest, followFile, childWrite])
+
+  const openDoc = topFile ? artifacts.find((a) => a.id === topFile.id) ?? null : null
+  // When the open document is the replay proof, it renders the recorded
+  // finding's structured report. A run can record several findings; each
+  // proof document names its own.
   const proofFindingId = openDoc?.findingId ?? state?.findingId ?? state?.findings[0]?.id ?? null
   const finding = useFinding(openDoc?.kind === "proof" ? proofFindingId : null)
   // Until the run store has loaded this run, trust the sidebar's status.
@@ -159,11 +173,8 @@ export function RunChat({
     setRetrying(false)
   }
 
-  // The main chat is the coordinator's own thread. On a run with no agents
-  // that is every step.
   // A fleet's main chat is the coordinator's thread. Its "session started"
-  // marker says nothing there, so it is left out. A run without agents keeps
-  // every step, as before.
+  // marker says nothing there, so it is left out. A solo run keeps every step.
   const mainSteps = useMemo(
     () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
     [state, fleet],
@@ -188,13 +199,6 @@ export function RunChat({
     },
   })
 
-  // The peek: one child's thread over the chat. The stack holds the peeks a
-  // pill opened from inside another peek, so "‹ Name" can go back.
-  const [peekStack, setPeekStack] = useState<{ id: string; key?: string }[]>([])
-  const peek = peekStack[peekStack.length - 1] ?? null
-  const prev = peekStack[peekStack.length - 2] ?? null
-  const [dockTab, setDockTab] = useState<DockTab>("fleet")
-  const [mobileTab, setMobileTab] = useState<"chat" | DockTab>("chat")
   // A pill jump scrolls to the same message in the other thread and marks it
   // for a moment.
   const [highlight, setHighlight] = useState<string | null>(null)
@@ -216,38 +220,35 @@ export function RunChat({
     return () => [a, b, c].forEach(clearTimeout)
   }, [jump])
 
+  // Open a child agent's thread. A pill inside the drawer pushes.
   const openPeek = (id: string, key?: string, push = false) => {
-    setPeekStack((s) => {
-      const top = s[s.length - 1]
-      if (push && top && top.id !== id) return [...s, { id, key }]
-      return [{ id, key }]
-    })
+    open({ kind: "agent", id, key }, push)
     if (key) {
       setJump({ where: "peek", key, n: Date.now() })
       setHighlight(key)
     }
   }
-  const closePeek = () => setPeekStack([])
-  // Escape closes the peek, unless a menu or dialog inside it takes the key.
-  const peekOpen = peekStack.length > 0
+  // Escape closes the drawer, unless a menu or dialog inside it takes the key.
+  const drawerOpen = drawer.length > 0
   useEffect(() => {
-    if (!peekOpen) return
+    if (!drawerOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) setPeekStack([])
+      if (e.key === "Escape" && !e.defaultPrevented) setDrawer([])
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [peekOpen])
+  }, [drawerOpen])
   const jumpMain = (key: string) => {
-    setPeekStack([])
-    setMobileTab("chat")
+    setDrawer([])
     setJump({ where: "main", key, n: Date.now() })
     setHighlight(key)
   }
 
-  const fleetView: FleetView | null =
-    fleet && state ? { state, openPeek, jumpMain, highlight, steer: send, canSteer: !archived } : null
+  const fleetView: FleetView | null = state
+    ? { state, openPeek, jumpMain, highlight, steer: send, canSteer: !archived }
+    : null
 
+  const peek = top?.kind === "agent" ? top : null
   const peekAgent = peek && state ? state.agents.find((a) => a.id === peek.id) ?? null : null
   const peekLive = live && !!peekAgent && isLiveAgent(peekAgent)
   const peekMessages = useMemo(
@@ -262,16 +263,32 @@ export function RunChat({
     onNew: async () => {},
   })
 
-  const actions = (
-    <RunActions
-      compact={fleet}
-      archived={archived}
-      busy={live || !state}
-      findings={state?.findings.length ?? 0}
-      onArchive={() => onArchive(run.id, !archived)}
-      onDelete={() => onDelete(run.id)}
+  // The run panel. It stays as the operator left it, on desktop and phone
+  // apart. On a phone it starts folded, and folds again after a pick, since
+  // the drawer covers the screen.
+  const [panelOpen, setPanelOpen] = useStoredFlag(isNarrow() ? "ts.panelOpen.phone" : "ts.panelOpen", !isNarrow())
+  const [section, setSection] = useStoredSection()
+  const picked = () => {
+    if (isNarrow()) setPanelOpen(false)
+  }
+  // While the drawer is open the panel moves to its left, so the operator can
+  // switch agents and files without closing it. When the view is too narrow
+  // for both, the drawer covers the panel.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const viewWidth = useWidth(rootRef)
+  const beside = drawerOpen && viewWidth - drawerWidth >= 340
+
+  const back = below ? (
+    <BackButton
+      label={
+        below.kind === "agent" && state
+          ? agentName(state, below.id)
+          : artifacts.find((a) => a.id === below.id)?.title ?? "Back"
+      }
+      onClick={() => setDrawer((s) => s.slice(0, -1))}
     />
-  )
+  ) : null
+
   const titleNode = renaming ? (
     <TitleInput
       value={title}
@@ -296,69 +313,30 @@ export function RunChat({
   )
 
   return (
-    <OpenArtifact.Provider value={openArtifact}>
+    <OpenArtifact.Provider value={openFile(false)}>
       <FleetContext.Provider value={fleetView}>
-        {/* The run splits into the chat and, when the agent writes one, the
-            document pane. The chat flexes; the pane is a fixed-width column on
-            desktop and a full-width overlay on mobile (so `relative` anchors it).
-            A fleet run adds the dock on the right. */}
-        <div className="relative flex h-full min-w-0 flex-col">
-          {/* A fleet run's top bar spans the chat and the dock. */}
-          {fleet && state ? <FleetHeader state={state} live={live} title={titleNode} actions={actions} /> : null}
-          <div className="relative flex min-h-0 min-w-0 flex-1">
-          <div className="relative flex h-full min-w-0 flex-1 flex-col">
-            {/* The run's files float in the chat's top-right corner, under the top
-                bar. Folded, the panel is one line; open, it lists every file. A
-                fleet run lists them in the dock instead. */}
-            {artifacts.length && !fleet ? (
-              <div className="pointer-events-none absolute top-14 right-3 z-10 flex max-h-[calc(100%-4rem)] justify-end">
-                <FilesPanel
-                  docs={artifacts}
-                  activeId={openDoc?.id ?? null}
-                  activeVersionId={openVersionId}
-                  open={filesOpen}
-                  onOpenChange={setFilesOpen}
-                  onOpen={(fileId, versionId) => {
-                    openArtifact(fileId, versionId)
-                    // On a phone the document covers the chat, so fold the list.
-                    if (isNarrow()) setFilesOpen(false)
-                  }}
-                />
-              </div>
-            ) : null}
-            {/* The top bar holds the run's title and the actions on the run as a
-                whole: archive, and delete behind a menu. Both wait while the agent
-                works, because the server refuses to change a busy run. The sidebar
-                toggle shows on mobile only, where the sidebar is a Sheet. */}
-            {fleet ? null : (
-              <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
-                <SidebarTrigger className="-ml-1 md:hidden" />
-                {/* The run's own name, the same one the rail shows. Click to rename. */}
-                {titleNode}
-                {actions}
-              </header>
-            )}
-
-            {fleet && state ? (
-              <MobileTabs
-                state={state}
-                live={live}
-                tab={mobileTab}
-                onTab={setMobileTab}
-                selected={peek?.id ?? null}
-                onAgent={(id) => openPeek(id)}
-                openDoc={openDoc?.id ?? null}
-                onFile={(id) => openArtifact(id)}
+        <div ref={rootRef} className="relative flex h-full min-w-0 flex-col overflow-hidden">
+          <RunHeader
+            state={state}
+            status={status}
+            live={live}
+            mode={mode}
+            title={titleNode}
+            actions={
+              <RunActions
+                archived={archived}
+                busy={live || !state}
+                findings={state?.findings.length ?? 0}
+                onArchive={() => onArchive(run.id, !archived)}
+                onDelete={() => onDelete(run.id)}
               />
-            ) : null}
+            }
+          />
 
-            <div
-              ref={mainRef}
-              className={cn("flex min-h-0 flex-1 flex-col", fleet && mobileTab !== "chat" && "max-md:hidden")}
-            >
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <div ref={mainRef} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>
                 <Thread
-                  live={live}
                   empty={messages.length === 0}
                   prepass={state?.prepass ?? null}
                   error={status === "error" ? state?.error ?? null : null}
@@ -367,145 +345,196 @@ export function RunChat({
                   retrying={retrying}
                   archived={archived}
                   sendError={sendError}
-                  fleet={fleet}
+                  to={fleet ? "the coordinator" : "the agent"}
                 />
               </AssistantRuntimeProvider>
             </div>
 
-            {/* The peek covers the chat from the right, up over the top bar, and
-                stops at the dock. Nothing under it moves; the chat only dims. On
-                a phone it fills the screen. */}
-            {fleet && state && peek ? (
-              <>
-                <div aria-hidden className="absolute inset-x-0 -top-[49px] bottom-0 z-20 bg-black/10 dark:bg-black/35 max-md:hidden" onClick={closePeek} />
-                <div
-                  ref={peekRef}
-                  role="dialog"
-                  aria-label={agentName(state, peek.id)}
-                  className="absolute -top-[49px] bottom-0 right-0 z-30 flex w-[552px] max-w-full flex-col bg-background shadow-[-10px_0_30px_#00000014] max-md:fixed max-md:inset-0 max-md:z-50 max-md:w-auto"
-                >
-                  <PeekHeader
-                    state={state}
-                    id={peek.id}
-                    prev={prev?.id ?? null}
-                    onBack={() => setPeekStack((s) => s.slice(0, -1))}
-                    onClose={closePeek}
-                  />
-                  <ThreadOwner.Provider value={peek.id}>
-                    <AssistantRuntimeProvider runtime={peekRuntime}>
-                      <Thread
-                        key={peek.id}
-                        live={peekLive}
-                        empty={peekMessages.length === 0}
-                        prepass={null}
-                        error={null}
-                        errorInfo={null}
-                        onRetry={() => {}}
-                        retrying={false}
-                        archived={archived}
-                        sendError={null}
-                        fleet
-                        readOnly
-                      />
-                    </AssistantRuntimeProvider>
-                  </ThreadOwner.Provider>
-                </div>
-              </>
+            {/* The panel floats over the chat's top-right corner and stops
+                above the composer. Only the panel itself takes clicks. */}
+            {state && mode ? (
+              <div
+                className={cn(
+                  "pointer-events-none absolute top-3 right-3 bottom-28 flex items-start justify-end",
+                  beside ? "z-30" : "z-10",
+                )}
+                style={beside ? { right: drawerWidth + 12 } : undefined}
+              >
+                <RunPanel
+                  state={state}
+                  live={live}
+                  mode={mode}
+                  open={panelOpen}
+                  onOpenChange={setPanelOpen}
+                  section={section}
+                  onSection={setSection}
+                  selectedAgent={peek?.id ?? null}
+                  onAgent={(id) => {
+                    openPeek(id)
+                    picked()
+                  }}
+                  onCoordinator={() => {
+                    closeDrawer()
+                    picked()
+                  }}
+                  openDoc={openDoc?.id ?? null}
+                  openVersion={topFile?.version ?? null}
+                  onFile={(id, v) => {
+                    openFile(false)(id, v)
+                    picked()
+                  }}
+                />
+              </div>
             ) : null}
           </div>
 
-          {openDoc ? (
-            <ArtifactPane
-              doc={openDoc}
-              versionId={openVersionId}
-              finding={finding}
-              onSelectVersion={setOpenVersionId}
-              onClose={() => {
-                setOpenArtifactId(null)
-                setOpenVersionId(null)
-              }}
-            />
+          {/* The drawer covers the run from the right, over the top bar.
+              Nothing under it moves; the chat only dims, and a click on it
+              closes the drawer. On a phone the drawer fills the screen. */}
+          {state && top ? (
+            <>
+              <div
+                aria-hidden
+                className="absolute inset-0 z-20 bg-black/10 max-md:hidden dark:bg-black/35"
+                onClick={closeDrawer}
+              />
+              <div
+                ref={peekRef}
+                role="dialog"
+                aria-label={top.kind === "agent" ? agentName(state, top.id) : openDoc?.title ?? "File"}
+                style={{ width: drawerWidth }}
+                className="absolute inset-y-0 right-0 z-40 flex max-w-full flex-col bg-background shadow-[-10px_0_30px_#00000014] max-md:fixed max-md:inset-0 max-md:z-50 max-md:!w-auto"
+              >
+                <ResizeHandle
+                  edge="left"
+                  width={drawerWidth}
+                  onWidth={setDrawerWidth}
+                  initial={drawerDefault}
+                  label="Resize drawer"
+                />
+                {top.kind === "agent" ? (
+                  <>
+                    <PeekHeader state={state} id={top.id} back={back} onClose={closeDrawer} />
+                    {/* A file opened from a child's thread goes on top of it. */}
+                    <OpenArtifact.Provider value={openFile(true)}>
+                      <ThreadOwner.Provider value={top.id}>
+                        <AssistantRuntimeProvider runtime={peekRuntime}>
+                          <Thread
+                            key={top.id}
+                            empty={peekMessages.length === 0}
+                            prepass={null}
+                            error={null}
+                            errorInfo={null}
+                            onRetry={() => {}}
+                            retrying={false}
+                            archived={archived}
+                            sendError={null}
+                            readOnly
+                          />
+                        </AssistantRuntimeProvider>
+                      </ThreadOwner.Provider>
+                    </OpenArtifact.Provider>
+                  </>
+                ) : openDoc ? (
+                  <ArtifactPane
+                    doc={openDoc}
+                    versionId={top.version}
+                    finding={finding}
+                    back={back}
+                    onSelectVersion={(v) => open({ kind: "file", id: openDoc.id, version: v }, true)}
+                    onClose={closeDrawer}
+                  />
+                ) : (
+                  <MissingFile back={back} onClose={closeDrawer} />
+                )}
+              </div>
+            </>
           ) : null}
-
-          {fleet && state ? (
-            <FleetDock
-              state={state}
-              live={live}
-              tab={dockTab}
-              onTab={setDockTab}
-              selected={peek?.id ?? null}
-              onAgent={(id) => openPeek(id)}
-              openDoc={openDoc?.id ?? null}
-              onFile={(id) => openArtifact(id)}
-            />
-          ) : null}
-          </div>
         </div>
       </FleetContext.Provider>
     </OpenArtifact.Provider>
   )
 }
 
-// The fleet run's top bar: status dot, title, "Running · 6m", the quiet cost,
-// and the ⋯ menu.
-function FleetHeader({
+// The run's top bar: status dot, title, "Running · 6m · Fleet", the quiet
+// spend, and the ⋯ menu. Before the run loads it shows the sidebar's status.
+function RunHeader({
   state,
+  status,
   live,
+  mode,
   title,
   actions,
 }: {
-  state: RunState
+  state: RunState | null
+  status: RunSummary["status"]
   live: boolean
+  mode: RunMode | null
   title: React.ReactNode
   actions: React.ReactNode
 }) {
-  const failed = state.status === "error"
-  const word = live ? "Running" : failed ? "Failed" : "Done"
-  const t0 = runStart(state)
-  const t1 = runEnd(state)
-  const budget = runBudget(state)
-  const spend = fleetSpend(state)
+  const failed = status === "error"
+  const running = state ? live : status === "running"
+  const word = running ? "Running" : failed ? "Failed" : "Done"
+  const t0 = state ? runStart(state) : null
+  const t1 = state ? runEnd(state) : null
+  const budget = state ? runBudget(state) : null
+  const spend = state ? fleetSpend(state) : 0
+  const meta = [word, t0 != null && t1 != null ? span(t1 - t0) : null, mode === "fleet" ? "Fleet" : mode ? "Solo" : null]
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
       <SidebarTrigger className="-ml-1 md:hidden" />
       <span
         className={cn(
           "size-[7px] shrink-0 rounded-full max-md:mt-[13px] max-md:self-start",
-          dotClass(live ? "working" : failed ? "failed" : "done"),
+          dotClass(running ? "working" : failed ? "failed" : "done"),
         )}
       />
-      {/* On a phone the status goes under the title, as in the mobile frame. */}
+      {/* On a phone the status goes under the title. */}
       <div className="flex min-w-0 items-baseline gap-2.5 max-md:flex-col max-md:items-stretch max-md:gap-0">
         {title}
-        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-          {word}
-          {t0 != null && t1 != null ? ` · ${span(t1 - t0)}` : ""}
-        </span>
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{meta.filter(Boolean).join(" · ")}</span>
       </div>
-      <span
-        className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums"
-        title="What the run has spent, against its budget"
-      >
-        <span className="text-foreground">{usd(spend)}</span>
-        {budget != null ? <span className="max-md:hidden"> / {usd(budget)}</span> : null}
-      </span>
+      {state ? (
+        <span
+          className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums"
+          title="What the run has spent, against its budget"
+        >
+          <span className="text-foreground">{usd(spend)}</span>
+          {budget != null ? <span className="max-md:hidden"> / {usd(budget)}</span> : null}
+        </span>
+      ) : (
+        <span className="ml-auto" />
+      )}
       {actions}
     </header>
   )
 }
 
-// The peek's top bar. "‹ Name" goes back to the peek this one was opened from.
+// "‹ Name": back to the drawer page this one was opened from.
+function BackButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="-ml-1 flex max-w-40 shrink-0 items-center gap-0.5 rounded-sm text-xs text-muted-foreground outline-none hover:text-foreground"
+    >
+      <ChevronLeft className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+// A child agent's top bar in the drawer.
 function PeekHeader({
   state,
   id,
-  prev,
-  onBack,
+  back,
   onClose,
 }: {
   state: RunState
   id: string
-  prev: string | null
-  onBack: () => void
+  back: React.ReactNode
   onClose: () => void
 }) {
   const a = state.agents.find((n) => n.id === id)
@@ -513,16 +542,7 @@ function PeekHeader({
   const to = a?.endedAt ?? runEnd(state)
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
-      {prev ? (
-        <button
-          type="button"
-          onClick={onBack}
-          className="-ml-1 flex shrink-0 items-center gap-0.5 rounded-sm text-xs text-muted-foreground outline-none hover:text-foreground"
-        >
-          <ChevronLeft className="size-3.5" />
-          {agentName(state, prev)}
-        </button>
-      ) : null}
+      {back}
       <span className={cn("size-[7px] shrink-0 rounded-full", dotClass(a?.state ?? "working"))} />
       <span className="min-w-0 truncate text-sm font-medium">{agentName(state, id)}</span>
       {a ? (
@@ -544,66 +564,52 @@ function PeekHeader({
   )
 }
 
-// On a phone the dock becomes tabs under the top bar. The chat stays mounted
-// while another tab shows, so its scroll is kept.
-function MobileTabs({
-  state,
-  live,
-  tab,
-  onTab,
-  selected,
-  onAgent,
-  openDoc,
-  onFile,
-}: {
-  state: RunState
-  live: boolean
-  tab: "chat" | DockTab
-  onTab: (t: "chat" | DockTab) => void
-  selected: string | null
-  onAgent: (id: string) => void
-  openDoc: string | null
-  onFile: (id: string) => void
-}) {
-  const trigger = "h-full flex-none px-0 text-[13px] group-data-horizontal/tabs:after:bottom-[-1px]"
+// A saved file that this run no longer has, or has not loaded yet.
+function MissingFile({ back, onClose }: { back: React.ReactNode; onClose: () => void }) {
   return (
     <>
-      <Tabs value={tab} onValueChange={(v) => onTab(v as "chat" | DockTab)} className="shrink-0 gap-0 md:hidden">
-        <div className="flex h-11 items-center border-b px-4">
-          <TabsList variant="line" className="gap-5 p-0 group-data-horizontal/tabs:h-full">
-            <TabsTrigger value="chat" className={trigger}>
-              Chat
-            </TabsTrigger>
-            <TabsTrigger value="fleet" className={trigger}>
-              Fleet
-            </TabsTrigger>
-            <TabsTrigger value="bulletin" className={trigger}>
-              Bulletin
-              {state.bulletin.length ? <Count n={state.bulletin.length} /> : null}
-            </TabsTrigger>
-            <TabsTrigger value="files" className={trigger}>
-              Files
-            </TabsTrigger>
-          </TabsList>
-        </div>
-      </Tabs>
-      {tab !== "chat" ? (
-        <ScrollArea className="min-h-0 flex-1 md:hidden">
-          {tab === "fleet" ? (
-            <FleetList state={state} live={live} selected={selected} onAgent={onAgent} />
-          ) : tab === "bulletin" ? (
-            <BulletinList state={state} onAgent={onAgent} />
-          ) : (
-            <FilesList docs={state.artifacts} openDoc={openDoc} onFile={onFile} />
-          )}
-        </ScrollArea>
-      ) : null}
+      <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
+        {back}
+        <span className="text-sm text-muted-foreground">Loading file…</span>
+        <Button variant="ghost" size="icon-sm" className="ml-auto text-muted-foreground" aria-label="Close" onClick={onClose}>
+          <X />
+        </Button>
+      </header>
     </>
   )
 }
 
-// Which file each chat's pane shows, saved by run id. A run with no entry has
-// its pane closed. Closing the pane removes the entry.
+// The width of an element, kept current as it resizes.
+function useWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [w, setW] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setW(el.clientWidth))
+    ro.observe(el)
+    setW(el.clientWidth)
+    return () => ro.disconnect()
+  }, [ref])
+  return w
+}
+
+// Which panel section is open, kept across runs. Null means all folded.
+const SECTION_KEY = "ts.panelSection"
+function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => void] {
+  const [value, setValue] = useState<PanelSection | null>(() => {
+    const saved = localStorage.getItem(SECTION_KEY)
+    if (saved === "") return null
+    return saved === "bulletin" || saved === "files" ? saved : "agents"
+  })
+  const set = (s: PanelSection | null) => {
+    setValue(s)
+    localStorage.setItem(SECTION_KEY, s ?? "")
+  }
+  return [value, set]
+}
+
+// Which file each chat's drawer shows, saved by run id. A run with no entry
+// opens with the drawer closed. Closing the drawer removes the entry.
 const PANE_KEY = "ts.artifactPane"
 
 function readPanes(): Record<string, string> {
@@ -670,17 +676,14 @@ function useStoredFlag(key: string, initial: boolean): [boolean, (v: boolean) =>
 // The actions on the whole run, at the end of the top bar. Archive is one tap
 // and undoes itself. Delete sits in a menu and asks first. The server moves a
 // deleted run's files to a trash folder, so a mistake can still be recovered by
-// hand. Both wait while the agent works.
+// hand. Both wait while the agent works. Both sit in the ⋯ menu.
 function RunActions({
-  compact = false,
   archived,
   busy,
   findings,
   onArchive,
   onDelete,
 }: {
-  // Fleet runs keep the top bar quiet: Archive moves into the ⋯ menu.
-  compact?: boolean
   archived: boolean
   busy: boolean
   findings: number
@@ -690,22 +693,8 @@ function RunActions({
   const [confirm, setConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const wait = busy ? "Wait for the agent to finish" : undefined
   return (
-    <div className={cn("flex shrink-0 items-center gap-0.5", !compact && "ml-auto")}>
-      {compact ? null : (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground"
-        disabled={busy}
-        title={wait}
-        onClick={onArchive}
-      >
-        {archived ? <ArchiveRestore /> : <Archive />}
-        <span className="hidden sm:inline">{archived ? "Unarchive" : "Archive"}</span>
-      </Button>
-      )}
+    <div className="flex shrink-0 items-center gap-0.5">
       <DropdownMenu>
         <DropdownMenuTrigger
           render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="More actions" />}
@@ -713,12 +702,10 @@ function RunActions({
           <MoreHorizontal />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40">
-          {compact ? (
-            <DropdownMenuItem disabled={busy} onClick={onArchive}>
-              {archived ? <ArchiveRestore /> : <Archive />}
-              {archived ? "Unarchive" : "Archive"}
-            </DropdownMenuItem>
-          ) : null}
+          <DropdownMenuItem disabled={busy} onClick={onArchive}>
+            {archived ? <ArchiveRestore /> : <Archive />}
+            {archived ? "Unarchive" : "Archive"}
+          </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
             disabled={busy}

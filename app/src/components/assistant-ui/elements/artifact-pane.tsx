@@ -7,15 +7,15 @@ import { codeScroll, codeSurface, ShimmerLabel } from "./surfaces";
 import { StreamingCode } from "./streaming-text";
 import { Markdown } from "@/components/markdown";
 import { ReplayProof } from "@/components/replay-proof";
-import { ResizeHandle, useStoredWidth } from "@/components/resize-handle";
 
-// The workspace pane beside the chat. The agent's live documents — the PoC it is
+// One document in the run drawer. The agent's live documents — the PoC it is
 // drafting, the replay proof it lands — open here instead of scrolling past in
 // the transcript, so the operator reads the whole file while the run keeps
-// moving. Code arrives as growing snapshots, highlighted monochrome with its
+// moving. The drawer owns the position and width; this fills it. Code arrives as growing snapshots, highlighted monochrome with its
 // fresh tail fading in; a proof document renders the recorded finding's
-// structured replay report. The pane shows one file at a time. The Files panel
-// in the chat picks which, so a run with many files never crowds this header.
+// structured replay report. The drawer shows one file at a time. The run
+// panel's Files section picks which, so a run with many files never crowds
+// this header.
 // One accent rule holds: a proof leads with the shield and the proven
 // green lives inside its report, never on the chrome here.
 const KIND_META: Record<ArtifactDoc["kind"], string> = {
@@ -39,14 +39,16 @@ export function ArtifactPane({
   finding,
   onSelectVersion,
   onClose,
+  back,
 }: {
   doc: ArtifactDoc;
   versionId: string | null;
   finding: Finding | null;
   onSelectVersion: (versionId: string) => void;
   onClose: () => void;
+  // "‹ Name" back to the drawer page this file was opened from.
+  back?: React.ReactNode;
 }) {
-  const [width, setWidth, initialWidth] = useStoredWidth("ts.paneWidth", 432, 320, 1100);
 
   const version =
     doc.versions.find((v) => v.id === versionId) ?? doc.versions[doc.versions.length - 1];
@@ -58,19 +60,9 @@ export function ArtifactPane({
   const words = version.text.trim() ? version.text.trim().split(/\s+/).length : 0;
 
   return (
-    <aside
-      style={{ "--pane-width": `${width}px` } as React.CSSProperties}
-      className={cn(
-        // Mobile: a full-width overlay above the chat, so a narrow column never
-        // squeezes the transcript off-screen or forces the code to wrap.
-        "absolute inset-y-0 right-0 z-20 flex h-full w-full min-w-0 flex-col bg-background",
-        // Desktop: a side column beside the chat, as wide as the operator drags
-        // it, but never so wide the chat loses its own room.
-        "md:relative md:z-auto md:w-(--pane-width) md:max-w-[65%] md:shrink-0 md:border-l md:bg-muted/20",
-      )}
-    >
-      <ResizeHandle edge="left" width={width} onWidth={setWidth} initial={initialWidth} label="Resize document pane" />
-      <header className="flex h-12 shrink-0 items-center gap-1 border-b pe-1.5 ps-1.5">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-1 border-b pe-1.5 ps-3">
+        {back}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
             <Icon className="size-4 shrink-0 text-muted-foreground" />
             <div className="flex min-w-0 flex-col">
@@ -144,7 +136,7 @@ export function ArtifactPane({
           />
         )}
       </div>
-    </aside>
+    </div>
   );
 }
 

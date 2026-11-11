@@ -24,7 +24,7 @@ import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { event } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
-import { COORDINATOR_INSTRUCTIONS, createFleet } from "./lib/fleet.mjs";
+import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 
@@ -70,7 +70,7 @@ async function openHarness(db, ws, state) {
   }, ctx);
   await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, {
-    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: pack.system(ws) + (fleet ? `\n\n${COORDINATOR_INSTRUCTIONS}` : "") },
+    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: pack.system(ws) + (fleet ? `\n\n${fleet.instructions}` : "") },
   });
   return { harness, root, reports, pack, fleet };
 }

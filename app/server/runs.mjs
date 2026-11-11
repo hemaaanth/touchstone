@@ -201,6 +201,8 @@ function view(run) {
     // The module plan for this run — which parts of the pipeline are on and why,
     // so a reconnecting client can render it without replaying the event stream.
     modules: run.modules ?? null,
+    // "fleet", "solo", or null for a run from before the choice.
+    mode: modeOf(run),
     status: run.status,
     archived: Boolean(run.archived),
     // The operator's own name for the run, or null. Set by renameRun.
@@ -297,7 +299,7 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export async function createRun({ alias, targetId, modules, budgetUsd, pack } = {}) {
+export async function createRun({ alias, targetId, modules, budgetUsd, pack, mode = "fleet" } = {}) {
   const cfg = readConfig()
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
@@ -309,6 +311,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack } = 
   // decides it, and nothing chosen means Contracts. An unknown pack, or a scope
   // that belongs to another pack, is refused before anything is spent.
   if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
+  if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
   const target = pickTarget({ id: targetId, pack: pack || undefined })
   // Resolve the module plan from the scope and the operator's request. A module
   // the scope cannot support (static/fuzz on a brief with no local source yet) is
@@ -357,6 +360,8 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack } = 
   // same. It lands in run.events, so a late subscriber replays it too.
   broadcast(run, { t: Date.now(), ev: "scope", scope: targetSummary(run.target) })
   broadcast(run, { t: Date.now(), ev: "budget", usd: budget })
+  // Fleet or Solo. A follow-up reads it back from this event.
+  broadcast(run, { t: Date.now(), ev: "mode", mode })
   // The module plan for this run — which parts of the pipeline are on, and the
   // honest reason for any that are off. Also replayed to late subscribers.
   broadcast(run, modulesEvent(plan))
@@ -457,6 +462,17 @@ function engineEvents(run) {
   }
 }
 
+// Fleet runs split the scope across children; solo runs have one agent. A run
+// from before the choice has no mode event, so the engine leaves it to the model.
+const RUN_MODES = ["fleet", "solo"]
+function modeOf(run) {
+  return run.events.findLast((e) => e.ev === "mode")?.mode ?? null
+}
+function fleetEnv(run) {
+  const mode = modeOf(run)
+  return mode ? { FLEET: mode === "solo" ? "0" : "1" } : {}
+}
+
 // The run's budget and what it has spent so far, from its own events. A
 // follow-up carries the spent amount forward, so the budget covers the whole run.
 function budgetEnv(run) {
@@ -544,7 +560,7 @@ function failureInfo(run) {
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
-  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...leads }
+  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...fleetEnv(run), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -720,6 +736,7 @@ function followUp(run, text) {
       EVENTS_FILE: run.eventsFile,
       MAX_POC,
       ...money,
+      ...fleetEnv(run),
       FOLLOWUP: text,
       PRIOR_FOUND: JSON.stringify(prior),
       ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),

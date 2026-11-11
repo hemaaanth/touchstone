@@ -7,6 +7,10 @@ export type Severity = "critical" | "high" | "medium" | "low"
 // operator later marked it not a finding they count (the proof still stands).
 export type AcceptedState = boolean | "auto" | "dismissed"
 
+// How a run uses agents. A fleet run must split the scope across child agents.
+// A solo run is one agent. The operator picks it in New run.
+export type RunMode = "fleet" | "solo"
+
 export interface FindingStages {
   hypothesis: boolean
   reproduced: boolean

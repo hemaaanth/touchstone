@@ -10,7 +10,9 @@ const textOf = (message, type = "text") => (message?.content ?? []).filter((b) =
 const empty = () => ({ agents: [], jobs: {}, bulletin: [] });
 const Fleet = defineDoc({ kind: "touchstone.fleet", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: empty, checkpointWhen: () => false });
 
-export const COORDINATOR_INSTRUCTIONS = `You are the fleet coordinator. Spawn only when splitting the work helps.
+export const COORDINATOR_INSTRUCTIONS = `You are the fleet coordinator. You can split the audit across children that you spawn.
+Size the fleet to the scope. A few related contracts may need two or three children.
+A broad scope, such as source code, contracts, web apps, and APIs together, may need one child per component or attack class.
 Give each child one clear angle. Children share the pack tools, workspace, PoC limits, and run budget.
 Use spawn_agent with a unique name, task, and area. Do not repeat a child's work.
 Use bulletin_read to see the roster and shared Bulletin. Use message_agent with a name or id to give direction.
@@ -19,12 +21,27 @@ If the operator says "retry <name>", use message_agent to ask that child to retr
 If the operator says "reassign <name>'s task", read the roster and give that task to another child by message_agent or spawn_agent.
 A failed child is not a failed audit. Cover its angle another way if the budget allows.`;
 
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 4 } = {}) {
+// Extra instructions for a run where the operator chose Fleet. The survey limit
+// is enforced by the pack tool wrapper below, not only by this text.
+export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first, then split.
+1. Survey the scope: list its sources and read the leads. Do not start proof work yet.
+2. Split the scope into independent areas. An area is one component, asset, or attack class that one child can work alone.
+3. Spawn one child per area before you do proof work yourself. After ${survey} survey calls, pack tools refuse your calls until you spawn.
+4. While the children work, you may take an area yourself, read the Bulletin, and steer them.
+5. End with one coverage summary that merges the children's reports.`;
+
+// FLEET=0 is a solo run: no fleet tools. FLEET=1 is a fleet run: the coordinator
+// must split the scope before it does pack work itself. Unset keeps the fleet
+// tools and leaves spawning to the model, for runs started before the choice.
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6 } = {}) {
   if (process.env.FLEET === "0") return undefined;
   max = Number(max);
   if (!Number.isInteger(max) || max < 1) throw new Error("FLEET_MAX must be a positive integer.");
   let harness;
   let packQueue = Promise.resolve();
+  // The coordinator's pack calls before its first spawn, for the fleet-run gate.
+  let spawned = false;
+  let surveyed = 0;
   const watches = new Map();
   const sessions = new Map();
 
@@ -143,6 +160,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 4 }
         return { agent, fresh: true };
       }, ctx);
       const { agent } = created;
+      spawned = true;
       if (created.fresh) event("subagent-spawned", { id: agent.id, name, title: task, area, tier: "T1", parent: null, conv: String(agent.conv) });
       await api.details({ conversationId: agent.conv }, ctx);
       return reply({ id: agent.id, name, task: agent.title, area, conv: String(agent.conv) });
@@ -196,6 +214,9 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 4 }
   function tag(tool, serialize = false) {
     return { ...tool, execute: (args, api, ctx) => withAgent(api.conversationId === ROOT_CONVERSATION_ID ? undefined : who(api.conversationId), async () => {
       if (!serialize) return tool.execute(args, api, ctx);
+      if (required && !spawned && api.conversationId === ROOT_CONVERSATION_ID && ++surveyed > survey) {
+        throw new Error("This is a fleet run. Split the scope now: call spawn_agent once per area. Pack tools work for you again after your first spawn.");
+      }
       const before = packQueue;
       let release;
       packQueue = new Promise((resolve) => { release = resolve; });
@@ -209,12 +230,14 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 4 }
   }
 
   return {
+    instructions: required ? `${COORDINATOR_INSTRUCTIONS}\n\n${fleetPlan(survey)}` : COORDINATOR_INSTRUCTIONS,
     extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [spawn, message, post, read].map((t) => tag(t)) }),
     wrapTools: (tools) => tools.map((t) => tag(t, true)),
     agentForSession: (sessionId) => sessions.get(sessionId),
     async attach(value, ctx) {
       harness = value;
       const board = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
+      spawned = board.agents.length > 0;
       for (const agent of board.agents) {
         const provider = await harness.snapshot(ProviderDoc, agent.conv, ctx);
         if (provider) sessions.set(provider.sessionId, agent.id);

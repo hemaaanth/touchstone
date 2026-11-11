@@ -11,6 +11,7 @@ import type {
   SpendState,
   TargetChoice,
   PackChoice,
+  RunMode,
 } from "./types"
 
 async function getJson<T>(url: string): Promise<T> {
@@ -64,8 +65,14 @@ export async function fetchRuns(): Promise<RunSummary[]> {
 
 // Start a run against a chosen scope. Omit targetId to let the server pick a
 // target at random from the library, so repeated Runs stop re-breaking one bug.
-export function startRun(alias: string, targetId?: string, budgetUsd?: number, pack?: string): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack })
+export function startRun(
+  alias: string,
+  targetId?: string,
+  budgetUsd?: number,
+  pack?: string,
+  mode?: RunMode,
+): Promise<RunView> {
+  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack, mode })
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.

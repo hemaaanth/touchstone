@@ -1,9 +1,10 @@
 import { createContext } from "react"
-import { COORDINATOR, type AgentNode } from "@/lib/types"
+import { COORDINATOR, type AgentNode, type RunMode } from "@/lib/types"
 import type { RunState, Step } from "@/lib/runModel"
 
-// What a fleet thread needs from the run view. RunChat provides it only when
-// the run has agents, so a single-agent run renders exactly as before.
+// What a run thread needs from the run view: the agents, the peek, and the
+// steer path. RunChat provides it for every run. A solo run has no agents, so
+// the fleet parts never show there.
 export interface FleetView {
   state: RunState
   // Open one agent's peek. `key` scrolls the peek to that step. `push` keeps the
@@ -66,6 +67,16 @@ export function stepAge(state: RunState, step: Step): string | undefined {
   const t = stepTime(state, step)
   const t0 = runStart(state)
   return t != null && t0 != null ? span(t - t0) : undefined
+}
+
+// Fleet or Solo, from the run's `mode` event. A run from before the choice
+// existed has no such event: it counts as a fleet when it spawned agents.
+export function runMode(state: RunState): RunMode {
+  for (let i = state.events.length - 1; i >= 0; i--) {
+    const m = (state.events[i] as { ev: string; mode?: unknown }).mode
+    if (state.events[i].ev === "mode" && (m === "fleet" || m === "solo")) return m
+  }
+  return state.agents.length > 0 ? "fleet" : "solo"
 }
 
 // The run's budget, from its `budget` event. Null on a run without one.

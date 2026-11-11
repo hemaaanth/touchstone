@@ -17,8 +17,8 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   Build structure from the headless primitives (`ThreadPrimitive`,
   `MessagePrimitive`, `ComposerPrimitive`). For styled leaves, use the
   assistant-ui **Elements** we vendored and restyled base-nova in
-  `@/components/assistant-ui/elements/*` (`AgentStatus`, `ShimmerLabel`, the
-  reasoning/tool `surfaces`, `agent-handoff`, `subagent-list`, etc.) — extend
+  `@/components/assistant-ui/elements/*` (`ShimmerLabel`, the reasoning/tool
+  `surfaces`, `agent-handoff`, `file-tree`, `artifact-pane`, etc.) — extend
   those rather than re-styling a leaf from scratch. Do not pull in the full
   assistant-ui thread template or registry wholesale; it drags in a second
   component kit that fights base-nova.
@@ -26,14 +26,23 @@ The console is built on **shadcn (base-nova style)** + **assistant-ui**. Follow
   engine. `bun run dev` serves the app and `/api/` from one process.
 - **Information architecture.** Left sidebar = runs list + Scopes / Modules /
   Playbooks / Settings. Center = the agent run chat; findings are scoped to
-  their run. Files the agent writes (PoC code, the replay proof) are artifacts
-  in a closable right pane, tabbed. Clicking a proven finding's proof card opens
-  its replay-proof artifact there. The pane is closed by default and each chat
-  saves its own pane state (closed when nothing is saved); it never auto-opens.
-  On desktop an open pane follows new writes. On a phone the pane is a
-  full-screen overlay, so it only opens on a tap and the file drafts inside its
-  chat card instead. There is no global findings
-  rail. Dark by default.
+  their run. There is no global findings rail. Dark by default. Every run has
+  one layout, fleet or solo (the operator picks the mode at start):
+  - The top bar: title, "Running · 6m · Fleet", spend, and the ⋯ menu.
+  - The main chat: the coordinator's thread (a solo run's one agent).
+  - The run panel floats in the chat's top-right corner. It folds to one line
+    ("4 agents · 3 notes · 11 files"). Open, it is an accordion: Agents,
+    Bulletin (fleet runs, or any run with notes), Files. One section is open
+    at a time and scrolls inside the panel.
+  - The drawer: a child's thread or a file (PoC code, the replay proof) opens
+    over the chat from the right. It never pushes the chat; the chat dims, and
+    a click on it or Escape closes the drawer. It is a stack: a file opened
+    from a child's thread goes on top, and "‹ Name" goes back. While it is
+    open, the panel sits to its left. Clicking a proven finding's proof card
+    opens its replay proof there. Each chat saves its open file; the drawer
+    never opens by itself. On desktop an open file follows the coordinator's
+    new writes. On a phone the drawer is full-screen, so it only opens on a
+    tap.
 - Do not upgrade existing dependencies (additive is fine). Use bun.
 - Open-source code is ours to use when its license allows it. Touchstone is
   open source too. Do not rebuild what a good open-source tool already does.

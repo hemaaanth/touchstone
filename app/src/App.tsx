@@ -7,6 +7,7 @@ import type {
   TargetChoice,
   PackChoice,
   Playbook,
+  RunMode,
 } from "@/lib/types"
 import type { CatalogState } from "@/lib/catalog"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
@@ -71,10 +72,10 @@ export function App() {
   }, [refreshModels])
 
   const onStart = useCallback(
-    (alias: string, targetId?: string, budgetUsd?: number, pack?: string) => {
+    (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias, targetId, budgetUsd, pack)
+      startRun(alias, targetId, budgetUsd, pack, mode)
         .then((run) => {
           setRuns((prev) => [
             { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },

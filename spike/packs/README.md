@@ -85,7 +85,8 @@ same model and pack tools, plus `message_agent`, `bulletin_post`, and
 
 - `spawn_agent({name, task, area})` starts one child in a background-owned
   conversation. Use one clear angle per child. `FLEET_MAX` caps the number
-  of children in the run. The default is four.
+  of children in the run. The default is eight. The coordinator sizes the
+  fleet to the scope within that cap.
 - `message_agent({to, text})` accepts a child name, child id, or
   `coordinator`. It steers a busy child and starts a new turn for an idle
   or failed child. To retry, message the same child. To reassign, read its
@@ -115,7 +116,15 @@ the same `budgetedApi` and `createRunBudget`. Usage snapshots do not charge
 the budget a second time. The budget is checked between provider calls.
 Responses already in flight can exceed the amount left when they started.
 
-Set `FLEET=0` to omit the fleet extension, wrappers, and coordinator prompt.
+The operator picks Fleet or Solo for each app run.
+
+- `FLEET=1` is a fleet run. The coordinator gets a plan step. After six pack
+  tool calls without a spawn, pack tools refuse the coordinator's calls until
+  it calls `spawn_agent`. Children are never gated.
+- `FLEET=0` is a solo run. It omits the fleet extension, wrappers, and
+  coordinator prompt.
+- Unset keeps the fleet tools and leaves spawning to the model. Runs started
+  before the choice existed, and CLI runs, use this.
 The original single-agent pack path remains in place. No T2 worker or new
 proof bypass is part of this implementation.
 
