@@ -68,11 +68,19 @@ export function startRun(alias: string, targetId?: string, budgetUsd?: number, p
   return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack })
 }
 
-// One scope per call. `repo` is one GitHub URL; `brief` is markdown whose
-// https links are the sources (several repos as one scope); `files` is local
-// Solidity source (one or more folders).
+// One member of a scope: a GitHub repo, or a local folder with its files.
+export type ScopeMember =
+  | { kind: "repo"; url: string }
+  | { kind: "folder"; name: string; files: { path: string; content: string }[] }
+
+// One scope per call. `members` is the main shape: repos and folders mixed, in
+// any language. The server picks the pack from the content; `pack` is a hint
+// that counts only for repos, whose content is not known until the run fetches
+// it. The other fields are the older single-member bodies.
 export function attachScope(body: {
   title: string
+  members?: ScopeMember[]
+  pack?: string
   repo?: string
   brief?: string
   files?: { path: string; content: string }[]

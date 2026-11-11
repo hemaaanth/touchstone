@@ -162,8 +162,10 @@ export async function handleFindings(req, res) {
 
 // Operator-configured scopes (briefs). A (req,res) handler because POST takes a
 // body. Returns true when it handled the request.
-//   GET    /api/scopes        — list the operator's brief scopes (summaries)
-//   POST   /api/scopes        — add one from { title, brief, blurb }
+//   GET    /api/scopes        — list the operator's scopes (summaries)
+//   POST   /api/scopes        — add one from { title, members, pack? } (repos and
+//                                folders, mixed), or a legacy { title, files },
+//                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
 export async function handleScopes(req, res) {
   const url = new URL(req.url, "http://localhost")
@@ -178,7 +180,7 @@ export async function handleScopes(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo }))
+      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

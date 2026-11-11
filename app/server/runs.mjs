@@ -26,7 +26,7 @@ import { activeProvider, allProviders, defaultAlias, readConfig } from "../../sp
 import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, addBriefScope, addSourceScope, addRepoScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -117,10 +117,18 @@ export function listScopes() {
   return readScopes().map(targetSummary)
 }
 
-// Add a brief scope from pasted markdown. Returns its summary so the UI can select
-// it immediately. Throws (surfaced as 400) when the title or markdown is empty.
-export function addScope({ title, brief, blurb, files, repo } = {}) {
-  const scope = files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
+// Add an operator scope. Returns its summary so the UI can select it at once.
+// Throws (surfaced as 400) on a bad body.
+//   { title, members: [{ kind:"repo", url } | { kind:"folder", name, files }], pack? }
+//       the main shape: repos and folders mixed, any language. `pack` is a hint
+//       that counts only for repos; the content decides (scopes-store scopePack).
+//   { title, files }   one folder (legacy)
+//   { title, repo }    one GitHub repo, audited as Solidity (legacy)
+//   { title, brief }   pasted markdown with links (legacy)
+export function addScope({ title, brief, blurb, files, repo, members, pack } = {}) {
+  const scope = members !== undefined
+    ? addMembersScope({ title, members, pack, blurb })
+    : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
   return { ...targetSummary(scope), runnable: true }
 }
 
