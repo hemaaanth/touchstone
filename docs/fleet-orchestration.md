@@ -69,6 +69,24 @@ report. Discretion to scale the fleet up or down mid-run.
   still reading as one continuous workspace, not separate rounded cards. Needs design input
   before the panel is built.
 
+### 6a. Locked UI rules (from the design track)
+
+The design track resolved the multi-identity tension. These are binding for the panel:
+
+- **No model picker; runtime identity is read-only in all cases.** The console never lets
+  the operator reassign a running agent's model.
+- **Agent name is the primary identity; its assigned model is neutral text in the same
+  row** — not a brand, not a color.
+- **One flat fleet list.** No per-agent or per-model cards, no colour-coded model brands.
+- **Selected row = "Inspecting &lt;agent&gt;"** in a read-only activity region. The
+  coordinator stays the sole composer; the operator inspects, never types at a child.
+- **T1/T2 trust is an explicit registry-derived label**, never inferred from the model name.
+- **Agent Done/Failed are neutral.** Success/danger signalling is reserved for an
+  authoritative *proven* lead — not for an agent merely finishing or erroring.
+
+Row geometry + Bulletin visual direction: a short design note is incoming from the design
+track; build the panel against that note.
+
 ## 7. Durability
 
 Bulletin = persisted BB channel. Fleet/agent registry lives in persisted run state. The
