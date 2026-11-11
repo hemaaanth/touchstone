@@ -84,8 +84,42 @@ The design track resolved the multi-identity tension. These are binding for the 
 - **Agent Done/Failed are neutral.** Success/danger signalling is reserved for an
   authoritative *proven* lead — not for an agent merely finishing or erroring.
 
-Row geometry + Bulletin visual direction: a short design note is incoming from the design
-track; build the panel against that note.
+### 6b. Row geometry + layout (design note `fleet.v1-notes.md`, thread thr_qen9sj2438)
+
+The design track delivered the concrete direction (its source note is `design-directions/`,
+which is gitignored scratch, so the binding parts are copied here):
+
+- **Fleet row: one 56–64px record per child.** Aligned fields on the primary line —
+  `Agent / short id · Tier · Model · Status · Spend` — with the current task truncated to
+  one line below. Agent name is primary; tier and model are secondary text. Show
+  **`T2 untrusted` explicitly**. Dollar spend right-aligned; tokens in the disclosure;
+  unknown spend is `—`, not `0`. Neutral lifecycle states (Done is not green, Failed is not
+  red). **Row order is stable** as status/spend change; a new agent must not steal selection.
+- **Selection:** one neutral `bg-muted` step opens a joined, read-only activity region below
+  the list — current work, folded tool output, links to the agent's Bulletin posts. Labelled
+  **"Inspecting [agent]"**, never "Speaking to". No child composer, no model switcher. The
+  main composer stays **"Message coordinator."**
+- **Presence:** coordinator identity in the conversation header; children live in Fleet. A
+  compact **"Fleet · 8 agents · 5 active"** summary (unique child ids, not posts/models). No
+  model-specific colours; identity stays legible through text, not an avatar legend.
+- **Bulletin feed:** flat, full-width entries — square edges, one bottom separator, no
+  per-entry shadow or rounded frame. Each keeps author/tier, module/toolkit tags, mechanism,
+  severity, status timeline, evidence link, reactions. High/Critical chips stay **neutral
+  until proven**. Render **recorded transitions only** — never infer earlier stages from the
+  latest state; `proven` and `dismissed` are alternative terminal outcomes. Reactions and
+  corroboration are not proof; only the harness/oracle result earns `proven`. **Trusted leads
+  and Evidence submissions stay visibly separate**; Tier-2 submissions are quarantined and get
+  no controls implying trusted-peer access.
+- **Placement in the continuous canvas:** center dock = `Conversation | Bulletin`; right dock
+  = `Files | Fleet`. On wide (≥ ~1680px) desktops Files and Fleet may pin side by side with a
+  shared divider; at 1440px do not force four narrow columns. Preserve selection + scroll when
+  switching dock views.
+- **Reuse, don't invent:** existing line Tabs, neutral Badges, ScrollArea, Collapsible, and
+  assistant-ui activity leaves. No new card system or palette.
+
+These field requirements are already reflected in the step-1 data model (`app/src/lib/fleet.ts`):
+nullable `AgentSpend` (`—` not 0), recorded-only `Lead.transitions`, the `BulletinLane` split,
+registry-derived `Tier`, and neutral `AgentStatus`.
 
 ## 7. Durability
 
