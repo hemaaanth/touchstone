@@ -174,7 +174,7 @@ function lowerKeys(obj) {
 // A passing test is not a proof. `assertTrue(true)` passes too. A forge finding
 // is proven only when the replay shows BOTH:
 //   1. the test made a successful call into a scope target, and
-//   2. a material adverse effect on a scope target, by EITHER channel:
+//   2. an effect on a scope target the gate accepts as harm, by EITHER channel:
 //      - funds:   a target's net ETH went DOWN during the test body, or
 //      - control: the test body made a real SSTORE in a target's storage.
 // Token drains (ERC-20/721) and access-control takeovers move no ETH. They show
@@ -183,17 +183,22 @@ function lowerKeys(obj) {
 // A scope target is a contract the replay CREATEd from code compiled out of the
 // scope: src/ (a lab) or vendor/ (fetched members). Contracts defined in the test
 // file, forge-std, the test contract and the cheatcode VM are never targets. A
-// target the test overwrote with vm.etch is no longer the scope's code, so it
-// stops being a target.
+// target overwritten with vm.etch — in the test body OR in setUp() — is no longer
+// the scope's code, so it stops being a target.
 //
 // Known limits, on purpose for this cycle:
 // - The funds channel sees native ETH only. A token-balance move that makes no
 //   target storage write (rare: balances live in the token's storage) is not
 //   seen. Measuring token balances is a later cycle.
 // - The control channel counts ANY target storage write in the test body, so a
-//   plain deposit also counts. The gate rejects tests that touch nothing; it
-//   does not judge intent. Packs with a lab model (keys, chain-watch) pass their
-//   own stricter judge to proveFindings.
+//   plain `deposit` also counts. It does not yet tell a privileged or owner write
+//   from an ordinary one. The gate rejects tests that touch nothing; it does not
+//   judge intent. Packs with a lab model (keys, chain-watch) pass their own
+//   stricter judge to proveFindings.
+// - A test that funds the target itself in setUp() and withdraws only its own
+//   balance in the body is accepted as funds. Setup funding is left out of the net
+//   on purpose: that exclusion is what keeps victim-funded drains provable, so do
+//   not "fix" it by netting setUp flows in.
 
 const lc = (v) => String(v ?? "").toLowerCase();
 const hex = (v) => lc(v).replace(/^0x/, "");

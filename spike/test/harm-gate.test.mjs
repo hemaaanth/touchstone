@@ -100,6 +100,20 @@ test("harm gate: a target the test etched over is no longer a target", () => {
   assert.match(verdict(traces).reason, /deployed no contract from the audited scope/);
 });
 
+test("harm gate: a target the test etched over in setUp() is no longer a target either", () => {
+  const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
+  const traces = [setup(
+    node(0, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: etch }),
+  ), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, steps: [sstore("0x0", "0x0", "0x1")] }),
+  )];
+  const harm = verdict(traces);
+  assert.equal(harm.ok, false);
+  assert.match(harm.reason, /deployed no contract from the audited scope/);
+  const finding = { severity: "high", poc: "X", forgePassed: true, pocProved: true, proof: { kind: "forge", status: "pass", pass: true, harm } };
+  assert.equal(isProven(finding), false);
+});
+
 test("gate(): a passing replay with no harm verdict, or a failed one, is not a pass", () => {
   assert.equal(gate({ kind: "forge", status: "pass", pass: true }).pass, false);
   const no = gate({ kind: "forge", status: "pass", pass: true, harm: { ok: false, reason: "nope" } });
