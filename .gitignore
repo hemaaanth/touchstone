@@ -46,3 +46,8 @@ design-directions/
 # OS
 .DS_Store
 spike/bun.lock
+
+# Run records the app writes on every run, and local review scratch. They are
+# runtime output, not source. Records already tracked stay tracked.
+spike/results/agent/run-*
+spike/.review/
