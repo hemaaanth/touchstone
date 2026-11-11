@@ -103,12 +103,18 @@ export function RunChat({
 
   // Open a page. From the main chat or the panel it replaces the stack. From
   // inside the drawer it goes on top, so "‹ Name" can come back.
-  const open = (item: DrawerItem, push: boolean) =>
+  // The control that opened the drawer. It is saved before the drawer opens,
+  // since the inert chat behind the drawer can take its focus away.
+  const openerRef = useRef<HTMLElement | null>(null)
+  const open = (item: DrawerItem, push: boolean) => {
+    if (drawer.length === 0)
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setDrawer((s) => {
       const t = s[s.length - 1]
       if (t && t.kind === item.kind && t.id === item.id) return [...s.slice(0, -1), item]
       return push && t ? [...s, item] : [item]
     })
+  }
   const openFile = (push: boolean) => (fileId: string, versionId?: string) =>
     open({ kind: "file", id: fileId, version: versionId ?? null }, push)
   const closeDrawer = () => setDrawer([])
@@ -232,9 +238,11 @@ export function RunChat({
   // Focus moves into the drawer when it opens and back to the opener when it
   // closes. The dimmed chat behind it is inert, so Tab stays out of it.
   const drawerOpen = drawer.length > 0
+  // The drawer renders once the run state loads, which can be after it opens.
+  const drawerShown = drawerOpen && !!state
   useEffect(() => {
-    if (!drawerOpen) return
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (!drawerShown) return
+    const opener = openerRef.current
     const drawerEl = peekRef.current
     if (drawerEl && !drawerEl.contains(document.activeElement)) drawerEl.focus({ preventScroll: true })
     const onKey = (e: KeyboardEvent) => {
@@ -246,8 +254,9 @@ export function RunChat({
       const active = document.activeElement
       const lost = !active || active === document.body || drawerEl?.contains(active)
       if (lost && opener?.isConnected) opener.focus({ preventScroll: true })
+      openerRef.current = null
     }
-  }, [drawerOpen])
+  }, [drawerShown])
   const jumpMain = (key: string) => {
     setDrawer([])
     setJump({ where: "main", key, n: Date.now() })
