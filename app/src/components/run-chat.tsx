@@ -29,9 +29,10 @@ import type { ArtifactDoc, ArtifactVersion, Finding, PendingApproval, PrepassVie
 import { PrepassFold } from "@/components/prepass"
 import { reloadRun, useRun, type RunState, type Step } from "@/lib/runModel"
 import { steerRun, fetchFinding } from "@/lib/api"
-import { INK, isTerminal, severityTone } from "@/lib/format"
+import { INK, isTerminal, runTitle, severityTone } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
+import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
@@ -81,24 +82,28 @@ const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>
 export function RunChat({
   run,
   onArchive,
+  onRename,
   onDelete,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
+  onRename: (id: string, name: string) => void
   onDelete: (id: string) => Promise<void>
 }) {
   const state = useRun(run.id)
-  // The workspace documents the agent wrote, and which one the pane shows. On
-  // desktop a new artifact auto-opens the pane and the pane follows to it;
-  // closing it sticks until a newer document arrives (or the Files panel opens
-  // one). On a phone the pane is a full-screen overlay, so it never
-  // opens by itself: the document drafts in its chat card and opens on a tap.
+  const [renaming, setRenaming] = useState(false)
+  // The workspace documents the agent wrote, and which one the pane shows. The
+  // pane is closed until the operator opens a document (a chat card or the
+  // Files panel). Each chat keeps its own pane: the open file is saved per run,
+  // so a chat comes back as it was left. A chat with nothing saved opens
+  // closed. On desktop an open pane follows new writes. On a phone the pane is
+  // a full-screen overlay, so it never opens by itself.
   const artifacts = state?.artifacts ?? []
   // The pane opens a file at one version. `latestArtifact` names the most recent
   // write (file + version); a new version of an older file still counts as the
   // latest even though it does not move that file to the end of `artifacts`.
   const latest = state?.latestArtifact ?? null
-  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null)
+  const [openArtifactId, setOpenArtifactId] = useState<string | null>(() => (isNarrow() ? null : storedPane(run.id)))
   const [openVersionId, setOpenVersionId] = useState<string | null>(null)
   const [filesOpen, setFilesOpen] = useStoredFlag("ts.filesOpen", false)
   // Open a file at a version. Omit the version to land on the file's latest.
@@ -107,19 +112,21 @@ export function RunChat({
     const file = artifacts.find((a) => a.id === fileId) ?? null
     setOpenVersionId(versionId ?? file?.versions[file.versions.length - 1]?.id ?? null)
   }
-  const seenArtifact = useRef<string | null>(null)
+  useEffect(() => storePane(run.id, openArtifactId), [run.id, openArtifactId])
+  // The first write we see is history, not news, so it only sets the mark.
+  const seenArtifact = useRef<string | null | undefined>(undefined)
   useEffect(() => {
     const key = latest ? `${latest.fileId}:${latest.versionId}` : null
-    if (key && key !== seenArtifact.current) {
-      seenArtifact.current = key
-      // Desktop follows every fresh write — including a new version of a file
-      // already open, so the pane steps from v1 to v2 as the agent rewrites.
-      if (!isNarrow() && latest) {
-        setOpenArtifactId(latest.fileId)
-        setOpenVersionId(latest.versionId)
-      }
+    if (!key || key === seenArtifact.current) return
+    const fresh = seenArtifact.current !== undefined
+    seenArtifact.current = key
+    // An open pane on desktop follows each fresh write, including a new version
+    // of the open file, so it steps from v1 to v2 as the agent rewrites.
+    if (fresh && openArtifactId && !isNarrow() && latest) {
+      setOpenArtifactId(latest.fileId)
+      setOpenVersionId(latest.versionId)
     }
-  }, [latest])
+  }, [latest, openArtifactId])
   const openDoc = openArtifactId ? artifacts.find((a) => a.id === openArtifactId) ?? null : null
   // When the open document is the replay proof, it renders the recorded finding's
   // structured report in the pane. Resolve that finding only while the proof is
@@ -131,6 +138,7 @@ export function RunChat({
   // Until the run store has loaded this run, trust the sidebar's status.
   const status = state ? state.status : run.status
   const scope = state?.scope ?? null
+  const title = runTitle({ ...run, scopeTitle: run.scopeTitle ?? scope?.title })
   // Live: a worker is running, so a message steers it. Idle: a message starts a
   // follow-up on the saved session. Only an archived run takes no messages.
   const live = !!state && !state.closed
@@ -193,9 +201,29 @@ export function RunChat({
               toggle shows on mobile only, where the sidebar is a Sheet. */}
           <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pe-2">
             <SidebarTrigger className="-ml-1 md:hidden" />
-            <h1 className="min-w-0 truncate text-sm font-medium">
-              {scope?.title ?? run.title ?? run.alias}
-            </h1>
+            {/* The run's own name, the same one the rail shows. Click to rename. */}
+            {renaming ? (
+              <TitleInput
+                value={title}
+                onSave={(name) => {
+                  onRename(run.id, name)
+                  setRenaming(false)
+                }}
+                onCancel={() => setRenaming(false)}
+                className="h-7 w-full max-w-md text-sm font-medium"
+              />
+            ) : (
+              <h1 className="min-w-0 truncate text-sm font-medium">
+                <button
+                  type="button"
+                  title="Rename run"
+                  onClick={() => setRenaming(true)}
+                  className="max-w-full cursor-text truncate rounded-sm text-left outline-none hover:text-foreground/80 focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {title}
+                </button>
+              </h1>
+            )}
             <RunActions
               archived={archived}
               busy={live || !state}
@@ -232,6 +260,32 @@ export function RunChat({
       </div>
     </OpenArtifact.Provider>
   )
+}
+
+// Which file each chat's pane shows, saved by run id. A run with no entry has
+// its pane closed. Closing the pane removes the entry.
+const PANE_KEY = "ts.artifactPane"
+
+function readPanes(): Record<string, string> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANE_KEY) ?? "{}")
+    return saved && typeof saved === "object" ? saved : {}
+  } catch {
+    return {}
+  }
+}
+
+function storedPane(runId: string): string | null {
+  const id = readPanes()[runId]
+  return typeof id === "string" ? id : null
+}
+
+function storePane(runId: string, fileId: string | null) {
+  const panes = readPanes()
+  if ((panes[runId] ?? null) === fileId) return
+  if (fileId) panes[runId] = fileId
+  else delete panes[runId]
+  localStorage.setItem(PANE_KEY, JSON.stringify(panes))
 }
 
 // Read at call time, not from state: the first artifact can land before a

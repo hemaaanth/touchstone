@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, Loader2, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react"
+import { Check, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
 import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
 import { formatUsd } from "@/lib/format"
+import { plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ProviderLogo } from "@/components/provider-logo"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
@@ -15,6 +18,10 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const [editing, setEditing] = useState<string | null>(null)
   useEffect(() => { fetchSettings().then(setSettings, (e) => setError(String(e.message))) }, [])
   const apply = (s: SettingsState) => { setSettings(s); setError(null); onChanged() }
+  // The default provider first, then the rest in the server's order.
+  const ordered = settings
+    ? [...settings.providers].sort((a, b) => Number(b.id === settings.default.provider) - Number(a.id === settings.default.provider))
+    : []
   const attempt = async (fn: () => Promise<SettingsState>) => {
     try { apply(await fn()); return true }
     catch (e) { setError(String((e as Error).message)); return false }
@@ -31,17 +38,17 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
           <div className="mx-auto max-w-3xl px-5 py-8 md:px-8 md:py-10">
             {error ? <p role="alert" className="mb-4 text-sm">{error}</p> : null}
             <section aria-labelledby="providers-title">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-5 flex items-end justify-between gap-3">
                 <div>
                   <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">Choose the provider and model for new runs.</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">New runs use the default provider and its model.</p>
                 </div>
                 <Button variant="outline" size="sm" disabled={editing === "new"} onClick={() => setEditing("new")}><Plus /> Add provider</Button>
               </div>
               {settings.envOverride ? <p className="mb-3 text-xs text-muted-foreground">The server fixes the provider to {settings.envOverride}. Restart without PROVIDER to change it.</p> : null}
               <ul className="divide-y border-y">
-                {settings.providers.map((p) => (
-                  <li key={p.id}>
+                {ordered.map((p) => (
+                  <li key={p.id} className={cn(settings.default.provider === p.id && "bg-muted/40")}>
                     <ProviderRow provider={p} isDefault={settings.default.provider === p.id} defaultModel={settings.default.model}
                       locked={Boolean(settings.envOverride)} editing={editing === p.id}
                       onEdit={() => setEditing(editing === p.id ? null : p.id)}
@@ -64,6 +71,18 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   )
 }
 
+// Where the key comes from, for the status dot's tooltip. The key itself never
+// reaches the browser.
+function keyNote(p: ProviderSetting): string {
+  if (!p.key.set) return "No API key"
+  if (p.key.source === "env") return `Key from ${p.key.envName ?? "the server environment"}`
+  return p.key.last4 ? `Key saved in Settings, ends ${p.key.last4}` : "Key saved in Settings"
+}
+
+// One provider. Columns: mark, name, model, actions. The action column has two
+// fixed slots (make default, edit), so icons line up on every row whether or
+// not a slot is used. The default provider is listed first, on a surface step,
+// with its model picker; the others stay quiet.
 function ProviderRow({ provider: p, isDefault, defaultModel, locked, editing, onEdit, onMakeDefault }: {
   provider: ProviderSetting; isDefault: boolean; defaultModel: string | null; locked: boolean; editing: boolean
   onEdit: () => void; onMakeDefault: (model: string) => Promise<boolean>
@@ -73,31 +92,63 @@ function ProviderRow({ provider: p, isDefault, defaultModel, locked, editing, on
   const choose = async (model: string) => { setBusy(true); await onMakeDefault(model); setBusy(false) }
   const current = p.models.find((m) => m.alias === defaultModel) ?? p.models[0]
   const items = p.models.map((m) => ({ value: m.alias, label: m.id }))
+  const canDefault = !isDefault && ready && !locked
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-4 sm:grid-cols-[minmax(8rem,1fr)_minmax(0,1.3fr)_11rem]">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-sm font-medium">{p.label}</span>
-          {isDefault ? <span className="text-[11px] text-muted-foreground">Default</span> : null}
-        </div>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{p.key.set ? "Key connected" : "No API key"}{p.key.set && p.key.last4 ? ` · …${p.key.last4}` : ""}</p>
+    <div className="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3.5 gap-y-2 px-3 py-3.5 sm:grid-cols-[2rem_minmax(9rem,1fr)_minmax(0,1.25fr)_auto]">
+      <ProviderLogo id={p.id} label={p.label} />
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={cn("truncate text-sm", isDefault ? "font-semibold" : "font-medium")}>{p.label}</span>
+        <span
+          role="img"
+          aria-label={keyNote(p)}
+          title={keyNote(p)}
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            p.key.set ? "bg-foreground/70" : "border border-muted-foreground/60",
+          )}
+        />
+        {isDefault ? <Badge variant="secondary" className="h-[18px] rounded-sm px-1.5 text-[10.5px]">Default</Badge> : null}
       </div>
-      <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+      <div className="col-span-2 col-start-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-3 sm:row-start-1">
         {isDefault && items.length > 1 ? (
           <Select items={items} value={current?.alias ?? null} onValueChange={(v) => { if (v && v !== current?.alias) void choose(String(v)) }}>
-            <SelectTrigger className="w-full min-w-0 bg-transparent text-xs" aria-label={`Default model for ${p.label}`} disabled={busy || !ready}>
+            <SelectTrigger className="w-full min-w-0 bg-background/60 font-mono text-xs" aria-label={`Default model for ${p.label}`} disabled={busy || !ready}>
               <SelectValue className="min-w-0 truncate" />
             </SelectTrigger>
             <SelectContent alignItemWithTrigger={false} align="end" className="max-w-[calc(100vw-2rem)] p-1">
-              {items.map((m) => <SelectItem key={m.value} value={m.value} className="text-xs"><span className="truncate">{m.label}</span></SelectItem>)}
+              {items.map((m) => <SelectItem key={m.value} value={m.value} className="font-mono text-xs"><span className="truncate">{m.label}</span></SelectItem>)}
             </SelectContent>
           </Select>
-        ) : isDefault && current ? <p className="truncate text-xs text-muted-foreground" title={current.id}>{current.id}</p>
-          : <span className="text-xs text-muted-foreground">{p.models.length} {p.models.length === 1 ? "model" : "models"}</span>}
+        ) : isDefault && current ? <p className="truncate font-mono text-xs" title={current.id}>{current.id}</p>
+          : <span className="text-xs text-muted-foreground">{p.key.set ? plural(p.models.length, "model") : "Add a key to use it"}</span>}
       </div>
-      <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 sm:col-start-3">
-        {!isDefault && ready && !locked ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void choose(p.models[0].alias)}>{busy ? <Loader2 className="animate-spin" /> : null}Make default</Button> : null}
-        <Button variant={editing ? "secondary" : "ghost"} size="sm" onClick={onEdit} aria-label={`${editing ? "Close" : "Edit"} ${p.label}`}>{editing ? "Close" : "Edit"}</Button>
+      <div className="col-start-3 row-start-1 flex items-center gap-0.5 sm:col-start-4">
+        <span className="flex size-7 items-center justify-center">
+          {canDefault ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-foreground"
+              disabled={busy}
+              onClick={() => void choose(p.models[0].alias)}
+              aria-label={`Make ${p.label} the default`}
+              title="Make default"
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <Star />}
+            </Button>
+          ) : null}
+        </span>
+        <Button
+          variant={editing ? "secondary" : "ghost"}
+          size="icon-sm"
+          className={editing ? "" : "text-muted-foreground hover:text-foreground"}
+          onClick={onEdit}
+          aria-label={`${editing ? "Close" : "Edit"} ${p.label}`}
+          aria-expanded={editing}
+          title={editing ? "Close" : "Edit"}
+        >
+          {editing ? <X /> : <Pencil />}
+        </Button>
       </div>
     </div>
   )
@@ -110,12 +161,12 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
   const n = Number(value)
   const valid = Number.isFinite(n) && n >= 0.01 && n <= 1000
   return (
-    <section className="mt-9" aria-labelledby="budget-title">
+    <section className="mt-12" aria-labelledby="budget-title">
       <h2 id="budget-title" className="text-sm font-semibold">Run budget</h2>
-      <div className="mt-4 flex flex-wrap items-start justify-between gap-4 border-y py-4">
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-y px-3 py-3.5">
         <div className="min-w-48 flex-1">
           <p className="text-sm">Default per run</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Set a different amount in New run.</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Used when New run leaves the budget blank.</p>
         </div>
         <form className="flex items-center gap-2" onSubmit={async (e) => {
           e.preventDefault()
@@ -129,9 +180,11 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
           <Button type="submit" variant="outline" disabled={!valid || n === saved || busy}>{busy ? <Loader2 className="animate-spin" /> : "Save"}</Button>
         </form>
       </div>
-      {!valid ? <p role="alert" className="mt-2 text-xs">Enter $0.01 to $1,000.</p> : null}
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">Checked between model calls. The final call may exceed the budget.</p>
-      <p className="mt-5 text-xs text-muted-foreground">Total spent <span className="ml-1 tabular-nums text-foreground/80">{formatUsd(settings.spend.usd)}</span></p>
+      {!valid ? <p role="alert" className="mt-2 px-3 text-xs">Enter $0.01 to $1,000.</p> : null}
+      <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-3 text-xs text-muted-foreground">
+        <p className="leading-relaxed">Checked between model calls. The final call may exceed the budget.</p>
+        <p>Total spent <span className="ml-1 tabular-nums text-foreground/80">{formatUsd(settings.spend.usd)}</span></p>
+      </div>
     </section>
   )
 }
@@ -225,11 +278,11 @@ function ProviderEditor({
     : "Paste the API key"
 
   return (
-    <div className="flex flex-col gap-4 border-t border-border/50 bg-background/40 px-4 py-4">
+    <div className="flex flex-col gap-4 border-t border-border/50 bg-background/40 px-3 py-4 sm:pl-[3.625rem]">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Name</span>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Lyber" disabled={Boolean(provider)} />
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="My gateway" disabled={Boolean(provider)} />
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Base URL</span>

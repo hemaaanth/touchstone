@@ -100,6 +100,8 @@ export interface RunState {
   replyStartedAt: number | null
   // Archived runs are locked: they take no more messages.
   archived: boolean
+  // The operator's name for the run, from the latest `renamed` event.
+  name: string | null
   // The verdict ladder, derived live from the step stream so the same four
   // stations the recorded finding shows are visible while the agent is still
   // working — the before and after views line up.
@@ -145,6 +147,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let replying = false
   let replyStartedAt: number | null = null
   let archived = false
+  let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
   let activity: Activity = "working"
@@ -566,6 +569,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "archived":
         archived = Boolean(e.archived)
         break
+      case "renamed":
+        name = str(e.name) || null
+        break
       default:
         break
     }
@@ -600,6 +606,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     replying,
     replyStartedAt,
     archived,
+    name,
     stages,
     activity,
     agents,
@@ -635,7 +642,7 @@ const allListeners = new Set<() => void>()
 const settleListeners = new Set<(id: string) => void>()
 
 // Status and headline of every loaded run, for the sidebar, plus what the
-// Modules and Projects pages count: the scope the run attacked, how many
+// Modules and Scopes pages count: the scope the run attacked, how many
 // findings it proved, its pipeline plan and the tools its prepass ran.
 // Replaced (never mutated) on each change so useSyncExternalStore sees a new
 // snapshot.

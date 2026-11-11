@@ -1,6 +1,7 @@
-import { Archive, ArchiveRestore, BookMarked, Boxes, ChevronRight, FolderGit2, Network, Plus, Settings2, ShieldCheck } from "lucide-react"
+import { useState } from "react"
+import { Archive, ArchiveRestore, BookMarked, Boxes, ChevronRight, FolderGit2, Network, Pencil, Plus, Settings2, ShieldCheck } from "lucide-react"
 import type { ProviderInfo, RunSummary, SpendState } from "@/lib/types"
-import { ago, DOT, formatUsd, isTerminal, statusLabel, statusTone } from "@/lib/format"
+import { ago, DOT, formatUsd, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "cn"
 import {
   Sidebar,
@@ -17,17 +18,18 @@ import {
 } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { ResizeHandle } from "@/components/resize-handle"
+import { TitleInput } from "@/components/title-input"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
   | { kind: "run"; id: string }
-  | { kind: "page"; id: "fleet" | "projects" | "modules" | "playbooks" | "settings" }
+  | { kind: "page"; id: "fleet" | "scopes" | "modules" | "playbooks" | "settings" }
 
 const PAGES = [
   { id: "fleet", label: "Operator console", icon: Network },
-  { id: "projects", label: "Projects", icon: FolderGit2 },
+  { id: "scopes", label: "Scopes", icon: FolderGit2 },
   { id: "modules", label: "Modules", icon: Boxes },
   { id: "playbooks", label: "Playbooks", icon: BookMarked },
 ] as const
@@ -38,6 +40,7 @@ export function AppSidebar({
   onSelect,
   onNewRun,
   onArchive,
+  onRename,
   spend,
   provider,
   width,
@@ -52,6 +55,7 @@ export function AppSidebar({
   onSelect: (v: View) => void
   onNewRun: () => void
   onArchive: (id: string, archived: boolean) => void
+  onRename: (id: string, name: string) => void
   spend: SpendState | null
   provider: ProviderInfo | null
 }) {
@@ -97,7 +101,7 @@ export function AppSidebar({
               {open.length === 0 ? (
                 <p className="px-2 py-1.5 text-xs text-muted-foreground">No runs yet.</p>
               ) : (
-                open.map((r) => <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} />)
+                open.map((r) => <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} onRename={onRename} />)
               )}
             </SidebarMenu>
           </SidebarGroupContent>
@@ -117,7 +121,7 @@ export function AppSidebar({
               <SidebarGroupContent>
                 <SidebarMenu>
                   {archived.map((r) => (
-                    <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} />
+                    <RunRow key={r.id} run={r} active={isRun(r.id)} onSelect={go} onArchive={onArchive} onRename={onRename} />
                   ))}
                 </SidebarMenu>
               </SidebarGroupContent>
@@ -127,7 +131,7 @@ export function AppSidebar({
       </SidebarContent>
 
       {/* Workspace nav + account controls sit together at the base, divided
-          from the runs list above. Projects / Modules / Playbooks are
+          from the runs list above. Scopes / Modules / Playbooks are
           destinations you leave the runs for, so they live down here by
           Settings rather than competing with the list. */}
       <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">
@@ -163,20 +167,52 @@ export function AppSidebar({
   )
 }
 
-// One run in the rail. Right-click (or long-press) opens Archive / Unarchive.
-// A run that is still working cannot be archived; it would cut the agent off.
+// One run in the rail. Right-click (or long-press) opens Rename and Archive /
+// Unarchive. Double-click the title to rename it in place. A run that is still
+// working cannot be archived; it would cut the agent off.
 function RunRow({
   run: r,
   active,
   onSelect,
   onArchive,
+  onRename,
 }: {
   run: RunSummary
   active: boolean
   onSelect: (v: View) => void
   onArchive: (id: string, archived: boolean) => void
+  onRename: (id: string, name: string) => void
 }) {
   const tone = statusTone(r.status)
+  const [editing, setEditing] = useState(false)
+  const title = runTitle(r)
+  // While editing, the row is a plain box with the input, so no input sits
+  // inside a button.
+  if (editing) {
+    return (
+      <SidebarMenuItem>
+        <div className="flex items-start gap-2 rounded-md bg-sidebar-accent px-2 py-1.5">
+          <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <TitleInput
+              value={title}
+              onSave={(name) => {
+                onRename(r.id, name)
+                setEditing(false)
+              }}
+              onCancel={() => setEditing(false)}
+              className="h-[1.375em] text-[13px] leading-snug"
+            />
+            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span>{statusLabel(r.status)}</span>
+              <span aria-hidden>·</span>
+              <span>{ago(r.startedAt)}</span>
+            </span>
+          </span>
+        </div>
+      </SidebarMenuItem>
+    )
+  }
   return (
     <ContextMenu>
       <ContextMenuTrigger
@@ -186,11 +222,12 @@ function RunRow({
         <SidebarMenuButton
           isActive={active}
           onClick={() => onSelect({ kind: "run", id: r.id })}
+          onDoubleClick={() => setEditing(true)}
           className="h-auto items-start py-1.5"
         >
           <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", DOT[tone])} />
           <span className="flex min-w-0 flex-col">
-            <span className="truncate text-[13px] leading-snug">{(r.title ?? r.alias).replaceAll("`", "")}</span>
+            <span className="truncate text-[13px] leading-snug">{title}</span>
             <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <span>{statusLabel(r.status)}</span>
               <span aria-hidden>·</span>
@@ -200,6 +237,10 @@ function RunRow({
         </SidebarMenuButton>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem onClick={() => setEditing(true)}>
+          <Pencil />
+          Rename
+        </ContextMenuItem>
         {r.archived ? (
           <ContextMenuItem onClick={() => onArchive(r.id, false)}>
             <ArchiveRestore />

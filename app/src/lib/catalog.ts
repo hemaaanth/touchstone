@@ -2,7 +2,7 @@ import type { PackChoice, RunSummary, TargetScope } from "./types"
 import type { RunBrief } from "./runModel"
 
 // Words for the module (pack) catalog, shared by the New run dialog and the
-// Modules and Projects pages. Every sentence here restates what the engine
+// Modules and Scopes pages. Every sentence here restates what the engine
 // already does (spike/packs/*, spike/lib/modules.mjs). None of it is data.
 
 // A scope saved before modules existed has no pack. It is a Contracts scope.
@@ -64,7 +64,7 @@ export function isOwnScope(id: string) {
   return id.startsWith("source-") || id.startsWith("brief-")
 }
 
-// A run plus its loaded brief, for the per-module and per-project counts.
+// A run plus its loaded brief, for the per-module and per-scope counts.
 export interface ScopedRun {
   run: RunSummary
   brief: RunBrief
