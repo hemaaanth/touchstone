@@ -1,32 +1,44 @@
-import { useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, MessagesSquare } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare } from "lucide-react"
 import type { AgentNode, BulletinNote, RunMode } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
-import { AGENT_WORD, agentName, dotClass, isLiveAgent, runStart, span } from "@/components/fleet-view"
+import { PLAN_STEP } from "@/lib/catalog"
+import {
+  AGENT_WORD,
+  agentName,
+  dotClass,
+  fleetSpend,
+  isLiveAgent,
+  runBudget,
+  runEnd,
+  runStart,
+  span,
+  usd,
+} from "@/components/fleet-view"
 
 // The run panel. It floats in the chat's top-right corner on every run, fleet
 // or solo, phone or desktop. It is a stack of sections, like the assistant-ui
-// MCP server panel: Agents, Bulletin, and Files. Each section row shows a count
+// MCP server panel: Info, Agents, Bulletin, and Files. Each section row shows a count
 // and a short status. One section is open at a time and scrolls inside itself.
 // The top row folds the whole panel to one line, so it never hides the chat
 // for long. A click on an agent or a file opens it in the run drawer.
 
-export type PanelSection = "agents" | "bulletin" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "files"
 
 export function RunPanel({
   state,
   live,
   mode,
+  model,
   open,
   onOpenChange,
   section,
   onSection,
   selectedAgent,
   onAgent,
-  onCoordinator,
   openDoc,
   openVersion,
   onFile,
@@ -34,13 +46,14 @@ export function RunPanel({
   state: RunState
   live: boolean
   mode: RunMode
+  // The model alias the run started with.
+  model: string
   open: boolean
   onOpenChange: (open: boolean) => void
   section: PanelSection | null
   onSection: (s: PanelSection | null) => void
   selectedAgent: string | null
   onAgent: (id: string) => void
-  onCoordinator: () => void
   openDoc: string | null
   openVersion: string | null
   onFile: (fileId: string, versionId?: string) => void
@@ -51,18 +64,20 @@ export function RunPanel({
   // A solo run has no Bulletin tools, so the section shows only if notes exist.
   const showBulletin = mode === "fleet" || notes.length > 0
   const writing = docs.some((d) => d.versions.some((v) => v.writing))
+  // The main chat is the coordinator (or a solo run's one agent), so the
+  // Agents section lists only the agents it spawned. A solo run has none.
+  const showAgents = mode === "fleet" || agents.length > 0
 
   const active = agents.filter(isLiveAgent).length
   const failed = agents.filter((a) => a.state === "failed").length
-  const agentStatus =
-    mode === "solo" && !agents.length ? null : failed ? `${failed} failed` : active ? `${active} active` : null
+  const agentStatus = failed ? `${failed} failed` : active ? `${active} active` : null
   const held = notes.filter((n) => n.lane === "evidence").length
   const leads = notes.filter((n) => n.lane !== "evidence" && n.kind === "lead").length
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
   const summary = [
-    mode === "fleet" || agents.length ? plural(agents.length, "agent") : "Solo",
+    showAgents ? plural(agents.length, "agent") : "Solo",
     showBulletin ? plural(notes.length, "note") : null,
     plural(docs.length, "file"),
   ]
@@ -92,23 +107,28 @@ export function RunPanel({
       {open ? (
         <>
           <Section
-            icon={Bot}
-            label={mode === "solo" && !agents.length ? "Agent" : "Agents"}
-            count={mode === "solo" && !agents.length ? null : agents.length}
-            status={agentStatus}
-            bad={failed > 0}
-            expanded={section === "agents"}
-            onToggle={() => toggle("agents")}
+            icon={Info}
+            label="Info"
+            count={null}
+            status={usd(fleetSpend(state))}
+            expanded={section === "info"}
+            onToggle={() => toggle("info")}
           >
-            <AgentList
-              state={state}
-              live={live}
-              mode={mode}
-              selected={selectedAgent}
-              onAgent={onAgent}
-              onCoordinator={onCoordinator}
-            />
+            <RunInfo state={state} live={live} mode={mode} model={model} />
           </Section>
+          {showAgents ? (
+            <Section
+              icon={Bot}
+              label="Agents"
+              count={agents.length}
+              status={agentStatus}
+              bad={failed > 0}
+              expanded={section === "agents"}
+              onToggle={() => toggle("agents")}
+            >
+              <AgentList state={state} live={live} selected={selectedAgent} onAgent={onAgent} />
+            </Section>
+          ) : null}
           {showBulletin ? (
             <Section
               icon={MessagesSquare}
@@ -191,37 +211,81 @@ function Count({ n }: { n: number }) {
 
 const empty = "px-3 py-2.5 text-xs text-muted-foreground"
 
-// The coordinator first, then one row per child agent. One click opens the
-// agent's thread in the drawer. The coordinator's thread is the main chat, so
-// its row closes the drawer instead. A solo run has only the one agent.
+// What the run is: its mode, how long it has run, what it has spent against
+// its budget, the model, the scope, and the pipeline steps it turned on.
+function RunInfo({ state, live, mode, model }: { state: RunState; live: boolean; mode: RunMode; model: string }) {
+  const now = useNow(live)
+  const t0 = runStart(state)
+  const t1 = live ? now : runEnd(state)
+  const budget = runBudget(state)
+  const steps = (state.modules ?? []).filter((m) => m.on).map((m) => PLAN_STEP[m.id] ?? m.id)
+  const rows: [string, React.ReactNode][] = [
+    ["Mode", mode === "fleet" ? "Fleet" : "Solo"],
+    ["Runtime", t0 != null && t1 != null ? span(t1 - t0) : null],
+    ["Spend", <Spend key="spend" usd={fleetSpend(state)} budget={budget} />],
+    ["Model", model || null],
+    ["Scope", state.scope?.title ?? null],
+    [
+      "Modules",
+      steps.length ? (
+        <span key="modules" className="flex flex-col gap-0.5">
+          {steps.map((s) => (
+            <span key={s}>{s}</span>
+          ))}
+        </span>
+      ) : null,
+    ],
+  ]
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 px-3 pt-1 pb-2.5 text-xs">
+      {rows
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => (
+          <div key={k} className="col-span-2 grid grid-cols-subgrid">
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="min-w-0 [overflow-wrap:anywhere] tabular-nums">{v}</dd>
+          </div>
+        ))}
+    </dl>
+  )
+}
+
+function Spend({ usd: spent, budget }: { usd: number; budget: number | null }) {
+  return (
+    <>
+      {usd(spent)}
+      {budget != null ? <span className="text-muted-foreground"> of {usd(budget)}</span> : null}
+    </>
+  )
+}
+
+// The time now, ticking every second while the run is live.
+function useNow(live: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!live) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [live])
+  return now
+}
+
+// One row per agent the coordinator spawned. One click opens the agent's
+// thread in the drawer.
 function AgentList({
   state,
   live,
-  mode,
   selected,
   onAgent,
-  onCoordinator,
 }: {
   state: RunState
   live: boolean
-  mode: RunMode
   selected: string | null
   onAgent: (id: string) => void
-  onCoordinator: () => void
 }) {
   const agents = state.agents
-  const failed = state.status === "error"
-  const own: AgentNode["state"] = live ? "working" : failed ? "failed" : "done"
   return (
     <div className="flex flex-col">
-      <Row
-        dot={own}
-        name={mode === "solo" && !agents.length ? "Agent" : "Coordinator"}
-        word={AGENT_WORD[own]}
-        sub={mode === "solo" && !agents.length ? "Works the whole scope. The main chat." : "Plans the split. The main chat."}
-        selected={false}
-        onClick={onCoordinator}
-      />
       {agents.map((a) => (
         <Row
           key={a.id}
@@ -234,7 +298,7 @@ function AgentList({
           onClick={() => onAgent(a.id)}
         />
       ))}
-      {mode === "fleet" && !agents.length ? (
+      {!agents.length ? (
         <p className={empty}>
           {live ? "No agents yet. The coordinator spawns them after a short survey." : "This run spawned no agents."}
         </p>

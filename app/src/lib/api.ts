@@ -108,6 +108,12 @@ export function steerRun(id: string, text: string): Promise<{ ok: true; followUp
   return postJson<{ ok: true; followUp?: boolean }>(`/api/runs/${encodeURIComponent(id)}/steer`, { text })
 }
 
+// Stop the run's live work: the audit, or a follow-up reply. The run ends as
+// stopped; a message continues it from its saved session.
+export function stopRun(id: string): Promise<{ ok: true }> {
+  return postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(id)}/stop`, {})
+}
+
 // Archive a run, or bring it back. An archived run takes no more messages.
 export function archiveRun(id: string, archived: boolean): Promise<{ ok: true; archived: boolean }> {
   return postJson<{ ok: true; archived: boolean }>(`/api/runs/${encodeURIComponent(id)}/archive`, { archived })

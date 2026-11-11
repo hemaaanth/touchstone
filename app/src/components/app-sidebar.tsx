@@ -1,8 +1,8 @@
 import { useMemo } from "react"
 import { BookMarked, Boxes, FolderGit2, Settings2, ShieldCheck } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
-import type { ProviderInfo, RunSummary, SpendState } from "@/lib/types"
-import { ago, DOT, formatUsd, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
+import type { RunSummary } from "@/lib/types"
+import { ago, DOT, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
 import {
   Sidebar,
   SidebarContent,
@@ -34,8 +34,6 @@ export function AppSidebar({
   onNewRun,
   onArchive,
   onRename,
-  spend,
-  provider,
   width,
   onWidth,
   defaultWidth,
@@ -49,8 +47,6 @@ export function AppSidebar({
   onNewRun: () => void
   onArchive: (id: string, archived: boolean) => void
   onRename: (id: string, name: string) => void
-  spend: SpendState | null
-  provider: ProviderInfo | null
 }) {
   const isPage = (id: string) => view?.kind === "page" && view.id === id
   const open = useMemo(() => runs.filter((r) => !r.archived), [runs])
@@ -136,8 +132,6 @@ export function AppSidebar({
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
-
-        {spend ? <SpendMeter spend={spend} provider={provider} /> : null}
       </SidebarFooter>
       <ResizeHandle edge="right" width={width} onWidth={onWidth} initial={defaultWidth} label="Resize sidebar" />
     </Sidebar>
@@ -157,17 +151,4 @@ function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
     canArchive: done,
   }
   return { status, id: r.id, title: runTitle(r), custom }
-}
-
-// Who is paying for new runs, and the total spent so far. Each run has its own
-// budget, so there is no global bar to fill.
-function SpendMeter({ spend, provider }: { spend: SpendState; provider: ProviderInfo | null }) {
-  return (
-    <div className="mx-2 mt-2 flex items-center justify-between gap-2 border-t border-sidebar-border pt-2.5 text-[11px]">
-      <span className="min-w-0 truncate font-medium text-muted-foreground">{provider?.label ?? "Spend"}</span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">
-        <span className="text-foreground/80">{formatUsd(spend.usd)}</span> spent
-      </span>
-    </div>
-  )
 }

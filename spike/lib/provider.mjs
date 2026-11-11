@@ -32,7 +32,7 @@ export function budgetedApi(api, agentForSession = () => undefined) {
             const message = e.type === "done" ? e.message : e.error;
             if (message.usage) {
               charge(model.id, message.usage);
-              event("spend", runSpend());
+              event("spend", { ...runSpend(), ...contextUse(model, message.usage) });
             }
           }
           output.push(e);
@@ -48,6 +48,14 @@ export function budgetedApi(api, agentForSession = () => undefined) {
     return output;
   };
   return { stream: wrap("stream"), streamSimple: wrap("streamSimple") };
+}
+
+// How full the model's context was on this call: every token it read plus the
+// tokens it wrote, against the model's window. Nothing when either is unknown.
+function contextUse(model, usage) {
+  const used = usage.totalTokens || (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0);
+  const window = model.contextWindow;
+  return used > 0 && window > 0 ? { ctx: { used, window } } : {};
 }
 
 // Api-key auth that reads the key saved in Settings, else the provider's env var.

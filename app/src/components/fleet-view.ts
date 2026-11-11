@@ -99,6 +99,21 @@ export function fleetSpend(state: RunState): number {
   return state.agents.reduce((n, a) => n + (a.spendUsd ?? 0), 0)
 }
 
+// How full the main thread's context was on its latest model call. The
+// coordinator's spend events, and a solo agent's, carry no agent id. Null on a
+// run from before the engine reported context.
+export type ContextUse = { used: number; window: number }
+export function mainContext(state: RunState): ContextUse | null {
+  for (let i = state.events.length - 1; i >= 0; i--) {
+    const e = state.events[i] as { ev: string; agent?: unknown; ctx?: { used?: unknown; window?: unknown } }
+    if (e.ev !== "spend" || e.agent != null) continue
+    const used = e.ctx?.used
+    const window = e.ctx?.window
+    return typeof used === "number" && typeof window === "number" && window > 0 ? { used, window } : null
+  }
+  return null
+}
+
 export const usd = (n: number) => `$${n.toFixed(2)}`
 
 export const AGENT_WORD: Record<AgentNode["state"], string> = {

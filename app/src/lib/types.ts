@@ -306,8 +306,8 @@ export interface TargetChoice extends TargetScope {
   runnable: boolean
 }
 
-// The active inference gateway (NEAR / Boundless / Lyber), so the UI can label
-// the spend meter with whichever provider a run will actually drive.
+// The active inference gateway (NEAR / Boundless / Lyber) that new runs will
+// drive. The app no longer shows it; the API still sends it.
 export interface ProviderInfo {
   id: string
   label: string

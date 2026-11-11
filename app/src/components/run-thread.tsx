@@ -1,5 +1,6 @@
 import { useContext, useState } from "react"
 import {
+  AuiIf,
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
@@ -27,9 +28,11 @@ import {
   CloudOff,
   Scissors,
   RefreshCw,
+  Square,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
+import type { ContextUse } from "@/components/fleet-view"
 import { PrepassFold } from "@/components/prepass"
 import type { RunFailure, Step } from "@/lib/runModel"
 import { INK, severityTone } from "@/lib/format"
@@ -149,6 +152,7 @@ export function Thread({
   retrying,
   archived,
   sendError,
+  context = null,
   to = "the agent",
   readOnly = false,
 }: {
@@ -160,6 +164,8 @@ export function Thread({
   retrying: boolean
   archived: boolean
   sendError: string | null
+  // How full the main thread's context is, when the engine reported it.
+  context?: ContextUse | null
   // Who a message goes to: "coordinator" in a fleet run, "the agent" in a solo run.
   to?: string
   // A peek: no composer, no prepass, no start line.
@@ -167,7 +173,7 @@ export function Thread({
 }) {
   return (
     <ThreadPrimitive.Root
-      className="flex min-h-0 flex-1 flex-col bg-background"
+      className="flex min-h-0 flex-1 flex-col bg-background [--composer-bg:color-mix(in_oklab,var(--color-muted)_30%,transparent)] [--composer-padding:8px] [--composer-radius:1rem]"
       style={{ ["--thread-max-width" as string]: "48rem" }}
     >
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
@@ -209,24 +215,36 @@ export function Thread({
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} />}
+      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} context={context} />}
     </ThreadPrimitive.Root>
   )
 }
 
-// The composer. The operator talks to the coordinator, which passes work on to
-// the agents, or to the one agent of a solo run. A plain box with the send
-// button inside, on the right. A failed send (spend cap, no saved session)
-// shows one line above it. An archived run reads as quiet rather than broken.
-function Composer({ to, archived, error }: { to: string; archived: boolean; error: string | null }) {
+// The composer, styled as assistant-ui's base-nova composer: the input on top,
+// an action row under it. The operator talks to the coordinator, which passes
+// work on to the agents, or to the one agent of a solo run. While the run works,
+// Send steers it and Stop ends the work. A failed send (spend cap, no saved
+// session) shows one line above the box. An archived run reads as quiet rather
+// than broken.
+function Composer({
+  to,
+  archived,
+  error,
+  context,
+}: {
+  to: string
+  archived: boolean
+  error: string | null
+  context: ContextUse | null
+}) {
   return (
-    <div className="px-5 pt-2 pb-5">
+    <div className="px-5 pt-2 pb-5 max-md:px-3 max-md:pb-3">
       <div className="mx-auto max-w-(--thread-max-width)">
         {error ? <p className="mb-1.5 px-3 text-xs text-bad">{error}</p> : null}
         <ComposerPrimitive.Root
           className={cn(
-            "flex items-end gap-2 rounded-xl border border-foreground/15 bg-background py-[7px] pr-[7px] pl-3",
-            "transition-colors focus-within:border-foreground/25",
+            "flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border border-foreground/10 bg-(--composer-bg) p-(--composer-padding)",
+            "transition-[border-color] focus-within:border-foreground/25",
             archived && "opacity-70",
           )}
         >
@@ -235,17 +253,60 @@ function Composer({ to, archived, error }: { to: string; archived: boolean; erro
             disabled={archived}
             rows={1}
             submitOnEnter
+            enterKeyHint="send"
             placeholder={archived ? "This run is archived." : `Message ${to}…`}
-            className="min-h-0 flex-1 resize-none bg-transparent py-[5px] text-sm leading-[18px] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+            className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 caret-primary outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed md:text-sm"
           />
-          <ComposerPrimitive.Send asChild>
-            <Button size="icon" className="size-7 shrink-0 rounded-md" disabled={archived} aria-label="Send">
-              <ArrowUp className="size-4" />
-            </Button>
-          </ComposerPrimitive.Send>
+          <div className="relative flex items-center justify-between">
+            {context ? <ContextRing use={context} /> : <span />}
+            <div className="flex items-center gap-1.5">
+              <AuiIf condition={(s) => s.thread.isRunning}>
+                <ComposerPrimitive.Cancel asChild>
+                  <Button size="icon" variant="outline" className="size-7 rounded-full" aria-label="Stop">
+                    <Square className="size-3 fill-current" />
+                  </Button>
+                </ComposerPrimitive.Cancel>
+              </AuiIf>
+              <ComposerPrimitive.Send asChild>
+                <Button size="icon" className="size-7 rounded-full" aria-label="Send">
+                  <ArrowUp className="size-4" />
+                </Button>
+              </ComposerPrimitive.Send>
+            </div>
+          </div>
         </ComposerPrimitive.Root>
       </div>
     </div>
+  )
+}
+
+// How full the model's context is: a small ring and a percentage. The title
+// gives the token counts.
+function ContextRing({ use }: { use: ContextUse }) {
+  const share = Math.min(1, use.used / use.window)
+  const r = 6
+  const c = 2 * Math.PI * r
+  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+  return (
+    <span
+      className="flex items-center gap-1.5 px-1.5 text-xs text-muted-foreground tabular-nums"
+      title={`Context: ${k(use.used)} of ${k(use.window)} tokens`}
+    >
+      <svg viewBox="0 0 16 16" className="size-3.5 -rotate-90" aria-hidden>
+        <circle cx="8" cy="8" r={r} fill="none" strokeWidth="2" className="stroke-foreground/10" />
+        <circle
+          cx="8"
+          cy="8"
+          r={r}
+          fill="none"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={`${share * c} ${c}`}
+          className={share > 0.85 ? "stroke-bad" : "stroke-muted-foreground"}
+        />
+      </svg>
+      {Math.round(share * 100)}% context
+    </span>
   )
 }
 

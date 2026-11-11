@@ -416,6 +416,11 @@ async function startEngine(run) {
   // The run may have been torn down while scanning (e.g. process restart); only
   // start the agent if it is still live.
   if (run.status !== "running") return
+  if (run.stopping) {
+    cleanupWorkspace(run.ws)
+    endStopped(run)
+    return
+  }
   spawnAgent(run, leads)
 }
 
@@ -590,6 +595,10 @@ function spawnAgent(run, leads) {
       return
     }
     cleanupWorkspace(run.ws)
+    if (run.stopping) {
+      endStopped(run)
+      return
+    }
     if (s && s.status === "done") {
       // Terminal, but not an error: the agent audited and found nothing to prove.
       run.error = null
@@ -691,6 +700,34 @@ export function steerRun(id, text) {
   return { ok: true }
 }
 
+// Stop a run's work: the live audit or a follow-up reply. The worker process
+// is killed. Its exit handler records any finding it proved before the stop;
+// otherwise the run ends as stopped, not failed. The saved agent session
+// stays, so a message continues the work. Before the agent starts (the
+// pre-pass), the stop lands as soon as the pre-pass returns.
+export function stopRun(id) {
+  const run = runs.get(id)
+  if (!run) throw new Error("no such run")
+  if (idle(run)) throw new Error("the run is not working")
+  const child = run.child
+  const alive = child && child.exitCode == null && child.signalCode == null
+  if (!alive && run.status !== "running") throw new Error(`the run is ${run.status}; it ends on its own`)
+  run.stopping = true
+  if (alive) child.kill("SIGTERM")
+  return { ok: true }
+}
+
+// End a run the operator stopped: a `stopped` marker, then a quiet terminal
+// status. Nothing was proven, so it reads like a run that found nothing.
+function endStopped(run) {
+  run.stopping = false
+  run.error = null
+  run.errorInfo = null
+  broadcast(run, { t: Date.now(), ev: "stopped" })
+  setRunStatus(run, "no-finding")
+  broadcast(run, { ev: "closed" })
+}
+
 // A run loaded from disk has no file paths on it yet. Set them from its id.
 // A run rebuilt from an older record has no stream file, so write its events
 // there first: new events must append to the full history, not replace it.
@@ -724,6 +761,7 @@ function followUp(run, text) {
   run.settled = null
   run.error = null
   run.errorInfo = null
+  run.stopping = false
   run.replying = true
   broadcast(run, { t: Date.now(), ev: "reply-start" })
 
@@ -755,12 +793,14 @@ function followUp(run, text) {
     const s = run.settled
     try {
       if (s?.findings?.length) await recordMore(run, s.findings)
+      else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
       else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
     } finally {
       cleanupWorkspace(run.ws)
       run.child = null
+      run.stopping = false
       run.replying = false
       broadcast(run, { t: Date.now(), ev: "closed" })
     }

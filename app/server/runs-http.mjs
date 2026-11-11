@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
@@ -89,6 +89,16 @@ export async function handleRuns(req, res) {
     const body = await readBody(req)
     try {
       send(res, 200, steerRun(id, body.text))
+    } catch (err) {
+      send(res, 409, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  // POST /api/runs/:id/stop — stop the run's live work (the audit or a reply)
+  if (parts.length === 4 && parts[3] === "stop" && req.method === "POST") {
+    try {
+      send(res, 200, stopRun(id))
     } catch (err) {
       send(res, 409, { error: String(err?.message ?? err) })
     }

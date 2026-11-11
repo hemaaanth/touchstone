@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type {
   ModelChoice,
-  ProviderInfo,
   RunSummary,
-  SpendState,
   TargetChoice,
   PackChoice,
   Playbook,
@@ -26,8 +24,6 @@ export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
   const [targets, setTargets] = useState<TargetChoice[]>([])
   const [packs, setPacks] = useState<PackChoice[]>([])
-  const [spend, setSpend] = useState<SpendState | null>(null)
-  const [provider, setProvider] = useState<ProviderInfo | null>(null)
   // Whether /api/models has answered, so a page can tell "none" from "unknown".
   const [catalog, setCatalog] = useState<CatalogState>("loading")
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -40,12 +36,10 @@ export function App() {
 
   const refreshModels = useCallback(() => {
     fetchModels()
-      .then(({ models, targets, packs, spend, provider }) => {
+      .then(({ models, targets, packs }) => {
         setModels(models)
         setTargets(targets)
         setPacks(packs ?? [])
-        setSpend(spend)
-        setProvider(provider)
         setCatalog("ready")
       })
       .catch(() => setCatalog("error"))
@@ -178,8 +172,6 @@ export function App() {
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
         onRename={onRename}
-        spend={spend}
-        provider={provider}
       />
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">

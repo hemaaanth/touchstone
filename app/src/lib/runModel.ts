@@ -163,6 +163,8 @@ export interface RunState {
   // The run's pipeline plan, from the `modules` event at run start. Null on a
   // run that predates the event.
   modules: ModulePlanEntry[] | null
+  // The operator stopped the run's last piece of work. A follow-up clears it.
+  stopped: boolean
 }
 
 export function reduceEvents(events: RunEvent[]): RunState {
@@ -191,6 +193,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let findingId: string | null = null
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
+  let stopped = false
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
   const str = (v: unknown) => (typeof v === "string" ? v : "")
@@ -663,8 +666,14 @@ export function reduceEvents(events: RunEvent[]): RunState {
         replying = true
         replyStartedAt = typeof e.t === "number" ? e.t : null
         activity = "working"
+        stopped = false
         error = null
         errorInfo = null
+        break
+      case "stopped":
+        stopped = true
+        activity = "idle"
+        steps.push({ key, kind: "note", phase, label: "You stopped the run. Send a message to continue." })
         break
       case "reply-error":
         steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
@@ -737,6 +746,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     findingId,
     prepass,
     modules,
+    stopped,
   }
 }
 

@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
+import {
+  AssistantRuntimeProvider,
+  useExternalStoreRuntime,
+  type AppendMessage,
+  type ExternalThreadQueueAdapter,
+  type ThreadMessageLike,
+} from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
-import type { Finding, RunMode, RunSummary } from "@/lib/types"
+import type { Finding, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
-import { steerRun, fetchFinding } from "@/lib/api"
+import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
@@ -20,15 +26,13 @@ import {
   ThreadOwner,
   agentName,
   dotClass,
-  fleetSpend,
   isLiveAgent,
-  runBudget,
   runEnd,
   runMode,
   runStart,
   span,
   usd,
-  type FleetView,
+  type FleetView, mainContext
 } from "@/components/fleet-view"
 import {
   DropdownMenu,
@@ -190,18 +194,37 @@ export function RunChat({
     [state, mainSteps, status, live, fleet],
   )
 
+  // assistant-ui blocks Send while a run is live unless the runtime has a
+  // queue. The server is the queue here: a message to a live run steers it, and
+  // a message to an idle run starts a follow-up. So this queue holds nothing and
+  // hands each message straight to `send`.
+  const sendRef = useRef(send)
+  useEffect(() => {
+    sendRef.current = send
+  })
+  const queue = useMemo<ExternalThreadQueueAdapter>(() => {
+    const take = (message: AppendMessage) => void sendRef.current(messageText(message))
+    return { items: [], steerItems: [], enqueue: take, steer: take, move: () => {}, edit: () => {}, remove: () => {} }
+  }, [])
+
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages,
     isRunning: live,
     isDisabled: !state || archived,
     convertMessage: (m) => m,
+    queue,
     onNew: async (message) => {
-      const text = message.content
-        .filter((p): p is { type: "text"; text: string } => p.type === "text")
-        .map((p) => p.text)
-        .join("")
-        .trim()
-      await send(text)
+      await send(messageText(message))
+    },
+    // The composer's stop button. The server ends the work; the run's stream
+    // then reports it stopped and closed.
+    onCancel: async () => {
+      setSendError(null)
+      try {
+        await stopRun(run.id)
+      } catch (err) {
+        setSendError(err instanceof Error ? err.message : String(err))
+      }
     },
   })
 
@@ -308,16 +331,19 @@ export function RunChat({
     />
   ) : null
 
+  // Renaming swaps the title's text for an input of the same size, in the
+  // same h1, so nothing in the bar moves.
   const titleNode = renaming ? (
-    <TitleInput
-      value={title}
-      onSave={(name) => {
-        onRename(run.id, name)
-        setRenaming(false)
-      }}
-      onCancel={() => setRenaming(false)}
-      className="h-7 w-full max-w-md text-sm font-medium"
-    />
+    <h1 className="min-w-0 text-sm font-medium">
+      <TitleInput
+        value={title}
+        onSave={(name) => {
+          onRename(run.id, name)
+          setRenaming(false)
+        }}
+        onCancel={() => setRenaming(false)}
+      />
+    </h1>
   ) : (
     <h1 className="min-w-0 truncate text-sm font-medium">
       <button
@@ -340,7 +366,6 @@ export function RunChat({
               state={state}
               status={status}
               live={live}
-              mode={mode}
               title={titleNode}
               actions={
                 <RunActions
@@ -366,6 +391,7 @@ export function RunChat({
                   retrying={retrying}
                   archived={archived}
                   sendError={sendError}
+                  context={state ? mainContext(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                 />
               </AssistantRuntimeProvider>
@@ -386,6 +412,7 @@ export function RunChat({
                   state={state}
                   live={live}
                   mode={mode}
+                  model={run.alias}
                   open={panelOpen}
                   onOpenChange={setPanelOpen}
                   section={section}
@@ -393,10 +420,6 @@ export function RunChat({
                   selectedAgent={peek?.id ?? null}
                   onAgent={(id) => {
                     openPeek(id)
-                    picked()
-                  }}
-                  onCoordinator={() => {
-                    closeDrawer()
                     picked()
                   }}
                   openDoc={openDoc?.id ?? null}
@@ -411,13 +434,15 @@ export function RunChat({
           </div>
 
           {/* The drawer covers the run from the right, over the top bar.
-              Nothing under it moves; the chat only dims, and a click on it
-              closes the drawer. On a phone the drawer fills the screen. */}
+              Nothing under it moves; the chat dims and blurs a little, and a
+              click on it closes the drawer. The drawer is a sheet: an edge
+              line, a shadow cast to the left, and in dark mode a surface one
+              step lighter than the chat. On a phone it fills the screen. */}
           {state && top ? (
             <>
               <div
                 aria-hidden
-                className="absolute inset-0 z-20 bg-black/10 max-md:hidden dark:bg-black/35"
+                className="absolute inset-0 z-20 bg-black/10 max-md:hidden supports-backdrop-filter:backdrop-blur-xs dark:bg-black/45"
                 onClick={closeDrawer}
               />
               <div
@@ -426,7 +451,7 @@ export function RunChat({
                 tabIndex={-1}
                 aria-label={top.kind === "agent" ? agentName(state, top.id) : openDoc?.title ?? "File"}
                 style={{ width: drawerWidth }}
-                className="absolute inset-y-0 right-0 z-40 flex max-w-full flex-col bg-background shadow-[-10px_0_30px_#00000014] max-md:fixed max-md:inset-0 max-md:z-50 max-md:!w-auto"
+                className="absolute inset-y-0 right-0 z-40 flex max-w-full flex-col border-l bg-background shadow-[-16px_0_48px_-12px_rgb(0_0_0/0.18)] max-md:fixed max-md:inset-0 max-md:z-50 max-md:!w-auto max-md:border-l-0 dark:shadow-[-16px_0_48px_-8px_rgb(0_0_0/0.65)] dark:[--background:oklch(0.185_0_0)]"
               >
                 <ResizeHandle
                   edge="left"
@@ -479,31 +504,34 @@ export function RunChat({
   )
 }
 
-// The run's top bar: status dot, title, "Running · 6m · Fleet", the quiet
-// spend, and the ⋯ menu. Before the run loads it shows the sidebar's status.
+// The plain text of a message the operator typed.
+function messageText(message: AppendMessage): string {
+  return message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("")
+    .trim()
+}
+
+// The run's top bar: status dot, title, the status word, and the ⋯ menu.
+// Mode, runtime and spend live in the run panel's Info section. Before the run
+// loads the bar shows the sidebar's status.
 function RunHeader({
   state,
   status,
   live,
-  mode,
   title,
   actions,
 }: {
   state: RunState | null
   status: RunSummary["status"]
   live: boolean
-  mode: RunMode | null
   title: React.ReactNode
   actions: React.ReactNode
 }) {
   const failed = status === "error"
   const running = state ? live : status === "running"
-  const word = running ? "Running" : failed ? "Failed" : "Done"
-  const t0 = state ? runStart(state) : null
-  const t1 = state ? runEnd(state) : null
-  const budget = state ? runBudget(state) : null
-  const spend = state ? fleetSpend(state) : 0
-  const meta = [word, t0 != null && t1 != null ? span(t1 - t0) : null, mode === "fleet" ? "Fleet" : mode ? "Solo" : null]
+  const word = running ? "Running" : failed ? "Failed" : state?.stopped ? "Stopped" : "Done"
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
       <SidebarTrigger className="-ml-1 md:hidden" />
@@ -516,19 +544,9 @@ function RunHeader({
       {/* On a phone the status goes under the title. */}
       <div className="flex min-w-0 items-baseline gap-2.5 max-md:flex-col max-md:items-stretch max-md:gap-0">
         {title}
-        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{meta.filter(Boolean).join(" · ")}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{word}</span>
       </div>
-      {state ? (
-        <span
-          className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums"
-          title="What the run has spent, against its budget"
-        >
-          <span className="text-foreground">{usd(spend)}</span>
-          {budget != null ? <span className="max-md:hidden"> / {usd(budget)}</span> : null}
-        </span>
-      ) : (
-        <span className="ml-auto" />
-      )}
+      <span className="ml-auto" />
       {actions}
     </header>
   )
@@ -622,7 +640,7 @@ function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => v
   const [value, setValue] = useState<PanelSection | null>(() => {
     const saved = localStorage.getItem(SECTION_KEY)
     if (saved === "") return null
-    return saved === "bulletin" || saved === "files" ? saved : "agents"
+    return saved === "info" || saved === "bulletin" || saved === "files" ? saved : "agents"
   })
   const set = (s: PanelSection | null) => {
     setValue(s)
