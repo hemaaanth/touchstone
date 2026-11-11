@@ -369,8 +369,12 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     eyebrow?: string
     spawn?: Step[]
     fleetFinding?: boolean
+    waiting?: boolean
   }
   if (a.eyebrow) return <Eyebrow text={a.eyebrow} />
+  // The agent has the message and has not answered yet. This is the same
+  // element as live reasoning below, so the row stays put when thinking starts.
+  if (a.waiting) return <ReasoningPart step={null} tail />
   if (a.spawn) return <SpawnRow steps={a.spawn} />
   if (a.pending && a.fleetFinding)
     return (
@@ -608,16 +612,21 @@ function ToolGroupPart({ group }: { group: Step[] }) {
 // one quiet line that shimmers "Thinking…" while the agent thinks, then reads
 // "Thought it through". A click opens the side rail with the full text, live or
 // done, and the block keeps that choice when the agent moves on.
-function ReasoningPart({ step, tail }: { step: Step; tail: boolean }) {
+// A folded thinking row. With no step it is the waiting row: the agent has the
+// message but has sent nothing yet. It looks the same, but does not open.
+function ReasoningPart({ step, tail }: { step: Step | null; tail: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+    <Collapsible open={open && !!step} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        disabled={!step}
+        className="group flex items-center gap-1.5 text-xs text-muted-foreground transition-colors enabled:hover:text-foreground"
+      >
         <Brain className="size-3.5" />
         {tail ? <ShimmerLabel active>Thinking…</ShimmerLabel> : "Thought it through"}
         <ChevronRight className="size-3.5 transition-transform group-data-[panel-open]:rotate-90" />
       </CollapsibleTrigger>
-      <CollapsibleContent>{open ? <ReasoningBody text={step.label} tail={tail} /> : null}</CollapsibleContent>
+      <CollapsibleContent>{open && step ? <ReasoningBody text={step.label} tail={tail} /> : null}</CollapsibleContent>
     </Collapsible>
   )
 }

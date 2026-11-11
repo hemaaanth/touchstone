@@ -1,4 +1,5 @@
 import type { RunEvent } from "./types"
+import type { Step } from "./runModel"
 
 // A message the operator sent that the agent has not echoed yet. `base` is
 // the run's event count when it was sent; only later events can settle it.
@@ -40,4 +41,41 @@ export function settleSent(sent: Sent[], events: RunEvent[]): Map<string, string
 
 export function messageId(): string {
   return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+// The message a reply answers: the operator's message by its send id, or a
+// message to an agent by its step key. The reply block takes this id, so the
+// "Thinking…" row shown while the agent works is the same row that grows into
+// its answer.
+export function turnId(step: Step, owner: string | null): string | null {
+  if (step.kind === "operator" && owner == null) return step.subId ?? step.key
+  if (step.kind === "message" && owner != null && step.to === owner) return step.key
+  return null
+}
+
+// What the agent owes an answer to right now, if anything. The thread shows a
+// "Thinking…" row there until the answer starts. `owner` is null for the main
+// chat, else a child id. `copies` are the local copies not echoed yet.
+// - A follow-up copy, or a copy still sending to an idle run, starts a turn:
+//   the row goes under that copy. A steer copy waits behind a live step, so
+//   it gets no row of its own.
+// - Else, on a live thread, the last step is a message the agent has not
+//   answered yet: the row goes under it.
+// - Else, a live child with no steps yet is starting: the row stands alone.
+// `after` says where the row goes: after the steps, or after the copies.
+export type Awaiting = { id: string; after: "steps" | "copies" }
+
+export function awaitingReply(
+  steps: Step[],
+  live: boolean,
+  owner: string | null,
+  copies: Sent[] = [],
+): Awaiting | null {
+  const copy = copies[copies.length - 1]
+  if (copy && (copy.mode === "follow-up" || (copy.mode === "sending" && !live))) return { id: copy.id, after: "copies" }
+  if (!live) return null
+  const last = steps[steps.length - 1]
+  if (!last) return owner == null ? null : { id: "start", after: "steps" }
+  const id = turnId(last, owner)
+  return id ? { id, after: "steps" } : null
 }

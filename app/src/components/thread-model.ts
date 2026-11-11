@@ -4,6 +4,7 @@ import type { ArtifactDoc, ArtifactVersion, PendingApproval, ProofKind, RunStatu
 import type { RunState, Step } from "@/lib/runModel"
 import { isTerminal } from "@/lib/format"
 import { agentName } from "@/components/fleet-view"
+import { turnId } from "@/lib/sent"
 
 // The data side of the run thread: steps in, assistant-ui messages out. The
 // renderers in run-thread.tsx read the parts this builds.
@@ -31,8 +32,11 @@ export function proofKindOf(state: RunState): ProofKind {
 // message whose parts carry the Step for our renderers — reasoning/prose/subagent
 // handoffs and tool cards alike. The agent's closing prose and the live proof
 // card trail the final assistant message. Keying each message by its first step
-// id keeps rows and scroll stable as the stream grows. `tail` marks the single
-// cognition block being written right now so only it reveals word by word.
+// id keeps rows and scroll stable as the stream grows. A block that answers a
+// message is keyed by that message instead (`reply:<id>`), the same key the
+// waiting row uses, so the waiting row grows into the answer in place. `tail`
+// marks the single cognition block being written right now so only it reveals
+// word by word.
 //
 // Fleet runs (`fleet`) add four things. Each assistant block starts with an
 // eyebrow naming its author. A message between agents is its own card. A run of
@@ -93,17 +97,14 @@ export function buildMessages(
     }
     spawn = []
   }
-  const eyebrow = (owner ? agentName(state, owner) : "Coordinator").toUpperCase()
+  // The message the next block answers, if any. A child's first block answers
+  // its start, like the waiting row on a child that has no steps yet.
+  let answers: string | null = owner == null ? null : "start"
   const open = (key: string) => {
-    const b: { id: string; parts: ThreadMessageLike["content"] } = { id: key, parts: [] }
-    if (fleet)
-      (b.parts as unknown[]).push({
-        type: "tool-call",
-        toolCallId: `eyebrow:${key}`,
-        toolName: "eyebrow",
-        args: { eyebrow },
-        result: "done",
-      })
+    const id = answers ? `reply:${answers}` : key
+    answers = null
+    const b: { id: string; parts: ThreadMessageLike["content"] } = { id, parts: [] }
+    if (fleet) (b.parts as unknown[]).push(eyebrowPart(state, id, owner))
     return b
   }
 
@@ -113,6 +114,7 @@ export function buildMessages(
       flushGroup()
       flush()
       msgs.push({ role: "user", id: step.key, content: [{ type: "text", text: step.label }] })
+      answers = turnId(step, owner)
       return
     }
     // The decide pass already shows up as the single proof card below, which
@@ -134,6 +136,7 @@ export function buildMessages(
           { type: "tool-call", toolCallId: step.key, toolName: "message", args: { step }, result: "done" },
         ] as unknown as ThreadMessageLike["content"],
       })
+      answers = turnId(step, owner) ?? answers
       return
     }
     if (!buf) buf = open(step.key)
@@ -221,9 +224,12 @@ export function buildMessages(
       })
       return
     }
+    // A block's first reasoning takes the waiting row's key, so that row
+    // becomes it without a remount.
+    const lead = step.kind === "reasoning" && buf.parts.length === (fleet ? 1 : 0)
     ;(buf.parts as unknown[]).push({
       type: "tool-call",
-      toolCallId: step.key,
+      toolCallId: lead ? `lead:${buf.id}` : step.key,
       toolName: step.kind,
       args: { step, tail: i === tailIndex },
       result: step.state ?? "done",
@@ -240,6 +246,29 @@ export function buildMessages(
 
   flush()
   return msgs
+}
+
+// Fleet: the eyebrow that opens a block, naming its author.
+function eyebrowPart(state: RunState, id: string, owner: string | null) {
+  const eyebrow = (owner ? agentName(state, owner) : "Coordinator").toUpperCase()
+  return { type: "tool-call", toolCallId: `eyebrow:${id}`, toolName: "eyebrow", args: { eyebrow }, result: "done" }
+}
+
+// The row shown while the agent works on a message and has not answered yet.
+// It has the key of the block that will hold the answer, and its one part has
+// the key of that block's first reasoning. So when the answer starts, React
+// updates this row in place. Reasoning keeps it exactly. Prose or a tool card
+// replaces it in the same spot, and the block only grows from there.
+export function waitingMessage(
+  state: RunState,
+  answers: string,
+  fleet: boolean,
+  owner: string | null,
+): ThreadMessageLike {
+  const id = `reply:${answers}`
+  const parts: unknown[] = fleet ? [eyebrowPart(state, id, owner)] : []
+  parts.push({ type: "tool-call", toolCallId: `lead:${id}`, toolName: "reasoning", args: { waiting: true }, result: "done" })
+  return { role: "assistant", id, content: parts as ThreadMessageLike["content"] }
 }
 
 // Match a submitted finding to its recorded one and its replay-proof document.

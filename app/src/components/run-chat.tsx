@@ -10,7 +10,7 @@ import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, 
 import type { Finding, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
-import { messageId, settleSent, type Sent } from "@/lib/sent"
+import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
@@ -19,7 +19,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { buildMessages, OpenArtifact } from "@/components/thread-model"
+import { buildMessages, OpenArtifact, waitingMessage } from "@/components/thread-model"
 import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
   AGENT_WORD,
@@ -238,9 +238,12 @@ export function RunChat({
   )
   const messages = useMemo(() => {
     const ms = buildMessages(state, mainSteps, status, live, fleet, null)
-    // The local copies trail the thread until their echoes land.
-    for (const x of sent) {
-      if (outcomes.has(x.id)) continue
+    // The local copies trail the thread until their echoes land. While the
+    // agent owes an answer, a waiting row stands where the answer will go.
+    const copies = sent.filter((x) => !outcomes.has(x.id))
+    const wait = state ? awaitingReply(mainSteps, live, null, copies) : null
+    if (state && wait?.after === "steps") ms.push(waitingMessage(state, wait.id, fleet, null))
+    for (const x of copies) {
       ms.push({
         role: "user",
         id: `sent:${x.id}`,
@@ -248,6 +251,7 @@ export function RunChat({
         metadata: { custom: { queued: x.mode === "steer" } },
       })
     }
+    if (state && wait?.after === "copies") ms.push(waitingMessage(state, wait.id, fleet, null))
     return ms
   }, [state, mainSteps, status, live, fleet, sent, outcomes])
 
@@ -354,10 +358,14 @@ export function RunChat({
   const peek = top?.kind === "agent" ? top : null
   const peekAgent = peek && state ? state.agents.find((a) => a.id === peek.id) ?? null : null
   const peekLive = live && !!peekAgent && isLiveAgent(peekAgent)
-  const peekMessages = useMemo(
-    () => (peek && state ? buildMessages(state, threadSteps(state.steps, peek.id), status, peekLive, true, peek.id) : []),
-    [peek, state, status, peekLive],
-  )
+  const peekMessages = useMemo(() => {
+    if (!peek || !state) return []
+    const steps = threadSteps(state.steps, peek.id)
+    const ms = buildMessages(state, steps, status, peekLive, true, peek.id)
+    const wait = awaitingReply(steps, peekLive, peek.id)
+    if (wait) ms.push(waitingMessage(state, wait.id, true, peek.id))
+    return ms
+  }, [peek, state, status, peekLive])
   const peekRuntime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: peekMessages,
     isRunning: peekLive,
