@@ -301,7 +301,7 @@ function ProviderEditor({
 
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">Models · {chosen.length} on</span>
+          <span className="text-xs text-muted-foreground">Models</span>
           <Button variant="ghost" size="sm" className="ml-auto" disabled={!baseUrl || busy !== null} onClick={fetchList}>
             {busy === "fetch" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Fetch models
           </Button>
@@ -334,7 +334,10 @@ function ProviderEditor({
                     <span className={cn("truncate font-mono text-xs", !on && "text-muted-foreground")}>{id}</span>
                   </button>
                   {d ? (
-                    <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <span
+                      className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                      title="USD per 1M tokens. A model with no price is charged a high fallback price."
+                    >
                       in $
                       <input className="h-6 w-14 rounded-md bg-background/60 px-1.5 text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50" inputMode="decimal" value={d.input} placeholder="?" onChange={(e) => setPrice(id, "input", e.target.value)} aria-label={`${id} input price per 1M`} />
                       out $
@@ -369,7 +372,6 @@ function ProviderEditor({
             Add
           </Button>
         </div>
-        <p className="text-[11px] text-muted-foreground">Prices are USD per 1M tokens. A model with no price is charged a high fallback price.</p>
       </div>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}

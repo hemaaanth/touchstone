@@ -417,7 +417,7 @@ async function startEngine(run) {
   // start the agent if it is still live.
   if (run.status !== "running") return
   if (run.stopping) {
-    cleanupWorkspace(run.ws)
+    await endWorkspace(run.ws)
     endStopped(run)
     return
   }
@@ -594,7 +594,7 @@ function spawnAgent(run, leads) {
       await recordRun(run, found)
       return
     }
-    cleanupWorkspace(run.ws)
+    await endWorkspace(run.ws)
     if (run.stopping) {
       endStopped(run)
       return
@@ -678,9 +678,20 @@ async function recordRun(run, found) {
     run.status = "error"
     broadcast(run, { ev: "status", status: run.status, error: run.error })
   } finally {
-    cleanupWorkspace(run.ws)
+    await endWorkspace(run.ws)
     broadcast(run, { ev: "closed" })
   }
+}
+
+// Delete a run's workspace. First let the pack stop what its pre-pass left
+// running there (the web lab's container), or that would outlive the run.
+async function endWorkspace(ws) {
+  try {
+    await packFor(readTouchstone(ws)).teardown?.(ws)
+  } catch {
+    // Best effort: the workspace still goes.
+  }
+  cleanupWorkspace(ws)
 }
 
 // Message a run. While a worker is running, the message is written to its
@@ -795,10 +806,17 @@ function followUp(run, text) {
       if (s?.findings?.length) await recordMore(run, s.findings)
       else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
       else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
+      // A failed run that a follow-up retried: if the reply finished, or the
+      // operator stopped it, the old failure no longer describes the run.
+      if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
+        run.error = null
+        run.errorInfo = null
+        setRunStatus(run, "no-finding")
+      }
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
     } finally {
-      cleanupWorkspace(run.ws)
+      await endWorkspace(run.ws)
       run.child = null
       run.stopping = false
       run.replying = false

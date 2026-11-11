@@ -379,4 +379,7 @@ export default {
   nudge,
   prepass,
   prove,
+  // The lab prepass started outlives the agent. prove() tears it down, but a
+  // run that ends with no finding (or is stopped) never calls prove().
+  teardown: teardownPersistedLab,
 };

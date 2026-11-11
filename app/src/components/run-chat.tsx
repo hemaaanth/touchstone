@@ -162,7 +162,11 @@ export function RunChat({
 
   // Send one operator message. Live, it steers the worker. Idle, the server
   // starts a follow-up, so fetch the run again to follow the reply.
-  const send = async (text: string) => {
+  // The composer clears as it sends. If the server refuses the message, put
+  // the text back so the operator does not lose it, unless they already
+  // started a new one.
+  const runtimeRef = useRef<ReturnType<typeof useExternalStoreRuntime> | null>(null)
+  const send = async (text: string, restore = true) => {
     if (!text || !state || archived) return
     setSendError(null)
     try {
@@ -170,6 +174,8 @@ export function RunChat({
       if (res.followUp) reloadRun(run.id)
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err))
+      const composer = runtimeRef.current?.thread.composer
+      if (restore && composer && !composer.getState().text) composer.setText(text)
     }
   }
 
@@ -179,7 +185,7 @@ export function RunChat({
   const onRetry = async () => {
     if (!state || archived || retrying) return
     setRetrying(true)
-    await send("Continue the audit from where it stopped.")
+    await send("Continue the audit from where it stopped.", false)
     setRetrying(false)
   }
 
@@ -226,6 +232,10 @@ export function RunChat({
         setSendError(err instanceof Error ? err.message : String(err))
       }
     },
+  })
+
+  useEffect(() => {
+    runtimeRef.current = runtime
   })
 
   // A pill jump scrolls to the same message in the other thread and marks it
@@ -529,9 +539,11 @@ function RunHeader({
   title: React.ReactNode
   actions: React.ReactNode
 }) {
-  const failed = status === "error"
   const running = state ? live : status === "running"
-  const word = running ? "Running" : failed ? "Failed" : state?.stopped ? "Stopped" : "Done"
+  // A stop is the newest fact about the run, so it wins over an older failure.
+  const stopped = !!state?.stopped
+  const failed = status === "error" && !stopped
+  const word = running ? "Running" : stopped ? "Stopped" : failed ? "Failed" : "Done"
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
       <SidebarTrigger className="-ml-1 md:hidden" />

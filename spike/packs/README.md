@@ -37,6 +37,7 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `nudge`   | `(state) => string \| null` | One optional follow-up when the model stops early. |
 | `prepass` | `(ws, { emit }) => Promise<{ env, record }>` | Optional tool scan before kickoff. Emits run events and returns leads and record data. |
 | `prove` | `(ws, found, events, log) => Promise<Finding[]>` | Optional replay after the agent settles. Returns findings worst first. No hook means no findings. |
+| `teardown` | `(ws) => Promise<void>` | Optional. Stops anything the pre-pass left running (a lab container). The server calls it before it deletes the workspace, on every ending. It must be safe to call twice. |
 
 `state` is `{ poc, passed, found }`. `passed` maps a proof name to the exact
 source that passed. `found` is the list of submitted findings. The engine
