@@ -890,7 +890,7 @@ function persistRun(run, findings) {
 // it broadcast. An older app run has only the engine's `run-<id>.events` plus
 // its `run-<id>.json` record; we rebuild the same event shape from those two.
 // CLI runs (`run-<alias>.json`, no stamp) are not app runs and are skipped.
-const APP_RUN = /^run-([a-z0-9-]+-\d{10}-\d+)\.(stream\.jsonl|json)$/
+const APP_RUN = /^run-([a-z0-9.-]+-\d{10}-\d+)\.(stream\.jsonl|json)$/
 
 function readJsonl(file) {
   const out = []

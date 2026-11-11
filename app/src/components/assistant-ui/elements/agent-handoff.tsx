@@ -1,6 +1,6 @@
 "use client";
 
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { ArrowRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -8,12 +8,14 @@ import { cn } from "@/lib/utils";
 // and the text. Each name is a pill. A pill with a click handler opens that
 // agent's thread; a pill without one is inert (it names the thread you are in).
 // `highlighted` marks the card a pill just jumped to. The highlight fades out
-// when the caller clears it.
+// when the caller clears it. `long` folds the body to a few lines behind
+// "Show more", for the long briefs agents send each other.
 export function AgentHandoff({
   from,
   to,
   time,
   text,
+  long,
   onFrom,
   onTo,
   highlighted,
@@ -23,11 +25,14 @@ export function AgentHandoff({
   from: string;
   to: string;
   time?: string;
-  text: string;
+  text: ReactNode;
+  long?: boolean;
   onFrom?: () => void;
   onTo?: () => void;
   highlighted?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const folded = long && !open;
   return (
     <div
       data-slot="agent-handoff"
@@ -44,7 +49,23 @@ export function AgentHandoff({
         <Pill name={to} onClick={onTo} />
         {time ? <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground tabular-nums">{time}</span> : null}
       </div>
-      <p className="text-[13px] leading-[19px] text-foreground [overflow-wrap:anywhere]">{text}</p>
+      <div
+        className={cn(
+          "text-[13px] leading-[19px] text-foreground [overflow-wrap:anywhere]",
+          folded && "max-h-[95px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
+        )}
+      >
+        {text}
+      </div>
+      {long ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="self-start text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {open ? "Show less" : "Show more"}
+        </button>
+      ) : null}
     </div>
   );
 }

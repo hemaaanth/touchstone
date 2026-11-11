@@ -1,9 +1,11 @@
+import { useState } from "react"
 import { FileCode2, FileText, ShieldCheck } from "lucide-react"
 import type { AgentNode, ArtifactDoc, BulletinNote } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Markdown } from "@/components/markdown"
 import { AGENT_WORD, agentName, dotClass, isLiveAgent, runStart, span } from "@/components/fleet-view"
 
 // The fleet run's right dock: the agents, the Bulletin, and the run's files.
@@ -203,7 +205,7 @@ export function BulletinList({ state, onAgent }: { state: RunState; onAgent: (id
           {held.map((n) => (
             <div key={n.id} className="flex flex-col gap-1 rounded-xl border px-[14px] py-3">
               <NoteHead note={n} state={state} t0={t0} onAgent={onAgent} />
-              <p className="text-[13px] leading-[19px] [overflow-wrap:anywhere]">{n.text}</p>
+              <NoteBody text={n.text} plain />
               <div className="mt-1 flex items-center gap-3">
                 <span className="text-xs text-muted-foreground">Unverified until the oracle replays it.</span>
                 <span className="ml-auto shrink-0" title="Replay of Bulletin notes is not available yet.">
@@ -275,7 +277,7 @@ function Note({
   return (
     <div className="flex flex-col gap-1 px-5 py-2.5">
       <NoteHead note={note} state={state} t0={t0} onAgent={onAgent} />
-      <p className="text-[13px] leading-[19px] [overflow-wrap:anywhere]">{note.text}</p>
+      <NoteBody text={note.text} />
       {note.tags.length ? (
         <div className="mt-1 flex flex-wrap gap-1.5">
           {note.tags.map((t) => (
@@ -286,6 +288,36 @@ function Note({
         </div>
       ) : null}
     </div>
+  )
+}
+
+// A note's text. A long note folds to a few lines behind "Show more".
+// Quarantined notes come from an untrusted model, so they stay plain text.
+function NoteBody({ text, plain }: { text: string; plain?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const long = text.length > 320
+  const folded = long && !open
+  return (
+    <>
+      <div
+        className={cn(
+          "text-[13px] leading-[19px] [overflow-wrap:anywhere]",
+          plain && "whitespace-pre-wrap",
+          folded && "max-h-[95px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
+        )}
+      >
+        {plain ? text : <Markdown text={text} className="text-[13px] leading-[19px]" />}
+      </div>
+      {long ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="self-start text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {open ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </>
   )
 }
 

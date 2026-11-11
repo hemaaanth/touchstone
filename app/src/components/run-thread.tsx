@@ -414,7 +414,8 @@ function MessageCard({ step }: { step: Step }) {
       from={agentName(fleet.state, step.from)}
       to={agentName(fleet.state, step.to)}
       time={stepAge(fleet.state, step)}
-      text={step.label}
+      text={<Markdown text={step.label} className="text-[13px] leading-[19px]" />}
+      long={step.label.length > 400}
       onFrom={click(step.from)}
       onTo={click(step.to)}
       highlighted={fleet.highlight === step.key}

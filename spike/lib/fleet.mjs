@@ -95,6 +95,9 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 4 }
           if (stored.reported.includes(receipt)) return { status: "running", checkpoint: { phase: "report" } };
           stored.reported.push(receipt);
           stored.status = status;
+          // A message steered into a busy child shares that turn. Its reporter
+          // gets an empty answer; the reporter that owns the turn reports it.
+          if (status !== "failed" && !textOf(final).trim()) return { status: "running", checkpoint: { phase: "report" } };
           const report = status === "failed" ? `${agent.name} failed: ${error}` : `${agent.name} completed: ${textOf(final)}`;
           return { status: "running", checkpoint: { phase: "report", report, status, ...(error ? { error } : {}) } };
         }, ctx);

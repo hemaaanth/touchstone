@@ -228,6 +228,16 @@ export function RunChat({
     }
   }
   const closePeek = () => setPeekStack([])
+  // Escape closes the peek, unless a menu or dialog inside it takes the key.
+  const peekOpen = peekStack.length > 0
+  useEffect(() => {
+    if (!peekOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) setPeekStack([])
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [peekOpen])
   const jumpMain = (key: string) => {
     setPeekStack([])
     setMobileTab("chat")
@@ -474,7 +484,7 @@ function FleetHeader({
       </div>
       <span
         className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums"
-        title="What the agents report spending, against the run's budget"
+        title="What the run has spent, against its budget"
       >
         <span className="text-foreground">{usd(spend)}</span>
         {budget != null ? <span className="max-md:hidden"> / {usd(budget)}</span> : null}

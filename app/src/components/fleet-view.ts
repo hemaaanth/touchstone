@@ -72,13 +72,19 @@ export function stepAge(state: RunState, step: Step): string | undefined {
 export function runBudget(state: RunState): number | null {
   for (const e of state.events) {
     if (e.ev === "budget" && typeof (e as { usd?: unknown }).usd === "number") return (e as unknown as { usd: number }).usd
+    if (e.ev === "spend" && typeof (e as { budgetUsd?: unknown }).budgetUsd === "number")
+      return (e as unknown as { budgetUsd: number }).budgetUsd
   }
   return null
 }
 
-// What the fleet has spent: the sum of each agent's reported spend. There is no
-// total-run cost event yet, so the coordinator's own spend is not in it.
+// What the run has spent. The engine's latest "spend" event is the run total,
+// coordinator included. A run without one falls back to the agents' own spend.
 export function fleetSpend(state: RunState): number {
+  for (let i = state.events.length - 1; i >= 0; i--) {
+    const e = state.events[i] as { ev: string; usd?: unknown }
+    if (e.ev === "spend" && typeof e.usd === "number") return e.usd
+  }
   return state.agents.reduce((n, a) => n + (a.spendUsd ?? 0), 0)
 }
 
