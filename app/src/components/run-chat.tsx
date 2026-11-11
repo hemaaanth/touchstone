@@ -164,18 +164,20 @@ export function RunChat({
   // starts a follow-up, so fetch the run again to follow the reply.
   // The composer clears as it sends. If the server refuses the message, put
   // the text back so the operator does not lose it, unless they already
-  // started a new one.
+  // started a new one or sent another message since.
   const runtimeRef = useRef<ReturnType<typeof useExternalStoreRuntime> | null>(null)
+  const sends = useRef(0)
   const send = async (text: string, restore = true) => {
     if (!text || !state || archived) return
     setSendError(null)
+    const mine = ++sends.current
     try {
       const res = await steerRun(run.id, text)
       if (res.followUp) reloadRun(run.id)
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err))
       const composer = runtimeRef.current?.thread.composer
-      if (restore && composer && !composer.getState().text) composer.setText(text)
+      if (restore && mine === sends.current && composer && !composer.getState().text) composer.setText(text)
     }
   }
 
