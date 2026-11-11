@@ -1,0 +1,26 @@
+# Out-of-process attacker sandbox — isolation proof (F1 R1)
+
+host sandbox capability: OK — user+net+mount namespaces available; netns empty; docker socket hidden
+
+Starting REAL Anvil lab in the R1-vulnerable posture (published on host loopback)...
+lab container touchstone-r1lab-a4b15507, Anvil cheat RPC on host loopback http://127.0.0.1:32813 (un-authed)
+
+## A. BASELINE (in-process, no sandbox) — reproduce R1
+  victim balance 0x21e19e0c9bab2400000 -> 0x0 via anvil_setBalance (no real vulnerability)
+  [PASS] in-process attacker reaches the lab on host loopback
+  [PASS] in-process attacker forges a credited drain (R1 vector) — this is exactly what the sandbox must make impossible
+
+broker: AF_UNIX read-only relay at /home/hemanth/.cache/tmp/r1-broker-181jNR/lab.sock -> lab (host side only)
+
+## B. SANDBOXED (out-of-process: own netns, no host net, no docker socket)
+  worker probes: {"loopbackDrain":{"reached":false,"error":"ENETUNREACH"},"dockerSocket":{"present":[]},"brokerRead":{"reached":true,"chainId":"0x7a69"},"brokerDrain":{"drained":false,"rejected":true,"rejection":"lab broker: method not allowed: anvil_setBalance","before":"0x21e19e0c9bab2400000","after":"0x21e19e0c9bab2400000"}}
+  [PASS] sandboxed attacker CANNOT reach the lab on host loopback — connect error ENETUNREACH — R1 drain impossible
+  [PASS] sandboxed attacker has NO docker socket — cannot `docker port` the labelled lab container
+  [PASS] sandboxed attacker CAN reach the lab through the brokered IPC socket — eth_chainId = 0x7a69
+  [PASS] the broker rejects a forged drain (read-only policy at the boundary) — lab broker: method not allowed: anvil_setBalance
+  [PASS] lab state is unmutated after the sandboxed run (no drain reached it) — victim balance still 0x21e19e0c9bab2400000
+
+# Result: ALL PASS — R1 CLOSED
+The in-process loopback drain (R1) is impossible from the sandbox; the only path to the
+lab is the brokered unix socket, which is read-only. R1 is closed for Tier-2 workers and
+F1 raw-tx replay alike — one sandbox, shared.
