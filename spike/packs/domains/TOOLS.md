@@ -44,11 +44,11 @@ live-only tool needs a grant, not a new mode.
 |------|-------|---------|--------|
 | baddns | Subdomain takeover signatures | skip — overlap (assumed, not tested) | Same fingerprint space as the wrapped Nuclei takeover templates and the compared dnsReaper; our own fingerprint check is the replay proof. baddns was not run, so no distinct lab catch is shown. |
 | subzy, subjack | Takeover fingerprint scanners | skip — overlap (assumed, not tested) | Identical fingerprint space to Nuclei takeover templates, which already serve as the second corroborating engine. Neither was run; no new detection was shown. |
-| testssl.sh | Full TLS / cipher audit | backlog — TLS findings | Directly fills the "Missing DNSSEC and TLS" crypto gap flagged on the dnsx and httpx rows. Wiring this tool is what makes TLS coverage land. The adapter would run testssl.sh against the granted TLS endpoint during live capture. A snapshot stores no TLS handshake today: `live.mjs:73` keeps URL, status, headers and body only. The work is the image, a `runTool()` call, stored TLS scan evidence, a replay adapter and tests. |
+| testssl.sh | Full TLS / cipher audit | backlog — TLS findings | Directly fills the "Missing TLS" crypto gap flagged on the dnsx and httpx rows. Wiring this tool is what makes TLS coverage land. The adapter would run testssl.sh against the granted TLS endpoint during live capture. A snapshot stores no TLS handshake today: `live.mjs` keeps URL, status, headers and body only. The work is the image, a `runTool()` call, stored TLS scan evidence, a replay adapter and tests. |
 | SSLyze, tlsx | TLS scan / cert capture | skip — overlap (assumed, not tested) | Assumed to overlap testssl.sh for TLS findings; nothing was run. Pick one TLS engine (testssl.sh) rather than ensemble three. tlsx may return later purely as snapshot cert/SAN capture, not as a finding source. |
 | DNSViz | DNSSEC validation | backlog — DNSSEC evidence | Fills the "Missing DNSSEC evidence" gap named on the dnsx row; `checks.mjs:125` reports it as `dnssec-evidence-missing`. DNSSEC is not captured today: `live.mjs:109` asks dnsx for A, AAAA and CNAME only. The work is to add chain capture in `live.mjs`, store the chain in the snapshot, add a replay check, and ship the image, `runTool()` call and parser. The grant covers the domain; nothing else exists. |
 | Zonemaster | DNS / DNSSEC conformance suite | skip — overlap (assumed, not tested) + scope | Assumed to overlap DNSViz for the DNSSEC evidence we would prove; no comparison was run. The rest is broad conformance testing outside this pack's two proof models. |
-| checkdmarc | SPF / DMARC / DKIM record evaluation | backlog — email-auth findings | Email authentication is part of M2 and nothing covers it. It takes the image, a `runTool()` call and a record parser. It is pure record evaluation, so it replays offline on a pinned snapshot. |
+| checkdmarc 6.0.3 | SPF / DMARC record evaluation | wrap — email-auth record evidence | Was `backlog — email-auth findings`; wrapped and green in the lab run. Fills the email-authentication gap in M2. License re-checked on 2026-11-12: Apache-2.0, upstream `LICENSE`; runs as a separate process, no code copied. Image `letiemble/checkdmarc:6.0.3@sha256:be9d7e82…c90cd` (amd64, 66.9 MiB), digest in `email.mjs`. `checkEmail()` calls it through `runTool()` with the pack limits and `-t 5 --retries 1`; the lab resolver or the grant resolver is passed with `-n`. `parseCheckdmarc()` narrows the JSON to the SPF record and its `all` mechanism, the DMARC record, policy, `rua` presence, MX and DNSSEC flag, and stores it in `snapshot.email`. Leads: `email-dmarc-missing` (medium), `email-dmarc-policy-none`, `email-dmarc-no-reporting`, `email-spf-missing`, `email-spf-allows-all` (low). All replay from the pin. Proves the published records; does not prove a spoofed message reaches an inbox, a DKIM selector, or a receiver's filter decision. A null MX is stored but raises no lead. A tool error is a coverage error and raises `email-auth-evidence-missing`. |
 | parsedmarc | Parses DMARC aggregate reports | skip — not a scan | Consumes mailbox aggregate reports, not a scan of the target. It is outside the capture-then-replay pipeline entirely. |
 | dnstwist, openSquat | Typosquat / lookalike-domain generation | product decision — M15 | Brand/phishing (M15) is a module this pack does not own (audit Gap kind B). Track the typosquat tooling with that module decision, not inside domains. |
 
@@ -95,6 +95,8 @@ What each tool did on this lab.
   CSP Evaluator needs no live HTTP fetch or bootstrap data during replay.
 - The jsdom replay (our own check, MIT) clicked the connect control in a fake
   wallet and saw an unlimited ERC-20 approve to an unknown spender.
+- checkdmarc ran on the lab resolver. The lab zone has no SPF or DMARC record,
+  so it returned `email-spf-missing` and `email-dmarc-missing`. It needs no HTTP.
 
 The smoke also runs the live path on the lab. A scope with `domain` and `reach`
 and no snapshot makes the prepass capture the domain with the real tools and
@@ -107,20 +109,25 @@ ensemble two zero-result takeover tools into a claimed takeover.
 
 ## Proof and limits
 
-The snapshot pins the zone text, DNS replies, HTTP headers and bodies, and
-optional RDAP and ENS/IPFS evidence. Replay re-runs allowlisted checks. Changed
-bytes fail. Unknown checks and wrong locations fail. A pattern in a bundle is a
-review-only lead. It cannot pass submit_finding or final replay.
+The snapshot pins the zone text, DNS replies, HTTP headers and bodies, the SPF
+and DMARC records, and optional RDAP and ENS/IPFS evidence. Replay re-runs
+allowlisted checks. Changed bytes fail. Unknown checks and wrong locations
+fail. A pattern in a bundle is a review-only lead. It cannot pass
+submit_finding or final replay.
 
 A drainer finding needs behavior. The replay runs the captured scripts in
 jsdom with a fake wallet. It clicks each connect, claim, airdrop, mint or verify
 control. It decodes approve, increaseAllowance, setApprovalForAll and Permit
 requests. Harm means an unlimited amount or all tokens. Connect and verify
 controls are critical. Mint, claim and airdrop controls are high, because real
-pages may ask for an approval. A text pattern alone
-stays a review-only lead. Nothing is signed and nothing is sent.
+pages may ask for an approval. A text pattern alone stays a review-only lead.
+Nothing is signed and nothing is sent.
 
 An NXDOMAIN result proves dangling DNS, not that a provider will let someone
 claim the target. Missing DNSSEC or RDAP evidence does not prove a disabled
 control. A registry lock is not the same as a registrar transfer lock. No DNS
 change, resource registration, wallet signature, or transaction is attempted.
+
+Email-authentication leads prove the published record only. A valid SPF or
+DMARC record does not prove a spoofed message reaches an inbox, and no DKIM
+selector or receiver filter is tested.
