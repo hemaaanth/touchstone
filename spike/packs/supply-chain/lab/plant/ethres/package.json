@@ -1,0 +1,6 @@
+{
+  "name": "ethres",
+  "version": "1.0.0",
+  "description": "Lab plant. Looks like ethers. Inert. Never install or run it.",
+  "main": "index.js"
+}

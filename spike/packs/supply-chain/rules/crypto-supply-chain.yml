@@ -1,0 +1,49 @@
+# Touchstone supply-chain rules for Semgrep. Written by us, for this pack.
+# They find code that reads signer material and sends it out, and install-time
+# code that does the same. A hit is a lead. Replay decides if it is a finding.
+rules:
+  - id: touchstone-env-secret-to-network
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Code reads a key, mnemonic or secret environment value and sends it over the network.
+    mode: taint
+    pattern-sources:
+      - pattern: process.env
+      - pattern: process.env.$NAME
+      - pattern: JSON.stringify(process.env)
+    pattern-sinks:
+      - pattern: $HTTP.request(...)
+      - pattern: $HTTP.get(...)
+      - pattern: fetch(...)
+      - pattern: $REQ.write(...)
+      - pattern: $REQ.end(...)
+      - pattern: $SOCK.write(...)
+    metadata:
+      touchstone-check: env-secret-to-network
+  - id: touchstone-signer-material-to-network
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A wallet key, mnemonic or signer is passed into a network call.
+    mode: taint
+    pattern-sources:
+      - pattern: $W.privateKey
+      - pattern: $W.mnemonic
+      - pattern: $W.mnemonic.phrase
+      - pattern: $W.signingKey
+    pattern-sinks:
+      - pattern: $HTTP.request(...)
+      - pattern: fetch(...)
+      - pattern: $REQ.write(...)
+      - pattern: $REQ.end(...)
+    metadata:
+      touchstone-check: signer-material-to-network
+  - id: touchstone-eval-base64
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Code decodes a base64 string and runs it. Dependencies use this to hide a payload.
+    pattern-either:
+      - pattern: eval(Buffer.from($X, "base64").toString(...))
+      - pattern: new Function(Buffer.from($X, "base64").toString(...))
+      - pattern: eval(atob($X))
+    metadata:
+      touchstone-check: eval-base64
