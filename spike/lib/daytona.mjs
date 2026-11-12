@@ -16,11 +16,21 @@
 //     created. A machine stops after 15 idle minutes and is deleted when it stops,
 //     so a crash cannot leave one running for long.
 //
-// When we fall back to local Docker:
-//   - The call needs a host network (host, or a named lab network). Those exist
-//     only on this host.
+// When we fall back to local Docker (each emits an `exec-fallback` event):
+//   - The call uses any network but `none`. Live reach goes through the scope
+//     proxy and the grant gate on this host. The remote path has no reach gate
+//     yet, so a call with a network stays here.
 //   - The call mounts a host path other than the workspace.
-//   - The Daytona API fails. We emit an `exec-fallback` event and run locally.
+//   - A solc version did not install on the machine. Only that call goes local.
+//   - The Daytona API fails. The machine is deleted and the call tries once more
+//     on a new machine. A second failure keeps every call local for 10 minutes.
+//
+// What goes through this backend: runTool() (lib/wrap.mjs), runDocker() for
+// Slither (static.mjs), Echidna (fuzz.mjs) and Medusa (medusa.mjs), and forge
+// in lib/sandbox.mjs. What always stays on local Docker, by design: the lab
+// chain and its network (sandbox/lab.mjs, fork-proof.mjs, txreplay-proof.mjs,
+// proof-http.mjs), the jail, image builds (keys/common.mjs), cloud.mjs, and the
+// docker calls in packs/domains. They need host networks or the host daemon.
 //
 // The key comes from Settings (spike/data/providers.json, field execution) or
 // the DAYTONA_API_KEY environment variable. It is never logged.
@@ -37,8 +47,9 @@ export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
 export const DEFAULT_TARGET = "us-west-3";
 const SNAPSHOT_IMAGE = "docker:28.5.1-dind";
 const IDLE_STOP_MIN = 15;
-const LOCAL_NETWORKS = new Set(["none", "bridge", "default"]);
 const DOWN_MS = 10 * 60_000;
+// Check a machine again after this much idle time. It stops at IDLE_STOP_MIN.
+const staleMs = () => Number(process.env.DAYTONA_STALE_MS) || 5 * 60_000;
 let downUntil = 0;
 
 // ---- Settings
@@ -79,19 +90,24 @@ export function daytonaOn(env = process.env) {
 //   ws    the workspace that may be mounted
 // The result names the image and gives the argv with the workspace mount
 // rewritten to `remoteWs`. `local` is set when the call must stay on this host:
-// a host network or a host mount other than the workspace.
+// any network but "none", or a host mount other than the workspace.
+// A call with a network may reach a live target. Live reach goes through the
+// scope proxy and the grant gate on this host, so it must not leave it.
 export function planRemote(args, ws, remoteWs) {
   if (args[0] !== "run") return { local: "not a docker run", image: null, args };
   const out = [];
   let image = null;
   let local = null;
+  let net = null; // docker's default network has internet access
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (image) { out.push(a); continue; }
-    if (a === "--network") {
-      const net = args[++i];
-      if (!LOCAL_NETWORKS.has(net)) local = `network ${net} is on this host`;
+    if (a === "--network" || a === "--net") {
+      net = args[++i];
       out.push(a, net);
+    } else if (/^--net(work)?=/.test(a)) {
+      net = a.slice(a.indexOf("=") + 1);
+      out.push(a);
     } else if (a === "-v" || a === "--volume") {
       const spec = args[++i];
       const [src, ...rest] = spec.split(":");
@@ -110,6 +126,7 @@ export function planRemote(args, ws, remoteWs) {
       out.push(a);
     }
   }
+  if (net !== "none") local ??= `network ${net ?? "default"} stays on this host`;
   return { local: image ? local : "no image", image, args: out };
 }
 
@@ -199,20 +216,62 @@ function readSidecar(root) {
   }
 }
 
-// Find or make the machine for this call.
+// Find or make the machine for this call. A machine idle for a while may have
+// stopped by itself (autoStopInterval). Check it, and open a new one if so.
 async function machineFor(c, ws) {
   const agent = currentAgent() || "root";
   const root = runRoot(ws);
-  if (!root && lastByAgent.has(agent)) return lastByAgent.get(agent);
-  const key = root ? `${root}|${agent}` : `orphan|${agent}`;
-  if (!machines.has(key)) {
-    const p = openMachine(c, root, agent);
-    machines.set(key, p);
-    p.catch(() => machines.delete(key));
+  let m = root ? null : lastByAgent.get(agent);
+  if (!m) {
+    const key = root ? `${root}|${agent}` : `orphan|${agent}`;
+    if (!machines.has(key)) {
+      const p = openMachine(c, root, agent);
+      machines.set(key, p);
+      p.catch(() => machines.delete(key));
+    }
+    m = await machines.get(key);
+    m.key = key;
   }
-  const m = await machines.get(key);
+  if (Date.now() - m.used > staleMs() && !(await alive(m))) {
+    retire(m);
+    return machineFor(c, ws);
+  }
   lastByAgent.set(agent, m);
   return m;
+}
+
+// Drop a machine from the caches, so the next call opens it again.
+function forget(m) {
+  if (m?.key && machines.has(m.key)) machines.delete(m.key);
+  for (const [agent, x] of lastByAgent) if (x === m) lastByAgent.delete(agent);
+}
+
+// Drop a broken machine for good: out of the caches and the sidecar, then
+// deleted. The next call opens a new one. An id Daytona will not delete yet
+// goes to the pending file, so closeRun retries it.
+function retire(m) {
+  forget(m);
+  orphans.delete(m.id);
+  if (m.root) {
+    const all = readSidecar(m.root);
+    if (all[m.agent]?.id === m.id) {
+      delete all[m.agent];
+      writeFileSync(sidecar(m.root), JSON.stringify(all, null, 2));
+    }
+  }
+  const keep = () => writePending([...readPending(), m.id]);
+  deleteMachine(m.api, m.id).then((ok) => ok || keep(), keep);
+}
+
+// True when the machine can still take calls. A 404 means it is gone.
+async function alive(m) {
+  try {
+    const s = await m.api.get(m.id);
+    return ["started", "creating", "starting"].includes(s?.state);
+  } catch (e) {
+    if (e.status === 404) return false;
+    throw e;
+  }
 }
 
 async function openMachine(c, root, agent) {
@@ -220,7 +279,7 @@ async function openMachine(c, root, agent) {
   const known = root ? readSidecar(root)[agent] : null;
   if (known) {
     // Another process of this run (the pre-pass in the app server) made it.
-    const m = { id: known.id, toolbox: known.toolbox, api, synced: new Map(), ready: new Set(), lock: Promise.resolve() };
+    const m = { id: known.id, toolbox: known.toolbox, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
     try {
       const s = await api.get(m.id);
       if (!["started", "creating", "starting"].includes(s?.state)) throw new Error(s?.state);
@@ -247,7 +306,7 @@ async function openMachine(c, root, agent) {
     }).catch(() => {});
     throw e;
   }
-  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, synced: new Map(), ready: new Set(), lock: Promise.resolve() };
+  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
   if (root) {
     const all = readSidecar(root);
     all[agent] = { id: m.id, toolbox: m.toolbox };
@@ -459,8 +518,23 @@ export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBu
     return null;
   }
   try {
-    const m = await machineFor(c, wsAbs);
-    return await locked(m, () => runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pullBack, skipBack, warm }));
+    // A failed call drops its machine and tries once more on a fresh one.
+    // Only a second failure puts every call on local Docker for a while.
+    for (let attempt = 0; ; attempt++) {
+      const m = await machineFor(c, wsAbs);
+      try {
+        return await locked(m, () => runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pullBack, skipBack, warm }));
+      } catch (e) {
+        // Only the solc warm failed. The machine is fine; this call runs locally.
+        if (e.localOnly) {
+          event("exec-fallback", { backend: "local", reason: String(e.message).slice(0, 200), image: plan.image, sandbox: m.id });
+          return null;
+        }
+        retire(m);
+        if (attempt >= 1) throw e;
+        event("exec-retry", { backend: "daytona", sandbox: m.id, reason: String(e?.message ?? e).slice(0, 200), image: plan.image });
+      }
+    }
   } catch (e) {
     // Stay local for a while, so one outage does not start a machine per call.
     downUntil = Date.now() + DOWN_MS;
@@ -489,10 +563,20 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   }
 
   // 2. Warm solc versions this machine has not seen.
+  // A failed warm means forge --offline would not find solc there. Run this
+  // call locally instead; warmSolc also warms the local cache.
   for (const v of warm) {
     if (m.ready.has(`solc:${v}`)) continue;
+    if (m.ready.has(`nosolc:${v}`)) throw Object.assign(new Error(`solc ${v} did not install on Daytona`), { localOnly: true });
     const r = await m.api.exec(m, `sh -c ${shq(warmScript(v))}`, 300);
-    if (r.exitCode === 0) m.ready.add(`solc:${v}`);
+    if (r.exitCode !== 0) {
+      m.ready.add(`nosolc:${v}`);
+      event("exec-warm-failed", { backend: "daytona", sandbox: m.id, solc: v, detail: String(r.result ?? "").slice(-200) });
+      const e = new Error(`solc ${v} did not install on Daytona`);
+      e.localOnly = true;
+      throw e;
+    }
+    m.ready.add(`solc:${v}`);
   }
 
   // 3. Run. The script extracts the delta, runs the container under a
@@ -519,13 +603,14 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     `${argv} </dev/null >${dir}/out 2>${dir}/err; echo $? >${dir}/code`,
     `touch ${dir}/done; docker rm -f ${name} >/dev/null 2>&1`,
     `else echo 199 >${dir}/code; fi`,
-    `: >${dir}/files`,
-    remoteWs && pullBack
-      ? `(cd ${remoteWs} && find . -type f -newer ${dir}/stamp ${skipBack.map((d) => `! -path ${shq(`./${d}/*`)}`).join(" ")} | sed 's|^\\./||' >${dir}/files)`
-      : ":",
     `mkdir -p ${dir}/pack/meta ${dir}/pack/ws`,
     `for f in out err code timedout; do [ -e ${dir}/$f ] && cp ${dir}/$f ${dir}/pack/meta/; done`,
-    remoteWs && pullBack ? `[ -s ${dir}/files ] && (cd ${remoteWs} && tar -cf - -T ${dir}/files) | tar -xf - -C ${dir}/pack/ws` : ":",
+    // Copy the changed files with find -exec. Names go as arguments, so a
+    // name that starts with "-" or holds a newline is safe. BusyBox tar has
+    // no --null, so a tar -T file list would not be.
+    remoteWs && pullBack
+      ? `(cd ${remoteWs} && find . -type f -newer ${dir}/stamp ${skipBack.map((d) => `! -path ${shq(`./${d}/*`)}`).join(" ")} -exec sh -c 'for f; do mkdir -p "$0/$(dirname "$f")" && cp -p "$f" "$0/$f"; done' ${dir}/pack/ws {} +)`
+      : ":",
     `tar -cf ${dir}/res.tar -C ${dir}/pack .`,
   ].join("\n");
   const b64 = Buffer.from(script).toString("base64");
@@ -533,6 +618,7 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   if (ex.exitCode !== 0) throw new Error(`remote script failed: ${String(ex.result).slice(-300)}`);
 
   const res = await m.api.download(m, `${dir}/res.tar`);
+  m.used = Date.now();
   m.api.exec(m, `rm -rf ${dir} /tmp/ts-${cid}.sh`, 30).catch(() => {});
   const files = await unpack(res);
   const code = Number(String(files.get("meta/code") ?? "1").trim());
@@ -609,7 +695,7 @@ export function warmScript(v) {
     `D=$(mktemp -d); mkdir -p $D/src; chmod -R 777 $D`,
     `printf '[profile.default]\\nsrc = "src"\\nout = "out"\\n' >$D/foundry.toml`,
     `printf '// SPDX-License-Identifier: MIT\\npragma solidity ${v};\\ncontract W {}\\n' >$D/src/W.sol`,
-    `docker run --rm -v foundry-svm:/home/foundry/.svm -v $D:/work -w /work ${FOUNDRY_IMG} 'forge build --use ${v}' >/dev/null 2>&1 || true`,
-    `rm -rf $D`,
+    `rc=0; docker run --rm -v foundry-svm:/home/foundry/.svm -v $D:/work -w /work ${FOUNDRY_IMG} 'forge build --use ${v}' >$D.log 2>&1 || rc=$?`,
+    `rm -rf $D; [ $rc -eq 0 ] || tail -c 400 $D.log; rm -f $D.log; exit $rc`,
   ].join("\n");
 }

@@ -128,12 +128,10 @@ export function concreteSolc(pragma) {
 export async function warmSolc(version) {
   const v = concreteSolc(version);
   if (!v) return { version, ok: false, skipped: true };
-  if (daytonaOn()) {
-    // On Daytona each machine has its own cache. Note the version; every
-    // machine installs it before its next forge run (see warmFor).
-    remoteWarm.add(v);
-    return { version: v, ok: true };
-  }
+  // On Daytona each machine has its own cache. Note the version; every
+  // machine installs it before its next forge run (see warmFor). Warm the
+  // local cache too: a call that falls back to local Docker needs solc there.
+  if (daytonaOn()) remoteWarm.add(v);
   const dir = mkdtempSync(join(tmpdir(), "solc-warm-"));
   try {
     mkdirSync(join(dir, "src"), { recursive: true });

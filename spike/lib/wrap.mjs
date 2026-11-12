@@ -27,8 +27,18 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
+  return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
+}
+
+// Run one `docker run` argv on the chosen backend: a Daytona machine when
+// Settings picks Daytona and the call can go there, else local Docker. ws is
+// the host dir the argv mounts; on Daytona its changed files come back.
+// runTool uses this. A module that needs its own docker flags (an entrypoint,
+// the image's own user) calls it directly, so it still honors the backend.
+// Resolves (never rejects) with { code, stdout, stderr, timedOut }.
+export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack } = {}) {
   if (daytonaOn()) {
-    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
+    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack });
     if (remote) return remote;
   }
   return new Promise((resolve) => {

@@ -49,7 +49,13 @@ test("planRemote rewrites the workspace mount and keeps named volumes", () => {
 test("planRemote keeps host networks and foreign mounts local", () => {
   assert.match(planRemote(["run", "--network", "host", "img"], null, null).local, /network host/);
   assert.match(planRemote(["run", "--network", "touchstone-lab", "img"], null, null).local, /network/);
-  assert.equal(planRemote(["run", "--network", "bridge", "img"], null, null).local, null);
+  // Until the reach gate covers the remote path, only --network none goes remote.
+  assert.match(planRemote(["run", "--network", "bridge", "img"], null, null).local, /network bridge/);
+  assert.match(planRemote(["run", "--network=bridge", "img"], null, null).local, /network bridge/);
+  assert.match(planRemote(["run", "--net", "default", "img"], null, null).local, /network default/);
+  assert.match(planRemote(["run", "img"], null, null).local, /network default/);
+  assert.equal(planRemote(["run", "--network", "none", "img"], null, null).local, null);
+  assert.equal(planRemote(["run", "--network=none", "img"], null, null).local, null);
   assert.match(planRemote(["run", "-v", "/etc:/x", "img"], "/tmp/ws", "/r").local, /host path/);
   assert.match(planRemote(["build", "."], null, null).local, /not a docker run/);
 });
@@ -177,6 +183,137 @@ test("closeRun keeps machines Daytona will not delete yet, and retries them late
     for (const [k, v] of Object.entries(saved.env)) v === undefined ? delete process.env[k] : (process.env[k] = v);
     rmSync(d, { recursive: true, force: true });
   }
+});
+
+// A fake Daytona API. Each machine runs the call script by its mode:
+// "ok" answers, "fail" returns HTTP 500. warmCode is the solc warm exit code.
+function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
+  const log = [];
+  const state = new Map();
+  let n = 0;
+  const tarDir = mkdtempSync(join(tmpdir(), "dtn-fake-"));
+  mkdirSync(join(tarDir, "meta"));
+  writeFileSync(join(tarDir, "meta", "code"), "0\n");
+  writeFileSync(join(tarDir, "meta", "out"), "hi");
+  const resTar = execFileSync("tar", ["-cf", "-", "-C", tarDir, "."]);
+  rmSync(tarDir, { recursive: true, force: true });
+  const json = (o, status = 200) => new Response(JSON.stringify(o), { status });
+  const fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    const id = (u.match(/\/(m-\d+)/) || [])[1];
+    if (u.includes("/snapshots/")) return json({ state: "active" });
+    if (method === "POST" && u.endsWith("/api/sandbox")) {
+      const mid = `m-${++n}`;
+      state.set(mid, "started");
+      log.push(`create ${mid}`);
+      return json({ id: mid, toolboxProxyUrl: "https://tb.test" });
+    }
+    if (method === "DELETE") { log.push(`delete ${id}`); state.delete(id); return new Response("", { status: 200 }); }
+    if (method === "GET" && /\/api\/sandbox\/m-/.test(u)) return state.has(id) ? json({ state: state.get(id) }) : new Response("gone", { status: 404 });
+    if (u.includes("/files/upload")) return new Response("", { status: 200 });
+    if (u.includes("/files/download")) return new Response(resTar, { status: 200 });
+    if (u.includes("/process/execute")) {
+      const cmd = JSON.parse(init.body).command;
+      if (cmd.includes("dockerd")) return json({ exitCode: 0, result: "" });
+      if (cmd.includes("base64 -d")) {
+        log.push(`run ${id}`);
+        const mode = modes[Number(id.slice(2)) - 1] ?? "ok";
+        return mode === "fail" ? new Response("toolbox down", { status: 500 }) : json({ exitCode: 0, result: "" });
+      }
+      if (cmd.includes("foundry-svm")) { log.push(`warm ${id}`); return json({ exitCode: warmCode, result: "solc download failed" }); }
+      return json({ exitCode: 0, result: "" });
+    }
+    return new Response("unexpected", { status: 500 });
+  };
+  return { fetch, log, state };
+}
+
+// Run fn against a fresh copy of daytona.mjs and the fake API.
+async function withFake(opts, fn) {
+  const d = mkdtempSync(join(tmpdir(), "dtn-m1-"));
+  const ws = join(d, "ws");
+  mkdirSync(ws);
+  writeFileSync(join(ws, ".touchstone.json"), "{}");
+  const keys = ["TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS"];
+  const saved = { env: Object.fromEntries(keys.map((k) => [k, process.env[k]])), fetch: globalThis.fetch, log: console.log };
+  const fake = fakeDaytona(opts);
+  const events = [];
+  try {
+    process.env.TOUCHSTONE_EXEC = "daytona";
+    process.env.DAYTONA_API_KEY = "test-key-not-real";
+    process.env.DAYTONA_PENDING = join(d, "pending.json");
+    process.env.DAYTONA_RETRY_MS = "1";
+    globalThis.fetch = fake.fetch;
+    console.log = (l) => { if (String(l).startsWith("EVENT ")) events.push(JSON.parse(String(l).slice(6))); };
+    const mod = await import(`../lib/daytona.mjs?fake=${Math.random()}`);
+    await fn({ mod, ws, fake, events, sidecar: () => JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8")) });
+    await mod.closeRun(ws);
+    await new Promise((r) => setTimeout(r, 20)); // let background deletes finish
+  } finally {
+    globalThis.fetch = saved.fetch;
+    console.log = saved.log;
+    for (const [k, v] of Object.entries(saved.env)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+const ARGS = (ws) => ["run", "--rm", "--network", "none", "-v", `${ws}:/work`, "-w", "/work", "img:1", "true"];
+
+test("M1: a failed machine is deleted and the call retries once on a new one", async () => {
+  await withFake({ modes: ["fail", "ok"] }, async ({ mod, ws, fake, events, sidecar }) => {
+    const r = await mod.remoteDocker(ARGS(ws), { ws });
+    assert.equal(r?.stdout, "hi");
+    assert.equal(events.find((e) => e.ev === "exec-retry")?.sandbox, "m-1");
+    assert.ok(!events.some((e) => e.ev === "exec-fallback"));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(fake.log.includes("delete m-1"));
+    assert.deepEqual(Object.values(sidecar()).map((x) => x.id), ["m-2"]);
+    // No global penalty: the next call goes straight to m-2.
+    const r2 = await mod.remoteDocker(ARGS(ws), { ws });
+    assert.equal(r2?.stdout, "hi");
+    assert.equal(fake.log.filter((l) => l.startsWith("create")).length, 2);
+    assert.equal(fake.log.at(-1), "run m-2");
+  });
+});
+
+test("M1: two failures in a row put Daytona on hold", async () => {
+  await withFake({ modes: ["fail", "fail"] }, async ({ mod, ws, fake, events }) => {
+    assert.equal(await mod.remoteDocker(ARGS(ws), { ws }), null);
+    assert.equal(events.filter((e) => e.ev === "exec-retry").length, 1);
+    assert.equal(events.at(-1).ev, "exec-fallback");
+    const before = fake.log.length;
+    assert.equal(await mod.remoteDocker(ARGS(ws), { ws }), null);
+    assert.match(events.at(-1).reason, /failed recently/);
+    assert.equal(fake.log.length, before);
+  });
+});
+
+test("M1: a machine idle past the stale time that has stopped is replaced", async () => {
+  await withFake({}, async ({ mod, ws, fake, sidecar }) => {
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+    fake.state.set("m-1", "stopped");
+    process.env.DAYTONA_STALE_MS = "1";
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+    assert.equal(fake.log.at(-1), "run m-2");
+    assert.deepEqual(Object.values(sidecar()).map((x) => x.id), ["m-2"]);
+  });
+});
+
+test("M2: a failed solc warm sends the call to local Docker and keeps the machine", async () => {
+  await withFake({ warmCode: 1 }, async ({ mod, ws, fake, events }) => {
+    assert.equal(await mod.remoteDocker(ARGS(ws), { ws, warm: ["0.8.20"] }), null);
+    assert.equal(events.find((e) => e.ev === "exec-warm-failed")?.solc, "0.8.20");
+    assert.equal(events.at(-1).ev, "exec-fallback");
+    // The same version is not tried again on that machine.
+    assert.equal(await mod.remoteDocker(ARGS(ws), { ws, warm: ["0.8.20"] }), null);
+    assert.equal(fake.log.filter((l) => l.startsWith("warm")).length, 1);
+    // No global penalty, and the machine stays: a call with no warm runs there.
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+    assert.ok(!fake.log.some((l) => l.startsWith("delete")));
+    assert.equal(fake.log.filter((l) => l.startsWith("create")).length, 1);
+  });
 });
 
 // Live: the same tool call on both backends gives the same result, files come

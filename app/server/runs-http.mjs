@@ -6,7 +6,7 @@
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, settingsWriteAllowed } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -231,6 +231,8 @@ export async function handleSettings(req, res) {
   const parts = url.pathname.split("/").filter(Boolean)
   if (parts[0] !== "api" || parts[1] !== "settings") return false
   const route = `${req.method} ${parts.slice(2, 3).join("/")}`
+  // Every write is guarded: a cross-site page must not repoint a key or a baseUrl.
+  if (req.method !== "GET" && !settingsWriteAllowed(req)) return send(res, 403, { error: "cross-site settings write refused" }), true
   try {
     if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
     if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true

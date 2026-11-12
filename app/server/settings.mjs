@@ -21,6 +21,31 @@ import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
 
+// May this request change Settings? A Settings write can repoint a key or a
+// provider baseUrl, so a page on another site must not be able to send one.
+//   - A POST must say content-type application/json. A cross-site form or a
+//     text/plain fetch cannot set that without a CORS preflight, and this
+//     server answers no preflight.
+//   - A browser request must come from this server's own origin: the Origin
+//     host must match the Host (or X-Forwarded-Host) header, and
+//     Sec-Fetch-Site must not say cross-site.
+// A request with no Origin (curl, a test) passes the origin check.
+// TODO(after the T7 merge): use T7's grantMutationAllowed guard here too.
+export function settingsWriteAllowed(req) {
+  const h = req.headers ?? {}
+  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) return false
+  if (h["sec-fetch-site"] === "cross-site") return false
+  if (!h.origin) return true
+  let host
+  try {
+    host = new URL(h.origin).host
+  } catch {
+    return false
+  }
+  const own = [h.host, ...String(h["x-forwarded-host"] ?? "").split(",")].map((x) => String(x ?? "").trim()).filter(Boolean)
+  return own.includes(host)
+}
+
 // The console's default per-run budget when Settings has none saved. The
 // engine's own default for CLI runs (spike/lib/run-budget.mjs) is also $5; app
 // runs pass their budget to the worker as RUN_BUDGET_USD, so this one wins.

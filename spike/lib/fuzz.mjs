@@ -21,17 +21,13 @@
 // substitutes for the replay that makes a finding real.
 import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { runDocker } from "./wrap.mjs";
 import { IMG, SOLC, HARNESS_WEI, prepareFuzzProject, weiHexToEth } from "./harness.mjs";
 import { medusaScan } from "./medusa.mjs";
 import { mergeFuzz } from "./ensemble.mjs";
 
-const run = (args, timeoutMs) =>
-  new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0 });
-    });
-  });
+// Honors the execution backend (local Docker or Daytona), like runTool.
+const run = (args, timeoutMs, ws, opts = {}) => runDocker(args, { ws, timeoutMs, maxBuffer: 16 * 1024 * 1024, ...opts });
 
 // Parse Echidna's text output: which echidna_* properties broke, and the minimal
 // call sequence it shrank to for each. The sequence is the lead the agent reads.
@@ -88,7 +84,7 @@ async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 5
     "-c",
     `solc-select use ${SOLC} --always-install >/dev/null 2>&1; echidna Harness.sol --contract Harness --config echidna.yaml --format text 2>&1`,
   ];
-  const r = await run(args, timeoutMs);
+  const r = await run(args, timeoutMs, scratch);
   const out = r.stdout + r.stderr;
   // No property line at all means the harness never compiled/ran — honest empty.
   if (!/echidna_\w+:/.test(out)) {
