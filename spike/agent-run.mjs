@@ -307,7 +307,7 @@ async function main() {
     usage: settled?.usage, reports: settled?.reports,
   };
   writeFileSync(`${DIR}run-${ALIAS}.json`, JSON.stringify({ result, transcript: settled?.summary }, null, 2));
-  cleanupWorkspace(ws);
+  await cleanupWorkspace(ws);
 
   console.log("\n==== run summary ====");
   console.log(JSON.stringify(result, null, 2));

@@ -35,10 +35,11 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
 // the host dir the argv mounts; on Daytona its changed files come back.
 // runTool uses this. A module that needs its own docker flags (an entrypoint,
 // the image's own user) calls it directly, so it still honors the backend.
+// root names the calling run when ws is a dir outside it (a fuzz scratch dir).
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
-export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack } = {}) {
+export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack, root = null } = {}) {
   if (daytonaOn()) {
-    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack });
+    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack, root });
     if (remote) return remote;
   }
   return new Promise((resolve) => {

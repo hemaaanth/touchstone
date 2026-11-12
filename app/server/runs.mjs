@@ -691,7 +691,7 @@ async function endWorkspace(ws) {
   } catch {
     // Best effort: the workspace still goes.
   }
-  cleanupWorkspace(ws)
+  await cleanupWorkspace(ws)
 }
 
 // Message a run. While a worker is running, the message is written to its

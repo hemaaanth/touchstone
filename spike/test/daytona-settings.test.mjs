@@ -2,8 +2,12 @@
 // only read Settings, or fail before a write, so the saved file never changes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 
-const { getSettings, setExecution, settingsWriteAllowed } = await import("../../app/server/settings.mjs");
+// A known console token, set before the import, so the guard can be tested.
+const TOKEN = "t6-test-token";
+process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN;
+const { getSettings, setExecution, settingsWriteAllowed, settingsWriteRefusal } = await import("../../app/server/settings.mjs");
 
 function withEnv(vars, fn) {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
@@ -43,32 +47,78 @@ test("setExecution rejects a bad backend and Daytona with no key, before any wri
   });
 });
 
-test("settingsWriteAllowed refuses a cross-site write", () => {
-  const req = (method, headers) => ({ method, headers });
-  const json = { "content-type": "application/json", host: "127.0.0.1:5173" };
-  // The console itself, locally and through a bb connect share.
-  assert.equal(settingsWriteAllowed(req("POST", { ...json, origin: "http://127.0.0.1:5173", "sec-fetch-site": "same-origin" })), true);
-  assert.equal(settingsWriteAllowed(req("POST", { ...json, host: "x.getbb.app", origin: "https://x.getbb.app" })), true);
-  assert.equal(settingsWriteAllowed(req("POST", { ...json, "x-forwarded-host": "x.getbb.app", origin: "https://x.getbb.app" })), true);
-  assert.equal(settingsWriteAllowed(req("POST", json)), true); // curl: no Origin
-  // A drive-by page: text/plain, a foreign Origin, or a cross-site fetch.
-  assert.equal(settingsWriteAllowed(req("POST", { host: json.host, "content-type": "text/plain", origin: "http://127.0.0.1:5173" })), false);
-  assert.equal(settingsWriteAllowed(req("POST", { host: json.host })), false);
-  assert.equal(settingsWriteAllowed(req("POST", { ...json, origin: "https://evil.example" })), false);
-  assert.equal(settingsWriteAllowed(req("POST", { ...json, origin: "null" })), false);
-  assert.equal(settingsWriteAllowed(req("DELETE", { host: json.host, origin: "https://evil.example" })), false);
-  assert.equal(settingsWriteAllowed(req("DELETE", { host: json.host, "sec-fetch-site": "cross-site" })), false);
-  assert.equal(settingsWriteAllowed(req("DELETE", { host: json.host, origin: "http://127.0.0.1:5173" })), true);
+// B: the guard fails closed. One DENY test per reason, and one ALLOW test.
+const HOST = "127.0.0.1:5173";
+const good = { host: HOST, origin: `http://${HOST}`, "content-type": "application/json", "x-touchstone-grant-token": TOKEN };
+const req = (method, headers) => ({ method, headers });
+const without = (k) => Object.fromEntries(Object.entries(good).filter(([key]) => key !== k));
+
+test("B: settings write with no Origin is refused", () => {
+  assert.equal(settingsWriteRefusal(req("POST", without("origin")))?.status, 403);
+  assert.equal(settingsWriteRefusal(req("DELETE", without("origin")))?.status, 403);
+  assert.equal(settingsWriteAllowed(req("POST", without("origin"))), false);
 });
 
-test("handleSettings answers 403 to a cross-site execution POST", async () => {
+test("B: settings write from a foreign Origin is refused", () => {
+  for (const origin of ["https://evil.example", "http://127.0.0.1:3000", "http://localhost:5173", "null", "not a url"]) {
+    assert.equal(settingsWriteRefusal(req("POST", { ...good, origin }))?.status, 403, origin);
+  }
+  // X-Forwarded-Host is not trusted: any client can set it.
+  assert.equal(settingsWriteRefusal(req("POST", { ...good, origin: "https://x.getbb.app", "x-forwarded-host": "x.getbb.app" }))?.status, 403);
+  assert.equal(settingsWriteRefusal(req("POST", without("host")))?.status, 403);
+});
+
+test("B: settings POST that is not application/json is refused", () => {
+  for (const ct of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", undefined]) {
+    const h = ct === undefined ? without("content-type") : { ...good, "content-type": ct };
+    assert.equal(settingsWriteRefusal(req("POST", h))?.status, 415, String(ct));
+  }
+});
+
+test("B: settings write with a missing or wrong token is refused", () => {
+  assert.equal(settingsWriteRefusal(req("POST", without("x-touchstone-grant-token")))?.status, 403);
+  assert.equal(settingsWriteRefusal(req("POST", { ...good, "x-touchstone-grant-token": "guess" }))?.status, 403);
+  assert.equal(settingsWriteRefusal(req("DELETE", { host: HOST, origin: `http://${HOST}` }))?.status, 403);
+});
+
+test("B: a same-origin JSON write with the token is allowed", () => {
+  assert.equal(settingsWriteRefusal(req("POST", good)), null);
+  assert.equal(settingsWriteAllowed(req("POST", good)), true);
+  // A DELETE has no body, so it needs no content-type.
+  assert.equal(settingsWriteAllowed(req("DELETE", without("content-type"))), true);
+  // Through a bb connect share, the browser's Host and Origin agree.
+  assert.equal(settingsWriteAllowed(req("POST", { ...good, host: "x.getbb.app", origin: "https://x.getbb.app" })), true);
+});
+
+function fakeRes() {
+  return { statusCode: 0, headers: {}, body: "", setHeader(k, v) { this.headers[k] = v; }, end(b) { this.body = b; } };
+}
+
+test("B: handleSettings refuses each bad write before it reaches Settings", async () => {
   const { handleSettings } = await import("../../app/server/runs-http.mjs");
-  const res = { statusCode: 0, headers: {}, body: "", setHeader(k, v) { this.headers[k] = v; }, end(b) { this.body = b; } };
-  const req = { method: "POST", url: "/api/settings/execution", headers: { host: "127.0.0.1:5173", "content-type": "text/plain", origin: "https://evil.example" } };
-  assert.equal(await handleSettings(req, res), true);
-  assert.equal(res.statusCode, 403);
-  const prov = { ...req, url: "/api/settings/providers" };
-  const res2 = { ...res, statusCode: 0 };
-  assert.equal(await handleSettings(prov, res2), true);
-  assert.equal(res2.statusCode, 403);
+  const cases = [
+    [without("origin"), 403],
+    [{ ...good, origin: "https://evil.example" }, 403],
+    [{ ...good, "content-type": "text/plain" }, 415],
+    [without("x-touchstone-grant-token"), 403],
+  ];
+  for (const url of ["/api/settings/execution", "/api/settings/providers"]) {
+    for (const [headers, status] of cases) {
+      const res = fakeRes();
+      assert.equal(await handleSettings({ method: "POST", url, headers }, res), true);
+      assert.equal(res.statusCode, status, `${url} ${JSON.stringify(headers)}`);
+    }
+  }
+});
+
+test("B: handleSettings lets a good write through to Settings", async () => {
+  const { handleSettings } = await import("../../app/server/runs-http.mjs");
+  // A good request with a bad body: the guard passes, and setExecution then
+  // refuses it with 400. So nothing is written.
+  const body = JSON.stringify({ backend: "cloud" });
+  const r = Object.assign(Readable.from([Buffer.from(body)]), { method: "POST", url: "/api/settings/execution", headers: good });
+  const res = fakeRes();
+  assert.equal(await handleSettings(r, res), true);
+  assert.equal(res.statusCode, 400, res.body);
+  assert.match(res.body, /backend must be/);
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Check, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
 import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
+import { getConsoleToken, setConsoleToken, tokenHeaders } from "@/lib/console-token"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
@@ -29,6 +30,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
         {!settings ? <p className="p-5 text-sm text-muted-foreground">{error ?? "Loading…"}</p> : (
           <div className="mx-auto max-w-2xl px-5 py-8 md:px-8 md:py-10">
             {error ? <p role="alert" className="mb-4 text-sm">{error}</p> : null}
+            <TokenSection />
             <section aria-labelledby="providers-title">
               <div className="mb-2 flex items-center justify-between gap-3 px-2">
                 <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
@@ -393,8 +395,31 @@ function ProviderEditor({
   )
 }
 
-// ---- Execution: where a run's tools run. Local Docker is the default. Daytona
-// gives each run, and each swarm child, its own sandbox machine. The key goes
+// ---- Console token: the server prints it once at start. Every Settings write
+// sends it, so a page on another site or port cannot change Settings.
+function TokenSection() {
+  const [token, setToken] = useState(getConsoleToken)
+  const change = (v: string) => { setToken(v.trim()); setConsoleToken(v.trim()) }
+  return (
+    <form className="mb-8 flex items-center gap-2 py-1.5 pr-1 pl-2" onSubmit={(e) => e.preventDefault()}>
+      <label htmlFor="console-token" className="shrink-0 text-sm">Console token</label>
+      <Input
+        id="console-token"
+        type="password"
+        className="text-xs"
+        value={token}
+        onChange={(e) => change(e.target.value)}
+        placeholder="Paste the token the server printed at start. Needed to change Settings."
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </form>
+  )
+}
+
+// ---- Execution: where a run's tools run. Local Docker is the default. With
+// Daytona, offline tool workspaces (secret scans too) are uploaded to a
+// Daytona machine. Each run, and each swarm child, gets its own machines. The key goes
 // up once and never comes back; the server returns only a masked state.
 
 interface ExecutionSetting {
@@ -411,7 +436,7 @@ type ExecutionBody = { backend: "local" | "daytona"; apiKey?: string; clearKey?:
 async function setExecution(body: ExecutionBody): Promise<SettingsState> {
   const res = await fetch("/api/settings/execution", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...tokenHeaders() },
     body: JSON.stringify(body),
   })
   const json = await res.json().catch(() => ({}))
@@ -436,7 +461,7 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
       : ex.key.last4 ? `Key saved in Settings, ends ${ex.key.last4}` : "Key saved in Settings"
   const options: { id: "local" | "daytona"; label: string; note: string }[] = [
     { id: "local", label: "Local Docker", note: "Tools run on this machine." },
-    { id: "daytona", label: "Daytona", note: `Each run and swarm child gets its own sandbox (${ex.target}). Falls back to local Docker if Daytona fails.` },
+    { id: "daytona", label: "Daytona", note: `Offline tools run on Daytona machines (${ex.target}). Falls back to local Docker if Daytona fails.` },
   ]
   return (
     <section className="mt-10" aria-labelledby="execution-title">
@@ -468,6 +493,9 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
           )
         })}
       </div>
+      <p className="mt-2 px-2 text-xs text-muted-foreground">
+        With Daytona on, the workspace of every offline tool call is uploaded to Daytona. That includes the secret scans and the keys lab: the target's files, and any keys in them, leave this machine. Tools that use a network stay on local Docker. So do the lab chain, the proof steps and image builds. Each run, and each swarm child, gets its own machines. They are deleted when the run ends.
+      </p>
       <form
         className="mt-2 flex items-center gap-2 py-1.5 pr-1 pl-2"
         onSubmit={(e) => {

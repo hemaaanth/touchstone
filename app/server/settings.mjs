@@ -20,30 +20,56 @@ import {
 import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import { randomUUID } from "node:crypto"
 
 // May this request change Settings? A Settings write can repoint a key or a
-// provider baseUrl, so a page on another site must not be able to send one.
-//   - A POST must say content-type application/json. A cross-site form or a
-//     text/plain fetch cannot set that without a CORS preflight, and this
-//     server answers no preflight.
-//   - A browser request must come from this server's own origin: the Origin
-//     host must match the Host (or X-Forwarded-Host) header, and
-//     Sec-Fetch-Site must not say cross-site.
-// A request with no Origin (curl, a test) passes the origin check.
-// TODO(after the T7 merge): use T7's grantMutationAllowed guard here too.
-export function settingsWriteAllowed(req) {
+// provider baseUrl, so only the operator's own console may send one. The rules
+// match T7's grantMutationAllowed guard. Each rule fails closed.
+//   - Origin is required, and its host must equal the Host header. A browser
+//     always sends Origin on a POST or DELETE. A write with no Origin is not
+//     the console, so it is refused. X-Forwarded-Host is not trusted: any
+//     client can set it.
+//   - A POST must say content-type application/json.
+//   - The request must carry the console token in x-touchstone-grant-token.
+// Note: the Vite dev server answers CORS preflights for localhost origins. So
+// a page on another localhost port can send a JSON POST. The Origin == Host
+// rule and the token are what refuse it.
+// The token is TOUCHSTONE_GRANT_TOKEN, else a random one printed once to the
+// server terminal. It is the same env var and header T7's grant routes use.
+// TODO(after the T7 merge): share T7's GRANT_TOKEN, so there is one token.
+export const SETTINGS_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || randomUUID()
+let tokenAnnounced = false
+function announceToken() {
+  if (tokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
+  tokenAnnounced = true
+  process.stderr.write(`[settings] to change Settings, paste this console token on the Settings page (header x-touchstone-grant-token): ${SETTINGS_TOKEN}\n`)
+}
+announceToken()
+
+// Why this write is refused, as { status, error }, or null when it may go on.
+export function settingsWriteRefusal(req) {
   const h = req.headers ?? {}
-  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) return false
-  if (h["sec-fetch-site"] === "cross-site") return false
-  if (!h.origin) return true
-  let host
+  let originHost = null
   try {
-    host = new URL(h.origin).host
+    originHost = h.origin ? new URL(h.origin).host : null
   } catch {
-    return false
+    originHost = null
   }
-  const own = [h.host, ...String(h["x-forwarded-host"] ?? "").split(",")].map((x) => String(x ?? "").trim()).filter(Boolean)
-  return own.includes(host)
+  if (!originHost || !h.host || originHost !== h.host) {
+    return { status: 403, error: "Settings can only be changed from the console's own origin" }
+  }
+  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
+    return { status: 415, error: "a Settings write must be application/json" }
+  }
+  const token = h["x-touchstone-grant-token"]
+  if (!token || token !== SETTINGS_TOKEN) {
+    return { status: 403, error: "missing or wrong console token. Paste the token the server printed at start" }
+  }
+  return null
+}
+
+export function settingsWriteAllowed(req) {
+  return settingsWriteRefusal(req) === null
 }
 
 // The console's default per-run budget when Settings has none saved. The

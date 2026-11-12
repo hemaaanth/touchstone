@@ -12,6 +12,9 @@
 //   - The machine ids of a run live next to its workspace, in `<ws>.daytona.json`.
 //     The run worker then reuses the machine the pre-pass made, and
 //     cleanupWorkspace(ws) deletes every machine of the run.
+//   - A fuzz scratch dir lives in tmp, outside the run. Its caller passes the
+//     run's workspace as `root`, so the call uses that run's machine. Its copy
+//     on the machine is deleted right after the call.
 //   - Every machine carries the label touchstone=1. We only ever delete ids we
 //     created. A machine stops after 15 idle minutes and is deleted when it stops,
 //     so a crash cannot leave one running for long.
@@ -21,6 +24,8 @@
 //     proxy and the grant gate on this host. The remote path has no reach gate
 //     yet, so a call with a network stays here.
 //   - The call mounts a host path other than the workspace.
+//   - The call uses a docker flag the parser does not know, or a
+//     `--flag=value` form other than `--network=`. Unknown means local.
 //   - A solc version did not install on the machine. Only that call goes local.
 //   - The Daytona API fails. The machine is deleted and the call tries once more
 //     on a new machine. A second failure keeps every call local for 10 minutes.
@@ -90,26 +95,33 @@ export function daytonaOn(env = process.env) {
 //   ws    the workspace that may be mounted
 // The result names the image and gives the argv with the workspace mount
 // rewritten to `remoteWs`. `local` is set when the call must stay on this host:
-// any network but "none", or a host mount other than the workspace.
+// any network but "none", a host mount other than the workspace, or a flag
+// this parser does not know.
 // A call with a network may reach a live target. Live reach goes through the
 // scope proxy and the grant gate on this host, so it must not leave it.
+// The parser fails safe. A flag it does not know may take a value, so it
+// cannot find the image after it. Such a call stays local. So does any
+// `--flag=value` form except `--network=`, and a second network flag.
+const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
+const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
+
 export function planRemote(args, ws, remoteWs) {
   if (args[0] !== "run") return { local: "not a docker run", image: null, args };
   const out = [];
   let image = null;
   let local = null;
   let net = null; // docker's default network has internet access
+  const stay = (why) => ({ local: why, image: null, args });
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (image) { out.push(a); continue; }
-    if (a === "--network" || a === "--net") {
-      net = args[++i];
-      out.push(a, net);
-    } else if (/^--net(work)?=/.test(a)) {
-      net = a.slice(a.indexOf("=") + 1);
+    if (a === "--network" || a === "--net" || /^--net(work)?=/.test(a)) {
+      if (net !== null) return stay("network given twice");
+      net = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++i];
       out.push(a);
+      if (!a.includes("=")) out.push(net);
     } else if (a === "-v" || a === "--volume") {
-      const spec = args[++i];
+      const spec = String(args[++i] ?? "");
       const [src, ...rest] = spec.split(":");
       if (src.startsWith("/") || src.startsWith(".")) {
         if (!ws || resolve(src) !== resolve(ws)) local = "mounts a host path";
@@ -117,10 +129,12 @@ export function planRemote(args, ws, remoteWs) {
       } else {
         out.push(a, spec); // a named volume lives on the machine
       }
-    } else if (["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"].includes(a)) {
+    } else if (VALUE_FLAGS.has(a)) {
       out.push(a, args[++i]);
+    } else if (BARE_FLAGS.has(a)) {
+      out.push(a);
     } else if (a.startsWith("-")) {
-      out.push(a); // a flag with no value: --rm, -i
+      return stay(`flag ${a.split("=")[0]} is not known to the remote path`);
     } else {
       image = a;
       out.push(a);
@@ -185,7 +199,6 @@ function client(c) {
 const START_DOCKER = `sh -c '(pgrep dockerd >/dev/null || (nohup dockerd-entrypoint.sh dockerd >/var/log/dockerd.log 2>&1 &)); for i in $(seq 1 60); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'`;
 
 const machines = new Map(); // pool key -> Promise<machine>
-const lastByAgent = new Map(); // agent -> machine, for calls with no run workspace
 const orphans = new Set(); // ids with no run workspace; deleted at process exit
 let snapshotReady = null;
 
@@ -218,32 +231,29 @@ function readSidecar(root) {
 
 // Find or make the machine for this call. A machine idle for a while may have
 // stopped by itself (autoStopInterval). Check it, and open a new one if so.
-async function machineFor(c, ws) {
+// `root` names the calling run when ws is outside it (a fuzz scratch dir in
+// tmp). So each run gets its own machine, and closeRun deletes it.
+async function machineFor(c, ws, rootHint = null) {
   const agent = currentAgent() || "root";
-  const root = runRoot(ws);
-  let m = root ? null : lastByAgent.get(agent);
-  if (!m) {
-    const key = root ? `${root}|${agent}` : `orphan|${agent}`;
-    if (!machines.has(key)) {
-      const p = openMachine(c, root, agent);
-      machines.set(key, p);
-      p.catch(() => machines.delete(key));
-    }
-    m = await machines.get(key);
-    m.key = key;
+  const root = (rootHint && runRoot(rootHint)) || runRoot(ws);
+  const key = root ? `${root}|${agent}` : `orphan|${agent}`;
+  if (!machines.has(key)) {
+    const p = openMachine(c, root, agent);
+    machines.set(key, p);
+    p.catch(() => machines.delete(key));
   }
+  const m = await machines.get(key);
+  m.key = key;
   if (Date.now() - m.used > staleMs() && !(await alive(m))) {
     retire(m);
-    return machineFor(c, ws);
+    return machineFor(c, ws, rootHint);
   }
-  lastByAgent.set(agent, m);
   return m;
 }
 
 // Drop a machine from the caches, so the next call opens it again.
 function forget(m) {
   if (m?.key && machines.has(m.key)) machines.delete(m.key);
-  for (const [agent, x] of lastByAgent) if (x === m) lastByAgent.delete(agent);
 }
 
 // Drop a broken machine for good: out of the caches and the sidecar, then
@@ -370,17 +380,24 @@ function locked(m, fn) {
 export async function closeRun(ws) {
   const root = resolve(ws);
   const all = readSidecar(root);
-  rmSync(sidecar(root), { force: true });
   const ids = Object.values(all).map((x) => x.id).filter(Boolean);
   for (const key of [...machines.keys()]) if (key.startsWith(`${root}|`)) machines.delete(key);
-  for (const [agent, m] of lastByAgent) if (ids.includes(m.id)) lastByAgent.delete(agent);
   const old = readPending().filter((id) => !ids.includes(id));
-  if (!ids.length && !old.length) return [];
+  if (!ids.length && !old.length) {
+    rmSync(sidecar(root), { force: true });
+    return [];
+  }
+  // Record the ids first. If this process dies during the deletes, the next
+  // closeRun still finds them. The sidecar goes only after the deletes.
+  writePending([...old, ...ids]);
   const api = client(execConfig());
   const gone = await Promise.all(ids.map((id) => deleteMachine(api, id)));
   const oldGone = await Promise.all(old.map((id) => deleteMachine(api, id, 1)));
-  const left = [...ids.filter((_, i) => !gone[i]), ...old.filter((_, i) => !oldGone[i])];
+  const done = new Set([...ids.filter((_, i) => gone[i]), ...old.filter((_, i) => oldGone[i])]);
+  // Read the file again: another run may have added ids meanwhile.
+  const left = readPending().filter((id) => !done.has(id));
   writePending(left);
+  rmSync(sidecar(root), { force: true });
   if (left.length) event("exec-cleanup", { backend: "daytona", left, note: "Daytona would not delete these yet; the next run retries" });
   return ids.filter((_, i) => gone[i]);
 }
@@ -503,7 +520,8 @@ function hostDocker(args, timeoutMs, opts = {}) {
 //   pullBack    copy changed workspace files back (default on)
 //   skipBack    top-level dirs not to copy back
 //   warm        solc versions the machine needs before this call
-export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, pullBack = true, skipBack = [], warm = [] } = {}) {
+//   root        the calling run's workspace, when ws is a dir outside it
+export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, pullBack = true, skipBack = [], warm = [], root = null } = {}) {
   const c = execConfig();
   if (!(c.backend === "daytona" && c.apiKey)) return null;
   const wsAbs = ws ? resolve(ws) : null;
@@ -521,7 +539,7 @@ export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBu
     // A failed call drops its machine and tries once more on a fresh one.
     // Only a second failure puts every call on local Docker for a while.
     for (let attempt = 0; ; attempt++) {
-      const m = await machineFor(c, wsAbs);
+      const m = await machineFor(c, wsAbs, root);
       try {
         return await locked(m, () => runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pullBack, skipBack, warm }));
       } catch (e) {
@@ -566,6 +584,11 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   // A failed warm means forge --offline would not find solc there. Run this
   // call locally instead; warmSolc also warms the local cache.
   for (const v of warm) {
+    // warmScript checks the version too. A bad one never reaches a shell.
+    if (!SOLC_VERSION.test(String(v))) {
+      event("exec-warm-failed", { backend: "daytona", sandbox: m.id, solc: String(v).slice(0, 40), detail: "not an x.y.z version" });
+      continue;
+    }
     if (m.ready.has(`solc:${v}`)) continue;
     if (m.ready.has(`nosolc:${v}`)) throw Object.assign(new Error(`solc ${v} did not install on Daytona`), { localOnly: true });
     const r = await m.api.exec(m, `sh -c ${shq(warmScript(v))}`, 300);
@@ -637,6 +660,14 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     const back = [...files.keys()].some((k) => k.startsWith("ws/"));
     if (back) await hostTar(["-xf", "-", "-C", wsAbs, "--strip-components=2", "--wildcards", "./ws/*"], res);
     m.synced.set(wsAbs, back ? scan(wsAbs) : now);
+    // Keep the copy of the run workspace itself: later calls send only the
+    // changes, and the machine goes when the run closes. Delete the copy of
+    // any other dir (a fuzz scratch dir) now. Wait for it, so the next call
+    // on this machine does not race the delete.
+    if (wsAbs !== m.root) {
+      m.synced.delete(wsAbs);
+      await m.api.exec(m, `rm -rf ${remoteWs}`, 30).catch(() => {});
+    }
   }
   const timedOut = files.has("meta/timedout");
   const stdout = clip(files.get("meta/out"), maxBuffer);
@@ -686,16 +717,24 @@ async function pushImage(m, image) {
 
 const FOUNDRY_IMG = "ghcr.io/foundry-rs/foundry:latest";
 
+// A solc version we pass to a shell: digits and dots only.
+export const SOLC_VERSION = /^\d+\.\d+\.\d+$/;
+
 // Put one solc version into the machine's foundry-svm volume, with network.
 // The first call also makes the volume and hands it to the foundry user.
+// v comes from the workspace's .touchstone.json, which a target or a
+// container may write. So it must be a plain x.y.z, and it is quoted too.
 export function warmScript(v) {
+  if (!SOLC_VERSION.test(String(v))) throw new Error(`not a solc version: ${String(v).slice(0, 40)}`);
+  const img = shq(FOUNDRY_IMG);
   return [
     "set -e",
-    `docker volume inspect foundry-svm >/dev/null 2>&1 || { docker volume create foundry-svm >/dev/null; docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm ${FOUNDRY_IMG} -c 'chown 1000:1000 /svm'; }`,
-    `D=$(mktemp -d); mkdir -p $D/src; chmod -R 777 $D`,
-    `printf '[profile.default]\\nsrc = "src"\\nout = "out"\\n' >$D/foundry.toml`,
-    `printf '// SPDX-License-Identifier: MIT\\npragma solidity ${v};\\ncontract W {}\\n' >$D/src/W.sol`,
-    `rc=0; docker run --rm -v foundry-svm:/home/foundry/.svm -v $D:/work -w /work ${FOUNDRY_IMG} 'forge build --use ${v}' >$D.log 2>&1 || rc=$?`,
-    `rm -rf $D; [ $rc -eq 0 ] || tail -c 400 $D.log; rm -f $D.log; exit $rc`,
+    `V=${shq(v)}`,
+    `docker volume inspect foundry-svm >/dev/null 2>&1 || { docker volume create foundry-svm >/dev/null; docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm ${img} -c 'chown 1000:1000 /svm'; }`,
+    `D=$(mktemp -d); mkdir -p "$D/src"; chmod -R 777 "$D"`,
+    `printf '[profile.default]\\nsrc = "src"\\nout = "out"\\n' >"$D/foundry.toml"`,
+    `printf '// SPDX-License-Identifier: MIT\\npragma solidity %s;\\ncontract W {}\\n' "$V" >"$D/src/W.sol"`,
+    `rc=0; docker run --rm -v foundry-svm:/home/foundry/.svm -v "$D:/work" -w /work ${img} "forge build --use $V" >"$D.log" 2>&1 || rc=$?`,
+    `rm -rf "$D"; [ $rc -eq 0 ] || tail -c 400 "$D.log"; rm -f "$D.log"; exit $rc`,
   ].join("\n");
 }

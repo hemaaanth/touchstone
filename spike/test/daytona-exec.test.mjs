@@ -8,9 +8,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import { closeRun, delta, execConfig, planRemote, readPending, runRoot, scan, shq } from "../lib/daytona.mjs";
+import { closeRun, delta, execConfig, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
 
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
@@ -58,6 +58,50 @@ test("planRemote keeps host networks and foreign mounts local", () => {
   assert.equal(planRemote(["run", "--network=none", "img"], null, null).local, null);
   assert.match(planRemote(["run", "-v", "/etc:/x", "img"], "/tmp/ws", "/r").local, /host path/);
   assert.match(planRemote(["build", "."], null, null).local, /not a docker run/);
+});
+
+// E: the parser fails safe. A flag it does not know may take a value, so the
+// image and the network after it cannot be trusted. Such a call stays local.
+test("E: planRemote sends unknown flags and --flag=value forms to local Docker", () => {
+  const ws = "/tmp/redteam-run-e";
+  const t = (...a) => planRemote(["run", ...a], ws, "/r").local;
+  assert.match(t("--network", "none", "--tmpfs", "/tmp", "img"), /--tmpfs/);
+  // The reviewer's case: --tmpfs swallows nothing, and a later --network host
+  // would win in docker. It must not go remote.
+  assert.match(t("--network", "none", "--tmpfs", "/tmp", "--network", "host", "img"), /--tmpfs|network/);
+  assert.match(t("--network", "none", "--network", "host", "img"), /twice/);
+  assert.match(t("--network", "none", `--volume=${ws}:/work`, "img"), /--volume/);
+  assert.match(t("--network", "none", "--volume=/etc:/x", "img"), /--volume/);
+  assert.match(t("--network", "none", "--mount", "type=bind,src=/etc,dst=/x", "img"), /--mount/);
+  assert.match(t("--network", "none", "--privileged", "img"), /--privileged/);
+  assert.match(t("--network", "none", "-eA=b", "img"), /-eA/);
+  assert.match(t("--network", "none", "--user=0", "img"), /--user/);
+  // What runTool and the packs send still goes remote.
+  assert.equal(t("--rm", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    "--pids-limit", "512", "--memory", "2g", "--user", "1:1", "-v", `${ws}:/work`, "-w", "/work",
+    "--entrypoint", "sh", "-e", "A=b", "img", "-c", "--tmpfs x"), null);
+});
+
+// A: the solc version comes from .touchstone.json, which a target or a
+// container can write. It must never run as shell on the machine.
+test("A: warmScript refuses anything but x.y.z and quotes the version", () => {
+  const d = mkdtempSync(join(tmpdir(), "dtn-warm-"));
+  const marker = join(d, "pwn");
+  try {
+    for (const bad of [`0.8.20'; touch ${marker}; echo '`, "0.8.20; touch x", "^0.8.20", "0.8", "$(id)", "", null]) {
+      assert.throws(() => warmScript(bad), /not a solc version/, String(bad));
+    }
+    // A good version runs with a stub docker. It reaches docker as one word.
+    const bin = join(d, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "docker"), `#!/bin/sh\nfor a; do printf '%s\\n' "$a"; done >>${shq(join(d, "argv"))}\n`, { mode: 0o755 });
+    execFileSync("sh", ["-c", warmScript("0.8.20")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    const argv = readFileSync(join(d, "argv"), "utf8").split("\n");
+    assert.ok(argv.includes("forge build --use 0.8.20"), argv.join("|"));
+    assert.ok(!existsSync(marker));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
 });
 
 test("shq quotes for sh", () => {
@@ -222,6 +266,7 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
         return mode === "fail" ? new Response("toolbox down", { status: 500 }) : json({ exitCode: 0, result: "" });
       }
       if (cmd.includes("foundry-svm")) { log.push(`warm ${id}`); return json({ exitCode: warmCode, result: "solc download failed" }); }
+      if (cmd.startsWith("rm -rf /ts/w/")) log.push(`rmws ${id}`);
       return json({ exitCode: 0, result: "" });
     }
     return new Response("unexpected", { status: 500 });
@@ -314,6 +359,78 @@ test("M2: a failed solc warm sends the call to local Docker and keeps the machin
     assert.ok(!fake.log.some((l) => l.startsWith("delete")));
     assert.equal(fake.log.filter((l) => l.startsWith("create")).length, 1);
   });
+});
+
+test("A: a bad solc version in warm is never sent to the machine", async () => {
+  await withFake({}, async ({ mod, ws, fake, events }) => {
+    const bad = "0.8.20'; touch /tmp/t6rev-pwn; echo '";
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws, warm: [bad] }))?.stdout, "hi");
+    assert.ok(!fake.log.some((l) => l.startsWith("warm")));
+    assert.match(events.find((e) => e.ev === "exec-warm-failed")?.detail ?? "", /x\.y\.z/);
+  });
+});
+
+// C: a fuzz scratch dir sits in tmp, outside any run. Before, it reused the
+// last machine its agent used, from any run. Now the caller names the run.
+test("C: scratch calls from two runs use each run's own machine and drop their remote copy", async () => {
+  await withFake({}, async ({ mod, ws, fake, events, sidecar }) => {
+    const wsB = join(dirname(ws), "wsB");
+    mkdirSync(wsB);
+    writeFileSync(join(wsB, ".touchstone.json"), "{}");
+    const s1 = mkdtempSync(join(tmpdir(), "redteam-fuzz-"));
+    const s2 = mkdtempSync(join(tmpdir(), "redteam-fuzz-"));
+    try {
+      assert.equal((await mod.remoteDocker(ARGS(s1), { ws: s1, root: ws }))?.stdout, "hi");
+      assert.equal((await mod.remoteDocker(ARGS(s2), { ws: s2, root: wsB }))?.stdout, "hi");
+      const used = events.filter((e) => e.ev === "exec").map((e) => e.sandbox);
+      assert.equal(used.length, 2);
+      assert.notEqual(used[0], used[1]);
+      // Each machine is in its run's sidecar, so closeRun deletes it.
+      assert.equal(sidecar().root.id, used[0]);
+      assert.equal(JSON.parse(readFileSync(`${wsB}.daytona.json`, "utf8")).root.id, used[1]);
+      // The scratch copies are deleted after each call.
+      assert.deepEqual(fake.log.filter((l) => l.startsWith("rmws")), [`rmws ${used[0]}`, `rmws ${used[1]}`]);
+      // The run workspace itself keeps its copy for the next delta.
+      assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+      assert.equal(fake.log.filter((l) => l.startsWith("rmws")).length, 2);
+      assert.equal(fake.log.at(-1), `run ${used[0]}`);
+      await mod.closeRun(wsB);
+    } finally {
+      rmSync(s1, { recursive: true, force: true });
+      rmSync(s2, { recursive: true, force: true });
+    }
+  });
+});
+
+// F: a process that dies during closeRun must not lose a machine id.
+test("F: closeRun writes the pending file before deleting and drops the sidecar after", async () => {
+  const d = mkdtempSync(join(tmpdir(), "dtn-f-"));
+  const ws = join(d, "ws");
+  mkdirSync(ws);
+  const keys = ["TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS"];
+  const saved = { env: Object.fromEntries(keys.map((k) => [k, process.env[k]])), fetch: globalThis.fetch, log: console.log };
+  const seen = [];
+  try {
+    process.env.TOUCHSTONE_EXEC = "daytona";
+    process.env.DAYTONA_API_KEY = "test-key-not-real";
+    process.env.DAYTONA_PENDING = join(d, "pending.json");
+    process.env.DAYTONA_RETRY_MS = "1";
+    console.log = () => {};
+    globalThis.fetch = async () => {
+      seen.push({ pending: readPending(), sidecar: existsSync(`${ws}.daytona.json`) });
+      return new Response("", { status: 200 });
+    };
+    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ root: { id: "m-7" } }));
+    assert.deepEqual(await closeRun(ws), ["m-7"]);
+    assert.deepEqual(seen[0], { pending: ["m-7"], sidecar: true });
+    assert.ok(!existsSync(`${ws}.daytona.json`));
+    assert.deepEqual(readPending(), []);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    console.log = saved.log;
+    for (const [k, v] of Object.entries(saved.env)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+    rmSync(d, { recursive: true, force: true });
+  }
 });
 
 // Live: the same tool call on both backends gives the same result, files come

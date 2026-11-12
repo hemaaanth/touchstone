@@ -104,7 +104,8 @@ function parseMedusa(text) {
 // prepareFuzzProject — the SAME sources and Harness.sol Echidna ran against.
 // Returns an honest empty result (available true, leads []) when Medusa ran but
 // broke nothing, or available false when it never produced a result at all.
-export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLimit = 20_000 } = {}) {
+// root is the run workspace (see echidnaScan in fuzz.mjs).
+export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLimit = 20_000, root = null } = {}) {
   writeFileSync(join(scratch, "medusa.json"), JSON.stringify(medusaConfig(testLimit), null, 2));
   const args = [
     "run", "--rm", "--network", "none",
@@ -113,7 +114,7 @@ export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLim
     "-c",
     `solc-select use ${SOLC} --always-install >/dev/null 2>&1; medusa fuzz --config medusa.json 2>&1`,
   ];
-  const r = await run(args, timeoutMs, scratch, { skipBack: ["medusa-corpus"] });
+  const r = await run(args, timeoutMs, scratch, { skipBack: ["medusa-corpus"], root });
   const out = r.stdout + r.stderr;
   // Clear the corpus Medusa wrote into the scratch so a later engine or rerun
   // starts clean; the whole scratch is removed by the caller regardless.

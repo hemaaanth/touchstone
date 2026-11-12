@@ -72,7 +72,9 @@ function parseEchidna(text) {
 
 // Run Echidna against the prepared fuzz project and return its broken-invariant
 // leads in the normalized fuzz-lead shape (engine-tagged for the ensemble).
-async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 50_000 } = {}) {
+// root is the run workspace. The scratch dir is outside it, so the Daytona
+// backend needs it to pick that run's machine.
+async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 50_000, root = null } = {}) {
   writeFileSync(
     join(scratch, "echidna.yaml"),
     `testMode: property\ntestLimit: ${testLimit}\nbalanceContract: ${HARNESS_WEI.toString()}\n`,
@@ -84,7 +86,7 @@ async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 5
     "-c",
     `solc-select use ${SOLC} --always-install >/dev/null 2>&1; echidna Harness.sol --contract Harness --config echidna.yaml --format text 2>&1`,
   ];
-  const r = await run(args, timeoutMs, scratch);
+  const r = await run(args, timeoutMs, scratch, { root });
   const out = r.stdout + r.stderr;
   // No property line at all means the harness never compiled/ran — honest empty.
   if (!/echidna_\w+:/.test(out)) {
@@ -123,8 +125,8 @@ export async function fuzzScan(ws, { timeoutMs = 240_000, testLimit = 50_000 } =
   try {
     // Run the two fuzzers in sequence — both invoke crytic-compile into the same
     // scratch, so they must not write over each other concurrently.
-    const ech = await echidnaScan(scratch, target, { timeoutMs, testLimit }).catch(() => ({ available: false, leads: [] }));
-    const med = await medusaScan(scratch, target, { timeoutMs, testLimit: Math.min(testLimit, 20_000) }).catch(() => ({ available: false, leads: [] }));
+    const ech = await echidnaScan(scratch, target, { timeoutMs, testLimit, root: ws }).catch(() => ({ available: false, leads: [] }));
+    const med = await medusaScan(scratch, target, { timeoutMs, testLimit: Math.min(testLimit, 20_000), root: ws }).catch(() => ({ available: false, leads: [] }));
 
     const engines = [];
     if (ech.available) engines.push("Echidna");

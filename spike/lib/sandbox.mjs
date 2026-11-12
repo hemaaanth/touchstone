@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
+import { SOLC_VERSION, closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
 
 const IMG = "ghcr.io/foundry-rs/foundry:latest";
 const SOLC = "0.8.38";
@@ -38,15 +38,26 @@ export function readTouchstone(ws) {
   }
 }
 
+// The solc a workspace pins: an x.y.z version, or "auto". No `solc` field
+// means the default. The value comes from .touchstone.json, which a target
+// ships and a container may rewrite. It goes into shell commands. So anything
+// but a plain x.y.z (an "=" prefix is allowed) counts as "auto": forge then
+// picks per pragma, and nothing unchecked reaches a shell.
+export function pinnedSolc(ws) {
+  const raw = readTouchstone(ws).solc;
+  if (raw === undefined || raw === null || raw === "") return SOLC;
+  const v = String(raw).trim().replace(/^=/, "");
+  return SOLC_VERSION.test(v) ? v : "auto";
+}
+
 // The `--use <solc>` fragment for a forge command, from the workspace config. A
 // lab (or any config with a pinned version) compiles with that exact solc, so
 // the suspect lines the static pass reported line up with the proof. "auto" (a
 // brief with fetched code of unknown pragma) returns "" so forge selects the
 // solc each file's pragma asks for from the warmed cache.
 function solcUse(ws) {
-  const cfg = readTouchstone(ws);
-  if (cfg.solc === "auto") return "";
-  return `--use ${cfg.solc || SOLC}`;
+  const v = pinnedSolc(ws);
+  return v === "auto" ? "" : `--use ${v}`;
 }
 
 // Build an isolated workspace from a target repo. The oracle/ directory is never
@@ -102,11 +113,12 @@ export function makeBriefWorkspace() {
   return ws;
 }
 
-export function cleanupWorkspace(ws) {
+export async function cleanupWorkspace(ws) {
   rmSync(ws, { recursive: true, force: true });
   // A Daytona run leaves `<ws>.daytona.json` with its machine ids. Delete those
-  // machines. Best effort: an idle machine also stops and deletes itself.
-  if (existsSync(`${ws}.daytona.json`)) closeRun(ws).catch(() => {});
+  // machines, and wait for it: a process that exits now would lose the ids.
+  // An id Daytona will not delete yet goes to the pending file.
+  if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {});
 }
 
 // Resolve a pragma expression to one concrete solc version we can pre-install.
@@ -185,10 +197,11 @@ const remoteWarm = new Set();
 
 // The solc versions a Daytona machine needs before forge runs on ws: the pinned
 // one, or for "auto" every concrete pragma in src/, test/ and vendor/, plus
-// what warmSolc was asked for.
-function warmFor(ws) {
-  const cfg = readTouchstone(ws);
-  if (cfg.solc !== "auto") return [cfg.solc || SOLC];
+// what warmSolc was asked for. Every value is a checked x.y.z (pinnedSolc,
+// concreteSolc), so it is safe to pass to the warm script.
+export function warmFor(ws) {
+  const pin = pinnedSolc(ws);
+  if (pin !== "auto") return [pin];
   const out = new Set(remoteWarm);
   const walk = (d) => {
     let names = [];
