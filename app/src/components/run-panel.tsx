@@ -153,7 +153,8 @@ export function RunPanel({
           <Section
             icon={ShieldCheck}
             label="Findings & Proofs"
-            count={found.length}
+            count={found.length ? null : 0}
+            pills={statePills(found)}
             status={null}
             expanded={section === "findings"}
             onToggle={() => toggle("findings")}
@@ -228,14 +229,40 @@ const CARD_WORD: Record<CardState, string> = {
   dropped: "Not recorded",
 }
 
+// One header pill per finding state the run has, in ladder order. A state
+// with no findings shows no pill. Only "proven" takes the green accent.
+const PILL_ORDER: CardState[] = ["proven", "replaying", "waiting", "unproven", "dropped"]
+const PILL_WORD: Record<CardState, string> = {
+  proven: "proven",
+  replaying: "replaying",
+  waiting: "awaiting",
+  unproven: "not reproduced",
+  dropped: "not recorded",
+}
+
+function statePills(items: PanelFinding[]): Pill[] {
+  return PILL_ORDER.map((card) => ({ card, n: items.filter((f) => f.card === card).length }))
+    .filter((p) => p.n > 0)
+    .map(({ card, n }) => ({ key: card, text: `${n} ${PILL_WORD[card]}`, title: `${n} ${CARD_WORD[card]}`, ok: card === "proven" }))
+}
+
 const plural = (n: number, word: string) => `${n} ${n === 1 ? word : `${word}s`}`
 
+interface Pill {
+  key: string
+  text: string
+  title: string
+  ok: boolean
+}
+
 // One section: a row with a chevron, an icon, a label, a count and a status.
+// A section can show several labelled count pills instead of one count.
 // Open, its body sits under the row and scrolls inside the panel.
 function Section({
   icon: Icon,
   label,
   count,
+  pills,
   status,
   bad = false,
   expanded,
@@ -245,6 +272,7 @@ function Section({
   icon: React.ComponentType<{ className?: string }>
   label: string
   count: number | null
+  pills?: Pill[]
   status: string | null
   bad?: boolean
   expanded: boolean
@@ -261,8 +289,24 @@ function Section({
       >
         <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="font-medium">{label}</span>
+        <span className="shrink-0 font-medium">{label}</span>
         {count != null ? <Count n={count} /> : null}
+        {pills?.length ? (
+          <span className="ml-auto flex min-w-0 flex-wrap justify-end gap-1">
+            {pills.map((p) => (
+              <span
+                key={p.key}
+                title={p.title}
+                className={cn(
+                  "rounded-full px-1.5 py-px text-[11px] leading-[14px] font-medium whitespace-nowrap tabular-nums",
+                  p.ok ? "bg-ok/10 text-ok" : "bg-foreground/[0.07] text-muted-foreground",
+                )}
+              >
+                {p.text}
+              </span>
+            ))}
+          </span>
+        ) : null}
         {status ? (
           <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : "text-muted-foreground")}>{status}</span>
         ) : null}
