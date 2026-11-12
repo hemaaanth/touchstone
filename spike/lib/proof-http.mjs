@@ -70,7 +70,7 @@ export async function requireImage(image, buildArg) {
 
 const PROXY_PORT = 8080;          // the port the proxy listens on (what scripts call)
 const ORIGIN_ALIAS = "origin";    // the lab's alias on the inner network
-const REC_MARKER = "__TOUCHSTONE_REC__";
+export const REC_MARKER = "__TOUCHSTONE_REC__";
 const PROXY_IMAGE = "node:20-slim";
 
 // The recording reverse proxy, run in its own container with built-in `http`
@@ -91,7 +91,7 @@ const PROXY_IMAGE = "node:20-slim";
 // Hop-by-hop headers are stripped on the way out (fetch sets its own), and the
 // response's content-encoding/length are stripped on the way back because
 // undici has already decoded the body we re-send.
-const RECORDER = `
+export const RECORDER = `
 import http from "node:http";
 const ORIGIN = process.env.ORIGIN_BASE_URL;
 const PROBE_SECRET = process.env.PROBE_SECRET || "";
@@ -121,9 +121,10 @@ http.createServer((req, res) => {
     }
     if (!probe) {
       const entry = {
-        // path is the pathname only (no ?query), so oracle matchers cannot be
-        // dodged or broken by a query string. The full URL stays in url.
-        method, path: new URL(req.url, "http://x").pathname, url: ORIGIN + req.url,
+        // path is the RAW request path the origin received, minus ?query and
+        // #fragment. It is not normalised (no "//" or "/../" collapsing), so a
+        // matcher sees what the origin saw. The full URL stays in url.
+        method, path: req.url.split(/[?#]/)[0], url: ORIGIN + req.url,
         reqHeaders: req.headers, reqBody: reqBuf.length ? parse(reqBuf.toString("utf8")) : null,
         status, resHeaders, resBody: parse(resText),
       };

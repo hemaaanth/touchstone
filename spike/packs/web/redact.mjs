@@ -23,34 +23,39 @@ export function fp(value) {
   return `[REDACTED sha256:${redactSecret(value).sha256.slice(0, 12)}]`;
 }
 
-export function scrubText(text) {
+// `extra` is a list of RegExp the caller configured on top of the built-in
+// shapes (for example the ai-mcp pack's TOUCHSTONE_MCP_SECRET_PATTERNS). The
+// oracles detect with those patterns, so the stored proof must scrub with them.
+const globalOf = (re) => (re.global ? re : new RegExp(re.source, re.flags + "g"));
+export function scrubText(text, extra = []) {
   let out = String(text);
   out = out.replace(PAIR, (_m, a, v, c) => `${a}${fp(v)}${c}`);
-  for (const re of SHAPES) out = out.replace(re, (m) => fp(m));
+  for (const re of [...SHAPES, ...extra.map(globalOf)]) out = out.replace(re, (m) => (m ? fp(m) : m));
   return out;
 }
 
 // A body (object, array or string) with every secret replaced. Returns a copy.
-export function scrubBody(value, name = "") {
+export function scrubBody(value, name = "", extra = []) {
   if (value == null) return value;
-  if (typeof value === "string") return SECRET_NAME.test(name) && value ? fp(value) : scrubText(value);
+  if (typeof value === "string") return SECRET_NAME.test(name) && value ? fp(value) : scrubText(value, extra);
   if (typeof value !== "object") return SECRET_NAME.test(name) && value !== "" ? fp(value) : value;
-  if (Array.isArray(value)) return value.map((v) => scrubBody(v, name));
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubBody(v, k)]));
+  if (Array.isArray(value)) return value.map((v) => scrubBody(v, name, extra));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubBody(v, k, extra)]));
 }
 
 // A finished http proof with no raw secret left in it. Run this right after
 // httpProof returns. The oracle has already decided, so only text changes.
-export function scrubProof(proof) {
-  const scrub = (b) => scrubBody(b);
+export function scrubProof(proof, extra = []) {
+  const scrub = (b) => scrubBody(b, "", extra);
+  const text = (t) => scrubText(t, extra);
   return {
     ...proof,
-    detail: scrubText(proof.detail ?? ""),
-    oracle: proof.oracle ? { ...proof.oracle, detail: scrubText(proof.oracle.detail ?? "") } : proof.oracle,
+    detail: text(proof.detail ?? ""),
+    oracle: proof.oracle ? { ...proof.oracle, detail: text(proof.oracle.detail ?? "") } : proof.oracle,
     log: (proof.log ?? []).map((x) => ({
       ...x,
-      label: scrubText(x.label ?? ""),
-      request: { ...x.request, url: scrubText(x.request?.url ?? ""), body: scrub(x.request?.body) },
+      label: text(x.label ?? ""),
+      request: { ...x.request, url: text(x.request?.url ?? ""), body: scrub(x.request?.body) },
       response: { ...x.response, body: scrub(x.response?.body) },
     })),
   };

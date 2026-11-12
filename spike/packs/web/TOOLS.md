@@ -68,4 +68,4 @@ the oracle accepts is a finding.
 | Session fixation / replay across subdomains | Named in `03-capabilities.md` M3's technique list | No planted bug for this in the current lab; a natural fourth oracle if the lab grows a second subdomain-like scope |
 - Lab image: built by `npm run build:labs` (`scripts/build-labs.sh`) from a
   lockfile. A missing image makes the prepass fail loudly.
-- The recorded transcript `path` is the bare pathname; `url` keeps the query.
+- The recorded transcript `path` is the raw request path with the query and fragment cut off (not normalised); `url` keeps the query.
