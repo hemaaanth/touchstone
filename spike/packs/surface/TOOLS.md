@@ -27,3 +27,19 @@ Surface has no submit_finding tool. Its prove hook returns no vulnerabilities.
 The evidence replay API can still confirm a captured inventory entry through
 its detector map. New ownership or active testing needs a separate scope grant.
 No CT, passive DNS, cloud API, public port scan, or production scan runs here.
+
+## Evaluated, not wrapped (research-named OSS, M1)
+
+The capture set is subfinder + dnsx + httpx + dns-zonefile by design. The M1
+asset-inventory research and the coverage audit name more OSS discovery tools.
+Each gets a verdict so a deliberate skip and an un-examined gap differ. The
+driving facts: this is a leads-only pack (no proof, no active testing), the lab
+origins are fixed, and any active scan or new ownership needs a separate grant.
+
+| Tool | Space | Verdict | Reason |
+|------|-------|---------|--------|
+| naabu | Port scanner | skip — out of scope by design | This pack deliberately runs no port scan (stated above); the lab advertises services through SRV records, and active port scanning needs a separate scope grant. An SRV name is a DNS name, not a running host. |
+| katana | Active crawler | skip for lab; defer for live | The lab origins are fixed, so crawling adds nothing here. Against a live target, katana could widen the URL set that httpx and the web pack consume — wire it there, behind the grant, if live crawling is wanted. |
+| jsluice, LinkFinder | Endpoint/secret extraction from JS | defer — web-pack territory | Could enrich the inventory with JS-derived endpoints, but that overlaps the web pack's script handling; surface uses parse5 for script elements only. Decide this in web, not surface. |
+| Amass | Passive + active recon framework | skip — overlap | The passive half overlaps wrapped subfinder; the active half needs network and a grant. subfinder (passive) + dnsx (brute) already cover this space with tighter offline and grant control. |
+| BBOT, reconFTW | Recursive recon orchestration frameworks | skip — orchestration overlap | Both bundle and drive the same underlying tools surface already runs individually (subfinder, httpx, dnsx). Running the orchestrator duplicates them and gives up the per-tool offline and grant enforcement this pack depends on. |

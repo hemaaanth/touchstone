@@ -27,6 +27,29 @@ is enforced in code here, and the captured snapshot is what later steps read.
 | [genlayer-frontendsentinel](https://github.com/bars26/genlayer-frontendsentinel) | MIT, upstream README and GitHub metadata | No scanner image documented in README; size not measured | Full checks use GenLayer, Cloudflare DoH and an LLM; direct-mode tests use mocks | Domain and reference description | Contract state and boolean verdict | DNS/content drift | No deterministic saved-response proof provided | Content monitoring, not this local capture pipeline | None | Needs a network and model consensus | read only; not suitable for deterministic offline replay |
 | [Cloudflare Page Shield](https://developers.cloudflare.com/client-side-security/), [cside](https://cside.com/), [Hypernative](https://www.hypernative.io/products/hypernative-frontend-monitoring), [Blockaid](https://blockaid.io/), [Front Sentinel](https://frontsentinel.com/) | Hosted products; no open-source scanner license established | No local scanner image selected; size not applicable | No offline scanner established | Live sites | Vendor alerts | Not imported | No local oracle established | Script inventory and drainer monitoring | None | Useful coverage references, not vendorable detectors | read only; no service calls or claims of parity |
 
+## Evaluated, not wrapped (research-named OSS, M2 + M15)
+
+The table above lists what this pack runs plus the monitors it compared and
+rejected. The research (M2 domains/DNS, M15 brand/phishing) and the coverage
+audit name more OSS tools in this space. Each gets a verdict here so a deliberate
+skip and an un-examined blind spot stop looking the same. Verdict ∈ {wrap,
+defer (a real gap named for a later wave), skip (reason), product decision
+(belongs to a module this pack does not own)}. The driving facts: this pack
+proves two things only — DNS takeover by fingerprint and the wallet drainer by
+jsdom replay — and every check must replay offline against the pinned snapshot.
+
+| Tool | Space | Verdict | Reason |
+|------|-------|---------|--------|
+| baddns | Subdomain takeover signatures | skip — overlap | Same fingerprint space as the wrapped Nuclei takeover templates and the compared dnsReaper; our own fingerprint check is the replay proof. No distinct lab catch to justify a third scanner. |
+| subzy, subjack | Takeover fingerprint scanners | skip — overlap | Identical fingerprint space to Nuclei takeover templates, which already serve as the second corroborating engine. No new detection. |
+| testssl.sh | Full TLS / cipher audit | defer — closes a named gap | Directly fills the "Missing DNSSEC and TLS" crypto gap flagged on the dnsx and httpx rows. Runs offline against a pinned host, so it fits evidence replay. The one TLS engine to wire when TLS coverage lands. |
+| SSLyze, tlsx | TLS scan / cert capture | skip — overlap | Overlap testssl.sh for TLS findings; pick one TLS engine (testssl.sh) rather than ensemble three. tlsx may return later purely as snapshot cert/SAN capture, not as a finding source. |
+| DNSViz | DNSSEC validation | defer — closes a named gap | Fills the "Missing DNSSEC evidence" gap named on the dnsx row. Needs the live resolver chain, so it is captured in live mode and replayed on the pinned chain. Real gap, named, not silent. |
+| Zonemaster | DNS / DNSSEC conformance suite | skip — overlap + scope | Overlaps DNSViz for the DNSSEC evidence we would prove; the rest is broad conformance testing outside this pack's two proof models. |
+| checkdmarc | SPF / DMARC / DKIM record evaluation | defer — email-auth is uncovered | Email authentication is part of M2 and nothing covers it today. checkdmarc is pure record evaluation, so it replays offline on a pinned snapshot. The tool to wire when email-auth coverage lands. |
+| parsedmarc | Parses DMARC aggregate reports | skip — not a scan | Consumes mailbox aggregate reports, not a scan of the target. It is outside the capture-then-replay pipeline entirely. |
+| dnstwist, openSquat | Typosquat / lookalike-domain generation | product decision — M15 | Brand/phishing (M15) is a module this pack does not own (audit Gap kind B). Track the typosquat tooling with that module decision, not inside domains. |
+
 ## Shared parsers and lab services
 
 - [dns-zonefile 0.3.2](https://github.com/elgs/dns-zonefile) is ISC.

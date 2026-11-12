@@ -19,17 +19,21 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   sandbox. Move it into a container.
 - The fuzz template covers vault accounting only. Other targets get no fuzz leads.
 
-## Candidates from the research (03-capabilities.md M5–M8, 04-crypto-coverage.md, 07-gap-3)
+## Evaluated, not wrapped (research-named OSS, 03-capabilities.md M5–M8, 04-crypto-coverage.md, 07-gap-3)
 
-To fill in before the Contracts wave adds them.
+Every OSS tool the research names for this module carries a verdict here, so a
+deliberate skip and an un-examined gap stop looking the same. Verdict ∈ {wrap,
+ensemble (already in "Wrapped today"), defer (a real gap, named for a wave),
+skip (reason)}. The lab targets always ship Solidity source and are EVM-only;
+those two facts drive most of these.
 
-| Tool | Why | Open questions |
-|------|-----|----------------|
-| Halmos | Symbolic tests in Foundry syntax. Proves or refutes a property. | Image, run time, output format. |
-| Mythril | Symbolic execution on bytecode. Finds paths Slither misses. | Speed on real repos. Noise. |
-| Heimdall | Decompiles bytecode when there is no source. | Lead quality. |
-| Wake | Python test and detector framework. | Overlap with Slither. |
-| Chimera (Recon) | One property suite runs on Echidna, Medusa, Halmos and Foundry. Fixes the vault-only fuzz template. | License. Whether the agent can write properties well. |
-| Semgrep (Solidity rules) | Fast pattern rules. Custom crypto rules are easy to add. | Rule pack license. |
-| 4naly3er | Gas and low findings report. | Low value for exploits. Maybe skip. |
-| Vyper, Move, Cairo, Rust (NEAR, Solana) analyzers | Non-EVM chains. | One row per chain. See 07-gap-3 for ZK and MPC. |
+| Tool | Why it was raised | Verdict | Reason |
+|------|-------------------|---------|--------|
+| Halmos | Symbolic tests in Foundry syntax; proves or refutes a property (M7 formal). | defer — Contracts wave | The only formal-verification tool in the research even reached as a candidate, and a proved/refuted property fits the harm-execution model directly. Not silent: blocked only on image, run time, and output-format work. |
+| Chimera (Recon) | One property suite runs across Echidna, Medusa, Halmos and Foundry. | defer — Contracts wave | Directly closes the "fuzz template covers vault accounting only" gap above. Blocked on license check and on whether the agent writes good properties unaided. |
+| Mythril | Symbolic execution on bytecode; finds paths Slither misses. | skip for this lab; defer for live | Lab targets ship source, so Slither + Aderyn already cover those paths. Mythril's bytecode-only path finding adds lift only against a no-source live target — wire it as an ensemble lead engine when live contract targets land. |
+| Heimdall | Decompiles bytecode when there is no source. | skip for this lab; defer for live no-source | The lab always has source, so Heimdall has zero lift today. It earns a row only when a live target ships bytecode without source. |
+| Wake | Python test and detector framework. | skip — overlap | Duplicates Slither + Aderyn as a static detector; no distinct detection shown to justify a third static engine in the ensemble. |
+| Semgrep (Solidity rules) | Fast pattern rules; custom crypto rules are easy to add. | skip — overlap | supply-chain already runs Semgrep with our own rules, and for contracts the crypto patterns are carried by Slither/Aderyn plus our oracles. Revisit if a custom crypto rule pack proves a distinct catch. |
+| 4naly3er | Gas and low-severity findings report. | skip — out of model | Gas and low findings are not exploit proof; this pack proves harm, so there is nothing for 4naly3er to prove. |
+| Vyper, Move, Cairo, Rust (NEAR, Solana) analyzers | Non-EVM chain static analysis. | defer — per target chain | The lab is EVM-only. Each non-EVM chain is one row to add when a target on that chain is in scope. See 07-gap-3 for ZK and MPC coverage. |

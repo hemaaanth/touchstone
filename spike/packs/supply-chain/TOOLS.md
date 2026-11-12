@@ -24,6 +24,27 @@ That research folder is not tracked in this worktree.
 | [Gitleaks](https://github.com/gitleaks/gitleaks) | MIT | `ghcr.io/gitleaks/gitleaks:v8.30.1`; 78.1 MB | Yes: `dir`; no provider verification | Snapshot files | `--report-format json --report-path /dev/stdout` | Rule and file/line; Secret becomes a hash; Match and source excerpts are discarded | `evidence`: rerun detector and secret fingerprint at the line | Found generic wallet key; missed Alchemy and unlabeled `accounts` value | MIT PEM private-key rule and default-rule extension workflow; retained notice | Add EVM key validation/address, BIP-39, keystore and provider URL checks | **ensemble** with TruffleHog; generic and provider-specific coverage differ |
 | [Kingfisher](https://github.com/mongodb/kingfisher) | Apache-2.0 | `ghcr.io/mongodb/kingfisher:2.18.1`; 113.2 MB. Tag has no `v` prefix | Yes: `--no-validate --no-update-check --git-history none`; network blocked | Files / Git | `--format json` emitted a report and a summary as separate JSON lines in this version; `--redact` hashes values | No findings in this lab under its default medium confidence | No retained proof adapter | Compared with Gitleaks and TruffleHog on the same generated lab | No copied rules | Did not add coverage for these planted crypto cases | **skip**; no extra detections in this lab, not a general claim about its quality |
 
+## Evaluated, not wrapped (research-named OSS, M13–M14)
+
+The table above lists what this pack runs plus the three it compared and rejected
+(Gato-X, GuardDog, Kingfisher). The M13/M14 research and the coverage audit name
+more OSS tools. Each gets a verdict so a deliberate skip and an un-examined gap
+differ. The driving facts: this pack audits a **pinned offline snapshot** and
+never touches live GitHub settings or an SCM API; workflow security is carried by
+the zizmor + poutine ensemble; Gato-X is already the read-only reference for the
+remote-enumeration class.
+
+| Tool | Space | Verdict | Reason |
+|------|-------|---------|--------|
+| OSSF Scorecard | Repo posture scored via GitHub API | skip — not offline | Needs the GitHub API and a token to read live repo settings (branch protection, etc.). This pack explicitly does not scan live GitHub settings. |
+| Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
+| Legitify | GitHub/GitLab org + repo misconfig via API | skip — not offline | Needs an SCM API token for live settings enumeration — the same remote class Gato-X already represents read-only. |
+| chain-bench | CIS supply-chain benchmark against an SCM | skip — not offline | Needs SCM API access to live settings; outside the pinned-snapshot model. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | skip; defer for provenance | A signing/verification tool, not a scanner; verification needs a live transparency log or registry. Wire only if artifact-provenance verification becomes a goal. |
+| octoscan | Static GitHub Actions scanner | skip — overlap | Overlaps the wrapped zizmor + poutine workflow engines; no distinct detection shown to justify a third. |
+| raven | CI/CD pipeline graph scanner | skip — not offline + overlap | Ingests workflows from the GitHub API into a graph DB; its strength is cross-repo scale, like Gato-X, outside the single-snapshot model. |
+| actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
+
 ## Comparison observed
 
 Run `node spike/packs/supply-chain/compare.mjs` to repeat the comparison.

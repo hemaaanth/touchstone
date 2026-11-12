@@ -1,6 +1,6 @@
 # AI and MCP: integration research
 
-Module M6. Same table as `packs/README.md`. The lab is one Express service: an
+Module M18. Same table as `packs/README.md`. The lab is one Express service: an
 MCP server, a support assistant and a public ticket form. It plants six root
 causes (see `SKILL.md`). Two tools are wrapped through `runTool()` in
 `scan.mjs`: MCP Inspector and Nuclei. They run in the prepass, in Docker, on a
@@ -26,6 +26,10 @@ Only a replayed script that an oracle accepts is a finding.
 | PyRIT | MIT | Python library | Needs a model | skip. Library, not a CLI. Same lead-only role |
 | LLM Guard, NeMo Guardrails, Rebuff | Apache-2.0 / Apache-2.0 / Apache-2.0 | Defense filters, not scanners | n/a | read only. They are fixes to suggest, not tools to run |
 | MCP servers' own test suites | per project | n/a | n/a | n/a. Out of scope: we test a server the operator runs, as a black box |
+| ramparts (MCP scanner) | Apache-2.0 (check current repo) | CLI | **No** if its risk analysis of tool descriptions calls a model/API, like mcp-scan | skip: same offline break as mcp-scan; it sends tool text off-machine. For enumeration MCP Inspector already covers us, and our oracles judge harm. Revisit if it gains a fully local mode |
+| mcp-shield | MIT (check current repo) | CLI | Pattern scan of tool descriptions; local if it ships no model call | skip for this lab: a text pattern is a lead, and our `tool-description-poisoning` oracle already proves that class from the transcript. Defer as a lead source for a real server if fully local |
+| AI-Infra-Guard | per repo | CLI + fingerprint DB | Needs its fingerprint DB; targets real AI deployments | skip: a broad AI-infra fingerprint scanner whose HTTP fingerprints overlap Nuclei. Out of this lab's black-box single-MCP scope |
+| Agentic Radar | per repo | Static analysis of agent source/workflow | Analyzes the agent's own source and tool graph | skip: different input. This pack tests a server as a black box and does not have the agent's source to analyze |
 
 ## Gaps in our wrapping
 

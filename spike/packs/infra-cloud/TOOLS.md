@@ -21,6 +21,26 @@ The two selected scanners run only through `runTool()` with `--network none`.
 The cloud service and Prowler also run through `runTool()`, but use a named Docker network created with `--internal`.
 No host port, cloud key, kubeconfig, Docker socket or host home is mounted into those containers.
 
+## Evaluated, not wrapped (research-named OSS, M10)
+
+The verdict table above lists the IaC scanners and the moto lab service this pack
+runs. The M10 research and the coverage audit name more OSS tools in this space.
+Each gets a verdict so a deliberate skip and an un-examined gap differ. The
+driving facts: this pack never touches a real cloud account (moto-only, offline),
+it scans IaC and manifests **statically**, and it proves config harm by replay —
+it is not a runtime agent and not a live-cluster or live-account tool.
+
+| Tool | Space | Verdict | Reason |
+|------|-------|---------|--------|
+| CloudFox | Exploitable-path enumeration in a real cloud account | skip; defer for live | Needs a real account; this pack never scans one. The right tool for a live engagement, not the offline lab. |
+| PMapper | IAM privilege-escalation graph from a real account | skip; defer for live | Needs real-account IAM data (and is AGPL, separate-process). Our IAM reasoning is structural on pinned Terraform plus the moto AssumeRole replay. |
+| Steampipe, Powerpipe | SQL-over-cloud posture / benchmark runner | skip — not offline + overlap | Query live cloud APIs (AGPL); for posture they overlap Prowler, which we already run against the moto subset. Nothing offline to wrap. |
+| cloud_enum, S3Scanner | Internet brute of public buckets/assets | skip — active, out of scope | Active public scanning over the internet, outside the offline model and needing a separate grant. Not a config proof. |
+| kube-bench | CIS benchmark against a running cluster/node | skip; defer for live cluster | Needs a running cluster/node. This pack scans Kubernetes manifests statically (Trivy/KICS), not a live node. |
+| Polaris | Kubernetes manifest best-practice checks | skip — overlap | Trivy + KICS + the compared Kubescape already cover K8s manifest misconfig; Polaris adds no distinct located result on this lab. |
+| KubeHound | Attack-path graph in a live cluster | skip; defer for live cluster | Needs a live cluster graph, outside the static/offline model. |
+| Falco | Runtime syscall threat detection | skip — out of model | A runtime detection agent, not a config/IaC scanner. This pack proves configuration harm by replay, not runtime events. |
+
 ## Comparison
 
 Run `node spike/packs/infra-cloud/compare.mjs`.
