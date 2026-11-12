@@ -9,6 +9,7 @@ import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
+import { randomUUID } from "node:crypto"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -247,6 +248,73 @@ export async function handleScopes(req, res) {
   return false
 }
 
+// A grant is the operator's written permission to reach a live host, so ADDING
+// or REVOKING one must be unforgeable by a web page the operator happens to visit
+// AND by the agent itself. Three checks together make it so:
+//
+//   1. A per-session capability token. Minted once per server process and printed
+//      to the server's console (OUTSIDE the HTTP surface, below). Only someone who
+//      can see the terminal — the operator — reads it. A cross-origin page cannot
+//      read it; the agent child is never handed it (it lives in a module variable,
+//      not in process.env, unless a test sets TOUCHSTONE_GRANT_TOKEN).
+//   2. Same-origin. A request that carries a foreign Origin is refused, so a
+//      visited page cannot drive a mutation even as a no-cors request.
+//   3. JSON only. A grant POST must be application/json — a content type a no-cors
+//      cross-origin request cannot set without a preflight it is not allowed.
+//
+// A drive-by page fails all three; the agent fails the token. A test sets
+// TOUCHSTONE_GRANT_TOKEN to a known value and skips the console print.
+const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || randomUUID()
+let grantTokenAnnounced = false
+function announceGrantToken() {
+  if (grantTokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
+  grantTokenAnnounced = true
+  // This line IS where the operator reads the token; it is not a log of a secret
+  // held elsewhere. Never sent over HTTP.
+  try {
+    process.stderr.write(`[grants] to add or revoke a live-reach grant, send header  x-touchstone-grant-token: ${GRANT_TOKEN}\n`)
+  } catch {
+    /* ignore a closed pipe */
+  }
+}
+
+// Guard a grant mutation (POST, DELETE). Returns true if the caller may proceed;
+// otherwise it has already sent the refusal and returns false.
+function grantMutationAllowed(req, res) {
+  // Same-origin: if an Origin is present, its host must equal our Host. A
+  // same-origin fetch sends a matching Origin; a cross-origin one sends a foreign
+  // Origin (or, for no-cors, cannot reach the JSON check below either).
+  const origin = req.headers["origin"]
+  if (origin) {
+    let originHost = null
+    try {
+      originHost = new URL(origin).host
+    } catch {
+      originHost = null
+    }
+    const host = req.headers["host"]
+    if (!originHost || !host || originHost !== host) {
+      send(res, 403, { error: "a grant can only be changed from the console's own origin" })
+      return false
+    }
+  }
+  // JSON only on POST (DELETE carries no body).
+  if (req.method === "POST") {
+    const ct = String(req.headers["content-type"] || "")
+    if (!/^application\/json\b/i.test(ct)) {
+      send(res, 415, { error: "a grant POST must be application/json" })
+      return false
+    }
+  }
+  // The capability token, unforgeable by a page or the agent.
+  const token = req.headers["x-touchstone-grant-token"]
+  if (!token || token !== GRANT_TOKEN) {
+    send(res, 403, { error: "a valid x-touchstone-grant-token is required to add or revoke a grant" })
+    return false
+  }
+  return true
+}
+
 // Grants — the operator's written permission to reach a live host (grant-store).
 // A grant names the hosts in scope, who approved it, and when; it fills the
 // scope proxy's allow-list, and a live module refuses to run with no grant for
@@ -260,6 +328,7 @@ export async function handleGrants(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","grants",...]
   if (parts[0] !== "api" || parts[1] !== "grants") return false
+  announceGrantToken()
 
   if (parts.length === 2 && req.method === "GET") {
     const now = Date.now()
@@ -268,6 +337,7 @@ export async function handleGrants(req, res) {
   }
 
   if (parts.length === 2 && req.method === "POST") {
+    if (!grantMutationAllowed(req, res)) return true
     const body = await readBody(req)
     try {
       send(res, 201, addGrant({ hosts: body.hosts, kind: body.kind, ownership: body.ownership, approvedBy: body.approvedBy, note: body.note, scopeId: body.scopeId, expiresAt: body.expiresAt }))
@@ -278,6 +348,7 @@ export async function handleGrants(req, res) {
   }
 
   if (parts.length === 3 && req.method === "DELETE") {
+    if (!grantMutationAllowed(req, res)) return true
     const id = decodeURIComponent(parts[2])
     if (!removeGrant(id)) {
       send(res, 404, { error: "no such grant" })

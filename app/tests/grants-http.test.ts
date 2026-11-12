@@ -10,17 +10,31 @@ import path from "node:path"
 // before the module loads, so the real spike/data/grants.json is never touched.
 const dir = mkdtempSync(path.join(tmpdir(), "grants-http-test-"))
 process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json")
+// A known token, set before the module loads, so the test can forge the header
+// the operator would read from the console. Also skips the console print.
+const TOKEN = "test-grant-token"
+process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleGrants } = await import("../server/runs-http.mjs")
 
 type Handlers = Record<string, (arg?: unknown) => void>
 
-function mockReq(method: string, url: string, body?: unknown) {
+// A mutation (POST/DELETE) from the console carries the capability token and,
+// for POST, an application/json content-type. These defaults stand in for a
+// same-origin console request; a test overrides them to probe the guard.
+function goodHeaders(method: string): Record<string, string> {
+  const h: Record<string, string> = { "x-touchstone-grant-token": TOKEN }
+  if (method === "POST") h["content-type"] = "application/json"
+  return h
+}
+
+function mockReq(method: string, url: string, body?: unknown, headers?: Record<string, string>) {
   const handlers: Handlers = {}
   const req = {
     method,
     url,
+    headers: headers ?? {},
     on(ev: string, cb: (arg?: unknown) => void) {
       handlers[ev] = cb
       // readBody registers "data" then "end"; drive the body once "end" is set so
@@ -51,9 +65,12 @@ function mockRes() {
   }
 }
 
-async function call(method: string, url: string, body?: unknown) {
+async function call(method: string, url: string, body?: unknown, headers?: Record<string, string>) {
   const res = mockRes()
-  const handled = await handleGrants(mockReq(method, url, body), res)
+  // A GET needs no credential; a mutation gets the console's good headers unless
+  // the test passes its own to probe the guard.
+  const h = headers ?? (method === "GET" ? {} : goodHeaders(method))
+  const handled = await handleGrants(mockReq(method, url, body, h), res)
   return { handled, status: res.statusCode, json: res.body ? JSON.parse(res.body) : null }
 }
 
@@ -101,6 +118,36 @@ describe("grant endpoints", () => {
     const r = await call("POST", "/api/grants", { hosts: ["y.example.com"], kind: "authorized" })
     expect(r.status).toBe(400)
     expect(r.json.error).toContain("approvedBy")
+  })
+
+  // A grant must be unforgeable by a web page or the agent. These three checks are
+  // the forgery defense: a drive-by page fails all three, the agent fails the
+  // token. None of them store a grant.
+  test("a grant POST with no capability token is refused, and stores nothing", async () => {
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json" })
+    expect(r.status).toBe(403)
+    const list = await call("GET", "/api/grants")
+    expect(list.json.grants.some((g: { hosts: string[] }) => g.hosts.includes("z.example.com"))).toBe(false)
+  })
+
+  test("a grant POST with the wrong content-type is refused (415)", async () => {
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "text/plain", "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(415)
+  })
+
+  test("a grant POST from a foreign origin is refused (403)", async () => {
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json", "x-touchstone-grant-token": TOKEN, origin: "https://evil.example", host: "localhost:5173" })
+    expect(r.status).toBe(403)
+  })
+
+  test("a grant DELETE with no capability token is refused (403)", async () => {
+    // Seed a grant with a valid request, then try to revoke it without the token.
+    const add = await call("POST", "/api/grants", { hosts: ["keep.example.com"], kind: "operator-owned", ownership: true })
+    expect(add.status).toBe(201)
+    const r = await call("DELETE", `/api/grants/${add.json.id}`, undefined, {})
+    expect(r.status).toBe(403)
+    const list = await call("GET", "/api/grants")
+    expect(list.json.grants.some((g: { id: string }) => g.id === add.json.id)).toBe(true)
   })
 })
 
