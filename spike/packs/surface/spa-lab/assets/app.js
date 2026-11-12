@@ -12,6 +12,12 @@ async function session() {
 async function withdraw(amount) {
   return fetch('/api/v1/withdrawals', { method: 'POST', body: JSON.stringify({ amount }) });
 }
+// A path built at run time. Only a JavaScript parser sees its shape.
+async function wallets(id) {
+  return fetch('/api/v1/users/' + id + '/wallets');
+}
+// The AWS documentation example key pair. It is not a real key.
+const storage = { accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', bucket: 'vault-uploads' };
 // A link to another host. A scoped crawl must not follow it.
 const status = 'http://localhost:__PORT__/status';
 function render(path) {
@@ -20,4 +26,4 @@ function render(path) {
 }
 window.addEventListener('popstate', () => render(location.pathname));
 render(location.pathname);
-export { session, withdraw, status };
+export { session, withdraw, wallets, storage, status };

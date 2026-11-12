@@ -13,8 +13,8 @@ import { startSpaLab } from '../packs/surface/spa-lab/server.mjs';
 const FIXTURE = new URL('./fixtures/katana-spa.jsonl', import.meta.url);
 const recorded = readFileSync(FIXTURE, 'utf8');
 const LAB = ['127.0.0.1'];
-// The fixture was recorded from the lab on this port.
-const AT = [{ scheme: 'http', port: 39051 }];
+// The fixture was recorded from the lab. Its first row is the seed page, so it names the port.
+const AT = [{ scheme: 'http', port: Number(new URL(JSON.parse(recorded.split('\n')[0]).request.endpoint).port) }];
 const paths = rows => rows.map(r => new URL(r.url).pathname);
 
 test('katana runs pinned, in standard mode, with the pack limits', () => {

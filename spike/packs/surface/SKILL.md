@@ -17,8 +17,9 @@ answered when it was captured. A dangling CNAME is a lead for Domains, not an
 exploited takeover. A captured RPC path does not prove an exposed signing API.
 
 Each entry says its kind (apex, provider-cname, cname, address, wallet-frontend,
-api-endpoint, provider-error-page, web-page, srv-service, route, script), what
-found it (subfinder, wordlist, dns-zonefile, httpx, katana) and its nextPack.
+api-endpoint, provider-error-page, web-page, srv-service, route, script,
+secret-pattern), what found it (subfinder, wordlist, dns-zonefile, httpx,
+katana, jsluice) and its nextPack.
 Report these as given. Do not infer a kind the lead does not state.
 
 In a live run, katana crawls the origins httpx found. Its endpoint entries say
@@ -26,6 +27,14 @@ where the URL was named. A crawled endpoint proves the URL was named at capture
 time. It does not prove the endpoint is reachable, open or vulnerable. An entry
 with no status may exist only in the browser. If katana shows as unavailable,
 say the crawl did not run and give its reason. Do not report a clean crawl.
+
+jsluice then reads the JavaScript katana and httpx fetched. It sends no request.
+Its endpoint entries say how the script used the URL. EXPR in a URL is a part
+the script builds at run time. A jsluice endpoint does not prove the endpoint
+exists. A secret-pattern entry names the kind, the script and a fingerprint. It
+holds no value. It does not prove the secret is real or works. Tell the operator
+a human must check it. If jsluice or jsluice-secrets shows as unavailable, say
+the scripts were not read and give its reason.
 
 Do not submit vulnerabilities. This pack has no submit_finding tool. Its prove
 hook returns no findings. Its detector map can replay inventory evidence through
