@@ -16,6 +16,7 @@ const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d
 const HTTPX = 'projectdiscovery/httpx:v1.7.1@sha256:4458ef60897c6abd1d93f7efa82c10c23b783d8ec974e2abd17e4711ff52cb41';
 const NUCLEI = 'projectdiscovery/nuclei:v3.4.2@sha256:d0e34e04a7180c6b944550b81fe50719f57383affcb18ae7a42c0045643d54af';
 const SUBFINDER = 'projectdiscovery/subfinder:v2.6.8@sha256:bf8f25e6dfb8806afa917ff1d4741fabe9296152ef150a4a539115bb6a77e682';
+export const KATANA = 'projectdiscovery/katana:v1.2.2@sha256:5dc4db5bea876732f2e393a460c2145de1e7385c1884b5d9129beb34acd4e45b';
 const TEMPLATE = fileURLToPath(new URL('./templates/github-takeover.yaml', import.meta.url));
 // A short list of names that real projects use. subfinder adds the names that public sources know.
 export const WORDLIST = ['www', 'app', 'api', 'cdn', 'docs', 'staging', 'stage', 'dev', 'test', 'beta', 'old', 'static', 'assets', 'blog', 'status', 'admin', 'portal', 'rpc', 'wallet', 'bridge', 'swap', 'claim', 'airdrop', 'mint', 'stake', 'dashboard', 'mail', 'ns'];
@@ -85,7 +86,45 @@ export function scriptUrls(pages, scope) {
   return [...urls];
 }
 
-export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) {
+// Crawl: katana in standard mode with JavaScript parsing (-jc). Headless mode is off.
+// Its Chromium makes its own calls to hosts outside the grant, so it is not offline-safe.
+// Limits match httpx: 5 requests a second, 2 at a time, 10 s timeout, 1 retry. Depth 3, 120 s at most.
+// -or and -ob stay off: with no body, katana parses no JavaScript.
+export const MAX_CRAWL = 100;
+const quote = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const PORTS = [{ scheme: 'https', port: 443 }, { scheme: 'http', port: 80 }];
+const isDefault = ({ scheme, port }) => (scheme === 'http' && port === 80) || (scheme === 'https' && port === 443);
+// Only granted hosts, their subdomains, and the granted scheme and port pairs.
+export const crawlScope = (scope, ports = PORTS) => '^(?:' + ports.map(p => p.scheme + '://([a-z0-9-]+\\.)*(' + scope.map(quote).join('|') + ')' + (isDefault(p) ? '(:' + p.port + ')?' : ':' + p.port)).join('|') + ')(?:/|$)';
+const portAllowed = (u, ports) => ports.some(p => p.scheme + ':' === u.protocol && Number(u.port || (u.protocol === 'https:' ? 443 : 80)) === p.port);
+export const katanaArgs = (list, scope, resolver, ports = PORTS) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
+  '-rl', '5', '-c', '2', '-p', '2', '-timeout', '10', '-retry', '1', '-mrs', '2097152', '-cs', crawlScope(scope, ports),
+  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver ? ['-r', 'udp:' + resolver + ':53'] : [])];
+// katana -jsonl rows to crawl rows. Seed URLs have no source, and httpx already has them.
+// A row with no status_code is a URL katana requested whose answer it did not keep (often an SPA fallback page).
+export function parseKatana(stdout, scope, ports = PORTS) {
+  const out = new Map();
+  for (const r of jsonl(stdout)) {
+    if (!r.request?.source) continue;
+    let u; try { u = new URL(r.request.endpoint); } catch { continue; }
+    if (!/^https?:$/.test(u.protocol) || !inScope(u.hostname, scope) || !portAllowed(u, ports)) continue;
+    u.hash = ''; u.search = '';
+    if (out.has(u.href)) continue;
+    const status = Number.isInteger(r.response?.status_code) ? r.response.status_code : null;
+    out.set(u.href, { url: u.href, status, type: status ? String(r.response.headers?.['content-type'] ?? '') : '', tag: String(r.request.tag ?? ''), attribute: String(r.request.attribute ?? ''), source: r.request.source });
+  }
+  return [...out.values()].sort((a, b) => a.url < b.url ? -1 : 1);
+}
+// Why a tool did not run, in words an operator can act on.
+export function failReason(result, image) {
+  const tail = String(result.stderr ?? '').trim().slice(-200);
+  if (result.timedOut) return 'Timed out. ' + tail;
+  if (result.code === 125) return 'Docker could not run the image ' + image + '. ' + tail;
+  return 'Exited with code ' + result.code + '. ' + tail;
+}
+
+// crawl: also run katana over the live pages. Surface sets it. Domains does not need it.
+export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false }) {
   const scope = assertReach(reach, domain);
   ensureImage();
   const dir = join(ws, '.live');
@@ -95,7 +134,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
   const run = async (engine, opts, leads = n => n) => {
     const result = await runTool({ ws, network: reach.network, env, ...opts });
     const status = result.code === 0 && !result.timedOut ? 'ran' : 'unavailable';
-    coverage.push({ engine, status, code: result.code, timedOut: result.timedOut, reason: status === 'ran' ? undefined : result.stderr.slice(-200), leads: 0 });
+    coverage.push({ engine, status, code: result.code, timedOut: result.timedOut, reason: status === 'ran' ? undefined : failReason(result, opts.image), leads: 0 });
     return Object.assign(result, { note: n => { coverage.find(c => c.engine === engine).leads = n; return n; } });
   };
   try {
@@ -126,7 +165,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
     const dns = dnsRows([...rows, ...targetRows]);
     const zone = synthZone(domain, dns);
     const live = rows.filter(r => r.a?.length || r.aaaa?.length || r.cname?.length).map(r => nameOf(r.host)).filter(h => inScope(h, scope));
-    const ports = reach.ports ?? [{ scheme: 'https', port: 443 }, { scheme: 'http', port: 80 }];
+    const ports = reach.ports ?? PORTS;
     const probe = async (engine, urls) => {
       put('urls.txt', urls);
       const res = await run(engine, { image: HTTPX, cmd: ['-l', '/work/.live/urls.txt', ...(reach.resolver ? ['-r', 'udp:' + reach.resolver + ':53'] : []), '-json', '-silent', '-duc', '-nfs', '-sc', '-title', '-irh', '-irr', '-rl', '5', '-t', '2', '-timeout', '10', '-retries', '1'], timeoutMs: 180000 });
@@ -137,6 +176,13 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
     const scripts = scriptUrls(pages, scope).filter(u => !pages.some(p => p.url === u));
     const assets = scripts.length ? await probe('httpx-scripts', scripts) : [];
     const http = [...pages, ...assets].sort((a, b) => a.url < b.url ? -1 : 1);
+    let crawled = null;
+    if (crawl && pages.length) {
+      put('crawl.txt', [...new Set(pages.map(p => new URL(p.url).origin + '/'))]);
+      const k = await run('katana', { image: KATANA, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports), timeoutMs: 180000 });
+      const rows = parseKatana(k.stdout, scope, ports); k.note(rows.length);
+      crawled = rows.slice(0, MAX_CRAWL);
+    }
     const hits = [];
     if (pages.length) {
       copyFileSync(TEMPLATE, join(dir, 'github-takeover.yaml'));
@@ -146,12 +192,12 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
+    return { schema: 1, root: domain, zone, dns, http, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.
-export async function pinLive(ws, domain, reach) {
-  const snapshot = await captureDomain({ ws, domain, reach });
+export async function pinLive(ws, domain, reach, options = {}) {
+  const snapshot = await captureDomain({ ws, domain, reach, ...options });
   pinSnapshot(ws, snapshot);
   return snapshot;
 }
