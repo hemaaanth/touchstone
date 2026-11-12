@@ -226,7 +226,7 @@ function isRunnable(target) {
   if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
   // A live target runs when it names at least one host and its module exists.
   // The grant check happens at run start (createRun -> openReach), not here.
-  if (target.kind === "live") return reachHosts(target).length > 0 && Boolean(PACKS[packOf(target)])
+  if (target.kind === "live") return reachHosts(target).length > 0 && Object.hasOwn(PACKS, packOf(target))
   return false
 }
 
@@ -263,7 +263,8 @@ export function pickTarget({ id, pack } = {}) {
   const want = pack ?? "contracts"
   let labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && isRunnable(t))
   // A pack with no labs (Review) picks from the operator's own scopes for it.
-  if (!labs.length) labs = readScopes().filter((t) => packOf(t) === want && isRunnable(t))
+  // A live website runs only when the operator picks it by id, never at random.
+  if (!labs.length) labs = readScopes().filter((t) => t.kind !== "live" && packOf(t) === want && isRunnable(t))
   if (!labs.length) throw new Error(`no runnable targets for pack "${want}"`)
   return labs[Math.floor(Math.random() * labs.length)]
 }

@@ -87,3 +87,8 @@ test("if the scope cannot be saved, its grant is rolled back", () => {
     process.env.TOUCHSTONE_SCOPES_FILE = real;
   }
 });
+
+test("a live scope is never picked at random, only by id", () => {
+  addLiveScope({ hosts: ["a.example.com"], pack: "review", permission: true });
+  assert.throws(() => pickTarget({ pack: "review" }), /no runnable targets/);
+});
