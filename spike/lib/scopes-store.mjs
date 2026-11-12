@@ -398,6 +398,23 @@ export function addRepoScope({ title, repo } = {}) {
   return addScope({ title, members: [{ kind: "repo", url: repo }], pack: "contracts" });
 }
 
+// The exact place a live run sends requests: scheme + host + port, from what the
+// operator typed. The grant keeps only the hostname (that is what the gate
+// matches); the origin is what the run is actually aimed at, so it must survive.
+// A bare host is https. Returns null when the text is not an http(s) address.
+export function siteOrigin(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  let u;
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  return u.origin;
+}
+
 // ---- Live sites ------------------------------------------------------------
 //
 // A live scope is one or more real websites the operator wants tested. The
@@ -415,6 +432,8 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
   const packId = String(pack || "").trim() || "web";
   if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
+  const origins = [...new Set(list.map(siteOrigin).filter(Boolean))];
+  if (!origins.length) throw new Error("A live scope needs at least one http(s) website.");
   // The grant checks and normalizes each host (no public-suffix wildcards, no
   // private addresses). It throws before anything is saved.
   const grant = addGrant({
@@ -434,6 +453,9 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
     entry: grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
+    // Where a run actually sends its requests, in the operator's own scheme and
+    // port. `hosts` above is only the gate's allow-list; this is the aim.
+    origins,
     permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
     proofSurface: {
       kind: "live",

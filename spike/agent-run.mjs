@@ -22,6 +22,8 @@ import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
+import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
+import { openReach } from "./lib/reach.mjs";
 import { event } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
@@ -253,13 +255,18 @@ async function main() {
   guard(); // stop before starting if this run has already spent its budget
   const db = `${DIR}run-${ALIAS}.sqlite`;
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
-  const ws = makeWorkspace(TARGET);
+  // TARGET_ID selects a library target (a live scope included) and prepares it
+  // the way the app does; TARGET stays the direct path for a working checkout.
+  const target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  const reach = target ? await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" }) : null;
+  const ws = target ? await prepareRunWorkspace(target) : makeWorkspace(TARGET);
   const pack = packFor(readTouchstone(ws));
   const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events` };
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
   const prep = await pack.prepass?.(ws, {
+    reach,
     emit: (ev) => {
       appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
       console.log("· " + ev.ev + " " + JSON.stringify(ev));
@@ -269,7 +276,7 @@ async function main() {
   // One worker runs the whole audit. submit_finding never blocks, so nothing
   // has to be killed or resumed; the run settles on its own.
   console.log(`\n== agent run (${ALIAS}) ==`);
-  const runEnv = { ...env, ...prep?.env };
+  const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
   const first = await runChild("run", db, ws, runEnv);
   const all = first.events;
   const settled = all.find((e) => e.ev === "settled");
@@ -307,6 +314,7 @@ async function main() {
     usage: settled?.usage, reports: settled?.reports,
   };
   writeFileSync(`${DIR}run-${ALIAS}.json`, JSON.stringify({ result, transcript: settled?.summary }, null, 2));
+  await reach?.stop?.();
   await cleanupWorkspace(ws);
 
   console.log("\n==== run summary ====");

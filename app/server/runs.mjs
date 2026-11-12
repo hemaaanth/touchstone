@@ -327,11 +327,11 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // workspace is prepared: an offline kind (lab/local-source/brief/scope) with no
   // host passes inert; EVERY other kind — and any kind that names a host — must
   // carry a grant, or openReach throws a clear refusal naming the first uncovered
-  // host. For a granted live run openReach also starts the scope proxy confined to
-  // the granted hosts and returns the env that routes the module's network seam
-  // through it, so egress is ENFORCED, not just pre-refused. A grant never widens
-  // what a run DOES; it only clears the host the network seam may reach.
-  const reach = await openReach(target)
+  // host. For a live run openReach stands up the confinement boundary and
+  // returns the env that routes the module's network seam through it, so egress
+  // is ENFORCED, not just pre-refused. A grant never widens what a run DOES; it
+  // only clears the host the network seam may reach.
+  const reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" })
   // The proxy (if the gate started one) is live from here. If any later setup
   // step throws before the run is registered, stop it so a refused or broken run
   // never leaks a listening gate.
@@ -426,6 +426,7 @@ async function startEngine(run) {
   try {
     const prep = await packFor(readTouchstone(run.ws)).prepass?.(run.ws, {
       emit: (ev) => broadcast(run, ev),
+      reach: run.reach,
     })
     run.prepass = prep?.record ?? null
     run.static = prep?.record?.static

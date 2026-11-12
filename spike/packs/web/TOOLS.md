@@ -39,11 +39,12 @@ the oracle accepts is a finding.
   anonymous surface. They cannot see the two session bugs (nonce replay, BOLA).
   A scan that signs in with the test wallets (ZAP with a SIWE auth script) is
   not built.
-- **Live target (acceptance line 6) is not done.** The scan takes `{ net,
-  baseUrl }`, so a granted target can plug in, and `prepass(ws, { target })`
-  already accepts it. But the agent's `run_request_script` still replays on the
-  lab image, and the scope proxy and grant (thread 7) do not exist yet. Until
-  they do, the pack runs on labs only.
+- **A granted live target is wired** (pack flag `live: true`). The scan is aimed
+  at the real base URL on the bridge network, `run_request_script` sends real
+  requests from a container confined to the grant, and the proof replays at the
+  site again. The lab image is still the script runtime (it carries ethers and
+  siwe); no lab is started. The oracles are lab-shaped, so a non-SIWE site will
+  rarely prove more than reflected XSS.
 - ZAP runs the passive baseline only. The active scan is not wired: it sends
   attack traffic, so it needs the scope proxy first.
 - No JWT-session lab exists in this pack, so `jwt_tool` has nothing to run

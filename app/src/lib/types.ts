@@ -282,8 +282,10 @@ export interface TargetScope {
   id: string
   title: string
   kind: "lab" | "local-source" | "brief" | "scope" | "live"
-  // A live scope's websites: the hosts a run may reach.
+  // A live scope's websites. `origins` is where a run sends requests (scheme,
+  // host and port as typed); `hosts` is the gate's bare-host allow-list.
   hosts?: string[]
+  origins?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
   blurb: string

@@ -35,15 +35,11 @@
 // non-granted host or a raw IP). The boundary (reach-confine.test.mjs) and the
 // primitive that runs tools inside it (runConfined) are both built and proven.
 //
-// WHAT REMAINS FOR A DISPATCHABLE LIVE TARGET. Two wires, not a boundary:
-//   1. lib/reach.mjs openReach() still starts the cooperating-proxy (option a)
-//      for a live run; it must instead stand up this confineReach boundary and
-//      hand the run a runConfined bound to it.
-//   2. lib/targets.mjs isRunnable() still refuses "live", and no live pack yet
-//      drives runConfined in a tool loop to a proof on a declared proofSurface.
-// Both are dispatcher wiring + a live pack, not a missing boundary. Until they
-// land a live target stays non-runnable, so the refusal is pre-flight and the
-// confinement — now including tool execution — is real, not advisory.
+// WIRED. openReach() now stands this boundary up for a live run (`mode:
+// "confine"`) and hands the run its env plus the handle, and the Web pack drives
+// its request tool through it to a proof on the target. The cooperative proxy
+// (lib/scope-proxy.mjs on its own) remains the default for tests and for any
+// caller that runs on the host.
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";

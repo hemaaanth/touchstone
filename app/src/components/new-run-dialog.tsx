@@ -321,15 +321,16 @@ const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 type Source =
   | { kind: "repo"; url: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
-  | { kind: "site"; host: string }
+  | { kind: "site"; host: string; origin: string }
 
-const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.host}` : `folder:${s.name}`)
+const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : `folder:${s.name}`)
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
 
-// A website address the operator typed, as a bare host name. "example.com",
-// "https://app.example.com/login" and "http://example.com:8080" all work.
-// The server checks the host again before it saves anything.
-function siteHost(raw: string): string | null {
+// A website address the operator typed, as the exact origin a run will call.
+// "example.com" means https; "https://app.example.com:8443/login" keeps its
+// scheme, host and port and drops the path. The server checks the host again
+// before it saves anything.
+function siteOrigin(raw: string): string | null {
   const text = raw.trim()
   if (!text) return null
   let u: URL
@@ -340,7 +341,7 @@ function siteHost(raw: string): string | null {
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null
   if (u.username || u.password || !u.hostname.includes(".")) return null
-  return u.hostname.toLowerCase()
+  return u.origin
 }
 
 // What POST /api/scopes gets for a list of sources: one members array, repos
@@ -351,7 +352,7 @@ function siteHost(raw: string): string | null {
 // operator saying they may test them, and the server records it as a grant.
 function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
-  const sites = sources.flatMap((s) => (s.kind === "site" ? [s.host] : []))
+  const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   if (sites.length) return { kind: "live", title, hosts: sites, permission, ...(pack ? { pack } : {}) }
   const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
   return { title, members, ...(pack ? { pack } : {}) }
@@ -403,14 +404,15 @@ export function AddScope({
   const addUrl = () => {
     const text = url.trim()
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
-    const host = href ? null : siteHost(text)
+    const origin = href ? null : siteOrigin(text)
+    const host = origin ? new URL(origin).hostname : null
     // github.com is never a live site here: a near-miss repo URL would
     // otherwise become a permission tick for all of github.com.
     if (host === "github.com" || host?.endsWith(".github.com")) {
       return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
     }
-    if (!href && !host) return onError("Use a GitHub repository URL or a website address.")
-    add(href ? { kind: "repo", url: href } : { kind: "site", host: host! })
+    if (!href && !origin) return onError("Use a GitHub repository URL or a website address.")
+    add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
     setUrl("")
   }
   const save = () => {
@@ -517,7 +519,7 @@ export function AddScope({
                   {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.host : `${s.name}/`}
+                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.origin : `${s.name}/`}
                 </span>
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">

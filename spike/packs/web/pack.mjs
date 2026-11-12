@@ -20,6 +20,7 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { Wallet } from "ethers";
 import { event } from "../../lib/event.mjs";
+import { readTouchstone } from "../../lib/sandbox.mjs";
 import { sortFindings } from "../../lib/record.mjs";
 import {
   httpProof,
@@ -33,9 +34,10 @@ import {
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
+import { LIVE_IMAGE, isLive, livePrepass, liveProof, runLiveScript } from "./live.mjs";
 import { fp, scrubProof } from "./redact.mjs";
 
-const IMAGE = "touchstone/web-lab:dev";
+const IMAGE = LIVE_IMAGE;
 const LEADS_FILE = ".web-leads.json";
 
 // Total run_request_script attempts for the whole audit. Three root causes
@@ -473,7 +475,9 @@ function kickoff(ws, env = {}) {
   const brief = readWorkspaceText(ws, "BRIEF.md");
   const openapi = readWorkspaceText(ws, "openapi.yaml");
   const parts = [
-    "Audit this dApp's sign-in flow and API. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.",
+    isLive(ws)
+      ? `Audit ${readTouchstone(ws).baseUrl ?? "the live site"} as a live website. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.`
+      : "Audit this dApp's sign-in flow and API. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.",
   ];
   if (env.LEADS && env.LEADS !== "[]") {
     parts.push(`Prepass leads from zap, nuclei and dalfox (hints only, each one must be proven by a replayed script; call web_leads to read them again):\n${env.LEADS}`);
@@ -495,7 +499,7 @@ function nudge(state) {
 function tools(ws, state) {
   const runScript = defineTool({
     name: "run_request_script",
-    description: "Run a short JS script against the live lab and read what happened. Inside the script, three globals are already defined: await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }; buildSiwe({ domain, address, uri, version, chainId, nonce, issuedAt }) returns the EIP-4361 message text for those fields; await signPersonal(privateKeyHex, message) returns an EIP-191 personal_sign signature. Every request/response is recorded in an independent transcript the script cannot edit; after the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"); if it trips a pattern, call submit_finding with that same label.",
+    description: "Run a short JS script against the target and read what happened. `path` is resolved against the run's base URL (the lab, or the live site). Inside the script, three globals are already defined: await request(method, path, { headers, body }) makes one real HTTP call and returns { status, resBody, resHeaders }; buildSiwe({ domain, address, uri, version, chainId, nonce, issuedAt }) returns the EIP-4361 message text for those fields; await signPersonal(privateKeyHex, message) returns an EIP-191 personal_sign signature. Every request/response is recorded in an independent transcript the script cannot edit; after the script runs, this tool reports whether that transcript tripped one of the engine's own harm checks. Give each attempt a short, unique label (e.g. \"replay-1\"); if it trips a pattern, call submit_finding with that same label.",
     parameters: obj({
       label: str({ description: "a short, unique name for this attempt, e.g. \"replay-1\" (pass this same label to submit_finding on a match)" }),
       script: str({ description: "JS source using request()/buildSiwe()/signPersonal(), e.g.: const n = await request(\"GET\", \"/siwe/nonce\"); const msg = buildSiwe({...}); ..." }),
@@ -509,14 +513,18 @@ function tools(ws, state) {
         const hint = unsent.length ? ` These matched attempts are not submitted yet: ${unsent.join(", ")}. Submit any that prove a new root cause.` : "";
         return { output: [{ type: "text", text: `Script attempt budget exhausted (${MAX_SCRIPT_RUNS} runs used).${hint} Stop running scripts and write the coverage summary.` }], isError: true };
       }
-      const handle = readLabHandle(ws);
-      if (!handle) {
+      // A live run has no lab handle: the same script goes to the operator's
+      // real site through the reach boundary the platform opened.
+      const live = isLive(ws);
+      if (!live && !readLabHandle(ws)) {
         return { output: [{ type: "text", text: "The lab is not running (no persisted handle). This is an infrastructure error, not something your script can fix." }], isError: true };
       }
       event("run_request_script", { label: args.label, attempt });
       let run;
       try {
-        run = await runRequestScript(handle, String(args.script), { timeoutMs: 20_000 });
+        run = await (live
+          ? runLiveScript(ws, String(args.script), { timeoutMs: 30_000 })
+          : runRequestScript(readLabHandle(ws), String(args.script), { timeoutMs: 20_000 }));
       } catch (err) {
         event("run_request_script-done", { label: args.label, ok: false });
         return { output: [{ type: "text", text: `Script failed to run: ${String(err?.message ?? err).slice(0, 300)}` }], isError: true };
@@ -602,23 +610,26 @@ function tools(ws, state) {
 //     agent's recorded transcripts or its lab state. The scan leads go to the
 //     agent. A lead is a hint. Only a replayed script that the oracle accepts
 //     is a finding.
-// A live target comes in as opts.target = { net, baseUrl }: the Docker network
-// and base URL the platform scope proxy grants. Then we scan that and start no
-// scan lab. (The platform seam for this is not built yet. See TOOLS.md.)
-async function prepass(ws, { emit = () => {}, target, image = IMAGE } = {}) {
+// A LIVE run has no lab. livePrepass (./live.mjs) binds the platform's reach
+// boundary to the workspace and scans the operator's real site instead, so every
+// later step aims at the site the run was actually pointed at.
+async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
+  if (isLive(ws)) return livePrepass(ws, { emit, reach });
   await requireImage(image, "web");
   const handle = await startLab({ image });
   writeLabHandle(ws, handle);
-  emit({ ev: "web-lab-started", image: IMAGE, alias: handle.alias });
+  emit({ ev: "web-lab-started", image, alias: handle.alias });
 
+  // A second, throwaway lab: scanner traffic must not touch the one the agent
+  // will explore, or it would pollute the recorded transcripts and lab state.
   let scan = { coverage: [], leads: [] };
   let scanLab = null;
   try {
-    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl });
+    scanLab = await startLab({ image });
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
     // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
     const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
-    scan = await scanWeb({ ...where, urls: docQueryUrls(docs, where.baseUrl) });
+    scan = await scanWeb({ net: scanLab.net, baseUrl: scanLab.netBaseUrl, urls: docQueryUrls(docs, scanLab.netBaseUrl) });
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {
@@ -636,12 +647,14 @@ function leadLine(l) {
 }
 
 // Never trust the live session's own run_request_script results as proof: by
-// the time prove() runs, the agent may have mutated the lab's in-memory state
-// (used nonces, issued tokens). Tear down the persisted lab, then replay each
-// submitted finding's exact script against a FRESH lab via httpProof(), which
-// starts its own lab, runs the script, asks the named oracle, and tears down.
+// the time prove() runs, the agent may have mutated state (used nonces, issued
+// tokens). Replay each submitted finding's exact script, independent of that
+// session, and let the named oracle read the new transcript.
+//   - Lab: tear down the persisted lab and replay against a FRESH one.
+//   - Live: there is no lab; replay at the operator's site again.
 async function prove(ws, found, _events, log) {
-  await teardownPersistedLab(ws);
+  const live = isLive(ws);
+  if (!live) await teardownPersistedLab(ws);
   const out = [];
   for (const f of sortFindings(found ?? [])) {
     if (!f?.script || !f?.oracleName) {
@@ -653,10 +666,10 @@ async function prove(ws, found, _events, log) {
       out.push({ ...f, proof: { kind: "http", status: "fail", detail: `unknown oracle: ${f.oracleName}`, oracle: { name: f.oracleName, detail: "", passed: false }, log: [] } });
       continue;
     }
-    log?.(`replaying #${f.n} ${f.title} against a fresh lab (${oracle.name})`);
+    log?.(`replaying #${f.n} ${f.title} against ${live ? "the live target" : "a fresh lab"} (${oracle.name})`);
     let proof;
     try {
-      proof = scrubProof(await httpProof({ image: IMAGE }, f.script, oracle));
+      proof = scrubProof(live ? await liveProof(ws, f.script, oracle) : await httpProof({ image: IMAGE }, f.script, oracle));
     } catch (err) {
       proof = { kind: "http", status: "fail", detail: `replay infrastructure error: ${String(err?.message ?? err).slice(0, 300)}`, oracle: { name: oracle.name, detail: "", passed: false }, log: [] };
     }
@@ -666,12 +679,79 @@ async function prove(ws, found, _events, log) {
   return out;
 }
 
+// The LIVE prompt. Same audit and the same rule (only a matched replay counts),
+// but it must not claim the lab's fixed address or wallets. Which oracle can
+// fire depends on the site, so they are listed plainly.
+function liveSystem(ws) {
+  const base = readTouchstone(ws).baseUrl ?? "";
+  return `You are an authorized offensive-security agent. The target is a REAL website the
+operator has permission to test: ${base}
+Nothing is a lab. There is no container to fall back on, and the site may change under
+you. Audit it, and PROVE every real bug by replaying a request script.
+
+How requests work:
+- Only run_request_script reaches the site. Inside a script, request(method, path,
+  { headers, body }) sends one real request, relative to ${base}, and returns
+  { status, resBody, resHeaders }.
+- Every request/response is recorded out of band; the tool reports whether that
+  transcript tripped one of the engine's harm checks. Read the transcript, never your
+  own console output.
+- The gate lets only the granted host through. A request to another host is refused.
+
+The checks this module can prove (a match is the ONLY thing that makes a finding):
+1. SIWE nonce replay: the same signed message and signature posted to the sign-in
+   endpoint twice, both minting a DIFFERENT session.
+2. Broken object authorization: a call reads another account's profile/wallet/API key
+   under a session token the server minted for a different user.
+3. An unauthenticated route returns a signer private key (a signerPrivateKey field whose
+   key derives the reported signerAddress). Prove it with a call carrying NO credentials
+   at all; a junk-token call is support only.
+4. Reflected XSS: a page reflects a query value unescaped as executable markup, in a
+   live position, with no CSP that blocks it.
+If the site is not a SIWE dApp, checks 1-3 may never fire; check 4 still can. Say that
+plainly in the coverage summary instead of forcing a lab-shaped claim.
+
+Wallets: if the site signs in with Ethereum, first read the domain, uri and chainId it
+expects. The two well-known test key pairs are available when the site accepts them:
+  user 1: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 / 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+  user 2: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 / 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+signPersonal(key, message) and buildSiwe(fields) are injected. If the site needs an
+account you have no key for, say so; never invent one.
+
+BRIEF.md names the site and its base URL. Read it first. The prepass scanners (zap,
+nuclei, dalfox) ran against the real host; their leads are in your first message and in
+web_leads. Leads are hints. They cannot sign in, so they miss session and authorization
+bugs.
+
+Rules:
+- One finding per ROOT CAUSE. One fix closes one finding.
+- Plan first, worst first: the sign-in flow, every discovered route's ownership check,
+  undocumented routes, then pages that echo input.
+- At most 3 run_request_script attempts per suspect. If it does not trip a pattern, mark
+  it "not proven" and move on.
+- The moment a script trips a pattern, call submit_finding with that label, then keep
+  going. Stop when every suspect is proven or ruled out, or the budget is spent, then
+  write the coverage summary, one line per suspect: proven / not exploitable / not tried.
+- Not findings: a correct 401/403, or a route returning only the caller's own data.
+
+Severity: critical = a private key or equivalent secret leaks with no further step;
+high = one session can read or act on another account, or a sign-in artifact mints
+sessions again; medium = reflected script injection, or a flaw needing an unusual
+precondition; low = a note with no path to harm.
+
+Write each explanation so a smart 15-year-old follows it. Simplified Technical English,
+short sentences, one idea per sentence. Put identifiers in \`backticks\`. End with a line
+starting with "Fix:". Keep going without asking questions. Work from the real site.`;
+}
+
 export default {
   id: "web",
   title: "Web and sign-in",
-  tier: "P", // passive: the lab runs only in our own offline sandbox
+  tier: "P", // passive
   proof: "http",
-  system: () => SYSTEM,
+  // This pack can drive its tools at a real host, not only at its own lab.
+  live: true,
+  system: (ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM),
   tools,
   kickoff,
   nudge,

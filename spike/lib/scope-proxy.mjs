@@ -298,6 +298,10 @@ function forward(req, res, target, pinnedAddress, done) {
   delete headers["x-touchstone-url"]; // the gate's own routing header, not the target's
   delete headers["proxy-connection"];
   delete headers.connection;
+  // fetch frames the body itself from the buffer. A client's own chunked
+  // framing must not ride along as a header, or fetch rejects the request.
+  delete headers["transfer-encoding"];
+  delete headers["content-length"];
 
   // Pin: send the request to the checked IP, but keep the original Host so the
   // target serves the right virtual host and TLS/SNI is moot (http only here).

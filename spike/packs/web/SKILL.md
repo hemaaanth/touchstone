@@ -122,9 +122,13 @@ checks this.
 
 - Two seeded wallets, one lab server, one Docker image. The agent does not
   discover new wallets or scan a route list the lab does not have.
-- Local, offline Docker only. No fork, no live network, no real keys.
-- A live (non-lab) target is not wired yet. It waits for the platform scope
-  proxy and grant. `prepass(ws, { target: { net, baseUrl } })` is the hook.
+- Local, offline Docker for a lab. A LIVE target is wired: the run makes real
+  requests to the site through the reach boundary, and the proof replays against
+  the site again. The four oracles are lab-shaped, so a site that is not a SIWE
+  dApp will rarely prove anything beyond reflected XSS — the coverage summary
+  says so instead of inventing a match.
+  The prepass scanners run on the default bridge network, aimed at the base URL;
+  only the script container is confined.
 - JWT-attack breadth (alg confusion, weak secrets), CORS/CSRF, and open-ended
   fuzzing are not covered by our own oracles; see TOOLS.md for what a wrapped
   scanner could still add as a lead (never a finding on its own — this pack

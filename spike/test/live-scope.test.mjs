@@ -35,6 +35,8 @@ test("the tick records a grant that covers exactly the scope's hosts", () => {
   assert.equal(scope.kind, "live");
   assert.equal(scope.pack, "web");
   assert.deepEqual(scope.hosts, ["app.example.com", "api.example.com"]);
+  // The exact origins survive: scheme, host and port are what the run aims at.
+  assert.deepEqual(scope.origins, ["https://app.example.com", "https://api.example.com"]);
   const [grant] = readGrants();
   assert.equal(grant.scopeId, scope.id);
   assert.deepEqual(grant.hosts, scope.hosts);
@@ -50,6 +52,12 @@ test("a live scope is offered and can be picked for a run", () => {
   assert.equal(row.runnable, true);
   assert.deepEqual(row.hosts, ["app.example.com"]);
   assert.equal(pickTarget({ id: scope.id }).id, scope.id);
+});
+
+test("the origin keeps an explicit scheme and port", () => {
+  const scope = addLiveScope({ hosts: ["http://example.com:8080/login", "example.org"], permission: true });
+  assert.deepEqual(scope.hosts, ["example.com", "example.org"]);
+  assert.deepEqual(scope.origins, ["http://example.com:8080", "https://example.org"]);
 });
 
 test("bad hosts are refused before anything is saved", () => {

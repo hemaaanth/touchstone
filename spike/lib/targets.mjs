@@ -30,19 +30,23 @@
 //   - "live":         a REAL host the operator has a grant to reach (the first
 //                     live-network kind). Unlike every kind above, a run for it
 //                     leaves the machine, so the reach gate (spike/lib/reach.mjs)
-//                     REFUSES it without a grant naming its host(s), and a scope
-//                     proxy confines its egress to exactly those hosts. The kind
-//                     only names a host; the grant is what authorizes the reach.
+//                     REFUSES it without a grant naming its host(s), and a
+//                     confinement boundary limits its tools' egress to exactly
+//                     those hosts. The kind only names a host; the grant is what
+//                     authorizes the reach.
 //
 //                     RUNNABLE. The operator adds a live scope with a
 //                     permission checkbox; that tick is recorded as a grant
-//                     (scopes-store.mjs addLiveScope). createRun calls openReach,
-//                     which starts the scope proxy and hands its address to the
-//                     worker (TOUCHSTONE_SCOPE_PROXY). The proxy is cooperative:
-//                     target traffic that uses it is limited to the granted
-//                     hosts. The agent's model calls do not go through it. The
-//                     stronger Docker boundary (reach-confine.mjs) exists but a
-//                     live run does not use it yet.
+//                     (scopes-store.mjs addLiveScope) together with the exact
+//                     origins typed. The workspace carries those origins as its
+//                     base URL, so every request aims at the site itself rather
+//                     than at the module's lab. createRun calls openReach in
+//                     "confine" mode, which stands up the boundary and gives the
+//                     run's script container the gate as its only way out.
+//                     A pack may only be pointed at a live host when it says
+//                     `live: true`; without it the run would silently scan its
+//                     own planted lab and record that lab's bugs against the
+//                     operator's website.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
@@ -174,6 +178,16 @@ function packLabs() {
 // local-source) have no pack field and are Contracts. A "scope" always has one.
 export const packOf = (target) => target?.pack ?? "contracts"
 
+// The exact origins a live run aims at. New scopes carry `origins` (scheme +
+// host + port as typed); older ones carry only hosts, which default to https.
+function liveOrigins(target) {
+  const given = (Array.isArray(target?.origins) ? target.origins : [])
+    .map((o) => String(o ?? "").trim())
+    .filter((o) => /^https?:\/\/[^/\s]+$/i.test(o))
+  if (given.length) return [...new Set(given)]
+  return reachHosts(target).map((h) => `https://${h}`)
+}
+
 // Resolve a target's workspace source directory to an absolute path. Only "lab"
 // targets have a repo-relative `dir`; the later kinds resolve differently and
 // will extend this.
@@ -202,7 +216,10 @@ export function targetSummary(target) {
   if (target.kind === "local-source") s.files = (target.files ?? []).map((f) => f.path)
   // A live target shows the host(s) it would touch, so the operator sees exactly
   // what a run reaches before starting it — and whether a grant must be added.
-  if (target.kind === "live") s.hosts = reachHosts(target)
+  if (target.kind === "live") {
+    s.hosts = reachHosts(target)
+    s.origins = liveOrigins(target)
+  }
   if (target.kind === "scope") {
     const members = Array.isArray(target.members) ? target.members : []
     s.links = Array.isArray(target.links) ? target.links : []
@@ -224,9 +241,14 @@ function isRunnable(target) {
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
   if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
-  // A live target runs when it names at least one host and its module exists.
-  // The grant check happens at run start (createRun -> openReach), not here.
-  if (target.kind === "live") return reachHosts(target).length > 0 && Object.hasOwn(PACKS, packOf(target))
+  // A live target runs when it names at least one host and its module says it
+  // can test a live site (`live: true`). A pack that has not been wired to a
+  // live host would scan its own lab, so it is not offered. The grant check
+  // happens at run start (createRun -> openReach), not here.
+  if (target.kind === "live") {
+    const pack = PACKS[packOf(target)]
+    return reachHosts(target).length > 0 && pack?.live === true
+  }
   return false
 }
 
@@ -310,27 +332,29 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     return ws
   }
   if (target.kind === "live") {
-    // No code to copy. The workspace holds a short brief that names the
-    // websites, so the agent knows what it may test.
+    // No code to copy. The workspace holds a short brief that names the exact
+    // websites and their base URLs, so the agent knows what it may test and the
+    // request tool knows where to aim.
     const hosts = reachHosts(target)
-    // A pack can test a live website only once it says so (live: true) and
-    // points its tools at these hosts. Today every pack scans its own planted
-    // lab, so a run would record the lab's bugs against the operator's
-    // site: a false report. Refuse before anything is spent. (Wire #3.)
+    const origins = liveOrigins(target)
+    if (!origins.length) throw new Error(`live target ${target.id} names no usable website`)
     if (PACKS[pack]?.live !== true) {
       throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
     }
+    const baseUrl = origins[0]
     const ws = makeBriefWorkspace()
     const lines = [
       `# ${target.title || "Live scope"}`,
       "",
       "Live websites. The operator confirmed they have permission to test them.",
       "",
-      ...hosts.map((h) => `- ${h}`),
+      ...origins.map((o, i) => `- ${o} (host ${hosts[i] ?? reachHosts({ url: o })[0] ?? ""})`),
+      "",
+      `Base URL for every request: ${baseUrl}`,
     ]
     if (target.blurb) lines.push("", String(target.blurb))
     writeFileSync(path.join(ws, "BRIEF.md"), lines.join("\n") + "\n")
-    writeTouchstone(ws, { kind: "live", pack, modules, hosts })
+    writeTouchstone(ws, { kind: "live", pack, modules, hosts, origins, baseUrl })
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)

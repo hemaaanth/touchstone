@@ -22,6 +22,7 @@
 // seam, with no change to any module (WAVE2.md SEAM rule).
 import { requireGrant, normalizeHost } from "./grant-store.mjs";
 import { startScopeProxy } from "./scope-proxy.mjs";
+import { confineReach } from "./reach-confine.mjs";
 
 // The kinds that run with no network. Anything NOT in this set is treated as a
 // live network kind: it must declare a host and carry a grant. Keeping the SAFE
@@ -97,18 +98,26 @@ function allowFromGrants(grants) {
   return allow;
 }
 
-// Open a run's reach. Enforces the gate; for a live run it starts the scope proxy
-// confined to the granted hosts and returns the handle that confines the run's
-// egress. For an offline run it returns an inert handle — so the lab path is
-// unchanged and starts no proxy. Always call stop() on teardown.
+// Open a run's reach. Enforces the gate; for a live run it starts a confinement
+// boundary (lib/reach-confine.mjs) whose one egress is a scope proxy confined to
+// the granted hosts, and returns that handle. For an offline run it returns an
+// inert handle — so the lab path is unchanged and starts nothing. Always call
+// stop() on teardown.
 //
-// The returned `env` carries the proxy under TOUCHSTONE_SCOPE_PROXY (and its
-// allow-list under TOUCHSTONE_SCOPE_ALLOW) so the module's network seam routes
-// through the gate. We deliberately do NOT set the process-wide HTTP_PROXY: that
-// would also capture the agent's own model-inference calls, which go to the
-// provider (an un-granted host) and the gate would wrongly block them. The gate
-// confines TARGET-bound traffic, not the agent's thinking.
-export async function openReach(target, { now = Date.now(), proxyHost = "127.0.0.1" } = {}) {
+// Two dispatch modes:
+//   "confine" (what a live run uses) — the run's tools execute in a container on
+//     a network with no route off it. Its ONLY path out is the gate, so a tool
+//     that ignores the proxy still cannot leave. The env carries the gate under
+//     TOUCHSTONE_SCOPE_PROXY and its in-network URL, because the run's tools
+//     never run on the host.
+//   "proxy" (the default; what unit tests use) — a host-local forward proxy. A
+//     cooperating client on this machine routes through it.
+//
+// We deliberately do NOT set the process-wide HTTP_PROXY: that would also
+// capture the agent's own model-inference calls, which go to the provider (an
+// un-granted host) and the gate would wrongly block them. The gate confines
+// TARGET-bound traffic, not the agent's thinking.
+export async function openReach(target, { now = Date.now(), mode = "proxy", proxyHost = "127.0.0.1" } = {}) {
   const { hosts, networkKind, grants } = enforceReach(target, { now });
   if (!hosts.length) {
     return {
@@ -118,6 +127,7 @@ export async function openReach(target, { now = Date.now(), proxyHost = "127.0.0
       allowedHosts: [],
       env: {},
       proxy: null,
+      confine: null,
       log: null,
       stop: async () => {},
     };
@@ -128,6 +138,27 @@ export async function openReach(target, { now = Date.now(), proxyHost = "127.0.0
   // covering grant opted in, the run may reach the private hosts those grants
   // name — the allow-list still confines WHICH hosts.
   const allowPrivate = grants.some((g) => g.allowPrivate === true);
+  if (mode === "confine") {
+    const confine = await confineReach({ allowedHosts: allow, allowPrivate });
+    return {
+      live: true,
+      networkKind,
+      hosts,
+      allowedHosts: allow,
+      // The gate's URL as the RUN's tools see it: an alias on their own network.
+      env: { TOUCHSTONE_SCOPE_PROXY: confine.gateUrl, TOUCHSTONE_SCOPE_ALLOW: allow.join(",") },
+      proxy: null,
+      confine,
+      log: null,
+      stop: async () => {
+        try {
+          await confine.stop();
+        } catch {
+          // already closed
+        }
+      },
+    };
+  }
   const proxy = await startScopeProxy({ allowedHosts: allow, host: proxyHost, allowPrivate });
   const env = {
     TOUCHSTONE_SCOPE_PROXY: proxy.url,
@@ -140,6 +171,7 @@ export async function openReach(target, { now = Date.now(), proxyHost = "127.0.0
     allowedHosts: allow,
     env,
     proxy,
+    confine: null,
     log: proxy.log,
     stop: async () => {
       try {

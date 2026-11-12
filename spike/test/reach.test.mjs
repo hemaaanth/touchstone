@@ -120,39 +120,42 @@ test("GRANT ⇒ ONLY THE GRANTED HOST: the proxy forwards the granted host and b
   }
 });
 
-test("a live target is runnable, but refused until its pack can test a live site", async () => {
+test("a live target runs under a live pack and carries its exact origin", async () => {
   // The operator adds a live scope with a permission checkbox (scopes-store
   // addLiveScope), so "live" is offered like any other scope. The grant check
   // runs at run start (openReach), not when the workspace is built.
-  const live = { id: "live-probe", title: "A live host", kind: "live", hosts: ["app.example.com"], pack: "web" };
+  const live = { id: "live-probe", title: "A live host", kind: "live", hosts: ["app.example.com"], origins: ["https://app.example.com:8443"], pack: "web" };
 
-  // The summary shows the host(s) a run would touch.
+  // The summary shows the host(s) and the exact origin a run would call.
   const s = targetSummary(live);
   assert.equal(s.kind, "live");
   assert.deepEqual(s.hosts, ["app.example.com"]);
+  assert.deepEqual(s.origins, ["https://app.example.com:8443"]);
 
   // A live target has no directory; it is never a lab.
   assert.throws(() => resolveTargetDir(live), /not yet runnable: live/);
 
-  // No pack can test a live website yet: each scans its own planted lab. So
-  // the run is refused before anything is spent, instead of reporting the
-  // lab's bugs against the operator's site.
-  assert.equal(PACKS.web.live, undefined);
-  assert.throws(() => prepareWorkspace(live, { modules: [] }), /cannot test a live website yet/);
-
-  // Once a pack says it can (live: true), the workspace is a brief that lists
-  // the hosts, and its config says "live".
-  PACKS.web.live = true;
-  let ws;
+  // The workspace is a brief naming the origin, and its config carries the base
+  // URL the request tool and the proof replay both read.
+  const ws = prepareWorkspace(live, { modules: [] });
   try {
-    ws = prepareWorkspace(live, { modules: [] });
-    assert.match(readFileSync(path.join(ws, "BRIEF.md"), "utf8"), /- app\.example\.com/);
+    const brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
+    assert.match(brief, /https:\/\/app\.example\.com:8443/);
     const cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"));
     assert.equal(cfg.kind, "live");
     assert.deepEqual(cfg.hosts, ["app.example.com"]);
+    assert.equal(cfg.baseUrl, "https://app.example.com:8443");
+    assert.deepEqual(cfg.origins, ["https://app.example.com:8443"]);
   } finally {
-    delete PACKS.web.live;
-    if (ws) rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+  }
+
+  // A pack that has not been wired to a live host is refused before the run.
+  PACKS.web.live = false;
+  try {
+    assert.throws(() => prepareWorkspace(live, { modules: [] }), /cannot test a live website yet/);
+  } finally {
+    PACKS.web.live = true;
   }
 });
 
