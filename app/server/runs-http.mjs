@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, namesLocalPath } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive, GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
@@ -231,7 +231,9 @@ export async function handleScopes(req, res) {
     // This covers the private-lab opt-in (allowPrivate) too: it only acts on
     // the live path, so it can never skip this token check.
     const body = await readBody(req)
-    if (body?.kind === "live") {
+    // A local folder path makes the server read this machine's disk, so it
+    // needs the token too.
+    if (body?.kind === "live" || namesLocalPath(body)) {
       const refusal = settingsWriteRefusal(req)
       if (refusal) {
         send(res, refusal.status, { error: refusal.error })

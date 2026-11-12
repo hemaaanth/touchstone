@@ -1,7 +1,7 @@
 import { useRef, useState } from "react"
-import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, X } from "lucide-react"
+import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
 import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
-import { attachScope } from "@/lib/api"
+import { attachScope, type ScopeMember } from "@/lib/api"
 import { getConsoleToken, setConsoleToken } from "@/lib/console-token"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
@@ -319,12 +319,27 @@ function githubUrl(raw: string): string | null {
 
 const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 
+// A folder is a path on this machine, read in place by the server (the
+// default), or files uploaded from the browser (the fallback).
 type Source =
   | { kind: "repo"; url: string }
+  | { kind: "folder"; name: string; path: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
   | { kind: "site"; host: string; origin: string }
 
-const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : `folder:${s.name}`)
+const sourceKey = (s: Source) =>
+  s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : "path" in s ? `path:${s.path}` : `folder:${s.name}`
+
+// A folder path the operator typed: "/..." or "~/...". The server expands "~",
+// resolves the path, and reads the folder. The name is its last part, made
+// safe the same way the server does it.
+function localPath(raw: string): { name: string; path: string } | null {
+  const text = raw.trim().replace(/\/+$/, "")
+  if (!(text.startsWith("/") || text === "~" || text.startsWith("~/"))) return null
+  const base = text.split("/").filter(Boolean).pop() ?? ""
+  const name = base === "~" ? "home" : base.replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
+  return { name, path: text }
+}
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
 
 // A website address the operator typed, as the exact origin a run will call.
@@ -375,7 +390,9 @@ function scopeBody(sources: Source[], name: string, pack: string | undefined, pe
   if (sites.length) {
     return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
   }
-  const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
+  const members = sources.flatMap((s): ScopeMember[] =>
+    s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
+  )
   return { title, members, ...(pack ? { pack } : {}) }
 }
 
@@ -414,7 +431,11 @@ export function AddScope({
   // A local lab: the opt-in shows only when a listed website is loopback or private.
   const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
   const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, lab && allowPrivate) : null
-  const ready = !live || (permission && !!consoleToken && (!lab || allowPrivate))
+  // A folder path makes the server read this machine's disk, so it needs the
+  // console token too, like a live website.
+  const onDisk = sources.some((s) => s.kind === "folder" && "path" in s)
+  const needsToken = live || onDisk
+  const ready = (!live || (permission && (!lab || allowPrivate))) && (!needsToken || !!consoleToken)
   const livePacks = (packs ?? []).filter((p) => p.live)
   // Only the AI/MCP module takes a caller credential. A website does not.
   const wantsToken = live && siteModule === "ai-mcp"
@@ -444,6 +465,12 @@ export function AddScope({
   }
   const addUrl = () => {
     const text = url.trim()
+    const local = localPath(text)
+    if (local) {
+      add({ kind: "folder", ...local })
+      setUrl("")
+      return
+    }
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
     const origin = href ? null : siteOrigin(text)
     const host = origin ? new URL(origin).hostname : null
@@ -452,7 +479,7 @@ export function AddScope({
     if (host === "github.com" || host?.endsWith(".github.com")) {
       return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
     }
-    if (!href && !origin) return onError("Use a GitHub repository URL or a website address.")
+    if (!href && !origin) return onError("Use a GitHub repository URL, a website address, or a folder path like ~/project.")
     add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
     setUrl("")
   }
@@ -460,7 +487,7 @@ export function AddScope({
     if (!body || busy) return
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
-    if (live && !consoleToken) return onError("Paste the console token. The server prints it when it starts.")
+    if (needsToken && !consoleToken) return onError("Paste the console token. The server prints it when it starts.")
     setBusy(true)
     onError(null)
     attachScope(body)
@@ -528,12 +555,18 @@ export function AddScope({
               else save()
             }
           }}
-          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL") : "GitHub URL or website"}
-          aria-label="GitHub repository URL or website address"
+          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL or folder path") : "GitHub URL, website, or folder path"}
+          aria-label="GitHub repository URL, website address, or local folder path"
           className="h-full min-w-0 flex-1 bg-transparent leading-none outline-none placeholder:text-muted-foreground"
         />
-        <button type="button" className={chip} disabled={busy} onClick={() => folderRef.current?.click()}>
-          <Folder /> Folder
+        <button
+          type="button"
+          className={chip}
+          disabled={busy}
+          title="Upload a folder from the browser instead. Typing its path is better: the server reads it in place."
+          onClick={() => folderRef.current?.click()}
+        >
+          <Upload /> Upload
         </button>
         <button
           type="button"
@@ -562,11 +595,17 @@ export function AddScope({
                   {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.origin : `${s.name}/`}
+                  {s.kind === "repo"
+                    ? s.url.replace(/^https:\/\/github\.com\//, "")
+                    : s.kind === "site"
+                      ? s.origin
+                      : "path" in s
+                        ? s.path
+                        : `${s.name}/`}
                 </span>
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                    {s.files.length} {s.files.length === 1 ? "file" : "files"}
+                    {"path" in s ? "read in place" : `${s.files.length} ${s.files.length === 1 ? "file" : "files"} uploaded`}
                   </span>
                 ) : null}
                 <button
@@ -623,7 +662,7 @@ export function AddScope({
               </span>
             </label>
           ) : null}
-          {live ? (
+          {needsToken ? (
             <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
               <span className="shrink-0 text-[11px] text-muted-foreground">Console token</span>
               <input

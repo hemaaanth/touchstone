@@ -285,7 +285,10 @@ export function validateMembers(members) {
       if (seen.has(`folder:${name}`)) throw new Error(`Two folders are named ${name}. Rename one.`);
       seen.add(`folder:${name}`);
       const { files, dropped } = folderFiles(m.files, budget);
-      return { kind: "folder", name, files, dropped };
+      // A folder read in place keeps its absolute path, so a run can read it
+      // fresh (app/server/runs.mjs). The files above are what the server read there.
+      const at = typeof m.path === "string" && path.isAbsolute(m.path) ? { path: m.path } : {};
+      return { kind: "folder", name, ...at, files, dropped };
     }
     throw new Error("A member is a repo { kind: \"repo\", url } or a folder { kind: \"folder\", name, files }.");
   });
