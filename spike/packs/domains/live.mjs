@@ -1,14 +1,16 @@
 // Live capture: turn one domain into the pinned snapshot the evidence checks read.
 // Every tool runs through runTool(). The network comes from `reach`, never from this file.
 //   reach = { network, granted, scope, resolver?, ports?, env? }
-// The lab starts its own internal network. A real target needs a grant: `granted: true`
-// and a `scope` list that covers the domain. The platform (Reach) fills `reach`.
+// Every capture needs a grant: `granted: true` and a `scope` list that covers the domain.
+// The platform (Reach) fills `reach`. The lab fills its own, for the lab domain only.
+// A network name is never a grant. A network named like the lab must also be --internal in Docker.
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { IMAGE, ensureImage } from './checks.mjs';
+import { assertInternal } from './labctl.mjs';
 
 const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec';
 const HTTPX = 'projectdiscovery/httpx:v1.7.1@sha256:4458ef60897c6abd1d93f7efa82c10c23b783d8ec974e2abd17e4711ff52cb41';
@@ -18,15 +20,15 @@ const TEMPLATE = fileURLToPath(new URL('./templates/github-takeover.yaml', impor
 // A short list of names that real projects use. subfinder adds the names that public sources know.
 export const WORDLIST = ['www', 'app', 'api', 'cdn', 'docs', 'staging', 'stage', 'dev', 'test', 'beta', 'old', 'static', 'assets', 'blog', 'status', 'admin', 'portal', 'rpc', 'wallet', 'bridge', 'swap', 'claim', 'airdrop', 'mint', 'stake', 'dashboard', 'mail', 'ns'];
 const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
-const OFFICIAL_LAB = /^touchstone-domains-/;
+const LAB_NAME = /^touchstone-domains-/;
 
 // A host is in scope when it is a listed name or a subdomain of one.
 export const inScope = (host, scope) => scope.some(s => host === s || host.endsWith('.' + s));
 export function assertReach(reach, domain) {
   if (!DOMAIN.test(domain ?? '')) throw new Error('Invalid domain');
   if (!reach || typeof reach.network !== 'string') throw new Error('Live capture needs reach.network from the platform');
-  if (OFFICIAL_LAB.test(reach.network)) return [domain];
   if (reach.granted !== true || !Array.isArray(reach.scope) || !inScope(domain, reach.scope)) throw new Error('Live capture needs a grant that covers ' + domain);
+  if (LAB_NAME.test(reach.network)) assertInternal(reach.network);
   return reach.scope;
 }
 const lines = text => String(text ?? '').split('\n').map(l => l.trim()).filter(Boolean);

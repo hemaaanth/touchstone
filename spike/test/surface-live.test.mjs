@@ -12,7 +12,9 @@ test('a service is typed from what it answered', () => {
   assert.equal(classifyService(page('<script src="/ethers.js"></script>')).kind, 'wallet-frontend');
   assert.equal(classifyService(page('<button>Connect wallet</button>')).next, 'domains');
   assert.equal(classifyService(page('{"ok":true}', 'application/json')).kind, 'api-endpoint');
-  assert.equal(classifyService(page('There isn\'t a GitHub Pages site here.')).kind, 'provider-error-page');
+  const unclaimed = { ...page('<html><body><p>There isn\'t a GitHub Pages site here.</p></body></html>'), status: 404 };
+  assert.equal(classifyService(unclaimed).kind, 'provider-error-page');
+  assert.equal(classifyService(page(unclaimed.body)).kind, 'web-page', 'the same words in a 200 page are not the unclaimed page');
   assert.deepEqual([classifyService(page('<h1>hello</h1>')).kind, classifyService(page('<h1>hello</h1>')).next], ['web-page', 'web']);
 });
 

@@ -32,9 +32,15 @@ wallet and clicked each connect, claim, airdrop, mint or verify control. A lead
 `wallet-drainer-behavior` means that click asked the wallet for an unlimited
 approval, setApprovalForAll or a Permit signature. The where cells show the
 control, the request, the asset, the spender and the amount. Cite them.
+The severity depends on the label. A Connect or Verify control never needs an
+approval, so it is critical. A Mint, Claim or Airdrop control may ask for one
+on a real site, so it is high. Say that a person must read the spender.
 
 A takeover fingerprint lead means a CNAME to a known provider plus that
-provider's unclaimed-resource page. It does not prove a claim would succeed.
+provider's unclaimed-resource page. The page is the root HTML or XML response.
+It has the provider's real status (404), its real markup and a small body.
+The same words in a script, a blog or a 200 page are not a takeover.
+It does not prove a claim would succeed.
 A second engine (nuclei) may agree. Say so when the lead lists it.
 
 The bundle pattern check (an approval API, an unlimited allowance and a spender
@@ -68,7 +74,9 @@ platform grant fills `reach`: `network`, `granted`, `scope`, and optionally
 `resolver`, `ports` and `env`. The prepass then captures the domain through
 `runTool()` (subfinder, dnsx, httpx, nuclei), pins the snapshot, and the
 checks run on the pin. Live capture refuses a domain that is not covered by
-`reach.scope`. With no grant it stops before any tool runs.
+`reach.scope`. With no grant it stops before any tool runs. A network name is
+never a grant. A lab network must also be `--internal` in Docker, and the tools
+check that with `docker network inspect`.
 CoreDNS needs NET_BIND_SERVICE because the upstream binary carries a file
 capability. Scanners still drop every capability. No port is published.
 

@@ -88,7 +88,9 @@ review-only lead. It cannot pass submit_finding or final replay.
 A drainer finding needs behavior. The replay runs the captured scripts in
 jsdom with a fake wallet. It clicks each connect, claim, airdrop, mint or verify
 control. It decodes approve, increaseAllowance, setApprovalForAll and Permit
-requests. Harm means an unlimited amount or all tokens. A text pattern alone
+requests. Harm means an unlimited amount or all tokens. Connect and verify
+controls are critical. Mint, claim and airdrop controls are high, because real
+pages may ask for an approval. A text pattern alone
 stays a review-only lead. Nothing is signed and nothing is sent.
 
 An NXDOMAIN result proves dangling DNS, not that a provider will let someone

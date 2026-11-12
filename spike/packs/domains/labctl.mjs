@@ -8,6 +8,14 @@ const SERVICES = [
   ['dns', '172.30.44.53', 'coredns/coredns:1.12.0@sha256:40384aa1f5ea6bfdc77997d243aec73da05f27aed0c5e9d65bfa98933c519d97', ['-conf', '/lab/Corefile'], ['--cap-add', 'NET_BIND_SERVICE']],
   ['web', '172.30.44.20', 'node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32', ['node', '/lab/server.mjs'], []],
 ];
+// A lab network must really be --internal: no route to the internet. A name proves nothing, so ask Docker.
+export function assertInternal(network) {
+  let internal;
+  try { internal = docker(['network', 'inspect', '--format', '{{.Internal}}', network]).trim(); }
+  catch { throw new Error('Lab network ' + network + ' was not found'); }
+  if (internal !== 'true') throw new Error('Lab network ' + network + ' is not --internal');
+}
+export const LAB_SCOPE = ['touchstone.test'];
 export function startLab(lab = LAB) {
   const network = 'touchstone-domains-' + process.pid;
   const names = [];
@@ -23,5 +31,6 @@ export function startLab(lab = LAB) {
       docker(['run', '-d', '--name', name, '--network', network, '--ip', ip, '--cap-drop', 'ALL', ...caps, '--security-opt', 'no-new-privileges', '--user', process.getuid() + ':' + process.getgid(), '-v', lab + ':/lab:ro', image, ...cmd]); names.push(name);
     }
   } catch (error) { stop(); throw error; }
-  return { network, resolver: '172.30.44.53', stop };
+  // The lab is ours, so its reach carries its own grant for the lab domain.
+  return { network, resolver: '172.30.44.53', granted: true, scope: LAB_SCOPE, stop };
 }

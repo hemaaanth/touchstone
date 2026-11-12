@@ -87,3 +87,69 @@ test('the drainer replays green, shows its harm in the viewer and rejects a forg
     assert.equal((await replayEvidence(ws,{...forged,where:lead.where},options)).status,'pass');
   } finally {rmSync(ws,{recursive:true,force:true});}
 });
+
+// Benign sites that print a provider's words must not raise a takeover.
+const DOCS='http://docs.touchstone.test:8080/';
+const docsRow=value=>value.http.find(r=>r.url===DOCS);
+const takeover=l=>l.check==='subdomain-takeover-fingerprint';
+const onProvider=(target,row)=>{
+  const changed=structuredClone(snapshot);
+  const old='touchstone-lab.github.io';
+  changed.zone=changed.zone.replace(old,target);
+  for(const r of changed.dns) r.answers=r.answers.map(a=>a===old?target:a);
+  Object.assign(docsRow(changed),row);
+  return changed;
+};
+const HTML={'content-type':'text/html'};
+
+test('the real unclaimed pages of GitHub Pages, Heroku and S3 still raise the takeover',async()=>{
+  const github=await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:'<html><body><p><strong>There isn\'t a GitHub Pages site here.</strong></p></body></html>'}));
+  const heroku=await leadsOf(onProvider('x.herokuapp.com',{status:404,headers:HTML,body:'<!DOCTYPE html><html><head><title>No such app</title></head><body><h1>No such app</h1></body></html>'}));
+  const s3=await leadsOf(onProvider('x.s3.amazonaws.com',{status:404,headers:{'content-type':'application/xml'},body:'<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>'}));
+  for(const found of [github,heroku,s3]) assert.deepEqual(found.filter(takeover).map(l=>l.where),['docs.touchstone.test']);
+});
+
+test('a live Heroku app whose script says "No such app" is not a takeover',async()=>{
+  const changed=onProvider('x.herokuapp.com',{status:200,headers:HTML,body:'<html><body>My app</body></html>'});
+  changed.http.push({url:'http://docs.touchstone.test:8080/main.js',status:200,headers:{'content-type':'application/javascript'},body:'if(!app)throw new Error("No such app");'});
+  assert.equal((await leadsOf(changed)).some(takeover),false);
+});
+
+test('a GitHub Pages blog that quotes the unclaimed words is not a takeover',async()=>{
+  const body='<html><body><article><p>If you see "There isn\'t a GitHub Pages site here." check your CNAME file.</p></article></body></html>';
+  assert.equal((await leadsOf(onProvider('x.github.io',{status:200,headers:HTML,body}))).some(takeover),false);
+  assert.equal((await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:body+' '.repeat(9000)}))).some(takeover),false,'a large page is not the provider page');
+});
+
+test('an S3 docs page that mentions NoSuchBucket is not a takeover',async()=>{
+  const body='<html><body><h2>Errors</h2><p>A missing bucket returns NoSuchBucket.</p><pre>&lt;Code&gt;NoSuchBucket&lt;/Code&gt;</pre></body></html>';
+  assert.equal((await leadsOf(onProvider('x.s3.amazonaws.com',{status:200,headers:HTML,body}))).some(takeover),false);
+  assert.equal((await leadsOf(onProvider('x.s3.amazonaws.com',{status:404,headers:HTML,body}))).some(takeover),false,'escaped text is not the XML error');
+});
+
+test('an unclaimed page with no CNAME in the snapshot is not a takeover',async()=>{
+  const changed=structuredClone(snapshot);
+  changed.dns=changed.dns.filter(r=>!(r.host==='docs.touchstone.test' && r.type==='CNAME'));
+  assert.equal((await leadsOf(changed)).some(takeover),false);
+});
+
+// A legitimate Mint or Claim button may ask for an approval. Only Connect, Verify and Sign in never do.
+const relabel=label=>{
+  const changed=structuredClone(snapshot);
+  const page=changed.http.find(r=>r.url==='http://www.touchstone.test:8080/');
+  page.body=page.body.replace('Connect wallet',label);
+  return changed;
+};
+
+test('a Mint or Claim button that asks for an unlimited approval is High, not Critical',async()=>{
+  for(const label of ['Mint NFT','Claim rewards','Airdrop']){
+    const found=drainer(await leadsOf(relabel(label)));
+    assert(found,label+' still raises a lead, because the spender needs a person to read it');
+    assert.equal(found.severity,'high',label);
+    assert.match(found.description,/person must read the spender/);
+  }
+});
+
+test('a Connect or Verify button that asks for an unlimited approval stays Critical',async()=>{
+  for(const label of ['Connect wallet','Verify wallet','Connect and claim']) assert.equal(drainer(await leadsOf(relabel(label))).severity,'critical',label);
+});

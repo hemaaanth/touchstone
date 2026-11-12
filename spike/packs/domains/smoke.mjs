@@ -51,7 +51,7 @@ try {
     // Live path: a scope with a domain and no snapshot. The prepass captures it with the real tools and pins it.
     const live=mkdtempSync(join(tmpdir(),'touchstone-domains-live-'));
     try {
-      const reach={network,resolver:lab_.resolver,ports:[{scheme:'http',port:8080}],scope:['touchstone.test']};
+      const reach={network,resolver:lab_.resolver,ports:[{scheme:'http',port:8080}],granted:lab_.granted,scope:lab_.scope};
       writeFileSync(join(live,'.touchstone.json'),JSON.stringify({pack:'domains',domain:'touchstone.test',reach}));
       const liveRun=await domains.prepass(live,{emit:()=>{}});
       const snap=JSON.parse(readFileSync(join(live,'snapshot.json'),'utf8'));

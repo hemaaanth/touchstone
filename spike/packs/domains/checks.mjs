@@ -30,17 +30,26 @@ export async function analyzeSnapshot(snapshot) {
 const stable = value => typeof value === 'string' ? value : JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : 1)));
 const sameWhere = (a, b) => (typeof a === 'string' || (a && typeof a === 'object')) && stable(a) === stable(b);
 // Unclaimed-resource pages, per provider. A CNAME to the provider plus this page means the name can be claimed.
+// The page is the provider's own: a 404 on the root, in the provider's markup, and small.
+// The same words in a 200 page, a script or a blog post are not the unclaimed page.
+const PAGE_LIMIT = 8192;
 const PROVIDERS = [
-  { name: 'GitHub Pages', target: /\.github\.io$/i, fingerprint: "There isn't a GitHub Pages site here." },
-  { name: 'Heroku', target: /\.herokuapp\.com$/i, fingerprint: 'No such app' },
-  { name: 'Amazon S3', target: /\.s3[.-][a-z0-9.-]*amazonaws\.com$/i, fingerprint: 'NoSuchBucket' },
+  { name: 'GitHub Pages', target: /\.github\.io$/i, status: 404, shape: /<(?:p|h1|h2|strong|title)\b[^>]*>(?:\s*<[^>]+>)*\s*There isn't a GitHub Pages site here\./i },
+  { name: 'Heroku', target: /\.herokuapp\.com$/i, status: 404, shape: /<title>\s*No such app\s*<\/title>/i },
+  { name: 'Amazon S3', target: /\.s3[.-][a-z0-9.-]*amazonaws\.com$/i, status: 404, shape: /<Code>\s*NoSuchBucket\s*<\/Code>/ },
 ];
+export function unclaimedPage(response, provider) {
+  const type = response.headers['content-type'] ?? '';
+  return new URL(response.url).pathname === '/' && /html|xml/i.test(type) && !/javascript/i.test(type)
+    && response.status === provider.status && response.body.length <= PAGE_LIMIT && provider.shape.test(response.body);
+}
 const fqdn = (name, root) => name === '@' ? root : name.endsWith('.') ? name.slice(0, -1) : name + '.' + root;
 const validSRI = value => String(value).split(/\s+/).some(token => {
   const match = token.match(/^(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})$/);
   return match && Buffer.from(match[2], 'base64').length === {sha256:32,sha384:48,sha512:64}[match[1]];
 });
 
+const NEVER_APPROVES = /connect|verify|sign.?in|log.?in/i;
 export function domainLeads(snapshot, analysis) {
   const leads = [];
   const add = (check, where, severity, description, engine = 'touchstone') => leads.push({id:sha256(check + '\n' + stable(where)).slice(0,16),check,where,severity,impact:severity[0].toUpperCase()+severity.slice(1),description,engine,file:'snapshot.json',lines:[]});
@@ -54,7 +63,9 @@ export function domainLeads(snapshot, analysis) {
     const name = fqdn(record.name, root), target = fqdn(record.alias, root);
     const provider = PROVIDERS.find(p => p.target.test(target));
     if (!provider) continue;
-    const page = snapshot.http.find(r => new URL(r.url).hostname === name && r.body.includes(provider.fingerprint));
+    // The snapshot must show the CNAME too, so a lone page cannot raise this lead.
+    const aliased = snapshot.dns.some(r => r.host === name && r.type === 'CNAME' && r.answers.includes(target));
+    const page = aliased && snapshot.http.find(r => new URL(r.url).hostname === name && unclaimedPage(r, provider));
     if (page) {
       add('subdomain-takeover-fingerprint', name, 'high', 'The CNAME points to ' + target + ' (' + provider.name + '). At capture time the host served the provider page for an unclaimed resource. Anyone who claims that resource there could serve content on ' + name + '. The snapshot proves the page, not that a claim succeeds.');
       // A second engine that agrees ranks the lead first.
@@ -85,8 +96,12 @@ export function domainLeads(snapshot, analysis) {
     if (page.controls.length) framed.push({ page, response });
     for (const control of page.controls) for (const harm of control.harm) {
       const kinds = { 'erc20-approve': 'an ERC-20 approve', 'set-approval-for-all': 'setApprovalForAll', permit: 'a Permit signature' };
-      add('wallet-drainer-behavior', { url: page.url, control: control.selector + ' "' + control.label + '"', wallet_request: kinds[harm.kind] ?? harm.kind, asset: harm.asset, spender: harm.spender, amount: harm.amount }, 'critical',
-        'Clicking "' + control.label + '" makes the page ask the wallet for ' + kinds[harm.kind] + ' of ' + harm.amount + ' on ' + harm.asset + ' to spender ' + harm.spender + '. A connect action only needs the account list. The page ran against the pinned snapshot in a fake wallet. No transaction was sent.', 'jsdom-replay');
+      // Connect, Verify and Sign in never need an approval, so an approval there is Critical.
+      // Claim, Airdrop and Mint may ask for one, so the same request is High until a person reads it.
+      const severity = NEVER_APPROVES.test(control.label) ? 'critical' : 'high';
+      const need = severity === 'critical' ? 'A connect action only needs the account list.' : 'Some real claim and mint pages ask for an approval, so a person must read the spender.';
+      add('wallet-drainer-behavior', { url: page.url, control: control.selector + ' "' + control.label + '"', wallet_request: kinds[harm.kind] ?? harm.kind, asset: harm.asset, spender: harm.spender, amount: harm.amount }, severity,
+        'Clicking "' + control.label + '" makes the page ask the wallet for ' + kinds[harm.kind] + ' of ' + harm.amount + ' on ' + harm.asset + ' to spender ' + harm.spender + '. ' + need + ' The page ran against the pinned snapshot in a fake wallet. No transaction was sent.', 'jsdom-replay');
     }
   }
   const seenFrames = new Set();
@@ -118,7 +133,7 @@ export function domainLeads(snapshot, analysis) {
 const WALLET = /(?:ethers|web3|walletconnect|connect-kit|wagmi|viem|ethereum|wallet)/i;
 export function classifyService(response) {
   const type = response.headers['content-type'] ?? '';
-  if (PROVIDERS.some(p => response.body.includes(p.fingerprint))) return { kind: 'provider-error-page', next: 'domains', why: 'it serves a cloud provider page for a missing resource' };
+  if (PROVIDERS.some(p => unclaimedPage(response, p))) return { kind: 'provider-error-page', next: 'domains', why: 'it serves a cloud provider page for a missing resource' };
   if (/json/.test(type) || /\/rpc\b/.test(new URL(response.url).pathname)) return { kind: 'api-endpoint', next: 'web', why: 'it answers like an API or RPC endpoint' };
   if (type.includes('text/html') && (WALLET.test(response.body) || /connect\s+wallet/i.test(response.body))) return { kind: 'wallet-frontend', next: 'domains', why: 'the page loads wallet code or shows a connect control' };
   return { kind: 'web-page', next: 'web', why: 'it serves a web page' };

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { assertReach, captureDomain, dnsRows, httpRows, inScope, originOf, parseSubfinder, scriptUrls, synthZone } from '../packs/domains/live.mjs';
 
 test('a real target needs a grant that covers the domain', () => {
@@ -11,7 +12,27 @@ test('a real target needs a grant that covers the domain', () => {
   assert.throws(() => assertReach(null, 'example.com'), /reach\.network/);
   assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, '-oX.example'), /Invalid domain/);
   assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'app.example.com'), ['example.com']);
-  assert.deepEqual(assertReach({ network: 'touchstone-domains-42' }, 'touchstone.test'), ['touchstone.test']);
+});
+
+test('a lab-looking network name is not a grant', () => {
+  assert.throws(() => assertReach({ network: 'touchstone-domains-42' }, 'touchstone.test'), /grant/);
+  assert.throws(() => assertReach({ network: 'touchstone-domains-42', granted: false, scope: ['touchstone.test'] }, 'touchstone.test'), /grant/);
+  assert.throws(() => assertReach({ network: 'touchstone-domains-42', granted: true, scope: ['other.test'] }, 'touchstone.test'), /grant/);
+});
+
+test('a lab-named network must exist and really be --internal', () => {
+  const docker = args => execFileSync('docker', args, { stdio: 'ignore' });
+  const open = 'touchstone-domains-test-open-' + process.pid, shut = 'touchstone-domains-test-shut-' + process.pid;
+  const reach = network => ({ network, granted: true, scope: ['touchstone.test'] });
+  assert.throws(() => assertReach(reach('touchstone-domains-test-missing-' + process.pid), 'touchstone.test'), /not found/);
+  try {
+    docker(['network', 'create', open]);
+    docker(['network', 'create', '--internal', shut]);
+    assert.throws(() => assertReach(reach(open), 'touchstone.test'), /not --internal/);
+    assert.deepEqual(assertReach(reach(shut), 'touchstone.test'), ['touchstone.test']);
+  } finally {
+    for (const name of [open, shut]) try { docker(['network', 'rm', name]); } catch {}
+  }
 });
 
 test('the capture refuses before any tool runs when there is no grant', async () => {
@@ -64,4 +85,9 @@ test('script urls stay inside the grant and resolve relative paths', () => {
 test('default ports leave the origin bare', () => {
   assert.equal(originOf('a.example.com', { scheme: 'https', port: 443 }), 'https://a.example.com');
   assert.equal(originOf('a.example.com', { scheme: 'http', port: 8080 }), 'http://a.example.com:8080');
+});
+
+test('the lab tools refuse a network Docker does not call --internal, whatever its name', async () => {
+  const { captureTools } = await import('../packs/domains/tools.mjs');
+  await assert.rejects(captureTools('/nonexistent', 'touchstone-domains-no-such-network'), /not found/);
 });
