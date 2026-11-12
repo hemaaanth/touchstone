@@ -20,11 +20,22 @@ const { handleGrants } = await import("../server/runs-http.mjs")
 
 type Handlers = Record<string, (arg?: unknown) => void>
 
-// A mutation (POST/DELETE) from the console carries the capability token and,
-// for POST, an application/json content-type. These defaults stand in for a
-// same-origin console request; a test overrides them to probe the guard.
+// The console's own origin. A grant mutation is accepted only from a same-origin
+// request: an Origin header whose host matches the request's Host header. These
+// stand-ins make goodHeaders a real same-origin request.
+const CONSOLE_ORIGIN = "http://localhost:5173"
+const CONSOLE_HOST = "localhost:5173"
+
+// A mutation (POST/DELETE) from the console carries the capability token, a
+// same-origin Origin/Host pair, and, for POST, an application/json content-type.
+// These defaults stand in for a same-origin console request; a test overrides
+// them to probe the guard.
 function goodHeaders(method: string): Record<string, string> {
-  const h: Record<string, string> = { "x-touchstone-grant-token": TOKEN }
+  const h: Record<string, string> = {
+    "x-touchstone-grant-token": TOKEN,
+    origin: CONSOLE_ORIGIN,
+    host: CONSOLE_HOST,
+  }
   if (method === "POST") h["content-type"] = "application/json"
   return h
 }
@@ -124,27 +135,39 @@ describe("grant endpoints", () => {
   // the forgery defense: a drive-by page fails all three, the agent fails the
   // token. None of them store a grant.
   test("a grant POST with no capability token is refused, and stores nothing", async () => {
-    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json" })
+    // Same-origin and good content-type, but no token: it must still be refused,
+    // so this isolates the token check.
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json", origin: CONSOLE_ORIGIN, host: CONSOLE_HOST })
     expect(r.status).toBe(403)
     const list = await call("GET", "/api/grants")
     expect(list.json.grants.some((g: { hosts: string[] }) => g.hosts.includes("z.example.com"))).toBe(false)
   })
 
   test("a grant POST with the wrong content-type is refused (415)", async () => {
-    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "text/plain", "x-touchstone-grant-token": TOKEN })
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "text/plain", "x-touchstone-grant-token": TOKEN, origin: CONSOLE_ORIGIN, host: CONSOLE_HOST })
     expect(r.status).toBe(415)
   })
 
   test("a grant POST from a foreign origin is refused (403)", async () => {
-    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json", "x-touchstone-grant-token": TOKEN, origin: "https://evil.example", host: "localhost:5173" })
+    const r = await call("POST", "/api/grants", { hosts: ["z.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json", "x-touchstone-grant-token": TOKEN, origin: "https://evil.example", host: CONSOLE_HOST })
     expect(r.status).toBe(403)
+  })
+
+  test("a grant POST with NO Origin header is refused (403, fail-closed)", async () => {
+    // A request with a valid token and good content-type but no Origin at all is
+    // still refused: the same-origin guard fails closed, so a client that omits
+    // the Origin cannot slip a mutation through. Nothing is stored.
+    const r = await call("POST", "/api/grants", { hosts: ["noorigin.example.com"], kind: "operator-owned", ownership: true }, { "content-type": "application/json", "x-touchstone-grant-token": TOKEN, host: CONSOLE_HOST })
+    expect(r.status).toBe(403)
+    const list = await call("GET", "/api/grants")
+    expect(list.json.grants.some((g: { hosts: string[] }) => g.hosts.includes("noorigin.example.com"))).toBe(false)
   })
 
   test("a grant DELETE with no capability token is refused (403)", async () => {
     // Seed a grant with a valid request, then try to revoke it without the token.
     const add = await call("POST", "/api/grants", { hosts: ["keep.example.com"], kind: "operator-owned", ownership: true })
     expect(add.status).toBe(201)
-    const r = await call("DELETE", `/api/grants/${add.json.id}`, undefined, {})
+    const r = await call("DELETE", `/api/grants/${add.json.id}`, undefined, { origin: CONSOLE_ORIGIN, host: CONSOLE_HOST })
     expect(r.status).toBe(403)
     const list = await call("GET", "/api/grants")
     expect(list.json.grants.some((g: { id: string }) => g.id === add.json.id)).toBe(true)

@@ -24,6 +24,7 @@
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -79,6 +80,90 @@ export function normalizeHost(raw) {
   return null;
 }
 
+// A short list of public suffixes we refuse to wildcard. A grant for
+// "*.<suffix>" would cover the whole registry (every .com, every .co.uk), which
+// is never a real scope. This is not the full Public Suffix List — it is the
+// common multi-party suffixes a fat-fingered or malicious grant would reach for.
+// A wildcard base must also have at least two labels, so "*.com" is refused on
+// the label count alone; this set catches the two-label public suffixes.
+const PUBLIC_SUFFIXES = new Set([
+  "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
+  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+  "co.nz", "net.nz", "org.nz", "govt.nz",
+  "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+  "com.br", "net.br", "org.br", "gov.br",
+  "co.in", "net.in", "org.in", "gov.in", "ac.in",
+  "com.cn", "net.cn", "org.cn", "gov.cn",
+  "co.za", "org.za", "gov.za",
+  "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
+  "github.io", "gitlab.io", "pages.dev", "web.app", "firebaseapp.com",
+  "herokuapp.com", "vercel.app", "netlify.app", "workers.dev", "appspot.com",
+  "s3.amazonaws.com", "cloudfront.net", "azurewebsites.net", "blob.core.windows.net",
+]);
+
+// True for a hostname that is loopback, unspecified, or an obvious local name
+// (not an IP — those are caught by isIP + isBlockedAddress at grant time). These
+// names must not be granted without an explicit opt-in: a grant for "localhost"
+// would let a run reach back into the host the console runs on.
+function isLocalName(name) {
+  return name === "localhost" || name === "localhost.localdomain" || name.endsWith(".localhost");
+}
+
+// True for an IP literal in a range a run must not reach without opting in:
+// loopback, private LAN, link-local (incl. cloud metadata 169.254.169.254),
+// carrier-grade NAT, unspecified, and the IPv6 equivalents. Same ranges the
+// scope proxy pins against (lib/scope-proxy.mjs) and lib/fetch.mjs refuses.
+function isPrivateIp(addr) {
+  const fam = isIP(addr);
+  if (fam === 4) {
+    const p = addr.split(".").map(Number);
+    const [a, b] = p;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (fam === 6) {
+    const a = addr.toLowerCase().replace(/^\[|\]$/g, "");
+    if (a === "::" || a === "::1") return true;
+    if (a.startsWith("fe80") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb")) return true;
+    if (a.startsWith("fc") || a.startsWith("fd")) return true;
+    const m = a.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (m) return isPrivateIp(m[1]);
+    return false;
+  }
+  return false;
+}
+
+// Reject a host entry that must not be granted. Returns an error string, or null
+// if the entry is allowed. `allowPrivate` opts a grant into loopback/private
+// space on purpose (the operator's own LAN, or a test). Wildcard bases are
+// checked for label count and public suffixes either way — a "*.com" grant is
+// never a real scope.
+function grantEntryError(entry, allowPrivate) {
+  const e = normalizeHost(entry);
+  // An unusable host is not this guard's concern: it is dropped by normalizeHost
+  // and caught downstream by the "at least one valid host" check. This guard only
+  // refuses hosts that ARE usable but must not be granted (too-broad wildcards,
+  // private space without opt-in).
+  if (!e) return null;
+  if (e.startsWith("*.")) {
+    const base = e.slice(2);
+    const labels = base.split(".").filter(Boolean);
+    if (labels.length < 2) return `"${e}" is too broad: a wildcard needs at least two labels after "*." (so "*.example.com", never "*.com").`;
+    if (PUBLIC_SUFFIXES.has(base)) return `"${e}" covers a whole public suffix (${base}); grant the exact subdomains instead.`;
+    return null;
+  }
+  if (!allowPrivate) {
+    if (isLocalName(e)) return `"${e}" is a loopback name; a grant for it would reach the console's own host. Pass allowPrivate to grant private space on purpose.`;
+    if (isIP(e) && isPrivateIp(e)) return `"${e}" is a loopback/private/link-local address; a grant for it could reach the host or cloud metadata. Pass allowPrivate to grant private space on purpose.`;
+    if (e === "0.0.0.0") return `"0.0.0.0" is the unspecified address and is never a target. Pass allowPrivate to grant private space on purpose.`;
+  }
+  return null;
+}
+
 // Does a granted host entry cover a request host? Exact match, or a "*.example
 // .com" wildcard that covers any single-or-multi-label subdomain of example.com
 // (but not example.com itself). Exact is the common case; the wildcard is opt-in
@@ -104,8 +189,16 @@ export function hostCovers(entry, host) {
 //   note      free text (the engagement, the ticket). Optional.
 //   scopeId   an optional link to a code scope (scopes-store.mjs).
 //   expiresAt an optional ms timestamp after which the grant is inert.
-export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, expiresAt } = {}) {
+export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, expiresAt, allowPrivate } = {}) {
   const list = Array.isArray(hosts) ? hosts : hosts == null ? [] : [hosts];
+  const priv = allowPrivate === true;
+  // Refuse a host that must not be granted (a public-suffix wildcard either way;
+  // loopback/private space unless opted in) BEFORE normalizing to the store, so a
+  // bad entry never lands.
+  for (const h of list) {
+    const err = grantEntryError(h, priv);
+    if (err) throw new Error(`Refused: ${err}`);
+  }
   const norm = [...new Set(list.map(normalizeHost).filter(Boolean))];
   if (!norm.length) throw new Error("A grant needs at least one valid host.");
   if (!GRANT_KINDS.includes(kind)) throw new Error(`A grant kind is one of: ${GRANT_KINDS.join(", ")}.`);
@@ -132,6 +225,10 @@ export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, ex
     scopeId: scopeId ? String(scopeId) : null,
     approvedAt: Date.now(),
     expiresAt: exp,
+    // The grant carries its own opt-in: the scope proxy reads this (via
+    // lib/reach.mjs) to decide whether to let this run reach private space. A
+    // grant for a public host never touches it.
+    allowPrivate: priv,
   };
   const all = readGrants();
   all.unshift(grant);

@@ -51,7 +51,9 @@ before(async () => {
 after(() => target && target.close());
 
 test("the gate forwards an allowed host and logs the exchange", async () => {
-  const gate = await startScopeProxy({ allowedHosts: ["127.0.0.1"] });
+  // allowPrivate: the stand-in target is a loopback server, which the proxy's
+  // SSRF pin refuses by default; a real run would reach a public host.
+  const gate = await startScopeProxy({ allowedHosts: ["127.0.0.1"], allowPrivate: true });
   try {
     const r = await fetch(gate.url, { headers: { "x-touchstone-url": targetUrl + "/hello" } });
     assert.equal(r.status, 200);
@@ -104,7 +106,7 @@ test("the gate rejects a request with no target url", async () => {
 });
 
 test("a POST body is forwarded to an allowed target", async () => {
-  const gate = await startScopeProxy({ allowedHosts: ["127.0.0.1"] });
+  const gate = await startScopeProxy({ allowedHosts: ["127.0.0.1"], allowPrivate: true });
   try {
     const r = await fetch(gate.url, {
       method: "POST",

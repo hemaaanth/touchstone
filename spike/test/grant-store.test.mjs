@@ -102,6 +102,31 @@ test("requireGrant returns the covering grants or throws naming the uncovered ho
   assert.throws(() => requireGrant([]), /no target host/i);
 });
 
+test("a grant refuses loopback, private, and unspecified hosts unless allowPrivate", () => {
+  // SSRF guard (Finding 2): an operator can grant a public host freely, but a
+  // host that points back into the run's own network needs an explicit opt-in.
+  for (const h of ["127.0.0.1", "localhost", "10.0.0.5", "192.168.1.1", "169.254.169.254", "0.0.0.0", "[::1]"]) {
+    assert.throws(() => addGrant({ hosts: [h], kind: "operator-owned", ownership: true }), /Refused/,
+      `expected ${h} to be refused without allowPrivate`);
+  }
+  // With the opt-in, the same host is accepted and the flag is recorded.
+  const g = addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, allowPrivate: true });
+  assert.deepEqual(g.hosts, ["127.0.0.1"]);
+  assert.equal(g.allowPrivate, true);
+});
+
+test("a wildcard grant needs at least two labels and rejects a public suffix", () => {
+  // Over-broad wildcard guard (Finding 3): "*.com" or "*.co.uk" would cover an
+  // entire registry, so a wildcard base must be a real registrable domain.
+  for (const h of ["*.com", "*.co.uk", "*.github.io", "*.vercel.app"]) {
+    assert.throws(() => addGrant({ hosts: [h], kind: "operator-owned", ownership: true }), /Refused/,
+      `expected ${h} to be refused as too broad`);
+  }
+  // A proper registrable wildcard is fine.
+  const g = addGrant({ hosts: ["*.example.com"], kind: "operator-owned", ownership: true });
+  assert.deepEqual(g.hosts, ["*.example.com"]);
+});
+
 test("removeGrant removes one and reports whether it existed", () => {
   const g = addGrant({ hosts: ["x.com"], kind: "operator-owned", ownership: true });
   assert.equal(removeGrant(g.id), true);

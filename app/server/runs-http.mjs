@@ -279,24 +279,27 @@ function announceGrantToken() {
 }
 
 // Guard a grant mutation (POST, DELETE). Returns true if the caller may proceed;
-// otherwise it has already sent the refusal and returns false.
-function grantMutationAllowed(req, res) {
-  // Same-origin: if an Origin is present, its host must equal our Host. A
-  // same-origin fetch sends a matching Origin; a cross-origin one sends a foreign
-  // Origin (or, for no-cors, cannot reach the JSON check below either).
+// otherwise it has already sent the refusal and returns false. Exported so other
+// state-changing console routes can reuse the one forgery defense.
+export function grantMutationAllowed(req, res) {
+  // Same-origin, fail-closed: an Origin MUST be present and its host MUST equal
+  // our Host. A browser always sends Origin on a state-changing (POST/DELETE)
+  // request, same-origin or not, so a mutation with no Origin is not the console
+  // — it is a non-browser caller or a stripped request, and we refuse it rather
+  // than wave it through. A same-origin fetch sends a matching Origin; a
+  // cross-origin one sends a foreign Origin (or, for no-cors, cannot set the JSON
+  // content-type the POST check below requires either).
   const origin = req.headers["origin"]
-  if (origin) {
-    let originHost = null
-    try {
-      originHost = new URL(origin).host
-    } catch {
-      originHost = null
-    }
-    const host = req.headers["host"]
-    if (!originHost || !host || originHost !== host) {
-      send(res, 403, { error: "a grant can only be changed from the console's own origin" })
-      return false
-    }
+  let originHost = null
+  try {
+    originHost = origin ? new URL(origin).host : null
+  } catch {
+    originHost = null
+  }
+  const host = req.headers["host"]
+  if (!originHost || !host || originHost !== host) {
+    send(res, 403, { error: "a grant can only be changed from the console's own origin (a same-origin request with a matching Origin header)" })
+    return false
   }
   // JSON only on POST (DELETE carries no body).
   if (req.method === "POST") {

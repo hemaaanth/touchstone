@@ -29,10 +29,77 @@
 // Either way the host decision happens before any byte reaches the target.
 import http from "node:http";
 import net from "node:net";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 // hostCovers lets a grant entry like "*.example.com" cover a subdomain. We take
 // it from the grant store so the proxy and the grant agree on one matching rule.
 import { hostCovers } from "./grant-store.mjs";
+
+// --- SSRF / DNS-rebinding guard ---------------------------------------------
+//
+// A grant names a public host. A name is not an address: a granted name can
+// resolve (now, or on a second lookup) to a loopback, a private LAN, or the
+// cloud metadata address 169.254.169.254. So the allow-list match (decide) is
+// not enough — the gate must also check the ADDRESS the host resolves to, and
+// then connect to THAT address, so a rebind between the check and the connect
+// cannot slip through. This predicate marks the addresses the gate refuses.
+// Same ranges as lib/fetch.mjs isBlockedAddress; kept here as a small pure copy
+// so the proxy depends on nothing heavy. `allowPrivate` opts a run into private
+// space on purpose (a grant for the operator's own LAN, or a test's 127.0.0.1).
+function isBlockedAddress(addr) {
+  const fam = isIP(addr);
+  if (fam === 4) {
+    const p = addr.split(".").map(Number);
+    if (p.length !== 4 || p.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
+    const [a, b] = p;
+    if (a === 0 || a === 10 || a === 127) return true; // this-network, private, loopback
+    if (a === 169 && b === 254) return true; // link-local (incl. cloud metadata)
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 192 && b === 168) return true; // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    if (a >= 224) return true; // multicast + reserved
+    return false;
+  }
+  if (fam === 6) {
+    const a = addr.toLowerCase().replace(/^\[|\]$/g, "");
+    if (a === "::" || a === "::1") return true; // unspecified, loopback
+    if (a.startsWith("fe80") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb")) return true; // link-local
+    if (a.startsWith("fc") || a.startsWith("fd")) return true; // unique-local
+    const m = a.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (m) return isBlockedAddress(m[1]); // IPv4-mapped — re-check the embedded v4
+    return false;
+  }
+  return true; // not a recognizable IP literal
+}
+
+// Resolve a request host to a single address to connect to, refusing any host
+// that resolves to a blocked address (unless allowPrivate). Returns
+// { ok, address, family, reason }. A bare IP literal is checked directly with no
+// lookup. When ALL resolved addresses pass, the first one is PINNED and returned,
+// so the caller connects to exactly the address that was checked — never a second
+// lookup that could answer differently (DNS rebinding).
+async function resolvePinned(host, allowPrivate) {
+  const h = String(host || "");
+  if (isIP(h)) {
+    if (!allowPrivate && isBlockedAddress(h)) return { ok: false, reason: `non-public address ${h}` };
+    return { ok: true, address: h, family: isIP(h) };
+  }
+  let addrs;
+  try {
+    addrs = await lookup(h, { all: true });
+  } catch {
+    return { ok: false, reason: `could not resolve ${h}` };
+  }
+  if (!addrs.length) return { ok: false, reason: `${h} resolved to nothing` };
+  if (!allowPrivate) {
+    for (const { address } of addrs) {
+      if (isBlockedAddress(address)) return { ok: false, reason: `${h} resolves to a non-public address (${address})` };
+    }
+  }
+  const first = addrs[0];
+  return { ok: true, address: first.address, family: first.family };
+}
 
 // The pure rule. Given the allow-list and one request host, allow or block.
 // allowSet is any iterable of host entries (exact hosts or "*." wildcards).
@@ -122,8 +189,16 @@ function httpTarget(req) {
 //   allowedHosts  the allow-list (from grant-store.allowedHosts()). Required to
 //                 reach anything; an empty list blocks every request.
 //   log           an optional ScopeLog to record into; one is made if omitted.
-//   host          the interface to bind; default 127.0.0.1 (local only).
-export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1" } = {}) {
+//   host          the interface to bind; default 127.0.0.1 (local only). The
+//                 confinement sidecar (lib/reach-confine.mjs) binds 0.0.0.0 so
+//                 the client container can reach it across the Docker network.
+//   port          the port to bind; default 0 (an ephemeral port). The sidecar
+//                 passes a fixed port so the client can name a stable gateway.
+//   allowPrivate  reach hosts that resolve to loopback/private/link-local space.
+//                 Off by default (an SSRF and DNS-rebinding defense); a grant for
+//                 the operator's own LAN, or a test, opts in. The covering grant
+//                 carries this, and lib/reach.mjs passes it here.
+export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", port = 0, allowPrivate = false } = {}) {
   const allow = [...allowedHosts];
   const scopeLog = log || new ScopeLog();
 
@@ -149,9 +224,19 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1" } =
       res.end(`Scope gate: blocked ${targetHost}. ${verdict.reason}. No grant covers this host.\n`);
       return;
     }
-    // Allowed: forward the request to the target and stream the response back.
-    forward(req, res, target, (status) => {
-      scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: true, reason: verdict.reason, status });
+    // Allowed by name — now check the ADDRESS and pin it, so a granted name that
+    // resolves to private/metadata space is refused, and the forward connects to
+    // exactly the address we checked.
+    resolvePinned(targetHost, allowPrivate).then((pin) => {
+      if (!pin.ok) {
+        scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: false, reason: pin.reason, status: 403 });
+        res.writeHead(403, { "content-type": "text/plain" });
+        res.end(`Scope gate: blocked ${targetHost}. ${pin.reason}.\n`);
+        return;
+      }
+      forward(req, res, target, pin.address, (status) => {
+        scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: true, reason: verdict.reason, status });
+      });
     });
   });
 
@@ -160,7 +245,7 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1" } =
   // still records the host and the allow/block decision.
   server.on("connect", (req, clientSocket, head) => {
     const [targetHost, portStr] = String(req.url || "").split(":");
-    const port = Number(portStr) || 443;
+    const tport = Number(portStr) || 443;
     const verdict = decide(allow, targetHost);
     if (!verdict.allowed) {
       scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: false, reason: verdict.reason, status: 403 });
@@ -168,23 +253,33 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1" } =
       clientSocket.end();
       return;
     }
-    const upstream = net.connect(port, targetHost, () => {
-      scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: true, reason: verdict.reason, status: 200 });
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (head && head.length) upstream.write(head);
-      upstream.pipe(clientSocket);
-      clientSocket.pipe(upstream);
+    resolvePinned(targetHost, allowPrivate).then((pin) => {
+      if (!pin.ok) {
+        scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: false, reason: pin.reason, status: 403 });
+        clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\nScope gate: blocked by address.\r\n");
+        clientSocket.end();
+        return;
+      }
+      // Connect to the PINNED address, not the name, so no second lookup can
+      // rebind the tunnel to a different host.
+      const upstream = net.connect(tport, pin.address, () => {
+        scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: true, reason: verdict.reason, status: 200 });
+        clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head && head.length) upstream.write(head);
+        upstream.pipe(clientSocket);
+        clientSocket.pipe(upstream);
+      });
+      upstream.on("error", () => { try { clientSocket.end(); } catch { /* ignore */ } });
+      clientSocket.on("error", () => { try { upstream.end(); } catch { /* ignore */ } });
     });
-    upstream.on("error", () => { try { clientSocket.end(); } catch { /* ignore */ } });
-    clientSocket.on("error", () => { try { upstream.end(); } catch { /* ignore */ } });
   });
 
   return new Promise((resolve) => {
-    server.listen(0, host, () => {
-      const port = server.address().port;
+    server.listen(port, host, () => {
+      const boundPort = server.address().port;
       resolve({
-        url: `http://${host}:${port}`,
-        port,
+        url: `http://${host}:${boundPort}`,
+        port: boundPort,
         log: scopeLog,
         stop: () => new Promise((r) => server.close(() => r())),
       });
@@ -193,21 +288,35 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1" } =
 }
 
 // Forward one allowed http request to its target and stream the response back.
-// Uses global fetch, so no new dependency. On a target error the gate returns
-// 502 and logs that status.
-function forward(req, res, target, done) {
+// Uses global fetch, so no new dependency. `pinnedAddress` is the address the
+// gate already resolved and approved: we connect to THAT (by rewriting the URL
+// host to the pinned IP and setting the original Host header), so fetch cannot
+// re-resolve the name to a different, unchecked address. On a target error the
+// gate returns 502 and logs that status.
+function forward(req, res, target, pinnedAddress, done) {
   const headers = { ...req.headers };
   delete headers["x-touchstone-url"]; // the gate's own routing header, not the target's
-  delete headers.host; // let fetch set the target host
   delete headers["proxy-connection"];
   delete headers.connection;
+
+  // Pin: send the request to the checked IP, but keep the original Host so the
+  // target serves the right virtual host and TLS/SNI is moot (http only here).
+  let pinnedUrl = target;
+  try {
+    const u = new URL(target);
+    headers.host = u.host; // the name:port the client asked for
+    u.hostname = isIP(pinnedAddress) === 6 ? `[${pinnedAddress}]` : pinnedAddress;
+    pinnedUrl = u.toString();
+  } catch {
+    delete headers.host; // malformed — let fetch decide (it will fail safely)
+  }
 
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", async () => {
     const hasBody = req.method !== "GET" && req.method !== "HEAD" && chunks.length > 0;
     try {
-      const upstream = await fetch(target, {
+      const upstream = await fetch(pinnedUrl, {
         method: req.method,
         headers,
         body: hasBody ? Buffer.concat(chunks) : undefined,

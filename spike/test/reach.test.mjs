@@ -28,6 +28,7 @@ beforeEach(() => rmSync(process.env.TOUCHSTONE_GRANTS_FILE, { force: true }));
 // Loaded after the env var is set, so the store reads the throwaway file.
 const { addGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, enforceReach, isNetworkKind, openReach, NON_NETWORK_KINDS } = await import("../lib/reach.mjs");
+const { targetSummary, resolveTargetDir, prepareWorkspace, prepareRunWorkspace } = await import("../lib/targets.mjs");
 
 // A local http server stands in for the granted host. Pointed at via the
 // x-touchstone-url header, which plain fetch can set (no proxy-agent dependency).
@@ -91,7 +92,9 @@ test("NO GRANT ⇒ NO DISPATCH: a live target with no grant is refused and start
 });
 
 test("GRANT ⇒ ONLY THE GRANTED HOST: the proxy forwards the granted host and blocks the rest", async () => {
-  addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, note: "test host" });
+  // allowPrivate: 127.0.0.1 is a loopback address, which addGrant refuses by
+  // default (SSRF guard); this operator-owned local target opts in explicitly.
+  addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, note: "test host", allowPrivate: true });
   const handle = await openReach({ kind: "live", hosts: ["127.0.0.1"] });
   try {
     assert.equal(handle.live, true);
@@ -116,8 +119,28 @@ test("GRANT ⇒ ONLY THE GRANTED HOST: the proxy forwards the granted host and b
   }
 });
 
+test("a live target is NEVER dispatched: honest in the summary, refused at every workspace entry", async () => {
+  // The confinement boundary is built and proven (reach-confine.test.mjs), but
+  // the dispatcher does not yet run a live run's tools inside it. So "live" stays
+  // non-runnable: the refusal is pre-flight and honest, never advisory.
+  const live = { id: "live-probe", title: "A live host", kind: "live", hosts: ["app.example.com"], pack: "review" };
+
+  // Honest in the summary: the operator sees the host(s) it WOULD touch, so the
+  // target is never silently offered as if it were nothing.
+  const s = targetSummary(live);
+  assert.equal(s.kind, "live");
+  assert.deepEqual(s.hosts, ["app.example.com"]);
+
+  // Refused at every path that would turn a target into a running workspace —
+  // even if a grant for its host exists. There is no entry point that dispatches.
+  addGrant({ hosts: ["app.example.com"], kind: "operator-owned", ownership: true });
+  assert.throws(() => resolveTargetDir(live), /not yet runnable: live/);
+  assert.throws(() => prepareWorkspace(live, { modules: [] }), /not yet runnable: live/);
+  await assert.rejects(() => prepareRunWorkspace(live, { modules: [] }), /not yet runnable: live/);
+});
+
 test("the allow-list is the covering grant's hosts, not every grant in the store", async () => {
-  addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true });
+  addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, allowPrivate: true });
   addGrant({ hosts: ["unrelated.example.com"], kind: "operator-owned", ownership: true });
   const handle = await openReach({ kind: "live", hosts: ["127.0.0.1"] });
   try {

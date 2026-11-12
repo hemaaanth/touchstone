@@ -123,7 +123,12 @@ export async function openReach(target, { now = Date.now(), proxyHost = "127.0.0
     };
   }
   const allow = allowFromGrants(grants);
-  const proxy = await startScopeProxy({ allowedHosts: allow, host: proxyHost });
+  // A grant that opted into private space (the operator's own LAN, or a test's
+  // 127.0.0.1) lets the proxy reach it; a public-host grant never does. If ANY
+  // covering grant opted in, the run may reach the private hosts those grants
+  // name — the allow-list still confines WHICH hosts.
+  const allowPrivate = grants.some((g) => g.allowPrivate === true);
+  const proxy = await startScopeProxy({ allowedHosts: allow, host: proxyHost, allowPrivate });
   const env = {
     TOUCHSTONE_SCOPE_PROXY: proxy.url,
     TOUCHSTONE_SCOPE_ALLOW: allow.join(","),

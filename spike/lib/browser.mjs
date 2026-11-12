@@ -40,13 +40,27 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return null; }
 }
 
+// The allow-list a run's browser seam should use. Inside a confined run the
+// reach gate (lib/reach.mjs) sets TOUCHSTONE_SCOPE_ALLOW to the COVERING grant's
+// hosts — the hosts of the grants that cover THIS run's target, not every grant
+// in the store. The browser seam must use that same narrow list, so a run cannot
+// open a page some unrelated grant happens to allow. Outside a confined run (no
+// env set) it falls back to the active grants, the prior behavior.
+function scopeAllowFromEnv() {
+  const raw = process.env.TOUCHSTONE_SCOPE_ALLOW;
+  if (raw == null) return grantAllowedHosts();
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 // The browser seam. Make one per run. It holds the allow-list source and the
 // log. `allowed` defaults to the live grant allow-list, so the seam and the
 // scope proxy always agree. A test passes a fixed list and a stub runner.
 export class BrowserSeam {
   constructor({ allowed, log, runner } = {}) {
-    // A function returning the current allow-list. Default: the active grants.
-    this.allowedHosts = allowed || grantAllowedHosts;
+    // A function returning the current allow-list. Default: the covering grant's
+    // hosts for this run (TOUCHSTONE_SCOPE_ALLOW), falling back to the active
+    // grants when no confined run is in effect. A test passes a fixed list.
+    this.allowedHosts = allowed || scopeAllowFromEnv;
     this.log = log || new ScopeLog();
     this.runner = runner || bbRunner;
     this.openUrl = null; // the page bb-browser currently holds
