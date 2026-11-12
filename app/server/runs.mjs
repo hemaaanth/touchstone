@@ -67,7 +67,8 @@ function loadEnvLocal() {
 const loadedKeys = loadEnvLocal()
 if (loadedKeys > 0) console.log(`[runs] loaded ${loadedKeys} key(s) from spike/.env.local`)
 const ENGINE = path.join(SPIKE, "agent-run.mjs")
-const RESULTS_DIR = path.join(SPIKE, "results", "agent")
+// TOUCHSTONE_RESULTS_DIR lets a test use a throwaway folder.
+const RESULTS_DIR = process.env.TOUCHSTONE_RESULTS_DIR || path.join(SPIKE, "results", "agent")
 const MAX_POC = process.env.MAX_POC ?? "12"
 
 // Which models the UI may run: the active provider's price table, the Settings
@@ -406,6 +407,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   startEngine(run).catch((err) => {
     run.error = String(err?.message ?? err)
     setRunStatus(run, "error")
+    finalize(run)
     broadcast(run, { ev: "closed" })
   })
 
@@ -660,6 +662,7 @@ function spawnAgent(run, leads) {
       run.error = run.errorInfo.message
       setRunStatus(run, "error")
     }
+    finalize(run)
     broadcast(run, { ev: "closed" })
   })
 }
@@ -710,6 +713,7 @@ async function recordRun(run, found) {
     run.error = String(err?.message ?? err)
     run.status = "error"
     broadcast(run, { ev: "status", status: run.status, error: run.error })
+    finalize(run)
   } finally {
     await endWorkspace(run)
     broadcast(run, { ev: "closed" })
@@ -780,6 +784,7 @@ function endStopped(run) {
   run.errorInfo = null
   broadcast(run, { t: Date.now(), ev: "stopped" })
   setRunStatus(run, "no-finding")
+  finalize(run)
   broadcast(run, { ev: "closed" })
 }
 
@@ -857,6 +862,7 @@ function followUp(run, text, clientId) {
         run.error = null
         run.errorInfo = null
         setRunStatus(run, "no-finding")
+        finalize(run)
       }
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
@@ -885,6 +891,12 @@ async function recordMore(run, found) {
     first = r.findings?.length ?? 0
     r.findings = [...(r.findings ?? []), ...findings]
     r.findingSubmitted = true
+    // A run that ended with no finding has a record already; it now records one.
+    r.outcome = "recorded"
+    r.error = null
+    r.errorInfo = null
+    r.decision = "approved"
+    r.recorded = true
     if (!r.finding) {
       const worst = findings[0]
       r.finding = { title: worst.title, severity: worst.severity, poc: worst.poc }
@@ -955,6 +967,7 @@ export function deleteRun(id) {
 // run and a CLI run produce the same history shape.
 function persistRun(run, findings) {
   const evs = run.events
+  const recorded = findings.length > 0
   const s = run.settled ?? {}
   const summary = s.summary ?? {}
   const pocRuns = evs.filter((e) => e.ev === "run_poc").length
@@ -977,6 +990,12 @@ function persistRun(run, findings) {
     ms,
     status: s.status ?? null,
     reason: s.reason ?? null,
+    // How the run ended: recorded, no-finding or error. An error keeps its
+    // reason, so a crashed run reads as a failure, never as a clean scan.
+    outcome: recorded ? "recorded" : run.status ?? null,
+    error: recorded ? null : (run.error ?? null),
+    errorInfo: recorded ? null : (run.errorInfo ?? null),
+    stopped: evs.some((e) => e.ev === "stopped"),
     // The pre-pass ensembles that fed the agent its leads: a suspect an engine
     // ranked, then proven by replay. A suspect is never a finding on its own.
     static: run.static ?? null,
@@ -992,14 +1011,32 @@ function persistRun(run, findings) {
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,
     pocProved: isProven(worst),
     proof: worst?.proof ?? null,
-    decision: "approved",
-    recorded: true,
+    // What the agent submitted. With no recorded finding these are claims
+    // that were never proven, so the findings ledger does not read them.
+    submitted: (run.submitted ?? []).map(({ title, severity, poc }) => ({ title, severity, poc })),
+    decision: recorded ? "approved" : null,
+    recorded,
     calls: (summary.calls ?? []).map((c) => c.name),
     final: summary.final?.text ?? null,
     usage: s.usage ?? null,
     reports: s.reports ?? [],
   }
   writeFileSync(path.join(RESULTS_DIR, `run-${run.id}.json`), JSON.stringify({ result, transcript: summary }, null, 2))
+}
+
+// Write the record of a run that ends with no finding to record: a clean
+// no-finding, an error, a crash or a stop. It keeps what the run did get (the
+// pre-pass leads and coverage, with any tool that was unavailable and why), so
+// the run is readable afterward. Call it after the terminal status is set. A
+// record that already holds findings is kept. A failed write never throws.
+function finalize(run) {
+  try {
+    const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
+    if (existsSync(file) && JSON.parse(readFileSync(file, "utf8")).result?.findings?.length) return
+    persistRun(run, [])
+  } catch (err) {
+    run.stderr = `${run.stderr ?? ""}[finalize] ${String(err?.message ?? err)}\n`
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,7 +1155,8 @@ function savedRun(id, events, mtime) {
   }
   // A terminal status always lands in the stream file. Without one, the server
   // stopped mid-run. Mark it in memory only: the file stays the true record.
-  if (!TERMINAL.includes(status)) {
+  const interrupted = !TERMINAL.includes(status)
+  if (interrupted) {
     status = "error"
     error = "the server restarted during this run, so it stopped"
     events.push({ t: Date.now(), ev: "status", status, error })
@@ -1149,6 +1187,7 @@ function savedRun(id, events, mtime) {
     findingIds,
     decision,
     error,
+    interrupted,
     child: null,
     stderr: "",
   }
@@ -1177,7 +1216,11 @@ function loadSavedRuns() {
         mtime = statSync(recordFile).mtimeMs
       }
       if (!events.length) continue
-      runs.set(id, savedRun(id, events, mtime))
+      const run = savedRun(id, events, mtime)
+      runs.set(id, run)
+      // The server stopped during this run, so no record was written. Write
+      // one now from the stream: the run is an error, with its reason.
+      if (run.interrupted && !existsSync(recordFile)) finalize(run)
     } catch (err) {
       console.warn(`[runs] skipped saved run ${id}: ${String(err?.message ?? err).slice(0, 200)}`)
     }

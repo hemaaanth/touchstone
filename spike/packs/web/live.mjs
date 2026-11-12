@@ -34,11 +34,15 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
   }
   // A second, broader engine: Strix brings a browser, a proxy and skills for the
   // classes our own oracles do not cover. Its results are leads; ours prove.
+  // Strix is best-effort. Whatever stops it, the run keeps the other engines'
+  // leads and records strix as "unavailable" with the reason.
+  const strixGap = (reason) => scan.coverage.push({ engine: "strix", status: "unavailable", reason, leads: 0 });
   let strix = null;
   try {
     const p = activeProvider(readConfig());
     const key = providerKey(p);
-    if (key) {
+    if (!key) strixGap("no provider key for strix's model calls");
+    else {
       strix = await runStrix({
         baseUrl,
         provider: {
@@ -54,7 +58,9 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
       scan.leads = mergeLeads([...scan.leads, ...strix.leads]);
     }
   } catch (err) {
-    emit({ ev: "web-strix-failed", error: String(err?.message ?? err).slice(0, 200) });
+    const error = String(err?.message ?? err).slice(0, 200);
+    emit({ ev: "web-strix-failed", error });
+    strixGap(`strix failed: ${error}`);
   }
   const record = { pack: "web", live: true, baseUrl, coverage: scan.coverage, leads: scan.leads };
   writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));

@@ -1,0 +1,14 @@
+{"t":1794525839389,"ev":"scope","scope":{"id":"live-smoke-example-com-4323950f","title":"Smoke example.com","kind":"live","pack":"web","blurb":"","entry":"example.com","signal":"agent","proofSurface":{"kind":"live","note":"Real requests to the websites listed here. You confirmed you have permission to test them."},"hosts":["example.com"],"origins":["https://example.com"]}}
+{"t":1794525839389,"ev":"budget","usd":0.5}
+{"t":1794525839389,"ev":"mode","mode":"solo"}
+{"t":1794525839389,"ev":"modules","modules":[{"id":"agent","on":true,"available":true,"fixed":true,"reason":"The agent always runs."},{"id":"replay","on":true,"available":true,"fixed":true,"reason":"The pack's proof step is the only thing that makes a finding real."}]}
+{"t":1794525839389,"ev":"provider","provider":"lyber","model":"deepseek-v4.1-flash-1017-abliterated"}
+{"t":1794525839389,"ev":"status","status":"running","pending":null,"decision":null}
+{"ev":"web-live-target","baseUrl":"https://example.com","hosts":["example.com"]}
+{"ev":"web-scan-started","engines":["zap","nuclei","dalfox"],"target":"https://example.com"}
+{"t":1794525847009,"ev":"renamed","name":"[test] example.com live"}
+{"ev":"web-strix-started","baseUrl":"https://example.com","budgetUsd":0.5}
+{"ev":"web-strix-line","line":"│ Penetration test initiated │"}
+{"ev":"web-strix-line","line":"│ │"}
+{"ev":"web-strix-line","line":"2026-11-12 23:27:50.482 ERROR example-com_3681 - strix.core.execution: agent run failed for 7693ddc3; marking stopped"}
+{"ev":"web-strix-line","line":"File \"/usr/local/lib/python3.12/site-packages/agents/result.py\", line 931, in stream_events"}

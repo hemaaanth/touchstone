@@ -110,13 +110,78 @@ export function parseSarif(text) {
   });
 }
 
-// One scan. Resolves with { status, leads, coverage, timedOut } and never throws
-// for a scan that merely found nothing.
-export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, timeoutMs = DEFAULT_TIMEOUT_MS, emit = () => {} } = {}) {
+const unavailable = (reason) => ({ status: "unavailable", reason, leads: [], coverage: { engine: "strix", status: "unavailable", reason, leads: 0 } });
+
+// Strix is best-effort. Its own agent can crash inside its Python SDK, as in
+// this real line from a live run:
+//   ERROR ... strix.core.execution: agent run failed for 7693ddc3; marking stopped
+// A crash with no findings file is a coverage gap, not a clean scan.
+const CRASH = /agent run failed|Traceback \(most recent call last\)/;
+
+// Strix's own verdict on its run. Its SARIF says executionSuccessful: false
+// when the scan was interrupted or its agents did not finish (seen on a real
+// example.com run whose root agent crashed). Returns the first note as the
+// reason, or null when the run completed or the document says nothing.
+export function sarifIncomplete(text) {
+  let doc;
+  try { doc = JSON.parse(text); } catch { return null; }
+  const inv = doc?.runs?.[0]?.invocations?.[0];
+  if (inv?.executionSuccessful !== false) return null;
+  return cap(inv.toolExecutionNotifications?.[0]?.message?.text ?? "strix reported the scan did not complete", 200);
+}
+
+// A work dir Strix's container can write. The default temp dir can sit where
+// the Docker daemon cannot write; then fall back to /tmp. Null with a reason
+// when no candidate works.
+function workDir() {
+  const tried = [];
+  for (const base of [...new Set([process.env.STRIX_TMPDIR, tmpdir(), "/tmp"].filter(Boolean))]) {
+    let dir = null;
+    try {
+      dir = mkdtempSync(join(base, "strix-run-"));
+      // The daemon may remap root to a subuid that does not own the tmp dir.
+      chmodSync(dir, 0o777);
+      return { dir };
+    } catch (err) {
+      tried.push(`${base}: ${err?.code ?? cap(err?.message, 80)}`);
+      if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* left behind */ }
+    }
+  }
+  return { reason: `no writable temp dir for strix (${tried.join("; ")})` };
+}
+
+// Strix's container writes as its own user, so the host user may not be able
+// to delete what it left (EACCES). Then delete it from a container, as that
+// user. Never throws: a dir left behind must not cost the leads already read.
+async function removeWorkDir(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); return null; } catch { /* try as the container user */ }
+  await runDocker(["run", "--rm", "--network", "none", "--entrypoint", "sh", "-v", `${dir}:/work`, STRIX_IMAGE, "-c", "rm -rf /work/* /work/.[!.]*"], { timeoutMs: 60_000 });
+  try { rmSync(dir, { recursive: true, force: true }); return null; } catch (err) {
+    return `left ${dir}: ${err?.code ?? cap(err?.message, 80)}`;
+  }
+}
+
+// One scan. Resolves with { status, leads, coverage, timedOut }. It never
+// throws: any Strix failure degrades to status "unavailable" with a reason, so
+// the run keeps the other engines' results.
+export async function runStrix(opts = {}) {
+  const emit = (ev) => {
+    try { opts.emit?.(ev); } catch { /* a view error must not stop the scan */ }
+  };
+  try {
+    return await scanStrix({ ...opts, emit });
+  } catch (err) {
+    const reason = `strix failed: ${cap(err?.message ?? err)}`;
+    emit({ ev: "web-strix-done", status: "unavailable", leads: 0, reason });
+    return unavailable(reason);
+  }
+}
+
+async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, timeoutMs = DEFAULT_TIMEOUT_MS, emit }) {
   // Gateways serve model ids LiteLLM cannot price, and without a price
   // --max-budget never fires. Always hand Strix our own per-token prices.
   const ready = await strixReady();
-  if (!ready.ok) return { status: "unavailable", reason: ready.reason, leads: [], coverage: { engine: "strix", status: "unavailable", reason: ready.reason, leads: 0 } };
+  if (!ready.ok) return unavailable(ready.reason);
   // Strix is the ONE networked, non-offline engine. It runs in its own container
   // through runDocker(), so it shares the backend switch (local Docker or
   // Daytona) and the resource caps the other engines get. It needs the Docker
@@ -126,9 +191,12 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
   //
   // The model shim runs INSIDE the same container (entrypoint.sh), so it works
   // unchanged when the container is on a remote Daytona machine.
-  const cwd = mkdtempSync(join(tmpdir(), "strix-run-"));
-  // The daemon may remap root to a subuid that does not own the tmp dir.
-  chmodSync(cwd, 0o777);
+  const work = workDir();
+  if (!work.dir) {
+    emit({ ev: "web-strix-done", status: "unavailable", leads: 0, reason: work.reason });
+    return unavailable(work.reason);
+  }
+  const cwd = work.dir;
   const name = `touchstone-strix-${randomBytes(4).toString("hex")}`;
   const args = [
     "run", "--rm", "--name", name,
@@ -155,10 +223,12 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
 
   const tail = [];
   let seen = 0;
+  let crashLine = null;
   const onLine = (d) => {
     for (const line of String(d).split("\n")) {
       if (!line.trim()) continue;
       tail.push(line);
+      if (!crashLine && CRASH.test(line)) crashLine = cap(line, 200);
       if (tail.length > 40) tail.shift();
       // The TUI prints a lot; one event per four lines is enough for the view.
       if (++seen % 4 === 0) emit({ ev: "web-strix-line", line: cap(line, 200) });
@@ -187,13 +257,17 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
   // reported before it stopped, which is the point of keeping the SARIF.
   let leads = [];
   let costUsd = 0;
+  let incomplete = null;
   try {
     const runs = join(cwd, "strix_runs");
     const dirs = existsSync(runs) ? readdirSync(runs) : [];
     const dir = dirs.sort().at(-1);
     const sarif = dir ? join(runs, dir, "findings.sarif") : null;
-    if (sarif && existsSync(sarif)) leads = parseSarif(readFileSync(sarif, "utf8"));
-    else tail.push("strix wrote no findings file");
+    if (sarif && existsSync(sarif)) {
+      const text = readFileSync(sarif, "utf8");
+      leads = parseSarif(text);
+      incomplete = sarifIncomplete(text);
+    } else tail.push("strix wrote no findings file");
     // Its own spend, from its own usage record, at our prices. The run budget
     // guard counts only the engine's own inference, so report this separately.
     try {
@@ -201,17 +275,27 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
       costUsd = ((usage.input_tokens ?? 0) / 1e6) * (provider.inputCost ?? 0)
         + ((usage.output_tokens ?? 0) / 1e6) * (provider.outputCost ?? 0);
     } catch { /* no usage record */ }
-  } finally {
-    if (process.env.STRIX_KEEP !== "1") rmSync(cwd, { recursive: true, force: true });
-    else tail.push(`kept ${cwd}`);
+  } catch (err) {
+    tail.push(`could not read strix output: ${cap(err?.message ?? err, 120)}`);
+  }
+  if (process.env.STRIX_KEEP === "1") tail.push(`kept ${cwd}`);
+  else {
+    const left = await removeWorkDir(cwd);
+    if (left) tail.push(left);
   }
   // Hitting the turn cap exits non-zero with a MaxTurnsExceeded trace. That is
   // a stop, not a failure: the leads it did produce are kept.
   const hitCap = tail.some((l) => /MaxTurnsExceeded|Max turns/i.test(l));
-  const status = timedOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
-  const reason = status === "unavailable"
-    ? tail.slice(-3).join(" | ")
+  // Its agent crashed, or its own report says the scan did not complete. With
+  // no leads that is a coverage gap, never a clean scan: "unavailable",
+  // whatever the exit code. Leads it did report are real and are kept.
+  const broke = hitCap ? null : crashLine ?? incomplete;
+  const status = broke && !leads.length ? "unavailable"
+    : timedOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
+  const reason = broke
+    ? (leads.length ? `strix did not finish; the ${leads.length} leads it reported are kept: ${broke}` : `strix did not finish and reported nothing: ${broke}`)
+    : status === "unavailable" ? tail.slice(-3).join(" | ")
     : hitCap ? "stopped at the turn cap; leads found before that are kept" : undefined;
-  emit({ ev: "web-strix-done", status, leads: leads.length, costUsd: Number(costUsd.toFixed(4)) });
+  emit({ ev: "web-strix-done", status, leads: leads.length, costUsd: Number(costUsd.toFixed(4)), ...(reason ? { reason } : {}) });
   return { status, leads, reason, timedOut, costUsd, coverage: { engine: "strix", status, leads: leads.length, ...(reason ? { reason } : {}), ...(costUsd ? { costUsd: Number(costUsd.toFixed(4)) } : {}) } };
 }
