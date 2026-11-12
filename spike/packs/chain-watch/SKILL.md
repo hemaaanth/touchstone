@@ -50,6 +50,33 @@ logs. When both see a change in the same block, the lead is `corroborated`. A
 slot change with no log is a silent change. A monitor that reads only events
 misses it. The lead says so.
 
+## Source checks (any folder)
+
+The pre-pass also reads `src/**/*.sol` with our own text checks. They need no lab world.
+A real Foundry folder gets them too. Each lead names the contract, function, file and
+line. A lead is never a finding. Aderyn runs on the same source. A lead both return is
+`corroborated`.
+
+| Check | Impact | What it means |
+|-------|--------|---------------|
+| `unprotected-control-function` | High | A function that changes an owner, admin, module, role or implementation has no caller check. |
+| `unprotected-implementation-write` | High | A function writes the implementation slot with no caller check. |
+| `silent-upgrade-path` | Medium | An upgrade path can run with no event. A monitor that reads events will miss it. |
+| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body. Anyone can upgrade. |
+| `initializer-unprotected` | High | An `initialize` function has no `initializer` guard or owner check. |
+| `implementation-initializable` | Medium | An implementation can be initialized by anyone. |
+| `delegatecall-user-target` | High | `delegatecall` goes to an address the caller picks. |
+| `unprotected-selfdestruct` | High | `selfdestruct` has no caller check. |
+| `tx-origin-auth` | High | `tx.origin` is used as an auth check. |
+| `module-no-access-control` | High | `execTransactionFromModule` is callable with no caller check. |
+| `ecrecover-zero-address` | High | `ecrecover` returns zero on a bad signature, and the result is not checked. |
+| `signature-malleability` | Medium | The `s` value is not bounded, so a second valid signature exists. |
+| `signature-replay-no-nonce` | High | A signed message has no nonce. It can be sent again. |
+| `signature-no-domain` | Medium | A signed hash has no chain or contract domain. It replays across chains. |
+| `hardcoded-private-key` | High | A private key is in the source. The lead shows it redacted. |
+
+Vendored code under `lib`, `node_modules` and `vendor` is skipped.
+
 ## Steps
 
 1. Call `chain_state` and `watch_leads`. Read the lab code.

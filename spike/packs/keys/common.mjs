@@ -20,7 +20,9 @@ import { runTool } from "../../lib/wrap.mjs";
 import { IMPACT_RANK } from "../../lib/ensemble.mjs";
 import { event } from "../../lib/event.mjs";
 import { proveFindings } from "../../lib/record.mjs";
+import { aderynScan } from "../../lib/aderyn.mjs";
 import { labOf, controlChanges } from "./control.mjs";
+import { scanSources } from "./source-checks.mjs";
 
 export const IMAGE = "touchstone-chain-tools:wave1";
 export const OBSERVATION = "chain-observation.json";
@@ -67,6 +69,11 @@ export async function observe(ws, mode) {
   if (!existsSync(file)) throw new Error(`The ${mode} lab did not write an observation: ${run.stderr.slice(-400)}`);
   return JSON.parse(readFileSync(file, "utf8"));
 }
+
+// The lab world needs the lab's own contracts. A real folder has none of them. Then the
+// pack runs in source mode: no Anvil, only the source checks and Aderyn.
+const WORLD_MARKER = { "keys": "src/KeysLab.sol", "chain-watch": "src/ChainWatchLab.sol" };
+export const hasWorld = (ws, mode) => existsSync(join(ws, WORLD_MARKER[mode] ?? "src/none.sol"));
 
 export function readObservation(ws) {
   try { return JSON.parse(readFileSync(join(ws, OBSERVATION), "utf8")); } catch { return null; }
@@ -240,6 +247,40 @@ export function describeLeads(leads, empty) {
   }).join("\n\n");
 }
 
+// ---------------------------------------------------------------- source leads
+
+// Every .sol file under src/ that is not vendored. Capped so a huge repo stays cheap.
+const SOURCE_CAP = 400;
+export function sourceFiles(ws) {
+  return listSol(ws).filter((rel) => !/(^|[\\/])(node_modules|lib|vendor)[\\/]/.test(rel)).slice(0, SOURCE_CAP).map((rel) => {
+    let content = "";
+    try { content = readFileSync(join(ws, rel), "utf8").slice(0, FILE_READ_CAP); } catch { /* skip unreadable files */ }
+    return { path: rel, content };
+  });
+}
+
+// Our own crypto-gap checks over the source (source-checks.mjs), as chain leads.
+export function sourceLeads(ws) {
+  return mergeChain(scanSources(sourceFiles(ws)).map((lead) => ({ ...lead, where: `${lead.where} (${lead.file}:${lead.lines[0]})` })));
+}
+
+// Aderyn runs through runTool() with no network. Only its High and Medium results
+// become leads. It is a second engine for the source, not a verdict.
+export async function aderynLeads(ws) {
+  let scan;
+  try { scan = await aderynScan(ws); } catch (error) { return { available: false, reason: String(error?.message ?? error), leads: [] }; }
+  const leads = (scan.leads ?? []).filter((l) => l.impact === "High" || l.impact === "Medium").slice(0, 10)
+    .map((l) => ({ engine: "Aderyn", check: l.check, impact: l.impact, where: `${l.file}:${l.lines?.[0] ?? 0}`,
+      file: l.file, lines: l.lines ?? [], description: l.description }));
+  return { available: scan.available, reason: scan.reason, leads };
+}
+
+// Leads for one workspace: the lab world (when there is one) plus the source checks.
+export function leadsFor(ws, analyze) {
+  const obs = readObservation(ws);
+  return [...(obs ? analyze(obs) : []), ...sourceLeads(ws)].sort((a, b) => rank(a.impact) - rank(b.impact)); // stable sort keeps engine order
+}
+
 // ---------------------------------------------------------------- harm oracle
 
 // The addresses a run is about: the proxy of Chain watch, the Safes of Keys. An agent
@@ -341,15 +382,17 @@ export function chainTools(ws, state, spec) {
     execute: async () => {
       event(spec.stateTool.name);
       const obs = readObservation(ws);
-      return obs ? text(JSON.stringify(obs, null, 1)) : text("No observation was recorded for this run.", true);
+      return obs ? text(JSON.stringify(obs, null, 1))
+        : text(`No observation was recorded. In source mode (a real folder with no lab world) there is none. Read the source with list_sources and read_source, and call ${spec.leadsTool.name} for the source leads.`, true);
     },
   });
   const leadsTool = defineTool({
     name: spec.leadsTool.name, description: spec.leadsTool.description, parameters: obj({}), replay: "safe",
     execute: async () => {
       event(spec.leadsTool.name);
-      const obs = readObservation(ws);
-      return text(obs ? describeLeads(spec.analyze(obs), spec.empty) : "No observation was recorded for this run.", !obs);
+      const nothingToRead = !readObservation(ws) && sourceFiles(ws).length === 0;
+      if (nothingToRead) return text("No observation was recorded for this run and there is no source to scan.", true);
+      return text(describeLeads(leadsFor(ws, spec.analyze), spec.empty));
     },
   });
   const runPoc = defineTool({
@@ -422,14 +465,20 @@ export function chainNudge(state, noun) {
 // The prepass for one chain pack. Runs the lab world, turns the observation into
 // leads, and returns them as the kickoff brief.
 export async function chainPrepass(ws, { emit }, { mode, analyze }) {
-  const obs = await observe(ws, mode);
-  const leads = analyze(obs);
+  // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
+  const world = hasWorld(ws, mode);
+  const obs = world ? await observe(ws, mode) : null;
+  const aderyn = await aderynLeads(ws);
+  const base = leadsFor(ws, analyze);
+  // Aderyn leads come last in each impact class. They are a second engine on the source.
+  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads]);
+  const block = obs ? (obs.block ?? obs.toBlock) : null;
   emit({ t: Date.now(), ev: "chain-scan", pack: mode, engines: [...new Set(leads.flatMap((l) => l.engines))],
-    block: obs.block ?? obs.toBlock, suspects: leads.length,
+    block, suspects: leads.length, source: !world, aderyn: aderyn.available,
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
     env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") },
-    record: { mode, block: obs.block ?? obs.toBlock, suspects: leads.length,
+    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available,
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };
 }

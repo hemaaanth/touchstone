@@ -14,13 +14,26 @@ with `--network none`, through `lib/wrap.mjs` `runTool()`.
 | Forta (`forta-agent` 0.1.48) | MIT | `runtime/monitor.mjs` in the tools image. `TransactionEvent.filterLog` decodes the logs | Yes. It does not call the Forta network | Raw logs from `eth_getLogs`, grouped per transaction | Decoded admin events: `Upgraded`, `AdminChanged`, `RoleGranted`, `RoleRevoked`, `OwnershipTransferred` | Event name, address, block, transaction hash | `forge` | Touchstone slot diff | The SDK is called. No bot code is copied | Reads logs only. It is blind to a change with no event | ensemble |
 | Touchstone slot diff (ours) | Ours | `observe.mjs` `chainWatch()` takes a snapshot per block. `common.mjs` `watchLeads` compares them | Yes | EIP-1967 implementation and admin slots, owner, role members, per block | Slot changes by block | `implementation-changed`, `admin-changed`, `owner-changed`, `role-granted`, `role-revoked`, and a note when the matching event is missing | `forge` | Forta | None | A silent upgrade (no `Upgraded` event) shows only here | own |
 | Touchstone canary and actor checks (ours) | Ours | Same container | Yes | Canary wallet balances and code, transactions per sender | Canary moves, delegation, actor groups | `canary-wallet-moved`, `actor-correlation` | `forge` | None | None | No open-source monitor does gap-5 canary wallets or 7702 delegation checks | own |
+| Aderyn 0.6.8 (`Cyfrin/aderyn`) | MIT | `lib/aderyn.mjs` `aderynScan`, through `runTool()`, image `touchstone/aderyn:0.6.8`, `--network none` | Yes | The workspace `src/` and `foundry.toml` | JSON report of High and Medium issues | Up to 10 leads, merged into the source leads. A lead both Aderyn and our checks return is `corroborated` | `forge` | Our source checks | None. The binary is run, not copied | On the chain-watch lab source it did **not** flag the planted open `upgradeTo`. Our source check does | ensemble |
+| Slither (`crytic/slither`) | AGPL-3.0 | **Not wrapped in this pack.** `lib/static.mjs` runs it with a direct `docker` `execFile`, not `runTool()`. That file is a seam file, so this thread did not change it | Yes (Docker, no network) | A Foundry project | Detector findings | Would add a second static engine beside Aderyn | `forge` | Aderyn | None | None | skip here, until `static.mjs` moves to `runTool()`. Run as a separate program only |
+| Touchstone source checks (ours) | Ours | `source-checks.mjs`, pure text checks, called by `common.mjs` `sourceLeads`. It runs on any Foundry folder, with or without the lab world | Yes | `src/**/*.sol`. Comments are stripped first. Vendored folders (`lib`, `node_modules`, `vendor`) are skipped | Ranked leads with file and line | `unprotected-control-function`, `unprotected-implementation-write`, `silent-upgrade-path`, `uups-authorize-empty`, `initializer-unprotected`, `implementation-initializable`, `delegatecall-user-target`, `unprotected-selfdestruct`, `tx-origin-auth`, `module-no-access-control`, plus the signature checks | `forge` | Aderyn (partial) | None | A proxy function that changes the implementation with no caller check, and that emits no event, is found here. An event monitor cannot see it. Aderyn does not rank it | own |
 | OpenZeppelin Monitor | AGPL-3.0 | Not wired. A Rust service with a config of networks, monitors and triggers | Needs an RPC and a block range. Could point at Anvil | Monitor JSON plus RPC | Matches, sent to triggers (Slack, webhook) | Same events as Forta | None | Forta | None | None | evaluated, not wired. Runs as a separate program only. Its value is alert delivery, which this lab has no use for |
 | Forta bots (network, `forta-network`) | Per bot. Mostly MIT | Not wired | No. The Forta network is a live service | Live blocks | Alerts | Many | None | Forta SDK | Detection ideas only | Not offline | read-only |
 | Tenderly Alerts | Hosted, proprietary | Not wired | No | Live chain | Alerts | Many | None | Forta | None | None | skip (hosted, no offline mode) |
 | Hypernative, Cyvers | Hosted, proprietary | Not wired | No | Live chain | Alerts | Many | None | Forta | None | None | skip (hosted) |
-| cast (Foundry) | MIT or Apache-2.0 | Binary in the tools image | Yes | Local RPC | `cast storage`, `cast logs` | Slot values and logs | None | The slot diff reads the same data | None | None | wrap (manual cross-check only) |
+| cast (Foundry) | MIT or Apache-2.0 | Binary is in the tools image. Nothing in this pack calls it | Yes | Local RPC | `cast storage`, `cast logs` | Slot values and logs | None | `observe.mjs` ethers reads and the forge cheatcodes read the same data | None | None | skip (in the image, not called, no gain over what we read) |
+
+## Source mode (a real folder)
+
+Run `TARGET=<dir> node agent-run.mjs` on a folder with `{"pack":"chain-watch"}` in
+`.touchstone.json`. With no lab proxy there is no chain observation. The pre-pass runs
+the source checks and Aderyn. The agent reads the leads, writes a Foundry test, and the
+`forge` oracle proves funds or control harm. See `../keys/TOOLS.md` for the folder layout
+and the scope limit.
 
 ## Gaps in our wrapping
+
+- Slither is not wrapped here. See its row above.
 
 - The lab replays a fixed list of transactions. The agent reads a range. It does
   not watch blocks as they arrive. A live watcher needs the scope proxy, the

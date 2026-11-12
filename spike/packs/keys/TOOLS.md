@@ -15,11 +15,28 @@ image `touchstone-chain-tools:wave1` (built from `runtime/Dockerfile`), with
 | Safe protocol-kit (`@safe-global/protocol-kit`) | MIT | `observe.mjs` in the tools image, `Safe.init` on the local RPC | Yes, with contract addresses passed in `contractNetworks` | Safe address and RPC | owners, threshold, modules, nonce, version | Second reader. A fact both readers return makes the lead `corroborated` | `forge` | Touchstone ethers reader | The SDK is called, not copied | We run our checks over what the SDK reads | ensemble |
 | ethers v6 | MIT | Same container | Yes | Safe address | Raw storage and `eth_getCode` reads | Owners, threshold, modules, guard, fallback handler, code at each owner | `forge` | Safe protocol-kit | None | Reads the guard and fallback slots and 7702 delegation. The SDK does not | wrap |
 | Touchstone Safe checks (ours) | Ours | `common.mjs` `keysLeads`, pure functions | Yes | The observation file | Ranked leads | `threshold-one`, `threshold-below-majority`, `owner-known-key`, `owner-7702-delegated`, `owner-is-contract`, `module-enabled`, `no-guard`, `fallback-handler-set`, `old-safe-version`, `signer-reuse` | `forge` | None | None | This is the crypto gap: no open-source tool does these checks on a lab chain | own |
+| Aderyn 0.6.8 (`Cyfrin/aderyn`) | MIT | `lib/aderyn.mjs` `aderynScan`, through `runTool()`, image `touchstone/aderyn:0.6.8`, `--network none` | Yes | The workspace `src/` and `foundry.toml` | JSON report of High and Medium issues | Up to 10 leads, merged into the source leads. A lead both Aderyn and our checks return is `corroborated` | `forge` | Our source checks | None. The binary is run, not copied | On the chain-watch lab source it did **not** flag the planted open `upgradeTo`. Our source check does | ensemble |
+| Slither (`crytic/slither`) | AGPL-3.0 | **Not wrapped in this pack.** `lib/static.mjs` runs it with a direct `docker` `execFile`, not `runTool()`. That file is a seam file, so this thread did not change it | Yes (Docker, no network) | A Foundry project | Detector findings | Would add a second static engine beside Aderyn | `forge` | Aderyn | None | None | skip here, until `static.mjs` moves to `runTool()`. Run as a separate program only |
+| Touchstone source checks (ours) | Ours | `source-checks.mjs`, pure text checks, called by `common.mjs` `sourceLeads`. It runs on any Foundry folder, with or without the lab world | Yes | `src/**/*.sol`. Comments are stripped first. Vendored folders (`lib`, `node_modules`, `vendor`) are skipped | Ranked leads with file and line | `ecrecover-zero-address`, `signature-malleability`, `signature-replay-no-nonce`, `signature-no-domain`, `tx-origin-auth`, `unprotected-control-function`, `unprotected-implementation-write`, `module-no-access-control`, `silent-upgrade-path`, `uups-authorize-empty`, `initializer-unprotected`, `implementation-initializable`, `delegatecall-user-target`, `unprotected-selfdestruct`, `hardcoded-private-key` | `forge` | Aderyn (partial) | None | This is the crypto gap: signature checks (zero address, malleability, replay, domain), tx.origin auth, and open owner, module or upgrade functions. The wrapped tools miss these | own |
+| cast (Foundry) | MIT or Apache-2.0 | Binary is in the tools image. Nothing in this pack calls it | Yes | Local RPC | `cast storage`, `cast logs` | Slot values and logs | None | `observe.mjs` ethers reads and the forge cheatcodes read the same data | None | None | skip (in the image, not called, no gain over what we read) |
 | safe-tx-hashes-util (`pcaversaccio`) | AGPL-3.0 | Not wired | Needs the Safe Transaction Service (network) | Safe tx or message hash | Verified hash, decoded call | Would flag a signed hash that does not match the call shown to signers | `evidence` (later) | None | None | Blind-signing check. Needs a real Safe tx history | read-only (separate program, never pasted) |
 | safe-cli (`safe-global/safe-cli`) | MIT | Not wired | Needs an RPC. Could point at Anvil | Safe address | Prints owners, threshold, modules | None beyond protocol-kit | None | Safe protocol-kit | None | None | skip (protocol-kit already covers it) |
 | safe-hash-rs (`Frontier159/safe-hash-rs`) | License not confirmed | Not wired | Hash computation is offline | Tx fields | Safe tx hash | Hash mismatch | None | safe-tx-hashes-util | None | Same as safe-tx-hashes-util | read-only until the license is checked |
 
+## Source mode (a real folder)
+
+Run `TARGET=<dir> node agent-run.mjs`. The folder needs `.touchstone.json` with
+`{"pack":"keys"}`, `foundry.toml`, `src/`, `test/` and `lib/forge-std`. There is no lab
+world, so no Anvil reads. The pre-pass runs the source checks and Aderyn. The agent
+writes a Foundry test. The same `forge` oracle proves funds or control harm.
+`test/keys-source.test.mjs` runs this path with no model spend.
+
+Scopes in the app can only run the `contracts` and `review` packs. A real folder reaches
+this pack through the CLI only. That is a platform gap, not a pack gap.
+
 ## Gaps in our wrapping
+
+- Slither and cast are not wrapped here. See their rows above.
 
 - The lab has two Safes with fixed weak setups. The agent reads them and proves
   harm. It does not scan a Safe by address on a live chain. That needs the scope

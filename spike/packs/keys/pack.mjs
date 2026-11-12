@@ -80,7 +80,7 @@ Keep going without asking the operator questions. Work from the actual lab.`;
 const kickoff = (ws, env) => {
   const base = "Audit the two Safes in this lab. Call key_leads and safe_state, read the lab source, list every suspect worst first, then prove each one you can with its own passing Foundry test that rebuilds the weak setup and moves ETH out of a Safe without the approval the owners meant to require. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, scariest first. A lead is real only once your test proves it. Call key_leads for the full list.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call key_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 

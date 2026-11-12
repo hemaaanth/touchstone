@@ -70,7 +70,7 @@ Keep going without asking the operator questions. Work from the actual lab.`;
 const kickoff = (ws, env) => {
   const base = "Review the watched block range for this proxy. Call watch_leads and chain_state, read the lab source, list every suspect change worst first, then prove each one you can with its own passing Foundry test that replays the change and moves ETH out of the proxy. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from two engines (state diff and Forta), scariest first. A lead is real only once your test proves it. Call watch_leads for the full list.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
