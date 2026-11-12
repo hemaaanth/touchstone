@@ -265,3 +265,178 @@ test("forge: contracts submit_finding refuses a passing tautology with reason no
   assert.match(r.output[0].text, /shows no harm/);
   assert.equal(state.found.length, 0);
 });
+
+// ---- reviewer cycle-2 cases: each a real forge replay of a defect the harm-gate
+// repair had to fix, with the matching benign negative so no fix is a new false
+// positive. These replace position/value guesses with the compiled storage layout
+// and add an ERC-20 token channel. See lib/proof.mjs scopeLayouts / layoutTakeovers
+// / tokenDrains.
+
+// Shorthand: drop the lab's Vault, write scope `src` files, prove one PoC contract.
+async function proveScope(ws, files, poc, body) {
+  rmSync(path.join(ws, "src/Vault.sol"));
+  for (const [name, code] of Object.entries(files)) writeFileSync(path.join(ws, "src", name), code);
+  return prove(ws, poc, HEAD + body);
+}
+
+const TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function mint(address to, uint256 a) external { balanceOf[to] += a; emit Transfer(address(0), to, a); }
+  function transfer(address to, uint256 a) public returns (bool) { balanceOf[msg.sender] -= a; balanceOf[to] += a; emit Transfer(msg.sender, to, a); return true; }
+}
+contract TokVault {
+  Tok public tok;
+  constructor(Tok t) { tok = t; }
+  function withdraw(uint256 a) external { tok.transfer(msg.sender, a); } // BUG: no accounting, anyone drains it
+}
+`;
+
+// #1 (regression fixed): an ERC-20 drain of a scope vault is proven by the token channel.
+test("forge: an ERC-20 token drain of a scope vault is proven (token channel)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "TokenDrainTest", `import "../src/Tokens.sol";
+contract TokenDrainTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function test_drain() public { vm.prank(address(0xBEEF)); vault.withdraw(100); assertEq(tok.balanceOf(address(0xBEEF)), 100); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.asset, "token");
+  assert.ok(BigInt(f.proof.harm.lostUnits) >= 100n);
+  assert.equal(isProven(f), true);
+});
+
+// #1 negative: tokens flowing INTO a scope vault (it gains) is not a drain.
+test("forge: tokens flowing into a scope vault is NOT a drain (token channel negative)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "TokenDepositTest", `import "../src/Tokens.sol";
+contract TokenDepositTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(this), 100); }
+  function test_deposit() public { tok.transfer(address(vault), 50); assertEq(tok.balanceOf(address(vault)), 50); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// #2 (false positive fixed): a uint counter in slot 0 that changes twice is not a takeover.
+test("forge: a counter in slot 0 that changes twice is NOT a takeover (layout fixes the FP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "CVault.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract CVault {
+  uint256 public totalDeposits;               // slot 0 — a counter, not an owner
+  mapping(address => uint256) public balanceOf;
+  function deposit() external payable { totalDeposits += msg.value; balanceOf[msg.sender] += msg.value; }
+}
+` }, "CounterTest", `import "../src/CVault.sol";
+contract CounterTest is Test {
+  CVault v;
+  function setUp() public { v = new CVault(); vm.deal(address(this), 2 ether); v.deposit{value: 1 ether}(); }
+  function test_deposit_again() public { v.deposit{value: 1 ether}(); assertEq(v.totalDeposits(), 2 ether); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// #3 (false negative fixed): an unprotected initializer setting owner from zero is a takeover.
+test("forge: an unprotected initializer that sets owner from zero IS a takeover (layout fixes the FN)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Initable.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Initable {
+  address public owner;                        // slot 0, starts at zero
+  function initialize() external { owner = msg.sender; } // BUG: no re-init guard, anyone can claim it
+}
+` }, "InitTest", `import "../src/Initable.sol";
+contract InitTest is Test {
+  Initable c;
+  function setUp() public { c = new Initable(); }
+  function test_init() public { vm.prank(address(0xBEEF)); c.initialize(); assertEq(c.owner(), address(0xBEEF)); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});
+
+// #4 (false negative fixed): an owner living in slot 1 is still found by the layout.
+test("forge: an owner takeover at a non-zero slot IS a takeover (layout fixes the FN)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Slot1Owned.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Slot1Owned {
+  uint256 public fee;                          // slot 0
+  address public owner;                        // slot 1
+  constructor() { owner = msg.sender; }
+  function setOwner(address o) external { owner = o; } // BUG: no access check
+}
+` }, "Slot1Test", `import "../src/Slot1Owned.sol";
+contract Slot1Test is Test {
+  Slot1Owned c;
+  function setUp() public { c = new Slot1Owned(); }
+  function test_takeover() public { vm.prank(address(0xBEEF)); c.setOwner(address(0xBEEF)); assertEq(c.owner(), address(0xBEEF)); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});
+
+// #5 (false positive fixed): the real owner performing a UUPS upgrade is not a hijack.
+test("forge: the real owner upgrading the implementation is NOT a hijack (layout fixes the FP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Up.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Up {
+  uint256 public x;                            // slot 0
+  address public owner;                        // slot 1
+  constructor() { owner = msg.sender; }
+  function upgradeTo(address impl) external {
+    require(msg.sender == owner, "not owner");
+    assembly { sstore(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc, impl) }
+  }
+}
+` }, "UpgradeTest", `import "../src/Up.sol";
+contract UpgradeTest is Test {
+  Up c;
+  function setUp() public { c = new Up(); }
+  function test_legit_upgrade() public { c.upgradeTo(address(0x1234)); assertTrue(true); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// #5 positive guard: an UNPROTECTED implementation write by a non-owner IS a hijack
+// (so fixing the FP above did not blind the EIP-1967 implementation channel).
+test("forge: an unprotected implementation write by a non-owner IS a hijack (channel still live)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "BadUp.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract BadUp {
+  uint256 public x;                            // slot 0
+  address public owner;                        // slot 1
+  constructor() { owner = msg.sender; }
+  function upgradeTo(address impl) external {  // BUG: no owner check
+    assembly { sstore(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc, impl) }
+  }
+}
+` }, "HijackTest", `import "../src/BadUp.sol";
+contract HijackTest is Test {
+  BadUp c;
+  function setUp() public { c = new BadUp(); }
+  function test_hijack() public { vm.prank(address(0xBEEF)); c.upgradeTo(address(0x1234)); assertTrue(true); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});

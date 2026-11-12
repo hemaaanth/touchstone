@@ -264,7 +264,11 @@ export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {})
 // money-moved table. We never distill; the raw JSON is parsed by lib/proof.mjs.
 export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, stateTrace = false } = {}) {
   // -vvvvv adds a storage_change to every EVM step: the replay state diff. It is large, so opt in.
-  let cmd = `forge test --offline ${solcUse(ws)} ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
+  // --extra-output storageLayout writes each compiled contract's storage layout into its build
+  // artifact. The harm gate reads it to know which slot holds an address-typed control variable
+  // (owner/admin/governor), so control-slot takeovers are judged from the real layout, not from a
+  // position/value guess. It only enlarges the artifact JSON; the replay is unchanged.
+  let cmd = `forge test --offline ${solcUse(ws)} --extra-output storageLayout ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
   if (matchContract) cmd += ` --match-contract ${matchContract}`;
   const args = [
     "run", "--rm", "--network", "none",
