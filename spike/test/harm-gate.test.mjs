@@ -325,6 +325,57 @@ contract TokenDepositTest is Test {
   assert.equal(isProven(f), false);
 });
 
+// A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
+// balance storage is identical to TOKENS; only the advisory logs are gone. The
+// ground-truth storage channel must prove a drain of it, and must NOT over-fire on
+// a benign gain. This is the reviewer's FN-C regression, locked in both polarities.
+const NOEVENT_TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  function mint(address to, uint256 a) external { balanceOf[to] += a; }
+  function transfer(address to, uint256 a) public returns (bool) { balanceOf[msg.sender] -= a; balanceOf[to] += a; return true; }
+}
+contract TokVault {
+  Tok public tok;
+  constructor(Tok t) { tok = t; }
+  function withdraw(uint256 a) external { tok.transfer(msg.sender, a); } // BUG: no accounting, anyone drains it
+}
+`;
+
+// #1b (regression fixed, no event): a drain of an event-less in-scope token is STILL
+// proven — read from the balance mapping, not a Transfer log.
+test("forge: an ERC-20 drain is proven even when the token emits NO Transfer event (storage channel)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": NOEVENT_TOKENS }, "NoEventDrainTest", `import "../src/Tokens.sol";
+contract NoEventDrainTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100 ether); }
+  function test_drain() public { address a = makeAddr("attacker"); vm.prank(a); vault.withdraw(100 ether); assertEq(tok.balanceOf(a), 100 ether); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.asset, "token");
+  assert.ok(BigInt(f.proof.harm.lostUnits) >= 100n * 10n ** 18n);
+  assert.equal(isProven(f), true);
+});
+
+// #1b negative (no event): tokens flowing INTO the event-less vault (it GAINS) must
+// not be read as a drain — the storage channel nets a positive delta, so no harm.
+test("forge: a gain of an event-less token is NOT a drain (storage channel negative)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": NOEVENT_TOKENS }, "NoEventDepositTest", `import "../src/Tokens.sol";
+contract NoEventDepositTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(this), 100 ether); }
+  function test_deposit() public { tok.transfer(address(vault), 50 ether); assertEq(tok.balanceOf(address(vault)), 50 ether); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
 // #2 (false positive fixed): a uint counter in slot 0 that changes twice is not a takeover.
 test("forge: a counter in slot 0 that changes twice is NOT a takeover (layout fixes the FP)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);

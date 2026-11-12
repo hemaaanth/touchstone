@@ -17,6 +17,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { writePoc, forgeTestJson } from "./sandbox.mjs";
 import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
+import { keccak256 } from "ethers";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -148,7 +149,7 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   const flows = netFlows(r.traces);
   const transfers = transferTable(flows, lowerKeys(r.labeled_addresses));
   const controlTrace = extractControlTrace(r.traces);
-  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace, layouts: scopeLayouts(ws) });
+  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace, layouts: scopeLayouts(ws), balances: scopeBalances(ws) });
   return {
     tool: "Foundry",
     source: "engine-replay",
@@ -316,6 +317,55 @@ export function scopeLayouts(ws) {
   return byName;
 }
 
+// The address-keyed balance mappings of every scope contract, read from the same
+// compiled layout. Returns Map(contract name -> Array of 32-byte base-slot words),
+// one entry per `mapping(address => <uint>)` whose NAME looks like a balance or
+// share holding. This is the GROUND-TRUTH signal the token-drain gate uses: a
+// drain is read straight from the victim's balance storage, so it is proven even
+// when the token emits no `Transfer` log — an in-scope token can omit or fake the
+// event, but its balance slots cannot lie. Non-balance maps are excluded two ways:
+// the name filter (so a nonce/timestamp map is skipped) and the uint-value check
+// (so an allowance map, whose value is itself a mapping, is skipped).
+const BALANCE_NAMES = /^(bal|balance|share|deposit|stake|holding|credit)/;
+export function scopeBalances(ws) {
+  const dir = outDir(ws);
+  const byName = new Map();
+  if (!existsSync(dir)) return byName;
+  const walk = (d, depth) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== "build-info" && depth < 4) walk(p, depth + 1); continue; }
+      if (!e.name.endsWith(".json")) continue;
+      let art;
+      try { art = JSON.parse(readFileSync(p, "utf8")); } catch { continue; }
+      const target = art?.metadata?.settings?.compilationTarget ?? {};
+      const [path, name] = Object.entries(target)[0] ?? [];
+      if (!path || !name || !SCOPE_ROOTS.some((r) => path.startsWith(r))) continue;
+      const layout = art?.storageLayout;
+      if (!layout || !Array.isArray(layout.storage)) continue;
+      const slots = [];
+      for (const s of layout.storage) {
+        const varName = String(s.label ?? "").replace(/^_+/, "").toLowerCase();
+        if (!BALANCE_NAMES.test(varName)) continue;
+        const t = layout.types?.[s.type];
+        if (!t || t.encoding !== "mapping") continue;
+        const kt = layout.types?.[t.key];
+        if (!/address/.test(String(kt?.label ?? t.key ?? ""))) continue; // key must be an address
+        const vt = layout.types?.[t.value];
+        if (!/^uint/.test(String(vt?.label ?? ""))) continue; // value must be a plain uint, not a nested map/struct
+        let slotWord;
+        try { slotWord = word("0x" + BigInt(s.slot).toString(16)); } catch { continue; }
+        slots.push(slotWord);
+      }
+      if (slots.length) byName.set(name, slots);
+    }
+  };
+  walk(dir, 0);
+  return byName;
+}
+
 // True when `init` (CREATE input) starts with `code`. A library-link
 // placeholder (__$…$__, 40 hex chars) in `code` matches anything.
 function startsWithCode(init, code) {
@@ -418,6 +468,58 @@ function tokenDrains(traces, targets) {
   return drains;
 }
 
+// The storage token-drain channel — ground truth, event-independent. The event
+// channel above trusts the token to emit a `Transfer` log; a hostile or sloppy
+// in-scope token need not, and a harm gate must not depend on an advisory event.
+// Here we read the drain from the balance mappings themselves. For each scope
+// target token K with a balance mapping at base slot p (from scopeBalances), and
+// each scope-target holder H, the live balance sits at keccak256(pad32(H).pad32(p)).
+// We net every execution SSTORE to that slot — controlTrace.writes is already body
+// only and success-gated, the same rules the ETH and event channels use, so setUp
+// funding is fixture and a reverted write does not count. A scope target that nets
+// a LOSS of a token it does not itself issue was drained. `balances` is
+// scopeBalances(ws); an empty map (no layout, e.g. synthetic unit traces) yields
+// no drains and the gate falls through to the event channel. Returns
+// [{ token, victim, lostUnits }], biggest loss first.
+function balanceDrains(controlTrace, targets, balances) {
+  if (!balances || !balances.size) return [];
+  const writes = controlTrace?.writes ?? [];
+  const index = new Map(); // `${token}:${slotWord}` -> holder address
+  for (const [addr, name] of targets.entries()) {
+    const bases = balances.get(name);
+    if (!bases) continue; // this target issues no scope-tracked balance
+    for (const base of bases) {
+      for (const holder of targets.keys()) {
+        const slot = word(keccak256(word(holder) + base.slice(2)));
+        index.set(`${addr}:${slot}`, holder);
+      }
+    }
+  }
+  if (!index.size) return [];
+  const net = new Map(); // token -> Map(holder -> signed units)
+  for (const w of writes) {
+    const token = lc(w.context);
+    const holder = index.get(`${token}:${word(w.slot)}`);
+    if (!holder) continue;
+    let before = 0n, after = 0n;
+    try { before = BigInt(w.before); after = BigInt(w.after); } catch { continue; }
+    const delta = after - before;
+    if (delta === 0n) continue;
+    const m = net.get(token) ?? new Map();
+    m.set(holder, (m.get(holder) ?? 0n) + delta);
+    net.set(token, m);
+  }
+  const drains = [];
+  for (const [token, holders] of net.entries()) {
+    for (const [holder, delta] of holders.entries()) {
+      if (delta >= 0n || holder === token) continue; // only a scope target that LOST a token it does not issue
+      drains.push({ token, victim: holder, lostUnits: (-delta).toString() });
+    }
+  }
+  drains.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : 1));
+  return drains;
+}
+
 // The layout-aware control channel. A storage write is a TAKEOVER only when it
 // re-points a control pointer the writer was not entitled to set. Which slots are
 // control pointers comes from the compiled storage layout (`layouts`, a Map
@@ -457,7 +559,7 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 // compiled artifacts) the gate falls back to the slot-0/EIP-1967 heuristic in
 // control-trace.mjs; a real replay always passes the layout, so production harm
 // is judged from the layout, never a position guess.
-export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null } = {}) {
+export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null, balances = null } = {}) {
   const { targets, invoked, net } = scanTargets(traces, scope);
   for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
@@ -469,7 +571,11 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     const [victim, wei] = losses[0];
     return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
   }
-  const drains = tokenDrains(traces, targets);
+  // Prefer the ground-truth storage read; fall back to the Transfer-log channel
+  // for tokens outside scope (a real external ERC-20 whose balance layout we do
+  // not have, but whose standard event we can still net).
+  const storageDrains = balanceDrains(controlTrace, targets, balances);
+  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
