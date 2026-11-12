@@ -4,7 +4,7 @@ import type { Balance, Finding, FindingBase, Proof, Transfer } from "@/lib/types
 import { formatNum } from "@/lib/format"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
-import { Block, CopyButton, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
+import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
 import { HttpProofCard } from "./http-proof"
 import { EvidenceProofCard } from "./evidence-proof"
 
@@ -259,7 +259,15 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
 }
 
 export function ReplayProof({ finding, children }: { finding: Finding; children?: ReactNode }) {
-  if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{children}</HttpProofCard>
-  if (finding.proofKind === "evidence") return <EvidenceProofCard finding={finding}>{children}</EvidenceProofCard>
-  return <ForgeProofCard finding={finding}>{children}</ForgeProofCard>
+  // Every proof kind ends with the same shareable-report action, below the
+  // card's own children, built from this recorded finding's id.
+  const footer = (
+    <>
+      {children}
+      <ExportReport findingId={finding.id} />
+    </>
+  )
+  if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{footer}</HttpProofCard>
+  if (finding.proofKind === "evidence") return <EvidenceProofCard finding={finding}>{footer}</EvidenceProofCard>
+  return <ForgeProofCard finding={finding}>{footer}</ForgeProofCard>
 }

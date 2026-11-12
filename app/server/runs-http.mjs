@@ -5,7 +5,8 @@
 // It returns true when it handled the request, false to fall through to the
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
-import { dismissFinding } from "./findings.mjs"
+import { dismissFinding, getFinding } from "./findings.mjs"
+import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
 function send(res, status, json) {
@@ -162,6 +163,41 @@ export async function handleFindings(req, res) {
     const body = await readBody(req)
     try {
       send(res, 200, await dismissFinding(id, Boolean(body.dismissed)))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  // GET /api/findings/:id/report?format=html|md|json — the shareable report of a
+  // finished run's finding (the finding, its proof, the harm, the fix). json is
+  // the structured report the UI renders; html is one self-contained page to
+  // share; md is for a README or an issue. The report invents nothing: the fix
+  // is shown only when the run stated one (report.mjs).
+  if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
+    const id = decodeURIComponent(parts[2])
+    const format = (url.searchParams.get("format") || "json").toLowerCase()
+    try {
+      const finding = await getFinding(id)
+      if (!finding) {
+        send(res, 404, { error: "no such finding" })
+        return true
+      }
+      const report = buildReport(finding)
+      const slug = String(id).replace(/[^\w.-]+/g, "-")
+      if (format === "html") {
+        res.statusCode = 200
+        res.setHeader("content-type", "text/html; charset=utf-8")
+        res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.html"`)
+        res.end(renderReportHtml(report))
+      } else if (format === "md" || format === "markdown") {
+        res.statusCode = 200
+        res.setHeader("content-type", "text/markdown; charset=utf-8")
+        res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
+        res.end(renderReportMarkdown(report))
+      } else {
+        send(res, 200, report)
+      }
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
