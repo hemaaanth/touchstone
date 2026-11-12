@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { get as httpGet } from 'node:http';
 import { Resolver } from 'node:dns/promises';
 import { createRequire } from 'node:module';
 const require = createRequire('/opt/tools/analyze.mjs');
@@ -21,10 +22,16 @@ for (const host of [...new Set([...hosts, ...(parsed.cname ?? []).map(r => r.ali
   }
 }
 const http = [];
-for (const host of ['touchstone.test','www.touchstone.test','cdn.touchstone.test','rpc.touchstone.test']) {
-  for (const path of host === 'www.touchstone.test' ? ['/','/bundle.js'] : host === 'cdn.touchstone.test' ? ['/ethers.js'] : host === 'rpc.touchstone.test' ? ['/rpc'] : ['/']) {
-    const response = await fetch('http://172.30.44.20:8080' + path, { headers: {Host: host + ':8080'}, redirect: 'error', signal: AbortSignal.timeout(3000) });
-    http.push({url: 'http://' + host + ':8080' + path, status: response.status, headers: Object.fromEntries([...response.headers].filter(([key]) => !['date','connection','keep-alive'].includes(key))), body: await response.text()});
+for (const host of ['touchstone.test','www.touchstone.test','cdn.touchstone.test','rpc.touchstone.test','docs.touchstone.test','staging.touchstone.test']) {
+  for (const path of host === 'www.touchstone.test' ? ['/','/bundle.js'] : host === 'cdn.touchstone.test' ? ['/ethers.js','/sdk.js'] : host === 'rpc.touchstone.test' ? ['/rpc'] : ['/']) {
+    // node:http keeps our Host header. fetch would replace it.
+    const response = await new Promise((resolve, reject) => {
+      const req = httpGet({ host: '172.30.44.20', port: 8080, path, headers: { Host: host + ':8080' }, timeout: 3000 }, res => {
+        const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+      });
+      req.on('error', reject); req.on('timeout', () => req.destroy(new Error('timeout')));
+    });
+    http.push({url: 'http://' + host + ':8080' + path, status: response.status, headers: Object.fromEntries(Object.entries(response.headers).filter(([key]) => !['date','connection','keep-alive'].includes(key))), body: response.body});
   }
 }
 console.log(JSON.stringify({schema: 1, root, zone, dns, http, rdap: null, contenthash: {name:'touchstone.eth', value:'ipns://mutable-lab-name', pinnedCid:null}}));

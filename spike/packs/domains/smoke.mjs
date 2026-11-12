@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,11 @@ const network='touchstone-domains-'+process.pid;
 const names=[];
 const docker=args=>execFileSync('docker',args,{encoding:'utf8',timeout:60000});
 let created=false;
+function cleanup() {
+  for(const name of names.reverse()) docker(['rm','-f',name]);
+  if(created) docker(['network','rm',network]);
+  rmSync(ws,{recursive:true,force:true});
+}
 try {
   cpSync(lab,ws,{recursive:true});
   if(process.argv.includes('--lab')) {
@@ -29,6 +35,16 @@ try {
     }
     const capture=await runTool({image:IMAGE,ws,network,cmd:['capture'],timeoutMs:15000});
     assert.equal(capture.code,0,capture.stderr);
+    if(process.argv.includes('--pin')) {
+      // Maintenance: write a fresh snapshot and re-pin it in both labs. Review the diff before you commit.
+      const bytes=JSON.stringify(JSON.parse(capture.stdout)),hash=createHash('sha256').update(bytes).digest('hex');
+      for(const dir of [lab,join(lab,'../../surface/lab')]) {
+        writeFileSync(join(dir,'snapshot.json'),bytes);
+        const cfg=JSON.parse(readFileSync(join(dir,'.touchstone.json'),'utf8')); cfg.evidenceSnapshot.sha256=hash;
+        writeFileSync(join(dir,'.touchstone.json'),JSON.stringify(cfg,null,2));
+      }
+      console.log('pinned',hash); cleanup(); process.exit(0);
+    }
     assert.deepEqual(JSON.parse(capture.stdout),JSON.parse(readFileSync(join(lab,'snapshot.json'),'utf8')),'Fresh lab must match the pinned snapshot');
     const reports=await captureTools(ws,network);
     assert(reports.dnsx.some(r=>r.host==='old.touchstone.test' && r.cname?.includes('removed.touchstone.test')));
@@ -65,7 +81,5 @@ try {
   assert.deepEqual(await domains.prove(ws,state.found,[],()=>{}),[]);
   console.log(JSON.stringify({domains:findings.length,surface:inventory.record.leads.length,tamper:'rejected',spendUSD:0}));
 } finally {
-  for(const name of names.reverse()) docker(['rm','-f',name]);
-  if(created) docker(['network','rm',network]);
-  rmSync(ws,{recursive:true,force:true});
+  cleanup();
 }

@@ -1,0 +1,6 @@
+$ORIGIN github.io.
+$TTL 60
+@ IN SOA ns.github.io. hostmaster.github.io. ( 1 60 60 3600 60 )
+@ IN NS ns.github.io.
+ns IN A 172.30.44.53
+touchstone-lab IN A 172.30.44.20

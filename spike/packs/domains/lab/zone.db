@@ -7,5 +7,7 @@ ns IN A 172.30.44.53
 www IN A 172.30.44.20
 cdn IN A 172.30.44.20
 rpc IN A 172.30.44.20
+staging IN A 172.30.44.20
 old IN CNAME removed.touchstone.test.
+docs IN CNAME touchstone-lab.github.io.
 _rpc._tcp IN SRV 0 5 8080 rpc.touchstone.test.

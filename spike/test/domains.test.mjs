@@ -16,7 +16,8 @@ test('captured plants are separated from review-only approval patterns',()=>{
   const leads=domainLeads(snapshot,analysis);
   assert(leads.some(l=>l.check==='dangling-cname' && l.where==='old.touchstone.test'));
   assert(leads.some(l=>l.check==='wallet-cdn-without-sri' && l.severity==='medium'));
-  assert.equal(leads.filter(l=>l.check==='weak-csp').length,1);
+  assert.deepEqual(leads.filter(l=>l.check==='weak-csp').map(l=>l.where).sort(),['http://staging.touchstone.test:8080/','http://touchstone.test:8080/']);
+  assert.equal(leads.some(l=>l.check==='weak-csp' && l.where.includes('docs.')),false,'an unclaimed 404 page has no CSP finding');
   assert(leads.find(l=>l.check==='wallet-unlimited-approval-pattern').reviewOnly);
   assert.equal(new Set(leads.map(l=>l.id)).size,leads.length);
 });
