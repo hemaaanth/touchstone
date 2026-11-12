@@ -436,7 +436,7 @@ Rules of the environment:
   - POST /mcp/approve: the operator's approval step for a tool. Body { tool }. A tool the
     operator has approved is trusted from then on. Always re-list tools after you use it.
 - Read BRIEF.md in your workspace for what the assistant is meant to do.
-- The prepass already ran two scanners (mcp-inspector and nuclei). Their leads are in
+- The prepass already ran three scanners (mcp-inspector, nuclei, mcp-shield). Their leads are in
   your first message and in mcp_leads. They are hints. They read only the tool list.
   They cannot see what a tool does, or what the assistant does with untrusted text.
 - A lead is only a lead. After a script runs, the tool tells you whether the transcript
@@ -549,7 +549,7 @@ function kickoff(ws, env = {}) {
   if (live && cfg.tokens) parts.push(`Token scopes the operator supplied:\n${JSON.stringify(cfg.tokens)}\nTool-to-scope map:\n${JSON.stringify(cfg.toolScope ?? {})}`);
   if (live && !cfg.tokens) parts.push("The operator supplied no token table, so the scope-bypass check cannot fire. The other checks still can.");
   if (env.LEADS && env.LEADS !== "[]") {
-    parts.push(`Prepass leads from mcp-inspector and nuclei (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
+    parts.push(`Prepass leads from mcp-inspector, nuclei and mcp-shield (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
   } else {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
@@ -649,7 +649,7 @@ function tools(ws, state) {
 
   const mcpLeads = defineTool({
     name: "mcp_leads",
-    description: "Read the prepass scan leads again (mcp-inspector, nuclei). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. The scan reads only the tool list. It cannot see what a tool does or what the assistant does with untrusted text.",
+    description: "Read the prepass scan leads again (mcp-inspector, nuclei, mcp-shield). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. The scan reads only the tool list. It cannot see what a tool does or what the assistant does with untrusted text.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => ({ output: [{ type: "text", text: readWorkspaceText(ws, LEADS_FILE) ?? "No scan leads were recorded for this run." }] }),
@@ -660,7 +660,8 @@ function tools(ws, state) {
 
 // The prepass does two things.
 //  1. Start the lab the agent will test (its handle is saved in the workspace).
-//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector and nuclei.
+//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector, nuclei and
+//     mcp-shield.
 //     Scanner traffic never touches the agent's lab or its transcripts.
 // A LIVE run has no lab: the target is the operator's own server. We bind the
 // platform's reach boundary and scan the real base URL, with the operator's
@@ -689,7 +690,7 @@ async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
     const where = live
       ? { net: SCAN_NETWORK, baseUrl: readTouchstone(ws).baseUrl, token: mcpConfig(ws).token ?? undefined }
       : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl, token: READER });
-    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei"] });
+    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei", "mcp-shield"] });
     scan = await scanMcp(where);
   } catch (err) {
     emit({ ev: "ai-mcp-scan-failed", error: String(err?.message ?? err).slice(0, 200) });

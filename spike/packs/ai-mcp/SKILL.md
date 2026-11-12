@@ -41,12 +41,15 @@ transcript.
 
 `prepass` starts the lab on a fresh `--internal` Docker network and saves its
 handle in the workspace. Then it scans a second, throwaway copy of the lab with
-two open-source tools, each run through `runTool()` (see `scan.mjs`):
+three open-source tools, each run through `runTool()` (see `scan.mjs`):
 
 - MCP Inspector (`@modelcontextprotocol/inspector` CLI): lists the tools. We
   read the list with plain rules. Which tool can send data out? Which one
   changes or deletes? Which one takes an address or a path?
 - Nuclei: one original template. Does `tools/list` answer with no sign-in?
+- mcp-shield: text patterns in each tool description (hidden instructions,
+  shadowing another tool, a sensitive file path) and side-channel parameter
+  names. It runs with no model key, so it makes no model call.
 
 The result is a prepass record (`coverage` and `leads`). It shows in the run
 view as a fold. The agent gets the leads in its first message and can read them
