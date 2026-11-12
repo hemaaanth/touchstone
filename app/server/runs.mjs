@@ -715,14 +715,15 @@ async function endWorkspace(run) {
   } catch {
     // Best effort: the workspace still goes.
   }
-  cleanupWorkspace(ws)
-  // Stop the scope proxy the reach gate started for a live run, so a finished run
-  // leaves no listening gate. Inert (no-op) for an offline run.
+  // Stop the scope proxy the reach gate started for a live run FIRST, so a slow
+  // Daytona teardown (deleteMachine can retry for minutes) cannot keep a finished
+  // run's gate listening or delay the `closed` broadcast. Inert for an offline run.
   try {
     await run?.reach?.stop?.()
   } catch {
     // already closed
   }
+  await cleanupWorkspace(ws)
 }
 
 // Message a run. While a worker is running, the message is written to its

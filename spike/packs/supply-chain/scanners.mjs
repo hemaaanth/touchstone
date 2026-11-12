@@ -51,6 +51,9 @@ export async function scanSnapshot(snapshot, engine) {
   const dir = mkdtempSync(join(tmpdir(), "touchstone-scan-"));
   try {
     for (const [file, content] of Object.entries(snapshot.files)) {
+      // A target repo can commit its own .touchstone.json. Do not stage it: in
+      // a scratch dir it could look like a run's config. Skip it; do not throw.
+      if (posix.basename(file) === ".touchstone.json") continue;
       if (posix.isAbsolute(file) || posix.normalize(file) !== file || file.split("/").some((s) => s === ".." || s === ".git") || file.startsWith(".scanner-db/") || file.startsWith(".scanner-rules/") || file === ".scanner-sbom.json") throw new Error("Invalid snapshot file");
       mkdirSync(dirname(join(dir, file)), { recursive: true });
       writeFileSync(join(dir, file), content, { mode: 0o600 });
