@@ -12,8 +12,11 @@ import web from "./web/pack.mjs";
 import peopleBrand from "./people-brand/pack.mjs";
 import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
-import sourceNav from "./source-nav/pack.mjs";
 
+// NOTE: source navigation is NOT a selectable pack. It is the default code-reading
+// layer every Contracts and Review run mounts on top of its own tools — see
+// agent-run.mjs, which imports sourceNavTools / NAV_SYSTEM from source-nav/pack.mjs
+// directly. Listing it here would offer a "mode" that maps to no routable target.
 export const PACKS = {
   [contracts.id]: contracts, [supplyChain.id]: supplyChain, [domains.id]: domains, [surface.id]: surface,
   [keys.id]: keys, [chainWatch.id]: chainWatch, [web.id]: web,
@@ -21,7 +24,6 @@ export const PACKS = {
   [infraCloud.id]: infraCloud,
   // Read-only review for operator scopes with no fitting replay oracle.
   [review.id]: review,
-  [sourceNav.id]: sourceNav,
 };
 
 export function packFor(cfg = {}) {

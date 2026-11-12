@@ -26,6 +26,8 @@ import { event } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
+import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
+import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 
 const ctx = BACKGROUND_CONTEXT;
@@ -52,9 +54,19 @@ function auditState() {
 
 async function openHarness(db, ws, state) {
   const pack = packFor(readTouchstone(ws));
+  // Source navigation is the DEFAULT code-reading layer for any run given a local
+  // folder or a fetched repo: Contracts and Review. The hunter gets the five
+  // read-only index tools alongside the pack's own tools, and an instruction to
+  // prefer the index over blind file reads. The flat source tools stay as the
+  // fallback. The nav tools and their prompt are mounted only when the index
+  // binary actually resolves, so a host without it gets no dead tools and no
+  // instruction to use them — the run falls back cleanly to the flat source
+  // tools. Navigation never produces a finding; proof is unchanged.
+  const navy = (pack.id === "contracts" || pack.id === "review") && (await resolveCbmBinary()) !== null;
+  const system = pack.system(ws) + (navy ? NAV_SYSTEM : "");
   const registry = createRegistry();
-  const fleet = createFleet({ system: pack.system(ws), costOf });
-  const tools = pack.tools(ws, state);
+  const fleet = createFleet({ system, costOf });
+  const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
   const reports = [];
@@ -70,7 +82,7 @@ async function openHarness(db, ws, state) {
   }, ctx);
   await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, {
-    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: pack.system(ws) + (fleet ? `\n\n${fleet.instructions}` : "") },
+    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : "") },
   });
   return { harness, root, reports, pack, fleet };
 }
