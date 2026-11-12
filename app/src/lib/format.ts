@@ -99,12 +99,12 @@ export const DOT: Record<Tone, string> = {
 }
 
 // The one title a run shows, in the rail and in its top bar: the operator's
-// name, else the finding title, else the scope title, else the model alias.
+// name, else the finding title, else the scope title. The model is runtime
+// metadata (the run panel's Info), never the run's name.
 export function runTitle(r: {
   name?: string | null
   title?: string | null
   scopeTitle?: string | null
-  alias: string
 }): string {
-  return (r.name || r.title || r.scopeTitle || r.alias).replaceAll("`", "")
+  return (r.name || r.title || r.scopeTitle || "Untitled run").replaceAll("`", "")
 }
