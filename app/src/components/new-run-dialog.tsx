@@ -643,20 +643,26 @@ export function AddScope({
             </label>
           ) : null}
           {live && livePacks.length > 1 ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Module</span>
-              <select
+            <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span id="add-scope-module" className="shrink-0 text-[11px] text-muted-foreground">Module</span>
+              <Select
+                items={livePacks.map((p) => ({ value: p.id, label: p.title }))}
                 value={siteModule}
                 disabled={busy}
-                onChange={(e) => setModule(e.target.value)}
-                aria-label="Module that tests this website"
-                className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
+                onValueChange={(v) => v && setModule(String(v))}
               >
-                {livePacks.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              </select>
-            </label>
+                <SelectTrigger size="sm" className="min-w-0 flex-1 text-xs" aria-labelledby="add-scope-module">
+                  <SelectValue className="min-w-0 truncate" />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false} className="p-1">
+                  {livePacks.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="text-xs">
+                      <span className="truncate">{p.title}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           ) : null}
           {wantsToken ? (
             <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
