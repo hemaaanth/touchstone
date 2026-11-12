@@ -5,6 +5,7 @@
 // writes JSON or SARIF. We parse that output into leads, the same lead shape the
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
+import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
@@ -13,7 +14,11 @@ import { execFile } from "node:child_process";
 //   user     runs as the host user by default, so it can read the workspace
 //            with no capabilities and its output files stay ours
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
-export function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
+//
+// The container runs in local Docker by default. When Settings picks Daytona,
+// it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
+// same result shape. A call Daytona cannot serve runs locally.
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const args = [
     "run", "--rm", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -22,6 +27,20 @@ export function runTool({ image, cmd, ws, network = "none", user = `${process.ge
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
+  return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
+}
+
+// Run one `docker run` argv on the chosen backend: a Daytona machine when
+// Settings picks Daytona and the call can go there, else local Docker. ws is
+// the host dir the argv mounts; on Daytona its changed files come back.
+// runTool uses this. A module that needs its own docker flags (an entrypoint,
+// the image's own user) calls it directly, so it still honors the backend.
+// Resolves (never rejects) with { code, stdout, stderr, timedOut }.
+export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack } = {}) {
+  if (daytonaOn()) {
+    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack });
+    if (remote) return remote;
+  }
   return new Promise((resolve) => {
     execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
       resolve({

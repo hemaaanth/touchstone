@@ -17,7 +17,7 @@
 // suspect's rank. That agreement signal — not either tool — is our contribution.
 import { readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
-import { execFile } from "node:child_process";
+import { runDocker } from "./wrap.mjs";
 import { aderynScan } from "./aderyn.mjs";
 import { mergeStatic, IMPACT_RANK } from "./ensemble.mjs";
 
@@ -28,12 +28,8 @@ const SOLC = "0.8.38"; // match the sandbox replay compiler so the suspect lines
 // never sees it as a source file.
 const UNIT_FILE = "_TouchstoneUnit.sol";
 
-const run = (args, timeoutMs) =>
-  new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0 });
-    });
-  });
+// Honors the execution backend (local Docker or Daytona), like runTool.
+const run = (args, timeoutMs, ws, opts = {}) => runDocker(args, { ws, timeoutMs, maxBuffer: 8 * 1024 * 1024, ...opts });
 
 // Every .sol under src/, recursively, as paths relative to src/. Recursion is the
 // whole point of "multi-file": a project with src/interfaces/IFoo.sol and
@@ -96,7 +92,7 @@ async function collectSlitherLeadsUnit(ws, srcDir, files, timeoutMs) {
       "-c",
       `solc-select use ${SOLC} --always-install >/dev/null 2>&1; slither 'src/${UNIT_FILE}' --compile-force-framework solc --solc-disable-warnings --json /tmp/s.json >/dev/null 2>/tmp/s.err; cat /tmp/s.json 2>/dev/null`,
     ];
-    const r = await run(args, timeoutMs);
+    const r = await run(args, timeoutMs, ws);
     if (!r.stdout.trim()) return null;
     let parsed;
     try { parsed = JSON.parse(r.stdout); } catch { return null; }
@@ -127,7 +123,7 @@ async function collectSlitherLeadsPerFile(ws, files, timeoutMs) {
       "-c",
       `slither 'src/${rel}' --compile-force-framework solc --solc-disable-warnings --json /tmp/s.json >/dev/null 2>/tmp/s.err; cat /tmp/s.json 2>/dev/null`,
     ];
-    const r = await run(args, timeoutMs);
+    const r = await run(args, timeoutMs, ws);
     let parsed = null;
     if (r.stdout.trim()) { try { parsed = JSON.parse(r.stdout); } catch { parsed = null; } }
     if (!parsed || parsed.success !== true || !parsed.results) { failed += 1; continue; }

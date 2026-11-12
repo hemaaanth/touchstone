@@ -15,15 +15,11 @@
 // turns a broken invariant into a finding.
 import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { runDocker } from "./wrap.mjs";
 import { IMG, SOLC, HARNESS_WEI, weiHexToEth } from "./harness.mjs";
 
-const run = (args, timeoutMs) =>
-  new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0 });
-    });
-  });
+// Honors the execution backend (local Docker or Daytona), like runTool.
+const run = (args, timeoutMs, ws, opts = {}) => runDocker(args, { ws, timeoutMs, maxBuffer: 16 * 1024 * 1024, ...opts });
 
 // Medusa's config. We mirror the Echidna run: property mode only (no assertion or
 // optimization noise), the harness funded with the same reward buffer, and the
@@ -117,7 +113,7 @@ export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLim
     "-c",
     `solc-select use ${SOLC} --always-install >/dev/null 2>&1; medusa fuzz --config medusa.json 2>&1`,
   ];
-  const r = await run(args, timeoutMs);
+  const r = await run(args, timeoutMs, scratch, { skipBack: ["medusa-corpus"] });
   const out = r.stdout + r.stderr;
   // Clear the corpus Medusa wrote into the scratch so a later engine or rerun
   // starts clean; the whole scratch is removed by the caller regardless.

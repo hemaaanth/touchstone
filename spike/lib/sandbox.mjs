@@ -5,11 +5,12 @@
 //   docker volume create foundry-svm
 //   docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm IMG -c 'chown 1000:1000 /svm'
 //   (cd lab/vault-reentrancy && docker run --rm -v foundry-svm:/home/foundry/.svm -v "$PWD":/work -w /work IMG 'forge build')
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import { closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
 
 const IMG = "ghcr.io/foundry-rs/foundry:latest";
 const SOLC = "0.8.38";
@@ -103,6 +104,9 @@ export function makeBriefWorkspace() {
 
 export function cleanupWorkspace(ws) {
   rmSync(ws, { recursive: true, force: true });
+  // A Daytona run leaves `<ws>.daytona.json` with its machine ids. Delete those
+  // machines. Best effort: an idle machine also stops and deletes itself.
+  if (existsSync(`${ws}.daytona.json`)) closeRun(ws).catch(() => {});
 }
 
 // Resolve a pragma expression to one concrete solc version we can pre-install.
@@ -124,6 +128,10 @@ export function concreteSolc(pragma) {
 export async function warmSolc(version) {
   const v = concreteSolc(version);
   if (!v) return { version, ok: false, skipped: true };
+  // On Daytona each machine has its own cache. Note the version; every
+  // machine installs it before its next forge run (see warmFor). Warm the
+  // local cache too: a call that falls back to local Docker needs solc there.
+  if (daytonaOn()) remoteWarm.add(v);
   const dir = mkdtempSync(join(tmpdir(), "solc-warm-"));
   try {
     mkdirSync(join(dir, "src"), { recursive: true });
@@ -172,6 +180,45 @@ export function distill(output) {
   return arr.length > 80 ? arr.slice(-80).join("\n") : text; // errors/results live at the end
 }
 
+// Solc versions warmSolc was asked for while on Daytona.
+const remoteWarm = new Set();
+
+// The solc versions a Daytona machine needs before forge runs on ws: the pinned
+// one, or for "auto" every concrete pragma in src/, test/ and vendor/, plus
+// what warmSolc was asked for.
+function warmFor(ws) {
+  const cfg = readTouchstone(ws);
+  if (cfg.solc !== "auto") return [cfg.solc || SOLC];
+  const out = new Set(remoteWarm);
+  const walk = (d) => {
+    let names = [];
+    try { names = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of names) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".sol")) {
+        for (const m of readFileSync(p, "utf8").matchAll(/pragma\s+solidity\s+([^;]+);/g)) {
+          const v = concreteSolc(m[1]);
+          if (v) out.add(v);
+        }
+      }
+    }
+  };
+  for (const d of ["src", "test", "vendor"]) walk(join(ws, d));
+  return [...out];
+}
+
+// Run forge on Daytona when it is on, else in local Docker. The files forge
+// writes come back, as they would locally. The proof gate needs them: it reads
+// the build artifacts in out/ (see scopeCode in proof.mjs).
+async function forgeRun(ws, args, timeoutMs) {
+  if (daytonaOn()) {
+    const r = await remoteDocker(args, { ws, timeoutMs, maxBuffer: 8 * 1024 * 1024, owner: "1000:1000", warm: warmFor(ws) });
+    if (r) return r;
+  }
+  return run(args, timeoutMs);
+}
+
 const run = (args, timeoutMs) =>
   new Promise((resolve) => {
     execFile("docker", args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -190,7 +237,7 @@ export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {})
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,
   ];
-  const r = await run(args, timeoutMs);
+  const r = await forgeRun(ws, args, timeoutMs);
   const raw = (r.stdout + r.stderr).trim();
   const passed = /\b([1-9]\d*) passed; 0 failed/.test(raw);
   const failed = /[1-9]\d* failed/.test(raw) || /compilation failed|Compilation failed|Error \(\d+\)|Error:/i.test(raw);
@@ -212,7 +259,7 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,
   ];
-  const r = await run(args, timeoutMs);
+  const r = await forgeRun(ws, args, timeoutMs);
   // forge prints the JSON object on stdout; warnings/errors go to stderr.
   return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut };
 }

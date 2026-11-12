@@ -72,6 +72,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
               {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
             </section>
             <BudgetSection settings={settings} onSave={(n) => attempt(() => setRunBudget(n))} />
+            <ExecutionSection settings={settings} onSave={(body) => attempt(() => setExecution(body))} />
           </div>
         )}
       </div>
@@ -389,5 +390,101 @@ function ProviderEditor({
         ) : null}
       </div>
     </div>
+  )
+}
+
+// ---- Execution: where a run's tools run. Local Docker is the default. Daytona
+// gives each run, and each swarm child, its own sandbox machine. The key goes
+// up once and never comes back; the server returns only a masked state.
+
+interface ExecutionSetting {
+  backend: "local" | "daytona"
+  saved: "local" | "daytona"
+  envOverride: string | null
+  key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null }
+  target: string
+  snapshot: string
+}
+
+type ExecutionBody = { backend: "local" | "daytona"; apiKey?: string; clearKey?: boolean }
+
+async function setExecution(body: ExecutionBody): Promise<SettingsState> {
+  const res = await fetch("/api/settings/execution", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error((json as { error?: string }).error ?? `execution -> ${res.status}`)
+  return json as SettingsState
+}
+
+function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSave: (b: ExecutionBody) => Promise<boolean> }) {
+  const ex = (settings as SettingsState & { execution?: ExecutionSetting }).execution
+  const [apiKey, setApiKey] = useState("")
+  const [busy, setBusy] = useState(false)
+  if (!ex) return null
+  const save = async (body: ExecutionBody) => {
+    setBusy(true)
+    if (await onSave(body)) setApiKey("")
+    setBusy(false)
+  }
+  const keyNote = !ex.key.set
+    ? "No Daytona key"
+    : ex.key.source === "env"
+      ? `Key from ${ex.key.envName ?? "the server environment"}`
+      : ex.key.last4 ? `Key saved in Settings, ends ${ex.key.last4}` : "Key saved in Settings"
+  const options: { id: "local" | "daytona"; label: string; note: string }[] = [
+    { id: "local", label: "Local Docker", note: "Tools run on this machine." },
+    { id: "daytona", label: "Daytona", note: `Each run and swarm child gets its own sandbox (${ex.target}). Falls back to local Docker if Daytona fails.` },
+  ]
+  return (
+    <section className="mt-10" aria-labelledby="execution-title">
+      <h2 id="execution-title" className="mb-2 px-2 text-sm font-semibold">Execution</h2>
+      {ex.envOverride ? <p className="mb-2 px-2 text-xs text-muted-foreground">The server fixes execution to {ex.envOverride}. Restart without TOUCHSTONE_EXEC to change it.</p> : null}
+      <div role="radiogroup" aria-label="Where tools run" className="flex flex-col gap-0.5">
+        {options.map((o) => {
+          const on = ex.saved === o.id
+          const blocked = o.id === "daytona" && !ex.key.set && !apiKey.trim()
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={busy || on || blocked || Boolean(ex.envOverride)}
+              onClick={() => save({ backend: o.id, apiKey: apiKey.trim() || undefined })}
+              className={cn("flex items-start gap-3 rounded-lg py-1.5 pr-1 pl-2 text-left transition-colors hover:bg-muted/50 disabled:cursor-default", on && "bg-muted/50")}
+              title={blocked ? "Add a Daytona key first" : undefined}
+            >
+              <span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full", on ? "bg-foreground text-background" : "bg-foreground/10")}>
+                {on ? <Check className="size-3" strokeWidth={3} /> : null}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{o.label}</span>
+                <span className="block text-xs text-muted-foreground">{o.note}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+      <form
+        className="mt-2 flex items-center gap-2 py-1.5 pr-1 pl-2"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (apiKey.trim() && !busy) save({ backend: ex.saved, apiKey: apiKey.trim() })
+        }}
+      >
+        <label htmlFor="daytona-key" className="shrink-0 text-sm">Daytona key</label>
+        <Input id="daytona-key" type="password" className="text-xs" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={ex.key.set ? `${keyNote}. Leave blank to keep it.` : "Paste the Daytona API key"} autoComplete="off" spellCheck={false} />
+        {apiKey.trim() ? (
+          <Button type="submit" variant="outline" size="sm" disabled={busy}>{busy ? <Loader2 className="animate-spin" /> : "Save"}</Button>
+        ) : ex.key.source === "settings" ? (
+          <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy || ex.saved === "daytona"} title={ex.saved === "daytona" ? "Switch to local Docker first" : "Remove the saved key"} onClick={() => save({ backend: ex.saved, clearKey: true })}>
+            <Trash2 />
+          </Button>
+        ) : null}
+      </form>
+    </section>
   )
 }

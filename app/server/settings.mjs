@@ -1,5 +1,5 @@
 // Settings: the inference providers the engine may use, the default provider
-// and model for new runs, and the spend cap.
+// and model for new runs, the spend cap, and where tool calls run.
 //
 // The config lives in spike/data/providers.json (see spike/lib/providers.mjs).
 // API keys are written there and read by the engine. They never go back to the
@@ -19,6 +19,32 @@ import {
 } from "../../spike/lib/providers.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
+import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+
+// May this request change Settings? A Settings write can repoint a key or a
+// provider baseUrl, so a page on another site must not be able to send one.
+//   - A POST must say content-type application/json. A cross-site form or a
+//     text/plain fetch cannot set that without a CORS preflight, and this
+//     server answers no preflight.
+//   - A browser request must come from this server's own origin: the Origin
+//     host must match the Host (or X-Forwarded-Host) header, and
+//     Sec-Fetch-Site must not say cross-site.
+// A request with no Origin (curl, a test) passes the origin check.
+// TODO(after the T7 merge): use T7's grantMutationAllowed guard here too.
+export function settingsWriteAllowed(req) {
+  const h = req.headers ?? {}
+  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) return false
+  if (h["sec-fetch-site"] === "cross-site") return false
+  if (!h.origin) return true
+  let host
+  try {
+    host = new URL(h.origin).host
+  } catch {
+    return false
+  }
+  const own = [h.host, ...String(h["x-forwarded-host"] ?? "").split(",")].map((x) => String(x ?? "").trim()).filter(Boolean)
+  return own.includes(host)
+}
 
 // The console's default per-run budget when Settings has none saved. The
 // engine's own default for CLI runs (spike/lib/run-budget.mjs) is also $5; app
@@ -67,7 +93,51 @@ export function getSettings() {
     envOverride: process.env.PROVIDER || null,
     spend: { usd: spent(), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
+    execution: executionState(cfg),
   }
+}
+
+// Where tool calls run: local Docker (the default) or Daytona sandboxes.
+// The Daytona key is masked like a provider key. TOUCHSTONE_EXEC in the
+// server's env overrides the saved backend. Say so.
+function executionState(cfg) {
+  const c = execConfig(process.env, cfg)
+  const saved = cfg.execution ?? {}
+  return {
+    backend: c.backend,
+    saved: saved.backend === "daytona" ? "daytona" : "local",
+    envOverride: process.env.TOUCHSTONE_EXEC || null,
+    key: c.apiKey
+      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
+      : { set: false, source: null, envName: null, last4: null },
+    target: c.target,
+    snapshot: c.snapshot,
+    defaults: { target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
+  }
+}
+
+// Save the execution backend. An empty apiKey keeps the saved one.
+// Daytona needs a key, from this body, Settings, or DAYTONA_API_KEY.
+export function setExecution(body = {}) {
+  const cfg = readConfig()
+  const prev = cfg.execution ?? {}
+  const backend = body.backend ?? prev.backend ?? "local"
+  if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
+  const next = { backend }
+  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  if (key) next.apiKey = key
+  else if (prev.apiKey && !body.clearKey) next.apiKey = prev.apiKey
+  for (const f of ["target", "snapshot"]) {
+    const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
+    if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
+    if (v) next[f] = v
+  }
+  if (backend === "daytona" && !execConfig(process.env, { execution: next }).apiKey) {
+    throw new Error("Daytona needs an API key (here, or DAYTONA_API_KEY)")
+  }
+  cfg.execution = next
+  writeConfig(cfg)
+  return getSettings()
 }
 
 function slug(s) {

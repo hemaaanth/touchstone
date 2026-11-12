@@ -8,7 +8,7 @@ import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun,
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, settingsWriteAllowed } from "./settings.mjs"
 import { randomUUID } from "node:crypto"
 
 function send(res, status, json) {
@@ -379,11 +379,14 @@ export function handleModels(req, res) {
 //   POST   /api/settings/discover          — list a gateway's models { id?, baseUrl?, apiKey? }
 //   POST   /api/settings/default           — { provider, model } for new runs
 //   POST   /api/settings/budget            — { budgetUsd } default per-run budget
+//   POST   /api/settings/execution         — { backend, apiKey?, clearKey? } where tools run
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
   if (parts[0] !== "api" || parts[1] !== "settings") return false
   const route = `${req.method} ${parts.slice(2, 3).join("/")}`
+  // Every write is guarded: a cross-site page must not repoint a key or a baseUrl.
+  if (req.method !== "GET" && !settingsWriteAllowed(req)) return send(res, 403, { error: "cross-site settings write refused" }), true
   try {
     if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
     if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true
@@ -391,6 +394,7 @@ export async function handleSettings(req, res) {
     if (parts.length === 3 && route === "POST discover") return send(res, 200, await discoverModels(await readBody(req))), true
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
     if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
+    if (parts.length === 3 && route === "POST execution") return send(res, 200, setExecution(await readBody(req))), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true
