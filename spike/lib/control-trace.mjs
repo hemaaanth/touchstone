@@ -18,27 +18,30 @@
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
 // address received. The address-shaped words in its storage come from Execution only.
-// - writeMeta[i] = { caller, authority } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender, and the owner
-//   (slot 0) and EIP-1967 admin the contract held just before the write. They come from the
+// - writeMeta[i] = { caller, authority, held } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender; the owner
+//   (slot 0) and EIP-1967 admin the contract held just before the write (`authority`, slot-0/admin only, entitlement-filtered for packs/keys/control.mjs); and
+//   `held`, a layout-free snapshot { [slot]: address } of EVERY address-valued slot the contract held just before the write. They come from the
 //   SSTOREs of every trace, constructors included. A write whose caller already held
-//   authority is a legitimate change, not a takeover. control.mjs decides.
+//   authority is a legitimate change, not a takeover. control.mjs reads `authority`; the forge
+//   harm gate (lib/proof.mjs) reads `held` with the compiled storage layout. control.mjs decides.
 import { keccak256, toUtf8Bytes } from "ethers";
 const VM = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
 const ETCH = "0xb4d6c782";
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
-const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
-const isAddressWord = (w) => /^0x0{24}[0-9a-f]{40}$/.test(w) && !/^0x0{64}$/.test(w);
+export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
+export const isAddressWord = (w) => /^0x0{24}[0-9a-f]{40}$/.test(w) && !/^0x0{64}$/.test(w);
 const OWNER_SLOT = word("0x0");
-const ADMIN_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.admin"))) - 1n).toString(16));
-const IMPLEMENTATION_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.implementation"))) - 1n).toString(16));
+export const ADMIN_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.admin"))) - 1n).toString(16));
+export const IMPLEMENTATION_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.implementation"))) - 1n).toString(16));
 const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
-const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
+export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces) {
   const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
+  const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
   for (const entry of Array.isArray(traces) ? traces : []) {
     const label = Array.isArray(entry) ? entry[0] : null;
     const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
@@ -60,16 +63,36 @@ export function extractControlTrace(traces) {
         if (!change) continue;
         const key = word(change.key);
         if (execution) for (const w of [word(change.value), word(change.had_value)]) if (isAddressWord(w)) (out.words[context] ??= new Set()).add("0x" + w.slice(26));
+        // An SLOAD reveals a slot's CURRENT address value. It is the ONLY way to see an
+        // owner/admin that setUp (or a constructor) set, because forge emits no per-step
+        // storage changes for the Setup trace — only the Execution trace carries them. A
+        // read tells us who the owner IS; it never grants the caller authority. We fold it
+        // into addrHeld so the next write's snapshot knows the real pre-existing owner. A
+        // genuine owner check (`require(msg.sender == owner)`) SLOADs the slot right before
+        // the write, so the snapshot is populated in time; an unprotected write reads nothing
+        // and is correctly left with no entitled owner.
+        if (change.reason === "SLOAD" && ok(i)) { const sv = asAddress(word(change.value)); if (sv) (addrHeld[context] ??= {})[key] = sv; }
         if (change.reason !== "SSTORE" || word(change.value) === word(change.had_value)) continue;
         if (!ok(i)) continue;
         const mine = held[context] ?? {};
         const authority = [asAddress(mine[OWNER_SLOT]), asAddress(mine[ADMIN_SLOT])].filter(Boolean);
         const caller = senderOf();
+        // Generic layout-free snapshot: the address value every slot of this contract held
+        // just BEFORE this write, across all traces (constructor, setUp, body). The forge harm
+        // gate pairs it with the compiled storage layout to read the real owner/admin of a
+        // target even when it was set in setUp — see lib/proof.mjs. We snapshot here, then
+        // record this write's own effect below, so the snapshot is the pre-write state.
+        const heldSnap = { ...(addrHeld[context] ?? {}) };
         if (execution && !under(i, (x) => x.kind === "CREATE")) {
           const setup = under(i, (x) => lc(String(x.data ?? "").slice(0, 10)) === SAFE_SETUP);
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
-          out.writeMeta.push({ caller, authority });
+          out.writeMeta.push({ caller, authority, held: heldSnap });
         }
+        // Track the live address value at this slot for the NEXT write's snapshot. A write to a
+        // non-address value (a renounce to 0, a scalar) clears the slot: it holds no address now.
+        const av = asAddress(word(change.value));
+        if (av) (addrHeld[context] ??= {})[key] = av;
+        else if (addrHeld[context]) delete addrHeld[context][key];
         if (key !== OWNER_SLOT && key !== ADMIN_SLOT) continue;
         // Authority is who COULD write this slot, not who the current value points at. A write
         // teaches the snapshot only when its writer is entitled to make it:

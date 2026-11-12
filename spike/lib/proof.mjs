@@ -16,7 +16,8 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { writePoc, forgeTestJson } from "./sandbox.mjs";
-import { extractControlTrace, controlTakeovers } from "./control-trace.mjs";
+import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
+import { keccak256 } from "ethers";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -148,7 +149,7 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   const flows = netFlows(r.traces);
   const transfers = transferTable(flows, lowerKeys(r.labeled_addresses));
   const controlTrace = extractControlTrace(r.traces);
-  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace });
+  const harm = judgeHarm(r.traces, { scope: scopeCode(ws), controlTrace, layouts: scopeLayouts(ws), balances: scopeBalances(ws) });
   return {
     tool: "Foundry",
     source: "engine-replay",
@@ -182,14 +183,20 @@ function lowerKeys(obj) {
 // A passing test is not a proof. `assertTrue(true)` passes too. A forge finding
 // is proven only when the replay shows BOTH:
 //   1. the test made a successful call into a scope target, and
-//   2. an effect on a scope target the gate accepts as harm, by EITHER channel:
-//      - funds:   a target's net ETH went DOWN during the test body, or
-//      - control: the test body re-pointed one of a target's CONTROL slots — the
-//        owner slot, the EIP-1967 admin or implementation — to a new address, by a
-//        caller that did not already hold that authority (a takeover, not a write).
+//   2. an effect on a scope target the gate accepts as harm, by ANY channel:
+//      - funds (ETH):   a target's net native ETH went DOWN during the test body;
+//      - funds (token): a target was a net LOSER of an ERC-20 token in the body,
+//        read from the real `Transfer` logs the EVM emitted (see tokenDrains); or
+//      - control: the test body re-pointed one of a target's CONTROL slots to a
+//        new address, by a caller that did not already hold that authority (a
+//        takeover, not an ordinary write). Which slots are control pointers comes
+//        from the compiled storage layout — the named owner/admin/governor address
+//        variable of that contract, in WHATEVER slot it lives, plus the EIP-1967
+//        admin and implementation slots — so a counter or a flag in slot 0 is
+//        never mistaken for an owner, and an owner outside slot 0 is still found.
 // Access-control takeovers and proxy hijacks move no ETH; they re-point a control
 // pointer, so the control channel proves them. A benign state write — a deposit's
-// balance, a counter, a flag — is NOT a control takeover and proves nothing.
+// balance, a counter, a flag — touches no control slot and proves nothing.
 //
 // A scope target is a contract the replay CREATEd from code compiled out of the
 // scope: src/ (a lab) or vendor/ (fetched members). Contracts defined in the test
@@ -198,14 +205,17 @@ function lowerKeys(obj) {
 // the scope's code, so it stops being a target.
 //
 // Known limits, on purpose for this cycle:
-// - The funds channel sees native ETH only. A token-balance move that makes no
-//   target storage write (rare: balances live in the token's storage) is not
-//   seen. Measuring token balances is a later cycle.
-// - The control channel counts ANY target storage write in the test body, so a
-//   plain `deposit` also counts. It does not yet tell a privileged or owner write
-//   from an ordinary one. The gate rejects tests that touch nothing; it does not
-//   judge intent. Packs with a lab model (keys, chain-watch) pass their own
-//   stricter judge to proveFindings.
+// - The token channel measures fungible ERC-20 value only. An NFT (ERC-721) theft
+//   emits a Transfer with an indexed tokenId and no value, so it is not counted as
+//   a drain; per-token-id accounting is a later cycle.
+// - A control variable packed ABOVE offset 0 in its slot (an address sharing a
+//   slot with another field) is left out: we only read a clean 20-byte address
+//   word, so we miss an exotic packing rather than misread it. This keeps the gate
+//   free of false takeovers at the cost of a rare miss.
+// - Control slots are judged from the layout only when the build artifact carries
+//   one (`--extra-output storageLayout`). An older artifact with no layout falls
+//   back to the EIP-1967-only view in control-trace.mjs. Packs with a lab model
+//   (keys, chain-watch) still pass their own judge to proveFindings.
 // - A test that funds the target itself in setUp() and withdraws only its own
 //   balance in the body is accepted as funds. Setup funding is left out of the net
 //   on purpose: that exclusion is what keeps victim-funded drains provable, so do
@@ -250,6 +260,122 @@ export function scopeCode(ws) {
   };
   walk(dir, 0);
   return out;
+}
+
+// The access-control roots a storage variable name can carry. A contract's
+// authority lives behind one of these: the owner, the admin, the governor. We
+// match the NAME, not a slot position, so an owner in any slot is found and a
+// same-shaped counter in slot 0 is not. Leading underscores (OZ `_owner`) are
+// stripped before the test.
+const CONTROL_NAMES = /^(owner|pendingowner|admin|proxyadmin|governor|governance|authority|guardian)$/;
+
+// Read the compiled storage layout of every scope contract (forge wrote it with
+// `--extra-output storageLayout`, see lib/sandbox.mjs). Returns a Map
+//   contract name -> Set of 32-byte slot words that hold an ADDRESS-typed control
+//   variable (owner/admin/governor) packed at offset 0.
+// This is the sound signal the harm gate uses to tell a control pointer from an
+// ordinary state word: a uint counter and an address are indistinguishable at the
+// word level, but the layout names the type. A slot that packs the address above
+// offset 0 is left out on purpose — we only extract a clean 20-byte address word,
+// so we would rather miss an exotic packing than misread it. An empty map (older
+// artifacts without a layout) makes the gate fall back to its EIP-1967-only view.
+export function scopeLayouts(ws) {
+  const dir = outDir(ws);
+  const byName = new Map();
+  if (!existsSync(dir)) return byName;
+  const walk = (d, depth) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== "build-info" && depth < 4) walk(p, depth + 1); continue; }
+      if (!e.name.endsWith(".json")) continue;
+      let art;
+      try { art = JSON.parse(readFileSync(p, "utf8")); } catch { continue; }
+      const target = art?.metadata?.settings?.compilationTarget ?? {};
+      const [path, name] = Object.entries(target)[0] ?? [];
+      if (!path || !name || !SCOPE_ROOTS.some((r) => path.startsWith(r))) continue;
+      const layout = art?.storageLayout;
+      if (!layout || !Array.isArray(layout.storage)) continue;
+      const slots = new Set();
+      // How many variables share each slot. An owner at offset 0 is only a clean
+      // 32-byte address word when it has the slot to ITSELF; if another field
+      // (e.g. `bool paused`) packs in above it, the live word is owner|otherField,
+      // which is not address-shaped and defeats both the takeover compare and the
+      // SLOAD entitlement fold. We skip those on purpose, same as offset != 0.
+      const slotCount = new Map();
+      for (const s of layout.storage) slotCount.set(String(s.slot), (slotCount.get(String(s.slot)) ?? 0) + 1);
+      for (const s of layout.storage) {
+        if (Number(s.offset) !== 0) continue; // only a clean, unpacked address word
+        if ((slotCount.get(String(s.slot)) ?? 1) > 1) continue; // a field packs in above the owner — not a clean address word
+        const varName = String(s.label ?? "").replace(/^_+/, "").toLowerCase();
+        if (!CONTROL_NAMES.test(varName)) continue;
+        const t = layout.types?.[s.type];
+        if (!t || t.encoding !== "inplace") continue; // not a mapping / dynamic / struct member
+        const tl = String(t.label ?? "");
+        if (tl !== "address" && tl !== "address payable" && !tl.startsWith("contract ")) continue; // must be address-typed (incl. `address payable`)
+        let slotWord;
+        try { slotWord = word("0x" + BigInt(s.slot).toString(16)); } catch { continue; }
+        slots.add(slotWord);
+      }
+      if (slots.size) byName.set(name, slots);
+    }
+  };
+  walk(dir, 0);
+  return byName;
+}
+
+// The address-keyed balance mappings of every scope contract, read from the same
+// compiled layout. Returns Map(contract name -> Array of 32-byte base-slot words),
+// one entry per `mapping(address => <uint>)` whose NAME looks like a balance or
+// share holding. This is the GROUND-TRUTH signal the token-drain gate uses: a
+// drain is read straight from the victim's balance storage, so it is proven even
+// when the token emits no `Transfer` log — an in-scope token can omit or fake the
+// event, but its balance slots cannot lie. Non-balance maps are excluded two ways:
+// the name filter (so a nonce/timestamp map is skipped) and the uint-value check
+// (so an allowance map, whose value is itself a mapping, is skipped).
+// Anchored to the WHOLE name (after stripping underscores), not a prefix: a prefix
+// match would also keep `depositTime`, `stakeStart`, `creditLimit` and
+// `balanceSnapshotBlock` — uint maps that are not balances — and net a benign reset
+// of one as a "drain". We accept the ERC-20 names and their plural/`Of` forms only.
+const BALANCE_NAMES = /^(bal|balanceof|balances?|shares?|deposits?|stakes?|holdings?|credits?)$/;
+export function scopeBalances(ws) {
+  const dir = outDir(ws);
+  const byName = new Map();
+  if (!existsSync(dir)) return byName;
+  const walk = (d, depth) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== "build-info" && depth < 4) walk(p, depth + 1); continue; }
+      if (!e.name.endsWith(".json")) continue;
+      let art;
+      try { art = JSON.parse(readFileSync(p, "utf8")); } catch { continue; }
+      const target = art?.metadata?.settings?.compilationTarget ?? {};
+      const [path, name] = Object.entries(target)[0] ?? [];
+      if (!path || !name || !SCOPE_ROOTS.some((r) => path.startsWith(r))) continue;
+      const layout = art?.storageLayout;
+      if (!layout || !Array.isArray(layout.storage)) continue;
+      const slots = [];
+      for (const s of layout.storage) {
+        const varName = String(s.label ?? "").replace(/^_+/, "").toLowerCase();
+        if (!BALANCE_NAMES.test(varName)) continue;
+        const t = layout.types?.[s.type];
+        if (!t || t.encoding !== "mapping") continue;
+        const kt = layout.types?.[t.key];
+        if (!/address/.test(String(kt?.label ?? t.key ?? ""))) continue; // key must be an address
+        const vt = layout.types?.[t.value];
+        if (!/^uint/.test(String(vt?.label ?? ""))) continue; // value must be a plain uint, not a nested map/struct
+        let slotWord;
+        try { slotWord = word("0x" + BigInt(s.slot).toString(16)); } catch { continue; }
+        slots.push(slotWord);
+      }
+      if (slots.length) byName.set(name, slots);
+    }
+  };
+  walk(dir, 0);
+  return byName;
 }
 
 // True when `init` (CREATE input) starts with `code`. A library-link
@@ -303,19 +429,186 @@ function scanTargets(traces, scope) {
   return { targets, invoked, net };
 }
 
+// ERC-20 `Transfer(address indexed from, address indexed to, uint256 value)`.
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const topicAddr = (t) => { const h = hex(t); return h.length >= 40 ? "0x" + h.slice(-40) : null; };
+
+// The token-drain channel. The native-ETH funds channel sees `t.value` only, so a
+// drain of ERC-20 balances — the most common DeFi harm — is invisible to it. Here
+// we read the real `Transfer` logs the EVM emitted in the test body and net them
+// per (token, holder). A scope target that is a net LOSER of a token it does not
+// itself issue was drained. Body only, success-gated — the same rules the ETH
+// channel uses, so setUp funding is fixture and a rolled-back transfer does not
+// count. Returns [{ token, victim, lostUnits }], biggest loss first.
+function tokenDrains(traces, targets) {
+  const net = new Map(); // token -> Map(holder -> signed units)
+  const bump = (token, holder, delta) => {
+    if (!holder) return;
+    const m = net.get(token) ?? new Map();
+    m.set(holder, (m.get(holder) ?? 0n) + delta);
+    net.set(token, m);
+  };
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    if ((Array.isArray(entry) ? entry[0] : null) !== "Execution") continue;
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      if (!ok(i)) return;
+      const token = lc(node?.trace?.address);
+      if (!token) return;
+      for (const log of node?.logs ?? []) {
+        const raw = log?.raw_log ?? log;
+        const topics = raw?.topics;
+        if (!Array.isArray(topics) || topics.length < 3 || lc(topics[0]) !== TRANSFER_TOPIC) continue;
+        let amount = 0n;
+        try { amount = BigInt(raw.data ?? "0x0"); } catch { amount = 0n; }
+        if (amount <= 0n) continue; // a 0-value or NFT (indexed tokenId, empty data) transfer is not a fungible drain
+        bump(token, topicAddr(topics[1]), -amount);
+        bump(token, topicAddr(topics[2]), amount);
+      }
+    });
+  }
+  const drains = [];
+  for (const [token, holders] of net.entries()) {
+    for (const [holder, delta] of holders.entries()) {
+      if (delta >= 0n || holder === token || !targets.has(holder)) continue;
+      drains.push({ token, victim: holder, lostUnits: (-delta).toString() });
+    }
+  }
+  drains.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : 1));
+  return drains;
+}
+
+// The storage token-drain channel — ground truth, event-independent. The event
+// channel above trusts the token to emit a `Transfer` log; a hostile or sloppy
+// in-scope token need not, and a harm gate must not depend on an advisory event.
+// Here we read the drain from the balance mappings themselves. For each scope
+// target token K with a balance mapping at base slot p (from scopeBalances), and
+// each scope-target holder H, the live balance sits at keccak256(pad32(H).pad32(p)).
+// We net every execution SSTORE to that slot — controlTrace.writes is already body
+// only and success-gated, the same rules the ETH and event channels use, so setUp
+// funding is fixture and a reverted write does not count. A scope target that nets
+// a LOSS of a token it does not itself issue was drained. `balances` is
+// scopeBalances(ws); an empty map (no layout, e.g. synthetic unit traces) yields
+// no drains and the gate falls through to the event channel. Returns
+// [{ token, victim, lostUnits }], biggest loss first.
+function balanceDrains(controlTrace, targets, balances) {
+  if (!balances || !balances.size) return [];
+  const writes = controlTrace?.writes ?? [];
+  const index = new Map(); // `${token}:${slotWord}` -> holder address
+  for (const [addr, name] of targets.entries()) {
+    const bases = balances.get(name);
+    if (!bases) continue; // this target issues no scope-tracked balance
+    for (const base of bases) {
+      for (const holder of targets.keys()) {
+        const slot = word(keccak256(word(holder) + base.slice(2)));
+        index.set(`${addr}:${slot}`, holder);
+      }
+    }
+  }
+  if (!index.size) return [];
+  const net = new Map(); // token -> Map(holder -> signed units)
+  for (const w of writes) {
+    const token = lc(w.context);
+    const holder = index.get(`${token}:${word(w.slot)}`);
+    if (!holder) continue;
+    let before = 0n, after = 0n;
+    try { before = BigInt(w.before); after = BigInt(w.after); } catch { continue; }
+    const delta = after - before;
+    if (delta === 0n) continue;
+    const m = net.get(token) ?? new Map();
+    m.set(holder, (m.get(holder) ?? 0n) + delta);
+    net.set(token, m);
+  }
+  const drains = [];
+  for (const [token, holders] of net.entries()) {
+    for (const [holder, delta] of holders.entries()) {
+      if (delta >= 0n || holder === token) continue; // only a scope target that LOST a token it does not issue
+      drains.push({ token, victim: holder, lostUnits: (-delta).toString() });
+    }
+  }
+  drains.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : 1));
+  return drains;
+}
+
+// KNOWN LIMITS of this control channel (documented, not silently overclaimed).
+// These are cases a code review raised that the gate does NOT yet judge perfectly;
+// each fails toward UNDER-claiming (a missed finding), not a false "proven":
+//   - An Ownable2Step `acceptOwnership` can read as a takeover: OZ clears the
+//     pending-owner slot BEFORE it writes the owner, so the new owner is not in the
+//     pre-write authority snapshot. (A benign 2-step hand-over flagged — narrow,
+//     needs that exact OZ flow run as a PoC.)
+//   - A legit UUPS/Transparent upgrade whose admin/owner check reads from the
+//     implementation's own or OZ-v5 namespaced storage (never SLOADing a slot in
+//     the proxy's own layout) leaves the authority set empty, so an in-scope
+//     proxy's upgrade can read as a hijack.
+//   - An owner that lives in the IMPLEMENTATION's layout but in PROXY storage is not
+//     a named control slot of the proxy, so a takeover through the proxy is missed.
+//   - Control roles under non-standard names (controller/manager/minter/keeper) and
+//     balances under non-standard names (_rOwned, struct-wrapped amounts) are not in
+//     CONTROL_NAMES / BALANCE_NAMES; those token drains fall back to Transfer logs,
+//     which an event-less token defeats.
+//
+// The layout-aware control channel. A storage write is a TAKEOVER only when it
+// re-points a control pointer the writer was not entitled to set. Which slots are
+// control pointers comes from the compiled storage layout (`layouts`, a Map
+// name -> Set of address-control slot words), NOT from a slot-position guess:
+//   - the named owner/admin/governor address variables of THIS contract, plus
+//   - the EIP-1967 admin and implementation slots (control pointers by definition).
+// Entitlement is read from the REAL slot values the contract held just before the
+// write (writeMeta[i].held, filled across setUp/constructor too): the current
+// owner and admin are the authority. A write whose caller already holds authority
+// is a legitimate hand-over; a write by anyone else to a control slot, re-pointing
+// it to a different address, is a takeover. The implementation slot is a control
+// target but not itself a source of authority. `targets` maps address -> name.
+function layoutTakeovers(controlTrace, targets, layouts) {
+  const writes = controlTrace?.writes ?? [];
+  const meta = controlTrace?.writeMeta ?? [];
+  return writes.filter((w, i) => {
+    const ctx = lc(w.context);
+    if (!targets.has(ctx)) return false;
+    const named = layouts?.get(targets.get(ctx)) ?? new Set();
+    const controlSlots = new Set([...named, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
+    const slot = word(w.slot);
+    if (!controlSlots.has(slot)) return false;
+    const after = word(w.after), before = word(w.before);
+    if (!isAddressWord(after) || after === before) return false; // must re-point to a DIFFERENT address
+    const held = meta[i]?.held ?? {};
+    const authoritySlots = [...named, ADMIN_SLOT]; // IMPL is controlled, not a controller
+    const authority = new Set(authoritySlots.map((s) => held[s]).filter(Boolean).map(lc));
+    const caller = lc(meta[i]?.caller ?? "");
+    if (caller && authority.has(caller)) return false; // the writer already held control: a legitimate change
+    return true;
+  });
+}
+
 // The generic harm verdict for one forge replay. Pure: traces + scope code in,
-// { ok, kind, targets, ... } out. `controlTrace` is extractControlTrace(traces).
-export function judgeHarm(traces, { scope = [], controlTrace = null } = {}) {
+// { ok, kind, targets, ... } out. `controlTrace` is extractControlTrace(traces);
+// `layouts` is scopeLayouts(ws). When `layouts` is null (unit traces with no
+// compiled artifacts) the gate falls back to the slot-0/EIP-1967 heuristic in
+// control-trace.mjs; a real replay always passes the layout, so production harm
+// is judged from the layout, never a position guess.
+export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null, balances = null } = {}) {
   const { targets, invoked, net } = scanTargets(traces, scope);
   for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
   if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
   if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
   const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
-  const takeovers = controlTakeovers(controlTrace, targets);
+  const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
   if (losses.length) {
     const [victim, wei] = losses[0];
-    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names, ...(takeovers.length ? { writes: takeovers.length } : {}) };
+    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
+  }
+  // Prefer the ground-truth storage read; fall back to the Transfer-log channel
+  // for tokens outside scope (a real external ERC-20 whose balance layout we do
+  // not have, but whose standard event we can still net).
+  const storageDrains = balanceDrains(controlTrace, targets, balances);
+  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets);
+  if (drains.length) {
+    const d = drains[0];
+    return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
   return { ok: false, reason: "the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)", targets: names };

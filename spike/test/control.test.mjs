@@ -214,7 +214,9 @@ test("extract: each write records its caller and the owner it saw just before", 
     node(2, { kind: "DELEGATECALL", address: EVIL, caller: PROXY, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
   ));
   assert.equal(out.writes.length, 1);
-  assert.deepEqual(out.writeMeta, [{ caller: ATTACKER, authority: [TEST] }]);
+  assert.equal(out.writeMeta.length, 1);
+  assert.equal(out.writeMeta[0].caller, ATTACKER);
+  assert.deepEqual(out.writeMeta[0].authority, [TEST]);
 });
 
 test("a proxy owner change made by the owner is not harm", () => {
