@@ -67,3 +67,23 @@ test("removing the scope removes its grant, and only its grant", () => {
   assert.deepEqual(readGrants().map((g) => g.scopeId), [b.id]);
   assert.throws(() => enforceReach(a), /a\.example\.com/);
 });
+
+test("a bad name or module is refused before the grant is written", () => {
+  assert.throws(() => addLiveScope({ title: "x".repeat(121), hosts: ["a.example.com"], permission: true }), /1 to 120/);
+  assert.throws(() => addLiveScope({ hosts: ["a.example.com"], pack: "../evil", permission: true }), /unknown module/);
+  assert.equal(readScopes().length, 0);
+  assert.equal(readGrants().length, 0);
+});
+
+test("if the scope cannot be saved, its grant is rolled back", () => {
+  // A directory where the scopes file should be makes the write fail.
+  const real = process.env.TOUCHSTONE_SCOPES_FILE;
+  const blocked = mkdtempSync(path.join(dir, "blocked-"));
+  process.env.TOUCHSTONE_SCOPES_FILE = blocked;
+  try {
+    assert.throws(() => addLiveScope({ hosts: ["a.example.com"], permission: true }));
+    assert.equal(readGrants().length, 0);
+  } finally {
+    process.env.TOUCHSTONE_SCOPES_FILE = real;
+  }
+});

@@ -410,7 +410,11 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
-  const id = `live-${slugify(String(title || list[0]))}-${randomUUID().slice(0, 8)}`;
+  const name = String(title || "").trim();
+  if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
+  const packId = String(pack || "").trim() || "web";
+  if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
+  const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
   // The grant checks and normalizes each host (no public-suffix wildcards, no
   // private addresses). It throws before anything is saved.
   const grant = addGrant({
@@ -420,17 +424,13 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
     note: "Confirmed when the live scope was added.",
     scopeId: id,
   });
-  const t = String(title || "").trim() || grant.hosts.join(" + ").slice(0, 120);
-  if (t.length > 120) {
-    removeGrant(grant.id);
-    throw new Error("Use a scope name of 1 to 120 characters.");
-  }
+  const t = name || grant.hosts.join(" + ").slice(0, 120);
   const scope = {
     id,
     kind: "live",
     title: t,
     blurb: String(blurb || "").trim(),
-    pack: String(pack || "").trim() || "web",
+    pack: packId,
     entry: grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
@@ -441,9 +441,16 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
     },
     createdAt: Date.now(),
   };
-  const all = readScopes();
-  all.unshift(scope);
-  writeScopes(all);
+  // A grant with no scope would let runs reach the hosts with nothing in the
+  // UI to remove it. Roll it back if the scope cannot be saved.
+  try {
+    const all = readScopes();
+    all.unshift(scope);
+    writeScopes(all);
+  } catch (err) {
+    removeGrant(grant.id);
+    throw err;
+  }
   return scope;
 }
 

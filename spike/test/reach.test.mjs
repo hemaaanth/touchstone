@@ -29,6 +29,7 @@ beforeEach(() => rmSync(process.env.TOUCHSTONE_GRANTS_FILE, { force: true }));
 const { addGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, enforceReach, isNetworkKind, openReach, NON_NETWORK_KINDS } = await import("../lib/reach.mjs");
 const { targetSummary, resolveTargetDir, prepareWorkspace, prepareRunWorkspace } = await import("../lib/targets.mjs");
+const { PACKS } = await import("../packs/index.mjs");
 
 // A local http server stands in for the granted host. Pointed at via the
 // x-touchstone-url header, which plain fetch can set (no proxy-agent dependency).
@@ -119,7 +120,7 @@ test("GRANT ⇒ ONLY THE GRANTED HOST: the proxy forwards the granted host and b
   }
 });
 
-test("a live target is runnable: it gets a workspace that names its hosts", async () => {
+test("a live target is runnable, but refused until its pack can test a live site", async () => {
   // The operator adds a live scope with a permission checkbox (scopes-store
   // addLiveScope), so "live" is offered like any other scope. The grant check
   // runs at run start (openReach), not when the workspace is built.
@@ -133,15 +134,25 @@ test("a live target is runnable: it gets a workspace that names its hosts", asyn
   // A live target has no directory; it is never a lab.
   assert.throws(() => resolveTargetDir(live), /not yet runnable: live/);
 
-  // The workspace is a brief that lists the hosts, and its config says "live".
-  const ws = prepareWorkspace(live, { modules: [] });
+  // No pack can test a live website yet: each scans its own planted lab. So
+  // the run is refused before anything is spent, instead of reporting the
+  // lab's bugs against the operator's site.
+  assert.equal(PACKS.web.live, undefined);
+  assert.throws(() => prepareWorkspace(live, { modules: [] }), /cannot test a live website yet/);
+
+  // Once a pack says it can (live: true), the workspace is a brief that lists
+  // the hosts, and its config says "live".
+  PACKS.web.live = true;
+  let ws;
   try {
+    ws = prepareWorkspace(live, { modules: [] });
     assert.match(readFileSync(path.join(ws, "BRIEF.md"), "utf8"), /- app\.example\.com/);
     const cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"));
     assert.equal(cfg.kind, "live");
     assert.deepEqual(cfg.hosts, ["app.example.com"]);
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    delete PACKS.web.live;
+    if (ws) rmSync(ws, { recursive: true, force: true });
   }
 });
 

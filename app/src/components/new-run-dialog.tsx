@@ -396,11 +396,19 @@ export function AddScope({
       return onError("A scope holds code or live websites, not both. Add the other kind as its own scope.")
     }
     onError(null)
+    // The tick covers the websites listed when it was ticked. A new one needs a new tick.
+    if (s.kind === "site") setPermission(false)
     setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
   }
   const addUrl = () => {
-    const href = githubUrl(url)
-    const host = href ? null : siteHost(url)
+    const text = url.trim()
+    const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
+    const host = href ? null : siteHost(text)
+    // github.com is never a live site here: a near-miss repo URL would
+    // otherwise become a permission tick for all of github.com.
+    if (host === "github.com" || host?.endsWith(".github.com")) {
+      return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
+    }
     if (!href && !host) return onError("Use a GitHub repository URL or a website address.")
     add(href ? { kind: "repo", url: href } : { kind: "site", host: host! })
     setUrl("")
@@ -521,7 +529,10 @@ export function AddScope({
                   aria-label={`Remove ${sourceLabel(s)}`}
                   title="Remove from scope"
                   disabled={busy}
-                  onClick={() => setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))}
+                  onClick={() => {
+                    if (s.kind === "site") setPermission(false)
+                    setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))
+                  }}
                   className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-3.5"
                 >
                   <X />

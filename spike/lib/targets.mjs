@@ -312,6 +312,13 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     // No code to copy. The workspace holds a short brief that names the
     // websites, so the agent knows what it may test.
     const hosts = reachHosts(target)
+    // A pack can test a live website only once it says so (live: true) and
+    // points its tools at these hosts. Today every pack scans its own planted
+    // lab, so a run would record the lab's bugs against the operator's
+    // site: a false report. Refuse before anything is spent. (Wire #3.)
+    if (PACKS[pack]?.live !== true) {
+      throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
+    }
     const ws = makeBriefWorkspace()
     const lines = [
       `# ${target.title || "Live scope"}`,

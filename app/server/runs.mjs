@@ -131,6 +131,8 @@ export function listScopes() {
 //       grant that lets a run reach these hosts.
 export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission } = {}) {
   if (kind === "live") {
+    // Checked before the grant is written, so an unknown module saves nothing.
+    if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
     const live = addLiveScope({ title, hosts, pack, blurb, permission })
     return { ...targetSummary(live), runnable: true }
   }
