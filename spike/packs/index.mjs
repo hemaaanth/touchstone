@@ -9,6 +9,7 @@ import surface from "./surface/pack.mjs";
 import keys from "./keys/pack.mjs";
 import chainWatch from "./chain-watch/pack.mjs";
 import web from "./web/pack.mjs";
+import aiMcp from "./ai-mcp/pack.mjs";
 import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
 
@@ -20,6 +21,7 @@ export const PACKS = {
   [contracts.id]: contracts, [supplyChain.id]: supplyChain, [domains.id]: domains, [surface.id]: surface,
   [keys.id]: keys, [chainWatch.id]: chainWatch, [web.id]: web,
   [infraCloud.id]: infraCloud,
+  [aiMcp.id]: aiMcp,
   // Read-only review for operator scopes with no fitting replay oracle.
   [review.id]: review,
 };

@@ -1,0 +1,28 @@
+id: touchstone-debug-config-exposed
+info:
+  name: Debug configuration route exposed without auth
+  author: touchstone
+  severity: high
+  description: A debug route answers an anonymous GET with configuration that includes key material.
+  tags: exposure,config,debug
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/internal/debug/config"
+      - "{{BaseURL}}/debug/config"
+      - "{{BaseURL}}/actuator/env"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: regex
+        part: body
+        regex:
+          - '(?i)"[a-z_]*(private[_-]?key|secret|api[_-]?key|password)[a-z_]*"\s*:\s*"[^"]{8,}"'
+    extractors:
+      - type: regex
+        part: body
+        group: 1
+        regex:
+          - '(?i)"([a-z_]*(?:private[_-]?key|secret|api[_-]?key|password)[a-z_]*)"\s*:'
