@@ -26,6 +26,7 @@ import { activeProvider, allProviders, defaultAlias, readConfig } from "../../sp
 import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -313,23 +314,42 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
   if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
   const target = pickTarget({ id: targetId, pack: pack || undefined })
-  // Resolve the module plan from the scope and the operator's request. A module
-  // the scope cannot support (static/fuzz on a brief with no local source yet) is
-  // off with a reason, never silently dropped. The plan rides into the workspace
-  // config, so the run worker builds exactly the tools this plan enables.
-  const plan = planModules(target, modules)
-  // Each run has its own budget. The worker stops the run when it is spent.
-  const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
+  // The reach gate (default-deny by kind). Before anything is spent or any
+  // workspace is prepared: an offline kind (lab/local-source/brief/scope) with no
+  // host passes inert; EVERY other kind — and any kind that names a host — must
+  // carry a grant, or openReach throws a clear refusal naming the first uncovered
+  // host. For a granted live run openReach also starts the scope proxy confined to
+  // the granted hosts and returns the env that routes the module's network seam
+  // through it, so egress is ENFORCED, not just pre-refused. A grant never widens
+  // what a run DOES; it only clears the host the network seam may reach.
+  const reach = await openReach(target)
+  // The proxy (if the gate started one) is live from here. If any later setup
+  // step throws before the run is registered, stop it so a refused or broken run
+  // never leaks a listening gate.
+  let plan, budget, id, db, eventsFile, streamFile, ws
+  try {
+    // Resolve the module plan from the scope and the operator's request. A module
+    // the scope cannot support (static/fuzz on a brief with no local source yet) is
+    // off with a reason, never silently dropped. The plan rides into the workspace
+    // config, so the run worker builds exactly the tools this plan enables.
+    plan = planModules(target, modules)
+    // Each run has its own budget. The worker stops the run when it is spent.
+    budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 
-  mkdirSync(RESULTS_DIR, { recursive: true })
-  const id = monotonicId(alias)
-  const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
-  const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
-  const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
-  for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
-  const ws = await prepareRunWorkspace(target, { modules: plan })
+    mkdirSync(RESULTS_DIR, { recursive: true })
+    id = monotonicId(alias)
+    db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
+    eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
+    streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
+    for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
+    ws = await prepareRunWorkspace(target, { modules: plan })
+  } catch (err) {
+    await reach.stop()
+    throw err
+  }
 
   const run = {
+    reach,
     id,
     alias,
     provider: provider.id,
@@ -417,7 +437,7 @@ async function startEngine(run) {
   // start the agent if it is still live.
   if (run.status !== "running") return
   if (run.stopping) {
-    await endWorkspace(run.ws)
+    await endWorkspace(run)
     endStopped(run)
     return
   }
@@ -565,7 +585,10 @@ function failureInfo(run) {
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
-  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...fleetEnv(run), ...leads }
+  // reach.env confines a live run: it carries the scope proxy's URL and allow-list
+  // so the module's network seam routes target-bound traffic through the gate. It
+  // is empty for an offline run, so a lab child's env is unchanged.
+  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -594,7 +617,7 @@ function spawnAgent(run, leads) {
       await recordRun(run, found)
       return
     }
-    await endWorkspace(run.ws)
+    await endWorkspace(run)
     if (run.stopping) {
       endStopped(run)
       return
@@ -678,20 +701,28 @@ async function recordRun(run, found) {
     run.status = "error"
     broadcast(run, { ev: "status", status: run.status, error: run.error })
   } finally {
-    await endWorkspace(run.ws)
+    await endWorkspace(run)
     broadcast(run, { ev: "closed" })
   }
 }
 
 // Delete a run's workspace. First let the pack stop what its pre-pass left
 // running there (the web lab's container), or that would outlive the run.
-async function endWorkspace(ws) {
+async function endWorkspace(run) {
+  const ws = run?.ws ?? run
   try {
     await packFor(readTouchstone(ws)).teardown?.(ws)
   } catch {
     // Best effort: the workspace still goes.
   }
   cleanupWorkspace(ws)
+  // Stop the scope proxy the reach gate started for a live run, so a finished run
+  // leaves no listening gate. Inert (no-op) for an offline run.
+  try {
+    await run?.reach?.stop?.()
+  } catch {
+    // already closed
+  }
 }
 
 // Message a run. While a worker is running, the message is written to its
@@ -819,7 +850,7 @@ function followUp(run, text, clientId) {
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
     } finally {
-      await endWorkspace(run.ws)
+      await endWorkspace(run)
       run.child = null
       run.stopping = false
       run.replying = false

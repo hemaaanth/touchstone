@@ -27,6 +27,25 @@
 //                     pack comes from its content: Solidity runs under
 //                     Contracts; code with no fitting replay oracle runs under
 //                     the read-only Review pack, whose proofSurface is "none".
+//   - "live":         a REAL host the operator has a grant to reach (the first
+//                     live-network kind). Unlike every kind above, a run for it
+//                     leaves the machine, so the reach gate (spike/lib/reach.mjs)
+//                     REFUSES it without a grant naming its host(s), and a scope
+//                     proxy confines its egress to exactly those hosts. The kind
+//                     only names a host; the grant is what authorizes the reach.
+//
+//                     NOT YET DISPATCHABLE. The grant pre-flight and the
+//                     ENFORCEABLE confinement boundary both exist and are proven
+//                     (spike/lib/reach-confine.mjs runs live-target traffic inside
+//                     a Docker --internal network whose only egress is the scope
+//                     proxy; spike/test/reach-confine.test.mjs proves a bypassing
+//                     client cannot escape it). What is NOT yet wired is the agent
+//                     tool-execution path that would run a live run's tools INSIDE
+//                     that confined container. Until that lands, a live target is
+//                     deliberately NOT runnable (isRunnable returns false): we
+//                     refuse to offer a target the dispatcher cannot yet confine.
+//                     This is pre-flight refusal + a built-but-undispatched
+//                     boundary, never an advisory one.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
@@ -34,11 +53,12 @@ import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath } from "./scopes-store.mjs"
+import { reachHosts } from "./reach.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..") // repo root
 
-export const TARGET_KINDS = ["lab", "local-source", "brief", "scope"]
+export const TARGET_KINDS = ["lab", "local-source", "brief", "scope", "live"]
 
 // A Foundry workspace proven offline in its own per-run copy. No chain, no funds.
 const SANDBOX_FOUNDRY = {
@@ -183,6 +203,9 @@ export function targetSummary(target) {
   }
   if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
   if (target.kind === "local-source") s.files = (target.files ?? []).map((f) => f.path)
+  // A live target shows the host(s) it would touch, so the operator sees exactly
+  // what a run reaches before starting it — and whether a grant must be added.
+  if (target.kind === "live") s.hosts = reachHosts(target)
   if (target.kind === "scope") {
     const members = Array.isArray(target.members) ? target.members : []
     s.links = Array.isArray(target.links) ? target.links : []
@@ -204,6 +227,14 @@ function isRunnable(target) {
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
   if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
+  // A live target is NOT runnable yet, even when it names a host and carries a
+  // grant. The grant pre-flight and the enforceable confinement boundary both
+  // exist and are proven (spike/lib/reach-confine.mjs), but the dispatcher does
+  // not yet run a live run's tools INSIDE that confined container. We refuse to
+  // offer a target we cannot yet confine on dispatch, so "live" stays non-runnable
+  // until that wiring lands. (reachHosts is still read for the summary, so the UI
+  // shows which hosts the target names and that a grant would be required.)
+  if (target.kind === "live") return false
   return false
 }
 

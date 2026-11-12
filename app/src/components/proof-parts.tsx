@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react"
-import { Check, ChevronRight, Copy, Info } from "lucide-react"
+import { Check, ChevronRight, Copy, Info, Share2 } from "lucide-react"
 import type { FindingBase, ProofCell } from "@/lib/types"
 import { formatNum, formatUsd } from "@/lib/format"
 import { explanationSections, inlineParts } from "@/lib/explanation"
@@ -30,6 +30,31 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       {copied ? "Copied" : label}
     </Button>
+  )
+}
+
+// The shareable report of a finished finding: the finding, its proof, the harm,
+// and the fix, as one self-contained page for a case study. Two formats, both
+// served by the engine from this same recorded finding (server/report.mjs): an
+// HTML page to open and share, and Markdown for a README or an issue. We open
+// the server route in a new tab rather than build the report in the browser, so
+// the shared artifact is exactly what the server records — no second source of
+// truth, and the report invents no fix the run did not state. Quiet, monochrome:
+// sharing is not a finding, so it never takes the one green accent.
+export function ExportReport({ findingId }: { findingId: string }) {
+  const base = `/api/findings/${encodeURIComponent(findingId)}/report`
+  const open = (format: string) => window.open(`${base}?format=${format}`, "_blank", "noopener,noreferrer")
+  return (
+    <div className="flex items-center gap-2 border-t pt-4">
+      <Share2 className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="mr-auto text-xs text-muted-foreground">Shareable report</span>
+      <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("html")}>
+        HTML
+      </Button>
+      <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("md")}>
+        Markdown
+      </Button>
+    </div>
   )
 }
 
