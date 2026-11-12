@@ -4,20 +4,29 @@
   "status": "done",
   "decision": "approved",
   "recorded": true,
-  "findings": 20,
-  "allEvidencePassed": true,
+  "findings": 26,
+  "proofKinds": {
+    "evidence": 25,
+    "http": 1
+  },
+  "allProofsPassed": true,
+  "liveProof": {
+    "status": "pass",
+    "oracle": "assumed-role-reads-foreign-bucket",
+    "requests": 4
+  },
   "usage": {
-    "usd": 0.029412030000000002,
+    "usd": 0.12676524,
     "models": {
       "near/Qwen/Qwen3.8-27B-abliterated": {
-        "in": 44067,
-        "out": 20481,
-        "reasoning": 17359
+        "in": 1577616,
+        "out": 47156,
+        "reasoning": 31897
       }
     }
   },
-  "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-  "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-  "record": "spike/results/agent/run-infra-cloud-qwen-abl-1794345425138.json",
+  "snapshotHash": "8d3f311e614adefb85a454da0adb8be468d6b7ac0a6ea45543f55b1e2f172f6a",
+  "commit": "433c67a6392c2cb7b62e368be43c3ea8e20e0222",
+  "record": "spike/results/agent/run-infra-cloud-live-1794452712-1.json",
   "reports": []
 }

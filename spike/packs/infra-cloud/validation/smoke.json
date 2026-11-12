@@ -1,7 +1,20 @@
 {
   "smoke": "pass",
-  "leads": 183,
-  "proven": 183,
+  "leads": 188,
+  "proven": 188,
+  "live": {
+    "status": "pass",
+    "oracle": "assumed-role-reads-other-bucket",
+    "requests": 4,
+    "narrowedGrant": {
+      "status": "fail",
+      "lastStatus": 403
+    },
+    "narrowedTrust": {
+      "status": "fail",
+      "lastStatus": 403
+    }
+  },
   "cryptoChecks": [
     "public-signer-load-balancer",
     "hot-wallet-key-in-config",
@@ -11,6 +24,7 @@
     "broad-kms-sign",
     "internet-signer-security-group",
     "frontend-public-write",
+    "iam-role-broad-object-read",
     "frontend-object-lock-missing",
     "frontend-versioning-disabled",
     "ci-can-write-frontend"
@@ -20,22 +34,32 @@
       "engine": "trivy",
       "status": "ok",
       "code": 0,
-      "reported": 85,
+      "reported": 87,
       "unlocated": 0,
-      "leads": 85
+      "leads": 87
     },
     {
       "engine": "kics",
       "status": "ok",
       "code": 0,
-      "reported": 88,
+      "reported": 91,
       "unlocated": 0,
-      "leads": 88
+      "leads": 91
     },
     {
       "engine": "prowler",
       "status": "ok",
       "findings": 3
+    },
+    {
+      "engine": "moto-live",
+      "status": "ok",
+      "leads": 1
+    },
+    {
+      "engine": "snapshot",
+      "status": "ok",
+      "skipped": 1
     }
   ],
   "cloud": {
@@ -75,7 +99,16 @@
       "publicWriteAcl": false
     }
   },
-  "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-  "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+  "liveCloud": {
+    "image": "touchstone/infra-cloud-cloud-lab:wave2",
+    "leads": [
+      {
+        "lead": "9",
+        "status": "ok"
+      }
+    ]
+  },
+  "snapshotHash": "3e188c1a2ee6625ff876f3fe5f41f920f0b34ca3accb34a63703b3595281d92f",
+  "commit": "780f88f9e4e8d854745d798d87611f834e446e93",
   "spendUsd": 0
 }

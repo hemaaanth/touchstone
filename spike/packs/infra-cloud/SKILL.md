@@ -23,6 +23,13 @@ docker build -f spike/packs/infra-cloud/Dockerfile.prowler-python \
   -t touchstone/prowler-python:5.48.0 spike/packs/infra-cloud
 ```
 
+Build the live-cloud lab image. It carries a private moto service with IAM
+enforced, plus the node runtime the request-script harness needs:
+
+```sh
+docker build -t touchstone/infra-cloud-cloud-lab:wave2 spike/packs/infra-cloud/lab/cloud
+```
+
 The comparison also uses Checkov and Kubescape:
 
 ```sh
@@ -32,10 +39,11 @@ docker build -f spike/packs/infra-cloud/Dockerfile.kubescape \
   -t touchstone/kubescape-cli:4.0.20 spike/packs/infra-cloud
 ```
 
-Tool provisioning may fetch public images, a CLI binary and policy assets.
-The actual IaC scans and evidence replays have no network.
-Prowler and moto share an internal Docker network with no host port.
-See `TOOLS.md` for licenses, checksums, sizes and the comparison.
+Tool provisioning may fetch public images, a CLI binary, policy assets and npm
+or pip packages. The actual IaC scans, evidence replays and cloud replays have no
+internet. The moto posture run and the live-cloud replay each use their own
+internal Docker network with no host port. See `TOOLS.md` for licenses,
+checksums, sizes and the comparison.
 
 ## Lab
 
@@ -68,6 +76,7 @@ It checks versioning and Object Lock FAIL-to-PASS transitions.
 It does not claim cloud verification of the public-write ACL case.
 
 The pack smoke checks every retained lead's replay, the submit gate, duplicate rejection and secret-value exclusion.
+It also runs the live-cloud replay for the role lead, checks that a narrowed grant and a narrowed trust both fail with a 403, and checks that no credential value survives in the rendered proof.
 This mechanically exercises the proof path. It does not claim that every scanner lead is a distinct vulnerability.
 Saved safe results live under `validation/`.
 
@@ -84,6 +93,10 @@ node spike/packs/infra-cloud/live.mjs
 
 The runner invokes the existing `spike/agent-run.mjs` with `near/qwen-abl` and a fresh lab workspace.
 It checks the ledger, cap and $1 budget before starting.
+It exits non-zero when any submitted finding did not pass its replay.
+`node spike/packs/infra-cloud/live.mjs summarize <record.json>` rebuilds
+`validation/live.json` and `validation/live-record.json` from an existing record
+with no spend, and re-applies the proof redaction.
 The engine uses fixed `qwen-abl` record names.
 The runner preserves old records, archives the new run under a unique name and restores the old fixed-name files.
 It does not push or publish anything.
@@ -102,6 +115,32 @@ A literal wallet key is represented by its derived address, `[REDACTED]` and a h
 No scanner source snippet, raw stdout, raw stderr or detector exception enters the run record.
 The shared evidence helper also suppresses detector prose.
 
+## Real folders
+
+The pack reads any folder, not only its lab:
+
+```sh
+node spike/packs/infra-cloud/real-input.mjs /path/to/infra
+```
+
+It captures the folder, runs the same prepass, replays three leads (`REPLAYS`
+sets the count) and saves `validation/real-input.json` with the command line.
+Binary, oversized and symlinked files are listed as skipped instead of stopping
+the audit.
+It pins the folder in place (`snapshot.json` and `.touchstone.json`), so point it
+at a copy when the folder must stay untouched.
+The app's scope target path currently allows only the Contracts and Review packs,
+so a scope run cannot select this pack yet. The folder runner is the supported
+path today.
+
+Real input is evidence-only for the crypto checks, and the live-cloud path is
+lab-only. That is a real limit, not a claim of coverage: on real Terraform the
+trust document usually sits behind `jsonencode(...)` or
+`data.aws_iam_policy_document`, which the structural parser does not interpret.
+So a real folder produces scanner leads, not crypto leads, and no moto replay.
+Four public repos were audited that way (72, 1009, 18 and 6 scanner leads); each
+replayed two leads green, and none produced a crypto lead.
+
 ## Proof contract
 
 The pack uses `lib/proof-evidence.mjs` without changes.
@@ -118,12 +157,32 @@ Only passing findings survive the final replay.
 
 Prowler is synthetic corroboration for source-level bucket recovery checks.
 It does not replace the finding's IaC detector.
-No HTTP proof or second HTTP runner is implemented here.
+
+The broad role read is the one lead with a live replay.
+`live-cloud.mjs` seeds a private moto cloud from the same pinned policy.
+A separate attacker key assumes the role, proves the assumed identity, then reads a
+bucket that is not the workload's own.
+The shared `lib/proof-http.mjs` records the traffic out of band and its oracle
+decides the verdict. The finding then carries an `http` proof, not an `evidence`
+proof, and the app renders its request log.
+The same policy narrowed to the workload's own bucket fails the replay with a
+403, and so does a trust narrowed away from the caller.
+Every call crosses the recording proxy on the private network. No host port and
+no raw socket from this process are used.
+Moto enforces the trust principal and the identity policy. It does not evaluate
+the rest of a trust document, such as conditions.
+The oracle binds the object read to the session AssumeRole returned: the read
+must carry that exact session token.
+After the oracle reads the raw transcript, the proof log is scrubbed of the
+secret key, the session token and the lab seed secret, so the rendered proof
+carries no credential value.
 
 ## What a finding means
 
 A passing proof confirms configuration in the pinned files.
 It does not prove a live deployment, actual internet routing, stolen credentials, key use or fund loss.
+For the role read, the live replay shows the declared grant really executes
+against a running S3-compatible service. It is not a real AWS account.
 NodePort alone is not internet reachability.
 A CI publishing grant is a trust-boundary warning, not evidence that CI was compromised.
 A missing recovery control is not evidence that an overwrite already happened.
@@ -141,15 +200,30 @@ RBAC grants restricted by `resourceNames` are not promoted.
 
 The four-tool comparison retained 85 Trivy leads, 54 Checkov leads, 88 KICS leads and 18 Kubescape leads.
 These are located rule hits, not counts of distinct vulnerabilities.
-The selected ensemble and crypto checks produced 183 leads in the no-spend smoke.
-All 183 replayed. The smoke rejected unchecked submissions and duplicate submissions.
-All 11 planted crypto cases were present.
+The selected ensemble and crypto checks plus the new role policy produced 188
+leads in the no-spend smoke.
+All 188 replayed, and the live-cloud replay passed for the role lead while a
+narrowed grant and a narrowed trust each failed it with a 403.
+The rendered proof was checked for surviving credential values.
+The smoke rejected unchecked submissions and duplicate submissions.
+All 12 planted crypto cases were present.
 
-The live `near/qwen-abl` run finished with 20 findings and 20 passing evidence proofs.
-It covered all 11 planted crypto cases.
-Its recorded cost was $0.02941203 under the $1 run budget.
+The live `near/qwen-abl` run finished with 26 findings: 25 passing evidence
+proofs and one passing `http` proof for the role lead.
+It covered all 12 planted crypto cases.
+The http finding carries its 4 recorded requests, and the app renders the oracle
+result and the request log beside it.
+Its recorded cost was $0.12676524 under the $1 run budget.
+A baseline run before the live proof was added cost $0.11297417.
 `validation/live-record.json` keeps the safe result.
 `validation/live.json` keeps its summary and archive reference.
 The raw test key was checked absent from that saved result.
-After merging coordinator main, the full spike suite passed all 155 tests.
+The full spike suite passed all 235 tests on this branch.
 App target discovery found `infra-cloud/lab`, kept its pack config and selected the evidence proof kind.
+Four real checkouts were audited with `real-input.mjs`: the public
+terraform-aws-vpc module, the microservices-demo shop, and two public IAM-role
+modules. Two leads replayed green in each, and all four produced zero crypto
+leads, for the HCL reason above. The results are in `validation/real-input.json`.
+The saved `validation/live.json` still names the pre-repair oracle
+`assumed-role-reads-foreign-bucket`, because the paid run predates the
+token-bound oracle. A new paid run would refresh it; none was run for the repair.

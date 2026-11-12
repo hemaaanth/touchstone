@@ -43,9 +43,14 @@ function role(r, word) {
   const label = tags?.["touchstone-role"] ?? r.data.metadata?.labels?.["touchstone-role"];
   return label === word || new RegExp(`(^|[-_])${word}([-_]|$)`, "i").test(r.name);
 }
+// A reference to another resource: a CloudFormation Ref, or a Terraform
+// interpolation or bare expression that reads one of its attributes. `count`
+// and `for_each` add an index before the attribute.
 function reference(value, resource) {
   if (typeof value === "object" && value?.Ref === resource.name) return true;
-  return ["id", "arn"].some((attribute) => value === `\${${resource.type}.${resource.name}.${attribute}}`);
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const shape = new RegExp(`^\\$?\\{?${escape(resource.type)}\\.${escape(resource.name)}(?:\\[[^\\]]*\\])?\\.(?:id|arn|name)\\}?$`);
+  return [value, ...list(value)].some((v) => typeof v === "string" && shape.test(v));
 }
 const awsTypes = (r, tf, cfn) => r.type === tf || r.type === cfn;
 const podSpec = (r) => r.type === "Pod" ? r.data.spec : r.type === "CronJob" ? r.data.spec?.jobTemplate?.spec?.template?.spec : r.data.spec?.template?.spec;
@@ -55,6 +60,30 @@ const isSigner = (r) => role(r, "signer") || role(r, "validator") || list(podSpe
 const publicLB = (r) => r.type === "Service" && r.data.spec?.type === "LoadBalancer" && !Object.entries(r.data.metadata?.annotations ?? {}).some(([k, v]) => /internal|load-balancer-scheme/i.test(k) && /^(?:true|internal)$/i.test(String(v))) && (!r.data.spec.loadBalancerSourceRanges?.length || r.data.spec.loadBalancerSourceRanges.some((s) => ["0.0.0.0/0", "::/0"].includes(s)));
 const selects = (service, workload) => namespace(service) === namespace(workload) && Object.keys(service.data.spec?.selector ?? {}).length > 0 && Object.entries(service.data.spec.selector).every(([k, v]) => podLabels(workload)?.[k] === v);
 const argValue = (args, flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : args.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1); };
+// The role a policy document is attached to, or undefined when it is not tied to a role.
+export function attachedRole(r, rs) {
+  if (r.type === "aws_iam_role_policy") {
+    // `${aws_iam_role.x.name}`, `${aws_iam_role.x[0].id}` and the bare
+    // `aws_iam_role.x.name`. The whole expression must be one reference, so
+    // `${aws_iam_role.x.name}-suffix` stays a different role.
+    const name = typeof r.data.role === "string" ? r.data.role.match(/^\$?\{?aws_iam_role\.([^.}\[]+)(?:\[[^\]]*\])?\.(?:name|id|arn)\}?$/) : null;
+    return rs.find((x) => x.type === "aws_iam_role" && (x.name === name?.[1] || reference(r.data.role, x)));
+  }
+  if (r.type === "AWS::IAM::Policy") return rs.find((x) => x.type === "AWS::IAM::Role" && list(r.data.Roles).some((v) => reference(v, x)));
+}
+// A trust policy that lets any principal assume the role with no further
+// condition. A condition (ExternalId, PrincipalOrgID, source account) makes the
+// trust narrower than it looks, and moto does not evaluate conditions, so the
+// replay alone would still pass. An explicit Deny of AssumeRole wins.
+function wildcardTrust(role) {
+  const trust = statements(role.data.assume_role_policy_document ?? role.data.AssumeRolePolicyDocument);
+  if (trust.some((s) => s.Effect === "Deny" && actionMatches(s.Action, "sts:AssumeRole"))) return false;
+  return trust.some((s) => s.Effect === "Allow" && broadPrincipal(s.Principal) && actionMatches(s.Action, "sts:AssumeRole")
+    && !s.Condition && !s.NotPrincipal && !s.NotAction);
+}
+// Allow statements that read objects in every bucket.
+const wildcardObjectRead = (r) => allowed(statements(r.data.policy ?? r.data.PolicyDocument), "s3:GetObject")
+  .filter((s) => list(s.Resource).some((v) => /^(\*|arn:aws:s3:::\*(\/\*)?)$/.test(v)));
 
 export function analyze(snapshot) {
   const { resources: rs, coverage } = parseResources(snapshot), leads = [];
@@ -127,10 +156,15 @@ export function analyze(snapshot) {
       if (grants.some((s) => list(s.Resource).some((v) => v === "*" || v === `arn:aws:s3:::${bucketName}/*` || v === `\${${b.type}.${b.name}.arn}/*`))) add("ci-can-write-frontend", r, [r.type === "aws_iam_role_policy" ? "policy" : "PolicyDocument"], "A CI role policy grants PutObject on the front-end bucket. Compromised CI can replace assets under this declared grant. This is a trust-boundary warning, not proof of a compromised token. Fix: restrict and isolate release publishing.", "Medium", { related: [{ file: b.file, line: b.line(), resource: `${b.type}.${b.name}` }] });
     }
   }
+  for (const p of rs.filter((r) => r.type === "aws_iam_role_policy" || r.type === "AWS::IAM::Policy")) {
+    const owner = attachedRole(p, rs);
+    if (!owner || !wildcardTrust(owner) || !wildcardObjectRead(p).length) continue;
+    add("iam-role-broad-object-read", p, [p.type === "aws_iam_role_policy" ? "policy" : "PolicyDocument"], "An assumable role trusts every principal and can read objects in every bucket. Any holder of the assumed credential reads data outside its own workload. The pinned source alone does not show the read. The live moto replay assumes the role and reads an unrelated bucket. Fix: limit the trust, the actions and the bucket pattern.", "High", { related: [{ file: owner.file, line: owner.line(), resource: `${owner.type}.${owner.name}` }], role: `${owner.type}.${owner.name}` });
+  }
   return { leads, coverage };
 }
 
-export const CHECKS = ["broad-kms-sign", "internet-signer-security-group", "public-signer-load-balancer", "exposed-signer-service", "internet-rpc-admin-namespaces", "hot-wallet-key-in-config", "hot-wallet-key-in-env", "ci-can-exec-signers", "frontend-versioning-disabled", "frontend-object-lock-missing", "frontend-public-write", "ci-can-write-frontend"];
+const CHECKS = ["broad-kms-sign", "internet-signer-security-group", "public-signer-load-balancer", "exposed-signer-service", "internet-rpc-admin-namespaces", "hot-wallet-key-in-config", "hot-wallet-key-in-env", "ci-can-exec-signers", "iam-role-broad-object-read", "frontend-versioning-disabled", "frontend-object-lock-missing", "frontend-public-write", "ci-can-write-frontend"];
 export function cryptoDetectors() {
   const cache = new WeakMap();
   return Object.fromEntries(CHECKS.map((check) => [check, (snapshot, where) => {
