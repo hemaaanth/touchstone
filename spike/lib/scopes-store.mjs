@@ -422,7 +422,7 @@ export function siteOrigin(raw) {
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
 // (reach.mjs) lets a run reach exactly these hosts. Removing the scope removes
 // its grant. There is no separate grant step.
-export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
+export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
@@ -444,6 +444,15 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
     scopeId: id,
   });
   const t = name || grant.hosts.join(" + ").slice(0, 120);
+  // A live AI/MCP target may carry its own bearer token and what that token may
+  // do. Both are the operator's text; nothing is inferred.
+  const mcp = token || tokens || toolScope
+    ? {
+      ...(String(token ?? "").trim() ? { token: String(token).trim() } : {}),
+      ...(tokens && typeof tokens === "object" ? { tokens } : {}),
+      ...(toolScope && typeof toolScope === "object" ? { toolScope } : {}),
+    }
+    : null;
   const scope = {
     id,
     kind: "live",
@@ -456,6 +465,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
     // Where a run actually sends its requests, in the operator's own scheme and
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
+    ...(mcp ? { mcp } : {}),
     permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
     proofSurface: {
       kind: "live",

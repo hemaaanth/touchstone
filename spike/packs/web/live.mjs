@@ -1,260 +1,16 @@
-// The Web pack's LIVE lane — the same request scripts and oracles, aimed at the
-// operator's real website instead of the pack's planted lab.
-//
-// WHY THIS EXISTS. Every other target kind copies or generates code, so the lab
-// is the target. A live target has no code to copy: the target IS the website
-// the operator added and ticked permission for. So nothing about the lab may
-// stand in for it:
-//   - prepass does not start a lab container; it scans the real site;
-//   - run_request_script sends real requests to the site;
-//   - prove() replays each finding's script against the site again.
-//
-// AIM. The workspace config (written by lib/targets.mjs prepareWorkspace) holds
-// `baseUrl` — the exact origin the operator typed, scheme and port included.
-// Every request is resolved against it. Nothing here guesses `http://lab:8080`.
-//
-// CONFINEMENT. A live script runs in a hardened container on the reach
-// boundary's client network (lib/reach-confine.mjs): its only route off that
-// network is the scope gate, whose allow-list is the grant. The harness routes
-// through the gate explicitly, so target traffic cannot leave any other way.
-//
-// TRANSCRIPT. The oracle must read something the script cannot quietly rewrite.
-// The lab path gets that from a separate recording proxy container. Here the
-// request helper itself is injected before the script runs and appends the real
-// exchange to a file the parent reads after the container exits. The script
-// shares the process, so this is weaker than the lab's out-of-band recorder;
-// the helper never calls global fetch, so monkeypatching fetch cannot fake it.
-import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+// The Web pack's live scan. The request runner, transcript and proof replay are
+// shared and live in lib/live.mjs; this file only aims the scanners at the real
+// site and records their leads.
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { requireImage } from "../../lib/proof-http.mjs";
-import { readTouchstone, writeTouchstone } from "../../lib/sandbox.mjs";
-import { scanWeb, docQueryUrls } from "./scan.mjs";
+import { readTouchstone } from "../../lib/sandbox.mjs";
+import { SCAN_NETWORK, bindLive } from "../../lib/live.mjs";
+import { scanWeb, docQueryUrls, mergeLeads } from "./scan.mjs";
+import { runStrix } from "../../lib/strix.mjs";
+import { activeProvider, providerKey, readConfig } from "../../lib/providers.mjs";
 
-// The script runtime. The lab image already carries ethers and siwe, so a live
-// script signs exactly as it does on a lab; nothing is installed at run time.
-export const LIVE_IMAGE = "touchstone/web-lab:dev";
-
-// The scanner stage needs a route to the internet, so it runs on the default
-// bridge network and is aimed straight at the base URL. The scan only produces
-// leads; the confined script run below is what proves anything.
-const SCAN_NETWORK = "bridge";
-
-// Same hardening as lib/reach-confine.mjs and lib/proof-http.mjs.
-const HARDEN = ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "--memory", "256m"];
-
-export function isLive(ws) {
-  return readTouchstone(ws).kind === "live";
-}
-
-// What the live lane runs against: the persisted confinement, the gate URL as
-// the script's container sees it, and the base URL from the workspace.
-export function liveTarget(ws) {
-  const cfg = readTouchstone(ws);
-  const net = cfg.live?.net;
-  const gate = cfg.live?.gate;
-  const baseUrl = cfg.baseUrl ?? cfg.live?.baseUrl;
-  if (!net || !gate) throw new Error("this live run has no confinement boundary (it was not set up by the prepass)");
-  if (!baseUrl) throw new Error("this live run has no base URL");
-  return { net, gate, baseUrl, image: cfg.live?.image ?? LIVE_IMAGE };
-}
-
-// Persist the boundary on the workspace, so the agent tool AND the later proof
-// replay (a different call site) find the same one.
-export function bindLive(ws, { net, gate, baseUrl, image = LIVE_IMAGE }) {
-  writeTouchstone(ws, { ...readTouchstone(ws), live: { net, gate, baseUrl, image } });
-}
-
-// The request helpers, injected into the script before it runs. `request` goes
-// through the gate on the client network; the gate decides the host against the
-// grant, then forwards or refuses.
-export const HARNESS = String.raw`
-import http from "node:http";
-import https from "node:https";
-import net from "node:net";
-import tls from "node:tls";
-import { appendFileSync } from "node:fs";
-import { Wallet } from "ethers";
-import { SiweMessage } from "siwe";
-
-const BASE = process.env.TOUCHSTONE_BASE_URL;
-const PROXY = new URL(process.env.TOUCHSTONE_SCOPE_PROXY);
-const OUT = process.env.TOUCHSTONE_TRANSCRIPT;
-const LIMIT = 200_000;
-
-const flat = (h) => { const o = {}; for (const [k, v] of Object.entries(h || {})) o[k] = Array.isArray(v) ? v.join(", ") : v; return o; };
-const record = (e) => appendFileSync(OUT, JSON.stringify(e) + "\n");
-const parse = (s) => { try { return JSON.parse(s); } catch { return s; } };
-
-function connectProxy() {
-  return new Promise((resolve, reject) => {
-    const s = net.connect(Number(PROXY.port), PROXY.hostname, () => resolve(s));
-    s.once("error", reject);
-  });
-}
-
-// Read exactly one HTTP head off a socket, then hand the rest back. The bytes
-// after the head are tunnel payload; the caller pushes them back with unshift.
-// Flowing mode (data events) is what makes the TLS wrap below work at all.
-function readHead(sock) {
-  return new Promise((resolve, reject) => {
-    let buf = "";
-    const onData = (d) => {
-      buf += d.toString("latin1");
-      const i = buf.indexOf("\r\n\r\n");
-      if (i < 0) return;
-      sock.removeListener("data", onData);
-      resolve({ head: buf.slice(0, i), rest: Buffer.from(buf.slice(i + 4), "latin1") });
-    };
-    sock.on("data", onData);
-    sock.once("error", reject);
-  });
-}
-
-async function openTunnel(host) {
-  const sock = await connectProxy();
-  sock.write("CONNECT " + host + " HTTP/1.1\r\nHost: " + host + "\r\n\r\n");
-  const { head, rest } = await readHead(sock);
-  if (!/^HTTP\/1\.[01] 200/.test(head)) throw new Error("the gate refused " + host + ": " + head.split("\r\n")[0]);
-  if (rest.length) sock.unshift(rest);
-  return new Promise((resolve, reject) => {
-    const s = tls.connect({ socket: sock, servername: host.replace(/:\d+$/, "") }, () => resolve(s));
-    s.once("error", reject);
-  });
-}
-
-async function send(url, method, headers, body) {
-  const secure = url.protocol === "https:";
-  const sock = secure ? await openTunnel(url.host) : await connectProxy();
-  // A fresh agent per call whose connection IS the socket we already made, so
-  // the request cannot re-resolve the name or open a second route. Per call, so
-  // a torn socket is never reused.
-  const agent = new (secure ? https : http).Agent({ keepAlive: false });
-  agent.createConnection = () => sock;
-  const opts = {
-    method,
-    headers: { ...headers, host: url.host },
-    path: secure ? url.pathname + url.search : url.href,
-    agent,
-  };
-  return new Promise((resolve, reject) => {
-    const req = (secure ? https : http).request(opts, (res) => {
-      let text = "";
-      res.setEncoding("utf8");
-      res.on("data", (d) => { if (text.length < LIMIT) text += d; });
-      res.on("end", () => resolve({ status: res.statusCode, headers: flat(res.headers), body: text }));
-    });
-    req.once("error", reject);
-    if (body !== undefined) req.write(body);
-    req.end();
-  });
-}
-
-globalThis.request = async function request(method, path, o = {}) {
-  const url = new URL(path, BASE);
-  const headers = { "content-type": "application/json", "accept-encoding": "identity", ...(o.headers || {}) };
-  const hasBody = o.body !== undefined;
-  const body = hasBody ? (typeof o.body === "string" ? o.body : JSON.stringify(o.body)) : undefined;
-  const res = await send(url, method, headers, body);
-  const resBody = parse(res.body);
-  record({
-    method, path: url.pathname, url: url.href, reqHeaders: headers, reqBody: hasBody ? parse(body) : null,
-    status: res.status, resHeaders: res.headers, resBody,
-  });
-  return { method, path: url.pathname, url: url.href, reqHeaders: headers, reqBody: hasBody ? parse(body) : null, status: res.status, resHeaders: res.headers, resBody };
-};
-
-globalThis.signPersonal = async function signPersonal(privateKey, message) {
-  return new Wallet(privateKey).signMessage(message);
-};
-
-// The same EIP-4361 helper the lab harness gives a script, so a live finding's
-// script replays unchanged on a lab and the other way round.
-globalThis.buildSiwe = function buildSiwe(fields) {
-  return new SiweMessage(fields).prepareMessage();
-};
-`;
-
-function docker(args, { timeoutMs = 30_000 } = {}) {
-  return new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({
-        code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
-        timedOut: Boolean(err?.killed),
-      });
-    });
-  });
-}
-
-// One live script, one throwaway container. Returns the transcript the helper
-// wrote plus the script's own output. Same shape as lib/proof-http.mjs
-// runRequestScript, so the caller's oracle code is identical for both.
-const queues = new Map();
-function serialize(key, fn) {
-  const prev = queues.get(key) || Promise.resolve();
-  const next = prev.then(fn, fn);
-  queues.set(key, next.then(() => {}, () => {}));
-  return next;
-}
-
-export async function runLiveScript(ws, script, { timeoutMs = 30_000 } = {}) {
-  return serialize(ws, async () => {
-    const t = liveTarget(ws);
-    await requireImage(t.image, "web");
-    const dir = mkdtempSync(join(tmpdir(), "touchstone-live-"));
-    try {
-      chmodSync(dir, 0o777);
-      writeFileSync(join(dir, "run.mjs"), `${HARNESS}\n(async () => {\n${script}\n})().catch((e) => { console.error(String(e && e.stack || e)); process.exitCode = 1; });\n`);
-      writeFileSync(join(dir, "transcript.jsonl"), "");
-      // --init: tini reaps a script that leaves a dangling timer, so one hung
-      // attempt cannot hold the queue (same reason as the lab runner).
-      const r = await docker([
-        // Mounted under /app (not /work) and run from there: the image's own
-        // node_modules sit at /app, which is where `import "ethers"` resolves.
-        "run", "--rm", "--init", "--network", t.net, ...HARDEN,
-        "-v", `${dir}:/app/_run`, "-w", "/app",
-        "-e", `TOUCHSTONE_BASE_URL=${t.baseUrl}`,
-        "-e", `TOUCHSTONE_SCOPE_PROXY=${t.gate}`,
-        "-e", "TOUCHSTONE_TRANSCRIPT=/app/_run/transcript.jsonl",
-        "--entrypoint", "node", t.image, "/app/_run/run.mjs",
-      ], { timeoutMs });
-      const transcript = readFileSync(join(dir, "transcript.jsonl"), "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
-      return { transcript, stdout: r.stdout.trim(), stderr: r.stderr.trim(), code: r.code, timedOut: r.timedOut };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-}
-
-// A replay against the live site for one finding. Mirrors httpProof()'s return
-// shape so proof-view renders it exactly like a lab replay.
-export async function liveProof(ws, script, oracle) {
-  const run = await runLiveScript(ws, script);
-  let verdict;
-  try {
-    verdict = oracle.check(run.transcript, run);
-  } catch (err) {
-    verdict = { pass: false, detail: `oracle threw: ${String(err?.message || err).slice(0, 300)}` };
-  }
-  const detail = verdict.detail ?? "";
-  return {
-    kind: "http",
-    status: verdict.pass ? "pass" : "fail",
-    detail,
-    oracle: { name: oracle.name ?? "", detail, passed: Boolean(verdict.pass) },
-    log: run.transcript.map((e, i) => ({
-      label: `${i + 1}. ${e.method} ${e.path}`,
-      request: { method: e.method, url: e.url, headers: e.reqHeaders, body: e.reqBody },
-      response: { status: e.status, headers: e.resHeaders, body: e.resBody },
-    })),
-  };
-}
+const LEADS_FILE = ".web-leads.json";
 
 // The live prepass: bind the boundary the platform opened, then scan the site
 // for leads. No lab is started.
@@ -263,8 +19,9 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
   const baseUrl = cfg.baseUrl;
   if (!baseUrl) throw new Error("the live workspace has no base URL");
   if (!reach?.confine) throw new Error("the live run has no confinement boundary");
-  await requireImage(LIVE_IMAGE, "web");
-  bindLive(ws, { net: reach.confine.netClient, gate: reach.confine.gateUrl, baseUrl });
+  const image = "touchstone/web-lab:dev";
+  await requireImage(image, "web");
+  bindLive(ws, { net: reach.confine.netClient, gate: reach.confine.gateUrl, baseUrl, image });
   emit({ ev: "web-live-target", baseUrl, hosts: reach.hosts });
 
   let scan = { coverage: [], leads: [] };
@@ -275,8 +32,32 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   }
+  // A second, broader engine: Strix brings a browser, a proxy and skills for the
+  // classes our own oracles do not cover. Its results are leads; ours prove.
+  let strix = null;
+  try {
+    const p = activeProvider(readConfig());
+    const key = providerKey(p);
+    if (key) {
+      strix = await runStrix({
+        baseUrl,
+        provider: {
+          baseUrl: p.baseUrl,
+          key,
+          model: Object.values(p.models)[0].id,
+          inputCost: Object.values(p.models)[0].input,
+          outputCost: Object.values(p.models)[0].output,
+        },
+        emit,
+      });
+      scan.coverage.push(strix.coverage);
+      scan.leads = mergeLeads([...scan.leads, ...strix.leads]);
+    }
+  } catch (err) {
+    emit({ ev: "web-strix-failed", error: String(err?.message ?? err).slice(0, 200) });
+  }
   const record = { pack: "web", live: true, baseUrl, coverage: scan.coverage, leads: scan.leads };
-  writeFileSync(join(ws, ".web-leads.json"), JSON.stringify(record, null, 2));
+  writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));
   emit({ ev: "web-scan-done", coverage: scan.coverage.map((c) => `${c.engine}:${c.status}:${c.leads}`), leads: scan.leads.length });
   return { env: { LEADS: JSON.stringify(scan.leads.map((l) => ({ check: l.check, impact: l.impact, where: l.where, engines: l.engines, corroborated: l.corroborated, note: l.description }))) }, record };
 }

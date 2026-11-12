@@ -34,10 +34,11 @@ import {
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
-import { LIVE_IMAGE, isLive, livePrepass, liveProof, runLiveScript } from "./live.mjs";
+import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
+import { livePrepass } from "./live.mjs";
 import { fp, scrubProof } from "./redact.mjs";
 
-const IMAGE = LIVE_IMAGE;
+const IMAGE = "touchstone/web-lab:dev";
 const LEADS_FILE = ".web-leads.json";
 
 // Total run_request_script attempts for the whole audit. Three root causes

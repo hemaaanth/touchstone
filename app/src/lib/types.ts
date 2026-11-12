@@ -303,6 +303,8 @@ export interface PackChoice {
   title: string
   tier?: string
   proof: string
+  // The module's tools can be aimed at a real host.
+  live?: boolean
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.

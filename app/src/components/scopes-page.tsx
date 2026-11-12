@@ -80,7 +80,7 @@ export function ScopesPage({
             {/* Adding a scope does not depend on a module. The server files it
                 under the pack that fits its content; the new row shows there. */}
             <div className="-mx-2.5 -mb-3">
-              <AddScope onAttached={() => { setError(null); onChanged() }} onError={setError} />
+              <AddScope packs={packs} onAttached={() => { setError(null); onChanged() }} onError={setError} />
             </div>
             {groups.length === 0 ? <Empty>No scopes yet. Add GitHub repositories or local folders.</Empty> : null}
             {groups.map((g) => (

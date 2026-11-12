@@ -350,10 +350,11 @@ function siteOrigin(raw: string): string | null {
 // repos, whose content the server does not know until a run fetches it.
 // Live websites go as { kind: "live", hosts, permission }: the checkbox is the
 // operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
-  if (sites.length) return { kind: "live", title, hosts: sites, permission, ...(pack ? { pack } : {}) }
+  const bearer = token.trim()
+  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}) }
   const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
   return { title, members, ...(pack ? { pack } : {}) }
 }
@@ -364,10 +365,13 @@ function scopeBody(sources: Source[], name: string, pack: string | undefined, pe
 // one added shows in a list under the row, and the scope is saved as one unit.
 export function AddScope({
   pack,
+  packs,
   onAttached,
   onError,
 }: {
   pack?: string
+  // The modules that can attack a live host; a live scope must name one.
+  packs?: PackChoice[]
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
 }) {
@@ -377,11 +381,17 @@ export function AddScope({
   const [sources, setSources] = useState<Source[]>([])
   const [busy, setBusy] = useState(false)
   const [permission, setPermission] = useState(false)
+  const [token, setToken] = useState("")
+  const [module, setModule] = useState("web")
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const body = sources.length ? scopeBody(sources, name.trim(), pack, permission) : null
+  const siteModule = pack && pack !== "contracts" ? pack : module
+  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token) : null
   const live = sources.some((s) => s.kind === "site")
+  const livePacks = (packs ?? []).filter((p) => p.live)
+  // Only the AI/MCP module takes a caller credential. A website does not.
+  const wantsToken = live && siteModule === "ai-mcp"
 
   const close = () => {
     setOpen(false)
@@ -389,6 +399,7 @@ export function AddScope({
     setName("")
     setSources([])
     setPermission(false)
+    setToken("")
     onError(null)
   }
   const add = (s: Source) => {
@@ -557,6 +568,35 @@ export function AddScope({
               <span>
                 I have permission to test these websites. A run sends real requests to them.
               </span>
+            </label>
+          ) : null}
+          {live && livePacks.length > 1 ? (
+            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span className="shrink-0 text-[11px] text-muted-foreground">Module</span>
+              <select
+                value={siteModule}
+                disabled={busy}
+                onChange={(e) => setModule(e.target.value)}
+                aria-label="Module that tests this website"
+                className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
+              >
+                {livePacks.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {wantsToken ? (
+            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span className="shrink-0 text-[11px] text-muted-foreground">Bearer token</span>
+              <input
+                value={token}
+                disabled={busy}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="optional; the caller token to audit with"
+                aria-label="Bearer token the run may use"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
             </label>
           ) : null}
           <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">

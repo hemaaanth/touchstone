@@ -129,11 +129,16 @@ checks this.
   says so instead of inventing a match.
   The prepass scanners run on the default bridge network, aimed at the base URL;
   only the script container is confined.
-- JWT-attack breadth (alg confusion, weak secrets), CORS/CSRF, and open-ended
-  fuzzing are not covered by our own oracles; see TOOLS.md for what a wrapped
-  scanner could still add as a lead (never a finding on its own — this pack
-  has no `forge`-style second proof path for anything outside the three
-  shipped oracles).
+- Our own oracles cover only the four shapes above. Everything else arrives as
+  a lead. On a LIVE target a second engine (Strix, Apache-2.0, run as a separate
+  program) widens the lead surface across classes we do not own; its results are
+  still leads, because our oracles are the only thing that can prove.
+- Strix is headless, quick mode, budget-capped (`STRIX_BUDGET_USD`, default
+  $0.5) and turn-capped (`STRIX_TURNS`, default 15). It can be turned off with
+  `STRIX=0`. Its budget is checked per response, so a long scan overshoots: 25
+  turns on a vulnerable demo cost about $4.30. It runs on live targets only.
+- JWT-attack breadth (alg confusion, weak secrets, CORS/CSRF) still has no
+  oracle of ours; Strix and the scanners can only hand them over as leads.
 
 ## Building the lab image
 

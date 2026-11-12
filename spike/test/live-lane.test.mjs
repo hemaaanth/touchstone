@@ -23,7 +23,7 @@ const { docker, dockerReady, containerIp } = await import("../lib/reach-confine.
 const { openReach } = await import("../lib/reach.mjs");
 const { prepareWorkspace } = await import("../lib/targets.mjs");
 const { addGrant } = await import("../lib/grant-store.mjs");
-const { bindLive, isLive, liveTarget, liveProof, runLiveScript } = await import("../packs/web/live.mjs");
+const { bindLive, isLive, liveTarget, liveProof, runLiveScript } = await import("../lib/live.mjs");
 
 const ready = await dockerReady();
 const skip = ready.ok ? false : ready.reason;
@@ -67,7 +67,7 @@ test("a live workspace is bound to its exact origin and its boundary", { skip },
 
   addGrant({ hosts: [originIp], kind: "operator-owned", ownership: true, allowPrivate: true });
   reach = await openReach(target, { mode: "confine" });
-  bindLive(ws, { net: reach.confine.netClient, gate: reach.confine.gateUrl, baseUrl: origin });
+  bindLive(ws, { net: reach.confine.netClient, gate: reach.confine.gateUrl, baseUrl: origin, image: "touchstone/web-lab:dev" });
 
   const t = liveTarget(ws);
   assert.equal(t.baseUrl, origin);

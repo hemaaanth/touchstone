@@ -342,6 +342,9 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
     }
     const baseUrl = origins[0]
+    // A live AI/MCP target can carry its own credential. It rides in the config
+    // (the tool reads it) and in the brief (the agent reads it).
+    const mcp = target.mcp ?? null
     const ws = makeBriefWorkspace()
     const lines = [
       `# ${target.title || "Live scope"}`,
@@ -352,9 +355,23 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       "",
       `Base URL for every request: ${baseUrl}`,
     ]
+    if (mcp?.token) lines.push("", `Bearer token: ${mcp.token}`)
     if (target.blurb) lines.push("", String(target.blurb))
     writeFileSync(path.join(ws, "BRIEF.md"), lines.join("\n") + "\n")
-    writeTouchstone(ws, { kind: "live", pack, modules, hosts, origins, baseUrl })
+    const live = { kind: "live", pack, modules, hosts, origins, baseUrl, ...(mcp ? { mcp } : {}) }
+    // The domain packs capture one root domain into a pinned snapshot. They read
+    // `domain` and `reach`; the network is the egress one (their tools resolve
+    // DNS over UDP, which an HTTP proxy cannot carry), and the grant is asserted
+    // in code against `scope`.
+    if (pack === "domains" || pack === "surface") {
+      const ports = origins.map((o) => {
+        const u = new URL(o)
+        return { scheme: u.protocol.slice(0, -1), port: Number(u.port || (u.protocol === "https:" ? 443 : 80)) }
+      })
+      live.domain = hosts[0]
+      live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+    }
+    writeTouchstone(ws, live)
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)

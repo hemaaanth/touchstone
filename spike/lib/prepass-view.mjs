@@ -39,6 +39,7 @@ function where(w, line) {
 function statusOf(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
+  if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };
   if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: null };
   const reason = str(t.reason)
     || (t.timedOut ? "Timed out." : t.code != null && t.code !== 0 ? `Exited with code ${str(t.code, 10)}.` : "")

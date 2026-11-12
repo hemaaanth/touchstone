@@ -8,9 +8,11 @@ Sizes below are local, uncompressed Docker image sizes. Scanner calls use
 `runTool()` in `lib/wrap.mjs`. Static checks use `--network none`.
 
 Capture has two modes. The lab mode uses an owned Docker `--internal` network.
-The live mode (`live.mjs`) takes its network from `reach`, which the platform
-fills. Live capture refuses a domain unless `reach.granted` is true and
-`reach.scope` covers it. No ungranted target is accepted.
+The live mode (`live.mjs`) takes its network from `reach`, which a live run
+fills when the workspace is built: the egress network, `granted: true`, and the
+grant's `scope`. Live capture refuses a domain unless that scope covers it. The
+capture tools resolve DNS over UDP, so they cannot use the HTTP gate; the grant
+is enforced in code here, and the captured snapshot is what later steps read.
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|

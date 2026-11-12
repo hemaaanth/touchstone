@@ -129,11 +129,11 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     if (pack != null && pack !== "" && !Object.hasOwn(PACKS, pack)) throw new Error(`unknown module: ${pack}`)
-    const live = addLiveScope({ title, hosts, pack, blurb, permission })
+    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope })
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined

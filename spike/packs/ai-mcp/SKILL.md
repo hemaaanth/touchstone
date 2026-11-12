@@ -143,7 +143,9 @@ A clean scan misses all of them. The tool list shows only that risky tools exist
 - The assistant is rule-based, not a model. It tests the harness and the
   oracles. It does not measure how easily a real model is fooled. Use a model
   based probe tool (garak, promptfoo) for that, as a lead source. See TOOLS.md.
-- A live target (a real agent or MCP server) is not wired. It waits for the
-  platform scope proxy and grant. `prepass(ws, { target: { net, baseUrl,
-  token } })` is the hook, but the agent's `run_request_script` still replays on
-  the lab image.
+- A live target IS wired (`live: true`): prepass scans the real base URL, the
+  script runs in a container confined to the grant, and `prove()` replays at the
+  real server. The operator's bearer token rides in the scope and the brief; a
+  token/scope table, when supplied, is read from `.touchstone.json` (`mcp`). The
+  lab's `/agent/chat`, `/tickets` and `/mcp/approve` endpoints are the target's
+  own, so a server without them can only prove checks 3, 4 and 6.

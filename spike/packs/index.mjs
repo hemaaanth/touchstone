@@ -35,5 +35,5 @@ export function packFor(cfg = {}) {
 
 // What the New run dialog needs to list the modules.
 export function packList() {
-  return Object.values(PACKS).map(({ id, title, tier, proof }) => ({ id, title: title ?? id, tier, proof }));
+  return Object.values(PACKS).map(({ id, title, tier, proof, live }) => ({ id, title: title ?? id, tier, proof, live: live === true }));
 }

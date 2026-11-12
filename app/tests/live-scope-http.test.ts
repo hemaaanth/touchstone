@@ -94,6 +94,16 @@ describe("POST /api/scopes, kind live", () => {
     expect(grants().length).toBe(0)
   })
 
+  test("an AI/MCP scope keeps its token out of the summary but on the target", async () => {
+    const r = await post({ ...live, host: undefined, hosts: ["https://mcp.example.com"], origins: undefined, pack: "ai-mcp", token: "tok_live_1" }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(201)
+    // The summary the client sees carries the origin, never the secret.
+    expect(r.json.origins).toEqual(["https://mcp.example.com"])
+    expect(JSON.stringify(r.json)).not.toContain("tok_live_1")
+    const saved = JSON.parse(readFileSync(SCOPES, "utf8")).find((x: { id: string }) => x.id === r.json.id)
+    expect(saved.mcp.token).toBe("tok_live_1")
+  })
+
   test("with the token and the tick: saved, with a grant tied to the scope", async () => {
     const r = await post(live, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
     expect(r.status).toBe(201)

@@ -29,13 +29,16 @@ Only a replayed script that an oracle accepts is a finding.
 
 ## Gaps in our wrapping
 
-- **Live target (acceptance line 6) is not done.** `prepass(ws, { target: {
-  net, baseUrl, token } })` is the hook, so a granted target plugs in. But the
-  agent's `run_request_script` still replays on the lab image. The scope proxy
-  and grant (thread 7) do not exist yet.
+- **A live target is wired** (`live: true`). The prepass binds the reach
+  boundary and scans the real base URL; `run_request_script` and the proof
+  replay are confined. The operator's token comes from the scope; without a
+  token/scope table the scope-bypass check cannot fire, and the prompt says so.
+  The scan stage itself runs on the bridge network (its tools need DNS), so the
+  grant there is enforced in code, not by the network. The scanner assumes the
+  MCP endpoint is `<base>/mcp`; a target with another path needs it in the scope
+  blurb, which the agent reads even though the scanner will miss it.
 - The scanners read the tool list only. They never call a tool. Calling tools
-  against a real server is an action with effects. It needs the scope grant
-  first.
+  deliberately is the agent's job, one script at a time.
 - The assistant in the lab is rule-based. A real LLM agent is not
   deterministic, so a replay may not repeat. A live module needs a replay rule
   for that (for example "passes 2 of 3 replays"). It is not built.

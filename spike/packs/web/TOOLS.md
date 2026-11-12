@@ -45,8 +45,12 @@ the oracle accepts is a finding.
   site again. The lab image is still the script runtime (it carries ethers and
   siwe); no lab is started. The oracles are lab-shaped, so a non-SIWE site will
   rarely prove more than reflected XSS.
-- ZAP runs the passive baseline only. The active scan is not wired: it sends
-  attack traffic, so it needs the scope proxy first.
+- ZAP runs the passive baseline only. The active scan is not wired.
+- Strix runs as a fourth, much broader engine on a LIVE target only (headless,
+  quick, budget-capped; results are leads, never findings). It brings its own
+  Docker sandbox and browser, so its traffic does not pass the scope gate — the
+  target list is what keeps it on the granted host. Its model calls go through a
+  loopback shim that drops one parameter the gateway rejects.
 - No JWT-session lab exists in this pack, so `jwt_tool` has nothing to run
   against. A dashboard-style target with JWT sessions is a natural case for
   a second lab under this same pack.

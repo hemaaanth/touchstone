@@ -31,6 +31,7 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `title`   | string                      | The name the UI shows. |
 | `tier`    | `"P" \| "S" \| "I" \| "F"`  | The highest tier the pack can reach. See 08-proposed-ui.md §5.4. |
 | `proof`   | `"forge" \| "http" \| "evidence"` | How a finding becomes real. See "Proof kinds". |
+| `live`    | boolean                     | The tools can be aimed at a real host, so the pack may run a live scope. Without it a live scope under this pack is refused rather than silently scanning the pack's lab. |
 | `system`  | `(ws) => string`            | The system prompt for this run. |
 | `tools`   | `(ws, state) => Tool[]`     | The pi-durable tools. The set must not change during a run. |
 | `kickoff` | `(ws, env) => string`       | The first message. `env` carries the pre-pass leads. |
