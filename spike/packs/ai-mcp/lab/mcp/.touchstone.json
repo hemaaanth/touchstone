@@ -1,0 +1,5 @@
+{
+  "pack": "ai-mcp",
+  "title": "Support assistant · MCP server and agent",
+  "blurb": "A practice MCP server with a gullible support agent on a private network. It plants a prompt injection, a leaky fetch tool and a missing scope check."
+}
