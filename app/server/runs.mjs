@@ -69,7 +69,6 @@ if (loadedKeys > 0) console.log(`[runs] loaded ${loadedKeys} key(s) from spike/.
 const ENGINE = path.join(SPIKE, "agent-run.mjs")
 // TOUCHSTONE_RESULTS_DIR lets a test use a throwaway folder.
 const RESULTS_DIR = process.env.TOUCHSTONE_RESULTS_DIR || path.join(SPIKE, "results", "agent")
-const MAX_POC = process.env.MAX_POC ?? "12"
 
 // Which models the UI may run: the active provider's price table, the Settings
 // default first. A run can never name a model the engine does not know how to bill.
@@ -600,7 +599,7 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, MAX_POC, ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
+  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -832,7 +831,6 @@ function followUp(run, text, clientId) {
       PROVIDER: runProvider(run),
       ALIAS: run.alias,
       EVENTS_FILE: run.eventsFile,
-      MAX_POC,
       ...money,
       ...fleetEnv(run),
       FOLLOWUP: text,

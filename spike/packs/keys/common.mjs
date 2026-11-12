@@ -19,6 +19,7 @@ import { forgeTest, writePoc } from "../../lib/sandbox.mjs";
 import { runTool } from "../../lib/wrap.mjs";
 import { IMPACT_RANK } from "../../lib/ensemble.mjs";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { proveFindings } from "../../lib/record.mjs";
 import { aderynScan } from "../../lib/aderyn.mjs";
 import { labOf, controlChanges } from "./control.mjs";
@@ -28,7 +29,8 @@ export const IMAGE = "touchstone-chain-tools:wave1";
 export const OBSERVATION = "chain-observation.json";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const FILE_READ_CAP = 256 * 1024;
-const MAX_POC = Number(process.env.MAX_POC ?? 8);
+// No count cap unless MAX_POC is set. The run spend budget is the stop.
+const MAX_POC = attemptCap("MAX_POC");
 
 const lc = (value) => String(value ?? "").toLowerCase();
 const isZero = (word) => /^0x0*$/.test(String(word ?? "0x"));
@@ -419,10 +421,9 @@ export function chainTools(ws, state, spec) {
       const result = await forgeTest(ws, { matchContract: args.contract_name });
       event("run_poc-done", { contract: args.contract_name, passed: result.passed, failed: result.failed, timedOut: result.timedOut });
       if (result.passed) state.passed.set(args.contract_name, args.test_source);
-      const left = MAX_POC - attempt;
       const note = result.passed && !state.found.some((f) => f.poc === args.contract_name)
         ? `\n\nThis test PASSED. If it shows real harm (funds leave a deployed contract), call submit_finding for \`${args.contract_name}\`.` : "";
-      return text(`${result.output || "(no output)"}${note}\n\n(${left} run_poc attempt${left === 1 ? "" : "s"} left.)`);
+      return text(`${result.output || "(no output)"}${note}\n\n(${leftText(MAX_POC, attempt, "run_poc")})`);
     },
   });
   const submitFinding = defineTool({
@@ -448,8 +449,7 @@ export function chainTools(ws, state, spec) {
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
       event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
-      const left = Math.max(0, MAX_POC - state.poc);
-      return text(`Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next lead, worst first. Skip anything this finding's fix would also stop. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left.`);
+      return text(`Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next lead, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")}`);
     },
   });
   return [listSources, readSource, stateTool, leadsTool, runPoc, submitFinding];
@@ -459,9 +459,8 @@ export function chainTools(ws, state, spec) {
 export function chainNudge(state, noun) {
   if (state.found.length === 0 || state.poc >= MAX_POC) return null;
   const list = state.found.map((f) => `#${f.n} ${f.title} (${f.severity}, test \`${f.poc}\`)`).join("\n");
-  const left = MAX_POC - state.poc;
-  event("audit-continue", { found: state.found.length, left });
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"}:\n${list}\n\nGo back to the ${noun} list. Try each lead you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit only a NEW root cause that the fixes above would not stop. If no leads are left, write the coverage summary now: one line per lead, marked "proven", "not exploitable", or "not tried".`;
+  event("audit-continue", { found: state.found.length, left: leftCount(MAX_POC, state.poc) });
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"}:\n${list}\n\nGo back to the ${noun} list. Try each lead you have not proven or ruled out, worst first. ${leftText(MAX_POC, state.poc, "run_poc")} Submit only a NEW root cause that the fixes above would not stop. If no leads are left, write the coverage summary now: one line per lead, marked "proven", "not exploitable", or "not tried".`;
 }
 
 // The prepass for one chain pack. Runs the lab world, turns the observation into

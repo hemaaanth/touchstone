@@ -15,14 +15,15 @@ import { concreteSolc, forgeTest, readTouchstone, warmSolc, writePoc } from "../
 import { moduleOn } from "../../lib/modules.mjs";
 import { fetchSource } from "../../lib/fetch.mjs";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { runPrepass } from "../../lib/prepass.mjs";
 import { gate, proveFindings } from "../../lib/record.mjs";
 import { proofDelta } from "../../lib/proof.mjs";
 
-// Total run_poc attempts for the whole audit. A comprehensive audit proves
-// several findings, so this is larger than a one-bug run needs. The prompt tells
-// the agent the number so it can plan its attempts across suspects.
-const MAX_POC = Number(process.env.MAX_POC ?? 12);
+// Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
+// set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
+// is set, the prompt tells the agent the number so it can plan across suspects.
+const MAX_POC = attemptCap("MAX_POC");
 const PER_SUSPECT = 3;
 
 // How the audit works. Shared by the lab and brief prompts. The key change from
@@ -43,15 +44,16 @@ const AUDIT = `How the audit works:
 - Plan first. Before you write any test, list every suspect root cause you see,
   ranked worst first. Include suspects the analyzers did not flag. Write the list
   in your reply.
-- Work down the list, worst first. Spend at most ${PER_SUSPECT} run_poc attempts on one
-  suspect. If it still fails, mark it "not proven" and move on.
+- Work down the list, worst first. Give one suspect about ${PER_SUSPECT} run_poc attempts.
+  If it still fails, mark it "not proven" for now and move on. Come back to it once
+  the other suspects are done, if budget is left.
 - Use a NEW test contract name for each suspect (for example \`ReentrancyTest\`,
   \`RoundingTest\`). Never reuse a name for a different bug.
 - The moment a test passes, call submit_finding for it. Then CONTINUE with the
   next suspect. Submitting a finding never ends the audit. A low or medium finding
   never means you can skip a worse suspect.
 - Submit each passing test once. One finding per test contract.
-- You have ${MAX_POC} run_poc attempts in total. That is a limit, not a target.
+- ${MAX_POC === Infinity ? "There is no fixed count of run_poc attempts. The run's spend budget is the limit." : `You have ${MAX_POC} run_poc attempts in total. That is a limit, not a target.`}
   Unused attempts are fine. A contract with one bug should give one finding.
 - Stop when every suspect root cause is proven or ruled out, or the budget is spent.
   Then write a short coverage summary: one line per suspect, marked "proven",
@@ -314,11 +316,10 @@ function tools(ws, state) {
       // Remember the exact source that passed. submit_finding's gate reads this,
       // and the final replay proof re-runs this source, not a later edit.
       if (r.passed) state.passed.set(args.contract_name, args.test_source);
-      const left = MAX_POC - pocAttempts;
       const note = r.passed && !state.found.some((f) => f.poc === args.contract_name)
         ? `\n\nThis test PASSED. If it proves a real bug, call submit_finding for \`${args.contract_name}\` now, then continue with the next suspect.`
         : "";
-      return { output: [{ type: "text", text: `${r.output || "(no output)"}${note}\n\n(${left} run_poc attempt${left === 1 ? "" : "s"} left.)` }] };
+      return { output: [{ type: "text", text: `${r.output || "(no output)"}${note}\n\n(${leftText(MAX_POC, pocAttempts, "run_poc")})` }] };
     },
   });
   const submitFinding = defineTool({
@@ -364,8 +365,7 @@ function tools(ws, state) {
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
       event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
-      const left = Math.max(0, MAX_POC - state.poc);
-      return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
   const staticFindings = defineTool({
@@ -444,9 +444,8 @@ function kickoff(ws, env) {
 function nudge(state) {
   if (state.found.length === 0 || state.poc >= MAX_POC) return null;
   const list = state.found.map((f) => `#${f.n} ${f.title} (${f.severity}, test \`${f.poc}\`)`).join("\n");
-  const left = MAX_POC - state.poc;
-  event("audit-continue", { found: state.found.length, left });
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause, one that the fixes for the findings above would not already stop. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+  event("audit-continue", { found: state.found.length, left: leftCount(MAX_POC, state.poc) });
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_POC, state.poc, "run_poc")} Submit a finding only for a NEW root cause, one that the fixes for the findings above would not already stop. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
 }
 
 async function prepass(ws, { emit }) {

@@ -2,7 +2,7 @@
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
 //   ALIAS=ds-abl node agent-run.mjs    pick the model
-//   MAX_POC=20 node agent-run.mjs      raise the PoC attempt budget
+//   MAX_POC=20 node agent-run.mjs      cap PoC attempts (default: no cap; the run budget stops it)
 //
 // The agent gets real tools over a per-run Foundry sandbox: it reads the contract
 // source, writes its own exploit tests, runs them offline in Docker, and must

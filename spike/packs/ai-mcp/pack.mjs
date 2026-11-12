@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftText } from "../../lib/attempt-cap.mjs";
 import { sortFindings } from "../../lib/record.mjs";
 import {
   httpProof,
@@ -33,7 +34,7 @@ import { fp, scrubProof, scrubText } from "../web/redact.mjs";
 
 const IMAGE = "touchstone/ai-mcp-lab:dev";
 const LEADS_FILE = ".ai-mcp-leads.json";
-const MAX_SCRIPT_RUNS = Number(process.env.MAX_HTTP_RUNS ?? 12);
+const MAX_SCRIPT_RUNS = attemptCap("MAX_HTTP_RUNS");
 
 // The practice service's own token table. The agent under test gets only the
 // reader token. An oracle must know what each token was granted, so it can
@@ -461,8 +462,9 @@ Think like an attacker, one question per surface:
 How the audit works:
 - One finding per ROOT CAUSE. One fix closes one finding.
 - Plan first. List each suspect in your reply, worst first.
-- Spend at most 3 run_request_script attempts chasing one suspect. If it still does
-  not trip a known pattern, mark it "not proven" and move on.
+- Give one suspect about 3 run_request_script attempts. If it still does not trip a
+  known pattern, mark it "not proven" for now and move on. Come back to it once the
+  other suspects are done, if budget is left.
 - The moment a script trips a pattern, call submit_finding. Then CONTINUE with the next
   suspect. Do not stop at the first finding.
 - Not findings: a 401 or an error that correctly blocks a request, or a tool that
@@ -513,7 +515,8 @@ The checks this module can prove (a match is the ONLY thing that makes a finding
 
 Rules:
 - One finding per ROOT CAUSE. One fix closes one finding.
-- Plan first, worst first. At most 3 run_request_script attempts per suspect.
+- Plan first, worst first. About 3 run_request_script attempts per suspect, then move on.
+  Come back to it later if budget is left.
 - The moment a script trips a pattern, call submit_finding with that label, then continue.
   Stop when every suspect is proven or ruled out, or the budget is spent, then write the
   coverage summary: one line per suspect, proven / not exploitable / not tried.
@@ -560,8 +563,7 @@ function kickoff(ws, env = {}) {
 function nudge(state) {
   if (state.found.length === 0) return null;
   const list = state.found.map((f) => `- #${f.n} ${f.title} (${f.severity})`).join("\n");
-  const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_request_script attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
 }
 
 function tools(ws, state) {
@@ -602,12 +604,11 @@ function tools(ws, state) {
       if (match) state.passed.set(String(args.label), { script: String(args.script), oracleName: match.oracle.name });
       event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null });
       const lines = run.transcript.map((e, i) => `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${asText(e.resBody).slice(0, 500)}`);
-      const left = MAX_SCRIPT_RUNS - attempt;
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
         : `\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.${oracleLeads(run.transcript, run).map((l) => `\n${l}`).join("")}`;
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
-      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${left} script attempt${left === 1 ? "" : "s"} left.)` }] };
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
   });
 
@@ -642,8 +643,7 @@ function tools(ws, state) {
       const finding = { n, title: String(args.title), severity: String(args.severity), poc: label, explanation: String(args.explanation), script: entry.script, oracleName: entry.oracleName };
       state.found.push(finding);
       event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
-      const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. You have ${left} script attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
 
