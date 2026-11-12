@@ -6,7 +6,7 @@
 // roles) and Forta's log filter. A change both see is a stronger lead. A change
 // with no event shows only in the state diff. The agent writes a test that shows
 // the change and its harm. See SKILL.md and TOOLS.md.
-import { chainNudge, chainPrepass, chainTools, proveWithHarm, watchLeads } from "../keys/common.mjs";
+import { chainNudge, chainPrepass, chainTools, proveWithHarm, watchLeads, hasWorld, sourceKickoff, sourceSystem } from "../keys/common.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a proxy contract that the operator owns. A monitor watched a range of
@@ -34,8 +34,9 @@ Rules of the environment:
 - Control also counts. The engine reads the storage writes of the replay. A proof is also
   real when the replay changes the EIP-1967 implementation slot, the EIP-1967 admin slot,
   or the owner (slot 0) of the lab proxy, with no ETH moved. Make the change as the actor
-  the lead names, with vm.prank, through the proxy's own functions. Do not use vm.store
-  (vm.store is not counted). A test that only reads state and changes nothing still fails.
+  the lead names, with vm.prank, through the proxy's own functions. The caller must be an
+  outsider. When the owner or admin hands over control, that is a legitimate change and the
+  engine rejects it. Do not use vm.store (vm.store is not counted). A test that only reads state and changes nothing still fails.
 - When a proof passes, call submit_finding with a title, severity, the name of the
   passing test contract, and a short explanation.
 
@@ -68,9 +69,10 @@ block whose opening fence names the language. End with a line that starts with "
 Keep going without asking the operator questions. Work from the actual lab.`;
 
 const kickoff = (ws, env) => {
+  if (!hasWorld(ws, "chain-watch")) return sourceKickoff("chain-watch", env.CHAIN_BRIEF);
   const base = "Review the watched block range for this proxy. Call watch_leads and chain_state, read the lab source, list every suspect change worst first, then prove each one you can with its own passing Foundry test that replays the change and moves ETH out of the proxy. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from two engines (state diff and Forta), scariest first. A lead is real only once your test proves it. Call watch_leads for the full list.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
@@ -79,7 +81,7 @@ export default {
   title: "Chain watch",
   tier: "P", // passive: Anvil runs only in our offline sandbox
   proof: "forge",
-  system: () => SYSTEM,
+  system: (ws) => (hasWorld(ws, "chain-watch") ? SYSTEM : sourceSystem("chain-watch")),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "chain-watch",
     stateTool: { name: "chain_state", description: "Read what the lab recorded for the watched block range: per-block snapshots of the EIP-1967 implementation and admin slots, the owner and role state, the logs, the transactions, the proxy balance and the canary wallet." },

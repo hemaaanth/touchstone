@@ -197,3 +197,125 @@ test("extract: vm.store makes no SSTORE step, so it leaves no write", () => {
   const out = extractControlTrace(arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data: "0x70ca10bb" })));
   assert.deepEqual(out.writes, []);
 });
+
+// Caller gate: the owner or admin handing over control is legitimate, an outsider is harm.
+const proxyLab = labOf({ address: PROXY }, KNOWN_KEYS);
+const ownerTrace = (caller) => extractControlTrace(arenaOf(
+  node(null, { address: TEST }),
+  node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+  node(0, { address: PROXY, caller, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
+));
+
+test("extract: each write records its caller and the owner it saw just before", () => {
+  const out = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: ATTACKER }),
+    node(2, { kind: "DELEGATECALL", address: EVIL, caller: PROXY, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
+  ));
+  assert.equal(out.writes.length, 1);
+  assert.deepEqual(out.writeMeta, [{ caller: ATTACKER, authority: [TEST] }]);
+});
+
+test("a proxy owner change made by the owner is not harm", () => {
+  assert.deepEqual(controlChanges(ownerTrace(TEST), proxyLab), []);
+});
+
+test("a proxy owner change made by an outsider is harm", () => {
+  const [change] = controlChanges(ownerTrace(ATTACKER), proxyLab);
+  assert.equal(change.field, "owner");
+});
+
+// ---- repair cycle 2 ----
+const E = "0x00000000000000000000000000000000000e0001";
+const A2 = "0x00000000000000000000000000000000000a0002";
+const ADMIN_SLOT_HEX = toBeHex(BigInt(keccak256(new TextEncoder().encode("eip1967.proxy.admin"))) - 1n, 32);
+
+test("a constructor that takes another contract's owner slot does not become its owner", () => {
+  // E takes PROXY slot 0 inside its own constructor. Later E changes it again.
+  const t = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+    node(0, { kind: "CREATE", address: E, caller: ATTACKER, steps: [] }),
+    node(2, { address: PROXY, caller: E, steps: [sstore(w(0), addrWord(E), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: E, steps: [sstore(w(0), addrWord(A2), addrWord(E))] }),
+  ));
+  const changes = controlChanges(t, proxyLab);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].field, "owner");
+  assert.equal(changes[0].after, addrWord(A2));
+});
+
+test("source mode: an admin's EIP-1967 upgrade is legitimate, an outsider's is harm", () => {
+  const source = labOf(null);
+  const run = (caller) => extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(ADMIN_SLOT_HEX, addrWord(TEST))] }),
+    node(0, { address: PROXY, caller, steps: [sstore(IMPL, addrWord(EVIL), addrWord(OTHER))] }),
+  ));
+  assert.deepEqual(controlChanges(run(TEST), source), []);
+  const [change] = controlChanges(run(ATTACKER), source);
+  assert.equal(change.field, "EIP-1967 implementation");
+});
+
+test("source mode: the prompt does not promise a slot-0 owner the engine will not count", async () => {
+  const { sourceSystem } = await import("../packs/keys/common.mjs");
+  const text = sourceSystem("keys");
+  assert.doesNotMatch(text, /changes the owner \(slot 0\)/);
+  assert.match(text, /plain owner variable \(slot 0\) is\s+NOT counted/);
+  assert.deepEqual(controlChanges(trace({ created: [PROXY], writes: [write(PROXY, w(0), addrWord(ATTACKER), addrWord(TEST))] }), labOf(null)), []);
+});
+
+// ---- repair cycle 3 ----
+test("source mode: an outsider who takes slot 0 does not become the authority for the upgrade", () => {
+  // TEST builds the proxy (slot 0 = TEST). ATTACKER calls an open setOwner (slot 0 = ATTACKER),
+  // then writes the implementation slot. Slot 0 is not counted as control in source mode, but the
+  // upgrade is harm all the same.
+  const t = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: ATTACKER, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: ATTACKER, steps: [sstore(IMPL, addrWord(EVIL), addrWord(OTHER))] }),
+  ));
+  const source = controlChanges(t, labOf(null));
+  assert.deepEqual(source.map((c) => c.field), ["EIP-1967 implementation"]);
+  // With a lab proxy both writes are harm: the takeover is not adopted as authority.
+  assert.deepEqual(controlChanges(t, proxyLab).map((c) => c.field), ["owner", "EIP-1967 implementation"]);
+});
+
+// ---- repair cycle 4 ----
+const OWNER2 = "0x00000000000000000000000000000000000a0003";
+const uupsTrace = (caller, build = true) => extractControlTrace(arenaOf(
+  node(null, { address: TEST }),
+  ...(build ? [node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(OWNER2))] })] : []),
+  node(0, { address: PROXY, caller, steps: [sstore(IMPL, addrWord(EVIL), addrWord(OTHER))] }),
+));
+
+test("source mode: a UUPS proxy has its owner in slot 0 and no admin slot; the owner's upgrade is legitimate", () => {
+  assert.deepEqual(controlChanges(uupsTrace(OWNER2), labOf(null)), []);
+  assert.deepEqual(controlChanges(uupsTrace(ATTACKER), labOf(null)).map((c) => c.field), ["EIP-1967 implementation"]);
+});
+
+test("source mode: an owner hand-over by the owner passes the authority on; a takeover does not", () => {
+  const chain = (first, second) => extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(OWNER2))] }),
+    node(0, { address: PROXY, caller: first, steps: [sstore(w(0), addrWord(OTHER), addrWord(OWNER2))] }),
+    node(0, { address: PROXY, caller: second, steps: [sstore(IMPL, addrWord(EVIL), addrWord(A2))] }),
+  ));
+  // OWNER2 hands slot 0 to OTHER, then OTHER upgrades: legitimate.
+  assert.deepEqual(controlChanges(chain(OWNER2, OTHER), labOf(null)), []);
+  // ATTACKER writes slot 0 (not entitled), then upgrades as ATTACKER: harm.
+  assert.deepEqual(controlChanges(chain(ATTACKER, ATTACKER), labOf(null)).map((c) => c.field), ["EIP-1967 implementation"]);
+});
+
+test("the test contract may initialize an empty owner slot; an outsider may not", () => {
+  const init = (caller) => extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [] }),
+    node(0, { address: PROXY, caller, steps: [sstore(w(0), addrWord(caller))] }),
+    node(0, { address: PROXY, caller, steps: [sstore(IMPL, addrWord(EVIL), addrWord(OTHER))] }),
+  ));
+  assert.deepEqual(controlChanges(init(TEST), labOf(null)), []);
+  assert.deepEqual(controlChanges(init(ATTACKER), labOf(null)).map((c) => c.field), ["EIP-1967 implementation"]);
+});

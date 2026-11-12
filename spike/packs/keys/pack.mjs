@@ -5,7 +5,7 @@
 // ways (plain ethers and Safe's protocol-kit). Our checks turn that state into
 // leads. The agent writes a test that runs a harmful transaction the setup should
 // have blocked. See SKILL.md and TOOLS.md.
-import { chainNudge, chainPrepass, chainTools, keysLeads, proveWithHarm } from "./common.mjs";
+import { chainNudge, chainPrepass, chainTools, keysLeads, proveWithHarm, hasWorld, sourceKickoff, sourceSystem } from "./common.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a pair of Safe multisig wallets that the operator owns. Each Safe
@@ -78,9 +78,10 @@ block whose opening fence names the language. End with a line that starts with "
 Keep going without asking the operator questions. Work from the actual lab.`;
 
 const kickoff = (ws, env) => {
+  if (!hasWorld(ws, "keys")) return sourceKickoff("keys", env.CHAIN_BRIEF);
   const base = "Audit the two Safes in this lab. Call key_leads and safe_state, read the lab source, list every suspect worst first, then prove each one you can with its own passing Foundry test that rebuilds the weak setup and moves ETH out of a Safe without the approval the owners meant to require. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, scariest first. A lead is real only once your test proves it. Call key_leads for the full list.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call key_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
@@ -89,7 +90,7 @@ export default {
   title: "Keys and signing",
   tier: "P", // passive: Anvil runs only in our offline sandbox
   proof: "forge",
-  system: () => SYSTEM,
+  system: (ws) => (hasWorld(ws, "keys") ? SYSTEM : sourceSystem("keys")),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "keys",
     stateTool: { name: "safe_state", description: "Read what the lab recorded from each Safe: owners, threshold, nonce, modules, guard, fallback handler and singleton, read by plain ethers and by Safe's protocol-kit, plus the code held by each owner and module address." },

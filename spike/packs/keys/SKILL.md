@@ -47,6 +47,33 @@ Our checks turn the readings into leads. A lead is never a finding.
 When both readers return the same fact, the lead is `corroborated` and ranks
 first. A lead only one reader returned ranks lower.
 
+## Source checks (any folder)
+
+The pre-pass also reads `src/**/*.sol` with our own text checks. They need no lab world.
+A real Foundry folder gets them too. Each lead names the contract, function, file and
+line. A lead is never a finding. Aderyn runs on the same source. A lead both return is
+`corroborated`.
+
+| Check | Impact | What it means |
+|-------|--------|---------------|
+| `unprotected-control-function` | High | A function that changes an owner, admin, module, role or implementation has no caller check. |
+| `unprotected-implementation-write` | High | A function writes the implementation slot with no caller check. |
+| `silent-upgrade-path` | Medium | An upgrade path can run with no event. A monitor that reads events will miss it. |
+| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body and no access modifier. Anyone can upgrade. `internal override onlyOwner {}` is safe and raises no lead. |
+| `initializer-unprotected` | High | An `initialize` function has no `initializer` guard or owner check. |
+| `implementation-initializable` | Medium | An implementation can be initialized by anyone. |
+| `delegatecall-user-target` | High | `delegatecall` goes to an address the caller picks. |
+| `unprotected-selfdestruct` | High | `selfdestruct` has no caller check. |
+| `tx-origin-auth` | High | `tx.origin` is used as an auth check. |
+| `module-no-access-control` | High | `execTransactionFromModule` is callable with no caller check. |
+| `ecrecover-zero-address` | High | `ecrecover` returns zero on a bad signature, and the result is not checked. |
+| `signature-malleability` | Medium | The `s` value is not bounded, so a second valid signature exists. |
+| `signature-replay-no-nonce` | High | A signed message has no nonce. It can be sent again. |
+| `signature-no-domain` | Medium | A signed hash has no chain or contract domain. It replays across chains. |
+| `hardcoded-private-key` | High | A private key is in the source. The lead shows it redacted. |
+
+Vendored code under `lib`, `node_modules` and `vendor` is skipped.
+
 ## Steps
 
 1. Call `safe_state` and `key_leads`. Read the lab code.
@@ -109,3 +136,6 @@ and handler writes at that account, so it counts as `control`.
 - Safe 1.4.1 only. Older singletons are not deployed in the lab.
 - Local EVM only. No fork, no live network, no real keys.
 - Hardware wallet, MPC and key-ceremony checks are not covered. See TOOLS.md.
+- Source checks read text, not a compiler tree. Strings and comments are blanked first, in one pass, so a `//` inside a string is safe.
+- The caller gate is a small control-flow check. A `require` or `assert` on the caller gates the function wherever it stands, because a revert undoes earlier writes. An `if` gates only when its revert branch, or its block around every state write, dominates the write. A write before a non-reverting `if`, or outside it, is not gated.
+- Known limits, documented and not chased: `else if` chains are judged by the text after `else`. A bare call statement counts as a write, so a lead stays alive when unsure. Helper calls such as `_checkOwner(` are trusted and not checked for position. A typehash written only inside a string no longer satisfies `signature-no-domain`. A lookup with the caller in a non-last bracket (`nest[msg.sender][1]`) is not a gate.

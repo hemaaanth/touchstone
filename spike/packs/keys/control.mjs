@@ -30,6 +30,8 @@ export function labOf(obs, knownKeys = []) {
   return { targets: [...safes, ...(proxy ? [proxy] : [])], proxy: Boolean(proxy), eoas };
 }
 
+const isSafe = (context, trace) => (trace.selectors[context] ?? []).some((s) => SAFE_SELECTORS.includes(s));
+
 // Name the field a storage slot holds for one contract, or null when it is not control.
 function fieldOf(slot, context, lab, trace) {
   if (slot === IMPLEMENTATION) return "EIP-1967 implementation";
@@ -55,13 +57,25 @@ export function controlChanges(trace, lab) {
   candidates.delete(lc(trace.testContract));
   const eoas = new Set(lab.eoas.map((eoa) => eoa.address));
   const changes = [];
-  for (const write of trace.writes ?? []) {
+  (trace.writes ?? []).forEach((write, index) => {
     // A Safe `setup` call is deployment when it runs on a contract the test made or a lab
     // Safe it rebuilt. It is a takeover when it runs on a lab EOA that is not a Safe yet.
-    if (write.setup ? !eoas.has(write.context) : !candidates.has(write.context)) continue;
+    if (write.setup ? !eoas.has(write.context) : !candidates.has(write.context)) return;
     const field = fieldOf(write.slot, write.context, lab, trace);
-    if (field) changes.push({ target: write.context, field, slot: write.slot, before: write.before, after: write.after });
-  }
+    if (!field) return;
+    // Caller gate. The owner or admin of a proxy may hand over control: that is a legitimate
+    // change, not a takeover. Drop a proxy write whose caller already held that authority
+    // just before the write. The trace knows the authority when the test deployed the proxy.
+    // Safe writes are not gated: a Safe changes itself through its own call. The gate does not
+    // need a lab proxy: source mode has none, and an admin's EIP-1967 upgrade is still legitimate.
+    const meta = trace.writeMeta?.[index];
+    // The authority snapshot is the same in both modes (see lib/control-trace.mjs): the owner
+    // (slot 0) and EIP-1967 admin that the contract itself or a prior authority set. A UUPS
+    // proxy keeps its owner in slot 0 and has no admin slot, so slot 0 must count here too.
+    // An outsider's write never joins the snapshot, so a takeover cannot hide the next write.
+    if (!write.setup && !isSafe(write.context, trace) && meta?.caller && (meta.authority ?? []).includes(meta.caller)) return;
+    changes.push({ target: write.context, field, slot: write.slot, before: write.before, after: write.after });
+  });
   // EIP-7702: etch of a delegation designator on a lab EOA, then a call that ran the delegate.
   for (const etch of trace.etches ?? []) {
     const eoa = lab.eoas.find((entry) => entry.address === lc(etch.target));
