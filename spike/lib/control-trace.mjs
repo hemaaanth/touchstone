@@ -18,7 +18,7 @@
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
 // address received. The address-shaped words in its storage come from Execution only.
-// - writeMeta[i] = { caller, authority } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender, and the owner
+// - writeMeta[i] = { caller, authority, admin } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender, and the owner
 //   (slot 0) and EIP-1967 admin the contract held just before the write. They come from the
 //   SSTOREs of every trace, constructors included. A write whose caller already held
 //   authority is a legitimate change, not a takeover. control.mjs decides.
@@ -65,7 +65,7 @@ export function extractControlTrace(traces) {
           const setup = under(i, (x) => lc(String(x.data ?? "").slice(0, 10)) === SAFE_SETUP);
           const authority = [asAddress(mine[OWNER_SLOT]), asAddress(mine[ADMIN_SLOT])].filter(Boolean);
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
-          out.writeMeta.push({ caller: senderOf(), authority });
+          out.writeMeta.push({ caller: senderOf(), authority, admin: [asAddress(mine[ADMIN_SLOT])].filter(Boolean) });
         }
         // Inside a constructor only the contract being built may set its own authority. A
         // constructor that writes ANOTHER contract's owner slot must not teach the gate that

@@ -89,20 +89,82 @@ const GATE_MODIFIERS = new Set(["onlyOwner", "onlyAdmin", "onlyRole", "onlyProxy
 const GATE_BODY = /\b(_checkOwner\s*\(|_checkRole\s*\(|_authorizeUpgrade\s*\(|_requireOwner|_onlyOwner)/;
 const CALLER = "(?:msg\\.sender|_msgSender\\s*\\(\\s*\\))";
 const ROLE_CALL = "(?:hasRole|isOwner|isAdmin|isAuthorized|isOperator|isGuardian|isGovernor|isMinter|isSigner|hasAccess|canCall|checkRole|checkOwner)";
-// Inside one condition the caller must be compared, looked up in a mapping, or handed to a role helper.
-const COMPARES = new RegExp(`${CALLER}\\s*[=!]=|[=!]=\\s*${CALLER}|\\[\\s*${CALLER}\\s*\\]|\\b${ROLE_CALL}\\s*\\([^()]*${CALLER}`);
-const LOOSE_COMPARE = new RegExp(`${CALLER}\\s*[=!]=|[=!]=\\s*${CALLER}|\\b(?:hasRole|isOwner|isAuthorized)\\s*\\(`);
+// Role helpers that take the caller. `_isOwner(msg.sender)` counts: a leading underscore is allowed.
+const ROLE_RE = new RegExp(`(?<![A-Za-z0-9])_*${ROLE_CALL}\\s*\\(`, "g");
+// Not an auth target: comparing the caller to zero or to `tx.origin` proves nothing.
+const NOT_AUTH_TARGET = /^(?:tx\.origin|address\(0(?:x0*)?\))$/;
+const LOOSE_COMPARE = /\b(?:hasRole|isOwner|isAuthorized)\s*\(/;
 const HELPER_CALL = /\b_(?:check|only|require|enforce|ensure|auth|validate|assert)\w*\s*\(/;
 const NOT_GATES = new Set(["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override", "returns", "nonReentrant", "whenNotPaused", "whenPaused", "noDelegateCall", "lock"]);
 const ARGS = "\\((?:[^()]|\\([^()]*\\))*\\)";
 
-// True when a guard statement compares the caller. The condition is the balanced text inside
-// the parentheses of that one `require`, `assert` or `if`, so a later statement never counts.
-function guardsCaller(body) {
+// Blank string literals, so a `(` or `)` inside a message cannot unbalance a condition.
+const blankStrings = (text) => text.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, (m) => `"${" ".repeat(m.length - 2)}"`);
+
+// How one condition tests the caller: { pos, neg } or null. Counts only a real auth test:
+// the caller compared (`==`, `!=`) to something that is not zero or `tx.origin`, the caller
+// looked up as the WHOLE condition (`admins[msg.sender]`, `!blocked[msg.sender]`), or the caller
+// handed to a role helper. `lastm[msg.sender] > 0` or `msg.sender != address(0)` are not tests.
+function callerTests(cond) {
+  const c = cond.replace(/_msgSender\s*\(\s*\)/g, "msg.sender").replace(/(?<![\w$])\(\s*msg\.sender\s*\)/g, "msg.sender");
+  const out = { pos: false, neg: false };
+  const note = (op, other) => {
+    if (NOT_AUTH_TARGET.test(other.replace(/\s+/g, ""))) return;
+    if (op === "!=") out.neg = true; else out.pos = true;
+  };
+  const side = "([\\w.$]+(?:\\s*\\([^()]*\\))?)";
+  for (const m of c.matchAll(new RegExp(`msg\\.sender\\s*([=!]=)\\s*${side}`, "g"))) note(m[1], m[2]);
+  for (const m of c.matchAll(new RegExp(`${side}\\s*([=!]=)\\s*msg\\.sender`, "g"))) note(m[2], m[1]);
+  const lookup = c.trim().match(/^(!?)\s*[\w.$]+(?:\[[^\[\]]*\])*\[\s*msg\.sender\s*\]\s*(?:==\s*true)?$/);
+  if (lookup) { if (lookup[1]) out.neg = true; else out.pos = true; }
+  for (const m of c.matchAll(ROLE_RE)) {
+    const open = m.index + m[0].length - 1;
+    const close = matchClose(c, open, "(", ")");
+    if (!/msg\.sender/.test(c.slice(open + 1, close < 0 ? undefined : close))) continue;
+    if (c.slice(0, m.index).trimEnd().endsWith("!")) out.neg = true; else out.pos = true;
+  }
+  return out.pos || out.neg ? out : null;
+}
+
+// The text before the first top-level comma: `require(cond, "message")` has the condition first.
+function firstArg(text) {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if ("([{".includes(text[i])) depth++;
+    else if (")]}".includes(text[i])) depth--;
+    else if (text[i] === "," && depth === 0) return text.slice(0, i);
+  }
+  return text;
+}
+
+// The statement an `if` runs: a block, or one statement up to `;`. Returns its text and the rest.
+function branchOf(rest) {
+  const text = rest.trimStart();
+  if (text.startsWith("{")) {
+    const end = matchClose(text, 0, "{", "}");
+    return end < 0 ? { branch: text, tail: "" } : { branch: text.slice(1, end), tail: text.slice(end + 1) };
+  }
+  const end = text.indexOf(";");
+  return end < 0 ? { branch: text, tail: "" } : { branch: text.slice(0, end + 1), tail: text.slice(end + 1) };
+}
+
+// True when a guard statement tests the caller. The condition is the balanced text inside the
+// parentheses of that one `require`, `assert` or `if`, so a later statement never counts.
+// - `require` and `assert` fail the call on a false condition, so any caller test is a gate.
+// - an `if` is a gate only when its branch ends the call (`revert`, or `return` after a negative
+//   test), or when a positive test wraps the rest of the function (or the other branch reverts).
+function guardsCaller(text) {
+  const body = blankStrings(text);
   for (const m of body.matchAll(/\b(require|assert|if)\s*\(/g)) {
     const open = m.index + m[0].length - 1;
     const close = matchClose(body, open, "(", ")");
-    if (COMPARES.test(body.slice(open + 1, close < 0 ? undefined : close))) return true;
+    if (close < 0) continue;
+    const tests = callerTests(firstArg(body.slice(open + 1, close)));
+    if (!tests) continue;
+    if (m[1] !== "if") return true;
+    const { branch, tail } = branchOf(body.slice(close + 1));
+    if (/\brevert\b|\bthrow\b/.test(branch) || (tests.neg && /\breturn\b/.test(branch))) return true;
+    if (tests.pos && (tail.trim() === "" || (/^\s*else\b/.test(tail) && /\brevert\b/.test(tail)))) return true;
   }
   return false;
 }

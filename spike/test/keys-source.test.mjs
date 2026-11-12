@@ -373,3 +373,38 @@ test("a member write of implementation ($ or s, ERC-7201) is still a write; a lo
   const local = scan(`contract P { function look(address x) external view returns (address) { address implementation = x; return implementation; } }`);
   assert.ok(!checks(local).some((c) => /implementation-write|silent-upgrade/.test(c)));
 });
+
+// ---- repair cycle 3 ----
+const setOwnerBody = (body) => scan(`contract C { address public owner; address last; bool d; mapping(address=>uint) lastm;
+  function setOwner(address n) external { ${body} owner = n; } }`);
+const impactOf = (leads) => leads.find((l) => l.check === "unprotected-control-function")?.impact;
+
+test("a string with an unbalanced paren does not hide an ungated write", () => {
+  assert.equal(impactOf(setOwnerBody('require(d, "oops("); bool z = msg.sender == last;')), "High");
+  assert.equal(impactOf(setOwnerBody('require(d, "oops)"); bool z = msg.sender == last;')), "High");
+  // A gate next to a string with balanced parens is still read.
+  assert.equal(impactOf(setOwnerBody('require(msg.sender == last, "no (way)");')), undefined);
+});
+
+test("a caller test that checks nothing is not a gate", () => {
+  for (const body of [
+    "require(msg.sender != address(0));",
+    "require(msg.sender == tx.origin);",
+    "require(lastm[msg.sender] > 0);",
+    "if (msg.sender == last) { d = true; }",
+  ]) assert.equal(impactOf(setOwnerBody(body)), "High", body);
+});
+
+test("real caller tests are still gates", () => {
+  for (const body of [
+    "require(msg.sender == last);",
+    "require(last == msg.sender, 'no');",
+    "require(msg.sender != last);",
+    "if (msg.sender != last) revert();",
+    "if (msg.sender != last) { return; }",
+    "if (!(msg.sender == last)) revert();",
+    "require(_isOwner(msg.sender));",
+    "require((msg.sender) == last);",
+    'require(hasRole(keccak256("A"), msg.sender));',
+  ]) assert.equal(impactOf(setOwnerBody(body)), undefined, body);
+});
