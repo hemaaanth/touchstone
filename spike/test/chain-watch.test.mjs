@@ -146,7 +146,7 @@ test("chain-watch smoke: Forta and the slot diff agree, funds and control harm p
     writePoc(ws, source);
     const run = await forgeTest(ws, { matchContract: "SilentUpgradeTest" });
     assert.ok(run.passed && !run.failed, run.output);
-    const pocs = ["SilentUpgradeTest", "UpgradeOnlyTest", "OwnerChangeTest", "ChainProbeTest"];
+    const pocs = ["SilentUpgradeTest", "UpgradeOnlyTest", "OwnerChangeTest", "LegitOwnerChangeTest", "ChainProbeTest"];
     const found = [];
     for (const poc of pocs) {
       writePoc(ws, source);
@@ -162,7 +162,9 @@ test("chain-watch smoke: Forta and the slot diff agree, funds and control harm p
     assert.equal(by.UpgradeOnlyTest.harm.kind, "control");
     assert.equal(by.UpgradeOnlyTest.harm.changes[0].field, "EIP-1967 implementation");
     assert.equal(by.OwnerChangeTest.harm.kind, "control");
-    assert.equal(by.OwnerChangeTest.harm.changes[0].field, "owner");
+    assert.ok(by.OwnerChangeTest.harm.changes.some((c) => c.field === "owner"), "the attacker took the owner slot");
+    assert.equal(by.LegitOwnerChangeTest.status, "fail", "the owner handing over control is not harm");
+    assert.equal(by.LegitOwnerChangeTest.harm.ok, false);
     assert.equal(by.ChainProbeTest.status, "fail");
     assert.equal(by.ChainProbeTest.harm.ok, false);
   } finally { cleanupWorkspace(ws); }

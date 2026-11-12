@@ -62,7 +62,7 @@ line. A lead is never a finding. Aderyn runs on the same source. A lead both ret
 | `unprotected-control-function` | High | A function that changes an owner, admin, module, role or implementation has no caller check. |
 | `unprotected-implementation-write` | High | A function writes the implementation slot with no caller check. |
 | `silent-upgrade-path` | Medium | An upgrade path can run with no event. A monitor that reads events will miss it. |
-| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body. Anyone can upgrade. |
+| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body and no access modifier. Anyone can upgrade. `internal override onlyOwner {}` is safe and raises no lead. |
 | `initializer-unprotected` | High | An `initialize` function has no `initializer` guard or owner check. |
 | `implementation-initializable` | Medium | An implementation can be initialized by anyone. |
 | `delegatecall-user-target` | High | `delegatecall` goes to an address the caller picks. |
@@ -120,3 +120,7 @@ and no control change in the replay is a note and not a finding.
 - Fixed transaction list. The agent reads a range. It does not send transactions
   on the lab chain.
 - Alert delivery (Slack, pager) is not part of this pack. See TOOLS.md.
+
+## Control harm needs an outsider
+
+The owner or admin of a proxy may change the owner or admin. The engine rejects such a proof. It records the caller of each storage write and the owner and admin the proxy held just before it. A change by a caller that already held that role is not harm. Change control as an outsider, for example through the open `upgradeTo` and then an implementation that writes slot 0.

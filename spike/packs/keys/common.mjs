@@ -250,9 +250,11 @@ export function describeLeads(leads, empty) {
 // ---------------------------------------------------------------- source leads
 
 // Every .sol file under src/ that is not vendored. Capped so a huge repo stays cheap.
+// Vendored means `node_modules` or `vendor` anywhere, or `lib` at the repo root (Foundry
+// dependencies). A first-party `src/lib/...` folder is scanned.
 const SOURCE_CAP = 400;
 export function sourceFiles(ws) {
-  return listSol(ws).filter((rel) => !/(^|[\\/])(node_modules|lib|vendor)[\\/]/.test(rel)).slice(0, SOURCE_CAP).map((rel) => {
+  return listSol(ws).filter((rel) => !/(^|[\\/])(node_modules|vendor)[\\/]/.test(rel) && !/^lib[\\/]/.test(rel)).slice(0, SOURCE_CAP).map((rel) => {
     let content = "";
     try { content = readFileSync(join(ws, rel), "utf8").slice(0, FILE_READ_CAP); } catch { /* skip unreadable files */ }
     return { path: rel, content };
@@ -464,6 +466,76 @@ export function chainNudge(state, noun) {
 
 // The prepass for one chain pack. Runs the lab world, turns the observation into
 // leads, and returns them as the kickoff brief.
+// Prompt for source mode: a real folder, no lab world. It names no Safe, no lab key and no
+// lab helper, because a real repo has none of them.
+const SOURCE_FOCUS = {
+  "keys": "Look hardest at signatures (ecrecover, nonces, chain ids), who may change owners, signers, thresholds or modules, hard-coded keys, and any wallet or Safe logic.",
+  "chain-watch": "Look hardest at proxies and upgrades (who may change the implementation or admin), owner and role changes, initializers, and silent state changes that emit no event.",
+};
+export const sourceSystem = (mode) => `You are an authorized offensive-security agent in an isolated sandbox.
+The target is the Solidity code of a real project that the operator owns. It is under src/.
+Your job: find every weakness that lets someone take funds or take control, and PROVE each
+one with a runnable Foundry test. ${SOURCE_FOCUS[mode] ?? ""}
+
+Rules of the environment:
+- The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
+- list_sources and read_source show the project code. Read the contracts you test.
+- There is no lab and no recorded chain state. The state tool will say so. Do not wait for it.
+- The leads tool returns ranked leads from our source checks. Aderyn leads come in the brief.
+  A lead is a guess from the code text. It counts only when your test proves it.
+- There are no known keys. Never invent a key. Use vm.addr(n), vm.prank and vm.deal.
+- Write a test (a contract that imports forge-std/Test.sol and the project contract, for
+  example \`import "../src/Vault.sol";\`) and run it with run_poc. Build the weak setup in
+  setUp. Pick the exact path a real attacker has.
+- A proof passes AND shows harm. Harm is one of two things.
+  Funds: a contract you deployed loses ETH and another address gains it. Fund the victim
+  with vm.deal AFTER you create it. Never fund it with a payable constructor, a call with
+  value, or a transfer from an account: that ETH comes back out and nets to zero.
+  Control: the replay changes the owner (slot 0), the EIP-1967 implementation or admin slot,
+  or the owner, threshold, module, guard or fallback handler of a Safe.
+  Make the change as an OUTSIDER. A change made by the address that already holds the owner
+  or admin role is a legitimate change and does not count. Do not use vm.store (not counted).
+  A test that only reads state and changes nothing fails.
+- When a proof passes, call submit_finding with a title, severity, the name of the passing
+  test contract, and a short explanation.
+
+How the audit works:
+- One finding per ROOT CAUSE. One fix closes one finding. If fixing A also stops B, then B
+  is part of A's impact. Do not write a second test for it.
+- Plan first. List each suspect, worst first, in your reply. Include suspects the leads did
+  not flag.
+- Spend at most 3 run_poc attempts on one suspect. If it still fails, mark it "not proven"
+  and move on.
+- Use a NEW test contract name for each suspect.
+- The moment a test passes, call submit_finding. Then CONTINUE with the next suspect.
+- Not findings: a risk with no path to move funds or change control.
+- Stop when every suspect is proven or ruled out, or the budget is spent. Then write a short
+  coverage summary: one line per suspect, marked "proven", "not exploitable", or "not tried".
+
+Severity:
+- critical: anyone can drain funds now.
+- high: an outsider takes control (owner, admin, implementation, signer) or drains with a
+  leaked key.
+- medium: a risky setup that needs another step.
+- low: a note with no direct loss of funds.
+
+Write each explanation so a smart 15-year-old with no security background can follow it. Use
+Simplified Technical English: short sentences, one idea per sentence, plain words. Put
+identifiers in \`backticks\` and every multi-line code snippet in a fenced block whose opening
+fence names the language. End with a line that starts with "Fix:". Keep going without asking
+the operator questions. Work from the actual code.`;
+
+// The kickoff for source mode. `brief` is the prepass lead list (may be empty).
+export function sourceKickoff(mode, brief) {
+  const base = "Audit the contracts under src/. Call the leads tool, read the code, list every suspect worst first, then prove each one you can with its own passing Foundry test that deploys the real contract and moves ETH out or changes who controls it. Submit each proven finding as soon as its test passes. End with the coverage summary.";
+  return brief
+    ? `${base}\n\n${brief}\n\nA lead is real only once your test proves it. Leads from source checks and Aderyn are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    : base;
+}
+
+// Tell the agent when Aderyn did not run, so "no Aderyn leads" is never read as "clean".
+export const aderynNote = (aderyn) => aderyn.available ? "" : `\n\nNOTE: Aderyn did NOT run (${String(aderyn.reason ?? "its image is missing").slice(0, 160)}). Having no Aderyn leads here does NOT mean the code is clean. Read the code yourself.`;
+
 export async function chainPrepass(ws, { emit }, { mode, analyze }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
@@ -477,7 +549,7 @@ export async function chainPrepass(ws, { emit }, { mode, analyze }) {
     block, suspects: leads.length, source: !world, aderyn: aderyn.available,
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
-    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") },
+    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) },
     record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available,
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };

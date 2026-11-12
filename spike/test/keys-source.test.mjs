@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanSource, scanSources, stripComments } from "../packs/keys/source-checks.mjs";
-import { chainPrepass, hasWorld, sourceFiles, sourceLeads, leadsFor, keysLeads, watchLeads } from "../packs/keys/common.mjs";
+import { aderynNote, chainPrepass, hasWorld, sourceFiles, sourceLeads, leadsFor, keysLeads, watchLeads } from "../packs/keys/common.mjs";
 import { prepassView } from "../lib/prepass-view.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -75,6 +75,55 @@ test("an empty _authorizeUpgrade is High", () => {
   assert.ok(checks(scan(src)).includes("implementation-initializable"));
 });
 
+test("the OpenZeppelin default _authorizeUpgrade(address) onlyOwner {} raises no lead", () => {
+  const src = `contract U is UUPSUpgradeable, OwnableUpgradeable {
+    constructor() { _disableInitializers(); }
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+  }`;
+  assert.deepEqual(checks(scan(src)), []);
+});
+
+test("an empty _authorizeUpgrade with an unknown modifier is only Medium", () => {
+  const src = `contract U is UUPSUpgradeable { constructor() { _disableInitializers(); } function _authorizeUpgrade(address) internal override onlyGov {} }`;
+  const leads = scan(src).filter((l) => l.check === "uups-authorize-empty");
+  assert.deepEqual(leads.map((l) => l.impact), ["Medium"]);
+});
+
+test("a custom gate is not High: a file-local modifier, a helper call and a mapping check", () => {
+  const src = `contract G {
+    mapping(address => bool) admins; address gov;
+    modifier onlyGov() { require(msg.sender == gov, "gov"); _; }
+    modifier guarded() { if (!admins[msg.sender]) revert(); _; }
+    function setOwner(address a) external onlyGov {}
+    function setAdmin(address a) external guarded {}
+    function transferOwnership(address a) external { require(admins[msg.sender]); }
+    function changeAdmin(address a) external { _checkGov(); }
+    function upgradeTo(address a) external restricted {}
+    function setGuard(address a) external {}
+  }`;
+  const high = scan(src).filter((l) => l.impact === "High");
+  assert.deepEqual(high.map((l) => l.where), ["G.setGuard"]);
+  const medium = scan(src).filter((l) => l.check === "unprotected-control-function" && l.impact === "Medium").map((l) => l.where).sort();
+  assert.deepEqual(medium, ["G.changeAdmin", "G.upgradeTo"]);
+});
+
+test("a local variable named implementation is not an implementation write", () => {
+  const src = `contract R { address public implementation; function peek(address x) external { address implementation = x; emit Peeked(implementation); }
+    function quote(address implementation) external { implementation = address(0); } }`;
+  assert.deepEqual(checks(scan(src)), []);
+  const write = `contract R { address public implementation; function set(address x) external { implementation = x; } }`;
+  assert.ok(checks(scan(write)).includes("unprotected-implementation-write"));
+});
+
+test("implementation-initializable reads only its own contract and its local bases", () => {
+  const two = `contract A is UUPSUpgradeable { function f() external {} }
+contract B is UUPSUpgradeable { constructor() { _disableInitializers(); } }`;
+  assert.deepEqual(scan(two).filter((l) => l.check === "implementation-initializable").map((l) => l.where), ["A"]);
+  const base = `abstract contract Base { constructor() { _disableInitializers(); } }
+contract C is Base, UUPSUpgradeable {}`;
+  assert.deepEqual(scan(base).filter((l) => l.check === "implementation-initializable"), []);
+});
+
 test("a module that spends with no caller check is High", () => {
   const src = `contract M { function drain(ISafe s, address to) external { s.execTransactionFromModule(to, 1, "", 0); } }`;
   assert.deepEqual(checks(scan(src)), ["module-no-access-control"]);
@@ -129,9 +178,10 @@ test("source mode skips vendored code and reports a lead with its file and line"
     "src/Vault.sol": "contract Vault {\n  address owner;\n  function setOwner(address o) external { owner = o; }\n}\n",
     "lib/forge-std/src/Vm.sol": "contract Vm { function setOwner(address o) external {} }",
     "src/node_modules/x/Y.sol": "contract Y { function setOwner(address o) external {} }",
+    "src/lib/Math.sol": "library Math { function add(uint a, uint b) internal pure returns (uint) { return a + b; } }",
   });
   try {
-    assert.deepEqual(sourceFiles(ws).map((f) => f.path), ["src/Vault.sol"]);
+    assert.deepEqual(sourceFiles(ws).map((f) => f.path).sort(), ["src/Vault.sol", "src/lib/Math.sol"]);
     const [lead] = sourceLeads(ws);
     assert.equal(lead.check, "unprotected-control-function");
     assert.match(lead.where, /Vault\.setOwner \(src\/Vault\.sol:3\)/);
@@ -243,4 +293,30 @@ test("source mode smoke: a real folder gets source leads, and its exploit replay
     cleanupWorkspace(ws);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("source mode prompts name no Safe, lab key or lab helper; lab mode keeps them", async () => {
+  const { default: keys } = await import("../packs/keys/pack.mjs");
+  const { default: watch } = await import("../packs/chain-watch/pack.mjs");
+  const real = folder({ "src/Vault.sol": "contract Vault {}" });
+  const lab = folder({ "src/KeysLab.sol": "contract KeysLab {}", "src/ChainWatchLab.sol": "contract ChainWatchLab {}" });
+  try {
+    for (const pack of [keys, watch]) {
+      const system = pack.system(real);
+      assert.doesNotMatch(system, /safe-artifacts|Anvil account|KeysLab|ChainWatchLab|0xac0974/);
+      assert.match(system, /real project/);
+      const kick = pack.kickoff(real, { CHAIN_BRIEF: "LEADS" });
+      assert.match(kick, /contracts under src\//);
+      assert.match(kick, /LEADS/);
+      assert.doesNotMatch(kick, /two Safes|watched block range/);
+    }
+    assert.match(keys.system(lab), /safe-artifacts/);
+    assert.match(keys.kickoff(lab, {}), /two Safes/);
+    assert.match(watch.kickoff(lab, {}), /watched block range/);
+  } finally { rmSync(real, { recursive: true, force: true }); rmSync(lab, { recursive: true, force: true }); }
+});
+
+test("a missing Aderyn image is told to the agent, so no Aderyn leads is not read as clean", () => {
+  assert.equal(aderynNote({ available: true }), "");
+  assert.match(aderynNote({ available: false, reason: "image not found" }), /Aderyn did NOT run.*image not found.*does NOT mean the code is clean/s);
 });

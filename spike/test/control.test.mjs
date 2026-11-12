@@ -197,3 +197,31 @@ test("extract: vm.store makes no SSTORE step, so it leaves no write", () => {
   const out = extractControlTrace(arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data: "0x70ca10bb" })));
   assert.deepEqual(out.writes, []);
 });
+
+// Caller gate: the owner or admin handing over control is legitimate, an outsider is harm.
+const proxyLab = labOf({ address: PROXY }, KNOWN_KEYS);
+const ownerTrace = (caller) => extractControlTrace(arenaOf(
+  node(null, { address: TEST }),
+  node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+  node(0, { address: PROXY, caller, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
+));
+
+test("extract: each write records its caller and the owner it saw just before", () => {
+  const out = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: ATTACKER }),
+    node(2, { kind: "DELEGATECALL", address: EVIL, caller: PROXY, steps: [sstore(w(0), addrWord(ATTACKER), addrWord(TEST))] }),
+  ));
+  assert.equal(out.writes.length, 1);
+  assert.deepEqual(out.writeMeta, [{ caller: ATTACKER, authority: [TEST] }]);
+});
+
+test("a proxy owner change made by the owner is not harm", () => {
+  assert.deepEqual(controlChanges(ownerTrace(TEST), proxyLab), []);
+});
+
+test("a proxy owner change made by an outsider is harm", () => {
+  const [change] = controlChanges(ownerTrace(ATTACKER), proxyLab);
+  assert.equal(change.field, "owner");
+});

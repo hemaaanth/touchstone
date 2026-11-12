@@ -35,9 +35,30 @@ contract UpgradeOnlyTest is Test {
     }
 }
 
-// Control harm: the owner slot changes hands. No ETH moves.
+// Slot 0 of the proxy is `owner`. This implementation writes it for any caller.
+contract TakeoverImplementation {
+    address public owner;
+    function take(address next) external { owner = next; }
+}
+
+// Control harm: an attacker takes the owner slot. The proxy is open to upgradeTo, so the
+// attacker installs code that writes slot 0. No ETH moves.
 contract OwnerChangeTest is Test {
     function test_ownerChange() public {
+        ChainWatchLab proxy = new ChainWatchLab(address(new BenignImplementation()));
+        address implementation = address(new TakeoverImplementation());
+        vm.startPrank(address(0xBAD));
+        proxy.upgradeTo(implementation, false);
+        TakeoverImplementation(address(proxy)).take(address(0xBAD));
+        vm.stopPrank();
+        assertEq(proxy.owner(), address(0xBAD));
+    }
+}
+
+// Not harm: the real owner hands the proxy over. The owner may do that. The harm gate must
+// reject it, because the caller already held the owner role.
+contract LegitOwnerChangeTest is Test {
+    function test_legitOwnerChange() public {
         ChainWatchLab proxy = new ChainWatchLab(address(new BenignImplementation()));
         proxy.transferOwnership(address(0xBAD));
         assertEq(proxy.owner(), address(0xBAD));

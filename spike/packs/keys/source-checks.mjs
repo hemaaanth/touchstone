@@ -44,7 +44,7 @@ export function functionsOf(clean) {
     const owner = [...contracts].reverse().find((c) => c.at < m.index);
     out.push({
       name: m[2] ?? m[1], contract: owner?.name ?? null, kind: owner?.kind ?? null,
-      header, params: clean.slice(open + 1, closeParams),
+      header, params: clean.slice(open + 1, closeParams), after: clean.slice(closeParams + 1, i),
       body: hasBody ? clean.slice(i + 1, end) : "", hasBody,
       line: lineOf(clean, m.index),
       external: /\b(external|public)\b/.test(header) || m[1] === "fallback" || m[1] === "receive",
@@ -53,6 +53,19 @@ export function functionsOf(clean) {
   }
   return out;
 }
+
+// Contracts of one file: kind, name, the text after the name (`is A, B`), and the body.
+function contractsOf(clean) {
+  const out = [];
+  for (const m of clean.matchAll(/(\babstract\s+)?\b(contract|library|interface)\s+(\w+)([^{;]*)\{/g)) {
+    const open = m.index + m[0].length - 1;
+    const end = matchClose(clean, open, "{", "}");
+    out.push({ name: m[3], kind: m[2], abstract: Boolean(m[1]), heritage: m[4], at: m.index, body: clean.slice(open + 1, end < 0 ? undefined : end) });
+  }
+  return out;
+}
+
+const basesOf = (c) => c.heritage.replace(/^\s*is\s+/, "").replace(/\([^)]*\)/g, "").split(",").map((b) => b.trim().split(/\s+/)[0]).filter(Boolean);
 
 function matchClose(text, from, open, close) {
   let depth = 0;
@@ -64,19 +77,71 @@ function matchClose(text, from, open, close) {
 }
 
 // A function is gated when its header carries an access modifier, or its body checks
-// the caller. The words are the common ones. A custom gate can hide behind another name.
+// the caller. Three answers: "gated", "maybe" and "open".
+// - gated: a known gate word, a file-local modifier that reads `msg.sender`, or a body that
+//   puts `msg.sender` inside a `require`, `assert` or `if`.
+// - maybe: a modifier or helper the scan cannot read (it may live in a base contract). The
+//   gate may be real. A lead on such a function drops to Medium.
+// - open: nothing looks like a gate.
 const GATE_MODIFIER = /\b(onlyOwner|onlyAdmin|onlyRole|onlyProxy|onlyGovernance|onlyGuardian|onlyOperator|onlyAuthorized|requiresAuth|auth|authorized|whenNotInitialized|initializer|reinitializer|ifAdmin|onlyDelegateCall)\b/;
 const GATE_BODY = /\b(msg\.sender\s*(==|!=)|_msgSender\(\)\s*(==|!=)|_checkOwner\s*\(|_checkRole\s*\(|_authorizeUpgrade\s*\(|hasRole\s*\(|isOwner\s*\(|isAuthorized\s*\(|_requireOwner|_onlyOwner|require\s*\(\s*owner\s*==)/;
-const gated = (fn) => GATE_MODIFIER.test(fn.header) || GATE_BODY.test(fn.body);
+const SENDER_CHECK = /\b(require|assert|if)\s*\([^;{]*?\b(msg\.sender|_msgSender\s*\(\s*\))/;
+const CALLER_WORDS = /\b(msg\.sender|_msgSender\s*\(\s*\)|tx\.origin)\b/;
+const HELPER_CALL = /\b_(?:check|only|require|enforce|ensure|auth|validate|assert)\w*\s*\(/;
+const NOT_GATES = new Set(["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override", "returns", "nonReentrant", "whenNotPaused", "whenPaused", "noDelegateCall", "lock"]);
+
+// Modifiers written in this file, by name, with their bodies.
+function localModifiers(clean) {
+  const out = new Map();
+  for (const m of clean.matchAll(/\bmodifier\s+(\w+)\s*(?:\([^)]*\))?[^{;]*\{/g)) {
+    const open = m.index + m[0].length - 1;
+    const end = matchClose(clean, open, "{", "}");
+    out.set(m[1], clean.slice(open + 1, end < 0 ? undefined : end));
+  }
+  return out;
+}
+
+function modifierNames(fn) {
+  const rest = (fn.after ?? "").replace(/\breturns\s*\([^)]*\)/g, " ").replace(/\boverride\s*\([^)]*\)/g, " ");
+  return [...rest.matchAll(/\b([A-Za-z_]\w*)\s*(?:\([^)]*\))?/g)].map((m) => m[1]);
+}
+
+// `mods` is the map from localModifiers(). Without it only the word lists and the body count.
+function gateOf(fn, mods = new Map()) {
+  if (GATE_MODIFIER.test(fn.header) || GATE_BODY.test(fn.body) || SENDER_CHECK.test(fn.body)) return "gated";
+  let maybe = HELPER_CALL.test(fn.body);
+  for (const name of modifierNames(fn)) {
+    if (NOT_GATES.has(name)) continue;
+    if (!mods.has(name)) { maybe = true; continue; }
+    const body = mods.get(name);
+    if (CALLER_WORDS.test(body) || GATE_BODY.test(body) || HELPER_CALL.test(body)) return "gated";
+  }
+  return maybe ? "maybe" : "open";
+}
+const gated = (fn, mods) => gateOf(fn, mods) === "gated";
+
+// Impact of an "ungated" lead, or null when the function is gated. Unknown gates give Medium.
+function ungatedImpact(fn, mods) {
+  const gate = gateOf(fn, mods);
+  return gate === "gated" ? null : gate === "maybe" ? "Medium" : "High";
+}
+const MAYBE_NOTE = " It has a modifier or helper this scan could not read, so a gate may exist. Read it first.";
 
 const CONTROL_NAMES = /^(upgradeTo|upgradeToAndCall|setImplementation|upgrade|changeAdmin|setAdmin|transferOwnership|setOwner|addOwner|addOwnerWithThreshold|removeOwner|swapOwner|changeThreshold|enableModule|disableModule|setGuard|setFallbackHandler|grantRole|revokeRole|setThreshold|setSigner|setTrustedSigner|setMinter|setOperator)$/;
 // A function writes the proxy implementation when it stores to a slot that the code names
-// "implementation", or assigns an `implementation` variable or an OpenZeppelin slot value.
-const WRITES_IMPLEMENTATION = {
-  test: (text) => (/\bsstore\s*\(/.test(text) && /implementation/i.test(text))
-    || /\b_?implementation\s*=\s*\w/.test(text)
-    || /StorageSlot\.getAddressSlot\([^)]*\)\.value\s*=/.test(text),
-};
+// "implementation", assigns a state variable named `implementation`, or sets an
+// OpenZeppelin slot value. A local variable or a parameter of that name is not a write.
+function writesImplementation(fn) {
+  const text = `${fn.header}\n${fn.body}`;
+  if (/\bsstore\s*\(/.test(text) && /implementation/i.test(text)) return true;
+  if (/StorageSlot\.getAddressSlot\([^)]*\)\.value\s*=(?!=)/.test(text)) return true;
+  for (const m of text.matchAll(/(?<![\w.])(_?implementation)\s*=(?!=)\s*\w/g)) {
+    if (/\b(address|payable|memory|storage|calldata|bytes32|bytes|uint\d*|bool|I[A-Z]\w*)\s*$/.test(text.slice(0, m.index))) continue; // a local declaration
+    if (new RegExp(`\\b\\w+\\s+(?:payable\\s+|memory\\s+|calldata\\s+)?${m[1]}\\b`).test(fn.params)) continue; // a parameter
+    return true;
+  }
+  return false;
+}
 
 const lead = (fn, file, check, impact, description, extra = {}) => ({
   engine: "Touchstone source", check, impact: IMPACT[impact] ?? impact,
@@ -90,6 +155,7 @@ export function scanSource(file, source) {
   const leads = [];
   const fns = functionsOf(clean);
   const fileHas = (re) => re.test(clean);
+  const mods = localModifiers(clean);
 
   for (const fn of fns) {
     if (!fn.hasBody || fn.kind === "interface") continue;
@@ -128,22 +194,24 @@ export function scanSource(file, source) {
     }
 
     // --- control functions with no gate
-    if (fn.external && !fn.view && !gated(fn)) {
+    const open = fn.external && !fn.view ? ungatedImpact(fn, mods) : null;
+    if (open) {
+      const note = open === "High" ? "" : MAYBE_NOTE;
       if (CONTROL_NAMES.test(fn.name)) {
-        leads.push(lead(fn, file, "unprotected-control-function", "High",
-          `\`${fn.name}\` changes who controls the contract (owner, admin, implementation, role or Safe setting). It has no access modifier and does not check \`msg.sender\`. Any caller may run it.`));
-      } else if (WRITES_IMPLEMENTATION.test(text)) {
-        leads.push(lead(fn, file, "unprotected-implementation-write", "High",
-          `\`${fn.name}\` writes the proxy implementation and has no access check. Any caller can swap the logic of the proxy.`));
+        leads.push(lead(fn, file, "unprotected-control-function", open,
+          `\`${fn.name}\` changes who controls the contract (owner, admin, implementation, role or Safe setting). It has no access modifier and does not check \`msg.sender\`. Any caller may run it.${note}`));
+      } else if (writesImplementation(fn)) {
+        leads.push(lead(fn, file, "unprotected-implementation-write", open,
+          `\`${fn.name}\` writes the proxy implementation and has no access check. Any caller can swap the logic of the proxy.${note}`));
       }
       if (/\bexecTransactionFromModule(ReturnData)?\s*\(/.test(fn.body)) {
-        leads.push(lead(fn, file, "module-no-access-control", "High",
-          `\`${fn.name}\` makes the Safe spend through \`execTransactionFromModule\` and does not check the caller. Once this module is enabled, any caller moves the Safe funds with no owner signature.`));
+        leads.push(lead(fn, file, "module-no-access-control", open,
+          `\`${fn.name}\` makes the Safe spend through \`execTransactionFromModule\` and does not check the caller. Once this module is enabled, any caller moves the Safe funds with no owner signature.${note}`));
       }
     }
 
     // --- silent state change: the implementation slot is written but an event is not always emitted
-    if (fn.external && WRITES_IMPLEMENTATION.test(text)) {
+    if (fn.external && writesImplementation(fn)) {
       const emits = [...fn.body.matchAll(/\bemit\s+\w+/g)];
       const conditional = emits.length && /\bif\s*\([^)]*\)\s*\{?\s*emit\b/.test(fn.body);
       if (!emits.length || conditional) {
@@ -153,9 +221,11 @@ export function scanSource(file, source) {
     }
 
     // --- UUPS and initializers
+    // An empty body is safe when the header carries the gate: `internal override onlyOwner {}`.
     if (fn.name === "_authorizeUpgrade" && fn.hasBody && fn.body.trim() === "") {
-      leads.push(lead(fn, file, "uups-authorize-empty", "High",
-        "`_authorizeUpgrade` has an empty body. Anyone can upgrade this UUPS proxy."));
+      const impact = ungatedImpact(fn, mods);
+      if (impact) leads.push(lead(fn, file, "uups-authorize-empty", impact,
+        `\`_authorizeUpgrade\` has an empty body and no access modifier. Anyone can upgrade this UUPS proxy.${impact === "High" ? "" : MAYBE_NOTE}`));
     }
     if (/^(initialize|init|__init)\w*$/.test(fn.name) && fn.external && !/\b(initializer|reinitializer|onlyInitializing)\b/.test(fn.header)
         && !/\b(initialized|_initialized|inited)\b/.test(fn.body)) {
@@ -164,24 +234,31 @@ export function scanSource(file, source) {
     }
 
     // --- dangerous primitives
-    if (fn.external && /\.delegatecall\s*\(/.test(fn.body) && /\baddress\b/.test(fn.params) && !gated(fn)) {
+    if (fn.external && /\.delegatecall\s*\(/.test(fn.body) && /\baddress\b/.test(fn.params) && !gated(fn, mods)) {
       leads.push(lead(fn, file, "delegatecall-user-target", "High",
         `\`${fn.name}\` runs \`delegatecall\` to an address the caller can pick. That code runs with this contract's storage and funds.`));
     }
-    if (/\bselfdestruct\s*\(/.test(fn.body) && fn.external && !gated(fn)) {
+    if (/\bselfdestruct\s*\(/.test(fn.body) && fn.external && !gated(fn, mods)) {
       leads.push(lead(fn, file, "unprotected-selfdestruct", "High",
         `\`${fn.name}\` can run \`selfdestruct\` and has no access check.`));
     }
   }
 
-  // UUPS or proxy implementation that leaves its initializer open.
-  for (const m of clean.matchAll(/\bcontract\s+(\w+)[^{]*\bUUPSUpgradeable\b[^{]*\{/g)) {
-    const section = clean.slice(m.index);
-    if (!/_disableInitializers\s*\(/.test(section.slice(0, 20000))) {
-      leads.push({ engine: "Touchstone source", check: "implementation-initializable", impact: "Medium",
-        where: m[1], file, lines: [lineOf(clean, m.index)],
-        description: `\`${m[1]}\` is an upgradeable implementation and never calls \`_disableInitializers()\`. Anyone can initialize the bare implementation.` });
-    }
+  // UUPS implementation that leaves its initializer open. Search the contract's own body and
+  // its file-local base contracts. A later contract in the same file never counts.
+  const contracts = contractsOf(clean);
+  const byName = new Map(contracts.map((c) => [c.name, c]));
+  const reach = (c, seen = new Set()) => {
+    if (!c || seen.has(c.name)) return "";
+    seen.add(c.name);
+    return c.body + "\n" + basesOf(c).map((name) => reach(byName.get(name), seen)).join("\n");
+  };
+  for (const c of contracts) {
+    if (c.kind !== "contract" || c.abstract || !/\bUUPSUpgradeable\b/.test(c.heritage)) continue;
+    if (/\b_disableInitializers\s*\(/.test(reach(c))) continue;
+    leads.push({ engine: "Touchstone source", check: "implementation-initializable", impact: "Medium",
+      where: c.name, file, lines: [lineOf(clean, c.at)],
+      description: `\`${c.name}\` is an upgradeable implementation and never calls \`_disableInitializers()\`. Anyone can initialize the bare implementation.` });
   }
 
   // A private key in source. 32 bytes of hex bound to a key-like name, or a known test key.

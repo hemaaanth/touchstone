@@ -59,7 +59,7 @@ line. A lead is never a finding. Aderyn runs on the same source. A lead both ret
 | `unprotected-control-function` | High | A function that changes an owner, admin, module, role or implementation has no caller check. |
 | `unprotected-implementation-write` | High | A function writes the implementation slot with no caller check. |
 | `silent-upgrade-path` | Medium | An upgrade path can run with no event. A monitor that reads events will miss it. |
-| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body. Anyone can upgrade. |
+| `uups-authorize-empty` | High | `_authorizeUpgrade` has an empty body and no access modifier. Anyone can upgrade. `internal override onlyOwner {}` is safe and raises no lead. |
 | `initializer-unprotected` | High | An `initialize` function has no `initializer` guard or owner check. |
 | `implementation-initializable` | Medium | An implementation can be initialized by anyone. |
 | `delegatecall-user-target` | High | `delegatecall` goes to an address the caller picks. |
