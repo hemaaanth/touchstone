@@ -210,7 +210,11 @@ function normalize(raw, { id, runId, finding }) {
   // is read exactly as before.
   const kind = proofKind(finding)
   const other = proofView(finding)
-  const pack = r.pack || "contracts"
+  // Which pack produced this finding. Older contracts runs predate the `pack`
+  // field; a forge proof identifies them as the contracts pack. A non-forge
+  // proof with no saved pack is a module run whose provenance we no longer have
+  // — we say Unknown rather than invent "contracts"/"Vault.sol" it never ran.
+  const pack = r.pack || (kind === "forge" ? "contracts" : null)
 
   return {
     id,
@@ -218,14 +222,14 @@ function normalize(raw, { id, runId, finding }) {
     runId,
     title: finding.title || null,
     severity: finding.severity || null,
-    pack,
+    ...(pack ? { pack } : {}),
     proofKind: kind,
     // The pack's own pre-pass record, as the run kept it (any shape).
     prepass: r.prepass ?? null,
-    module: pack === "contracts" ? "Contracts" : (PACKS[pack]?.title ?? pack),
+    module: pack === "contracts" ? "Contracts" : pack ? (PACKS[pack]?.title ?? pack) : "Unknown",
     // Prefer the structured target from the library (new runs); fall back to the
     // transcript's own list_sources for older/CLI runs that predate it.
-    target: r.target?.title || (t.results || []).find((x) => x.name === "list_sources")?.text || "Vault.sol",
+    target: r.target?.title || (t.results || []).find((x) => x.name === "list_sources")?.text || "Unknown",
     // The structured scope and module plan this run used, kept so a reopened
     // finding can show the same opening `scope` / `modules` the live run streamed.
     // The orchestrator broadcasts those two events at run start, but they live in
