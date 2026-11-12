@@ -182,15 +182,26 @@ RBAC grants restricted by `resourceNames` are not promoted.
 
 The four-tool comparison retained 85 Trivy leads, 54 Checkov leads, 88 KICS leads and 18 Kubescape leads.
 These are located rule hits, not counts of distinct vulnerabilities.
-The selected ensemble and crypto checks produced 183 leads in the no-spend smoke.
-All 183 replayed. The smoke rejected unchecked submissions and duplicate submissions.
-All 11 planted crypto cases were present.
+The selected ensemble and crypto checks plus the new role policy produced 189
+leads in the no-spend smoke.
+All 189 replayed, and the live-cloud replay passed for the role lead while the
+narrowed policy failed it.
+The smoke rejected unchecked submissions and duplicate submissions.
+All 12 planted crypto cases were present.
 
-The live `near/qwen-abl` run finished with 20 findings and 20 passing evidence proofs.
-It covered all 11 planted crypto cases.
-Its recorded cost was $0.02941203 under the $1 run budget.
+The live `near/qwen-abl` run finished with 26 findings: 25 passing evidence
+proofs and one passing `http` proof for the role lead.
+It covered all 12 planted crypto cases.
+The http finding carries its 4 recorded requests, and the app renders the oracle
+result and the request log beside it.
+Its recorded cost was $0.12676524 under the $1 run budget.
+A baseline run before the live proof was added cost $0.11297417.
 `validation/live-record.json` keeps the safe result.
 `validation/live.json` keeps its summary and archive reference.
 The raw test key was checked absent from that saved result.
-After merging coordinator main, the full spike suite passed all 155 tests.
+The full spike suite passed all 231 tests on this branch.
 App target discovery found `infra-cloud/lab`, kept its pack config and selected the evidence proof kind.
+Two real checkouts were audited with `real-input.mjs`: a public Terraform module
+(72 leads) and a public shop demo (1009 leads, 24 binary files skipped).
+Three leads replayed green in each, and the results are in
+`validation/real-input.json`.

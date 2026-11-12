@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
+import { event } from "../../lib/event.mjs";
 import { proveFindings, replayEvidence, sha256 } from "../../lib/proof-evidence.mjs";
 import { analyze, cryptoDetectors, parseResources } from "./checks.mjs";
 import { prepareSnapshot } from "./snapshot.mjs";

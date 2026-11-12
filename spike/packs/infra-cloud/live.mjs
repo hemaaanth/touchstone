@@ -33,7 +33,8 @@ try {
   if (code !== 0) throw new Error(`Live engine exited ${code}; see the archived log`);
   const data = JSON.parse(readFileSync(join(results, "run-qwen-abl.json"), "utf8"));
   const r = data.result;
-  const summary = { provider: "near", alias: "qwen-abl", status: r.status, decision: r.decision, recorded: r.recorded, findings: r.findings?.length ?? 0, allEvidencePassed: Boolean(r.findings?.length) && r.findings.every((f) => f.proof?.kind === "evidence" && f.proof.status === "pass"), usage: r.usage, snapshotHash: r.snapshotHash, commit: r.commit, record: `spike/results/agent/run-${stamp}.json`, reports: r.reports };
+  const kinds = (r.findings ?? []).reduce((n, f) => ({ ...n, [f.proof?.kind ?? "none"]: (n[f.proof?.kind ?? "none"] ?? 0) + 1 }), {});
+  const summary = { provider: "near", alias: "qwen-abl", status: r.status, decision: r.decision, recorded: r.recorded, findings: r.findings?.length ?? 0, proofKinds: kinds, allProofsPassed: Boolean(r.findings?.length) && r.findings.every((f) => f.proof?.status === "pass"), allEvidencePassed: (r.findings ?? []).length > 0 && (r.findings ?? []).every((f) => f.proof?.kind === "evidence" && f.proof.status === "pass"), usage: r.usage, snapshotHash: r.snapshotHash, commit: r.commit, record: `spike/results/agent/run-${stamp}.json`, reports: r.reports };
   mkdirSync(new URL("./validation/", import.meta.url), { recursive: true });
   writeFileSync(new URL("./validation/live.json", import.meta.url), JSON.stringify(summary, null, 2) + "\n");
   writeFileSync(new URL("./validation/live-record.json", import.meta.url), JSON.stringify({ result: r }, null, 2) + "\n");
