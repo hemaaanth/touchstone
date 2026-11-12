@@ -33,20 +33,22 @@ The table above lists what this pack runs plus the monitors it compared and
 rejected. The research (M2 domains/DNS, M15 brand/phishing) and the coverage
 audit name more OSS tools in this space. Each gets a verdict here so a deliberate
 skip and an un-examined blind spot stop looking the same. Verdict ∈ {wrap,
-defer (a real gap named for a later wave), skip (reason), product decision
-(belongs to a module this pack does not own)}. The driving facts: this pack
-proves two things only — DNS takeover by fingerprint and the wallet drainer by
-jsdom replay — and every check must replay offline against the pinned snapshot.
+blocked (a named thing that does not exist yet), backlog (net-new work nobody
+has decided against), skip (reason), product decision (belongs to a module this
+pack does not own)}. The driving facts: this pack proves two things only — DNS
+takeover by fingerprint and the wallet drainer by jsdom replay — and every check
+must replay offline against the pinned snapshot. Live capture is wired, so a
+live-only tool needs a grant, not a new mode.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
 | baddns | Subdomain takeover signatures | skip — overlap | Same fingerprint space as the wrapped Nuclei takeover templates and the compared dnsReaper; our own fingerprint check is the replay proof. No distinct lab catch to justify a third scanner. |
 | subzy, subjack | Takeover fingerprint scanners | skip — overlap | Identical fingerprint space to Nuclei takeover templates, which already serve as the second corroborating engine. No new detection. |
-| testssl.sh | Full TLS / cipher audit | defer — closes a named gap | Directly fills the "Missing DNSSEC and TLS" crypto gap flagged on the dnsx and httpx rows. Runs offline against a pinned host, so it fits evidence replay. The one TLS engine to wire when TLS coverage lands. |
+| testssl.sh | Full TLS / cipher audit | backlog — TLS findings | Directly fills the "Missing DNSSEC and TLS" crypto gap flagged on the dnsx and httpx rows. Wiring this tool is what makes TLS coverage land. It takes the image, a `runTool()` call against the pinned host, an output parser, a replay check and tests. It runs offline against a pinned host, so replay fits. |
 | SSLyze, tlsx | TLS scan / cert capture | skip — overlap | Overlap testssl.sh for TLS findings; pick one TLS engine (testssl.sh) rather than ensemble three. tlsx may return later purely as snapshot cert/SAN capture, not as a finding source. |
-| DNSViz | DNSSEC validation | defer — closes a named gap | Fills the "Missing DNSSEC evidence" gap named on the dnsx row. Needs the live resolver chain, so it is captured in live mode and replayed on the pinned chain. Real gap, named, not silent. |
+| DNSViz | DNSSEC validation | backlog — DNSSEC evidence | Fills the "Missing DNSSEC evidence" gap named on the dnsx row. It takes the image, a `runTool()` call, a chain parser, tests, and a replay on the pinned chain. It needs the live resolver chain, so live capture records it. The grant already carries the scope, and the captured chain replays. |
 | Zonemaster | DNS / DNSSEC conformance suite | skip — overlap + scope | Overlaps DNSViz for the DNSSEC evidence we would prove; the rest is broad conformance testing outside this pack's two proof models. |
-| checkdmarc | SPF / DMARC / DKIM record evaluation | defer — email-auth is uncovered | Email authentication is part of M2 and nothing covers it today. checkdmarc is pure record evaluation, so it replays offline on a pinned snapshot. The tool to wire when email-auth coverage lands. |
+| checkdmarc | SPF / DMARC / DKIM record evaluation | backlog — email-auth findings | Email authentication is part of M2 and nothing covers it. It takes the image, a `runTool()` call and a record parser. It is pure record evaluation, so it replays offline on a pinned snapshot. |
 | parsedmarc | Parses DMARC aggregate reports | skip — not a scan | Consumes mailbox aggregate reports, not a scan of the target. It is outside the capture-then-replay pipeline entirely. |
 | dnstwist, openSquat | Typosquat / lookalike-domain generation | product decision — M15 | Brand/phishing (M15) is a module this pack does not own (audit Gap kind B). Track the typosquat tooling with that module decision, not inside domains. |
 

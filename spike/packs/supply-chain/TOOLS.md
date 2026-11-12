@@ -32,17 +32,19 @@ more OSS tools. Each gets a verdict so a deliberate skip and an un-examined gap
 differ. The driving facts: this pack audits a **pinned offline snapshot** and
 never touches live GitHub settings or an SCM API; workflow security is carried by
 the zizmor + poutine ensemble; Gato-X is already the read-only reference for the
-remote-enumeration class.
+remote-enumeration class. The live product has live scopes, but this pack has no
+live path yet (`pack.mjs` has no `live` flag). Tools that need an SCM token are
+backlog here, and each names the token and adapter it needs.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
-| OSSF Scorecard | Repo posture scored via GitHub API | skip — not offline | Needs the GitHub API and a token to read live repo settings (branch protection, etc.). This pack explicitly does not scan live GitHub settings. |
+| OSSF Scorecard | Repo posture scored via GitHub API | backlog — live repo posture | Needs a read-only SCM token on a live SCM scope, plus a lead adapter. It closes branch protection, review and release settings that a snapshot cannot show. |
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
-| Legitify | GitHub/GitLab org + repo misconfig via API | skip — not offline | Needs an SCM API token for live settings enumeration — the same remote class Gato-X already represents read-only. |
-| chain-bench | CIS supply-chain benchmark against an SCM | skip — not offline | Needs SCM API access to live settings; outside the pinned-snapshot model. |
-| cosign (Sigstore) | Artifact / attestation signing and verification | skip; defer for provenance | A signing/verification tool, not a scanner; verification needs a live transparency log or registry. Wire only if artifact-provenance verification becomes a goal. |
-| octoscan | Static GitHub Actions scanner | skip — overlap | Overlaps the wrapped zizmor + poutine workflow engines; no distinct detection shown to justify a third. |
-| raven | CI/CD pipeline graph scanner | skip — not offline + overlap | Ingests workflows from the GitHub API into a graph DB; its strength is cross-repo scale, like Gato-X, outside the single-snapshot model. |
+| Legitify | GitHub/GitLab org + repo misconfig via API | backlog — live org and repo misconfig | Needs an SCM API token and a live scope. Same remote class as Gato-X, which stays the read-only reference. |
+| chain-bench | CIS supply-chain benchmark against an SCM | backlog — live supply-chain benchmark | Needs SCM API access and a live scope. It closes live org settings; a snapshot scan cannot reach them. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing/verification tool, not a scanner. It takes a signed artifact, a verifier call and a trust-root policy from the operator. Verification needs a live transparency log or registry, so it also needs the live path this pack lacks. |
+| octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
+| raven | CI/CD pipeline graph scanner | backlog — cross-repo pipeline graph | Ingests workflows from the GitHub API into a graph DB, so it needs an SCM token and a live scope. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
 
 ## Comparison observed
