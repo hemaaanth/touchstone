@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare } from "lucide-react"
-import type { AgentNode, BulletinNote, RunMode } from "@/lib/types"
+import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
+import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
+import { cardFor, type CardState } from "@/components/thread-model"
 import {
   AGENT_WORD,
   agentName,
@@ -21,12 +22,15 @@ import {
 
 // The run panel. It floats in the chat's top-right corner on every run, fleet
 // or solo, phone or desktop. It is a stack of sections, like the assistant-ui
-// MCP server panel: Info, Agents, Bulletin, and Files. Each section row shows a count
-// and a short status. One section is open at a time and scrolls inside itself.
-// The top row folds the whole panel to one line, so it never hides the chat
-// for long. A click on an agent or a file opens it in the run drawer.
+// MCP server panel: Info, Agents, Bulletin, Findings & Proofs, and Files. Each
+// section row shows a count and a short status. One section is open at a time
+// and scrolls inside itself. The top row folds the whole panel to one line, so
+// it never hides the chat for long. A click on an agent, a finding's proof or a
+// file opens it in the run drawer.
+// Findings & Proofs holds what the run claims and what its replay showed.
+// Files holds what the run wrote to get there: test files, sources, reports.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "files"
 
 export function RunPanel({
   state,
@@ -60,7 +64,11 @@ export function RunPanel({
 }) {
   const agents = state.agents
   const notes = state.bulletin
-  const docs = state.artifacts
+  // Replay proofs belong to their findings, not to the run's working files.
+  const docs = state.artifacts.filter((d) => d.kind !== "proof")
+  const found = panelFindings(state)
+  const linked = new Set(found.map((f) => f.proofId))
+  const loose = state.artifacts.filter((d) => d.kind === "proof" && !linked.has(d.id))
   // A solo run has no Bulletin tools, so the section shows only if notes exist.
   const showBulletin = mode === "fleet" || notes.length > 0
   const writing = docs.some((d) => d.versions.some((v) => v.writing))
@@ -79,6 +87,7 @@ export function RunPanel({
   const summary = [
     showAgents ? plural(agents.length, "agent") : "Solo",
     showBulletin ? plural(notes.length, "note") : null,
+    plural(found.length, "finding"),
     plural(docs.length, "file"),
   ]
     .filter(Boolean)
@@ -142,6 +151,22 @@ export function RunPanel({
             </Section>
           ) : null}
           <Section
+            icon={ShieldCheck}
+            label="Findings & Proofs"
+            count={found.length}
+            status={null}
+            expanded={section === "findings"}
+            onToggle={() => toggle("findings")}
+          >
+            <FindingList
+              items={found}
+              loose={loose}
+              openDoc={openDoc}
+              openVersion={openVersion}
+              onFile={onFile}
+            />
+          </Section>
+          <Section
             icon={Files}
             label="Files"
             count={docs.length}
@@ -155,6 +180,52 @@ export function RunPanel({
       ) : null}
     </div>
   )
+}
+
+// One finding as the panel shows it: what the agent claimed and what the
+// replay made of it. `card` is the same state the finding's chat card shows.
+interface PanelFinding {
+  id: string
+  title: string
+  severity: Severity
+  poc: string | null
+  card: CardState
+  proofId: string | null
+}
+
+// Every finding of the run, in submission order. A submitted finding takes
+// its state from cardFor, so the panel and the chat card never disagree. A
+// recorded finding with no submission in the stream (an older record) still
+// shows: its recorded replay result is its state.
+function panelFindings(state: RunState): PanelFinding[] {
+  const out: PanelFinding[] = state.submitted.map((sub) => {
+    const { card, proofArtifactId } = cardFor(state, sub, state.status)
+    return { id: sub.id, title: sub.title, severity: sub.severity, poc: sub.poc || null, card, proofId: proofArtifactId }
+  })
+  const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
+  const pocs = new Set(state.submitted.map((s) => s.poc))
+  for (const f of state.findings) {
+    if (legacy ? state.submitted.length > 0 : f.poc && pocs.has(f.poc)) continue
+    const proof = f.proven ? state.artifacts.find((a) => a.kind === "proof" && a.findingId === f.id) : undefined
+    out.push({
+      id: f.id,
+      title: f.title,
+      severity: f.severity,
+      poc: f.poc ?? null,
+      card: f.proven ? "proven" : "unproven",
+      proofId: proof?.id ?? null,
+    })
+  }
+  return out
+}
+
+// The word each finding state shows. Same words as the chat's finding card.
+const CARD_WORD: Record<CardState, string> = {
+  proven: "Proven",
+  replaying: "Replaying",
+  waiting: "Awaiting replay",
+  unproven: "Not reproduced",
+  dropped: "Not recorded",
 }
 
 const plural = (n: number, word: string) => `${n} ${n === 1 ? word : `${word}s`}`
@@ -344,6 +415,74 @@ function Row({
           {t2 ? <TierTag /> : null}
         </span>
         {sub ? <span className="truncate text-xs leading-4 text-muted-foreground">{sub}</span> : null}
+      </span>
+    </button>
+  )
+}
+
+// The run's findings, one row each. A proven row opens its replay proof in the
+// drawer. A replay proof that matches no finding row still lists below, so no
+// proof is hidden.
+function FindingList({
+  items,
+  loose,
+  openDoc,
+  openVersion,
+  onFile,
+}: {
+  items: PanelFinding[]
+  loose: ArtifactDoc[]
+  openDoc: string | null
+  openVersion: string | null
+  onFile: (fileId: string, versionId?: string) => void
+}) {
+  if (!items.length && !loose.length) return <p className={empty}>No findings yet.</p>
+  return (
+    <div className="flex flex-col py-1">
+      {items.map((f) => (
+        <FindingRow key={f.id} finding={f} active={f.proofId != null && f.proofId === openDoc} onFile={onFile} />
+      ))}
+      {loose.length ? <FileTree docs={loose} activeId={openDoc} activeVersionId={openVersion} onOpen={onFile} /> : null}
+    </div>
+  )
+}
+
+function FindingRow({
+  finding: f,
+  active,
+  onFile,
+}: {
+  finding: PanelFinding
+  active: boolean
+  onFile: (fileId: string, versionId?: string) => void
+}) {
+  const proven = f.card === "proven"
+  const Icon = proven ? ShieldCheck : Shield
+  const proofId = f.proofId
+  return (
+    <button
+      type="button"
+      disabled={!proofId}
+      onClick={proofId ? () => onFile(proofId) : undefined}
+      aria-current={active || undefined}
+      title={proofId ? "Open the replay proof" : undefined}
+      className={cn(
+        "flex w-full gap-2.5 px-3 py-[7px] text-left transition-colors outline-none enabled:hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03]",
+        active && "bg-foreground/5 enabled:hover:bg-foreground/5",
+      )}
+    >
+      <Icon className={cn("mt-px size-3.5 shrink-0", proven ? "text-ok" : "text-muted-foreground")} />
+      <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{f.title}</span>
+          <span className={cn("ml-auto shrink-0 text-[11px] leading-[14px]", proven ? "text-ok" : "text-muted-foreground")}>
+            {CARD_WORD[f.card]}
+          </span>
+        </span>
+        <span className="flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
+          <span className="shrink-0 capitalize">{f.severity}</span>
+          {f.poc ? <span className="min-w-0 truncate font-mono text-[11px]">{f.poc}</span> : null}
+        </span>
       </span>
     </button>
   )
