@@ -11,7 +11,8 @@
 //   any other pack the same coverage / leads keys, or `tools` instead of `coverage`
 // prepassView turns each of them into one shape for the run view:
 //   { total, tools: [{ name, status: "ran" | "unavailable", reason, leads }],
-//     leads: [{ check, impact, where, detail, tools[], corroborated }] }
+//     leads: [{ check, impact, where, rule, detail, tools[], corroborated }] }
+// `rule` is the scanner's rule id and CWE ("10038 · CWE-693"), or "".
 // Leads are worst first. A lead is never a finding: only a replay proves one.
 // Pack data is untrusted: sizes are capped and no secret value is ever copied
 // (only fields we name are read, and a secret lead field is never one of them).
@@ -51,15 +52,36 @@ function tool(t, name, leads) {
   return { name: str(name, 60) || "tool", ...statusOf(t), leads };
 }
 
+// Older ZAP leads keep the rule id and CWE only at the start of their
+// description: "ZAP rule 10038, CWE-693. Parameter: q."
+const ZAP_PREFIX = /^ZAP rule (\d+)(?:, CWE-(\d+))?\.\s*/;
+
+// The rule id and CWE of a lead, from named fields only. `rule` is the rule
+// id only when the lead also has a check; alone it is the check itself.
+function ruleOf(o, detail) {
+  const id = o.ruleId ?? o.pluginid ?? (o.check != null ? o.rule : null);
+  const cwe = o.cwe ?? o.cweid;
+  const parts = [];
+  if (id != null && String(id) !== "") parts.push(str(id, 60));
+  if (cwe != null && String(cwe) !== "" && String(cwe) !== "-1") parts.push(`CWE-${str(cwe, 10).replace(/^CWE-/i, "")}`);
+  const m = ZAP_PREFIX.exec(detail);
+  const rest = m ? detail.slice(m[0].length) : detail;
+  if (parts.length) return { rule: parts.join(" · "), detail: rest };
+  if (!m) return { rule: "", detail };
+  return { rule: m[2] ? `${m[1]} · CWE-${m[2]}` : m[1], detail: rest };
+}
+
 function lead(l, toolNames) {
   const o = obj(l);
   const names = arr(o.engines).map((e) => str(e, 60)).filter(Boolean);
   if (!names.length) names.push(str(o.engine ?? o.tool ?? toolNames, 60));
+  const { rule, detail } = ruleOf(o, str(o.property ?? o.description ?? o.detail ?? o.summary, 240));
   return {
     check: str(o.check ?? o.rule ?? o.title, 120),
     impact: str(o.impact ?? o.severity, 20),
     where: where(o.where ?? o.file, o.lines?.[0] ?? o.line),
-    detail: str(o.property ?? o.description ?? o.detail ?? o.summary, 240),
+    rule,
+    detail,
     tools: names.filter(Boolean),
     corroborated: Boolean(o.corroborated),
   };

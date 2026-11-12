@@ -88,3 +88,20 @@ test("a CLI record keeps its prepass at the top level; the fold is built from it
   assert.equal(prepassFromResult({ alias: "a", findings: [], pack: "domains" }), null);
   assert.equal(prepassFromResult(null), null);
 });
+
+test("a ZAP lead shows its rule id and CWE, also from an older record", () => {
+  const v = prepassView({ leads: [
+    { engine: "zap", check: "CSP header not set", impact: "Medium", where: "/", rule: "10038", cwe: "693", description: "ZAP rule 10038, CWE-693. Parameter: q." },
+    { engine: "zap", check: "Cookie without flag", impact: "Low", where: "/login", description: "ZAP rule 10010, CWE-1004. Parameter: sid." },
+    { engine: "zap", check: "Info leak", impact: "Info", where: "/x", description: "ZAP rule 10027. " },
+    { engine: "semgrep", check: "sqli", impact: "High", where: "a.js", description: "Raw query." },
+  ] });
+  const by = Object.fromEntries(v.leads.map((l) => [l.check, l]));
+  assert.equal(by["CSP header not set"].rule, "10038 · CWE-693");
+  assert.equal(by["CSP header not set"].detail, "Parameter: q.");
+  assert.equal(by["Cookie without flag"].rule, "10010 · CWE-1004");
+  assert.equal(by["Cookie without flag"].detail, "Parameter: sid.");
+  assert.equal(by["Info leak"].rule, "10027");
+  assert.equal(by.sqli.rule, "");
+  assert.equal(by.sqli.detail, "Raw query.");
+});

@@ -147,6 +147,8 @@ export interface PrepassLead {
   check: string
   impact: string
   where: string
+  // Rule id and CWE, e.g. "10038 · CWE-693". Older records have none.
+  rule?: string
   detail: string
   tools: string[]
   corroborated: boolean

@@ -97,6 +97,8 @@ export function parseZap(text) {
         impact: ["Informational", "Low", "Medium", "High"][Number(a.riskcode)] ?? "Informational",
         where: `${path}${more}`,
         path,
+        rule: String(a.pluginid ?? ""),
+        cwe: a.cweid && a.cweid !== "-1" ? String(a.cweid) : null,
         description: cap(`ZAP rule ${a.pluginid}${a.cweid && a.cweid !== "-1" ? `, CWE-${a.cweid}` : ""}. ${first?.param ? `Parameter: ${first.param}.` : ""}`, 240),
       });
     }
