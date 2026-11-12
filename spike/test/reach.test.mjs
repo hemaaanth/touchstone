@@ -16,7 +16,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -29,6 +29,7 @@ beforeEach(() => rmSync(process.env.TOUCHSTONE_GRANTS_FILE, { force: true }));
 const { addGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, enforceReach, isNetworkKind, openReach, NON_NETWORK_KINDS } = await import("../lib/reach.mjs");
 const { targetSummary, resolveTargetDir, prepareWorkspace, prepareRunWorkspace } = await import("../lib/targets.mjs");
+const { PACKS } = await import("../packs/index.mjs");
 
 // A local http server stands in for the granted host. Pointed at via the
 // x-touchstone-url header, which plain fetch can set (no proxy-agent dependency).
@@ -119,24 +120,40 @@ test("GRANT ⇒ ONLY THE GRANTED HOST: the proxy forwards the granted host and b
   }
 });
 
-test("a live target is NEVER dispatched: honest in the summary, refused at every workspace entry", async () => {
-  // The confinement boundary is built and proven (reach-confine.test.mjs), but
-  // the dispatcher does not yet run a live run's tools inside it. So "live" stays
-  // non-runnable: the refusal is pre-flight and honest, never advisory.
-  const live = { id: "live-probe", title: "A live host", kind: "live", hosts: ["app.example.com"], pack: "review" };
+test("a live target is runnable, but refused until its pack can test a live site", async () => {
+  // The operator adds a live scope with a permission checkbox (scopes-store
+  // addLiveScope), so "live" is offered like any other scope. The grant check
+  // runs at run start (openReach), not when the workspace is built.
+  const live = { id: "live-probe", title: "A live host", kind: "live", hosts: ["app.example.com"], pack: "web" };
 
-  // Honest in the summary: the operator sees the host(s) it WOULD touch, so the
-  // target is never silently offered as if it were nothing.
+  // The summary shows the host(s) a run would touch.
   const s = targetSummary(live);
   assert.equal(s.kind, "live");
   assert.deepEqual(s.hosts, ["app.example.com"]);
 
-  // Refused at every path that would turn a target into a running workspace —
-  // even if a grant for its host exists. There is no entry point that dispatches.
-  addGrant({ hosts: ["app.example.com"], kind: "operator-owned", ownership: true });
+  // A live target has no directory; it is never a lab.
   assert.throws(() => resolveTargetDir(live), /not yet runnable: live/);
-  assert.throws(() => prepareWorkspace(live, { modules: [] }), /not yet runnable: live/);
-  await assert.rejects(() => prepareRunWorkspace(live, { modules: [] }), /not yet runnable: live/);
+
+  // No pack can test a live website yet: each scans its own planted lab. So
+  // the run is refused before anything is spent, instead of reporting the
+  // lab's bugs against the operator's site.
+  assert.equal(PACKS.web.live, undefined);
+  assert.throws(() => prepareWorkspace(live, { modules: [] }), /cannot test a live website yet/);
+
+  // Once a pack says it can (live: true), the workspace is a brief that lists
+  // the hosts, and its config says "live".
+  PACKS.web.live = true;
+  let ws;
+  try {
+    ws = prepareWorkspace(live, { modules: [] });
+    assert.match(readFileSync(path.join(ws, "BRIEF.md"), "utf8"), /- app\.example\.com/);
+    const cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"));
+    assert.equal(cfg.kind, "live");
+    assert.deepEqual(cfg.hosts, ["app.example.com"]);
+  } finally {
+    delete PACKS.web.live;
+    if (ws) rmSync(ws, { recursive: true, force: true });
+  }
 });
 
 test("the allow-list is the covering grant's hosts, not every grant in the store", async () => {

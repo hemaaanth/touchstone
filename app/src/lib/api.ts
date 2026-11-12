@@ -87,6 +87,9 @@ export type ScopeMember =
 // it. The other fields are the older single-member bodies.
 export function attachScope(body: {
   title: string
+  kind?: "live"
+  hosts?: string[]
+  permission?: boolean
   members?: ScopeMember[]
   pack?: string
   repo?: string

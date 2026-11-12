@@ -1,5 +1,5 @@
 import { useRef, useState } from "react"
-import { FileCode2, FlaskConical, Folder, FolderGit2, Loader2, Plus, X } from "lucide-react"
+import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, X } from "lucide-react"
 import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope } from "@/lib/api"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
@@ -217,6 +217,7 @@ export function NewRunDialog({
 // A scope's kind, as an icon: a lab, local folders, or linked repos. A mixed
 // scope with any repo shows the repo icon, else the folder icon.
 export function ScopeIcon({ target: t }: { target: Pick<TargetChoice, "kind" | "links"> }) {
+  if (t.kind === "live") return <Globe />
   if (t.kind === "lab") return <FlaskConical />
   if (t.kind === "local-source") return <Folder />
   if (t.kind === "scope") return t.links?.length ? <FolderGit2 /> : <Folder />
@@ -320,17 +321,40 @@ const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 type Source =
   | { kind: "repo"; url: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
+  | { kind: "site"; host: string }
 
-const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : `folder:${s.name}`)
-const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.name)
+const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.host}` : `folder:${s.name}`)
+const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
+
+// A website address the operator typed, as a bare host name. "example.com",
+// "https://app.example.com/login" and "http://example.com:8080" all work.
+// The server checks the host again before it saves anything.
+function siteHost(raw: string): string | null {
+  const text = raw.trim()
+  if (!text) return null
+  let u: URL
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`)
+  } catch {
+    return null
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null
+  if (u.username || u.password || !u.hostname.includes(".")) return null
+  return u.hostname.toLowerCase()
+}
 
 // What POST /api/scopes gets for a list of sources: one members array, repos
 // and folders mixed, in any language. The server picks the pack from the
 // content. `pack` is the module the scope was added under; it counts only for
 // repos, whose content the server does not know until a run fetches it.
-function scopeBody(sources: Source[], name: string, pack?: string): Parameters<typeof attachScope>[0] {
+// Live websites go as { kind: "live", hosts, permission }: the checkbox is the
+// operator saying they may test them, and the server records it as a grant.
+function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
-  return { title, members: sources, ...(pack ? { pack } : {}) }
+  const sites = sources.flatMap((s) => (s.kind === "site" ? [s.host] : []))
+  if (sites.length) return { kind: "live", title, hosts: sites, permission, ...(pack ? { pack } : {}) }
+  const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
+  return { title, members, ...(pack ? { pack } : {}) }
 }
 
 // The add row under a scope list. Closed, it is one quiet row. Open, the same
@@ -351,30 +375,47 @@ export function AddScope({
   const [name, setName] = useState("")
   const [sources, setSources] = useState<Source[]>([])
   const [busy, setBusy] = useState(false)
+  const [permission, setPermission] = useState(false)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const body = sources.length ? scopeBody(sources, name.trim(), pack) : null
+  const body = sources.length ? scopeBody(sources, name.trim(), pack, permission) : null
+  const live = sources.some((s) => s.kind === "site")
 
   const close = () => {
     setOpen(false)
     setUrl("")
     setName("")
     setSources([])
+    setPermission(false)
     onError(null)
   }
   const add = (s: Source) => {
+    // One scope is either code (repos, folders) or live websites, not both.
+    if (sources.length && (s.kind === "site") !== live) {
+      return onError("A scope holds code or live websites, not both. Add the other kind as its own scope.")
+    }
     onError(null)
+    // The tick covers the websites listed when it was ticked. A new one needs a new tick.
+    if (s.kind === "site") setPermission(false)
     setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
   }
   const addUrl = () => {
-    const href = githubUrl(url)
-    if (!href) return onError("Use an HTTPS GitHub repository, folder, or file URL.")
-    add({ kind: "repo", url: href })
+    const text = url.trim()
+    const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
+    const host = href ? null : siteHost(text)
+    // github.com is never a live site here: a near-miss repo URL would
+    // otherwise become a permission tick for all of github.com.
+    if (host === "github.com" || host?.endsWith(".github.com")) {
+      return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
+    }
+    if (!href && !host) return onError("Use a GitHub repository URL or a website address.")
+    add(href ? { kind: "repo", url: href } : { kind: "site", host: host! })
     setUrl("")
   }
   const save = () => {
     if (!body || busy) return
+    if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     setBusy(true)
     onError(null)
     attachScope(body)
@@ -442,8 +483,8 @@ export function AddScope({
               else save()
             }
           }}
-          placeholder={sources.length ? "Add another GitHub URL" : "GitHub URL"}
-          aria-label="GitHub repository URL"
+          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL") : "GitHub URL or website"}
+          aria-label="GitHub repository URL or website address"
           className="h-full min-w-0 flex-1 bg-transparent leading-none outline-none placeholder:text-muted-foreground"
         />
         <button type="button" className={chip} disabled={busy} onClick={() => folderRef.current?.click()}>
@@ -473,10 +514,10 @@ export function AddScope({
             {sources.map((s) => (
               <li key={sourceKey(s)} className="flex h-8 items-center gap-3 pr-1 pl-2.5 [&_svg]:size-4">
                 <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
-                  {s.kind === "repo" ? <FolderGit2 /> : <Folder />}
+                  {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : `${s.name}/`}
+                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.host : `${s.name}/`}
                 </span>
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
@@ -488,7 +529,10 @@ export function AddScope({
                   aria-label={`Remove ${sourceLabel(s)}`}
                   title="Remove from scope"
                   disabled={busy}
-                  onClick={() => setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))}
+                  onClick={() => {
+                    if (s.kind === "site") setPermission(false)
+                    setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))
+                  }}
                   className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-3.5"
                 >
                   <X />
@@ -496,6 +540,23 @@ export function AddScope({
               </li>
             ))}
           </ul>
+          {live ? (
+            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input
+                type="checkbox"
+                checked={permission}
+                disabled={busy}
+                onChange={(e) => {
+                  setPermission(e.target.checked)
+                  if (e.target.checked) onError(null)
+                }}
+                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
+              />
+              <span>
+                I have permission to test these websites. A run sends real requests to them.
+              </span>
+            </label>
+          ) : null}
           <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
             <input
               value={name}
@@ -518,9 +579,11 @@ export function AddScope({
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
             <span className="shrink-0 text-[11px] text-muted-foreground">
-              {`${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
+              {live
+                ? `${sources.length} ${sources.length === 1 ? "website" : "websites"}, tested as one unit`
+                : `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy || (live && !permission)} onClick={save}>
               Add scope
             </Button>
           </div>

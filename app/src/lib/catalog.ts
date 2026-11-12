@@ -55,11 +55,13 @@ export const SCOPE_KIND: Record<TargetScope["kind"], string> = {
   "local-source": "Local source",
   brief: "Repository",
   scope: "Scope",
+  live: "Live site",
 }
 
 // What a scope row shows on the right: its file, its file count, or its repo.
 // A scope with several members counts its repos and files.
 export function scopeMeta(t: TargetScope): string {
+  if (t.hosts?.length) return t.hosts.join(", ")
   if ((t.members?.length ?? 0) > 1) {
     const repos = t.links?.length ?? 0
     const files = t.files?.length ?? 0
