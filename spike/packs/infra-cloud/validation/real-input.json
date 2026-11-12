@@ -1,0 +1,118 @@
+{
+  "/tmp/realin4/vpc": {
+    "files": 101,
+    "skipped": 0,
+    "leads": 72,
+    "located": 72,
+    "executors": [
+      {
+        "engine": "trivy",
+        "status": "ok",
+        "reported": 24,
+        "leads": 24
+      },
+      {
+        "engine": "kics",
+        "status": "ok",
+        "reported": 62,
+        "leads": 62
+      },
+      {
+        "engine": "prowler",
+        "status": "unavailable"
+      },
+      {
+        "engine": "moto-live",
+        "status": "ok",
+        "leads": 0
+      }
+    ],
+    "cryptoChecks": [],
+    "sample": [
+      "trivy AWS-0101 main.tf:1388",
+      "kics 4fa66806-0dd9-4f8d-9480-3174d39c7c91 examples/flow-log/main.tf:264",
+      "kics 568a4d22-3517-44a6-a7ad-6a7eed88722c examples/flow-log/main.tf:264",
+      "kics d0cc8694-fcad-43ff-ac86-32331d7e867f examples/flow-log/main.tf:264",
+      "kics f861041c-8c9f-4156-acfc-5e6e524f5884 examples/flow-log/main.tf:264"
+    ],
+    "replays": [
+      {
+        "check": "AWS-0101",
+        "file": "main.tf",
+        "line": 1388,
+        "status": "pass"
+      },
+      {
+        "check": "4fa66806-0dd9-4f8d-9480-3174d39c7c91",
+        "file": "examples/flow-log/main.tf",
+        "line": 264,
+        "status": "pass"
+      },
+      {
+        "check": "568a4d22-3517-44a6-a7ad-6a7eed88722c",
+        "file": "examples/flow-log/main.tf",
+        "line": 264,
+        "status": "pass"
+      }
+    ],
+    "ms": 13742
+  },
+  "/tmp/realin4/shop": {
+    "files": 290,
+    "skipped": 24,
+    "leads": 1009,
+    "located": 1009,
+    "executors": [
+      {
+        "engine": "trivy",
+        "status": "ok",
+        "reported": 364,
+        "leads": 364
+      },
+      {
+        "engine": "kics",
+        "status": "ok",
+        "reported": 673,
+        "leads": 673
+      },
+      {
+        "engine": "prowler",
+        "status": "unavailable"
+      },
+      {
+        "engine": "moto-live",
+        "status": "ok",
+        "leads": 0
+      }
+    ],
+    "cryptoChecks": [],
+    "sample": [
+      "trivy KSV-0014 kustomize/components/shopping-assistant/shoppingassistantservice.yaml:38",
+      "trivy DS-0002 src/adservice/Dockerfile:1",
+      "kics fd54f200-402c-4333-a5a4-36ef6709af2f src/adservice/Dockerfile:31",
+      "trivy DS-0002 src/cartservice/src/Dockerfile.debug:1",
+      "kics fd54f200-402c-4333-a5a4-36ef6709af2f src/cartservice/src/Dockerfile.debug:25"
+    ],
+    "replays": [
+      {
+        "check": "KSV-0014",
+        "file": "kustomize/components/shopping-assistant/shoppingassistantservice.yaml",
+        "line": 38,
+        "status": "pass"
+      },
+      {
+        "check": "DS-0002",
+        "file": "src/adservice/Dockerfile",
+        "line": 1,
+        "status": "pass"
+      },
+      {
+        "check": "fd54f200-402c-4333-a5a4-36ef6709af2f",
+        "file": "src/adservice/Dockerfile",
+        "line": 31,
+        "status": "pass"
+      }
+    ],
+    "ms": 12257
+  }
+}

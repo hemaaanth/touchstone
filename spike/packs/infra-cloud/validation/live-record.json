@@ -2,7 +2,7 @@
   "result": {
     "alias": "qwen-abl",
     "approveMode": "auto",
-    "ms": 419654,
+    "ms": 1086869,
     "status": "done",
     "pack": "infra-cloud",
     "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
@@ -6434,6 +6434,41 @@
     "findings": [
       {
         "n": 1,
+        "leadId": "1",
+        "title": "public-signer-load-balancer",
+        "severity": "high",
+        "poc": "infra-evidence-1",
+        "rootCause": "public-signer-load-balancer:cloudformation.json:AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB",
+        "explanation": "A signer or validator load balancer is internet-facing and has a listener. Backend reachability and authentication are not tested. Fix: keep the signing endpoint private.",
+        "file": "cloudformation.json",
+        "lines": [
+          8
+        ],
+        "resource": "AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "public-signer-load-balancer",
+          "where": {
+            "file": "cloudformation.json",
+            "line": 8,
+            "document": 0,
+            "resource": "AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "public-signer-load-balancer",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 2,
         "leadId": "2",
         "title": "hot-wallet-key-in-config",
         "severity": "high",
@@ -6474,7 +6509,42 @@
         "pocProved": true
       },
       {
-        "n": 2,
+        "n": 3,
+        "leadId": "3",
+        "title": "exposed-signer-service",
+        "severity": "high",
+        "poc": "infra-evidence-3",
+        "rootCause": "exposed-signer-service:kubernetes.yaml:Service.signer",
+        "explanation": "A Service selects a signer workload and uses NodePort. NodePort alone does not prove internet routing. A public LoadBalancer requests external exposure. Fix: use a private ClusterIP service and restrict ingress.",
+        "file": "kubernetes.yaml",
+        "lines": [
+          51
+        ],
+        "resource": "Service.signer",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "exposed-signer-service",
+          "where": {
+            "file": "kubernetes.yaml",
+            "line": 51,
+            "document": 3,
+            "resource": "Service.signer"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "exposed-signer-service",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 4,
         "leadId": "4",
         "title": "internet-rpc-admin-namespaces",
         "severity": "high",
@@ -6509,112 +6579,7 @@
         "pocProved": true
       },
       {
-        "n": 3,
-        "leadId": "1",
-        "title": "public-signer-load-balancer",
-        "severity": "high",
-        "poc": "infra-evidence-1",
-        "rootCause": "public-signer-load-balancer:cloudformation.json:AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB",
-        "explanation": "A signer or validator load balancer is internet-facing and has a listener. Backend reachability and authentication are not tested. Fix: keep the signing endpoint private.",
-        "file": "cloudformation.json",
-        "lines": [
-          8
-        ],
-        "resource": "AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "public-signer-load-balancer",
-          "where": {
-            "file": "cloudformation.json",
-            "line": 8,
-            "document": 0,
-            "resource": "AWS::ElasticLoadBalancingV2::LoadBalancer.ValidatorLB"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "public-signer-load-balancer",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
-        "n": 4,
-        "leadId": "7",
-        "title": "internet-signer-security-group",
-        "severity": "high",
-        "poc": "infra-evidence-7",
-        "rootCause": "internet-signer-security-group:main.tf.json:aws_instance.signer",
-        "explanation": "A public-address signer instance references a security group with world ingress. This declares network exposure, not a deployed route or a successful signing request. Fix: remove public ingress and use a private signer network.",
-        "file": "main.tf.json",
-        "lines": [
-          24
-        ],
-        "resource": "aws_instance.signer",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "internet-signer-security-group",
-          "where": {
-            "file": "main.tf.json",
-            "line": 24,
-            "document": 0,
-            "resource": "aws_instance.signer"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "internet-signer-security-group",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
         "n": 5,
-        "leadId": "6",
-        "title": "broad-kms-sign",
-        "severity": "high",
-        "poc": "infra-evidence-6",
-        "rootCause": "broad-kms-sign:main.tf.json:aws_kms_key.signer",
-        "explanation": "A key-policy Allow gives the wildcard principal kms:Sign without a restricting condition. The key can authorize signing. This does not prove a deployed key or a usable transaction signature. Fix: restrict the principal and signing conditions.",
-        "file": "main.tf.json",
-        "lines": [
-          9
-        ],
-        "resource": "aws_kms_key.signer",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "broad-kms-sign",
-          "where": {
-            "file": "main.tf.json",
-            "line": 9,
-            "document": 0,
-            "resource": "aws_kms_key.signer"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "broad-kms-sign",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
-        "n": 6,
         "leadId": "5",
         "title": "ci-can-exec-signers",
         "severity": "high",
@@ -6649,33 +6614,68 @@
         "pocProved": true
       },
       {
-        "n": 7,
-        "leadId": "3",
-        "title": "exposed-signer-service",
+        "n": 6,
+        "leadId": "6",
+        "title": "broad-kms-sign",
         "severity": "high",
-        "poc": "infra-evidence-3",
-        "rootCause": "exposed-signer-service:kubernetes.yaml:Service.signer",
-        "explanation": "A Service selects a signer workload and uses NodePort. NodePort alone does not prove internet routing. A public LoadBalancer requests external exposure. Fix: use a private ClusterIP service and restrict ingress.",
-        "file": "kubernetes.yaml",
+        "poc": "infra-evidence-6",
+        "rootCause": "broad-kms-sign:main.tf.json:aws_kms_key.signer",
+        "explanation": "A key-policy Allow gives the wildcard principal kms:Sign without a restricting condition. The key can authorize signing. This does not prove a deployed key or a usable transaction signature. Fix: restrict the principal and signing conditions.",
+        "file": "main.tf.json",
         "lines": [
-          51
+          9
         ],
-        "resource": "Service.signer",
+        "resource": "aws_kms_key.signer",
         "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
         "evidence": {
-          "check": "exposed-signer-service",
+          "check": "broad-kms-sign",
           "where": {
-            "file": "kubernetes.yaml",
-            "line": 51,
-            "document": 3,
-            "resource": "Service.signer"
+            "file": "main.tf.json",
+            "line": 9,
+            "document": 0,
+            "resource": "aws_kms_key.signer"
           },
           "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
         },
         "proof": {
           "kind": "evidence",
           "status": "pass",
-          "check": "exposed-signer-service",
+          "check": "broad-kms-sign",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 7,
+        "leadId": "7",
+        "title": "internet-signer-security-group",
+        "severity": "high",
+        "poc": "infra-evidence-7",
+        "rootCause": "internet-signer-security-group:main.tf.json:aws_instance.signer",
+        "explanation": "A public-address signer instance references a security group with world ingress. This declares network exposure, not a deployed route or a successful signing request. Fix: remove public ingress and use a private signer network.",
+        "file": "main.tf.json",
+        "lines": [
+          24
+        ],
+        "resource": "aws_instance.signer",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "internet-signer-security-group",
+          "where": {
+            "file": "main.tf.json",
+            "line": 24,
+            "document": 0,
+            "resource": "aws_instance.signer"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "internet-signer-security-group",
           "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
           "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
           "detail": "Allowlisted detector confirmed the pinned evidence."
@@ -6720,108 +6720,6 @@
       },
       {
         "n": 12,
-        "leadId": "27",
-        "title": "Image user should not be 'root'",
-        "severity": "high",
-        "poc": "infra-evidence-27",
-        "rootCause": "DS-0002:Dockerfile:Dockerfile:3",
-        "explanation": "Image user should not be 'root'. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
-        "file": "Dockerfile",
-        "lines": [
-          3
-        ],
-        "resource": "Dockerfile:3",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "tool:trivy",
-          "where": {
-            "file": "Dockerfile",
-            "line": 3,
-            "rule": "DS-0002"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "tool:trivy",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
-        "n": 13,
-        "leadId": "30",
-        "title": "Privileged",
-        "severity": "high",
-        "poc": "infra-evidence-30",
-        "rootCause": "KSV-0017:kubernetes.yaml:Deployment.signer",
-        "explanation": "Privileged. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
-        "file": "kubernetes.yaml",
-        "lines": [
-          30
-        ],
-        "resource": "Deployment.signer",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "tool:trivy",
-          "where": {
-            "file": "kubernetes.yaml",
-            "line": 30,
-            "rule": "KSV-0017"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "tool:trivy",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
-        "n": 14,
-        "leadId": "22",
-        "title": "Privileged",
-        "severity": "high",
-        "poc": "infra-evidence-22",
-        "rootCause": "KSV-0017:chart/templates/validator.yaml:chart/templates/validator.yaml:17",
-        "explanation": "Privileged. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
-        "file": "chart/templates/validator.yaml",
-        "lines": [
-          17
-        ],
-        "resource": "chart/templates/validator.yaml:17",
-        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-        "evidence": {
-          "check": "tool:trivy",
-          "where": {
-            "file": "chart/templates/validator.yaml",
-            "line": 17,
-            "rule": "KSV-0017"
-          },
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
-        },
-        "proof": {
-          "kind": "evidence",
-          "status": "pass",
-          "check": "tool:trivy",
-          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-          "detail": "Allowlisted detector confirmed the pinned evidence."
-        },
-        "proven": true,
-        "pocProved": true
-      },
-      {
-        "n": 15,
         "leadId": "19",
         "title": "Access to host network",
         "severity": "high",
@@ -6855,13 +6753,115 @@
         "pocProved": true
       },
       {
-        "n": 16,
-        "leadId": "33",
-        "title": "Privilege Escalation Allowed",
+        "n": 13,
+        "leadId": "22",
+        "title": "Privileged",
         "severity": "high",
-        "poc": "infra-evidence-33",
-        "rootCause": "5572cc5e-1e4c-4113-92a6-7a8a3bd25e6d:kubernetes.yaml:Deployment.rpc",
-        "explanation": "Privilege Escalation Allowed. kics confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "poc": "infra-evidence-22",
+        "rootCause": "KSV-0017:chart/templates/validator.yaml:chart/templates/validator.yaml:17",
+        "explanation": "Privileged. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          17
+        ],
+        "resource": "chart/templates/validator.yaml:17",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 17,
+            "rule": "KSV-0017"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 14,
+        "leadId": "27",
+        "title": "Image user should not be 'root'",
+        "severity": "high",
+        "poc": "infra-evidence-27",
+        "rootCause": "DS-0002:Dockerfile:Dockerfile:3",
+        "explanation": "Image user should not be 'root'. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "Dockerfile",
+        "lines": [
+          3
+        ],
+        "resource": "Dockerfile:3",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "Dockerfile",
+            "line": 3,
+            "rule": "DS-0002"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 15,
+        "leadId": "30",
+        "title": "Privileged",
+        "severity": "high",
+        "poc": "infra-evidence-30",
+        "rootCause": "KSV-0017:kubernetes.yaml:Deployment.signer",
+        "explanation": "Privileged. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "kubernetes.yaml",
+        "lines": [
+          30
+        ],
+        "resource": "Deployment.signer",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "kubernetes.yaml",
+            "line": 30,
+            "rule": "KSV-0017"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 16,
+        "leadId": "35",
+        "title": "Default security context configured",
+        "severity": "high",
+        "poc": "infra-evidence-35",
+        "rootCause": "KSV-0118:kubernetes.yaml:Deployment.rpc",
+        "explanation": "Default security context configured. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
         "file": "kubernetes.yaml",
         "lines": [
           74
@@ -6869,18 +6869,18 @@
         "resource": "Deployment.rpc",
         "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
         "evidence": {
-          "check": "tool:kics",
+          "check": "tool:trivy",
           "where": {
             "file": "kubernetes.yaml",
             "line": 74,
-            "rule": "5572cc5e-1e4c-4113-92a6-7a8a3bd25e6d"
+            "rule": "KSV-0118"
           },
           "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
         },
         "proof": {
           "kind": "evidence",
           "status": "pass",
-          "check": "tool:kics",
+          "check": "tool:trivy",
           "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
           "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
           "detail": "Allowlisted detector confirmed the pinned evidence."
@@ -7128,19 +7128,189 @@
         },
         "proven": true,
         "pocProved": true
+      },
+      {
+        "n": 21,
+        "leadId": "52",
+        "title": "Using Unrecommended Namespace",
+        "severity": "medium",
+        "poc": "infra-evidence-52",
+        "rootCause": "611ab018-c4aa-4ba2-b0f6-a448337509a6:chart/templates/validator.yaml:chart/templates/validator.yaml:4",
+        "explanation": "Using Unrecommended Namespace. kics confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          4
+        ],
+        "resource": "chart/templates/validator.yaml:4",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:kics",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 4,
+            "rule": "611ab018-c4aa-4ba2-b0f6-a448337509a6"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:kics",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 22,
+        "leadId": "53",
+        "title": "Service Account Token Automount Not Disabled",
+        "severity": "medium",
+        "poc": "infra-evidence-53",
+        "rootCause": "48471392-d4d0-47c0-b135-cdec95eb3eef:chart/templates/validator.yaml:chart/templates/validator.yaml:13",
+        "explanation": "Service Account Token Automount Not Disabled. kics confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          13
+        ],
+        "resource": "chart/templates/validator.yaml:13",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:kics",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 13,
+            "rule": "48471392-d4d0-47c0-b135-cdec95eb3eef"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:kics",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 23,
+        "leadId": "57",
+        "title": "Image tag \":latest\" used",
+        "severity": "medium",
+        "poc": "infra-evidence-57",
+        "rootCause": "KSV-0013:chart/templates/validator.yaml:chart/templates/validator.yaml:17",
+        "explanation": "Image tag \":latest\" used. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          17
+        ],
+        "resource": "chart/templates/validator.yaml:17",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 17,
+            "rule": "KSV-0013"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 24,
+        "leadId": "58",
+        "title": "Seccomp policies disabled",
+        "severity": "medium",
+        "poc": "infra-evidence-58",
+        "rootCause": "KSV-0104:chart/templates/validator.yaml:chart/templates/validator.yaml:17",
+        "explanation": "Seccomp policies disabled. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          17
+        ],
+        "resource": "chart/templates/validator.yaml:17",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 17,
+            "rule": "KSV-0104"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
+      },
+      {
+        "n": 25,
+        "leadId": "59",
+        "title": "Restrict container images to trusted registries",
+        "severity": "medium",
+        "poc": "infra-evidence-59",
+        "rootCause": "KSV-0125:chart/templates/validator.yaml:chart/templates/validator.yaml:17",
+        "explanation": "Restrict container images to trusted registries. trivy confirms this static rule at the cited location. No deployment or exploit is tested.",
+        "file": "chart/templates/validator.yaml",
+        "lines": [
+          17
+        ],
+        "resource": "chart/templates/validator.yaml:17",
+        "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+        "evidence": {
+          "check": "tool:trivy",
+          "where": {
+            "file": "chart/templates/validator.yaml",
+            "line": 17,
+            "rule": "KSV-0125"
+          },
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea"
+        },
+        "proof": {
+          "kind": "evidence",
+          "status": "pass",
+          "check": "tool:trivy",
+          "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
+          "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+          "detail": "Allowlisted detector confirmed the pinned evidence."
+        },
+        "proven": true,
+        "pocProved": true
       }
     ],
     "findingSubmitted": true,
     "finding": {
-      "title": "hot-wallet-key-in-config",
+      "title": "public-signer-load-balancer",
       "severity": "high",
-      "poc": "infra-evidence-2"
+      "poc": "infra-evidence-1"
     },
     "pocProved": true,
     "proof": {
       "kind": "evidence",
       "status": "pass",
-      "check": "hot-wallet-key-in-config",
+      "check": "public-signer-load-balancer",
       "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
       "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
       "detail": "Allowlisted detector confirmed the pinned evidence."
@@ -7149,35 +7319,76 @@
     "recorded": true,
     "calls": [
       "infrastructure_leads",
+      "spawn_agent",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "bulletin_read",
+      "bulletin_post",
+      "message_agent",
+      "bulletin_read",
+      "bulletin_read",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "check_evidence",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "submit_finding",
+      "bulletin_read",
+      "message_agent",
+      "bulletin_read",
+      "spawn_agent",
+      "bulletin_read",
+      "bulletin_read",
+      "message_agent",
+      "bulletin_read",
+      "bulletin_read",
+      "bulletin_read",
       "infrastructure_leads",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
+      "bulletin_read",
+      "bulletin_read",
       "check_evidence",
       "check_evidence",
       "check_evidence",
@@ -7189,32 +7400,18 @@
       "check_evidence",
       "check_evidence",
       "check_evidence",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
-      "submit_finding",
       "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence",
-      "check_evidence"
+      "bulletin_post",
+      "bulletin_post"
     ],
-    "final": "\n\nAudit complete. All 26 evidence replays passed against pinned snapshot `cff14a62…` (commit `96d2334…`); 20 findings recorded, each deduped to one fix per root cause.\n\n## Proven — High (priority paths: keys → signers → RPC admin → publishing)\n\n| # | Lead | Root cause (pinned location) | Fix |\n|---|------|------------------------------|-----|\n| 1 | 2 | **Hot-wallet private key in plaintext ConfigMap** — `kubernetes.yaml` doc1:13 `ConfigMap.hot-wallet` (key sha256 `39c8b1be…`, address `0xd2C3…d6fa`; no balance/live-use claim) | Isolated signing service + rotate key |\n| 2 | 4 | **Internet RPC with admin namespaces** — `kubernetes.yaml` doc5:90 `Service.rpc` public LB → all-interface listener, `admin`/`debug`/`personal` enabled (related `Deployment.rpc`:59); configured path, not a live RPC test | Remove admin namespaces from public RPC |\n| 3 | 1 | **Internet-facing signer/validator LB** — `cloudformation.json`:8 `ValidatorLB` | Keep signing endpoint private |\n| 4 | 7 | **Public signer instance with world-ingress SG** — `main.tf.json`:24 `aws_instance.signer` + SG:14 | Remove public ingress, private signer network |\n| 5 | 6 | **Wildcard `kms:Sign` key policy, no conditions** — `main.tf",
+    "final": "\n\nBoth fleet reports are in and consistent — no further work required. Final audit state, unchanged:\n\n- **Proven:** 25 findings (16 High / 9 Medium), every one recorded only after its own `check_evidence` pass against snapshot `cff14a62`. Lead 60 is now formally attributed as a dedup into F13 (b-311), and board-scope confirms zero new root causes across all 60 directly visible leads.\n- **Ruled out / deduplicated:** 35 visible scanner leads folded into the 25 root causes (one finding per shared fix); baseline.tf leads stand as corroborating anchors of the main.tf.json bucket/SG (confirmed single-fix merge); Prowler/moto results used as synthetic corroboration only.\n- **Untried / gaps:** tail IDs 61–183 (123 Medium/Low scanner leads) replay-verified by sampling but not individually enumerable — harness output truncates at ~36KB deterministically for every agent; all High scanner leads sit inside the visible range, so no High cause is masked. Also logged: validator.yaml template-only for crypto detectors, baseline.tf outside cryptoCoverage, one off-by-one/multi-engine record (IDs contiguous, none missing).\n\nFleet disbanded; Bulletin holds the full trail (b-129 dedup map, b-242 recon g",
     "usage": {
-      "usd": 0.029412030000000002,
+      "usd": 0.11297417,
       "models": {
         "near/Qwen/Qwen3.8-27B-abliterated": {
-          "in": 44067,
-          "out": 20481,
-          "reasoning": 17359
+          "in": 518048,
+          "out": 68335,
+          "reasoning": 58624
         }
       }
     },

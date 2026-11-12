@@ -23,6 +23,13 @@ docker build -f spike/packs/infra-cloud/Dockerfile.prowler-python \
   -t touchstone/prowler-python:5.48.0 spike/packs/infra-cloud
 ```
 
+Build the live-cloud lab image. It carries a private moto service with IAM
+enforced, plus the node runtime the request-script harness needs:
+
+```sh
+docker build -t touchstone/infra-cloud-cloud-lab:wave2 spike/packs/infra-cloud/lab/cloud
+```
+
 The comparison also uses Checkov and Kubescape:
 
 ```sh
@@ -32,10 +39,11 @@ docker build -f spike/packs/infra-cloud/Dockerfile.kubescape \
   -t touchstone/kubescape-cli:4.0.20 spike/packs/infra-cloud
 ```
 
-Tool provisioning may fetch public images, a CLI binary and policy assets.
-The actual IaC scans and evidence replays have no network.
-Prowler and moto share an internal Docker network with no host port.
-See `TOOLS.md` for licenses, checksums, sizes and the comparison.
+Tool provisioning may fetch public images, a CLI binary, policy assets and npm
+or pip packages. The actual IaC scans, evidence replays and cloud replays have no
+internet. The moto posture run and the live-cloud replay each use their own
+internal Docker network with no host port. See `TOOLS.md` for licenses,
+checksums, sizes and the comparison.
 
 ## Lab
 
@@ -68,6 +76,7 @@ It checks versioning and Object Lock FAIL-to-PASS transitions.
 It does not claim cloud verification of the public-write ACL case.
 
 The pack smoke checks every retained lead's replay, the submit gate, duplicate rejection and secret-value exclusion.
+It also runs the live-cloud replay for the role lead, and checks that the same policy narrowed to one bucket fails it.
 This mechanically exercises the proof path. It does not claim that every scanner lead is a distinct vulnerability.
 Saved safe results live under `validation/`.
 
@@ -102,6 +111,24 @@ A literal wallet key is represented by its derived address, `[REDACTED]` and a h
 No scanner source snippet, raw stdout, raw stderr or detector exception enters the run record.
 The shared evidence helper also suppresses detector prose.
 
+## Real folders
+
+The pack reads any folder, not only its lab:
+
+```sh
+node spike/packs/infra-cloud/real-input.mjs /path/to/infra
+```
+
+It captures the folder, runs the same prepass, replays three leads and saves
+`validation/real-input.json`.
+Binary, oversized and symlinked files are listed as skipped instead of stopping
+the audit.
+It pins the folder in place (`snapshot.json` and `.touchstone.json`), so point it
+at a copy when the folder must stay untouched.
+The app's scope target path currently allows only the Contracts and Review packs,
+so a scope run cannot select this pack yet. The folder runner is the supported
+path today.
+
 ## Proof contract
 
 The pack uses `lib/proof-evidence.mjs` without changes.
@@ -118,12 +145,26 @@ Only passing findings survive the final replay.
 
 Prowler is synthetic corroboration for source-level bucket recovery checks.
 It does not replace the finding's IaC detector.
-No HTTP proof or second HTTP runner is implemented here.
+
+The broad role read is the one lead with a live replay.
+`live-cloud.mjs` seeds a private moto cloud from the same pinned policy.
+A foreign access key assumes the role, proves the assumed identity, then reads a
+bucket that is not the workload's own.
+The shared `lib/proof-http.mjs` records the traffic out of band and its oracle
+decides the verdict. The finding then carries an `http` proof, not an `evidence`
+proof, and the app renders its request log.
+The same policy narrowed to the workload's own bucket fails the replay.
+Every call crosses the recording proxy on the private network. No host port and
+no raw socket from this process are used.
+Moto emulates the identity policy. It does not evaluate the trust policy, so a
+narrowed trust alone still passes the replay.
 
 ## What a finding means
 
 A passing proof confirms configuration in the pinned files.
 It does not prove a live deployment, actual internet routing, stolen credentials, key use or fund loss.
+For the role read, the live replay shows the declared grant really executes
+against a running S3-compatible service. It is not a real AWS account.
 NodePort alone is not internet reachability.
 A CI publishing grant is a trust-boundary warning, not evidence that CI was compromised.
 A missing recovery control is not evidence that an overwrite already happened.

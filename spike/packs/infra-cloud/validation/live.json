@@ -4,20 +4,20 @@
   "status": "done",
   "decision": "approved",
   "recorded": true,
-  "findings": 20,
+  "findings": 25,
   "allEvidencePassed": true,
   "usage": {
-    "usd": 0.029412030000000002,
+    "usd": 0.11297417,
     "models": {
       "near/Qwen/Qwen3.8-27B-abliterated": {
-        "in": 44067,
-        "out": 20481,
-        "reasoning": 17359
+        "in": 518048,
+        "out": 68335,
+        "reasoning": 58624
       }
     }
   },
   "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
   "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
-  "record": "spike/results/agent/run-infra-cloud-qwen-abl-1794345425138.json",
+  "record": "spike/results/agent/run-infra-cloud-qwen-abl-1794451453505.json",
   "reports": []
 }

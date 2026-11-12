@@ -1,7 +1,17 @@
 {
   "smoke": "pass",
-  "leads": 183,
-  "proven": 183,
+  "leads": 189,
+  "proven": 189,
+  "live": {
+    "status": "pass",
+    "oracle": "assumed-role-reads-foreign-bucket",
+    "requests": 4,
+    "narrowedPolicy": {
+      "status": "fail",
+      "detail": "touchstone-lab-treasury/wallets.json was not readable with the assumed credential.",
+      "bucket": true
+    }
+  },
   "cryptoChecks": [
     "public-signer-load-balancer",
     "hot-wallet-key-in-config",
@@ -11,6 +21,7 @@
     "broad-kms-sign",
     "internet-signer-security-group",
     "frontend-public-write",
+    "iam-role-broad-object-read",
     "frontend-object-lock-missing",
     "frontend-versioning-disabled",
     "ci-can-write-frontend"
@@ -20,22 +31,27 @@
       "engine": "trivy",
       "status": "ok",
       "code": 0,
-      "reported": 85,
+      "reported": 87,
       "unlocated": 0,
-      "leads": 85
+      "leads": 87
     },
     {
       "engine": "kics",
       "status": "ok",
       "code": 0,
-      "reported": 88,
+      "reported": 92,
       "unlocated": 0,
-      "leads": 88
+      "leads": 92
     },
     {
       "engine": "prowler",
       "status": "ok",
       "findings": 3
+    },
+    {
+      "engine": "moto-live",
+      "status": "ok",
+      "leads": 1
     }
   ],
   "cloud": {
@@ -75,7 +91,16 @@
       "publicWriteAcl": false
     }
   },
-  "snapshotHash": "cff14a6264f6cec7de2aaee45f89169e6c17d1bcc33ab756038f0937c3d6e3ea",
-  "commit": "96d233408ebaa8043407c781bab30880d67f7edf",
+  "liveCloud": {
+    "image": "touchstone/infra-cloud-cloud-lab:wave2",
+    "leads": [
+      {
+        "lead": "9",
+        "status": "ok"
+      }
+    ]
+  },
+  "snapshotHash": "8d3f311e614adefb85a454da0adb8be468d6b7ac0a6ea45543f55b1e2f172f6a",
+  "commit": "433c67a6392c2cb7b62e368be43c3ea8e20e0222",
   "spendUsd": 0
 }

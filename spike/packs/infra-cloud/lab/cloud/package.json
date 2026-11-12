@@ -1,0 +1,9 @@
+{
+  "name": "touchstone-infra-cloud-lab",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ethers": "6.16.0",
+    "siwe": "2.3.2"
+  }
+}

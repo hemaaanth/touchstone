@@ -13,7 +13,7 @@ The research files live in the main checkout. They are not tracked in this workt
 | [KICS](https://github.com/Checkmarx/kics) | Apache-2.0 | `checkmarx/kics:v2.2.1`, digest in scanners.mjs; 293.4 MB | Yes: bundled queries and libraries at explicit absolute paths; network none; secret scanning disabled here | Terraform HCL, Kubernetes, Helm templates, Dockerfile, CloudFormation | SARIF file via `--report-formats sarif` | Rule ID, static title, severity and exact source location | evidence: rerun the same rule and line | 88 located results. Adds a separate rule engine. No main.tf.json results in this lab | Rule IDs, titles and shared severity classifications in rule-catalog.json | Does not derive the hot-wallet address or connect crypto roles across these resources | **ensemble** with Trivy; independent configuration rules and exact citations |
 | [Kubescape](https://github.com/kubescape/kubescape) | Apache-2.0 | CLI 4.0.20 in `touchstone/kubescape-cli:4.0.20`; 952.8 MB. Binary and offline policy assets have explicit SHA-256 checksums | Yes after policy provisioning. Local WorkloadScan, controls and exceptions; `--keep-local`; network none | Kubernetes manifest file | `--format sarif --output ...` | 18 located results with control IDs | Comparison only; selected proof allowlist does not include it | Narrower file scope; default workload risks overlap this lab's other scanners | Rule IDs/severity metadata; unmodified regolibrary WorkloadScan assets fetched into the image | No AWS KMS, bucket or CI-cloud relationships | **skip** in prepass; retain the offline comparison image and adapter |
 | [Prowler](https://github.com/prowler-cloud/prowler) | Apache-2.0 | `toniblyx/prowler:5.48.0`, pinned base; Python entrypoint adapter `touchstone/prowler-python:5.48.0`; 4384.0 MB | Yes for this bounded moto subset, on a Docker internal network with no published ports | One synthetic S3 account seeded from the pinned lab IaC | JSON OCSF; only rule IDs and PASS/FAIL leave the container | Synthetic corroboration for bucket versioning and Object Lock | The finding still replays its IaC detector. Prowler output alone cannot pass the finding gate | Confirms two source-level recovery-control risks against a live local service | No Prowler source copied. Check IDs remain upstream | Does not prove real-cloud exposure; the public-write ACL case was not reproduced by the moto observation | **wrap** for the private lab subset; never a real account scan |
-| [moto](https://github.com/getmoto/moto) | Apache-2.0 | `motoserver/moto:5.2.5`, pinned digest; 548.4 MB | Yes. Server and Prowler share an internal Docker network. Credentials are the dummy value `testing` | Supported literal front-end bucket settings from main.tf.json | AWS-compatible local API; no target code executed | Lab service, not an independent finding engine | No HTTP proof is created. Source evidence stays authoritative | Chosen instead of LocalStack to avoid a cloud account or hobby-plan sign-in | No server source copied | Simulated AWS behavior is not a deployment or internet reachability proof | **wrap** as the private cloud lab service |
+| [moto](https://github.com/getmoto/moto) | Apache-2.0 | `motoserver/moto:5.2.5`, pinned digest; 548.4 MB; plus the pack's `lab/cloud` image (node for the request-script harness, IAM enforcement on) | Yes. The posture run and the live replay each use their own internal Docker network with no host port and no internet | Supported literal front-end bucket settings, and one role policy plus trust taken from the pinned main.tf.json | AWS-compatible local API; no target code executed | Two jobs: posture corroboration, and the `http` proof service | `http`: a foreign access key assumes the seeded role and reads an unrelated bucket through the recording proxy | The bucket posture run corroborates source recovery controls. The replay proves the declared role grant executes | Chosen instead of LocalStack to avoid a cloud account or hobby-plan sign-in | No server source copied | Simulated AWS behavior is not a deployment or internet reachability proof. Moto checks the identity policy but not the trust policy | **wrap** as the private cloud lab service and the `http` proof |
 | [ScoutSuite](https://github.com/nccgroup/ScoutSuite) | GPL-2.0; separate program only | No image selected or pulled; size not measured | Not exercised; no real cloud account allowed | Cloud account APIs | JSON/HTML reports | No adapter | None | Alternative to Prowler; Prowler works for the required local subset | Read only; no GPL source copied | No offline crypto-specific adapter built | **skip**; Prowler satisfies the offline posture experiment |
 
 Sizes are Docker's installed sizes, in decimal MB. They are not compressed download sizes.
@@ -71,6 +71,31 @@ Only this S3 subset is seeded. This is not a whole-account AWS audit.
 KMS, security groups, load balancers, RBAC and RPC checks use pinned source evidence.
 No cloud-posture finding can skip the evidence gate.
 
+## Live cloud replay
+
+One lead, `iam-role-broad-object-read`, gets a live replay of its own.
+The lab image `lab/cloud` runs moto with `INITIAL_NO_AUTH_ACTION_COUNT=0`, so moto
+evaluates IAM identity policies instead of accepting everything.
+The seed is taken from the same pinned policy the finding cites.
+A foreign access key assumes the role. The assumed credential then reads
+`touchstone-lab-treasury/wallets.json`, a bucket outside the workload.
+`lib/proof-http.mjs` starts the service on a private internal network and records
+every call at a proxy the script cannot write to.
+The finding's proof becomes `http` with the recorded exchanges.
+The same policy narrowed to the workload's own bucket fails the replay, so the
+replay is a real differential and not a tautology.
+
+The proof script signs its own SigV4 requests. The shared AWS SDK could not be
+used: the recording proxy rewrites the Host header, and the SDK always signs the
+URL host, so every signature would break at that boundary.
+The lab gate passes the Host header through and the script signs the origin host.
+
+Moto checks the identity policy but not the trust policy. A wildcard trust is
+therefore required for the lead, but a narrowed trust alone does not fail the
+replay.
+The gate process is part of the lab image. It serves `/healthz` and the lab seed
+so a readiness probe only passes once the seed is complete.
+
 ## Crypto additions
 
 - An unconditional KMS key-policy Allow for a wildcard principal and `kms:Sign` or a matching action wildcard.
@@ -89,5 +114,14 @@ They do not implement an HCL interpreter or a Helm renderer. HCL, Dockerfiles an
 Unresolved bucket expressions are coverage gaps, not proof that controls are disabled.
 IAM handling is conservative. Conditional or denied grants are not promoted as broad access.
 All findings describe requested configuration in the captured files, not actual deployment, token theft, signing, RPC responses or loss of funds.
+
+The live replay reads a synthetic bucket in moto, not a real AWS account.
+It needs Docker at prove time and the built lab image. Without either, the live
+leading finding fails instead of silently falling back.
+The lab seeds one role, one treasury bucket and one policy. It does not model
+bucket policies, resource policies, conditions, permission boundaries, SCPs or
+the trust document.
+The S3-compatible emulation is enough for an object read. It is not AWS fidelity
+for every IAM feature.
 
 Upstream references: [Trivy config scanning](https://trivy.dev/latest/docs/scanner/misconfiguration/), [Checkov](https://github.com/bridgecrewio/checkov), [KICS](https://docs.kics.io/), [Kubescape offline use](https://github.com/kubescape/kubescape#offline-support), [Prowler](https://github.com/prowler-cloud/prowler), [moto server mode](https://docs.getmoto.org/en/latest/docs/server_mode.html).

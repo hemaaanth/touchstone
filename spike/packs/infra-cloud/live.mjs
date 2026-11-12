@@ -9,7 +9,9 @@ const ledger = "/home/hemanth/Projects/near/redteam-harness/spike/spend.json";
 if (process.env.SPEND_LEDGER !== ledger || process.env.SPEND_CAP_USD !== "50.85" || process.env.RUN_BUDGET_USD !== "1") throw new Error("Use WAVE1.md's shared ledger, cap and $1 run budget");
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const results = join(root, "spike/results/agent");
-const stamp = `infra-cloud-qwen-abl-${Date.now()}`;
+// The app loads saved runs whose id matches `-<10 digits>-<n>`, so the stamp
+// carries a seconds field and a counter instead of one millisecond number.
+const stamp = `infra-cloud-qwen-abl-${Math.floor(Date.now() / 1000)}-1`;
 const previous = mkdtempSync(join(tmpdir(), "infra-prior-runs-"));
 const suffixes = ["json", "events", "sqlite", "sqlite-wal", "sqlite-shm"];
 const saved = [];
