@@ -286,6 +286,17 @@ test("reflected-xss: a <meta> CSP before the reflection blocks inline, one after
   assert.equal(xssAt(P, `${meta("script-src 'self'")}<p>${P}</p>`, { "content-security-policy": "img-src *" }).pass, false);
 });
 
+// KNOWN LIMIT (documented in packs/web/SKILL.md): attribute injection into an
+// existing tag has no tag of its own in the value, so the oracle does not see it.
+// It only misses a finding; it never invents one. This pins the boundary: if a
+// change makes it detect this, update this test and the doc together.
+test("reflected-xss: KNOWN LIMIT - an attribute-break payload with no tag of its own is a fail (missed, never false)", () => {
+  const A = '" autofocus onfocus="alert(1)';
+  assert.equal(xssAt(A, `<input value="${A}">`).pass, false);
+  const B = "' autofocus onfocus='alert(1)";
+  assert.equal(xssAt(B, `<input value='${B}'>`).pass, false);
+});
+
 test("reflected-xss: a ?query on the page path still matches (path is the raw path, no query)", () => {
   assert.equal(xss.check([html({ path: "/explorer" })]).pass, true);
 });

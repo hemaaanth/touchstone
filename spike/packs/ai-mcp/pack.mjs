@@ -88,7 +88,10 @@ const mcpItems = (e) => {
   return items;
 };
 const mcpText = (e) => mcpItems(e).join("\n");
-const safeDecode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+// Decode each %XX run on its own. One stray "%" ("100% broken") must not stop the
+// rest of the text from decoding, or two sides that decode differently disagree
+// about whether a secret was already there. Used on BOTH sides of the origin check.
+const safeDecode = (s) => String(s).replace(/(?:%[0-9a-fA-F]{2})+/g, (m) => { try { return decodeURIComponent(m); } catch { return m; } });
 // Was `secret` already in something the caller or a stranger wrote, at or before
 // transcript[i]? That is: any request body or URL up to and including entry i
 // (tickets, chat messages, tool args), or a tool description listed earlier.

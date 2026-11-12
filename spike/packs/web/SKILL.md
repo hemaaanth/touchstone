@@ -102,6 +102,13 @@ The four oracles, each pure functions over a transcript (`pack.mjs`
 | `debug-route-signer-key-leak` | Critical | An unauthenticated route returns the chain signer's private key. "Unauthenticated" is proven from the transcript: a bare call with no credential header returns 200 and the key (that call is the proof; a junk-token call that also returns it is support only), and the key is a real 64-hex key whose derived address equals the `signerAddress` the route reports. |
 | `reflected-xss` | Medium | A page writes a query value into its HTML with an executable vector in it (a `<script>` tag, an `on*=` handler attribute, or a `javascript:` URL in a link-like attribute; a plain `<b>x</b>` does not count) in a live place (not in a comment, an attribute value, or a raw-text element such as `<textarea>`, `<title>`, `<noscript>`, `<iframe>`, `<noembed>`, `<noframes>`, `<xmp>`, unless the payload closes it). CSP is read from the header and from a `<meta http-equiv>` before the reflection. A `<script>` asks `script-src-elem`; a handler or `javascript:` URL asks `script-src-attr`; both fall back to `script-src`, then `default-src`. Inline is allowed only with `'unsafe-inline'` and no nonce, hash or `'strict-dynamic'`. The query is read from the full URL. |
 
+Known limit of `reflected-xss`: it finds only a reflected value that brings its own
+tag. Attribute injection into an existing tag is NOT detected. A payload such as
+`" autofocus onfocus="alert(1)` written into `<input value="">` has no tag of its
+own, so the oracle says no. This only causes a MISSED finding, never a false one.
+`test/web.test.mjs` pins it as a current `fail`, so a future change that fixes it
+must update that test.
+
 ## Secrets in proofs
 
 Oracles read the raw transcript. Their `detail` and the stored `proof.log` never
