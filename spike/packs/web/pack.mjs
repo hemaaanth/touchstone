@@ -29,9 +29,10 @@ import {
   stopLab,
   teardownPersistedLab,
   writeLabHandle,
+  requireImage,
 } from "../../lib/proof-http.mjs";
 
-import { scanWeb } from "./scan.mjs";
+import { scanWeb, docQueryUrls } from "./scan.mjs";
 import { fp, scrubProof } from "./redact.mjs";
 
 const IMAGE = "touchstone/web-lab:dev";
@@ -506,17 +507,20 @@ function tools(ws, state) {
 // A live target comes in as opts.target = { net, baseUrl }: the Docker network
 // and base URL the platform scope proxy grants. Then we scan that and start no
 // scan lab. (The platform seam for this is not built yet. See TOOLS.md.)
-async function prepass(ws, { emit = () => {}, target } = {}) {
-  const handle = await startLab({ image: IMAGE });
+async function prepass(ws, { emit = () => {}, target, image = IMAGE } = {}) {
+  await requireImage(image, "web");
+  const handle = await startLab({ image });
   writeLabHandle(ws, handle);
   emit({ ev: "web-lab-started", image: IMAGE, alias: handle.alias });
 
   let scan = { coverage: [], leads: [] };
   let scanLab = null;
   try {
-    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image: IMAGE }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl });
+    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl });
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
-    scan = await scanWeb(where);
+    // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
+    const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
+    scan = await scanWeb({ ...where, urls: docQueryUrls(docs, where.baseUrl) });
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {

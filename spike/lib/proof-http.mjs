@@ -58,6 +58,16 @@ function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {})
   });
 }
 
+// Fail loudly when a lab image is not built. Without this, `docker run` tries to
+// pull a local-only tag and the error reads "pull access denied". The packs have
+// no source to fall back on, so a missing image means the module cannot run.
+export async function requireImage(image, buildArg) {
+  const r = await docker(["image", "inspect", image]);
+  if (r.code !== 0) {
+    throw new Error(`lab image ${image} is not built. This pack has no source to fall back on, so it cannot run. Build it with: npm run build:labs -- ${buildArg}  (that is: bash scripts/build-labs.sh ${buildArg})`);
+  }
+}
+
 const PROXY_PORT = 8080;          // the port the proxy listens on (what scripts call)
 const ORIGIN_ALIAS = "origin";    // the lab's alias on the inner network
 const REC_MARKER = "__TOUCHSTONE_REC__";

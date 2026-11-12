@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import web, { ORACLES, matchOracle } from "../packs/web/pack.mjs";
-import { mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
+import { prepassView } from "../lib/prepass-view.mjs";
+import { docQueryUrls, mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
 import { proofView } from "../lib/proof-view.mjs";
@@ -298,6 +299,45 @@ test("mergeLeads sorts worst first and marks a path two tools flag as corroborat
   assert.deepEqual(merged.map((l) => l.impact), ["High", "Medium", "Low"]);
   assert.equal(merged[0].corroborated, true);
   assert.equal(merged[2].corroborated, false);
+});
+
+test("docQueryUrls pulls documented input URLs out of the brief and the OpenAPI file", () => {
+  const brief = "It has `GET /explorer?q=<address or tx hash>`. Also /api/users/1 and https://x.test/a?b=1 and /search?term=a&page=2.";
+  assert.deepEqual(docQueryUrls(brief, "http://lab:8080/"), ["http://lab:8080/explorer?q=x", "http://lab:8080/search?term=a&page=2"]);
+  assert.deepEqual(docQueryUrls("no queries here /api/me", "http://lab:8080"), []);
+  assert.deepEqual(docQueryUrls(null, "http://lab:8080"), []);
+});
+
+test("scanWeb feeds dalfox the supplied input URLs, and reports 'no-input' (not 'ran') when it has none", async () => {
+  const dalfoxCalls = [];
+  const run = async ({ image, ws, cmd }) => {
+    if (image.includes("zaproxy")) { writeFileSync(join(ws, "zap.json"), JSON.stringify({ site: [] })); return { code: 0 }; }
+    if (image.includes("nuclei")) return { code: 0 };
+    dalfoxCalls.push(cmd[2]);
+    return { code: 0 };
+  };
+  const withUrls = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run, urls: ["http://lab:8080/explorer?q=x"] });
+  assert.deepEqual(dalfoxCalls, ["http://lab:8080/explorer?q=x"]);
+  assert.equal(withUrls.coverage.find((c) => c.engine === "dalfox").status, "ran");
+
+  dalfoxCalls.length = 0;
+  const none = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run });
+  assert.deepEqual(dalfoxCalls, [], "dalfox is not launched with nothing to test");
+  const d = none.coverage.find((c) => c.engine === "dalfox");
+  assert.equal(d.status, "no-input");
+  assert.match(d.reason, /not a clean result/);
+  // The run view shows it as unavailable, with that reason, never as a clean run.
+  const view = prepassView({ pack: "web", coverage: none.coverage, leads: [] });
+  const tool = view.tools.find((t) => t.name === "dalfox");
+  assert.notEqual(tool.status, "ran");
+  assert.match(tool.reason, /not a clean result/);
+});
+
+test("prepass fails loudly, naming the build script, when the lab image is not built", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "web-noimg-"));
+  try {
+    await assert.rejects(() => web.prepass(ws, { image: "touchstone/no-such-lab:0" }), /not built[\s\S]*build-labs\.sh web/);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
 test("scanWeb runs all three tools, reads their files, and reports a failed tool as unavailable", async () => {

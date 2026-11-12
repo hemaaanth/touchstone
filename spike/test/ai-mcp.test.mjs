@@ -253,6 +253,13 @@ test("mcp-tool-definition-rug-pull: identical listings, one listing, a new tool,
   assert.equal(rugPull.check([a, { ...listCall([def("search_notes", "CHANGED")]), status: 500 }]).pass, false);
 });
 
+test("prepass fails loudly, naming the build script, when the lab image is not built", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "mcp-noimg-"));
+  try {
+    await assert.rejects(() => aiMcp.prepass(ws, { image: "touchstone/no-such-lab:0" }), /not built[\s\S]*build-labs\.sh ai-mcp/);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
 test("matchOracle returns the first oracle that passes, or null", () => {
   assert.equal(matchOracle([]), null);
   const hit = matchOracle([lcall(3, READER, "x"), del(3, READER), lcall(3, READER, "gone", true)]);

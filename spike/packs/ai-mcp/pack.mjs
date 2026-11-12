@@ -24,6 +24,7 @@ import {
   stopLab,
   teardownPersistedLab,
   writeLabHandle,
+  requireImage,
 } from "../../lib/proof-http.mjs";
 import { scanMcp } from "./scan.mjs";
 import { fp, scrubProof, scrubText } from "../web/redact.mjs";
@@ -500,15 +501,16 @@ function tools(ws, state) {
 //     Scanner traffic never touches the agent's lab or its transcripts.
 // A live target comes in as opts.target = { net, baseUrl, token }, the network
 // and base URL the platform scope proxy grants. Then we scan that instead.
-async function prepass(ws, { emit = () => {}, target } = {}) {
-  const handle = await startLab({ image: IMAGE });
+async function prepass(ws, { emit = () => {}, target, image = IMAGE } = {}) {
+  await requireImage(image, "ai-mcp");
+  const handle = await startLab({ image });
   writeLabHandle(ws, handle);
   emit({ ev: "ai-mcp-lab-started", image: IMAGE, alias: handle.alias });
 
   let scan = { coverage: [], leads: [] };
   let scanLab = null;
   try {
-    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image: IMAGE }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl, token: READER });
+    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl, token: READER });
     emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei"] });
     scan = await scanMcp(where);
   } catch (err) {
