@@ -111,7 +111,9 @@ http.createServer((req, res) => {
     }
     if (!probe) {
       const entry = {
-        method, path: req.url, url: ORIGIN + req.url,
+        // path is the pathname only (no ?query), so oracle matchers cannot be
+        // dodged or broken by a query string. The full URL stays in url.
+        method, path: new URL(req.url, "http://x").pathname, url: ORIGIN + req.url,
         reqHeaders: req.headers, reqBody: reqBuf.length ? parse(reqBuf.toString("utf8")) : null,
         status, resHeaders, resBody: parse(resText),
       };
@@ -410,7 +412,7 @@ export async function runRequestScript(handle, script, { timeoutMs = 20_000 } = 
 // key) shows that secret in full, because that is the evidence.
 function exchange(e, i) {
   return {
-    label: `${i + 1}. ${e.method} ${e.path}`,
+    label: `${i + 1}. ${e.method} ${e.url ? e.url.replace(/^https?:\/\/[^/]+/, "") : e.path}`,
     request: { method: e.method, url: e.url ?? e.path, headers: e.reqHeaders, body: e.reqBody },
     response: { status: e.status, headers: e.resHeaders, body: e.resBody },
   };

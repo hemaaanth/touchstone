@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
+import { Wallet } from "ethers";
 import { event } from "../../lib/event.mjs";
 import { sortFindings } from "../../lib/record.mjs";
 import {
@@ -122,27 +123,129 @@ function bolaOracle() {
 // Bug 3 (infra/secrets): an unauthenticated, undocumented route returns the
 // chain signer's private key. Matched generically (any response that carries
 // a signerPrivateKey-shaped field), so the agent has to find the route.
+//
+// "Unauthenticated" is PROVEN, not assumed. The transcript must hold, for the
+// same path, (a) a call with no credential header at all and (b) a call with a
+// junk bearer token the server never minted. Both must answer 200 with the same
+// body. The key must also be a real one: 66 chars (0x + 64 hex) and its address
+// must equal the reported signerAddress.
+const CRED_HEADER = /^(authorization|proxy-authorization|cookie|x-api-key|api-key|x-auth[-\w]*|x-[-\w]*token)$/i;
+const credHeaders = (e) => Object.keys(e.reqHeaders || {}).filter((k) => CRED_HEADER.test(k));
+const sameBody = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 function debugLeakOracle() {
   return {
     name: "debug-route-signer-key-leak",
     check(transcript) {
-      const call = transcript.find((e) => e.status === 200 && typeof e.resBody?.signerPrivateKey === "string" && e.resBody.signerPrivateKey.startsWith("0x"));
-      if (!call) return { pass: false, detail: "no response returned a signerPrivateKey field" };
-      return { pass: true, detail: `${call.method} ${call.path} returned the chain signer's private key with no authentication (signerPrivateKey ${fp(call.resBody.signerPrivateKey)}, signer ${call.resBody.signerAddress ?? "unknown"}).` };
+      const leaks = transcript.filter((e) => e.status === 200 && typeof e.resBody?.signerPrivateKey === "string" && e.resBody.signerPrivateKey.startsWith("0x"));
+      if (leaks.length === 0) return { pass: false, detail: "no response returned a signerPrivateKey field" };
+      const minted = new Set(transcript.filter((e) => e.path === "/siwe/verify" && e.status === 200 && e.resBody?.token != null).map((e) => String(e.resBody.token)));
+      const isJunk = (e) => {
+        const h = e.reqHeaders || {};
+        const raw = String(h.authorization ?? "").trim();
+        const tok = (/^Bearer\s+(.+)$/i.exec(raw) || [])[1];
+        return credHeaders(e).length > 0 && !(tok && minted.has(tok.trim()));
+      };
+      let why = "";
+      for (const bare of leaks.filter((e) => credHeaders(e).length === 0)) {
+        const key = bare.resBody.signerPrivateKey;
+        if (!/^0x[0-9a-fA-F]{64}$/.test(key)) { why = "the returned signerPrivateKey is not a 66-char hex key"; continue; }
+        let addr = null;
+        try { addr = new Wallet(key).address; } catch { /* invalid key */ }
+        if (!addr || addr.toLowerCase() !== String(bare.resBody.signerAddress ?? "").toLowerCase()) { why = "the returned signerPrivateKey does not derive the reported signerAddress"; continue; }
+        const junk = transcript.find((e) => e.path === bare.path && e.status === 200 && isJunk(e) && sameBody(e.resBody, bare.resBody));
+        if (!junk) { why = `${bare.path} answered with no credentials, but no call to it with a junk token also returned the same 200 body`; continue; }
+        return { pass: true, detail: `${bare.method} ${bare.path} returned the chain signer's private key with no credentials and again with a junk token the server never issued (signerPrivateKey ${fp(key)}, it derives signer ${bare.resBody.signerAddress}).` };
+      }
+      return { pass: false, detail: why || "a signerPrivateKey came back, but only on a call that carried credentials. Re-request the same path with NO headers and again with a junk Authorization token to prove it is unauthenticated" };
     },
   };
 }
 
 // Bug 4 (web front end): a page writes a query value into its HTML with no
-// escaping and sets no Content-Security-Policy. Markup in the URL becomes live
-// markup in the page, so a link can run script in a victim's browser.
+// escaping. Markup in the URL becomes live markup in the page, so a link can
+// run script in a victim's browser.
 //
 // The oracle reads the recorded transcript. It needs a 200 HTML response whose
 // body holds the request's own query value, with an HTML tag in it, byte for
-// byte. An escaped page would hold "&lt;" instead, so it would not match. A CSP
-// that limits scripts also stops the pass: the markup would not run.
+// byte (an escaped page would hold "&lt;"). Two more checks keep it honest:
+//  - the tag must land in an executable HTML position. A value reflected inside
+//    an attribute, a <script>/<style>/<textarea>/<title> body or a comment is
+//    inert, unless the payload itself breaks out (">...) -- we run a small HTML
+//    state machine over the page to tell.
+//  - a CSP stops the pass only when it really blocks inline script (script-src
+//    or default-src without 'unsafe-inline', or with a nonce/hash).
+const RAW_TEXT = new Set(["script", "style", "textarea", "title"]);
+
+// Advance a tiny HTML tokenizer over s[from, to). Returns the new state and
+// whether a tag opened while in the DATA state inside that span.
+function htmlScan(s, st, from, to) {
+  let openedInData = false;
+  let i = from;
+  while (i < to) {
+    const c = s[i];
+    if (st.mode === "data") {
+      if (s.startsWith("<!--", i)) { st = { mode: "comment" }; i += 4; continue; }
+      if (c === "<" && /[a-zA-Z\/]/.test(s[i + 1] ?? "")) {
+        const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9-]*)?/.exec(s.slice(i, i + 40));
+        st = { mode: "tag", close: m?.[1] === "/", name: (m?.[2] ?? "").toLowerCase() };
+        if (!st.close || m?.[2]) openedInData = true;
+        i += m ? m[0].length : 1;
+        continue;
+      }
+    } else if (st.mode === "tag") {
+      if (c === ">") { st = !st.close && RAW_TEXT.has(st.name) ? { mode: "raw", name: st.name } : { mode: "data" }; i++; continue; }
+      if (c === '"' || c === "'") {
+        const before = s.slice(Math.max(0, i - 40), i).trimEnd();
+        if (before.endsWith("=")) { st = { ...st, mode: c === '"' ? "dq" : "sq" }; i++; continue; }
+      }
+    } else if (st.mode === "dq" || st.mode === "sq") {
+      if (c === (st.mode === "dq" ? '"' : "'")) { st = { mode: "tag", close: st.close, name: st.name }; i++; continue; }
+    } else if (st.mode === "raw") {
+      if (c === "<" && s.slice(i + 2, i + 2 + st.name.length).toLowerCase() === st.name && s[i + 1] === "/") {
+        st = { mode: "tag", close: true, name: st.name }; i += 2 + st.name.length; continue;
+      }
+    } else if (st.mode === "comment") {
+      if (s.startsWith("-->", i)) { st = { mode: "data" }; i += 3; continue; }
+    }
+    i++;
+  }
+  return { st, openedInData };
+}
+
+// True if the first-or-later raw reflection of `value` puts a tag into live markup.
+function reflectsExecutably(body, value) {
+  let at = body.indexOf(value);
+  while (at !== -1) {
+    const pre = htmlScan(body, { mode: "data" }, 0, at);
+    const inValue = htmlScan(body, pre.st, at, at + value.length);
+    // Already in data state: any tag in the value is live. Otherwise only a
+    // tag that opened in data state AFTER the payload broke out of its context.
+    if (TAG_IN.test(value) && (pre.st.mode === "data" || inValue.openedInData)) return true;
+    at = body.indexOf(value, at + 1);
+  }
+  return false;
+}
+const TAG_IN = /<\s*[a-zA-Z][^>]*>/;
+
+// Does this Content-Security-Policy value stop an inline <img onerror=...> or
+// <script>? Several policies (comma list) all apply: any one that blocks wins.
+function cspBlocksInline(csp) {
+  for (const policy of String(csp).split(",")) {
+    const dirs = new Map();
+    for (const part of policy.split(";")) {
+      const [name, ...vals] = part.trim().split(/\s+/);
+      if (name && !dirs.has(name.toLowerCase())) dirs.set(name.toLowerCase(), vals.map((v) => v.toLowerCase()));
+    }
+    const src = dirs.get("script-src") ?? dirs.get("default-src");
+    if (!src) continue;                       // nothing limits script
+    const inlineOk = src.includes("'unsafe-inline'") && !src.some((v) => v.startsWith("'nonce-") || v.startsWith("'sha256-") || v.startsWith("'sha384-") || v.startsWith("'sha512-"));
+    if (!inlineOk) return true;
+  }
+  return false;
+}
+
 function xssOracle() {
-  const TAG = /<\s*[a-zA-Z][^>]*>/;
   return {
     name: "reflected-xss",
     check(transcript) {
@@ -152,16 +255,16 @@ function xssOracle() {
         const type = String(h["content-type"] ?? h["Content-Type"] ?? "");
         if (!/text\/html/i.test(type)) continue;
         const csp = String(h["content-security-policy"] ?? h["Content-Security-Policy"] ?? "");
-        if (/(script-src|default-src)/i.test(csp)) continue;
+        if (cspBlocksInline(csp)) continue;
         let query;
         try { query = new URL(e.url ?? `http://x${e.path}`).searchParams; } catch { continue; }
         for (const [name, value] of query) {
-          if (TAG.test(value) && e.resBody.includes(value)) {
-            return { pass: true, detail: `GET ${e.path} wrote the query value "${name}" into the page as live HTML with no escaping and no Content-Security-Policy. Payload: ${value.slice(0, 160)}` };
+          if (TAG_IN.test(value) && reflectsExecutably(e.resBody, value)) {
+            return { pass: true, detail: `GET ${e.path} wrote the query value "${name}" into the page as live HTML with no escaping and no effective Content-Security-Policy. Payload: ${value.slice(0, 160)}` };
           }
         }
       }
-      return { pass: false, detail: "no HTML response carried a markup query value back unescaped" };
+      return { pass: false, detail: "no HTML response carried a markup query value back unescaped into live markup" };
     },
   };
 }
@@ -203,7 +306,7 @@ Rules of the environment:
   - user 1 ("alice"): address 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266,
     private key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
   - user 2 ("bob"): address 0x70997970C51812dc3A010C7d01b50e0d17dc79C8,
-    private key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690
+    private key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
   Use ONLY these two keys to sign messages. Never invent a third identity's key.
 - The sign-in flow: GET /siwe/nonce returns a fresh nonce; build and sign a SIWE
   message with it (domain "touchstone.lab", uri "http://touchstone.lab/siwe", version
@@ -221,6 +324,10 @@ Rules of the environment:
   when it does. When it does, call submit_finding right away with the same label.
 - When a proof passes, call submit_finding with a title, severity, the label of the
   passing run_request_script attempt, and a short explanation.
+- To prove a route needs NO authentication, call it three ways in one script: with no
+  headers at all, and with a junk token such as "authorization: Bearer junk". The
+  proof passes only if both answer 200 with the same body. A call that carried a real
+  session token proves nothing about authentication.
 
 How the audit works:
 - One finding per ROOT CAUSE. One fix closes one finding. If two routes share the same

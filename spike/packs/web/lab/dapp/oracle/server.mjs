@@ -67,7 +67,7 @@ const LEAKED_SIGNER = {
   rpcUrl: "https://mainnet.infura.io/v3/00000000000000000000000000000000",
   chainId: 1,
   signerAddress: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-  signerPrivateKey: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365",
+  signerPrivateKey: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
 };
 
 // --- Nonce store. Bug 1: a nonce is never invalidated after a successful
