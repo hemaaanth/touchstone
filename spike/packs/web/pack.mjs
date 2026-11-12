@@ -31,6 +31,7 @@ import {
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb } from "./scan.mjs";
+import { fp, scrubProof } from "./redact.mjs";
 
 const IMAGE = "touchstone/web-lab:dev";
 const LEADS_FILE = ".web-leads.json";
@@ -113,7 +114,7 @@ function bolaOracle() {
         if (callerId != null && callerId !== pathId) { found = { e, pathId, callerId }; break; }
       }
       if (!found) return { pass: false, detail: "no call read another user's wallet/profile under a session token whose own user id differs from the id in the path" };
-      return { pass: true, detail: `signed in as user ${found.callerId}, a call to ${found.e.path} read user ${found.pathId}'s data with no ownership check: ${JSON.stringify(found.e.resBody)}` };
+      return { pass: true, detail: `signed in as user ${found.callerId}, a call to ${found.e.path} read user ${found.pathId}'s data with no ownership check. The reply held: ${Object.entries(found.e.resBody).map(([k, v]) => (/key|secret|token/i.test(k) ? `${k} ${fp(v)}` : k)).join(", ")}.` };
     },
   };
 }
@@ -127,7 +128,7 @@ function debugLeakOracle() {
     check(transcript) {
       const call = transcript.find((e) => e.status === 200 && typeof e.resBody?.signerPrivateKey === "string" && e.resBody.signerPrivateKey.startsWith("0x"));
       if (!call) return { pass: false, detail: "no response returned a signerPrivateKey field" };
-      return { pass: true, detail: `${call.method} ${call.path} returned the chain signer's private key with no authentication: ${JSON.stringify(call.resBody)}` };
+      return { pass: true, detail: `${call.method} ${call.path} returned the chain signer's private key with no authentication (signerPrivateKey ${fp(call.resBody.signerPrivateKey)}, signer ${call.resBody.signerAddress ?? "unknown"}).` };
     },
   };
 }
@@ -446,7 +447,7 @@ async function prove(ws, found, _events, log) {
     log?.(`replaying #${f.n} ${f.title} against a fresh lab (${oracle.name})`);
     let proof;
     try {
-      proof = await httpProof({ image: IMAGE }, f.script, oracle);
+      proof = scrubProof(await httpProof({ image: IMAGE }, f.script, oracle));
     } catch (err) {
       proof = { kind: "http", status: "fail", detail: `replay infrastructure error: ${String(err?.message ?? err).slice(0, 300)}`, oracle: { name: oracle.name, detail: "", passed: false }, log: [] };
     }

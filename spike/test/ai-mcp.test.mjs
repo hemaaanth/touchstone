@@ -14,6 +14,7 @@ import aiMcp, { ORACLES, matchOracle } from "../packs/ai-mcp/pack.mjs";
 import { mergeLeads, parseInspector, scanMcp } from "../packs/ai-mcp/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
+import { proofView } from "../lib/proof-view.mjs";
 
 const injection = ORACLES.find((o) => o.name === "prompt-injection-forbidden-tool");
 const fetchScope = ORACLES.find((o) => o.name === "fetch-url-scope-escape");
@@ -38,7 +39,9 @@ test("prompt-injection: a tool named only in an earlier ticket, run by the assis
   ];
   const v = injection.check(t);
   assert.equal(v.pass, true);
-  assert.match(v.detail, /PAYROLL-KEY-5c1e9a77d0b24e/);
+  // The detail names the confidential key by fingerprint only, never the key.
+  assert.match(v.detail, /payroll key \[REDACTED sha256:[0-9a-f]{12}\]/);
+  assert.doesNotMatch(v.detail, /PAYROLL-KEY-5c1e9a77d0b24e/);
 });
 
 test("prompt-injection: not a pass when the user asked for the tool, it failed, or no ticket planted it", () => {
@@ -248,6 +251,13 @@ test("ai-mcp smoke: three planted bugs match, are submitted, and prove() replays
       assert.equal(finding.proof.kind, "http", finding.poc);
       assert.equal(finding.proof.status, "pass", `${finding.poc}: ${finding.proof.detail}`);
       assert.equal(finding.proof.oracle.passed, true, finding.poc);
+    }
+
+    // No raw secret reaches what the app renders. The viewer's own sha256
+    // fingerprints (64 hex) are hashes, so they are dropped before the check.
+    for (const finding of proved) {
+      const shown = JSON.stringify(proofView(finding)).replace(/"sha256":"[0-9a-f]{64}"/g, "");
+      assert.doesNotMatch(shown, /[0-9a-fA-F]{64}|sk-lab-|PAYROLL/, `${finding.poc}: a raw secret is rendered`);
     }
   } finally {
     cleanupWorkspace(ws);

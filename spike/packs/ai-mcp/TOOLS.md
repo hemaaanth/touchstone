@@ -41,5 +41,8 @@ Only a replayed script that an oracle accepts is a finding.
   for that (for example "passes 2 of 3 replays"). It is not built.
 - Only one untrusted channel is planted (the ticket form). Hidden text in a web
   page, a file or a tool description (tool poisoning) is not covered.
+- Two oracles are weaker than they look. The scope check never reads the side
+  effect after the call. The fetch check needs the `sk-lab-` key shape. See
+  SKILL.md, "What the oracles assume".
 - The token table the oracles use is the lab's own. A live target needs its own
   table from the operator.

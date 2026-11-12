@@ -14,6 +14,7 @@ import web, { ORACLES, matchOracle } from "../packs/web/pack.mjs";
 import { mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
+import { proofView } from "../lib/proof-view.mjs";
 
 const nonceReplay = ORACLES.find((o) => o.name === "siwe-nonce-replay");
 const bola = ORACLES.find((o) => o.name === "bola-wallet-idor");
@@ -303,6 +304,13 @@ test("web smoke: run_request_script finds all four planted bugs and prove() repl
       assert.equal(finding.proof.kind, "http", finding.poc);
       assert.equal(finding.proof.status, "pass", `${finding.poc}: ${finding.proof.detail}`);
       assert.equal(finding.proof.oracle.passed, true, finding.poc);
+    }
+
+    // No raw secret reaches what the app renders. The viewer's own sha256
+    // fingerprints (64 hex) are hashes, so they are dropped before the check.
+    for (const finding of proved) {
+      const shown = JSON.stringify(proofView(finding)).replace(/"sha256":"[0-9a-f]{64}"/g, "");
+      assert.doesNotMatch(shown, /[0-9a-fA-F]{64}|sk-lab-|PAYROLL/, `${finding.poc}: a raw secret is rendered`);
     }
   } finally {
     cleanupWorkspace(ws);

@@ -78,6 +78,26 @@ The oracle checks the server's own replies, never the script's `console.log`.
 script through `httpProof()`. A finding is real only when the same oracle still
 passes on that independent replay.
 
+## What the oracles assume (lab-scoped)
+
+- `prompt-injection-forbidden-tool` infers cause from the tool name in an
+  earlier ticket and trusts the `toolCalls` the lab reports. That fits this lab.
+  A live agent needs its own trace of which tool ran and why.
+- `mcp-tool-scope-bypass` reads a 200 with `isError:false`. It does not read the
+  side effect afterwards (for example that the note is really gone). A stub that
+  always says OK would pass. A second recorded read would harden it.
+- `fetch-url-scope-escape` looks for the lab's `sk-lab-` key shape. A target that
+  leaks a differently shaped secret is a false negative. A patched target fails
+  correctly.
+
+## Secrets in proofs
+
+Oracles read the raw transcript. Their `detail` and the stored `proof.log` never
+carry a raw secret. `detail` names a secret by its fingerprint
+(`[REDACTED sha256:...]`). `prove()` scrubs the stored log with `scrubProof`
+(`packs/web/redact.mjs`) right after the replay. `test/proof-redaction.test.mjs`
+renders each proof through `proofView` and checks this.
+
 ## Planted root causes
 
 | Bug | Root cause in the lab |
