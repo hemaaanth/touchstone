@@ -225,28 +225,24 @@ function stageSources(ws) {
 // (the aderyn.mjs pattern) instead of failing the run.
 //
 // The job SETTLES to a result marker ({ cbm, project, ... } | { unavailable } |
-// { failed }) rather than rejecting. A settled success or "unavailable" is reused
-// as-is. A settled FAILURE (e.g. a transient 300s index timeout under fleet
-// fan-out) is retried at most MAX_INDEX_ATTEMPTS times for the SAME fingerprint:
-// enough to recover from a blip, but bounded so a persistently failing index does
-// not re-run the expensive build on every query and stall a fleet of hunters. A
-// pending job is always shared, so concurrent queries never start a second index.
+// { failed }) rather than rejecting. EVERY settled result is cached per
+// fingerprint, failures included: a deterministic index failure (or a 300s
+// timeout) is paid for once, then each later nav call for the SAME fingerprint
+// returns the cached error at once instead of re-running the build. Without this a
+// fleet of hunters could each re-trigger the full index on every call and stall
+// the run's other pack tools (run_poc included). The index is retried only when
+// the fingerprint changes (new code landed in src/ or vendor/). A pending job is
+// always shared, so concurrent queries never start a second index.
 //
 // Superseded indexes (a mid-run fingerprint change) are NOT eagerly deleted —
 // doing so raced a cleanup against an in-flight query still reading the old cache.
 // Their temp dirs (staging + private cache, both tracked in tempDirs) are instead
 // reclaimed together on process exit.
-const MAX_INDEX_ATTEMPTS = 2;
 const indexed = new Map();
 function ensureIndexed(ws) {
   const fp = sourceFingerprint(ws);
   const cached = indexed.get(ws);
-  if (cached && cached.fp === fp) {
-    // Reuse a pending or successful job; retry only a settled failure, and only
-    // while under the per-fingerprint attempt cap.
-    if (!(cached.settled && cached.settled.failed && cached.attempts < MAX_INDEX_ATTEMPTS)) return cached.job;
-  }
-  const attempts = (cached && cached.fp === fp ? cached.attempts : 0) + 1;
+  if (cached && cached.fp === fp) return cached.job; // pending, success, or cached failure
   const job = (async () => {
     try {
       const bin = await resolveCbmBinary();
@@ -264,11 +260,7 @@ function ensureIndexed(ws) {
       return { failed: String(e?.message ?? e) };
     }
   })();
-  // Record the settled marker synchronously on the entry so the next call can see
-  // a failure (and retry under the cap) without awaiting.
-  const entry = { fp, job, attempts, settled: null };
-  job.then((r) => { entry.settled = r; }).catch(() => {});
-  indexed.set(ws, entry);
+  indexed.set(ws, { fp, job });
   return job;
 }
 

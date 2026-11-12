@@ -9,9 +9,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sourceNavTools, NAV_SYSTEM, sourceFingerprint, stageSources, VENDOR_STAGE } from '../packs/source-nav/pack.mjs';
 import { PACKS } from '../packs/index.mjs';
+import { resolveCbmBinary } from '../lib/cbm.mjs';
 
 const NAV_NAMES = ['resolve_symbol', 'read_symbol', 'get_code_snippets', 'read_symbols', 'search_and_read_symbols'];
 
@@ -186,5 +188,119 @@ test('nav tools are pure builders — constructing them needs no engine', () => 
     // lazily on first query. This asserts the builder stays side-effect-free.
     const tools = sourceNavTools(ws);
     assert.ok(tools.every((t) => typeof t.execute === 'function'));
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+// ---- Index scope + failure cache + wiring (repair of the default-read-layer review) ----
+
+const toolNamed = (ws, name) => sourceNavTools(ws).find((t) => t.name === name);
+const call = async (ws, name, args) => {
+  const r = await toolNamed(ws, name).execute(args);
+  return { isError: !!r.isError, body: JSON.parse(r.output[0].text) };
+};
+const ERC20 = (name) =>
+  `pragma solidity ^0.8.0;\ncontract ${name} {\n  mapping(address => uint256) public balanceOf;\n` +
+  `  function transfer(address to, uint256 v) public returns (bool) { balanceOf[to] += v; return true; }\n` +
+  `  function approve(address s, uint256 v) public returns (bool) { return v > 0 && s != address(0); }\n}\n`;
+
+test('a deterministic index failure is cached per fingerprint, and retried only when the fingerprint changes', async () => {
+  // A non-empty executable whose sha256 is not the pin: the wrapper refuses to run
+  // it, so every index attempt fails the same way. Each attempt allocates a private
+  // engine cache dir (touchstone-cbm-*), which lets us count real index attempts.
+  const fake = mkdtempSync(join(tmpdir(), 'nav-fakebin-'));
+  const bin = join(fake, 'cbm');
+  writeFileSync(bin, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const attempts = () => readdirSync(tmpdir()).filter((n) => n.startsWith('touchstone-cbm-')).length;
+  const prior = process.env.PI_CBM_BIN;
+  process.env.PI_CBM_BIN = bin;
+  const ws = workspace();
+  try {
+    const before = attempts();
+    const first = await call(ws, 'resolve_symbol', { name: 'withdraw' });
+    assert.equal(first.isError, true);
+    assert.match(first.body.error, /index failed/);
+    assert.equal(attempts() - before, 1, 'first call runs one index attempt');
+    for (let i = 0; i < 4; i++) {
+      const again = await call(ws, 'read_symbol', { name: 'withdraw' });
+      assert.equal(again.isError, true);
+      assert.match(again.body.error, /index failed/);
+    }
+    assert.equal(attempts() - before, 1, 'same fingerprint: the cached failure is returned, no re-index');
+    // New code lands in vendor/ (a fetch_source clone): fingerprint moves, so retry once.
+    mkdirSync(join(ws, 'vendor'), { recursive: true });
+    writeFileSync(join(ws, 'vendor', 'Lib.sol'), 'pragma solidity ^0.8.0;\ncontract Lib { function lib() public {} }\n');
+    await call(ws, 'resolve_symbol', { name: 'withdraw' });
+    await call(ws, 'resolve_symbol', { name: 'withdraw' });
+    assert.equal(attempts() - before, 2, 'a changed fingerprint retries exactly once more');
+  } finally {
+    if (prior === undefined) delete process.env.PI_CBM_BIN; else process.env.PI_CBM_BIN = prior;
+    rmSync(ws, { recursive: true, force: true });
+    rmSync(fake, { recursive: true, force: true });
+  }
+});
+
+test('sourceFingerprint and stageSources never touch lib/, test/, node_modules/, out/ or .git/ at the workspace root', () => {
+  // The scope shadows the review found (forge-std mocks, a stale AgentPoc.t.sol)
+  // live OUTSIDE src/ and vendor/. This pins the scoping logic without the engine.
+  const ws = workspace();
+  for (const [dir, file] of [['lib/forge-std/src/mocks', 'MockERC20.sol'], ['test', 'AgentPoc.t.sol'], ['out', 'Built.sol'], ['node_modules/x', 'X.sol'], ['.git', 'cfg']]) {
+    mkdirSync(join(ws, dir), { recursive: true });
+    writeFileSync(join(ws, dir, file), ERC20('Shadow'));
+  }
+  let staging;
+  try {
+    const base = sourceFingerprint(ws);
+    writeFileSync(join(ws, 'test', 'AgentPoc.t.sol'), ERC20('Rewritten')); // writePoc rewrite
+    assert.equal(sourceFingerprint(ws), base, 'rewriting test/AgentPoc.t.sol does not move the fingerprint');
+    staging = stageSources(ws);
+    assert.deepEqual(readdirSync(staging), ['src'], 'only src/ is staged when vendor/ is absent');
+    assert.deepEqual(readdirSync(join(staging, 'src')), ['Vault.sol']);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+    if (staging) rmSync(staging, { recursive: true, force: true });
+  }
+});
+
+test('agent-run mounts the nav tools + prompt only for contracts/review, and only when the binary resolves', () => {
+  // agent-run.mjs is a runner (it executes on import), so the gate is pinned by
+  // reading the one expression that decides it rather than by importing it.
+  const src = readFileSync(new URL('../agent-run.mjs', import.meta.url), 'utf8');
+  const gate = src.match(/const navy = (.+);/);
+  assert.ok(gate, 'a single `navy` gate exists');
+  assert.match(gate[1], /pack\.id === "contracts"/);
+  assert.match(gate[1], /pack\.id === "review"/);
+  assert.equal((gate[1].match(/pack\.id ===/g) ?? []).length, 2, 'no other pack is gated in');
+  assert.match(gate[1], /await resolveCbmBinary\(\)\) !== null/, 'gated on the binary actually resolving');
+  assert.match(src, /pack\.system\(ws\) \+ \(navy \? NAV_SYSTEM : ""\)/, 'prompt only when navy');
+  assert.match(src, /\.\.\.pack\.tools\(ws, state\), \.\.\.\(navy \? sourceNavTools\(ws\) : \[\]\)/, 'tools only when navy');
+  // Both gated packs are real, selectable packs; every other pack is unchanged
+  // because the gate names exactly those two ids (asserted above).
+  for (const id of ['contracts', 'review']) assert.ok(PACKS[id], `${id} pack exists`);
+});
+
+test('with the engine: resolve_symbol/read_symbol on ERC20 names resolve to src/, never forge-std, test/ or out/ shadows', { skip: (await resolveCbmBinary()) ? false : 'codebase-memory-mcp binary not installed' }, async () => {
+  const ws = workspace();
+  writeFileSync(join(ws, 'src', 'Token.sol'), ERC20('Token'));
+  for (const [dir, file, name] of [['lib/forge-std/src/mocks', 'MockERC20.sol', 'MockERC20'], ['test', 'AgentPoc.t.sol', 'AgentPoc'], ['out', 'Built.sol', 'Built'], ['node_modules/x', 'X.sol', 'X']]) {
+    mkdirSync(join(ws, dir), { recursive: true });
+    writeFileSync(join(ws, dir, file), ERC20(name));
+  }
+  try {
+    for (const name of ['transfer', 'approve', 'balanceOf']) {
+      const { isError, body } = await call(ws, 'resolve_symbol', { name });
+      assert.equal(isError, false, `${name}: ${JSON.stringify(body)}`);
+      const files = JSON.stringify(body);
+      for (const shadow of ['forge-std', 'MockERC20', 'AgentPoc', 'Built', 'node_modules', '/test/', '/out/'])
+        assert.equal(files.includes(shadow), false, `${name} leaks ${shadow}: ${files}`);
+      assert.match(files, /src\/Token\.sol/, `${name} resolves into the target's own contract`);
+    }
+    // The ERC20 names that failed closed on main (33 candidates) now read cleanly.
+    const read = await call(ws, 'read_symbol', { name: 'transfer', file_path: 'src/Token.sol' });
+    assert.equal(read.isError, false, JSON.stringify(read.body));
+    assert.match(JSON.stringify(read.body), /balanceOf\[to\] \+= v/);
+    // A test/ rewrite after the index is built does not become readable as audited code.
+    writeFileSync(join(ws, 'test', 'AgentPoc.t.sol'), 'contract StalePoc { function exploit() public {} }\n');
+    const stale = await call(ws, 'resolve_symbol', { name: 'exploit' });
+    assert.equal(JSON.stringify(stale.body).includes('StalePoc'), false, 'own stale PoC is not indexed');
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
