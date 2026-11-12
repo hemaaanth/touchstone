@@ -31,6 +31,8 @@ const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0
 const isAddressWord = (w) => /^0x0{24}[0-9a-f]{40}$/.test(w) && !/^0x0{64}$/.test(w);
 const OWNER_SLOT = word("0x0");
 const ADMIN_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.admin"))) - 1n).toString(16));
+const IMPLEMENTATION_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("eip1967.proxy.implementation"))) - 1n).toString(16));
+const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces) {
@@ -96,4 +98,36 @@ export function extractControlTrace(traces) {
   out.words = Object.fromEntries(Object.entries(out.words).map(([k, v]) => [k, [...v]]));
   out.calls = out.calls.slice(-4000);
   return out;
+}
+
+// The generic takeover filter for the forge harm gate (lib/proof.mjs). A storage
+// write is a TAKEOVER only when it re-points a control pointer the writer was not
+// entitled to set: a write to a control-significant slot (the owner slot 0, the
+// EIP-1967 admin or implementation slot), whose new value is a DIFFERENT address,
+// made by a caller who did not already hold that authority. A benign state write
+// — a deposit's balance, a counter, a flag — touches no control slot (or writes a
+// non-address value) and never qualifies. This mirrors the control-harm standard
+// in packs/keys/control.mjs; the funds channel still catches ETH that leaves.
+// `targetSet` is anything with a `.has(lowercased-address)` (a Set or the targets
+// Map from scanTargets); pass null to skip the scope filter.
+export function controlTakeovers(controlTrace, targetSet = null) {
+  const writes = controlTrace?.writes ?? [];
+  const meta = controlTrace?.writeMeta ?? [];
+  return writes.filter((w, i) => {
+    if (targetSet && !targetSet.has(lc(w.context))) return false;
+    const slot = word(w.slot);
+    if (!CONTROL_SLOTS.has(slot)) return false;
+    const after = word(w.after), before = word(w.before);
+    if (!isAddressWord(after) || after === before) return false; // the new value must be a DIFFERENT address
+    // Slot 0 is also where a contract stashes its first scalar (a counter, a flag),
+    // and a small integer like 1 is address-shaped. Only count the owner slot when
+    // it ALREADY held an address — a genuine re-pointing of an owner, not a scalar
+    // init. The EIP-1967 admin and implementation slots are control pointers by
+    // definition, so claiming one even from zero is a proxy hijack.
+    if (slot === OWNER_SLOT && !isAddressWord(before)) return false;
+    const m = meta[i] ?? {};
+    const authority = (m.authority ?? []).map(lc);
+    if (m.caller && authority.includes(lc(m.caller))) return false; // the writer already held authority: a legitimate hand-over
+    return true;
+  });
 }

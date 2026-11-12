@@ -54,7 +54,7 @@ test("harm gate: a test that calls the target but moves nothing and writes nothi
   const traces = [setup(), exec(node(0, { kind: "STATICCALL", address: VAULT, caller: TEST, data: "0x01e1d114" }))];
   const h = verdict(traces);
   assert.equal(h.ok, false);
-  assert.match(h.reason, /moved no ETH out of it and changed none of its storage/);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
   assert.deepEqual(h.targets, [{ address: VAULT, name: "Vault" }]);
 });
 
@@ -74,12 +74,28 @@ test("harm gate: ETH leaving the target in the test body is funds harm", () => {
   assert.equal(h.lostWei, "1000000000000000000");
 });
 
-test("harm gate: a storage write in the target with zero ETH is control harm", () => {
+test("harm gate: re-pointing the owner slot to a new address with zero ETH is control harm", () => {
   const traces = [setup(), exec(node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x13af4035", steps: [sstore("0x0", "0x" + TEST.slice(2).padStart(64, "0"), "0x" + ATTACKER.slice(2).padStart(64, "0"))] }))];
   const h = verdict(traces);
   assert.equal(h.ok, true);
   assert.equal(h.kind, "control");
   assert.equal(h.victim, VAULT);
+});
+
+test("harm gate: a benign state write in the target (a balance, not a control slot) is NOT harm", () => {
+  // The reviewer's case: a normal deposit writes a balance-mapping slot in the test
+  // body. It is a real SSTORE, but it re-points no control pointer, so it is not harm.
+  const traces = [setup(), exec(node(0, { kind: "CALL", address: VAULT, caller: TEST, value: "0x10", data: "0xd0e30db0", steps: [sstore("0x9", "0x0", "0x10")] }))];
+  const h = verdict(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /took over none of its control slots/);
+});
+
+test("harm gate: writing a non-address value into the owner slot is NOT a takeover", () => {
+  // A control slot touched, but the new value is a scalar (a flag/count), not an
+  // address reassignment. Nothing was taken over.
+  const traces = [setup(), exec(node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x12345678", steps: [sstore("0x0", "0x0", "0x1")] }))];
+  assert.equal(verdict(traces).ok, false);
 });
 
 test("harm gate: a write or payout under a reverted call does not count", () => {
@@ -152,6 +168,17 @@ contract HarmlessTest is Test {
   function test_look() public { assertEq(v.totalAssets(), 1 ether); }
 }
 `;
+// The reviewer's exposed case: the state-changing call is in the TEST BODY, not
+// setUp(). A deposit writes a real balance slot in the target during the body and
+// still proves nothing — it re-points no control pointer and drains no ETH. Under
+// the old gate any such body write counted as "control" harm.
+const HARMLESS_BODY = HEAD + `import "../src/Vault.sol";
+contract HarmlessBodyTest is Test {
+  Vault v;
+  function setUp() public { v = new Vault(); vm.deal(address(this), 1 ether); }
+  function test_deposit() public { v.deposit{value: 1 ether}(); assertEq(v.balanceOf(address(this)), 1 ether); }
+}
+`;
 
 // Record one submitted finding the way a run does: run_poc passed, then prove.
 async function prove(ws, poc, source) {
@@ -177,7 +204,17 @@ test("forge: a test that calls the vault but moves and writes nothing in the tes
   workspaces.push(ws);
   const f = await prove(ws, "HarmlessTest", HARMLESS);
   assert.equal(f.forgePassed, true);
-  assert.match(f.proof.harm.reason, /moved no ETH out of it and changed none of its storage/);
+  assert.match(f.proof.harm.reason, /moved no ETH out of it and took over none of its control slots/);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: a deposit that writes a balance slot in the test body is NOT proven", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB);
+  workspaces.push(ws);
+  const f = await prove(ws, "HarmlessBodyTest", HARMLESS_BODY);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /took over none of its control slots/);
   assert.equal(isProven(f), false);
 });
 

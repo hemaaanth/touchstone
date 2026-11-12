@@ -16,7 +16,7 @@
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { writePoc, forgeTestJson } from "./sandbox.mjs";
-import { extractControlTrace } from "./control-trace.mjs";
+import { extractControlTrace, controlTakeovers } from "./control-trace.mjs";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -184,9 +184,12 @@ function lowerKeys(obj) {
 //   1. the test made a successful call into a scope target, and
 //   2. an effect on a scope target the gate accepts as harm, by EITHER channel:
 //      - funds:   a target's net ETH went DOWN during the test body, or
-//      - control: the test body made a real SSTORE in a target's storage.
-// Token drains (ERC-20/721) and access-control takeovers move no ETH. They show
-// up as a target storage write, so the control channel proves them.
+//      - control: the test body re-pointed one of a target's CONTROL slots — the
+//        owner slot, the EIP-1967 admin or implementation — to a new address, by a
+//        caller that did not already hold that authority (a takeover, not a write).
+// Access-control takeovers and proxy hijacks move no ETH; they re-point a control
+// pointer, so the control channel proves them. A benign state write — a deposit's
+// balance, a counter, a flag — is NOT a control takeover and proves nothing.
 //
 // A scope target is a contract the replay CREATEd from code compiled out of the
 // scope: src/ (a lab) or vendor/ (fetched members). Contracts defined in the test
@@ -309,11 +312,11 @@ export function judgeHarm(traces, { scope = [], controlTrace = null } = {}) {
   if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
   if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
   const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
-  const writes = (controlTrace?.writes ?? []).filter((w) => targets.has(lc(w.context)));
+  const takeovers = controlTakeovers(controlTrace, targets);
   if (losses.length) {
     const [victim, wei] = losses[0];
-    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names, ...(writes.length ? { writes: writes.length } : {}) };
+    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names, ...(takeovers.length ? { writes: takeovers.length } : {}) };
   }
-  if (writes.length) return { ok: true, kind: "control", victim: lc(writes[0].context), writes: writes.length, targets: names };
-  return { ok: false, reason: "the test called a scope target but moved no ETH out of it and changed none of its storage", targets: names };
+  if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
+  return { ok: false, reason: "the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)", targets: names };
 }
