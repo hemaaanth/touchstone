@@ -418,8 +418,9 @@ function TokenSection() {
 }
 
 // ---- Execution: where a run's tools run. Local Docker is the default. With
-// Daytona, offline tool workspaces (secret scans too) are uploaded to a
-// Daytona machine. Each run, and each swarm child, gets its own machines. The key goes
+// Daytona, offline tools on a run's workspace (secret scans, forge and the
+// proof replay too) run on a Daytona machine. A call that belongs to no run
+// stays local. Each run, and each swarm child, gets its own machines. The key goes
 // up once and never comes back; the server returns only a masked state.
 
 interface ExecutionSetting {
@@ -461,7 +462,7 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
       : ex.key.last4 ? `Key saved in Settings, ends ${ex.key.last4}` : "Key saved in Settings"
   const options: { id: "local" | "daytona"; label: string; note: string }[] = [
     { id: "local", label: "Local Docker", note: "Tools run on this machine." },
-    { id: "daytona", label: "Daytona", note: `Offline tools run on Daytona machines (${ex.target}). Falls back to local Docker if Daytona fails.` },
+    { id: "daytona", label: "Daytona", note: `Offline tools on a run's workspace run on Daytona machines (${ex.target}). Falls back to local Docker if Daytona fails.` },
   ]
   return (
     <section className="mt-10" aria-labelledby="execution-title">
@@ -494,7 +495,7 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
         })}
       </div>
       <p className="mt-2 px-2 text-xs text-muted-foreground">
-        With Daytona on, the workspace of every offline tool call is uploaded to Daytona. That includes the secret scans and the keys lab: the target's files, and any keys in them, leave this machine. Tools that use a network stay on local Docker. So do the lab chain, the proof steps and image builds. Each run, and each swarm child, gets its own machines. They are deleted when the run ends.
+        With Daytona on, offline tools that work on a run's workspace run on Daytona. The workspace is uploaded first. This includes the Solidity analyzers and fuzzers, the keys pack's secret scans, forge builds, and the proof replay. So the target's files, and any keys in them, leave this machine. The proof verdict is read from files built on Daytona and copied back. These stay on local Docker: tools that use a network, the lab chain, image builds, and the supply-chain, infra-cloud and domains scans. Those scans work on a snapshot that belongs to no run. Each run, and each swarm child, gets its own machines. They are deleted when the run ends.
       </p>
       <form
         className="mt-2 flex items-center gap-2 py-1.5 pr-1 pl-2"

@@ -15,6 +15,9 @@
 //   - A fuzz scratch dir lives in tmp, outside the run. Its caller passes the
 //     run's workspace as `root`, so the call uses that run's machine. Its copy
 //     on the machine is deleted right after the call.
+//   - Every machine belongs to one run. A call with no run (its ws is in no
+//     run workspace, and it passes no `root`) runs on local Docker. Examples:
+//     the supply-chain, infra-cloud and domains scans of an evidence snapshot.
 //   - Every machine carries the label touchstone=1. We only ever delete ids we
 //     created. A machine stops after 15 idle minutes and is deleted when it stops,
 //     so a crash cannot leave one running for long.
@@ -24,6 +27,7 @@
 //     proxy and the grant gate on this host. The remote path has no reach gate
 //     yet, so a call with a network stays here.
 //   - The call mounts a host path other than the workspace.
+//   - The call belongs to no run (see Machines above).
 //   - The call uses a docker flag the parser does not know, or a
 //     `--flag=value` form other than `--network=`. Unknown means local.
 //   - A solc version did not install on the machine. Only that call goes local.
@@ -32,14 +36,15 @@
 //
 // What goes through this backend: runTool() (lib/wrap.mjs), runDocker() for
 // Slither (static.mjs), Echidna (fuzz.mjs) and Medusa (medusa.mjs), and forge
-// in lib/sandbox.mjs. What always stays on local Docker, by design: the lab
+// in lib/sandbox.mjs. Forge includes the proof replay (proof.mjs proofDelta):
+// the proof gate reads files built on the machine and copied back. What always stays on local Docker, by design: the lab
 // chain and its network (sandbox/lab.mjs, fork-proof.mjs, txreplay-proof.mjs,
 // proof-http.mjs), the jail, image builds (keys/common.mjs), cloud.mjs, and the
 // docker calls in packs/domains. They need host networks or the host daemon.
 //
 // The key comes from Settings (spike/data/providers.json, field execution) or
 // the DAYTONA_API_KEY environment variable. It is never logged.
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -199,7 +204,6 @@ function client(c) {
 const START_DOCKER = `sh -c '(pgrep dockerd >/dev/null || (nohup dockerd-entrypoint.sh dockerd >/var/log/dockerd.log 2>&1 &)); for i in $(seq 1 60); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'`;
 
 const machines = new Map(); // pool key -> Promise<machine>
-const orphans = new Set(); // ids with no run workspace; deleted at process exit
 let snapshotReady = null;
 
 // The run workspace a path belongs to: the nearest dir (itself or a parent)
@@ -229,14 +233,12 @@ function readSidecar(root) {
   }
 }
 
-// Find or make the machine for this call. A machine idle for a while may have
-// stopped by itself (autoStopInterval). Check it, and open a new one if so.
-// `root` names the calling run when ws is outside it (a fuzz scratch dir in
-// tmp). So each run gets its own machine, and closeRun deletes it.
-async function machineFor(c, ws, rootHint = null) {
+// Find or make the machine for this call, in run `root`. A machine idle for a
+// while may have stopped by itself (autoStopInterval). Check it, and open a new
+// one if so. Each run gets its own machines, and closeRun deletes them.
+async function machineFor(c, root) {
   const agent = currentAgent() || "root";
-  const root = (rootHint && runRoot(rootHint)) || runRoot(ws);
-  const key = root ? `${root}|${agent}` : `orphan|${agent}`;
+  const key = `${root}|${agent}`;
   if (!machines.has(key)) {
     const p = openMachine(c, root, agent);
     machines.set(key, p);
@@ -246,7 +248,7 @@ async function machineFor(c, ws, rootHint = null) {
   m.key = key;
   if (Date.now() - m.used > staleMs() && !(await alive(m))) {
     retire(m);
-    return machineFor(c, ws, rootHint);
+    return machineFor(c, root);
   }
   return m;
 }
@@ -261,7 +263,6 @@ function forget(m) {
 // goes to the pending file, so closeRun retries it.
 function retire(m) {
   forget(m);
-  orphans.delete(m.id);
   if (m.root) {
     const all = readSidecar(m.root);
     if (all[m.agent]?.id === m.id) {
@@ -317,14 +318,9 @@ async function openMachine(c, root, agent) {
     throw e;
   }
   const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
-  if (root) {
-    const all = readSidecar(root);
-    all[agent] = { id: m.id, toolbox: m.toolbox };
-    writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
-  } else {
-    orphans.add(m.id);
-    armExitCleanup(c);
-  }
+  const all = readSidecar(root);
+  all[agent] = { id: m.id, toolbox: m.toolbox };
+  writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
   event("exec-machine", { backend: "daytona", sandbox: m.id, run: labels.run ?? null });
   await waitReady(m);
   return m;
@@ -436,29 +432,6 @@ function writePending(ids) {
   writeFileSync(f, JSON.stringify([...new Set(ids)]) + "\n");
 }
 
-// Scratch-dir machines have no run to close them. A detached child deletes
-// them after this process exits.
-let exitArmed = false;
-function armExitCleanup(c) {
-  if (exitArmed) return;
-  exitArmed = true;
-  process.on("exit", () => {
-    if (!orphans.size) return;
-    // Record them first. If the delete below fails, the next closeRun retries.
-    try {
-      writePending([...readPending(), ...orphans]);
-    } catch {
-      // Best effort.
-    }
-    const code = `const ids=${JSON.stringify([...orphans])};for(const id of ids)fetch(${JSON.stringify(API)}+"/sandbox/"+id,{method:"DELETE",headers:{Authorization:"Bearer "+process.env.K}}).catch(()=>{});`;
-    try {
-      spawn(process.execPath, ["-e", code], { detached: true, stdio: "ignore", env: { K: c.apiKey, PATH: process.env.PATH } }).unref();
-    } catch {
-      // The machines still stop after 15 idle minutes and are then deleted.
-    }
-  });
-}
-
 // ---- Workspace sync
 
 // Every entry under dir, as path -> signature. A file is "size:mtime". A
@@ -531,6 +504,13 @@ export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBu
     event("exec-fallback", { backend: "local", reason: plan.local, image: plan.image });
     return null;
   }
+  // Every machine belongs to one run, so closeRun deletes it. A call with no
+  // run would need a machine no run owns. It runs locally instead.
+  const run = (root && runRoot(root)) || runRoot(wsAbs);
+  if (!run) {
+    event("exec-fallback", { backend: "local", reason: "the call belongs to no run", image: plan.image });
+    return null;
+  }
   if (Date.now() < downUntil) {
     event("exec-fallback", { backend: "local", reason: "Daytona failed recently", image: plan.image });
     return null;
@@ -539,7 +519,7 @@ export async function remoteDocker(args, { ws = null, timeoutMs = 180_000, maxBu
     // A failed call drops its machine and tries once more on a fresh one.
     // Only a second failure puts every call on local Docker for a while.
     for (let attempt = 0; ; attempt++) {
-      const m = await machineFor(c, wsAbs, root);
+      const m = await machineFor(c, run);
       try {
         return await locked(m, () => runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pullBack, skipBack, warm }));
       } catch (e) {

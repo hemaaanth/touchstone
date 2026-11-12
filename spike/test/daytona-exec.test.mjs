@@ -171,6 +171,7 @@ test("runTool falls back to local Docker when the Daytona API fails", { skip: !h
     globalThis.fetch = async () => { calls++; throw new Error("network down"); };
     console.log = (l) => { if (String(l).startsWith("EVENT ")) events.push(JSON.parse(String(l).slice(6))); };
     writeFileSync(join(ws, "in.txt"), "hello");
+    writeFileSync(join(ws, ".touchstone.json"), "{}"); // a run workspace
     const { runTool } = await import("../lib/wrap.mjs");
     const r = await runTool({ image: "debian:bookworm-slim", ws, cmd: ["sh", "-c", "cat in.txt; echo made > out.txt"] });
     assert.equal(r.code, 0);
@@ -400,6 +401,92 @@ test("C: scratch calls from two runs use each run's own machine and drop their r
       rmSync(s2, { recursive: true, force: true });
     }
   });
+});
+
+// C2: the supply-chain, infra-cloud and domains packs scan an evidence
+// snapshot in a tmp scratch dir that belongs to no run. Before, all of them
+// shared one "orphan" machine that no run's closeRun deleted. Now such a call
+// runs on local Docker, and no machine is made.
+const NO_RUN_SCRATCH = ["touchstone-scan-", "infra-scan-", "touchstone-evidence-"];
+
+test("C2: a pack scan scratch dir with no run runs locally and makes no machine", async () => {
+  await withFake({}, async ({ mod, fake, events }) => {
+    const { withAgent } = await import("../lib/event.mjs");
+    for (const prefix of NO_RUN_SCRATCH) {
+      const s = mkdtempSync(join(tmpdir(), prefix));
+      try {
+        assert.equal(await mod.remoteDocker(ARGS(s), { ws: s }), null, prefix);
+        assert.equal(events.at(-1).ev, "exec-fallback");
+        assert.match(events.at(-1).reason, /no run/);
+        // A swarm child's scan is no different.
+        assert.equal(await withAgent("a-child", () => mod.remoteDocker(ARGS(s), { ws: s })), null);
+        // No ws at all is no run either.
+        assert.equal(await mod.remoteDocker(["run", "--rm", "--network", "none", "img:1", "true"], {}), null);
+      } finally {
+        rmSync(s, { recursive: true, force: true });
+      }
+    }
+    assert.ok(!fake.log.some((l) => l.startsWith("create")), "no machine was made");
+    assert.ok(!fake.log.some((l) => l.startsWith("run ")), "nothing ran on Daytona");
+  });
+});
+
+test("C2: a run-scoped call still gets its run's own machine, deleted with the run", async () => {
+  await withFake({}, async ({ mod, ws, fake, events, sidecar }) => {
+    const wsB = join(dirname(ws), "wsB");
+    mkdirSync(wsB);
+    writeFileSync(join(wsB, ".touchstone.json"), "{}");
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+    assert.equal((await mod.remoteDocker(ARGS(wsB), { ws: wsB }))?.stdout, "hi");
+    // A scratch dir of run B, named by root, uses run B's machine.
+    const s = mkdtempSync(join(tmpdir(), "touchstone-scan-"));
+    try {
+      assert.equal((await mod.remoteDocker(ARGS(s), { ws: s, root: wsB }))?.stdout, "hi");
+    } finally {
+      rmSync(s, { recursive: true, force: true });
+    }
+    const used = events.filter((e) => e.ev === "exec").map((e) => e.sandbox);
+    assert.equal(used.length, 3);
+    assert.notEqual(used[0], used[1]);
+    assert.equal(used[2], used[1]);
+    assert.equal(sidecar().root.id, used[0]);
+    const b = JSON.parse(readFileSync(`${wsB}.daytona.json`, "utf8")).root.id;
+    assert.equal(b, used[1]);
+    // Each run's closeRun deletes its own machine, and only that one.
+    assert.deepEqual(await mod.closeRun(wsB), [b]);
+    assert.ok(fake.log.includes(`delete ${b}`));
+    assert.ok(!fake.log.includes(`delete ${used[0]}`));
+    assert.deepEqual(await mod.closeRun(ws), [used[0]]);
+    assert.ok(fake.log.includes(`delete ${used[0]}`));
+  });
+});
+
+// The same, end to end through runTool: a supply-chain-style scratch scan
+// never reaches the Daytona API, and runs on local Docker.
+test("C2: runTool on a no-run scratch dir never calls Daytona", { skip: !hasDocker && "no docker" }, async () => {
+  const s = mkdtempSync(join(tmpdir(), "touchstone-scan-"));
+  const saved = { exec: process.env.TOUCHSTONE_EXEC, key: process.env.DAYTONA_API_KEY, fetch: globalThis.fetch, log: console.log };
+  const events = [];
+  let calls = 0;
+  try {
+    process.env.TOUCHSTONE_EXEC = "daytona";
+    process.env.DAYTONA_API_KEY = "test-key-not-real";
+    globalThis.fetch = async () => { calls++; throw new Error("must not be called"); };
+    console.log = (l) => { if (String(l).startsWith("EVENT ")) events.push(JSON.parse(String(l).slice(6))); };
+    writeFileSync(join(s, "in.txt"), "scan me");
+    const { runTool } = await import("../lib/wrap.mjs");
+    const r = await runTool({ image: "debian:bookworm-slim", ws: s, cmd: ["cat", "in.txt"] });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, "scan me");
+    assert.equal(calls, 0);
+    assert.match(events.find((e) => e.ev === "exec-fallback")?.reason ?? "", /no run/);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    console.log = saved.log;
+    if (saved.exec === undefined) delete process.env.TOUCHSTONE_EXEC; else process.env.TOUCHSTONE_EXEC = saved.exec;
+    if (saved.key === undefined) delete process.env.DAYTONA_API_KEY; else process.env.DAYTONA_API_KEY = saved.key;
+    rmSync(s, { recursive: true, force: true });
+  }
 });
 
 // F: a process that dies during closeRun must not lose a machine id.
