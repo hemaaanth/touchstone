@@ -320,3 +320,56 @@ test("a missing Aderyn image is told to the agent, so no Aderyn leads is not rea
   assert.equal(aderynNote({ available: true }), "");
   assert.match(aderynNote({ available: false, reason: "image not found" }), /Aderyn did NOT run.*image not found.*does NOT mean the code is clean/s);
 });
+
+// ---- repair cycle 2: gate false negatives, member writes ----
+const setOwnerWith = (modifierBody) => scan(`contract C { address public owner; address public last; event L(address a);
+  modifier m() { ${modifierBody} _; }
+  function setOwner(address n) external m { owner = n; } }`);
+const hasControlLead = (leads) => leads.some((l) => l.check === "unprotected-control-function");
+
+test("a modifier that only logs or stores the caller, or reads tx.origin, is not a gate", () => {
+  for (const body of ["emit L(msg.sender);", "last = msg.sender;", "emit L(tx.origin);"]) {
+    const lead = setOwnerWith(body).find((l) => l.check === "unprotected-control-function");
+    assert.ok(lead, `no lead for modifier: ${body}`);
+    assert.equal(lead.impact, "High", body);
+  }
+});
+
+test("a modifier that compares the caller is still a gate", () => {
+  assert.equal(hasControlLead(setOwnerWith("require(msg.sender == owner, 'no');")), false);
+  assert.equal(hasControlLead(setOwnerWith("if (msg.sender != owner) revert();")), false);
+});
+
+test("a caller that is only mentioned after the condition is not a gate", () => {
+  for (const body of ["if (d) emit Called(msg.sender);", "if (d) last[msg.sender] = 1;", "require(token.transferFrom(msg.sender, address(this), 1));"]) {
+    const leads = scan(`contract C { address public owner; bool d; mapping(address=>uint) last; IERC20 token; event Called(address a);
+      function setOwner(address n) external { ${body} owner = n; } }`);
+    const lead = leads.find((l) => l.check === "unprotected-control-function");
+    assert.ok(lead, `no lead for: ${body}`);
+    assert.equal(lead.impact, "High", body);
+  }
+});
+
+test("a mapping or role lookup of the caller inside the condition is a gate", () => {
+  const leads = scan(`contract C { address public owner; mapping(address=>bool) admins;
+    function setOwner(address n) external { require(admins[msg.sender], "no"); owner = n; } }`);
+  assert.equal(hasControlLead(leads), false);
+});
+
+test("a parameter named like a gate modifier does not gate the function", () => {
+  const leads = scan(`contract C { address public owner;
+    function setOwner(address auth) external { owner = auth; } }`);
+  assert.equal(leads.find((l) => l.check === "unprotected-control-function")?.impact, "High");
+});
+
+test("a member write of implementation ($ or s, ERC-7201) is still a write; a local variable is not", () => {
+  for (const target of ["$", "s"]) {
+    const leads = scan(`contract P { struct S { address implementation; }
+      function _s() private pure returns (S storage s) { assembly { s.slot := 0 } }
+      function swap(address n) external { S storage ${target} = _s(); ${target}.implementation = n; } }`);
+    const got = checks(leads);
+    assert.ok(got.includes("unprotected-implementation-write") && got.includes("silent-upgrade-path"), `${target}: ${got}`);
+  }
+  const local = scan(`contract P { function look(address x) external view returns (address) { address implementation = x; return implementation; } }`);
+  assert.ok(!checks(local).some((c) => /implementation-write|silent-upgrade/.test(c)));
+});

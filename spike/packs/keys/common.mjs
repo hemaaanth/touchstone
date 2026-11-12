@@ -491,8 +491,9 @@ Rules of the environment:
   Funds: a contract you deployed loses ETH and another address gains it. Fund the victim
   with vm.deal AFTER you create it. Never fund it with a payable constructor, a call with
   value, or a transfer from an account: that ETH comes back out and nets to zero.
-  Control: the replay changes the owner (slot 0), the EIP-1967 implementation or admin slot,
-  or the owner, threshold, module, guard or fallback handler of a Safe.
+  Control: the replay changes the EIP-1967 implementation or admin slot, or the owner,
+  threshold, module, guard or fallback handler of a Safe. A plain owner variable (slot 0) is
+  NOT counted here, because this mode has no lab to say which contract it belongs to.
   Make the change as an OUTSIDER. A change made by the address that already holds the owner
   or admin role is a legitimate change and does not count. Do not use vm.store (not counted).
   A test that only reads state and changes nothing fails.

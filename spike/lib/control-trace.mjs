@@ -67,7 +67,12 @@ export function extractControlTrace(traces) {
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
           out.writeMeta.push({ caller: senderOf(), authority });
         }
-        if (key === OWNER_SLOT || key === ADMIN_SLOT) (held[context] ??= {})[key] = word(change.value);
+        // Inside a constructor only the contract being built may set its own authority. A
+        // constructor that writes ANOTHER contract's owner slot must not teach the gate that
+        // its writer is the owner.
+        let building = null;
+        for (let n = arena[i]; n && !building; n = arena[n.parent]) if (n.trace?.kind === "CREATE") building = lc(n.trace.address);
+        if ((key === OWNER_SLOT || key === ADMIN_SLOT) && (building === null || building === context)) (held[context] ??= {})[key] = word(change.value);
       }
       if (t.kind !== "CALL" || !t.success || !ok(i)) return;
       if (address === VM && selector === ETCH) {

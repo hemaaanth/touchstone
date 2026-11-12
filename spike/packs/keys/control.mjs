@@ -66,9 +66,10 @@ export function controlChanges(trace, lab) {
     // Caller gate. The owner or admin of a proxy may hand over control: that is a legitimate
     // change, not a takeover. Drop a proxy write whose caller already held that authority
     // just before the write. The trace knows the authority when the test deployed the proxy.
-    // Safe writes are not gated: a Safe changes itself through its own call.
+    // Safe writes are not gated: a Safe changes itself through its own call. The gate does not
+    // need a lab proxy: source mode has none, and an admin's EIP-1967 upgrade is still legitimate.
     const meta = trace.writeMeta?.[index];
-    if (!write.setup && lab.proxy && !isSafe(write.context, trace) && meta?.caller && (meta.authority ?? []).includes(meta.caller)) return;
+    if (!write.setup && !isSafe(write.context, trace) && meta?.caller && (meta.authority ?? []).includes(meta.caller)) return;
     changes.push({ target: write.context, field, slot: write.slot, before: write.before, after: write.after });
   });
   // EIP-7702: etch of a delegation designator on a lab EOA, then a call that ran the delegate.

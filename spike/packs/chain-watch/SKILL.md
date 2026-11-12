@@ -104,7 +104,7 @@ settles, the engine replays each test once more. A finding is real only when the
 - `funds`: the proxy (a "Deployed contract" row, or the lab proxy address) lost ETH,
   and some other address gained ETH.
 - `control`: the replay changed the EIP-1967 implementation slot, the EIP-1967 admin
-  slot, or the owner (slot 0) of the lab proxy.
+  slot, or the owner (slot 0) of the lab proxy. In source mode (no lab) the slot-0 owner is not counted.
 
 The engine reads control changes from the replay state diff (`forge test -vvvvv`
 storage writes). It does not read the test text. The result shows the field and the

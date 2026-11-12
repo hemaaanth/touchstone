@@ -76,19 +76,36 @@ function matchClose(text, from, open, close) {
   return -1;
 }
 
-// A function is gated when its header carries an access modifier, or its body checks
-// the caller. Three answers: "gated", "maybe" and "open".
-// - gated: a known gate word, a file-local modifier that reads `msg.sender`, or a body that
-//   puts `msg.sender` inside a `require`, `assert` or `if`.
+// A function is gated when a modifier gates it, or its body checks the caller. Three answers:
+// "gated", "maybe" and "open".
+// - gated: a known gate modifier, a file-local modifier whose body guards on the caller, or a
+//   body with a guard statement (`require`, `assert`, `if`) that COMPARES the caller inside
+//   its own parenthesised condition.
 // - maybe: a modifier or helper the scan cannot read (it may live in a base contract). The
 //   gate may be real. A lead on such a function drops to Medium.
-// - open: nothing looks like a gate.
-const GATE_MODIFIER = /\b(onlyOwner|onlyAdmin|onlyRole|onlyProxy|onlyGovernance|onlyGuardian|onlyOperator|onlyAuthorized|requiresAuth|auth|authorized|whenNotInitialized|initializer|reinitializer|ifAdmin|onlyDelegateCall)\b/;
-const GATE_BODY = /\b(msg\.sender\s*(==|!=)|_msgSender\(\)\s*(==|!=)|_checkOwner\s*\(|_checkRole\s*\(|_authorizeUpgrade\s*\(|hasRole\s*\(|isOwner\s*\(|isAuthorized\s*\(|_requireOwner|_onlyOwner|require\s*\(\s*owner\s*==)/;
-const SENDER_CHECK = /\b(require|assert|if)\s*\([^;{]*?\b(msg\.sender|_msgSender\s*\(\s*\))/;
-const CALLER_WORDS = /\b(msg\.sender|_msgSender\s*\(\s*\)|tx\.origin)\b/;
+// - open: nothing looks like a gate. Mentioning `msg.sender` is not a gate: emitting it,
+//   storing it, or passing it to `transferFrom` checks nothing. `tx.origin` is never a gate.
+const GATE_MODIFIERS = new Set(["onlyOwner", "onlyAdmin", "onlyRole", "onlyProxy", "onlyGovernance", "onlyGuardian", "onlyOperator", "onlyAuthorized", "requiresAuth", "auth", "authorized", "whenNotInitialized", "initializer", "reinitializer", "ifAdmin", "onlyDelegateCall"]);
+const GATE_BODY = /\b(_checkOwner\s*\(|_checkRole\s*\(|_authorizeUpgrade\s*\(|_requireOwner|_onlyOwner)/;
+const CALLER = "(?:msg\\.sender|_msgSender\\s*\\(\\s*\\))";
+const ROLE_CALL = "(?:hasRole|isOwner|isAdmin|isAuthorized|isOperator|isGuardian|isGovernor|isMinter|isSigner|hasAccess|canCall|checkRole|checkOwner)";
+// Inside one condition the caller must be compared, looked up in a mapping, or handed to a role helper.
+const COMPARES = new RegExp(`${CALLER}\\s*[=!]=|[=!]=\\s*${CALLER}|\\[\\s*${CALLER}\\s*\\]|\\b${ROLE_CALL}\\s*\\([^()]*${CALLER}`);
+const LOOSE_COMPARE = new RegExp(`${CALLER}\\s*[=!]=|[=!]=\\s*${CALLER}|\\b(?:hasRole|isOwner|isAuthorized)\\s*\\(`);
 const HELPER_CALL = /\b_(?:check|only|require|enforce|ensure|auth|validate|assert)\w*\s*\(/;
 const NOT_GATES = new Set(["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override", "returns", "nonReentrant", "whenNotPaused", "whenPaused", "noDelegateCall", "lock"]);
+const ARGS = "\\((?:[^()]|\\([^()]*\\))*\\)";
+
+// True when a guard statement compares the caller. The condition is the balanced text inside
+// the parentheses of that one `require`, `assert` or `if`, so a later statement never counts.
+function guardsCaller(body) {
+  for (const m of body.matchAll(/\b(require|assert|if)\s*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    const close = matchClose(body, open, "(", ")");
+    if (COMPARES.test(body.slice(open + 1, close < 0 ? undefined : close))) return true;
+  }
+  return false;
+}
 
 // Modifiers written in this file, by name, with their bodies.
 function localModifiers(clean) {
@@ -102,19 +119,21 @@ function localModifiers(clean) {
 }
 
 function modifierNames(fn) {
-  const rest = (fn.after ?? "").replace(/\breturns\s*\([^)]*\)/g, " ").replace(/\boverride\s*\([^)]*\)/g, " ");
-  return [...rest.matchAll(/\b([A-Za-z_]\w*)\s*(?:\([^)]*\))?/g)].map((m) => m[1]);
+  const rest = (fn.after ?? "").replace(new RegExp(`\\b(?:returns|override)\\s*${ARGS}`, "g"), " ");
+  return [...rest.matchAll(new RegExp(`\\b([A-Za-z_]\\w*)\\s*(?:${ARGS})?`, "g"))].map((m) => m[1]);
 }
 
-// `mods` is the map from localModifiers(). Without it only the word lists and the body count.
+// `mods` is the map from localModifiers(). Modifiers are read from the text after the
+// parameters, so a parameter named `auth` is not a gate.
 function gateOf(fn, mods = new Map()) {
-  if (GATE_MODIFIER.test(fn.header) || GATE_BODY.test(fn.body) || SENDER_CHECK.test(fn.body)) return "gated";
-  let maybe = HELPER_CALL.test(fn.body);
-  for (const name of modifierNames(fn)) {
+  const names = modifierNames(fn);
+  if (names.some((name) => GATE_MODIFIERS.has(name)) || GATE_BODY.test(fn.body) || guardsCaller(fn.body)) return "gated";
+  let maybe = HELPER_CALL.test(fn.body) || LOOSE_COMPARE.test(fn.body);
+  for (const name of names) {
     if (NOT_GATES.has(name)) continue;
     if (!mods.has(name)) { maybe = true; continue; }
     const body = mods.get(name);
-    if (CALLER_WORDS.test(body) || GATE_BODY.test(body) || HELPER_CALL.test(body)) return "gated";
+    if (guardsCaller(body) || GATE_BODY.test(body) || HELPER_CALL.test(body)) return "gated";
   }
   return maybe ? "maybe" : "open";
 }
@@ -130,12 +149,13 @@ const MAYBE_NOTE = " It has a modifier or helper this scan could not read, so a 
 const CONTROL_NAMES = /^(upgradeTo|upgradeToAndCall|setImplementation|upgrade|changeAdmin|setAdmin|transferOwnership|setOwner|addOwner|addOwnerWithThreshold|removeOwner|swapOwner|changeThreshold|enableModule|disableModule|setGuard|setFallbackHandler|grantRole|revokeRole|setThreshold|setSigner|setTrustedSigner|setMinter|setOperator)$/;
 // A function writes the proxy implementation when it stores to a slot that the code names
 // "implementation", assigns a state variable named `implementation`, or sets an
-// OpenZeppelin slot value. A local variable or a parameter of that name is not a write.
+// OpenZeppelin slot value. A member write counts too (`$.implementation = n` in ERC-7201
+// namespaced storage). A local variable or a parameter of that name is not a write.
 function writesImplementation(fn) {
   const text = `${fn.header}\n${fn.body}`;
   if (/\bsstore\s*\(/.test(text) && /implementation/i.test(text)) return true;
   if (/StorageSlot\.getAddressSlot\([^)]*\)\.value\s*=(?!=)/.test(text)) return true;
-  for (const m of text.matchAll(/(?<![\w.])(_?implementation)\s*=(?!=)\s*\w/g)) {
+  for (const m of text.matchAll(/(?<!\w)(_?implementation)\s*=(?!=)\s*\w/g)) {
     if (/\b(address|payable|memory|storage|calldata|bytes32|bytes|uint\d*|bool|I[A-Z]\w*)\s*$/.test(text.slice(0, m.index))) continue; // a local declaration
     if (new RegExp(`\\b\\w+\\s+(?:payable\\s+|memory\\s+|calldata\\s+)?${m[1]}\\b`).test(fn.params)) continue; // a parameter
     return true;

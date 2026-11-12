@@ -225,3 +225,43 @@ test("a proxy owner change made by an outsider is harm", () => {
   const [change] = controlChanges(ownerTrace(ATTACKER), proxyLab);
   assert.equal(change.field, "owner");
 });
+
+// ---- repair cycle 2 ----
+const E = "0x00000000000000000000000000000000000e0001";
+const A2 = "0x00000000000000000000000000000000000a0002";
+const ADMIN_SLOT_HEX = toBeHex(BigInt(keccak256(new TextEncoder().encode("eip1967.proxy.admin"))) - 1n, 32);
+
+test("a constructor that takes another contract's owner slot does not become its owner", () => {
+  // E takes PROXY slot 0 inside its own constructor. Later E changes it again.
+  const t = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(w(0), addrWord(TEST))] }),
+    node(0, { kind: "CREATE", address: E, caller: ATTACKER, steps: [] }),
+    node(2, { address: PROXY, caller: E, steps: [sstore(w(0), addrWord(E), addrWord(TEST))] }),
+    node(0, { address: PROXY, caller: E, steps: [sstore(w(0), addrWord(A2), addrWord(E))] }),
+  ));
+  const changes = controlChanges(t, proxyLab);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].field, "owner");
+  assert.equal(changes[0].after, addrWord(A2));
+});
+
+test("source mode: an admin's EIP-1967 upgrade is legitimate, an outsider's is harm", () => {
+  const source = labOf(null);
+  const run = (caller) => extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { kind: "CREATE", address: PROXY, caller: TEST, steps: [sstore(ADMIN_SLOT_HEX, addrWord(TEST))] }),
+    node(0, { address: PROXY, caller, steps: [sstore(IMPL, addrWord(EVIL), addrWord(OTHER))] }),
+  ));
+  assert.deepEqual(controlChanges(run(TEST), source), []);
+  const [change] = controlChanges(run(ATTACKER), source);
+  assert.equal(change.field, "EIP-1967 implementation");
+});
+
+test("source mode: the prompt does not promise a slot-0 owner the engine will not count", async () => {
+  const { sourceSystem } = await import("../packs/keys/common.mjs");
+  const text = sourceSystem("keys");
+  assert.doesNotMatch(text, /changes the owner \(slot 0\)/);
+  assert.match(text, /plain owner variable \(slot 0\) is\s+NOT counted/);
+  assert.deepEqual(controlChanges(trace({ created: [PROXY], writes: [write(PROXY, w(0), addrWord(ATTACKER), addrWord(TEST))] }), labOf(null)), []);
+});
