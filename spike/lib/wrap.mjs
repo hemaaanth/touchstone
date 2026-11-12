@@ -5,6 +5,7 @@
 // writes JSON or SARIF. We parse that output into leads, the same lead shape the
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
+import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
@@ -13,7 +14,11 @@ import { execFile } from "node:child_process";
 //   user     runs as the host user by default, so it can read the workspace
 //            with no capabilities and its output files stay ours
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
-export function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
+//
+// The container runs in local Docker by default. When Settings picks Daytona,
+// it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
+// same result shape. A call Daytona cannot serve runs locally.
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const args = [
     "run", "--rm", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -22,6 +27,10 @@ export function runTool({ image, cmd, ws, network = "none", user = `${process.ge
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
+  if (daytonaOn()) {
+    const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
+    if (remote) return remote;
+  }
   return new Promise((resolve) => {
     execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
       resolve({

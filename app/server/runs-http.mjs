@@ -6,7 +6,7 @@
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding } from "./findings.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -225,6 +225,7 @@ export function handleModels(req, res) {
 //   POST   /api/settings/discover          — list a gateway's models { id?, baseUrl?, apiKey? }
 //   POST   /api/settings/default           — { provider, model } for new runs
 //   POST   /api/settings/budget            — { budgetUsd } default per-run budget
+//   POST   /api/settings/execution         — { backend, apiKey?, clearKey? } where tools run
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
@@ -237,6 +238,7 @@ export async function handleSettings(req, res) {
     if (parts.length === 3 && route === "POST discover") return send(res, 200, await discoverModels(await readBody(req))), true
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
     if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
+    if (parts.length === 3 && route === "POST execution") return send(res, 200, setExecution(await readBody(req))), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true

@@ -9,6 +9,12 @@ export function withAgent(agent, fn) {
   return agents.run(agent, fn);
 }
 
+// The agent tag of the current call, or undefined for the root agent. The
+// Daytona backend uses it to give each swarm child its own machine.
+export function currentAgent() {
+  return agents.getStore();
+}
+
 export function event(name, data = {}) {
   const agent = agents.getStore();
   const line = JSON.stringify({ t: Date.now(), ev: name, ...(agent ? { agent } : {}), ...data });
