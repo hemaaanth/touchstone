@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 build_web()       { docker build -t touchstone/web-lab:dev packs/web/lab/dapp/oracle; }
 build_ai_mcp()    { docker build -t touchstone/ai-mcp-lab:dev packs/ai-mcp/lab/mcp/oracle; }
 build_inspector() { docker build -f packs/ai-mcp/Dockerfile.inspector -t touchstone/mcp-inspector:0.17.2 packs/ai-mcp; }
+build_strix()     { bash tools/build-strix-image.sh; }
 
 targets=("$@")
 [ ${#targets[@]} -eq 0 ] && targets=(web ai-mcp inspector)
@@ -23,7 +24,8 @@ for t in "${targets[@]}"; do
     web) build_web ;;
     ai-mcp) build_ai_mcp ;;
     inspector) build_inspector ;;
-    *) echo "unknown target: $t (use web, ai-mcp or inspector)" >&2; exit 2 ;;
+    strix) build_strix ;;
+    *) echo "unknown target: $t (use web, ai-mcp, inspector or strix)" >&2; exit 2 ;;
   esac
 done
 echo "built: ${targets[*]}"

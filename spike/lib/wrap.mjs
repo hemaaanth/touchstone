@@ -37,13 +37,13 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
 // the image's own user) calls it directly, so it still honors the backend.
 // root names the calling run when ws is a dir outside it (a fuzz scratch dir).
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
-export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack, root = null } = {}) {
+export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack, root = null, stream = null } = {}) {
   if (daytonaOn()) {
     const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack, root });
     if (remote) return remote;
   }
   return new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
+    const child = execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
       resolve({
         code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
         stdout: String(stdout ?? ""),
@@ -51,6 +51,12 @@ export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffe
         timedOut: Boolean(err?.killed),
       });
     });
+    // Optional live tee. The callback still receives the full buffers; this is
+    // only so a long engine can report progress before it exits.
+    if (stream) {
+      child.stdout?.on("data", (d) => stream("stdout", String(d)));
+      child.stderr?.on("data", (d) => stream("stderr", String(d)));
+    }
   });
 }
 

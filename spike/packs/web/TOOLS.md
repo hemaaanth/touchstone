@@ -47,10 +47,15 @@ the oracle accepts is a finding.
   rarely prove more than reflected XSS.
 - ZAP runs the passive baseline only. The active scan is not wired.
 - Strix runs as a fourth, much broader engine on a LIVE target only (headless,
-  quick, budget-capped; results are leads, never findings). It brings its own
-  Docker sandbox and browser, so its traffic does not pass the scope gate — the
-  target list is what keeps it on the granted host. Its model calls go through a
-  loopback shim that drops one parameter the gateway rejects.
+  quick, budget- and turn-capped; results are leads, never findings — the
+  fields say `proven: false`). It runs in its own container through runDocker(),
+  with the standard caps, and that container mounts the Docker socket because it
+  starts its own sandbox. Its traffic does NOT pass the scope gate: the target
+  list is what keeps it on the granted host, and a followed link can leave it.
+  This is the one deliberate networked, non-offline engine; `lib/strix.mjs`
+  says why. Its model calls go through a loopback shim inside the same container
+  that drops one parameter the gateway rejects. Build the image with
+  `bash scripts/build-labs.sh strix`.
 - No JWT-session lab exists in this pack, so `jwt_tool` has nothing to run
   against. A dashboard-style target with JWT sessions is a natural case for
   a second lab under this same pack.

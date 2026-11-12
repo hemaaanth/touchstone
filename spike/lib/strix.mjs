@@ -1,25 +1,46 @@
 // Strix as a finding engine for a live target.
 //
-// WHY. Our own oracles only cover a SIWE dApp. Strix (Apache-2.0, usestrix) is a
-// broad black-box web pentest agent: Playwright browser, Caido proxy, a Kali
-// sandbox, skills per vulnerability class. Running it as a second engine means
-// our agent starts from real, PoC-backed leads on classes we do not own —
-// while our own oracles stay the only thing that can mark a finding proven.
+// ============================================================================
+// THE DELIBERATE EXCEPTION. Every other engine in this repo is sealed: an
+// offline lab, `--internal` networks, a scope proxy as the only egress, no
+// internet. Strix is the ONE networked, non-offline engine. It is a full
+// pentest agent, not a scanner: its sandbox needs the internet (target plus its
+// own model calls), a browser, a proxy and its own containers. Sealing that is
+// possible and would cost far more than it buys, because a live target is not
+// offline to begin with. So:
+//   - it runs in its own container through runDocker(), with the same caps and
+//     the same backend switch as every other engine;
+//   - that container mounts the Docker socket, because it starts its own
+//     sandbox containers;
+//   - its traffic does NOT pass the scope gate. The target list is the only
+//     thing keeping it on the granted host. A run with Strix enabled therefore
+//     reaches the internet, and a Strix lead can come from a host the grant
+//     does not name (a link it followed). That is the accepted cost.
+// If the Daytona backend is on, this call currently falls back to local Docker
+// (its default network and the socket mount are host things). It says so.
+// ============================================================================
 //
-// HOW. Headless (`-n`), budget-capped, quick mode, one target. Strix writes
-// `strix_runs/<run>/findings.sarif`; each result becomes a lead. Its own model
-// calls go through a loopback shim (lib/llm-shim.mjs) because the gateway
-// rejects one parameter Strix always sends.
+// WHY. Our own oracles only cover a SIWE dApp. Strix (Apache-2.0, usestrix) is
+// broad: Playwright browser, Caido proxy, a Kali sandbox, skills per class.
+// Running it as a second engine means the agent starts from real, PoC-backed
+// leads on classes we do not own — while our oracles stay the only minting
+// path. A Strix result is ALWAYS a lead (`proven: false`, `corroborated:
+// false`). It cannot short-circuit into a finding.
 //
-// NOT INSIDE THE GATE. Strix brings its own Docker sandbox and browser, so its
-// traffic does not pass the scope proxy. The target list is what keeps it on the
-// granted host; nothing else it does is target traffic.
-import { spawn, execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+// HOW. Headless (`-n`), quick, budget- and turn-capped, one target. It writes
+// `strix_runs/<run>/findings.sarif`; each result becomes a lead. Its model calls
+// go through a loopback shim inside the same container (lib/llm-shim.mjs) that
+// drops one parameter our gateway rejects; running the shim in-container is what
+// keeps it working when the container is not on this host.
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dockerReady } from "./reach-confine.mjs";
-import { startShim } from "./llm-shim.mjs";
+import { requireImage } from "./proof-http.mjs";
+import { runDocker } from "./wrap.mjs";
+
+export const STRIX_IMAGE = "touchstone/strix:1.7.0";
 
 // Cheap and honest: quick mode, a hard budget, a turn cap.
 // The budget is checked after each model response, so a large prompt can
@@ -40,13 +61,14 @@ export function strixEnabled() {
 
 export async function strixReady() {
   if (!strixEnabled()) return { ok: false, reason: "disabled by STRIX=0" };
-  const version = await new Promise((resolve) => {
-    execFile("strix", ["--version"], { timeout: 20_000 }, (err, stdout) => resolve(err ? null : String(stdout).trim()));
-  });
-  if (!version) return { ok: false, reason: "the strix CLI is not installed (uv tool install strix-agent)" };
   const docker = await dockerReady();
   if (!docker.ok) return { ok: false, reason: docker.reason };
-  return { ok: true, version };
+  try {
+    await requireImage(STRIX_IMAGE, "strix");
+  } catch (err) {
+    return { ok: false, reason: String(err?.message ?? err).slice(0, 300) };
+  }
+  return { ok: true };
 }
 
 const cap = (s, n = 300) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -55,14 +77,20 @@ const pathOf = (uri) => {
   try { return new URL(uri).pathname ?? "/"; } catch { return String(uri); }
 };
 
-// SARIF results → our lead shape. Exported for the unit test: no Docker.
+// SARIF results → our lead shape. ALWAYS a lead: `proven: false` here and
+// `corroborated: false` mean nothing downstream may treat one as a finding. The
+// only minting path stays submit_finding -> an oracle match -> prove(). A lead
+// is prompt text; a finding is a replayed transcript. Exported for the unit
+// test: no Docker.
 export function parseSarif(text) {
   let doc;
   try { doc = JSON.parse(text); } catch { return []; }
   const results = doc?.runs?.[0]?.results ?? [];
   return results.flatMap((r) => {
     const uri = r?.locations?.[0]?.physicalLocation?.artifactLocation?.uri;
-    if (!r?.ruleId) return [];
+    // Coverage rows ("Not applicable") carry a synthetic rule id; they are not
+    // findings, so keep them out of the lead list.
+    if (!r?.ruleId || String(r.ruleId).startsWith("strix-coverage/")) return [];
     const text = cap(r.message?.text);
     // A DAST finding is anchored to SECURITY.md, which says nothing about where
     // in the site it is. Prefer a URL or a path the write-up names; the path is
@@ -71,11 +99,13 @@ export function parseSarif(text) {
     const where = hit ?? (uri && !/SECURITY\.md$/i.test(uri) ? pathOf(uri) : "/");
     return [{
       engine: "strix",
+      source: "strix",
       check: String(r.ruleId),
       impact: IMPACT[r?.properties?.strix?.severity] ?? LEVEL[r.level] ?? "Informational",
       where,
       description: text,
       corroborated: false,
+      proven: false,
     }];
   });
 }
@@ -87,9 +117,32 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
   // --max-budget never fires. Always hand Strix our own per-token prices.
   const ready = await strixReady();
   if (!ready.ok) return { status: "unavailable", reason: ready.reason, leads: [], coverage: { engine: "strix", status: "unavailable", reason: ready.reason, leads: 0 } };
-  const shim = await startShim({ baseUrl: provider.baseUrl, key: provider.key });
+  // Strix is the ONE networked, non-offline engine. It runs in its own container
+  // through runDocker(), so it shares the backend switch (local Docker or
+  // Daytona) and the resource caps the other engines get. It needs the Docker
+  // socket because it starts its own sandbox containers, and it needs network
+  // for the target and its model calls. The sealed/offline parity of the lab
+  // engines is deliberately not chased here: a live target is not offline.
+  //
+  // The model shim runs INSIDE the same container (entrypoint.sh), so it works
+  // unchanged when the container is on a remote Daytona machine.
   const cwd = mkdtempSync(join(tmpdir(), "strix-run-"));
+  // The daemon may remap root to a subuid that does not own the tmp dir.
+  chmodSync(cwd, 0o777);
+  const name = `touchstone-strix-${randomBytes(4).toString("hex")}`;
   const args = [
+    "run", "--rm", "--name", name,
+    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    "--pids-limit", "512", "--memory", "2g",
+    "-v", "/var/run/docker.sock:/var/run/docker.sock",
+    "-v", `${cwd}:/work`, "-w", "/work",
+    "-e", `STRIX_LLM=${provider.model}`,
+    "-e", "LLM_API_KEY=shim", // the in-container shim adds the real one
+    "-e", `UPSTREAM_BASE=${provider.baseUrl}`,
+    "-e", `UPSTREAM_KEY=${provider.key}`,
+    ...(provider.inputCost != null ? ["-e", `STRIX_LLM_INPUT_COST_PER_MTOK=${provider.inputCost}`] : []),
+    ...(provider.outputCost != null ? ["-e", `STRIX_LLM_OUTPUT_COST_PER_MTOK=${provider.outputCost}`] : []),
+    STRIX_IMAGE,
     "-n",
     "--target", baseUrl,
     "--scan-mode", "quick",
@@ -100,21 +153,6 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
   ];
   emit({ ev: "web-strix-started", baseUrl, budgetUsd });
 
-  let timedOut = false;
-  const child = spawn("strix", args, {
-    cwd,
-    env: {
-      ...process.env,
-      STRIX_LLM: provider.model,
-      LLM_API_KEY: "shim", // the shim adds the real one
-      LLM_API_BASE: shim.url,
-      STRIX_API_TYPE: "chat_completions",
-      STRIX_TELEMETRY: "0",
-      ...(provider.inputCost != null ? { STRIX_LLM_INPUT_COST_PER_MTOK: String(provider.inputCost) } : {}),
-      ...(provider.outputCost != null ? { STRIX_LLM_OUTPUT_COST_PER_MTOK: String(provider.outputCost) } : {}),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
   const tail = [];
   let seen = 0;
   const onLine = (d) => {
@@ -126,13 +164,24 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
       if (++seen % 4 === 0) emit({ ev: "web-strix-line", line: cap(line, 200) });
     }
   };
-  child.stdout.on("data", onLine);
-  child.stderr.on("data", onLine);
-  const code = await new Promise((resolve) => {
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, timeoutMs);
-    child.on("exit", (c) => { clearTimeout(timer); resolve(c); });
-    child.on("error", () => { clearTimeout(timer); resolve(1); });
-  });
+  const r = await runDocker(args, { ws: cwd, timeoutMs, stream: (_where, d) => onLine(d) });
+  const timedOut = r.timedOut;
+  // A killed CLI leaves its sandbox container behind: `docker run` was killed,
+  // the daemon was not. Remove the CLI container by name and any sandbox that
+  // appeared after this scan started.
+  if (timedOut) {
+    await runDocker(["rm", "-f", name], { timeoutMs: 20_000 });
+    const since = String(Math.floor(Date.now() / 1000) - Math.ceil(timeoutMs / 1000) - 30);
+    // Its sandbox image tag moves with the CLI release, so match the repo in the
+    // image name rather than an exact ancestor tag (which would silently match
+    // nothing). Only containers created since this scan started are touched.
+    const q = await runDocker(["ps", "--format", "{{.ID}} {{.Image}}", "--filter", `since=${since}`], { timeoutMs: 20_000 });
+    for (const line of q.stdout.split("\n")) {
+      if (!line.includes("strix-sandbox")) continue;
+      await runDocker(["rm", "-f", line.split(" ")[0]], { timeoutMs: 20_000 });
+    }
+  }
+  if (r.code !== 0 && !timedOut) tail.push(r.stderr.trim().slice(-300));
 
   // Strix writes one run dir. A timed-out or partial run still has whatever it
   // reported before it stopped, which is the point of keeping the SARIF.
@@ -153,12 +202,16 @@ export async function runStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_U
         + ((usage.output_tokens ?? 0) / 1e6) * (provider.outputCost ?? 0);
     } catch { /* no usage record */ }
   } finally {
-    await shim.stop();
     if (process.env.STRIX_KEEP !== "1") rmSync(cwd, { recursive: true, force: true });
     else tail.push(`kept ${cwd}`);
   }
-  const status = timedOut ? "timed-out" : code === 0 || code === 2 ? "ran" : "unavailable";
-  const reason = status === "unavailable" ? tail.slice(-3).join(" | ") : undefined;
+  // Hitting the turn cap exits non-zero with a MaxTurnsExceeded trace. That is
+  // a stop, not a failure: the leads it did produce are kept.
+  const hitCap = tail.some((l) => /MaxTurnsExceeded|Max turns/i.test(l));
+  const status = timedOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
+  const reason = status === "unavailable"
+    ? tail.slice(-3).join(" | ")
+    : hitCap ? "stopped at the turn cap; leads found before that are kept" : undefined;
   emit({ ev: "web-strix-done", status, leads: leads.length, costUsd: Number(costUsd.toFixed(4)) });
   return { status, leads, reason, timedOut, costUsd, coverage: { engine: "strix", status, leads: leads.length, ...(reason ? { reason } : {}), ...(costUsd ? { costUsd: Number(costUsd.toFixed(4)) } : {}) } };
 }

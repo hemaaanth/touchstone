@@ -10,6 +10,7 @@
 // One shim serves one provider for one process. Start it with startShim(provider)
 // and stop it with the returned stop(). It binds 127.0.0.1 on an ephemeral port.
 import http from "node:http";
+import { writeFileSync } from "node:fs";
 
 const DROP = ["parallel_tool_calls"];
 
@@ -78,4 +79,19 @@ export async function startShim({ baseUrl, key }) {
       server.close(() => resolve());
     }),
   };
+}
+
+
+// Run as a program (inside the Strix image): take the upstream from the
+// environment and publish the shim URL where the entrypoint can read it.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  const base = process.env.UPSTREAM_BASE;
+  const key = process.env.UPSTREAM_KEY;
+  if (!base || !key) {
+    console.error("shim needs UPSTREAM_BASE and UPSTREAM_KEY");
+    process.exit(1);
+  }
+  const shim = await startShim({ baseUrl: base, key });
+  writeFileSync(process.env.SHIM_URL_FILE ?? "/tmp/shim.url", shim.url);
+  console.log(`shim ${shim.url}`);
 }
