@@ -298,14 +298,22 @@ export function scopeLayouts(ws) {
       const layout = art?.storageLayout;
       if (!layout || !Array.isArray(layout.storage)) continue;
       const slots = new Set();
+      // How many variables share each slot. An owner at offset 0 is only a clean
+      // 32-byte address word when it has the slot to ITSELF; if another field
+      // (e.g. `bool paused`) packs in above it, the live word is owner|otherField,
+      // which is not address-shaped and defeats both the takeover compare and the
+      // SLOAD entitlement fold. We skip those on purpose, same as offset != 0.
+      const slotCount = new Map();
+      for (const s of layout.storage) slotCount.set(String(s.slot), (slotCount.get(String(s.slot)) ?? 0) + 1);
       for (const s of layout.storage) {
         if (Number(s.offset) !== 0) continue; // only a clean, unpacked address word
+        if ((slotCount.get(String(s.slot)) ?? 1) > 1) continue; // a field packs in above the owner — not a clean address word
         const varName = String(s.label ?? "").replace(/^_+/, "").toLowerCase();
         if (!CONTROL_NAMES.test(varName)) continue;
         const t = layout.types?.[s.type];
         if (!t || t.encoding !== "inplace") continue; // not a mapping / dynamic / struct member
         const tl = String(t.label ?? "");
-        if (tl !== "address" && !tl.startsWith("contract ")) continue; // must be address-typed
+        if (tl !== "address" && tl !== "address payable" && !tl.startsWith("contract ")) continue; // must be address-typed (incl. `address payable`)
         let slotWord;
         try { slotWord = word("0x" + BigInt(s.slot).toString(16)); } catch { continue; }
         slots.add(slotWord);
@@ -326,7 +334,11 @@ export function scopeLayouts(ws) {
 // event, but its balance slots cannot lie. Non-balance maps are excluded two ways:
 // the name filter (so a nonce/timestamp map is skipped) and the uint-value check
 // (so an allowance map, whose value is itself a mapping, is skipped).
-const BALANCE_NAMES = /^(bal|balance|share|deposit|stake|holding|credit)/;
+// Anchored to the WHOLE name (after stripping underscores), not a prefix: a prefix
+// match would also keep `depositTime`, `stakeStart`, `creditLimit` and
+// `balanceSnapshotBlock` — uint maps that are not balances — and net a benign reset
+// of one as a "drain". We accept the ERC-20 names and their plural/`Of` forms only.
+const BALANCE_NAMES = /^(bal|balanceof|balances?|shares?|deposits?|stakes?|holdings?|credits?)$/;
 export function scopeBalances(ws) {
   const dir = outDir(ws);
   const byName = new Map();
@@ -520,6 +532,24 @@ function balanceDrains(controlTrace, targets, balances) {
   return drains;
 }
 
+// KNOWN LIMITS of this control channel (documented, not silently overclaimed).
+// These are cases a code review raised that the gate does NOT yet judge perfectly;
+// each fails toward UNDER-claiming (a missed finding), not a false "proven":
+//   - An Ownable2Step `acceptOwnership` can read as a takeover: OZ clears the
+//     pending-owner slot BEFORE it writes the owner, so the new owner is not in the
+//     pre-write authority snapshot. (A benign 2-step hand-over flagged — narrow,
+//     needs that exact OZ flow run as a PoC.)
+//   - A legit UUPS/Transparent upgrade whose admin/owner check reads from the
+//     implementation's own or OZ-v5 namespaced storage (never SLOADing a slot in
+//     the proxy's own layout) leaves the authority set empty, so an in-scope
+//     proxy's upgrade can read as a hijack.
+//   - An owner that lives in the IMPLEMENTATION's layout but in PROXY storage is not
+//     a named control slot of the proxy, so a takeover through the proxy is missed.
+//   - Control roles under non-standard names (controller/manager/minter/keeper) and
+//     balances under non-standard names (_rOwned, struct-wrapped amounts) are not in
+//     CONTROL_NAMES / BALANCE_NAMES; those token drains fall back to Transfer logs,
+//     which an event-less token defeats.
+//
 // The layout-aware control channel. A storage write is a TAKEOVER only when it
 // re-points a control pointer the writer was not entitled to set. Which slots are
 // control pointers comes from the compiled storage layout (`layouts`, a Map

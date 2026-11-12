@@ -491,3 +491,84 @@ contract HijackTest is Test {
   assert.equal(f.proof.harm.kind, "control");
   assert.equal(isProven(f), true);
 });
+
+// ---- reviewer cycle-2.2 cases: the classifier-blocked review raised these by
+// reading the code. Each is a real forge replay that would have mis-judged before
+// the fix, plus the polarity that proves the fix did not blind the channel. See
+// lib/proof.mjs scopeLayouts (packed-slot skip, `address payable`) and BALANCE_NAMES.
+
+// F7 (false positive fixed): a uint map whose NAME starts with a balance word but is
+// not a balance — `depositTime`. A prefix match kept it and read a benign reset as a
+// drain. Anchoring the name to the whole word drops it, so no drain is reported.
+test("forge: a non-balance map named depositTime is NOT a token drain when it resets (name anchor fixes the FP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Reg.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Reg {
+  mapping(address => uint256) public depositTime; // a timestamp map, NOT a balance
+  function set(address who, uint256 t) external { depositTime[who] = t; }
+}
+contract Member { constructor(Reg r) { r.set(address(this), 0); } }
+` }, "DepTimeTest", `import "../src/Reg.sol";
+contract DepTimeTest is Test {
+  Reg reg; Member m;
+  function setUp() public { reg = new Reg(); m = new Member(reg); reg.set(address(m), 100); }
+  function test_reset() public { reg.set(address(m), 0); assertEq(reg.depositTime(address(m)), 0); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// F1 (false positive fixed): an owner packed in slot 0 with another field (`bool
+// paused`). The live word is owner|paused, not address-shaped, so the SLOAD
+// entitlement fold never records the real owner and a benign unpause BY the owner
+// read as a re-point. scopeLayouts now skips any slot shared by two fields, so a
+// packed owner is not treated as a clean control pointer at all. (The symmetric cost
+// — a REAL takeover of a packed owner is no longer proven through this channel — is
+// the documented "rather miss an exotic packing than misread it" tradeoff.)
+test("forge: a benign unpause by the real owner of a PACKED owner slot is NOT a takeover (packed-slot skip fixes the FP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Pausable.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Pausable {
+  address public owner;   // slot 0, offset 0
+  bool public paused;     // slot 0, offset 20 — packed above the owner
+  constructor() { owner = msg.sender; }
+  function pause() external { require(msg.sender == owner, "no"); paused = true; }
+  function unpause() external { require(msg.sender == owner, "no"); paused = false; }
+}
+` }, "PauseTest", `import "../src/Pausable.sol";
+contract PauseTest is Test {
+  Pausable c;
+  function setUp() public { c = new Pausable(); c.pause(); }
+  function test_unpause() public { c.unpause(); assertTrue(!c.paused()); }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// F3 (false negative fixed): an owner declared `address payable`. The storage-layout
+// type label is "address payable", which the strict `=== "address"` check dropped, so
+// a takeover of that owner was never proven. The label is now accepted.
+test("forge: a takeover of an `address payable` owner IS proven (payable type accepted, fixes the FN)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "PayOwned.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract PayOwned {
+  address payable public owner;  // slot 0
+  constructor() { owner = payable(msg.sender); }
+  function setOwner(address payable o) external { owner = o; } // BUG: no access check
+}
+` }, "PayTest", `import "../src/PayOwned.sol";
+contract PayTest is Test {
+  PayOwned c;
+  function setUp() public { c = new PayOwned(); }
+  function test_takeover() public { vm.prank(address(0xBEEF)); c.setOwner(payable(address(0xBEEF))); assertEq(c.owner(), address(0xBEEF)); }
+}
+`);
+  assert.equal(f.proof.harm.ok, true);
+  assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});
