@@ -228,6 +228,8 @@ export async function handleScopes(req, res) {
     // A live scope also records the operator's permission to reach real hosts,
     // so it needs the console token, like a Settings write. A web page or the
     // agent cannot add one.
+    // This covers the private-lab opt-in (allowPrivate) too: it only acts on
+    // the live path, so it can never skip this token check.
     const body = await readBody(req)
     if (body?.kind === "live") {
       const refusal = settingsWriteRefusal(req)
@@ -237,7 +239,7 @@ export async function handleScopes(req, res) {
       }
     }
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, allowPrivate: body.allowPrivate }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

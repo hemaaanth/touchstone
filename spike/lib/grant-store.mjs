@@ -171,6 +171,39 @@ function grantEntryError(entry, allowPrivate) {
   return null;
 }
 
+// Cloud metadata endpoints that sit outside 169.254/16. They are never a lab.
+const METADATA_IPS = new Set(["100.100.100.200", "fd00:ec2::254"]);
+
+// The stricter rule for a live scope the operator opts into private space (a
+// local lab). Returns an error string, or null if the entry is allowed. Every
+// host in such a scope must be a loopback name or a loopback/private IP literal:
+//   - No public host and no DNS name. An opted-in grant lets the proxy reach
+//     private space, so a public name in it could be rebound to a private
+//     address. A lab is named by "localhost" or by its IP.
+//   - No wildcard. A lab scope names exact hosts.
+//   - No link-local, unspecified or cloud-metadata address, even with the
+//     opt-in. Those are never a lab.
+export function privateLabHostError(entry) {
+  const e = normalizeHost(entry);
+  if (!e) return null; // dropped, then caught by the "at least one valid host" check
+  if (e.startsWith("*.")) return `"${e}" is a wildcard. A private lab scope names exact hosts.`;
+  if (isLocalName(e)) return null;
+  if (!isIP(e)) return `"${e}" is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  const mapped = e.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const ip = mapped ? mapped[1] : e;
+  if (METADATA_IPS.has(ip)) return `"${e}" is a cloud metadata address and is never a lab.`;
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split(".").map(Number);
+    if (a === 0) return `"${e}" is an unspecified address and is never a lab.`;
+    if (a === 169 && b === 254) return `"${e}" is link-local (cloud metadata lives here) and is never a lab.`;
+  } else {
+    if (ip === "::") return `"${e}" is the unspecified address and is never a lab.`;
+    if (/^fe[89ab]/.test(ip)) return `"${e}" is link-local and is never a lab.`;
+  }
+  if (!isPrivateIp(ip)) return `"${e}" is a public address. A private lab scope takes only loopback or private addresses.`;
+  return null;
+}
+
 // Does a granted host entry cover a request host? Exact match, or a "*.example
 // .com" wildcard that covers any single-or-multi-label subdomain of example.com
 // (but not example.com itself). Exact is the common case; the wildcard is opt-in

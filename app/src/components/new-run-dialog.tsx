@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, X } from "lucide-react"
 import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope } from "@/lib/api"
+import { getConsoleToken, setConsoleToken } from "@/lib/console-token"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
@@ -340,8 +341,25 @@ function siteOrigin(raw: string): string | null {
     return null
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null
-  if (u.username || u.password || !u.hostname.includes(".")) return null
+  if (u.username || u.password) return null
+  // A bare name like "intranet" is a typo more often than a target. localhost
+  // and IP literals are fine: a local lab is named that way.
+  if (!u.hostname.includes(".") && !labHost(u.hostname) && !u.hostname.startsWith("[")) return null
   return u.origin
+}
+
+// True for a loopback or private host: a local lab, not a public website. The
+// server checks again and refuses such a host unless the operator opts in.
+// A URL hostname keeps IPv6 brackets, so they are stripped first.
+function labHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (h === "localhost" || h.endsWith(".localhost")) return true
+  const v4 = h.match(/^(?:::ffff:)?(\d+)\.(\d+)\.\d+\.\d+$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+  }
+  return h === "::1" || /^f[cd]/.test(h)
 }
 
 // What POST /api/scopes gets for a list of sources: one members array, repos
@@ -350,11 +368,13 @@ function siteOrigin(raw: string): string | null {
 // repos, whose content the server does not know until a run fetches it.
 // Live websites go as { kind: "live", hosts, permission }: the checkbox is the
 // operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   const bearer = token.trim()
-  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}) }
+  if (sites.length) {
+    return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+  }
   const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
   return { title, members, ...(pack ? { pack } : {}) }
 }
@@ -383,12 +403,18 @@ export function AddScope({
   const [permission, setPermission] = useState(false)
   const [token, setToken] = useState("")
   const [module, setModule] = useState("web")
+  const [allowPrivate, setAllowPrivate] = useState(false)
+  // The console token the server printed at start. A live scope needs it.
+  const [consoleToken, setConsoleTokenState] = useState(getConsoleToken)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const siteModule = pack && pack !== "contracts" ? pack : module
-  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token) : null
   const live = sources.some((s) => s.kind === "site")
+  // A local lab: the opt-in shows only when a listed website is loopback or private.
+  const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
+  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, lab && allowPrivate) : null
+  const ready = !live || (permission && !!consoleToken && (!lab || allowPrivate))
   const livePacks = (packs ?? []).filter((p) => p.live)
   // Only the AI/MCP module takes a caller credential. A website does not.
   const wantsToken = live && siteModule === "ai-mcp"
@@ -399,6 +425,7 @@ export function AddScope({
     setName("")
     setSources([])
     setPermission(false)
+    setAllowPrivate(false)
     setToken("")
     onError(null)
   }
@@ -409,7 +436,10 @@ export function AddScope({
     }
     onError(null)
     // The tick covers the websites listed when it was ticked. A new one needs a new tick.
-    if (s.kind === "site") setPermission(false)
+    if (s.kind === "site") {
+      setPermission(false)
+      setAllowPrivate(false)
+    }
     setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
   }
   const addUrl = () => {
@@ -429,6 +459,8 @@ export function AddScope({
   const save = () => {
     if (!body || busy) return
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
+    if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
+    if (live && !consoleToken) return onError("Paste the console token. The server prints it when it starts.")
     setBusy(true)
     onError(null)
     attachScope(body)
@@ -543,7 +575,10 @@ export function AddScope({
                   title="Remove from scope"
                   disabled={busy}
                   onClick={() => {
-                    if (s.kind === "site") setPermission(false)
+                    if (s.kind === "site") {
+                      setPermission(false)
+                      setAllowPrivate(false)
+                    }
                     setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))
                   }}
                   className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-3.5"
@@ -568,6 +603,43 @@ export function AddScope({
               <span>
                 I have permission to test these websites. A run sends real requests to them.
               </span>
+            </label>
+          ) : null}
+          {lab ? (
+            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input
+                type="checkbox"
+                checked={allowPrivate}
+                disabled={busy}
+                onChange={(e) => {
+                  setAllowPrivate(e.target.checked)
+                  if (e.target.checked) onError(null)
+                }}
+                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
+              />
+              <span>
+                This is my own local lab. Let runs reach these loopback or private addresses. Every website in this scope must
+                be localhost or a private IP.
+              </span>
+            </label>
+          ) : null}
+          {live ? (
+            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span className="shrink-0 text-[11px] text-muted-foreground">Console token</span>
+              <input
+                type="password"
+                value={consoleToken}
+                disabled={busy}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  setConsoleTokenState(v)
+                  setConsoleToken(v)
+                }}
+                placeholder="printed by the server at start"
+                aria-label="Console token"
+                autoComplete="off"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
             </label>
           ) : null}
           {live && livePacks.length > 1 ? (
@@ -625,7 +697,7 @@ export function AddScope({
                 ? `${sources.length} ${sources.length === 1 ? "website" : "websites"}, tested as one unit`
                 : `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy || (live && !permission)} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy || !ready} onClick={save}>
               Add scope
             </Button>
           </div>

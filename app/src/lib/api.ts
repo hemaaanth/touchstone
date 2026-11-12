@@ -90,6 +90,8 @@ export function attachScope(body: {
   kind?: "live"
   hosts?: string[]
   permission?: boolean
+  // The operator's opt-in for a local lab (loopback or private hosts only).
+  allowPrivate?: boolean
   // A live AI/MCP target may carry its own credential and its scopes.
   token?: string
   tokens?: Record<string, { client: string; scopes: string[] }>

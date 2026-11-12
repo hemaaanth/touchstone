@@ -68,6 +68,62 @@ test("bad hosts are refused before anything is saved", () => {
   assert.equal(readGrants().length, 0);
 });
 
+test("a loopback or private host is refused by default", () => {
+  for (const h of ["127.0.0.1", "localhost", "http://localhost:3000", "10.0.0.5", "192.168.1.20", "[::1]"]) {
+    assert.throws(() => addLiveScope({ hosts: [h], permission: true }), /Refused/, h);
+  }
+  // Only the exact value true opts in. A string or 1 does not.
+  for (const v of ["yes", "true", 1, {}]) {
+    assert.throws(() => addLiveScope({ hosts: ["127.0.0.1"], permission: true, allowPrivate: v }), /Refused/, String(v));
+  }
+  assert.equal(readScopes().length, 0);
+  assert.equal(readGrants().length, 0);
+});
+
+test("the explicit opt-in allows a loopback or private lab", () => {
+  const scope = addLiveScope({
+    title: "Local lab",
+    hosts: ["http://127.0.0.1:8080", "localhost", "10.0.0.5", "192.168.1.20"],
+    permission: true,
+    allowPrivate: true,
+  });
+  assert.deepEqual(scope.hosts, ["127.0.0.1", "localhost", "10.0.0.5", "192.168.1.20"]);
+  assert.deepEqual(scope.origins.slice(0, 2), ["http://127.0.0.1:8080", "https://localhost"]);
+  assert.equal(scope.permission.allowPrivate, true);
+  const [grant] = readGrants();
+  assert.equal(grant.scopeId, scope.id);
+  assert.equal(grant.allowPrivate, true);
+  // The reach gate passes, and the covering grant carries the opt-in.
+  const gate = enforceReach(scope);
+  assert.deepEqual(gate.hosts, scope.hosts);
+  assert.equal(gate.grants.every((g) => g.allowPrivate === true), true);
+});
+
+test("the opt-in never covers a public host, a DNS name, a wildcard or metadata", () => {
+  const refused = [
+    "app.example.com", // a public name could be rebound to a private address
+    "8.8.8.8", // a public address
+    "lab.internal", // a DNS name, even one that looks private
+    "*.example.com",
+    "169.254.169.254", // cloud metadata
+    "100.100.100.200", // cloud metadata outside 169.254/16
+    "0.0.0.0",
+    "[fe80::1]",
+  ];
+  for (const h of refused) {
+    assert.throws(() => addLiveScope({ hosts: ["127.0.0.1", h], permission: true, allowPrivate: true }), /Refused/, h);
+  }
+  assert.equal(readScopes().length, 0);
+  assert.equal(readGrants().length, 0);
+});
+
+test("a public scope's grant never opts in, and the opt-in still needs the tick", () => {
+  addLiveScope({ hosts: ["app.example.com"], permission: true });
+  assert.equal(readGrants()[0].allowPrivate, false);
+  assert.equal(enforceReach({ kind: "live", hosts: ["app.example.com"] }).grants.some((g) => g.allowPrivate), false);
+  assert.throws(() => addLiveScope({ hosts: ["127.0.0.1"], allowPrivate: true }), /permission/);
+});
+
 test("removing the scope removes its grant, and only its grant", () => {
   const a = addLiveScope({ hosts: ["a.example.com"], permission: true });
   const b = addLiveScope({ hosts: ["b.example.com"], permission: true });

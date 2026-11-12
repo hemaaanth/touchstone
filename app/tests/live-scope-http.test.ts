@@ -114,3 +114,37 @@ describe("POST /api/scopes, kind live", () => {
     expect(g[0].scopeId).toBe(r.json.id)
   })
 })
+
+describe("POST /api/scopes, kind live, private lab opt-in", () => {
+  const lab = { kind: "live", title: "Local lab", hosts: ["http://127.0.0.1:8080"], permission: true, allowPrivate: true }
+
+  test("the opt-in without the console token: refused, nothing saved", async () => {
+    const r = await post(lab, CONSOLE)
+    expect(r.status).toBe(403)
+    expect(grants().length).toBe(0)
+    expect(existsSync(SCOPES)).toBe(false)
+  })
+
+  test("a loopback host without the opt-in, even with the token: refused", async () => {
+    const r = await post({ ...lab, allowPrivate: undefined }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(400)
+    expect(r.json.error).toMatch(/Refused/)
+    expect(grants().length).toBe(0)
+  })
+
+  test("a non-boolean opt-in does not opt in", async () => {
+    const r = await post({ ...lab, allowPrivate: "true" }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(400)
+    expect(grants().length).toBe(0)
+  })
+
+  test("the opt-in with the token: saved, and only that grant opts in", async () => {
+    const r = await post(lab, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(201)
+    expect(r.json.hosts).toEqual(["127.0.0.1"])
+    const g = grants()
+    expect(g.length).toBe(1)
+    expect(g[0].scopeId).toBe(r.json.id)
+    expect(g[0].allowPrivate).toBe(true)
+  })
+})
