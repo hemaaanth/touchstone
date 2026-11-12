@@ -83,7 +83,10 @@ An empty folder prints a clear message and exits 1.
 - Trust rule: a package that is locked under its own name with an integrity hash and a registry source is trusted. Its code hits are Medium, not High. The canonical packages (`ethers`, `viem`, `web3` and so on) are skipped.
 - A lookalike name is never trusted, even when locked. A typosquat from the registry has a real integrity hash. So a vendored lookalike with exfil code is High, and a vendored or declared lookalike that is used as a signer is a suspect (Medium without code evidence).
 - A lookalike name alone (such as `view` or `web`) is a Low lead. It becomes a Medium suspect only when a file uses it as a signer.
-- `dependency-reaches-signer` needs the imported binding to be used as a signer, such as `new Wallet(process.env.DEPLOYER_KEY)`. The word `Wallet` in a comment does not count. A lookalike that is not locked is capped at Medium.
+- Lookalike names include edit-distance-1 typos, swapped letters, and affix squats: a known name plus `js`, `sdk`, `lib`, `node` or `client` (`ethers-js`, `web3.js`, `viem-sdk`, `@solana/web3.js-sdk`). Real names and real families (`web3-utils`, `@ethersproject/*`) are not flagged.
+- Network sinks for exfil: `fetch`, `http(s).request/get`, `axios`, `got`, `ky`, `needle`, `superagent`, `undici`, `navigator.sendBeacon`, `net`/`tls` connect, DNS, `WebSocket`, `XMLHttpRequest`. The Semgrep rules cover the same clients.
+- `evm-private-key` needs the 64-hex value assigned or listed after a key word (`KEY=0x..`, `"privateKey": "0x.."`, `accounts: ["0x.."]`). Lines with `bytes32`, `_ROLE` or `keccak256` are role or hash constants and are skipped.
+- `dependency-reaches-signer` needs the imported binding to be used as a signer, such as `new Wallet(process.env.DEPLOYER_KEY)`, `new ethers.Wallet(pk)`, `Wallet.fromPhrase(words)`, or `new ethers.Contract(addr, abi, wallet)`. The word `Wallet` in a comment does not count. A lookalike that is not locked is capped at Medium.
 - The lab vendors an inert `node_modules/ethres` that looks like `ethers`. OSV and Grype do not know it. Our checks and Semgrep do.
 - All hits on one package share the root cause `malicious-dependency:<package>`.
 
@@ -153,6 +156,9 @@ Raw scanner stdout and stderr exist only in memory and are discarded after parsi
 
 ## Limits
 
+The `evm-private-key` check reads the statement that holds the hex. The key word must come before it, joined by `=`, `:`, `(`, `,`, `+`, `=>`, `||`, `??` or `return`. A `bytes32`, `_ROLE` or `keccak256` skips only its own statement, not the whole line.
+Semgrep sinks name the HTTP methods of `axios` and `got` (`post`, `get`, `put`, `patch`, `request`, `delete`, `head`, and `stream` for `got`). Config calls such as `axios.create` and `got.extend` are not sinks.
+
 The target is a Git root (committed bytes are pinned) or a plain folder.
 A Git scan reads committed files only. Untracked and ignored files are counted, not read. Use `--worktree` to read them.
 Only regular text files are read. A source file is at most 512 KiB. Source text totals at most 8 MiB.
@@ -163,6 +169,7 @@ Known evasions. The dependency checks are static and heuristic. They miss:
 
 - an exfil that splits the secret read and the network call across two files, or more than 8 lines apart;
 - a secret read through destructuring, such as `const { PRIVATE_KEY } = process.env`, before the sink;
+- a key labeled only by a trailing comment, such as `const PK = "0x.."; // deployer private key`. This is on purpose. The same rule keeps `// not a private key` clean;
 - minified or bundled code, and `.d.ts` files (skipped on purpose, because they caused false positives);
 - module names built at run time, and native or binary add-ons;
 - a hijacked canonical package that is locked with a valid integrity hash.
@@ -178,7 +185,7 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 
 ## Verification recorded
 
-- The focused supply-chain tests pass: 26 tests (14 first delivery, 10 repair 1, 2 repair 2).
+- The focused supply-chain tests pass: 36 tests (14 first delivery, 10 repair 1, 2 repair 2, 7 deep review, 3 re-review).
 - The full `bun run test` in `spike/` passes (count in the repair report).
 - The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
 - One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.

