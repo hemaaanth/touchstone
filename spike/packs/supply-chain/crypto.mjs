@@ -14,7 +14,19 @@ function nearName(a, b) {
   return false;
 }
 
-const lookalike = (name) => (canonical.includes(name) ? null : canonical.find((known) => nearName(name.toLowerCase(), known)) ?? null);
+// Affix typosquats: a real name with a small affix added, such as ethers-js, ethersjs, web3.js or viem-sdk.
+// Only these affixes count. Real families (web3-utils, @ethersproject/*) have other names and are not flagged.
+const AFFIX = /^(?:js|sdk|lib|node|client)$/;
+function affixed(name, known) {
+  if (name === known) return false;
+  if (name.startsWith(known) && AFFIX.test(name.slice(known.length).replace(/^[-_.]/, ""))) return true;
+  return name.endsWith(known) && AFFIX.test(name.slice(0, -known.length).replace(/[-_.]$/, ""));
+}
+const lookalike = (name) => {
+  if (canonical.includes(name)) return null;
+  const n = name.toLowerCase();
+  return canonical.find((known) => nearName(n, known) || affixed(n, known)) ?? null;
+};
 
 // Dependency checks. A scanner that reads advisories cannot see these.
 // 1. Vendored code that reads a secret or signer field and, a few lines away, sends data out.
@@ -27,12 +39,15 @@ const lookalike = (name) => (canonical.includes(name) ? null : canonical.find((k
 // and code that builds the module name at run time are not seen.
 const CODE = /\.[cm]?[jt]sx?$/;
 const TYPES = /\.d\.[cm]?ts$/;
-const SINK = /\b(?:https?\.(?:request|get)|fetch|net\.connect|dns\.resolve\w*)\s*\(|new\s+(?:XMLHttpRequest|WebSocket)\b/;
+// Network sinks: node http(s), fetch, the common HTTP clients, beacons, sockets and DNS.
+const SINK = /\b(?:https?\.(?:request|get)|http2\.connect|fetch|net\.connect|tls\.connect|dns\.resolve\w*|navigator\.sendBeacon|(?:axios|got|ky|needle|superagent|undici)\.(?:post|get|put|patch|request|fetch|stream|delete)|(?:axios|got|ky)|undici\.(?:request|fetch))\s*\(|new\s+(?:XMLHttpRequest|WebSocket)\b/;
 const KEYWORD = "KEY|SECRET|TOKEN|MNEMONIC|SEED|PASS";
 // A named env secret or a signer field. A bare `process.env` (copied whole) is not a secret read.
 const SECRET_READ = new RegExp(`process\\.env\\s*\\.\\s*\\w*(?:${KEYWORD})\\w*|process\\.env\\s*\\[\\s*["'\`][^"'\`]*(?:${KEYWORD})[^"'\`]*["'\`]\\s*\\]|\\.(?:privateKey|mnemonic|signingKey)\\b`);
 const SIGNER_MATERIAL = /PRIVATE_KEY|DEPLOYER_KEY|\bprivateKey\b|\bmnemonic\b/;
 const SIGNER_NAME = /Wallet|Signer|Keypair|sign|send/i;
+// ethers v6 ways to make a signer from secret material.
+const SIGNER_FACTORY = /^(?:from(?:Phrase|Mnemonic|PrivateKey|SecretKey|Seed|EncryptedJson\w*)|createRandom)$/;
 const WINDOW = 8;
 const vendoredName = (file) => file.match(/^(?:.*\/)?node_modules\/((?:@[^/]+\/)?[^/]+)\//)?.[1] ?? null;
 const esc = (x) => x.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
@@ -78,8 +93,12 @@ function importOf(src, pkg) {
 function usesAsSigner(src, names) {
   for (const raw of names) {
     const b = esc(raw);
-    for (const m of src.matchAll(new RegExp(`\\bnew\\s+${b}\\b(?:\\.([\\w$]+))?\\s*\\(([^;]{0,200})`, "g"))) if (SIGNER_NAME.test(m[1] ?? raw) || SIGNER_MATERIAL.test(m[2])) return true;
-    for (const m of src.matchAll(new RegExp(`\\b${b}\\.([\\w$]+)`, "g"))) if (SIGNER_NAME.test(m[1])) return true;
+    for (const m of src.matchAll(new RegExp(`\\bnew\\s+${b}\\b(?:\\.([\\w$]+))?\\s*\\(([^;]{0,200})`, "g"))) {
+      if (SIGNER_NAME.test(m[1] ?? raw) || SIGNER_MATERIAL.test(m[2])) return true;
+      // new ethers.Contract(address, abi, wallet): a wallet or signer in the last position signs transactions.
+      if ((m[1] ?? raw) === "Contract" && /,\s*[\w$.]*(?:wallet|signer)[\w$]*\s*\)/i.test(m[2])) return true;
+    }
+    for (const m of src.matchAll(new RegExp(`\\b${b}\\.([\\w$]+)`, "g"))) if (SIGNER_NAME.test(m[1]) || SIGNER_FACTORY.test(m[1])) return true;
     for (const m of src.matchAll(new RegExp(`\\b${b}\\s*\\(([^;]{0,200})`, "g"))) if (SIGNER_MATERIAL.test(m[1])) return true;
   }
   return false;
@@ -163,7 +182,12 @@ export function cryptoLeads(snapshot) {
       // A random bytes32 is not necessarily a key. Require key/account context.
       // A minified bundle holds long hex constants. A real committed key sits on a short line.
       if ((text.length <= 1000 || !(vendoredName(file) || /\.min\.[cm]?js$/.test(file))) && /(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(text)) {
+        // A role or hash constant is not a key: bytes32 declarations, _ROLE names and keccak256 values.
+        if (/\bbytes32\b|_ROLE\b|keccak256/i.test(text)) continue;
         for (const m of text.matchAll(/(?<![a-fA-F0-9])(?:0x)?[a-fA-F0-9]{64}(?![a-fA-F0-9])/g)) {
+          // The hex must be assigned or listed after the key word: KEY=0x.., "key": "0x..", accounts: ["0x.."].
+          const before = text.slice(0, m.index);
+          if (!/(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(before) || !/(?:[:=\[(,]|\bis)\s*["'`]?\s*$/.test(before)) continue;
           try {
             const address = new Wallet(m[0].startsWith("0x") ? m[0] : `0x${m[0]}`).address;
             add("evm-private-key", file, i + 1, "Exposed EVM signing key. No balance or live-use claim.", m[0], { address });
