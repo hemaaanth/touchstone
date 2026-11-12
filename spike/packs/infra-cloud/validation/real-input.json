@@ -1,6 +1,6 @@
 {
-  "command": "node spike/packs/infra-cloud/real-input.mjs realin7/vpc realin7/shop",
-  "replays": 3,
+  "command": "node spike/packs/infra-cloud/real-input.mjs realin7/vpc realin7/shop realin8/snowflake realin8/mineiros",
+  "replays": 2,
   "realin7/vpc": {
     "files": 101,
     "skipped": 6,
@@ -53,15 +53,9 @@
         "file": "examples/flow-log/main.tf",
         "line": 264,
         "status": "pass"
-      },
-      {
-        "check": "568a4d22-3517-44a6-a7ad-6a7eed88722c",
-        "file": "examples/flow-log/main.tf",
-        "line": 264,
-        "status": "pass"
       }
     ],
-    "ms": 12691
+    "ms": 10352
   },
   "realin7/shop": {
     "files": 290,
@@ -115,14 +109,120 @@
         "file": "src/adservice/Dockerfile",
         "line": 1,
         "status": "pass"
+      }
+    ],
+    "ms": 8264
+  },
+  "realin8/snowflake": {
+    "files": 16,
+    "skipped": 4,
+    "leads": 18,
+    "located": 18,
+    "executors": [
+      {
+        "engine": "trivy",
+        "status": "ok",
+        "reported": 9,
+        "leads": 9
       },
       {
-        "check": "fd54f200-402c-4333-a5a4-36ef6709af2f",
-        "file": "src/adservice/Dockerfile",
-        "line": 31,
+        "engine": "kics",
+        "status": "ok",
+        "reported": 9,
+        "leads": 9
+      },
+      {
+        "engine": "prowler",
+        "status": "unavailable"
+      },
+      {
+        "engine": "moto-live",
+        "status": "ok",
+        "leads": 0
+      },
+      {
+        "engine": "snapshot",
+        "status": "ok"
+      }
+    ],
+    "cryptoChecks": [],
+    "sample": [
+      "trivy AWS-0086 s3.tf:1",
+      "trivy AWS-0087 s3.tf:1",
+      "trivy AWS-0091 s3.tf:1",
+      "trivy AWS-0093 s3.tf:1",
+      "trivy AWS-0132 s3.tf:1"
+    ],
+    "replays": [
+      {
+        "check": "AWS-0086",
+        "file": "s3.tf",
+        "line": 1,
+        "status": "pass"
+      },
+      {
+        "check": "AWS-0087",
+        "file": "s3.tf",
+        "line": 1,
         "status": "pass"
       }
     ],
-    "ms": 10663
+    "ms": 4081
+  },
+  "realin8/mineiros": {
+    "files": 18,
+    "skipped": 4,
+    "leads": 6,
+    "located": 6,
+    "executors": [
+      {
+        "engine": "trivy",
+        "status": "ok",
+        "reported": 1,
+        "leads": 1
+      },
+      {
+        "engine": "kics",
+        "status": "ok",
+        "reported": 5,
+        "leads": 5
+      },
+      {
+        "engine": "prowler",
+        "status": "unavailable"
+      },
+      {
+        "engine": "moto-live",
+        "status": "ok",
+        "leads": 0
+      },
+      {
+        "engine": "snapshot",
+        "status": "ok"
+      }
+    ],
+    "cryptoChecks": [],
+    "sample": [
+      "trivy AWS-0345 main.tf:111",
+      "kics e592a0c5-5bdb-414c-9066-5dba7cdea370 main.tf:43",
+      "kics 1e434b25-8763-4b00-a5ca-ca03b7abbb66 examples/iam-instance-profile/main.tf:25",
+      "kics e38a8e0a-b88b-4902-b3fe-b0fcb17d5c10 main.tf:55",
+      "kics e38a8e0a-b88b-4902-b3fe-b0fcb17d5c10 main.tf:169"
+    ],
+    "replays": [
+      {
+        "check": "AWS-0345",
+        "file": "main.tf",
+        "line": 111,
+        "status": "pass"
+      },
+      {
+        "check": "e592a0c5-5bdb-414c-9066-5dba7cdea370",
+        "file": "main.tf",
+        "line": 43,
+        "status": "pass"
+      }
+    ],
+    "ms": 6642
   }
 }

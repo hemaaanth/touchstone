@@ -127,14 +127,17 @@ export function oracle(roleName) {
 // XML carry real values, so scrub them out of the stored proof after the oracle
 // has read the raw transcript. The recorder parses JSON bodies, so objects are
 // walked too. A session token expires, but it stays out of the saved record.
+// Any key named like a credential is redacted, so a future script shape cannot
+// leak one by accident, while ordinary fields stay visible.
 const scrubText = (body) => body
   .replace(/(<SecretAccessKey>)[^<]*(<\/SecretAccessKey>)/g, "$1[REDACTED]$2")
   .replace(/(<SessionToken>)[^<]*(<\/SessionToken>)/g, "$1[REDACTED]$2")
-  .replace(/("secretAccessKey"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2");
+  .replace(/("[Ss]ecretAccessKey"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2")
+  .replace(/("[Ss]essionToken"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2");
 const scrub = (value) => {
   if (typeof value === "string") return scrubText(value);
   if (Array.isArray(value)) return value.map(scrub);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /secret/i.test(k) ? "[REDACTED]" : scrub(v)]));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /secret|token|password|credential/i.test(k) ? "[REDACTED]" : scrub(v)]));
   return value;
 };
 const REDACTED_HEADER = /^(?:x-amz-security-token|authorization)$/i;

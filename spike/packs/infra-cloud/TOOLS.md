@@ -117,6 +117,14 @@ Unresolved bucket expressions are coverage gaps, not proof that controls are dis
 IAM handling is conservative. Conditional or denied grants are not promoted as broad access.
 All findings describe requested configuration in the captured files, not actual deployment, token theft, signing, RPC responses or loss of funds.
 
+A conditioned trust (ExternalId, PrincipalOrgID) makes the trust narrower than a
+wildcard principal looks. The detector therefore refuses a conditioned or
+`NotPrincipal` statement, and an explicit Deny of `sts:AssumeRole`. Moto ignores
+trust conditions, so the replay alone would still pass; the detector is what
+stays sound there.
+On real Terraform the trust document often sits behind `jsonencode(...)` or a
+`data.aws_iam_policy_document`, which the structural parser cannot read. Real
+folders therefore produce scanner leads and no crypto or live-cloud lead.
 The live replay reads a synthetic bucket in moto, not a real AWS account.
 It needs Docker at prove time and the built lab image. Without either, the live
 leading finding fails instead of silently falling back.

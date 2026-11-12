@@ -16,6 +16,19 @@ try {
   assert.equal(prep.record.liveCloud.leads.find((l) => l.lead === liveLead.id).status, "ok");
   // Only our own detector emits it; no scanner finds the role chain (bar 2).
   assert.deepEqual(liveLead.engines, ["Touchstone"]);
+  // A conditioned trust is not broad: the detector must stay quiet. The replay
+  // alone cannot tell, because moto ignores conditions.
+  const conditioned = makeLabWorkspace();
+  try {
+    const tf = JSON.parse(readFileSync(join(conditioned, "main.tf.json"), "utf8"));
+    tf.resource.aws_iam_role.ci_runner.assume_role_policy_document = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: "*", Action: "sts:AssumeRole", Condition: { StringEquals: { "sts:ExternalId": "touchstone" } } }] });
+    writeFileSync(join(conditioned, "main.tf.json"), JSON.stringify(tf, null, 2));
+    const { snapshot: snap } = (await import("./snapshot.mjs")).prepareSnapshot(conditioned);
+    const { analyze } = await import("./checks.mjs");
+    assert.ok(!analyze(snap).leads.some((l) => l.check === LIVE_CHECK), "a conditioned trust must not lead");
+    const proof = await liveProof(conditioned, { evidence: { where: { ...liveLead.where, file: "main.tf.json" } } });
+    assert.equal(proof.status, "pass", "the replay still passes: that is why the detector must exclude it");
+  } finally { rmSync(conditioned, { recursive: true, force: true }); }
   const state = { poc: 0, passed: new Map(), found: [] };
   const tools = Object.fromEntries(pack.tools(ws, state).map((t) => [t.name, t]));
   const first = prep.record.leads[0];

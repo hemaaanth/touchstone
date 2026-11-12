@@ -44,10 +44,13 @@ function role(r, word) {
   return label === word || new RegExp(`(^|[-_])${word}([-_]|$)`, "i").test(r.name);
 }
 // A reference to another resource: a CloudFormation Ref, or a Terraform
-// interpolation or bare expression that reads one of its attributes.
+// interpolation or bare expression that reads one of its attributes. `count`
+// and `for_each` add an index before the attribute.
 function reference(value, resource) {
   if (typeof value === "object" && value?.Ref === resource.name) return true;
-  return ["id", "arn", "name"].some((attribute) => [value, ...list(value)].includes(`${resource.type}.${resource.name}.${attribute}`) || value === `\${${resource.type}.${resource.name}.${attribute}}`);
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const shape = new RegExp(`^\\$?\\{?${escape(resource.type)}\\.${escape(resource.name)}(?:\\[[^\\]]*\\])?\\.(?:id|arn|name)\\}?$`);
+  return [value, ...list(value)].some((v) => typeof v === "string" && shape.test(v));
 }
 const awsTypes = (r, tf, cfn) => r.type === tf || r.type === cfn;
 const podSpec = (r) => r.type === "Pod" ? r.data.spec : r.type === "CronJob" ? r.data.spec?.jobTemplate?.spec?.template?.spec : r.data.spec?.template?.spec;
@@ -60,15 +63,24 @@ const argValue = (args, flag) => { const i = args.indexOf(flag); return i >= 0 ?
 // The role a policy document is attached to, or undefined when it is not tied to a role.
 export function attachedRole(r, rs) {
   if (r.type === "aws_iam_role_policy") {
-    // `${aws_iam_role.x.name}`, `${...id}` and the bare `aws_iam_role.x.name`.
-    const name = typeof r.data.role === "string" ? r.data.role.match(/^\$?\{?aws_iam_role\.([^.}]+)\./) : null;
+    // `${aws_iam_role.x.name}`, `${aws_iam_role.x[0].id}` and the bare
+    // `aws_iam_role.x.name`. The whole expression must be one reference, so
+    // `${aws_iam_role.x.name}-suffix` stays a different role.
+    const name = typeof r.data.role === "string" ? r.data.role.match(/^\$?\{?aws_iam_role\.([^.}\[]+)(?:\[[^\]]*\])?\.(?:name|id|arn)\}?$/) : null;
     return rs.find((x) => x.type === "aws_iam_role" && (x.name === name?.[1] || reference(r.data.role, x)));
   }
   if (r.type === "AWS::IAM::Policy") return rs.find((x) => x.type === "AWS::IAM::Role" && list(r.data.Roles).some((v) => reference(v, x)));
 }
-// A trust policy that lets any principal assume the role.
-const wildcardTrust = (role) => statements(role.data.assume_role_policy_document ?? role.data.AssumeRolePolicyDocument)
-  .some((s) => s.Effect === "Allow" && broadPrincipal(s.Principal) && actionMatches(s.Action, "sts:AssumeRole"));
+// A trust policy that lets any principal assume the role with no further
+// condition. A condition (ExternalId, PrincipalOrgID, source account) makes the
+// trust narrower than it looks, and moto does not evaluate conditions, so the
+// replay alone would still pass. An explicit Deny of AssumeRole wins.
+function wildcardTrust(role) {
+  const trust = statements(role.data.assume_role_policy_document ?? role.data.AssumeRolePolicyDocument);
+  if (trust.some((s) => s.Effect === "Deny" && actionMatches(s.Action, "sts:AssumeRole"))) return false;
+  return trust.some((s) => s.Effect === "Allow" && broadPrincipal(s.Principal) && actionMatches(s.Action, "sts:AssumeRole")
+    && !s.Condition && !s.NotPrincipal && !s.NotAction);
+}
 // Allow statements that read objects in every bucket.
 const wildcardObjectRead = (r) => allowed(statements(r.data.policy ?? r.data.PolicyDocument), "s3:GetObject")
   .filter((s) => list(s.Resource).some((v) => /^(\*|arn:aws:s3:::\*(\/\*)?)$/.test(v)));

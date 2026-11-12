@@ -142,6 +142,31 @@ test("broad object read needs a wildcard-trust role and a wildcard resource gran
   assert.ok(checks(policy((s) => { s.Action = "s3:*"; })).includes("iam-role-broad-object-read"));
 });
 
+test("a conditioned trust is not a broad trust, because real AWS denies it", () => {
+  const trust = (statement) => terraform((r) => { r.aws_iam_role.ci_runner.assume_role_policy_document = JSON.stringify({ Statement: [statement] }); });
+  // ExternalId is the classic case: a wildcard principal alone is not enough.
+  assert.ok(!checks(trust({ Effect: "Allow", Principal: "*", Action: "sts:AssumeRole", Condition: { StringEquals: { "sts:ExternalId": "touchstone" } } })).includes("iam-role-broad-object-read"));
+  assert.ok(!checks(trust({ Effect: "Allow", Principal: { AWS: "*" }, Action: "sts:AssumeRole", Condition: { StringEquals: { "aws:PrincipalOrgID": "o-lab" } } })).includes("iam-role-broad-object-read"));
+  assert.ok(!checks(trust({ Effect: "Allow", NotPrincipal: { AWS: "arn:aws:iam::1:root" }, Action: "sts:AssumeRole" })).includes("iam-role-broad-object-read"));
+  // An explicit Deny of AssumeRole wins over an Allow.
+  assert.equal(checks(trust({ Effect: "Allow", Principal: "*", Action: "sts:AssumeRole" })).filter((c) => c === "iam-role-broad-object-read").length, 1);
+  const denied = terraform((r) => { r.aws_iam_role.ci_runner.assume_role_policy_document = JSON.stringify({ Statement: [
+    { Effect: "Allow", Principal: "*", Action: "sts:AssumeRole" },
+    { Effect: "Deny", Principal: "*", Action: "sts:AssumeRole" },
+  ] }); });
+  assert.ok(!checks(denied).includes("iam-role-broad-object-read"));
+});
+
+test("a role reference must be the whole expression, and an index is allowed", () => {
+  for (const role of ["${aws_iam_role.ci_runner.name}extra", "${aws_iam_role.ci_runner_x.name}", "${aws_iam_role.ci_runner.name}-blue"]) {
+    assert.ok(!checks(terraform((r) => { r.aws_iam_role_policy.ci_runner_read.role = role; })).includes("iam-role-broad-object-read"), role);
+  }
+  for (const role of ["${aws_iam_role.ci_runner[0].name}", "${aws_iam_role.ci_runner[count.index].id}", "aws_iam_role.ci_runner[each.key].arn"]) {
+    assert.ok(checks(terraform((r) => { r.aws_iam_role_policy.ci_runner_read.role = role; })).includes("iam-role-broad-object-read"), role);
+    assert.equal(liveSeed(terraform((r) => { r.aws_iam_role_policy.ci_runner_read.role = role; }), { resource: "aws_iam_role_policy.ci_runner_read" }).roleName, "ci_runner", role);
+  }
+});
+
 test("broad object read also reads the CloudFormation shape", () => {
   const cfn = { files: { "stack.json": JSON.stringify({
     Resources: {
@@ -194,6 +219,12 @@ test("the rendered proof carries no credential value", () => {
   assert.ok(!shown.includes("AsiAtoken"));
   assert.ok(!shown.includes("AKIA/SECRET"));
   assert.ok(shown.includes("ts-treasury-7f3a"), "the harm stays visible");
+  // A body shape no current script sends is still covered.
+  const future = { ...proof, log: [{ ...proof.log[2], response: { status: 200, headers: {}, body: { sessionToken: "unScrubbedFutureToken", password: "pw", credential: "cred", note: "keep" } } }] };
+  const later = JSON.stringify(redactProof(future));
+  assert.ok(!later.includes("unScrubbedFutureToken"));
+  assert.ok(!later.includes('"pw"') && !later.includes('"cred"'));
+  assert.ok(later.includes('"keep"'));
   assert.ok(shown.includes('"accessKeyId":"AKIAEXAMPLE"'), "a key id is not a secret");
 });
 

@@ -124,7 +124,7 @@ node spike/packs/infra-cloud/real-input.mjs /path/to/infra
 ```
 
 It captures the folder, runs the same prepass, replays three leads (`REPLAYS`
-raises the count) and saves `validation/real-input.json` with the command line.
+sets the count) and saves `validation/real-input.json` with the command line.
 Binary, oversized and symlinked files are listed as skipped instead of stopping
 the audit.
 It pins the folder in place (`snapshot.json` and `.touchstone.json`), so point it
@@ -132,6 +132,14 @@ at a copy when the folder must stay untouched.
 The app's scope target path currently allows only the Contracts and Review packs,
 so a scope run cannot select this pack yet. The folder runner is the supported
 path today.
+
+Real input is evidence-only for the crypto checks, and the live-cloud path is
+lab-only. That is a real limit, not a claim of coverage: on real Terraform the
+trust document usually sits behind `jsonencode(...)` or
+`data.aws_iam_policy_document`, which the structural parser does not interpret.
+So a real folder produces scanner leads, not crypto leads, and no moto replay.
+Four public repos were audited that way (72, 1009, 18 and 6 scanner leads); each
+replayed two leads green, and none produced a crypto lead.
 
 ## Proof contract
 
@@ -210,9 +218,12 @@ A baseline run before the live proof was added cost $0.11297417.
 `validation/live-record.json` keeps the safe result.
 `validation/live.json` keeps its summary and archive reference.
 The raw test key was checked absent from that saved result.
-The full spike suite passed all 233 tests on this branch.
+The full spike suite passed all 235 tests on this branch.
 App target discovery found `infra-cloud/lab`, kept its pack config and selected the evidence proof kind.
-Two real checkouts were audited with `real-input.mjs`: a public Terraform module
-(72 leads) and a public shop demo (1009 leads, 24 binary files skipped).
-Three leads replayed green in each, and the results are in
-`validation/real-input.json`.
+Four real checkouts were audited with `real-input.mjs`: the public
+terraform-aws-vpc module, the microservices-demo shop, and two public IAM-role
+modules. Two leads replayed green in each, and all four produced zero crypto
+leads, for the HCL reason above. The results are in `validation/real-input.json`.
+The saved `validation/live.json` still names the pre-repair oracle
+`assumed-role-reads-foreign-bucket`, because the paid run predates the
+token-bound oracle. A new paid run would refresh it; none was run for the repair.
