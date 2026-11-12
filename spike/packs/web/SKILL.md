@@ -3,7 +3,7 @@ name: web
 description: Audit a dApp backend's SIWE sign-in and REST API, and prove each bug by replaying a request script against a fresh copy of the lab.
 tier: P
 proof: http
-tools: [run_request_script, submit_finding]
+tools: [web_leads, run_request_script, submit_finding]
 labs: [lab/dapp]
 ---
 
@@ -29,8 +29,20 @@ network with no route to the internet.
 Before the agent starts, `prepass` starts the lab container on a fresh,
 `--internal` Docker network (no host port, no outbound route) and writes the
 live handle to the workspace so the agent's tool calls can reach it across
-the child-process boundary. It returns no leads: this module has no static
-scanner to run first, the lab is new ground to probe by hand.
+the child-process boundary.
+
+Then it scans a second, throwaway copy of the lab with three open-source
+tools, each run in Docker through `runTool()` (see `scan.mjs`):
+
+- ZAP baseline: header and info-leak alerts, and a spider that finds URLs
+  that take input.
+- Nuclei: our own template for an exposed debug or config route.
+- dalfox: reflected XSS on the URLs ZAP found.
+
+The result is a prepass record (`coverage` and `leads`). It shows in the run
+view as a fold: which tool ran, and the leads. The agent gets the leads in its
+first message and can read them again with `web_leads`. A lead is a hint,
+never a finding. The scan cannot sign in, so it never sees the session bugs.
 
 ## Steps
 
@@ -77,7 +89,7 @@ independent replay — this is why `prove()` never reuses the agent's own
 session: by the time the run ends, nonces are already spent and tokens
 already issued, so a stale transcript could look like a false pass.
 
-The three oracles, each pure functions over a transcript (`pack.mjs`
+The four oracles, each pure functions over a transcript (`pack.mjs`
 `ORACLES`):
 
 | Oracle | Impact | What it means |
@@ -85,12 +97,15 @@ The three oracles, each pure functions over a transcript (`pack.mjs`
 | `siwe-nonce-replay` | High | The identical signed SIWE message and signature, POSTed to `/siwe/verify` twice, mint two different sessions. A captured signature is a forever session-minting credential, not a one-time login. |
 | `bola-wallet-idor` | High | Signed in as one user, a call to `/api/users/:id` or `/api/users/:id/wallet` for a DIFFERENT id returns that user's wallet or API key. The route checks only that some session exists, never that it is the caller's own id. |
 | `debug-route-signer-key-leak` | Critical | An unauthenticated route returns the chain signer's private key. |
+| `reflected-xss` | Medium | A page writes a query value into its HTML unescaped, with no script-limiting CSP. The oracle needs the request's own markup, byte for byte, in a 200 HTML response. |
 
 ## Limits
 
 - Two seeded wallets, one lab server, one Docker image. The agent does not
   discover new wallets or scan a route list the lab does not have.
 - Local, offline Docker only. No fork, no live network, no real keys.
+- A live (non-lab) target is not wired yet. It waits for the platform scope
+  proxy and grant. `prepass(ws, { target: { net, baseUrl } })` is the hook.
 - JWT-attack breadth (alg confusion, weak secrets), CORS/CSRF, and open-ended
   fuzzing are not covered by our own oracles; see TOOLS.md for what a wrapped
   scanner could still add as a lead (never a finding on its own — this pack

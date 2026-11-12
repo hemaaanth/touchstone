@@ -7,16 +7,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import web, { ORACLES, matchOracle } from "../packs/web/pack.mjs";
+import { mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
 
 const nonceReplay = ORACLES.find((o) => o.name === "siwe-nonce-replay");
 const bola = ORACLES.find((o) => o.name === "bola-wallet-idor");
 const debugLeak = ORACLES.find((o) => o.name === "debug-route-signer-key-leak");
+const xss = ORACLES.find((o) => o.name === "reflected-xss");
 
 const verify = (over = {}) => ({ path: "/siwe/verify", status: 200, resBody: { token: "t1", user: { id: 1, name: "alice" } }, ...over });
 
@@ -83,6 +85,25 @@ test("debug-route-signer-key-leak: any 200 response carrying a signerPrivateKey 
   assert.equal(debugLeak.check([]).pass, false);
 });
 
+const html = (over = {}) => ({ method: "GET", path: "/explorer", url: "http://lab:8080/explorer?q=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E", status: 200, resHeaders: { "content-type": "text/html; charset=utf-8" }, resBody: "<p>No results for <b><img src=x onerror=alert(1)></b></p>", ...over });
+
+test("reflected-xss: markup in the query, written back unescaped in a 200 HTML page, is a pass", () => {
+  const v = xss.check([html()]);
+  assert.equal(v.pass, true);
+  assert.match(v.detail, /\/explorer/);
+});
+
+test("reflected-xss: an escaped page, plain text, a CSP, JSON, or a plain value is not a pass", () => {
+  assert.equal(xss.check([html({ resBody: "<p>No results for <b>&lt;img src=x onerror=alert(1)&gt;</b></p>" })]).pass, false);
+  assert.equal(xss.check([html({ resHeaders: { "content-type": "text/plain" } })]).pass, false);
+  assert.equal(xss.check([html({ resHeaders: { "content-type": "text/html", "content-security-policy": "default-src 'none'" } })]).pass, false);
+  assert.equal(xss.check([html({ status: 404 })]).pass, false);
+  assert.equal(xss.check([html({ url: "http://lab:8080/explorer?q=hello", resBody: "<b>hello</b>" })]).pass, false);
+  // The page must hold the REQUEST's value, not just any tag.
+  assert.equal(xss.check([html({ resBody: "<p>nothing here</p>" })]).pass, false);
+  assert.equal(xss.check([]).pass, false);
+});
+
 test("matchOracle returns the first oracle that passes, or null", () => {
   const same = { message: "m", signature: "s" };
   const t = [
@@ -103,7 +124,7 @@ test("the web pack is registered and has a stable tool set", () => {
   assert.equal(typeof web.prove, "function");
   const state = { poc: 0, passed: new Map(), found: [] };
   const names = web.tools("/nonexistent", state).map((t) => t.name);
-  assert.deepEqual(names, ["run_request_script", "submit_finding"]);
+  assert.deepEqual(names, ["web_leads", "run_request_script", "submit_finding"]);
   assert.equal(web.nudge({ poc: 0, passed: new Map(), found: [] }), null);
 });
 
@@ -142,6 +163,77 @@ test("submit_finding refuses an unmatched or duplicate label, and dedupes by roo
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
+// ---- scan parsers and runner: pure, no Docker
+
+const DALFOX = JSON.stringify([
+  { type: "V", inject_type: "inHTML-none(1)", data: "http://lab:8080/explorer?=&q=test%3Csummary", param: "", payload: "<summary ontoggle=x>", severity: "High" },
+  { type: "R", inject_type: "inHTML-URL", data: "http://lab:8080/explorer?q=test%27", param: "q", payload: "'><math>", severity: "Medium" },
+  {},
+]);
+const NUCLEI = JSON.stringify({ "template-id": "touchstone-debug-config-exposed", info: { name: "Debug configuration route exposed without auth", severity: "high", description: "d" }, "matched-at": "http://lab:8080/internal/debug/config", "extracted-results": ["signerPrivateKey"], response: "SECRET-BODY-0xdeadbeef" }) + "\nnot json\n";
+const ZAP = JSON.stringify({ site: [{ alerts: [
+  { pluginid: "10038", name: "Content Security Policy (CSP) Header Not Set", riskcode: "2", cweid: "693", instances: [{ uri: "http://lab:8080/", param: "" }, { uri: "http://lab:8080/explorer?q=ZAP", param: "" }] },
+  { pluginid: "10037", name: "X-Powered-By leak", riskcode: "1", cweid: "497", instances: [{ uri: "http://lab:8080/", param: "" }] },
+] }] });
+
+test("parseDalfox keeps one lead per URL: the verified hit, with the real parameter name", () => {
+  const leads = parseDalfox(DALFOX);
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].check, "reflected-xss");
+  assert.equal(leads[0].impact, "High");
+  assert.equal(leads[0].path, "/explorer");
+  assert.equal(leads[0].param, "q");
+  assert.deepEqual(parseDalfox("not json"), []);
+});
+
+test("parseNuclei makes a lead from a match and never copies the response body", () => {
+  const leads = parseNuclei(NUCLEI);
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].check, "debug-config-exposed");
+  assert.equal(leads[0].impact, "High");
+  assert.equal(leads[0].where, "/internal/debug/config");
+  assert.match(leads[0].description, /signerPrivateKey/);
+  assert.doesNotMatch(JSON.stringify(leads), /SECRET-BODY|deadbeef/);
+});
+
+test("parseZap makes one lead per alert and zapQueryUrls lists the URLs that take input", () => {
+  const leads = parseZap(ZAP);
+  assert.equal(leads.length, 2);
+  assert.equal(leads[0].impact, "Medium");
+  assert.match(leads[0].where, /\+1 more/);
+  assert.deepEqual(zapQueryUrls(ZAP), ["http://lab:8080/explorer?q=ZAP"]);
+});
+
+test("mergeLeads sorts worst first and marks a path two tools flag as corroborated", () => {
+  const merged = mergeLeads([
+    { engine: "zap", check: "csp", impact: "Medium", path: "/explorer", where: "/explorer" },
+    { engine: "dalfox", check: "reflected-xss", impact: "High", path: "/explorer", where: "/explorer" },
+    { engine: "zap", check: "low", impact: "Low", path: "/", where: "/" },
+  ]);
+  assert.deepEqual(merged.map((l) => l.impact), ["High", "Medium", "Low"]);
+  assert.equal(merged[0].corroborated, true);
+  assert.equal(merged[2].corroborated, false);
+});
+
+test("scanWeb runs all three tools, reads their files, and reports a failed tool as unavailable", async () => {
+  const calls = [];
+  const run = async ({ image, ws, network, cmd }) => {
+    calls.push({ image, network });
+    if (image.includes("zaproxy")) { writeFileSync(join(ws, "zap.json"), ZAP); return { code: 0, stdout: "", stderr: "" }; }
+    if (image.includes("nuclei")) { writeFileSync(join(ws, "nuclei.jsonl"), NUCLEI); return { code: 0, stdout: "", stderr: "" }; }
+    // dalfox is the tool that fails here, with no output.
+    return { code: 127, stdout: "", stderr: "boom", timedOut: false };
+  };
+  const out = await scanWeb({ net: "n1", baseUrl: "http://lab:8080", run });
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every((c) => c.network === "n1"));
+  const status = Object.fromEntries(out.coverage.map((c) => [c.engine, c.status]));
+  assert.deepEqual(status, { zap: "ran", nuclei: "ran", dalfox: "unavailable" });
+  assert.ok(out.leads.some((l) => l.check === "debug-config-exposed"));
+  const only = await scanWeb({ net: "n1", baseUrl: "http://lab:8080", run, only: ["nuclei"] });
+  assert.deepEqual(only.coverage.map((c) => c.engine), ["nuclei"]);
+});
+
 // ---- smoke: needs Docker and the lab image. No model spend.
 
 const hasImage = (() => {
@@ -169,9 +261,12 @@ await request("GET", "/api/users/2/wallet", { headers: { authorization: "Bearer 
   "debug-leak": `
 await request("GET", "/internal/debug/config");
 `,
+  "xss": `
+await request("GET", "/explorer?q=" + encodeURIComponent("<img src=x onerror=alert(1)>"));
+`,
 }[name]);
 
-test("web smoke: run_request_script finds all three planted bugs and prove() replays each on a fresh lab", { skip: !hasImage && "image not built", timeout: 600_000 }, async () => {
+test("web smoke: run_request_script finds all four planted bugs and prove() replays each on a fresh lab", { skip: !hasImage && "image not built", timeout: 600_000 }, async () => {
   const ws = makeWorkspace(LAB);
   try {
     assert.equal(packFor(readTouchstone(ws)).id, "web");
@@ -179,10 +274,19 @@ test("web smoke: run_request_script finds all three planted bugs and prove() rep
     const prep = await web.prepass(ws, { emit: (e) => events.push(e) });
     assert.equal(events[0].ev, "web-lab-started");
 
+    // The prepass ran all three tools and found the planted leads. It must NOT
+    // find the two bugs that need a signed-in session: a clean scan misses them.
+    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["dalfox:ran", "nuclei:ran", "zap:ran"]);
+    const checks = prep.record.leads.map((l) => l.check);
+    assert.ok(checks.includes("reflected-xss"), checks.join(","));
+    assert.ok(checks.includes("debug-config-exposed"), checks.join(","));
+    assert.ok(!checks.some((c) => /idor|nonce|bola/i.test(c)), "a clean scan must not see the session bugs");
+    assert.doesNotMatch(JSON.stringify(prep), /signerPrivateKey"\s*:\s*"0x/);
+
     const state = { poc: 0, passed: new Map(), found: [] };
     const tools = Object.fromEntries(web.tools(ws, state).map((t) => [t.name, t]));
 
-    const labels = { "siwe-nonce-replay": "nonce-replay", "bola-wallet-idor": "idor", "debug-route-signer-key-leak": "debug-leak" };
+    const labels = { "siwe-nonce-replay": "nonce-replay", "bola-wallet-idor": "idor", "debug-route-signer-key-leak": "debug-leak", "reflected-xss": "xss" };
     for (const [oracleName, label] of Object.entries(labels)) {
       const run = await tools.run_request_script.execute({ label, script: scriptFor(label) });
       assert.ok(!run.isError, run.output?.[0]?.text);
@@ -191,10 +295,10 @@ test("web smoke: run_request_script finds all three planted bugs and prove() rep
       const sub = await tools.submit_finding.execute({ title: label, severity: "high", label, explanation: "x. Fix: x" });
       assert.ok(!sub.isError, sub.output?.[0]?.text);
     }
-    assert.equal(state.found.length, 3);
+    assert.equal(state.found.length, 4);
 
     const proved = await web.prove(ws, state.found, [], () => {});
-    assert.equal(proved.length, 3);
+    assert.equal(proved.length, 4);
     for (const finding of proved) {
       assert.equal(finding.proof.kind, "http", finding.poc);
       assert.equal(finding.proof.status, "pass", `${finding.poc}: ${finding.proof.detail}`);

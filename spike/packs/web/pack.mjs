@@ -14,7 +14,7 @@
 // independent oracle reads the recorded transcript, never the script's own
 // console output, to decide whether the harm is real. See SKILL.md and
 // TOOLS.md.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
@@ -25,11 +25,15 @@ import {
   readLabHandle,
   runRequestScript,
   startLab,
+  stopLab,
   teardownPersistedLab,
   writeLabHandle,
 } from "../../lib/proof-http.mjs";
 
+import { scanWeb } from "./scan.mjs";
+
 const IMAGE = "touchstone/web-lab:dev";
+const LEADS_FILE = ".web-leads.json";
 
 // Total run_request_script attempts for the whole audit. Three root causes
 // are planted; this leaves room to explore and still re-try a failed attempt.
@@ -128,7 +132,40 @@ function debugLeakOracle() {
   };
 }
 
-export const ORACLES = [nonceReplayOracle(), bolaOracle(), debugLeakOracle()];
+// Bug 4 (web front end): a page writes a query value into its HTML with no
+// escaping and sets no Content-Security-Policy. Markup in the URL becomes live
+// markup in the page, so a link can run script in a victim's browser.
+//
+// The oracle reads the recorded transcript. It needs a 200 HTML response whose
+// body holds the request's own query value, with an HTML tag in it, byte for
+// byte. An escaped page would hold "&lt;" instead, so it would not match. A CSP
+// that limits scripts also stops the pass: the markup would not run.
+function xssOracle() {
+  const TAG = /<\s*[a-zA-Z][^>]*>/;
+  return {
+    name: "reflected-xss",
+    check(transcript) {
+      for (const e of transcript) {
+        if (e.status !== 200 || typeof e.resBody !== "string") continue;
+        const h = e.resHeaders || {};
+        const type = String(h["content-type"] ?? h["Content-Type"] ?? "");
+        if (!/text\/html/i.test(type)) continue;
+        const csp = String(h["content-security-policy"] ?? h["Content-Security-Policy"] ?? "");
+        if (/(script-src|default-src)/i.test(csp)) continue;
+        let query;
+        try { query = new URL(e.url ?? `http://x${e.path}`).searchParams; } catch { continue; }
+        for (const [name, value] of query) {
+          if (TAG.test(value) && e.resBody.includes(value)) {
+            return { pass: true, detail: `GET ${e.path} wrote the query value "${name}" into the page as live HTML with no escaping and no Content-Security-Policy. Payload: ${value.slice(0, 160)}` };
+          }
+        }
+      }
+      return { pass: false, detail: "no HTML response carried a markup query value back unescaped" };
+    },
+  };
+}
+
+export const ORACLES = [nonceReplayOracle(), bolaOracle(), debugLeakOracle(), xssOracle()];
 
 export function matchOracle(transcript, run) {
   for (const oracle of ORACLES) {
@@ -175,6 +212,9 @@ Rules of the environment:
 - The documented API routes are in openapi.yaml and BRIEF.md, already in your
   workspace. Read them. The API may also have routes that are NOT documented —
   looking for those is part of the audit.
+- The prepass already ran three scanners (zap, nuclei, dalfox). Their leads are in
+  your first message and in web_leads. Treat them as hints. They cannot sign in,
+  so they miss authorization and session bugs. Do not stop at them.
 - A lead is only a lead. After a script runs, the tool tells you whether the
   transcript tripped one of the engine's own harm checks. It counts as a finding ONLY
   when it does. When it does, call submit_finding right away with the same label.
@@ -185,7 +225,8 @@ How the audit works:
 - One finding per ROOT CAUSE. One fix closes one finding. If two routes share the same
   missing check, that is one finding, not two.
 - Plan first. List each suspect worst first in your reply: the sign-in flow itself,
-  every documented route's ownership check, and whether any undocumented route exists.
+  every documented route's ownership check, whether any undocumented route exists,
+  and every page that echoes input back (a page can reflect a query value as HTML).
 - Spend at most 3 run_request_script attempts chasing one suspect. If it still does
   not trip a known pattern, mark it "not proven" and move on.
 - The moment a script trips a pattern, call submit_finding. Then CONTINUE with the
@@ -202,8 +243,9 @@ Severity:
 - high: one session can read or act on another user's account (data, funds-adjacent
   fields, or credentials), or the sign-in flow itself can be replayed to mint new
   sessions without a fresh signature.
-- medium: a flaw that needs an unusual precondition (e.g. the attacker must already
-  hold something sensitive) before it causes the harm above.
+- medium: reflected script injection in a page (a link a victim opens runs the
+  attacker's markup), or a flaw that needs an unusual precondition (e.g. the
+  attacker must already hold something sensitive) before it causes the harm above.
 - low: a note with no path to real harm in this lab.
 
 Write each explanation so a smart 15-year-old with no security background can follow
@@ -220,12 +262,17 @@ function readWorkspaceText(ws, name) {
   }
 }
 
-function kickoff(ws) {
+function kickoff(ws, env = {}) {
   const brief = readWorkspaceText(ws, "BRIEF.md");
   const openapi = readWorkspaceText(ws, "openapi.yaml");
   const parts = [
     "Audit this dApp's sign-in flow and API. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.",
   ];
+  if (env.LEADS && env.LEADS !== "[]") {
+    parts.push(`Prepass leads from zap, nuclei and dalfox (hints only, each one must be proven by a replayed script; call web_leads to read them again):\n${env.LEADS}`);
+  } else {
+    parts.push("The prepass scan returned no leads. Audit by hand.");
+  }
   if (brief) parts.push(`BRIEF.md:\n${brief}`);
   if (openapi) parts.push(`openapi.yaml (the documented routes — there may be more):\n${openapi}`);
   return parts.join("\n\n");
@@ -327,14 +374,55 @@ function tools(ws, state) {
     },
   });
 
-  return [runScript, submitFinding];
+  const webLeads = defineTool({
+    name: "web_leads",
+    description: "Read the prepass scan leads again (zap, nuclei, dalfox). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the app is safe. The scan cannot sign in, so it cannot see authorization bugs.",
+    parameters: obj({}),
+    replay: "safe",
+    execute: async () => {
+      const raw = readWorkspaceText(ws, LEADS_FILE);
+      return { output: [{ type: "text", text: raw ?? "No scan leads were recorded for this run." }] };
+    },
+  });
+
+  return [webLeads, runScript, submitFinding];
 }
 
-async function prepass(ws, { emit }) {
+// The prepass does two things.
+//  1. Start the lab the agent will test (its handle is saved in the workspace).
+//  2. Scan a SECOND, throwaway copy of the lab with zap, nuclei and dalfox. The
+//     scan never touches the agent's lab, so scanner traffic cannot pollute the
+//     agent's recorded transcripts or its lab state. The scan leads go to the
+//     agent. A lead is a hint. Only a replayed script that the oracle accepts
+//     is a finding.
+// A live target comes in as opts.target = { net, baseUrl }: the Docker network
+// and base URL the platform scope proxy grants. Then we scan that and start no
+// scan lab. (The platform seam for this is not built yet. See TOOLS.md.)
+async function prepass(ws, { emit = () => {}, target } = {}) {
   const handle = await startLab({ image: IMAGE });
   writeLabHandle(ws, handle);
   emit({ ev: "web-lab-started", image: IMAGE, alias: handle.alias });
-  return { env: {}, record: {} };
+
+  let scan = { coverage: [], leads: [] };
+  let scanLab = null;
+  try {
+    const where = target?.net && target?.baseUrl ? target : (scanLab = await startLab({ image: IMAGE }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl });
+    emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
+    scan = await scanWeb(where);
+  } catch (err) {
+    emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
+  } finally {
+    if (scanLab) await stopLab(scanLab).catch(() => {});
+  }
+  const record = { pack: "web", coverage: scan.coverage, leads: scan.leads };
+  writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));
+  emit({ ev: "web-scan-done", coverage: scan.coverage.map((c) => `${c.engine}:${c.status}:${c.leads}`), leads: scan.leads.length });
+  return { env: { LEADS: JSON.stringify(scan.leads.map(leadLine)) }, record };
+}
+
+// A lead the agent reads: place and class, never a secret.
+function leadLine(l) {
+  return { check: l.check, impact: l.impact, where: l.where, engines: l.engines, corroborated: l.corroborated, note: l.description };
 }
 
 // Never trust the live session's own run_request_script results as proof: by

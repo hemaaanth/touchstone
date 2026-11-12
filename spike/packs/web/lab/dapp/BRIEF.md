@@ -39,3 +39,6 @@ session or request lets one account see or do something that should require
 being the other account, or that should require no account access to reach
 at all, and for any endpoint that returns credentials or signing material it
 should not.
+
+The dApp also serves a small public page for people: `GET /` and
+`GET /explorer?q=<address or tx hash>`. It needs no sign-in. Test it too.
