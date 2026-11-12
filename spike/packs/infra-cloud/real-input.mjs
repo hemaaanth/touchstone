@@ -17,8 +17,10 @@ import { replayEvidence } from "../../lib/proof-evidence.mjs";
 
 const dirs = process.argv.slice(2);
 if (!dirs.length) throw new Error("Give at least one folder to audit");
+const limit = Number(process.env.REPLAYS ?? 3);
 
-const out = {};
+// Keys stay as typed, so a saved relative path can be re-run from the same cwd.
+const out = { command: `node spike/packs/infra-cloud/real-input.mjs ${dirs.join(" ")}`, replays: limit };
 for (const arg of dirs) {
   const dir = resolve(arg);
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`Not a folder: ${arg}`);
@@ -28,12 +30,12 @@ for (const arg of dirs) {
     const prep = await pack.prepass(dir, { emit: () => {} });
     const located = prep.record.leads.filter((lead) => lead.file);
     const replays = [];
-    // Three leads through the real replay, so the proof is shown on real input.
-    for (const lead of located.slice(0, 3)) {
+    // A few leads through the real replay, so the proof is shown on real input.
+    for (const lead of located.slice(0, limit)) {
       const proof = await replayEvidence(dir, lead.evidence, { detectors: { ...cryptoDetectors(), ...scannerDetectors(SELECTED) } });
       replays.push({ check: lead.check, file: lead.file, line: lead.lines[0], status: proof.status });
     }
-    out[dir] = {
+    out[arg] = {
       files: Object.keys(snapshot.files).length,
       skipped: snapshot.skipped?.length ?? 0,
       leads: prep.record.leads.length,
@@ -45,7 +47,7 @@ for (const arg of dirs) {
       ms: Date.now() - started,
     };
   } catch (err) {
-    out[dir] = { error: String(err?.message ?? err).slice(0, 300), ms: Date.now() - started };
+    out[arg] = { error: String(err?.message ?? err).slice(0, 300), ms: Date.now() - started };
   }
 }
 mkdirSync(new URL("./validation/", import.meta.url), { recursive: true });

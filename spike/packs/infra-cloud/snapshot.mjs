@@ -12,8 +12,11 @@ export function captureSnapshot(ws) {
   let total = 0;
   function walk(rel = "") {
     for (const entry of readdirSync(join(ws, rel), { withFileTypes: true })) {
-      if (entry.name.startsWith(".") || ["node_modules", "oracle", "out", "cache", "snapshot.json", "infra-cloud-leads.json"].includes(entry.name)) continue;
       const file = rel ? `${rel}/${entry.name}` : entry.name;
+      // Everything skipped is recorded, so a vanished `.github` or a folder
+      // named `out` shows up as a gap instead of disappearing silently.
+      if (entry.name.startsWith(".")) { skipped.push({ file, reason: "dot name" }); continue; }
+      if (["node_modules", "oracle", "out", "cache", "snapshot.json", "infra-cloud-leads.json"].includes(entry.name)) { skipped.push({ file, reason: "generated or shared scratch" }); continue; }
       if (entry.isSymbolicLink()) { skipped.push({ file, reason: "symlink" }); continue; }
       if (entry.isDirectory()) { walk(file); continue; }
       if (!entry.isFile()) { skipped.push({ file, reason: "not a regular file" }); continue; }

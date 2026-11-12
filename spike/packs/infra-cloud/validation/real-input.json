@@ -1,7 +1,9 @@
 {
-  "/tmp/realin4/vpc": {
+  "command": "node spike/packs/infra-cloud/real-input.mjs realin7/vpc realin7/shop",
+  "replays": 3,
+  "realin7/vpc": {
     "files": 101,
-    "skipped": 0,
+    "skipped": 6,
     "leads": 72,
     "located": 72,
     "executors": [
@@ -25,6 +27,10 @@
         "engine": "moto-live",
         "status": "ok",
         "leads": 0
+      },
+      {
+        "engine": "snapshot",
+        "status": "ok"
       }
     ],
     "cryptoChecks": [],
@@ -55,11 +61,11 @@
         "status": "pass"
       }
     ],
-    "ms": 13742
+    "ms": 12691
   },
-  "/tmp/realin4/shop": {
+  "realin7/shop": {
     "files": 290,
-    "skipped": 24,
+    "skipped": 39,
     "leads": 1009,
     "located": 1009,
     "executors": [
@@ -83,6 +89,10 @@
         "engine": "moto-live",
         "status": "ok",
         "leads": 0
+      },
+      {
+        "engine": "snapshot",
+        "status": "ok"
       }
     ],
     "cryptoChecks": [],
@@ -113,6 +123,6 @@
         "status": "pass"
       }
     ],
-    "ms": 12257
+    "ms": 10663
   }
 }

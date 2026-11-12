@@ -7602,7 +7602,7 @@
                 "body": {
                   "roleArn": "arn:aws:iam::123456789012:role/ci_runner",
                   "accessKeyId": "AKIARZPUZDIKBJH6Q6VY",
-                  "secretAccessKey": "O56ItnNrK+KdPkufqDlIDsG3KhfEymJLH/werzw9",
+                  "secretAccessKey": "[REDACTED]",
                   "treasuryBucket": "touchstone-lab-treasury",
                   "treasuryKey": "wallets.json",
                   "marker": "ts-treasury-7f3a"
@@ -7620,7 +7620,7 @@
                   "content-type": "application/x-www-form-urlencoded",
                   "x-amz-content-sha256": "24a089e7c5fd8ff740a690ec217ee375f33c8a3e42748450c73205061855676b",
                   "x-amz-date": "20261112T032751Z",
-                  "authorization": "AWS4-HMAC-SHA256 Credential=AKIARZPUZDIKBJH6Q6VY/20261112/us-east-1/sts/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=01dd6bb479b8921e3ab5d4e0d51d932084cdec3ede3a5ee2aab55b4b665da546",
+                  "authorization": "[REDACTED]",
                   "accept": "*/*",
                   "accept-language": "*",
                   "sec-fetch-mode": "cors",
@@ -7640,7 +7640,7 @@
                   "server": "BaseHTTP/0.6 Python/3.11.2, Werkzeug/3.1.9 Python/3.11.2, amazon.com",
                   "x-amzn-requestid": "4dF7dY1wAIZCdpPplhtDqdpWYKYVTeHcKtgzgRYsGmbuFZJS7973"
                 },
-                "body": "<AssumeRoleResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><AssumeRoleResult><Credentials><AccessKeyId>ASIARZPUZDIKBJW4GV4N</AccessKeyId><SecretAccessKey>8Yuok/rOFvRKmAvE1atn4xnscAu4IWWcPhVi/yGW</SecretAccessKey><SessionToken>FQoGZXIvYXdzEBYaDV+LM0JMvHKX0ztBWyle32eSBRkQIU8cLFbZTQicAhWTai1UqkHoaPRDE3z6dSu0bdS/0MKwYL0lNjfnF1doJceNE9ks1fuMPHdrZKYVHYXevjR8EiSxQphAEpN0bNHiMZ066uw52J5ZDPCG33evYmRAX90VOVrpAdP32ql8LdHbxAIzZ3fR2R1iwgNeI8NJV1NVQk8MxSnNd4G7tRjC1i61adPxkQ2XxT6cEHJdgpSOljsJ9neVhZzfGZ+aigkexiRadNz/79/6j7I04LJw76m/kZmS4C8nm+IQwWrLeGd68xm/1tU1tlSSF3raRSGC0O5SSuwcQmfhiZHG9ho=</SessionToken><Expiration>2026-11-12T04:27:51.895297Z</Expiration></Credentials><AssumedRoleUser><AssumedRoleId>AROARZPUZDIKEKXNHFWQL:attacker</AssumedRoleId><Arn>arn:aws:sts::123456789012:assumed-role/ci_runner/attacker</Arn></AssumedRoleUser><PackedPolicySize>6</PackedPolicySize></AssumeRoleResult><ResponseMetadata><RequestId>4dF7dY1wAIZCdpPplhtDqdpWYKYVTeHcKtgzgRYsGmbuFZJS7973</RequestId></ResponseMetadata></AssumeRoleResponse>"
+                "body": "<AssumeRoleResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><AssumeRoleResult><Credentials><AccessKeyId>ASIARZPUZDIKBJW4GV4N</AccessKeyId><SecretAccessKey>[REDACTED]</SecretAccessKey><SessionToken>[REDACTED]</SessionToken><Expiration>2026-11-12T04:27:51.895297Z</Expiration></Credentials><AssumedRoleUser><AssumedRoleId>AROARZPUZDIKEKXNHFWQL:attacker</AssumedRoleId><Arn>arn:aws:sts::123456789012:assumed-role/ci_runner/attacker</Arn></AssumedRoleUser><PackedPolicySize>6</PackedPolicySize></AssumeRoleResult><ResponseMetadata><RequestId>4dF7dY1wAIZCdpPplhtDqdpWYKYVTeHcKtgzgRYsGmbuFZJS7973</RequestId></ResponseMetadata></AssumeRoleResponse>"
               }
             },
             {
@@ -7654,8 +7654,8 @@
                   "content-type": "application/x-www-form-urlencoded",
                   "x-amz-content-sha256": "ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
                   "x-amz-date": "20261112T032751Z",
-                  "x-amz-security-token": "FQoGZXIvYXdzEBYaDV+LM0JMvHKX0ztBWyle32eSBRkQIU8cLFbZTQicAhWTai1UqkHoaPRDE3z6dSu0bdS/0MKwYL0lNjfnF1doJceNE9ks1fuMPHdrZKYVHYXevjR8EiSxQphAEpN0bNHiMZ066uw52J5ZDPCG33evYmRAX90VOVrpAdP32ql8LdHbxAIzZ3fR2R1iwgNeI8NJV1NVQk8MxSnNd4G7tRjC1i61adPxkQ2XxT6cEHJdgpSOljsJ9neVhZzfGZ+aigkexiRadNz/79/6j7I04LJw76m/kZmS4C8nm+IQwWrLeGd68xm/1tU1tlSSF3raRSGC0O5SSuwcQmfhiZHG9ho=",
-                  "authorization": "AWS4-HMAC-SHA256 Credential=ASIARZPUZDIKBJW4GV4N/20261112/us-east-1/sts/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=d5d5df6d38729a1964f136810bca53b5e9e8b1710ddf207c18f3404e7c1f2cb7",
+                  "x-amz-security-token": "[REDACTED]",
+                  "authorization": "[REDACTED]",
                   "accept": "*/*",
                   "accept-language": "*",
                   "sec-fetch-mode": "cors",
@@ -7689,8 +7689,8 @@
                   "content-type": "application/json",
                   "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                   "x-amz-date": "20261112T032751Z",
-                  "x-amz-security-token": "FQoGZXIvYXdzEBYaDV+LM0JMvHKX0ztBWyle32eSBRkQIU8cLFbZTQicAhWTai1UqkHoaPRDE3z6dSu0bdS/0MKwYL0lNjfnF1doJceNE9ks1fuMPHdrZKYVHYXevjR8EiSxQphAEpN0bNHiMZ066uw52J5ZDPCG33evYmRAX90VOVrpAdP32ql8LdHbxAIzZ3fR2R1iwgNeI8NJV1NVQk8MxSnNd4G7tRjC1i61adPxkQ2XxT6cEHJdgpSOljsJ9neVhZzfGZ+aigkexiRadNz/79/6j7I04LJw76m/kZmS4C8nm+IQwWrLeGd68xm/1tU1tlSSF3raRSGC0O5SSuwcQmfhiZHG9ho=",
-                  "authorization": "AWS4-HMAC-SHA256 Credential=ASIARZPUZDIKBJW4GV4N/20261112/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=d34dca29719e18252e99f6b7f61ac02d10ab058f287e7cad5a295b58c5d5f730",
+                  "x-amz-security-token": "[REDACTED]",
+                  "authorization": "[REDACTED]",
                   "accept": "*/*",
                   "accept-language": "*",
                   "sec-fetch-mode": "cors",

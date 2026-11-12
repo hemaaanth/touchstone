@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { analyze, cryptoDetectors } from "../packs/infra-cloud/checks.mjs";
 import { captureSnapshot, makeLabWorkspace } from "../packs/infra-cloud/snapshot.mjs";
 import { cloudSeed } from "../packs/infra-cloud/cloud.mjs";
-import { liveSeed, oracle } from "../packs/infra-cloud/live-cloud.mjs";
+import { liveSeed, oracle, redactProof } from "../packs/infra-cloud/live-cloud.mjs";
 import { pinSnapshot, replayEvidence } from "../lib/proof-evidence.mjs";
 
 function labSnapshot() {
@@ -161,14 +161,48 @@ test("the live seed follows the cited policy and refuses an unattached one", () 
   assert.match(JSON.stringify(seed.trust), /sts:AssumeRole/);
   assert.throws(() => liveSeed(original, { resource: "aws_iam_role_policy.missing" }), /not in the snapshot/);
   assert.throws(() => liveSeed(original, { resource: "nonsense" }), /no resource/);
+  // `role = aws_iam_role.x.name` and the `.name` interpolation both resolve.
+  for (const role of ["${aws_iam_role.ci_runner.name}", "aws_iam_role.ci_runner.name"]) {
+    const snapshot = terraform((r) => { r.aws_iam_role_policy.ci_runner_read.role = role; });
+    assert.equal(liveSeed(snapshot, { resource: "aws_iam_role_policy.ci_runner_read" }).roleName, "ci_runner", role);
+  }
+});
+
+test("the canonical broad object ARN counts as every bucket", () => {
+  for (const resource of ["arn:aws:s3:::*/*", "arn:aws:s3:::*"]) {
+    assert.ok(checks(terraform((r) => { r.aws_iam_role_policy.ci_runner_read.policy = JSON.stringify({ Statement: [{ Effect: "Allow", Action: "s3:GetObject", Resource: resource }] }); })).includes("iam-role-broad-object-read"), resource);
+  }
+  assert.ok(!checks(terraform((r) => { r.aws_iam_role_policy.ci_runner_read.policy = JSON.stringify({ Statement: [{ Effect: "Allow", Action: "s3:GetObject", Resource: "arn:aws:s3:::touchstone-lab-app/*" }] }); })).includes("iam-role-broad-object-read"));
+});
+
+test("the rendered proof carries no credential value", () => {
+  const proof = {
+    kind: "http", status: "pass", detail: "x", oracle: { name: "o", detail: "x", passed: true },
+    log: [
+      { label: "seed", request: { method: "GET", url: "http://lab/__lab.json", headers: { host: "lab" }, body: null },
+        response: { status: 200, headers: {}, body: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "s3cr3tValueThatIsLongEnough", roleArn: "arn:x" } } },
+      { label: "assume", request: { method: "POST", url: "http://lab/", headers: { authorization: "AWS4-HMAC-SHA256 Credential=AKIA/SECRET", "x-amz-security-token": "tok" }, body: "Action=AssumeRole&" },
+        response: { status: 200, headers: {}, body: "<Credentials><AccessKeyId>ASIAX</AccessKeyId><SecretAccessKey>temporarySecretValue</SecretAccessKey><SessionToken>sessionTokenValue</SessionToken></Credentials>" } },
+      { label: "read", request: { method: "GET", url: "http://lab/b/k", headers: { "x-amz-security-token": "AsiAtoken" }, body: null },
+        response: { status: 200, headers: {}, body: { marker: "ts-treasury-7f3a" } } },
+    ],
+  };
+  const shown = JSON.stringify(redactProof(proof));
+  assert.ok(!shown.includes("s3cr3tValueThatIsLongEnough"));
+  assert.ok(!shown.includes("temporarySecretValue"));
+  assert.ok(!shown.includes("sessionTokenValue"));
+  assert.ok(!shown.includes("AsiAtoken"));
+  assert.ok(!shown.includes("AKIA/SECRET"));
+  assert.ok(shown.includes("ts-treasury-7f3a"), "the harm stays visible");
+  assert.ok(shown.includes('"accessKeyId":"AKIAEXAMPLE"'), "a key id is not a secret");
 });
 
 test("the live oracle needs the assume, the role identity, the read and the marker", () => {
   const role = "ci_runner";
   const ok = [
-    { method: "POST", path: "/", status: 200, reqBody: "Action=AssumeRole", resBody: "<AccessKeyId>AKIA</AccessKeyId>" },
+    { method: "POST", path: "/", status: 200, reqBody: "Action=AssumeRole&Version=2011-06-15", resBody: "<AccessKeyId>ASIA</AccessKeyId><SecretAccessKey>s</SecretAccessKey><SessionToken>the-token</SessionToken>" },
     { method: "POST", path: "/", status: 200, reqBody: "Action=GetCallerIdentity", resBody: `<Arn>arn:aws:sts::1:assumed-role/${role}/attacker</Arn>` },
-    { method: "GET", path: "/touchstone-lab-treasury/wallets.json", status: 200, resBody: { marker: "ts-treasury-7f3a" } },
+    { method: "GET", path: "/touchstone-lab-treasury/wallets.json", status: 200, reqHeaders: { "x-amz-security-token": "the-token" }, resBody: { marker: "ts-treasury-7f3a" } },
   ];
   const check = (t) => oracle(role).check(t);
   assert.equal(check(ok).pass, true);
@@ -177,6 +211,8 @@ test("the live oracle needs the assume, the role identity, the read and the mark
   assert.equal(check([ok[0], { ...ok[1], resBody: "<Arn>arn:aws:sts::1:assumed-role/other/x</Arn>" }, ok[2]]).pass, false, "wrong identity");
   assert.equal(check([ok[0], ok[1], { ...ok[2], status: 403 }]).pass, false, "read denied");
   assert.equal(check([ok[0], ok[1], { ...ok[2], resBody: { marker: "nope" } }]).pass, false, "no object body");
+  assert.equal(check([ok[0], ok[1], { ...ok[2], reqHeaders: { "x-amz-security-token": "other" } }]).pass, false, "another session");
+  assert.equal(check([{ ...ok[0], reqBody: "Action=AssumeRoleWithWebIdentity" }, ok[1], ok[2]]).pass, false, "web identity is not AssumeRole");
 });
 
 test("the snapshot skips binaries, symlinks and oversized files instead of stopping", () => {
@@ -187,7 +223,8 @@ test("the snapshot skips binaries, symlinks and oversized files instead of stopp
     const snapshot = captureSnapshot(ws);
     assert.ok(!("logo.png" in snapshot.files));
     assert.ok(!("big.yaml" in snapshot.files));
-    assert.deepEqual(snapshot.skipped.map((s) => s.reason).sort(), ["larger than 512 KiB", "not UTF-8 text"]);
+    assert.deepEqual(snapshot.skipped.map((s) => s.reason).sort(), ["dot name", "larger than 512 KiB", "not UTF-8 text"]);
+    assert.ok(snapshot.skipped.some((s) => s.file === ".touchstone.json"), "a dotfile is recorded, not silent");
     assert.ok("main.tf.json" in snapshot.files);
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });

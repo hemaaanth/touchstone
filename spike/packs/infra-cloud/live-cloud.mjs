@@ -1,8 +1,9 @@
 // The live-cloud side of this pack: the `http` proof for a role that can read
 // every bucket.
 //
-// The finding is still proven from the pinned snapshot by the `evidence` check.
-// This file adds the harm: a private moto cloud is seeded from the SAME pinned
+// The finding is still gated by the `evidence` check against the pinned
+// snapshot, and prove() runs that check before this replay starts. This file
+// adds the harm: a private moto cloud is seeded from the SAME pinned
 // policy, an attacker credential assumes the role, and the assumed credential
 // reads a bucket that is not the workload's own. Moto runs with IAM enforced,
 // so a narrower policy really does fail here.
@@ -73,7 +74,7 @@ const labBody = (await request("GET", "/__lab.json")).resBody;
 const lab = typeof labBody === "string" ? JSON.parse(labBody) : labBody;
 const attacker = { accessKeyId: lab.accessKeyId, secretAccessKey: lab.secretAccessKey };
 
-// 1. A foreign account key assumes the role. Only its policy can stop it.
+// 1. A separate attacker key assumes the role. Only its policy can stop it.
 const assumed = (await call("POST", "/", { credentials: attacker, service: "sts",
   body: form({ Action: "AssumeRole", Version: "2011-06-15", RoleArn: lab.roleArn, RoleSessionName: "attacker" }) })).resBody;
 const xml = typeof assumed === "string" ? assumed : JSON.stringify(assumed);
@@ -94,32 +95,65 @@ console.log("read", lab.treasuryBucket + "/" + lab.treasuryKey, "status", read.s
 `;
 
 const text = (value) => (typeof value === "string" ? value : JSON.stringify(value ?? ""));
+const header = (entry, name) => {
+  const found = Object.entries(entry?.reqHeaders ?? {}).find(([key]) => key.toLowerCase() === name);
+  return Array.isArray(found?.[1]) ? found[1][0] : found?.[1];
+};
 
 // The oracle reads only what crossed the proxy. Each step must be visible:
-// the assume, the identity behind the credential, and the object body.
+// the assume, the identity behind the credential, and the same credential
+// reading the object. The read's session token must be the one AssumeRole
+// returned, so an unrelated credential that happens to pass cannot carry it.
 export function oracle(roleName) {
   return {
-    name: "assumed-role-reads-foreign-bucket",
+    name: "assumed-role-reads-other-bucket",
     check(transcript) {
-      const assume = transcript.find((e) => e.status === 200 && text(e.reqBody).includes("Action=AssumeRole"));
-      const credentials = assume && /<AccessKeyId>(.*?)<\/AccessKeyId>/.test(text(assume.resBody));
-      if (!assume || !credentials) return { pass: false, detail: "AssumeRole did not return a session credential." };
+      const assume = transcript.find((e) => e.status === 200 && text(e.reqBody).includes("Action=AssumeRole&"));
+      const xml = text(assume?.resBody);
+      const token = /<SessionToken>(.*?)<\/SessionToken>/.exec(xml)?.[1];
+      if (!assume || !/<AccessKeyId>/.test(xml) || !token) return { pass: false, detail: "AssumeRole did not return a session credential." };
       const identity = transcript.find((e) => e.status === 200 && text(e.reqBody).includes("Action=GetCallerIdentity"));
       if (!identity || !text(identity.resBody).includes(`assumed-role/${roleName}/`)) return { pass: false, detail: "The session credential is not the cited role." };
       const read = transcript.find((e) => e.method === "GET" && e.path.includes(`/${TREASURY_BUCKET}/${TREASURY_KEY}`));
       if (!read || read.status !== 200) return { pass: false, detail: `${TREASURY_BUCKET}/${TREASURY_KEY} was not readable with the assumed credential.` };
+      if (header(read, "x-amz-security-token") !== token) return { pass: false, detail: "The read was not signed with the assumed session." };
       if (!text(read.resBody).includes(MARKER)) return { pass: false, detail: "The read returned no treasury object body." };
-      return { pass: true, detail: `A foreign access key assumed ${roleName}, the credential proved that identity, and the same credential read ${TREASURY_BUCKET}/${TREASURY_KEY} (200) with marker ${MARKER}.` };
+      return { pass: true, detail: `A separate attacker key assumed ${roleName}, the credential proved that identity, and the same session read ${TREASURY_BUCKET}/${TREASURY_KEY} (200) with marker ${MARKER}.` };
     },
   };
+}
+
+// proofView() redacts header names, never body text. The lab seed and the STS
+// XML carry real values, so scrub them out of the stored proof after the oracle
+// has read the raw transcript. The recorder parses JSON bodies, so objects are
+// walked too. A session token expires, but it stays out of the saved record.
+const scrubText = (body) => body
+  .replace(/(<SecretAccessKey>)[^<]*(<\/SecretAccessKey>)/g, "$1[REDACTED]$2")
+  .replace(/(<SessionToken>)[^<]*(<\/SessionToken>)/g, "$1[REDACTED]$2")
+  .replace(/("secretAccessKey"\s*:\s*")[^"]*(")/g, "$1[REDACTED]$2");
+const scrub = (value) => {
+  if (typeof value === "string") return scrubText(value);
+  if (Array.isArray(value)) return value.map(scrub);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, /secret/i.test(k) ? "[REDACTED]" : scrub(v)]));
+  return value;
+};
+const REDACTED_HEADER = /^(?:x-amz-security-token|authorization)$/i;
+
+export function redactProof(proof) {
+  return { ...proof, log: proof.log.map((x) => ({
+    ...x,
+    request: { ...x.request, headers: Object.fromEntries(Object.entries(x.request?.headers ?? {}).map(([k, v]) => [k, REDACTED_HEADER.test(k) ? "[REDACTED]" : v])) },
+    response: { ...x.response, body: scrub(x.response?.body) },
+  })) };
 }
 
 export async function liveProof(ws, finding) {
   const { snapshot } = loadSnapshot(ws);
   const seed = liveSeed(snapshot, finding.evidence?.where);
-  return httpProof(
+  const proof = await httpProof(
     { image: LIVE_IMAGE, containerPort: 5000, readyPath: "/healthz", scriptTimeoutMs: 40_000, env: { LAB_SEED: JSON.stringify(seed) } },
     SCRIPT,
     oracle(seed.roleName),
   );
+  return redactProof(proof);
 }

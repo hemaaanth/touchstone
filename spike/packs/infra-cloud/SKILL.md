@@ -76,7 +76,7 @@ It checks versioning and Object Lock FAIL-to-PASS transitions.
 It does not claim cloud verification of the public-write ACL case.
 
 The pack smoke checks every retained lead's replay, the submit gate, duplicate rejection and secret-value exclusion.
-It also runs the live-cloud replay for the role lead, and checks that the same policy narrowed to one bucket fails it.
+It also runs the live-cloud replay for the role lead, checks that a narrowed grant and a narrowed trust both fail with a 403, and checks that no credential value survives in the rendered proof.
 This mechanically exercises the proof path. It does not claim that every scanner lead is a distinct vulnerability.
 Saved safe results live under `validation/`.
 
@@ -93,6 +93,10 @@ node spike/packs/infra-cloud/live.mjs
 
 The runner invokes the existing `spike/agent-run.mjs` with `near/qwen-abl` and a fresh lab workspace.
 It checks the ledger, cap and $1 budget before starting.
+It exits non-zero when any submitted finding did not pass its replay.
+`node spike/packs/infra-cloud/live.mjs summarize <record.json>` rebuilds
+`validation/live.json` and `validation/live-record.json` from an existing record
+with no spend, and re-applies the proof redaction.
 The engine uses fixed `qwen-abl` record names.
 The runner preserves old records, archives the new run under a unique name and restores the old fixed-name files.
 It does not push or publish anything.
@@ -119,8 +123,8 @@ The pack reads any folder, not only its lab:
 node spike/packs/infra-cloud/real-input.mjs /path/to/infra
 ```
 
-It captures the folder, runs the same prepass, replays three leads and saves
-`validation/real-input.json`.
+It captures the folder, runs the same prepass, replays three leads (`REPLAYS`
+raises the count) and saves `validation/real-input.json` with the command line.
 Binary, oversized and symlinked files are listed as skipped instead of stopping
 the audit.
 It pins the folder in place (`snapshot.json` and `.touchstone.json`), so point it
@@ -148,16 +152,22 @@ It does not replace the finding's IaC detector.
 
 The broad role read is the one lead with a live replay.
 `live-cloud.mjs` seeds a private moto cloud from the same pinned policy.
-A foreign access key assumes the role, proves the assumed identity, then reads a
+A separate attacker key assumes the role, proves the assumed identity, then reads a
 bucket that is not the workload's own.
 The shared `lib/proof-http.mjs` records the traffic out of band and its oracle
 decides the verdict. The finding then carries an `http` proof, not an `evidence`
 proof, and the app renders its request log.
-The same policy narrowed to the workload's own bucket fails the replay.
+The same policy narrowed to the workload's own bucket fails the replay with a
+403, and so does a trust narrowed away from the caller.
 Every call crosses the recording proxy on the private network. No host port and
 no raw socket from this process are used.
-Moto emulates the identity policy. It does not evaluate the trust policy, so a
-narrowed trust alone still passes the replay.
+Moto enforces the trust principal and the identity policy. It does not evaluate
+the rest of a trust document, such as conditions.
+The oracle binds the object read to the session AssumeRole returned: the read
+must carry that exact session token.
+After the oracle reads the raw transcript, the proof log is scrubbed of the
+secret key, the session token and the lab seed secret, so the rendered proof
+carries no credential value.
 
 ## What a finding means
 
@@ -182,10 +192,11 @@ RBAC grants restricted by `resourceNames` are not promoted.
 
 The four-tool comparison retained 85 Trivy leads, 54 Checkov leads, 88 KICS leads and 18 Kubescape leads.
 These are located rule hits, not counts of distinct vulnerabilities.
-The selected ensemble and crypto checks plus the new role policy produced 189
+The selected ensemble and crypto checks plus the new role policy produced 188
 leads in the no-spend smoke.
-All 189 replayed, and the live-cloud replay passed for the role lead while the
-narrowed policy failed it.
+All 188 replayed, and the live-cloud replay passed for the role lead while a
+narrowed grant and a narrowed trust each failed it with a 403.
+The rendered proof was checked for surviving credential values.
 The smoke rejected unchecked submissions and duplicate submissions.
 All 12 planted crypto cases were present.
 
@@ -199,7 +210,7 @@ A baseline run before the live proof was added cost $0.11297417.
 `validation/live-record.json` keeps the safe result.
 `validation/live.json` keeps its summary and archive reference.
 The raw test key was checked absent from that saved result.
-The full spike suite passed all 231 tests on this branch.
+The full spike suite passed all 233 tests on this branch.
 App target discovery found `infra-cloud/lab`, kept its pack config and selected the evidence proof kind.
 Two real checkouts were audited with `real-input.mjs`: a public Terraform module
 (72 leads) and a public shop demo (1009 leads, 24 binary files skipped).

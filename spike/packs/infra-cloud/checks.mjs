@@ -43,9 +43,11 @@ function role(r, word) {
   const label = tags?.["touchstone-role"] ?? r.data.metadata?.labels?.["touchstone-role"];
   return label === word || new RegExp(`(^|[-_])${word}([-_]|$)`, "i").test(r.name);
 }
+// A reference to another resource: a CloudFormation Ref, or a Terraform
+// interpolation or bare expression that reads one of its attributes.
 function reference(value, resource) {
   if (typeof value === "object" && value?.Ref === resource.name) return true;
-  return ["id", "arn"].some((attribute) => value === `\${${resource.type}.${resource.name}.${attribute}}`);
+  return ["id", "arn", "name"].some((attribute) => [value, ...list(value)].includes(`${resource.type}.${resource.name}.${attribute}`) || value === `\${${resource.type}.${resource.name}.${attribute}}`);
 }
 const awsTypes = (r, tf, cfn) => r.type === tf || r.type === cfn;
 const podSpec = (r) => r.type === "Pod" ? r.data.spec : r.type === "CronJob" ? r.data.spec?.jobTemplate?.spec?.template?.spec : r.data.spec?.template?.spec;
@@ -58,7 +60,8 @@ const argValue = (args, flag) => { const i = args.indexOf(flag); return i >= 0 ?
 // The role a policy document is attached to, or undefined when it is not tied to a role.
 export function attachedRole(r, rs) {
   if (r.type === "aws_iam_role_policy") {
-    const name = typeof r.data.role === "string" ? r.data.role.match(/^\\$\\{aws_iam_role\\.([^.}]+)\\./) : null;
+    // `${aws_iam_role.x.name}`, `${...id}` and the bare `aws_iam_role.x.name`.
+    const name = typeof r.data.role === "string" ? r.data.role.match(/^\$?\{?aws_iam_role\.([^.}]+)\./) : null;
     return rs.find((x) => x.type === "aws_iam_role" && (x.name === name?.[1] || reference(r.data.role, x)));
   }
   if (r.type === "AWS::IAM::Policy") return rs.find((x) => x.type === "AWS::IAM::Role" && list(r.data.Roles).some((v) => reference(v, x)));
@@ -68,7 +71,7 @@ const wildcardTrust = (role) => statements(role.data.assume_role_policy_document
   .some((s) => s.Effect === "Allow" && broadPrincipal(s.Principal) && actionMatches(s.Action, "sts:AssumeRole"));
 // Allow statements that read objects in every bucket.
 const wildcardObjectRead = (r) => allowed(statements(r.data.policy ?? r.data.PolicyDocument), "s3:GetObject")
-  .filter((s) => list(s.Resource).some((v) => v === "*" || v === "arn:aws:s3:::*"));
+  .filter((s) => list(s.Resource).some((v) => /^(\*|arn:aws:s3:::\*(\/\*)?)$/.test(v)));
 
 export function analyze(snapshot) {
   const { resources: rs, coverage } = parseResources(snapshot), leads = [];
