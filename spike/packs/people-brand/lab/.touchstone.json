@@ -1,9 +1,0 @@
-{
-  "pack": "people-brand",
-  "title": "AstralHarbor · brand impersonation",
-  "blurb": "Made-up DNS, certificates, profiles, pages and GitHub export. Offline and passive only.",
-  "evidenceSnapshot": {
-    "file": "snapshot.json",
-    "sha256": "3f39f3f837ddad3d45a77bb0a3fee8d8369287e945d9ddf5efa1a68f0d5b93a0"
-  }
-}
