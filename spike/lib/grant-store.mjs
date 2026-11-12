@@ -37,6 +37,13 @@ const grantsFile = () => process.env.TOUCHSTONE_GRANTS_FILE || path.join(DATA_DI
 
 export const GRANT_KINDS = ["operator-owned", "authorized"];
 
+// One shared console token for every mutating console action — both the live-reach
+// grant routes and the settings-write guard import THIS. TOUCHSTONE_GRANT_TOKEN
+// pins it (tests, or an operator who wants a known value); otherwise one random
+// token is minted per process. Single source => the operator sees and pastes one
+// token, never two that happen to share the x-touchstone-grant-token header.
+export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || randomUUID();
+
 // Read the whole store. A missing file or unparsable JSON yields an empty list,
 // so a hand-edited or absent file degrades to "no grants", never a throw.
 export function readGrants() {

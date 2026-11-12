@@ -1,5 +1,5 @@
 // Settings: the inference providers the engine may use, the default provider
-// and model for new runs, and the spend cap.
+// and model for new runs, the spend cap, and where tool calls run.
 //
 // The config lives in spike/data/providers.json (see spike/lib/providers.mjs).
 // API keys are written there and read by the engine. They never go back to the
@@ -19,6 +19,59 @@ import {
 } from "../../spike/lib/providers.mjs"
 import { spent } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
+import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
+
+// May this request change Settings? A Settings write can repoint a key or a
+// provider baseUrl, so only the operator's own console may send one. The rules
+// match T7's grantMutationAllowed guard. Each rule fails closed.
+//   - Origin is required, and its host must equal the Host header. A browser
+//     always sends Origin on a POST or DELETE. A write with no Origin is not
+//     the console, so it is refused. X-Forwarded-Host is not trusted: any
+//     client can set it.
+//   - A POST must say content-type application/json.
+//   - The request must carry the console token in x-touchstone-grant-token.
+// Note: the Vite dev server answers CORS preflights for localhost origins. So
+// a page on another localhost port can send a JSON POST. The Origin == Host
+// rule and the token are what refuse it.
+// The token is TOUCHSTONE_GRANT_TOKEN, else a random one printed once to the
+// server terminal. It is the same env var and header T7's grant routes use.
+// The same single token T7's grant routes use (grant-store.GRANT_TOKEN), so the
+// operator has exactly one console token for every mutating console action.
+export const SETTINGS_TOKEN = GRANT_TOKEN
+let tokenAnnounced = false
+function announceToken() {
+  if (tokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
+  tokenAnnounced = true
+  process.stderr.write(`[settings] to change Settings, paste this console token on the Settings page (header x-touchstone-grant-token): ${SETTINGS_TOKEN}\n`)
+}
+announceToken()
+
+// Why this write is refused, as { status, error }, or null when it may go on.
+export function settingsWriteRefusal(req) {
+  const h = req.headers ?? {}
+  let originHost = null
+  try {
+    originHost = h.origin ? new URL(h.origin).host : null
+  } catch {
+    originHost = null
+  }
+  if (!originHost || !h.host || originHost !== h.host) {
+    return { status: 403, error: "Settings can only be changed from the console's own origin" }
+  }
+  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
+    return { status: 415, error: "a Settings write must be application/json" }
+  }
+  const token = h["x-touchstone-grant-token"]
+  if (!token || token !== SETTINGS_TOKEN) {
+    return { status: 403, error: "missing or wrong console token. Paste the token the server printed at start" }
+  }
+  return null
+}
+
+export function settingsWriteAllowed(req) {
+  return settingsWriteRefusal(req) === null
+}
 
 // The console's default per-run budget when Settings has none saved. The
 // engine's own default for CLI runs (spike/lib/run-budget.mjs) is also $5; app
@@ -67,7 +120,51 @@ export function getSettings() {
     envOverride: process.env.PROVIDER || null,
     spend: { usd: spent(), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
+    execution: executionState(cfg),
   }
+}
+
+// Where tool calls run: local Docker (the default) or Daytona sandboxes.
+// The Daytona key is masked like a provider key. TOUCHSTONE_EXEC in the
+// server's env overrides the saved backend. Say so.
+function executionState(cfg) {
+  const c = execConfig(process.env, cfg)
+  const saved = cfg.execution ?? {}
+  return {
+    backend: c.backend,
+    saved: saved.backend === "daytona" ? "daytona" : "local",
+    envOverride: process.env.TOUCHSTONE_EXEC || null,
+    key: c.apiKey
+      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
+      : { set: false, source: null, envName: null, last4: null },
+    target: c.target,
+    snapshot: c.snapshot,
+    defaults: { target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
+  }
+}
+
+// Save the execution backend. An empty apiKey keeps the saved one.
+// Daytona needs a key, from this body, Settings, or DAYTONA_API_KEY.
+export function setExecution(body = {}) {
+  const cfg = readConfig()
+  const prev = cfg.execution ?? {}
+  const backend = body.backend ?? prev.backend ?? "local"
+  if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
+  const next = { backend }
+  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  if (key) next.apiKey = key
+  else if (prev.apiKey && !body.clearKey) next.apiKey = prev.apiKey
+  for (const f of ["target", "snapshot"]) {
+    const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
+    if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
+    if (v) next[f] = v
+  }
+  if (backend === "daytona" && !execConfig(process.env, { execution: next }).apiKey) {
+    throw new Error("Daytona needs an API key (here, or DAYTONA_API_KEY)")
+  }
+  cfg.execution = next
+  writeConfig(cfg)
+  return getSettings()
 }
 
 function slug(s) {

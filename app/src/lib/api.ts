@@ -13,6 +13,7 @@ import type {
   PackChoice,
   RunMode,
 } from "./types"
+import { tokenHeaders } from "./console-token"
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
@@ -23,7 +24,7 @@ async function getJson<T>(url: string): Promise<T> {
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...tokenHeaders() },
     body: JSON.stringify(body),
   })
   const json = await res.json().catch(() => ({}))
@@ -191,7 +192,7 @@ export function saveProvider(body: {
 }
 
 export async function deleteProvider(id: string): Promise<SettingsState> {
-  const res = await fetch(`/api/settings/providers/${encodeURIComponent(id)}`, { method: "DELETE" })
+  const res = await fetch(`/api/settings/providers/${encodeURIComponent(id)}`, { method: "DELETE", headers: tokenHeaders() })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error((json as { error?: string }).error ?? `delete -> ${res.status}`)
   return json as SettingsState
