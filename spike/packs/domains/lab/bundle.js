@@ -5,3 +5,5 @@ function plantedApproval(provider) {
     value: '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
   }]});
 }
+// The page wires its Connect button to the SDK.
+document.getElementById('connect').addEventListener('click', function () { window.TouchstoneWallet.connect(); });

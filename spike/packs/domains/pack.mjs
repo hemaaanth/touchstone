@@ -2,7 +2,10 @@ import { defineTool } from '@earendil-works/pi-durable';
 import { obj, str } from '@earendil-works/pi-schema';
 import { event } from '../../lib/event.mjs';
 import { scanSnapshot, detectorsFor } from './checks.mjs';
-import { replayEvidence, proveFindings } from '../../lib/proof-evidence.mjs';
+import { replayEvidence, proveFindings, loadSnapshot } from '../../lib/proof-evidence.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pinLive } from './live.mjs';
 
 export function evidenceTools(ws,state,id) {
   const text = value => ({output:[{type:'text',text:JSON.stringify(value)}]});
@@ -21,9 +24,24 @@ export function evidenceTools(ws,state,id) {
       return text({recorded:finding.n,proof});
     }})];
 }
+// The scope can name a domain: `.touchstone.json` has `domain` and `reach`. The platform fills `reach`.
+// With no pinned snapshot yet, the prepass captures the domain once and pins the result. A pinned lab skips this.
+function scopeConfig(ws) { try { return JSON.parse(readFileSync(join(ws,'.touchstone.json'),'utf8')); } catch { return {}; } }
+// Which engines ran. Capture tools come first, then the engines that read the snapshot.
+export function coverageOf(snapshot,leads) {
+  const capture = snapshot.discovery?.coverage ?? [{engine:'pinned-snapshot',status:'ran',leads:snapshot.http.length}];
+  const reads = ['dns-zonefile','csp-evaluator','jsdom-replay','retire.js','touchstone'].map(engine=>({engine,status:'ran',leads:leads.filter(l=>(l.engines ?? [l.engine]).includes(engine)).length}));
+  return [...capture.map(({engine,status,leads,reason})=>({engine,status,leads,...(reason ? {reason} : {})})),...reads];
+}
 export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
+  const cfg = scopeConfig(ws);
+  if(cfg.domain && !cfg.evidenceSnapshot) {
+    emit({ev:id+'-capture-start',domain:cfg.domain});
+    await pinLive(ws,cfg.domain,cfg.reach);
+  }
   const scan = await scanSnapshot(ws,id);
-  const record = {pack:id,snapshotHash:scan.snapshotHash,leads:scan.leads,retire:scan.retire};
+  const {snapshot} = loadSnapshot(ws);
+  const record = {pack:id,snapshotHash:scan.snapshotHash,leads:scan.leads,coverage:coverageOf(snapshot,scan.leads),retire:scan.retire};
   emit({ev:id+'-prepass-done',leads:scan.leads.length,snapshotHash:scan.snapshotHash});
   return {env:{LEADS:JSON.stringify(scan.leads)},record};
 }; }

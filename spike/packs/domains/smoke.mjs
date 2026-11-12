@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,27 +9,33 @@ import domains from './pack.mjs';
 import surface from '../surface/pack.mjs';
 import { runTool } from '../../lib/wrap.mjs';
 import { captureTools,compareTakeovers } from './tools.mjs';
+import { startLab } from './labctl.mjs';
 import { IMAGE,detectorsFor } from './checks.mjs';
 import { replayEvidence } from '../../lib/proof-evidence.mjs';
 const lab=fileURLToPath(new URL('./lab',import.meta.url));
 const ws=mkdtempSync(join(tmpdir(),'touchstone-domains-smoke-'));
-const network='touchstone-domains-'+process.pid;
-const names=[];
+let network,lab_;
 const docker=args=>execFileSync('docker',args,{encoding:'utf8',timeout:60000});
-let created=false;
+function cleanup() {
+  lab_?.stop();
+  rmSync(ws,{recursive:true,force:true});
+}
 try {
   cpSync(lab,ws,{recursive:true});
   if(process.argv.includes('--lab')) {
-    docker(['network','create','--internal','--subnet','172.30.44.0/24',network]); created=true;
-    for(const [suffix,ip,image,cmd,caps] of [
-      ['dns','172.30.44.53','coredns/coredns:1.12.0@sha256:40384aa1f5ea6bfdc77997d243aec73da05f27aed0c5e9d65bfa98933c519d97',['-conf','/lab/Corefile'],['--cap-add','NET_BIND_SERVICE']],
-      ['web','172.30.44.20','node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32',['node','/lab/server.mjs'],[]]
-    ]) {
-      const name=network+'-'+suffix;
-      docker(['run','-d','--name',name,'--network',network,'--ip',ip,'--cap-drop','ALL',...caps,'--security-opt','no-new-privileges','--user',process.getuid()+':'+process.getgid(),'-v',lab+':/lab:ro',image,...cmd]); names.push(name);
-    }
+    lab_=startLab(lab); network=lab_.network;
     const capture=await runTool({image:IMAGE,ws,network,cmd:['capture'],timeoutMs:15000});
     assert.equal(capture.code,0,capture.stderr);
+    if(process.argv.includes('--pin')) {
+      // Maintenance: write a fresh snapshot and re-pin it in both labs. Review the diff before you commit.
+      const bytes=JSON.stringify(JSON.parse(capture.stdout)),hash=createHash('sha256').update(bytes).digest('hex');
+      for(const dir of [lab,join(lab,'../../surface/lab')]) {
+        writeFileSync(join(dir,'snapshot.json'),bytes);
+        const cfg=JSON.parse(readFileSync(join(dir,'.touchstone.json'),'utf8')); cfg.evidenceSnapshot.sha256=hash;
+        writeFileSync(join(dir,'.touchstone.json'),JSON.stringify(cfg,null,2));
+      }
+      console.log('pinned',hash); cleanup(); process.exit(0);
+    }
     assert.deepEqual(JSON.parse(capture.stdout),JSON.parse(readFileSync(join(lab,'snapshot.json'),'utf8')),'Fresh lab must match the pinned snapshot');
     const reports=await captureTools(ws,network);
     assert(reports.dnsx.some(r=>r.host==='old.touchstone.test' && r.cname?.includes('removed.touchstone.test')));
@@ -41,6 +48,25 @@ try {
     const headerReport=JSON.parse(observatory.stdout);
     assert.equal(headerReport.tests['content-security-policy'].result,'csp-not-implemented');
     assert.equal(headerReport.tests['subresource-integrity'].pass,false);
+    // Live path: a scope with a domain and no snapshot. The prepass captures it with the real tools and pins it.
+    const live=mkdtempSync(join(tmpdir(),'touchstone-domains-live-'));
+    try {
+      const reach={network,resolver:lab_.resolver,ports:[{scheme:'http',port:8080}],granted:lab_.granted,scope:lab_.scope};
+      writeFileSync(join(live,'.touchstone.json'),JSON.stringify({pack:'domains',domain:'touchstone.test',reach}));
+      const liveRun=await domains.prepass(live,{emit:()=>{}});
+      const snap=JSON.parse(readFileSync(join(live,'snapshot.json'),'utf8'));
+      assert(snap.discovery.hosts.includes('staging.touchstone.test'),'brute force must find the host the lab hides from its own host list');
+      assert(snap.discovery.nuclei.some(h=>h.template==='github-takeover' && h.url.includes('docs.touchstone.test')));
+      assert(snap.discovery.coverage.every(c=>c.status==='ran'),JSON.stringify(snap.discovery.coverage));
+      const checks=new Set(liveRun.record.leads.map(l=>l.check));
+      for(const check of ['wallet-drainer-behavior','subdomain-takeover-fingerprint','dangling-cname','weak-csp','wallet-cdn-without-sri','missing-frame-protection']) assert(checks.has(check),'live capture must show '+check);
+      assert.deepEqual(liveRun.record.leads.find(l=>l.check==='subdomain-takeover-fingerprint').engines,['touchstone','nuclei']);
+      const lead=liveRun.record.leads.find(l=>l.check==='wallet-drainer-behavior');
+      const proof=await replayEvidence(live,{check:lead.check,where:lead.where,snapshotHash:liveRun.record.snapshotHash},{detectors:detectorsFor('domains')});
+      assert.equal(proof.status,'pass');
+      var liveSummary={hosts:snap.discovery.hosts.length,leads:liveRun.record.leads.length,coverage:liveRun.record.coverage.map(c=>c.engine+':'+c.status+':'+c.leads)};
+    } finally { rmSync(live,{recursive:true,force:true}); }
+    console.log(JSON.stringify({liveCapture:liveSummary}));
     console.log(JSON.stringify({capture:'matches pinned snapshot',dnsx:reports.dnsx.length,httpx:reports.httpx.length,takeovers:comparison,observatory}));
   }
   const prep=await domains.prepass(ws,{emit:()=>{}});
@@ -65,7 +91,5 @@ try {
   assert.deepEqual(await domains.prove(ws,state.found,[],()=>{}),[]);
   console.log(JSON.stringify({domains:findings.length,surface:inventory.record.leads.length,tamper:'rejected',spendUSD:0}));
 } finally {
-  for(const name of names.reverse()) docker(['rm','-f',name]);
-  if(created) docker(['network','rm',network]);
-  rmSync(ws,{recursive:true,force:true});
+  cleanup();
 }

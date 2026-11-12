@@ -2,3 +2,7 @@ touchstone.test:53 {
   errors
   file /lab/zone.db touchstone.test
 }
+github.io:53 {
+  errors
+  file /lab/github.io.db github.io
+}
