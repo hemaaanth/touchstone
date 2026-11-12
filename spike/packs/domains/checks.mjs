@@ -30,13 +30,14 @@ export async function analyzeSnapshot(snapshot) {
 const stable = value => typeof value === 'string' ? value : JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : 1)));
 const sameWhere = (a, b) => (typeof a === 'string' || (a && typeof a === 'object')) && stable(a) === stable(b);
 // Unclaimed-resource pages, per provider. A CNAME to the provider plus this page means the name can be claimed.
-// The page is the provider's own: a 404 on the root, in the provider's markup, and small.
+// The page is the provider's own: a 404 on the root, in the provider's markup, and not huge.
+// The real GitHub page is about 9 KB. The markup shape does the work. The size cap only stops a giant page.
 // The same words in a 200 page, a script or a blog post are not the unclaimed page.
-const PAGE_LIMIT = 8192;
+const PAGE_LIMIT = 32768;
 const PROVIDERS = [
   { name: 'GitHub Pages', target: /\.github\.io$/i, status: 404, shape: /<(?:p|h1|h2|strong|title)\b[^>]*>(?:\s*<[^>]+>)*\s*There isn't a GitHub Pages site here\./i },
   { name: 'Heroku', target: /\.herokuapp\.com$/i, status: 404, shape: /<title>\s*No such app\s*<\/title>/i },
-  { name: 'Amazon S3', target: /\.s3[.-][a-z0-9.-]*amazonaws\.com$/i, status: 404, shape: /<Code>\s*NoSuchBucket\s*<\/Code>/ },
+  { name: 'Amazon S3', target: /\.s3[.-][a-z0-9.-]*amazonaws\.com$/i, status: 404, shape: /<Code>\s*NoSuchBucket\s*<\/Code>|<li>\s*Code:\s*NoSuchBucket\s*<\/li>/ },
 ];
 export function unclaimedPage(response, provider) {
   const type = response.headers['content-type'] ?? '';
@@ -49,7 +50,7 @@ const validSRI = value => String(value).split(/\s+/).some(token => {
   return match && Buffer.from(match[2], 'base64').length === {sha256:32,sha384:48,sha512:64}[match[1]];
 });
 
-const NEVER_APPROVES = /connect|verify|sign.?in|log.?in/i;
+const NEVER_APPROVES = /connect|verify/i;
 export function domainLeads(snapshot, analysis) {
   const leads = [];
   const add = (check, where, severity, description, engine = 'touchstone') => leads.push({id:sha256(check + '\n' + stable(where)).slice(0,16),check,where,severity,impact:severity[0].toUpperCase()+severity.slice(1),description,engine,file:'snapshot.json',lines:[]});
@@ -96,7 +97,7 @@ export function domainLeads(snapshot, analysis) {
     if (page.controls.length) framed.push({ page, response });
     for (const control of page.controls) for (const harm of control.harm) {
       const kinds = { 'erc20-approve': 'an ERC-20 approve', 'set-approval-for-all': 'setApprovalForAll', permit: 'a Permit signature' };
-      // Connect, Verify and Sign in never need an approval, so an approval there is Critical.
+      // Connect and Verify never need an approval, so an approval there is Critical.
       // Claim, Airdrop and Mint may ask for one, so the same request is High until a person reads it.
       const severity = NEVER_APPROVES.test(control.label) ? 'critical' : 'high';
       const need = severity === 'critical' ? 'A connect action only needs the account list.' : 'Some real claim and mint pages ask for an approval, so a person must read the spender.';

@@ -101,6 +101,8 @@ const onProvider=(target,row)=>{
   return changed;
 };
 const HTML={'content-type':'text/html'};
+// A real unclaimed GitHub Pages page, captured from a site that does not exist. It is 9115 bytes.
+const GITHUB_404=readFileSync(new URL('./fixtures/github-pages-404.html',import.meta.url),'utf8');
 
 test('the real unclaimed pages of GitHub Pages, Heroku and S3 still raise the takeover',async()=>{
   const github=await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:'<html><body><p><strong>There isn\'t a GitHub Pages site here.</strong></p></body></html>'}));
@@ -118,7 +120,8 @@ test('a live Heroku app whose script says "No such app" is not a takeover',async
 test('a GitHub Pages blog that quotes the unclaimed words is not a takeover',async()=>{
   const body='<html><body><article><p>If you see "There isn\'t a GitHub Pages site here." check your CNAME file.</p></article></body></html>';
   assert.equal((await leadsOf(onProvider('x.github.io',{status:200,headers:HTML,body}))).some(takeover),false);
-  assert.equal((await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:body+' '.repeat(9000)}))).some(takeover),false,'a large page is not the provider page');
+  assert.equal((await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:body+' '.repeat(9000)}))).some(takeover),false,'the quote is not in the provider markup');
+  assert.equal((await leadsOf(onProvider('x.github.io',{status:404,headers:HTML,body:GITHUB_404+' '.repeat(40000)}))).some(takeover),false,'a giant page is not the provider page');
 });
 
 test('an S3 docs page that mentions NoSuchBucket is not a takeover',async()=>{
@@ -152,4 +155,20 @@ test('a Mint or Claim button that asks for an unlimited approval is High, not Cr
 
 test('a Connect or Verify button that asks for an unlimited approval stays Critical',async()=>{
   for(const label of ['Connect wallet','Verify wallet','Connect and claim']) assert.equal(drainer(await leadsOf(relabel(label))).severity,'critical',label);
+});
+
+test('the real 9 KB GitHub Pages unclaimed page raises the takeover',async()=>{
+  assert(GITHUB_404.length>9000);
+  const found=await leadsOf(onProvider('x.github.io',{status:404,headers:{'content-type':'text/html; charset=utf-8'},body:GITHUB_404}));
+  assert.deepEqual(found.filter(takeover).map(l=>l.where),['docs.touchstone.test']);
+});
+
+test('an S3 website endpoint unclaimed page raises the takeover',async()=>{
+  const body='<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><ul><li>Code: NoSuchBucket</li><li>Message: The specified bucket does not exist</li><li>BucketName: x</li></ul></body></html>';
+  const found=await leadsOf(onProvider('x.s3-website-us-east-1.amazonaws.com',{status:404,headers:HTML,body}));
+  assert.deepEqual(found.filter(takeover).map(l=>l.where),['docs.touchstone.test']);
+});
+
+test('a Sign in button is not clicked, so it raises no drainer lead',async()=>{
+  assert.equal(drainer(await leadsOf(relabel('Sign in'))),undefined);
 });

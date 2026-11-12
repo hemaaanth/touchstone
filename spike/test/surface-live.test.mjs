@@ -14,6 +14,8 @@ test('a service is typed from what it answered', () => {
   assert.equal(classifyService(page('{"ok":true}', 'application/json')).kind, 'api-endpoint');
   const unclaimed = { ...page('<html><body><p>There isn\'t a GitHub Pages site here.</p></body></html>'), status: 404 };
   assert.equal(classifyService(unclaimed).kind, 'provider-error-page');
+  const real = { ...page(readFileSync(new URL('./fixtures/github-pages-404.html', import.meta.url), 'utf8')), status: 404 };
+  assert.equal(classifyService(real).kind, 'provider-error-page', 'the real 9 KB GitHub page');
   assert.equal(classifyService(page(unclaimed.body)).kind, 'web-page', 'the same words in a 200 page are not the unclaimed page');
   assert.deepEqual([classifyService(page('<h1>hello</h1>')).kind, classifyService(page('<h1>hello</h1>')).next], ['web-page', 'web']);
 });
