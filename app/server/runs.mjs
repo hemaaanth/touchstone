@@ -26,6 +26,7 @@ import { activeProvider, allProviders, defaultAlias, readConfig } from "../../sp
 import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { requireGrant } from "../../spike/lib/grant-store.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -299,6 +300,18 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
+// The live hosts a target would reach, if it declares any. No target kind
+// carries a live host yet (TARGET_KINDS is lab/local-source/brief/scope), so
+// this is empty for every target today and the grant gate below never fires. It
+// reads defensively — a future network target kind that adds a `hosts: [...]` or
+// `host: "..."` field is picked up with no shape assumption here — so the moment
+// that kind lands, the gate becomes live with no other change.
+function targetHosts(target) {
+  if (!target) return []
+  const raw = Array.isArray(target.hosts) ? target.hosts : target.host ? [target.host] : []
+  return raw.map((h) => String(h || "").trim()).filter(Boolean)
+}
+
 export async function createRun({ alias, targetId, modules, budgetUsd, pack, mode = "fleet" } = {}) {
   const cfg = readConfig()
   const provider = activeProvider(cfg)
@@ -313,6 +326,14 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
   if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
   const target = pickTarget({ id: targetId, pack: pack || undefined })
+  // Live-target gate (dormant). If the target declares a live host, a run may not
+  // reach it without a grant: requireGrant throws a clear refusal naming the first
+  // uncovered host, before anything is spent or any workspace is prepared. No
+  // target kind declares a host yet, so today this never fires — it is the correct
+  // gate, wired and waiting for a network target kind. A grant never widens what a
+  // run DOES; it only clears the host the network seam may reach.
+  const liveHosts = targetHosts(target)
+  if (liveHosts.length) requireGrant(liveHosts)
   // Resolve the module plan from the scope and the operator's request. A module
   // the scope cannot support (static/fuzz on a brief with no local source yet) is
   // off with a reason, never silently dropped. The plan rides into the workspace

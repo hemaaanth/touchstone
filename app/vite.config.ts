@@ -5,7 +5,7 @@ import { defineConfig, type Plugin } from 'vite'
 // @ts-expect-error — plain .mjs module, no types needed
 import { handleApi } from './server/api.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
-import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings } from './server/runs-http.mjs'
+import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings, handleGrants } from './server/runs-http.mjs'
 
 // The whole backend, in-process inside Vite's dev server. The Vite dev server
 // is a real long-lived Node process, so it can spawn the agent engine, hold an
@@ -26,6 +26,7 @@ function touchstoneApi(): Plugin {
             if (handleModels(req, res)) return
             if (await handleRuns(req, res)) return
             if (await handleScopes(req, res)) return
+            if (await handleGrants(req, res)) return
             if (await handleSettings(req, res)) return
             if (await handleFindings(req, res)) return
             const result: { status: number; json: unknown } = await handleApi(req.url)

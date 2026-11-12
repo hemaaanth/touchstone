@@ -7,6 +7,7 @@
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels } from "./settings.mjs"
 
 function send(res, status, json) {
@@ -240,6 +241,49 @@ export async function handleScopes(req, res) {
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
+    return true
+  }
+
+  return false
+}
+
+// Grants — the operator's written permission to reach a live host (grant-store).
+// A grant names the hosts in scope, who approved it, and when; it fills the
+// scope proxy's allow-list, and a live module refuses to run with no grant for
+// its target. A grant never widens what a run may DO — it only names hosts the
+// network seam may reach — so this is permission plumbing, never a finding. A
+// (req,res) handler because POST takes a body.
+//   GET    /api/grants        — list grants, each with a computed `active` flag
+//   POST   /api/grants        — add one from { hosts, kind, ownership?, approvedBy?, note?, scopeId?, expiresAt? }
+//   DELETE /api/grants/:id     — revoke one
+export async function handleGrants(req, res) {
+  const url = new URL(req.url, "http://localhost")
+  const parts = url.pathname.split("/").filter(Boolean) // ["api","grants",...]
+  if (parts[0] !== "api" || parts[1] !== "grants") return false
+
+  if (parts.length === 2 && req.method === "GET") {
+    const now = Date.now()
+    send(res, 200, { grants: readGrants().map((g) => ({ ...g, active: grantActive(g, now) })) })
+    return true
+  }
+
+  if (parts.length === 2 && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      send(res, 201, addGrant({ hosts: body.hosts, kind: body.kind, ownership: body.ownership, approvedBy: body.approvedBy, note: body.note, scopeId: body.scopeId, expiresAt: body.expiresAt }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 3 && req.method === "DELETE") {
+    const id = decodeURIComponent(parts[2])
+    if (!removeGrant(id)) {
+      send(res, 404, { error: "no such grant" })
+      return true
+    }
+    send(res, 200, { removed: true, id })
     return true
   }
 
