@@ -81,7 +81,8 @@ An empty folder prints a clear message and exits 1.
 - `dependency-exfil-code`: vendored code reads a secret and calls the network within 8 lines, after comments are removed. Type files (`.d.ts`) and minified bundles are skipped.
 - `dependency-not-in-lockfile`: a package is declared in `package.json` but the lockfile next to it has no entry. A lockfile scan never sees it. Low impact. It is a suspect only when its name also looks like a known crypto package.
 - Trust rule: a package that is locked under its own name with an integrity hash and a registry source is trusted. Its code hits are Medium, not High. The canonical packages (`ethers`, `viem`, `web3` and so on) are skipped.
-- A name that only looks like a crypto package (such as `view` or `web`) is Low. It is never a suspect by itself.
+- A lookalike name is never trusted, even when locked. A typosquat from the registry has a real integrity hash. So a vendored lookalike with exfil code is High, and a vendored or declared lookalike that is used as a signer is a suspect (Medium without code evidence).
+- A lookalike name alone (such as `view` or `web`) is a Low lead. It becomes a Medium suspect only when a file uses it as a signer.
 - `dependency-reaches-signer` needs the imported binding to be used as a signer, such as `new Wallet(process.env.DEPLOYER_KEY)`. The word `Wallet` in a comment does not count. A lookalike that is not locked is capped at Medium.
 - The lab vendors an inert `node_modules/ethres` that looks like `ethers`. OSV and Grype do not know it. Our checks and Semgrep do.
 - All hits on one package share the root cause `malicious-dependency:<package>`.
@@ -177,7 +178,7 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 
 ## Verification recorded
 
-- The focused supply-chain tests pass: 24 tests (14 first delivery, 10 repair regressions).
+- The focused supply-chain tests pass: 26 tests (14 first delivery, 10 repair 1, 2 repair 2).
 - The full `bun run test` in `spike/` passes (count in the repair report).
 - The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
 - One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.

@@ -20,7 +20,9 @@ const lookalike = (name) => (canonical.includes(name) ? null : canonical.find((k
 // 1. Vendored code that reads a secret or signer field and, a few lines away, sends data out.
 // 2. A suspect package that a source file imports AND uses to build or call a signer.
 // 3. A package.json dependency that its own lockfile does not list.
-// A package the lockfile pins by integrity hash, under its own name, from the npm registry is not suspect.
+// A package the lockfile pins by integrity hash, under its own name, from the npm registry is trusted.
+// A name that is near a canonical crypto package (a lookalike) is never trusted. A typosquat is a real
+// registry package with a real integrity hash, so being locked proves nothing about it.
 // Known limits (see SKILL.md): exfil split across two files, env destructuring, minified bundles,
 // and code that builds the module name at run time are not seen.
 const CODE = /\.[cm]?[jt]sx?$/;
@@ -101,7 +103,7 @@ function dependencyLeads(snapshot, add) {
   for (const [file, source] of Object.entries(snapshot.files)) {
     const pkg = vendoredName(file);
     if (!pkg) continue;
-    if (!vendored.has(pkg)) vendored.set(pkg, lockedWithIntegrity(file, pkg, lockOf));
+    if (!vendored.has(pkg)) vendored.set(pkg, lockedWithIntegrity(file, pkg, lockOf) && !lookalike(pkg));
     if (!CODE.test(file) || TYPES.test(file) || !SECRET_READ.test(source) || !SINK.test(source) || minified(source)) continue;
     const trusted = vendored.get(pkg);
     if (trusted && canonical.includes(pkg)) continue;
@@ -113,12 +115,15 @@ function dependencyLeads(snapshot, add) {
     add("dependency-exfil-code", file, at + 1, `Vendored package ${pkg} reads secret or signer values and sends data out within ${WINDOW} lines. Static match only. Nothing was run.`, null, { package: pkg, impact });
     if (!trusted) suspect(pkg, "High", "exfil-code");
   }
-  for (const [pkg, trusted] of vendored) if (!trusted && lookalike(pkg)) suspect(pkg, "Medium", "lookalike-not-locked");
+  // A vendored lookalike is a suspect whether or not it is locked.
+  for (const pkg of vendored.keys()) if (lookalike(pkg)) suspect(pkg, "Medium", "lookalike-vendored");
   for (const [file, source] of Object.entries(snapshot.files)) {
     if (!isManifest(file) || vendoredName(file)) continue;
     let obj;
     try { obj = JSON.parse(source); } catch { continue; }
     const names = [...new Set(Object.keys({ ...obj?.dependencies, ...obj?.devDependencies, ...obj?.optionalDependencies }))];
+    // A declared lookalike is a suspect even when the lockfile lists it. Most repos do not commit node_modules.
+    for (const name of names) if (lookalike(name)) suspect(name, "Medium", "lookalike-declared");
     const lockPath = posix.join(posix.dirname(file), "package-lock.json");
     const lock = lockOf(lockPath);
     if (!lock) continue;
@@ -126,7 +131,6 @@ function dependencyLeads(snapshot, add) {
     const lines = source.split("\n");
     for (const name of names) if (!listed.has(name)) {
       add("dependency-not-in-lockfile", file, lines.findIndex((t) => t.includes(JSON.stringify(name))) + 1, `Package ${name} is in package.json but not in ${lockPath}. A lockfile scan never sees it.`, null, { package: name });
-      if (lookalike(name)) suspect(name, "Medium", "lookalike-not-locked");
     }
   }
   for (const [file, source] of Object.entries(snapshot.files)) {

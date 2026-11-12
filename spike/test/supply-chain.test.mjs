@@ -267,9 +267,10 @@ test("a lookalike name stays below High, even when a file mentions Wallet", () =
   const reach = used.filter((l) => l.check === "dependency-reaches-signer");
   assert.deepEqual(reach.map((l) => [l.package, l.impact]), [["view", "Medium"]]);
   assert.deepEqual(high(used), []);
-  // With no lockfile entry to compare, a lookalike name alone raises nothing but its Low warning.
+  // With no lockfile at all, a declared lookalike used as a signer is still capped at Medium.
   const noLock = cryptoLeads({ files: { "package.json": files["package.json"], "deploy.js": "const view = require('view');\nnew view.Wallet(process.env.DEPLOYER_KEY);\n" } });
-  assert.deepEqual(noLock.map((l) => [l.check, l.impact]).sort(), [["crypto-package-lookalike", "Low"], ["crypto-package-lookalike", "Low"]]);
+  assert.deepEqual(high(noLock), []);
+  assert.deepEqual(noLock.filter((l) => l.check === "dependency-reaches-signer").map((l) => l.impact), ["Medium"]);
 });
 
 test("a multi-line import of the planted package still reaches the signer, and a comment does not", () => {
@@ -367,4 +368,25 @@ test("scan.mjs prints a clear message for an empty folder, not a stack trace", (
     assert.ok(!/\n\s+at /.test(empty.out), "no stack trace");
     assert.equal(run([join(dir, "missing")]).code, 2);
   } finally { remove(dir); }
+});
+
+// Repair cycle 2. A typosquat from the registry is a real package with a real integrity hash.
+const registryLock = (name) => lockOf({ [`node_modules/${name}`]: { version: "1.0.0", integrity: "sha512-abc", resolved: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz` }, "node_modules/lodash": { version: "4.17.21", integrity: "sha512-x", resolved: "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz" } });
+
+test("a lookalike installed from the registry, locked with integrity, still reaches the signer at High", () => {
+  const files = { ...evil, "package-lock.json": registryLock("ethres") };
+  const leads = cryptoLeads({ files });
+  assert.deepEqual(leads.filter((l) => l.check === "dependency-reaches-signer").map((l) => [l.file, l.lines[0], l.package, l.impact]), [["scripts/deploy.js", 1, "ethres", "High"]]);
+  assert.deepEqual(leads.filter((l) => l.check === "dependency-exfil-code").map((l) => [l.package, l.impact]), [["ethres", "High"]]);
+  assert.ok(!leads.some((l) => l.check === "dependency-not-in-lockfile"), "it is locked, so this is not the missing-lock case");
+  // The real canonical package, same lockfile shape, is still trusted: its own code raises nothing.
+  const real = cryptoLeads({ files: { ...vendorEthers(), "package.json": JSON.stringify({ dependencies: { ethers: "6" } }), "package-lock.json": registryLock("ethers"), "scripts/deploy.js": "const { Wallet } = require('ethers');\nnew Wallet(process.env.DEPLOYER_KEY);\n" } });
+  assert.deepEqual(real, []);
+});
+
+test("a declared lookalike with no node_modules in the repo is a Medium signer reach, even when locked", () => {
+  const files = { "package.json": evil["package.json"], "package-lock.json": registryLock("ethres"), "scripts/deploy.js": evil["scripts/deploy.js"] };
+  const leads = cryptoLeads({ files });
+  assert.deepEqual(leads.filter((l) => l.check === "dependency-reaches-signer").map((l) => [l.package, l.impact]), [["ethres", "Medium"]]);
+  assert.deepEqual(high(leads), []);
 });
