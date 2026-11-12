@@ -707,11 +707,15 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // Which panel section is open, kept across runs. Null means all folded.
 const SECTION_KEY = "ts.panelSection"
+const SECTIONS = ["info", "agents", "bulletin", "files", "findings"]
+
 function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => void] {
   const [value, setValue] = useState<PanelSection | null>(() => {
     const saved = localStorage.getItem(SECTION_KEY)
     if (saved === "") return null
-    return saved === "info" || saved === "bulletin" || saved === "files" ? saved : "agents"
+    // "findings" is the Findings & Proofs section on main. The cast keeps this
+    // branch building until PanelSection gains it.
+    return saved && SECTIONS.includes(saved) ? (saved as PanelSection) : "agents"
   })
   const set = (s: PanelSection | null) => {
     setValue(s)

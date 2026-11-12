@@ -2,7 +2,7 @@
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
 //   ALIAS=ds-abl node agent-run.mjs    pick the model
-//   MAX_POC=20 node agent-run.mjs      raise the PoC attempt budget
+//   MAX_POC=20 node agent-run.mjs      cap PoC attempts (default: no cap; the run budget stops it)
 //
 // The agent gets real tools over a per-run Foundry sandbox: it reads the contract
 // source, writes its own exploit tests, runs them offline in Docker, and must
@@ -18,7 +18,8 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
+import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
+import { readSpendWith } from "./lib/attempt-cap.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -31,6 +32,9 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+
+// Tools tell the model how much of the run budget is left.
+readSpendWith(runSpend);
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? defaultAlias(activeProvider());
