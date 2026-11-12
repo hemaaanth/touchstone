@@ -113,6 +113,19 @@ export function zapQueryUrls(text) {
   return [...out];
 }
 
+// Input URLs the operator already documents: every `/path?query` in a text (the
+// brief, the OpenAPI file). They are absolute against baseUrl. dalfox is fed
+// these as well as the URLs ZAP's spider finds, because a scanner cannot guess
+// which URLs take input.
+export function docQueryUrls(text, baseUrl) {
+  const out = new Set();
+  const base = String(baseUrl ?? "").replace(/\/+$/, "");
+  for (const m of String(text ?? "").matchAll(/(?<![\w:/.])(\/[A-Za-z0-9_./~-]*\?[A-Za-z0-9_.~%=&+-]+=[A-Za-z0-9_.~%=&+<>-]*)/g)) {
+    out.add(`${base}${m[1].replace(/[<>].*$/, "x").replace(/[.,;]+$/, "").replace(/=(?=&|$)/g, "=x")}`);
+  }
+  return [...out];
+}
+
 // One list, worst first. A path that two tools flag gets corroborated=true.
 export function mergeLeads(all) {
   const byKey = new Map();
@@ -163,6 +176,9 @@ export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, ti
       const dalfoxUrls = [...new Set([...urls, ...zapQueryUrls(read(join(scratch, "zap.json")))])].slice(0, 5);
       const all = [];
       let last = { code: 0, timedOut: false };
+      // dalfox only tests URLs that take input. With none, it did not run: that
+      // is NOT the same as "ran and found nothing", and the agent must know.
+      if (dalfoxUrls.length === 0) return { r: last, leads: all, noInput: true };
       for (const [i, u] of dalfoxUrls.entries()) {
         const out = `dalfox-${i}.json`;
         last = await run({
@@ -183,9 +199,10 @@ export async function scanWeb({ net, baseUrl, urls = [], only, run = runTool, ti
     const done = await Promise.all(names.map(async (n) => {
       try { return [n, n === "zap" ? ((await zapRun) ?? { r: { code: 1, timedOut: false }, leads: [] }) : await jobs[n]()]; } catch (e) { return [n, { r: { code: 1, timedOut: false, stderr: String(e) }, leads: [] }]; }
     }));
-    const coverage = done.map(([engine, { r, leads }]) => ({
+    const coverage = done.map(([engine, { r, leads, noInput }]) => ({
       engine,
-      status: r.code === 0 || leads.length ? "ran" : "unavailable",
+      status: noInput ? "no-input" : r.code === 0 || leads.length ? "ran" : "unavailable",
+      ...(noInput ? { reason: "No URL with a query string was known (none in the brief or the OpenAPI file, none found by ZAP's spider), so dalfox had nothing to test. This is not a clean result." } : {}),
       code: r.code,
       timedOut: Boolean(r.timedOut),
       leads: leads.length,

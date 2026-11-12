@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import web, { ORACLES, matchOracle } from "../packs/web/pack.mjs";
-import { mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
+import { prepassView } from "../lib/prepass-view.mjs";
+import { docQueryUrls, mergeLeads, parseDalfox, parseNuclei, parseZap, scanWeb, zapQueryUrls } from "../packs/web/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
 import { proofView } from "../lib/proof-view.mjs";
@@ -79,11 +80,68 @@ test("bola-wallet-idor: signing in as BOTH users and reading user 2's wallet wit
   assert.equal(bola.check(real).pass, true);
 });
 
-test("debug-route-signer-key-leak: any 200 response carrying a signerPrivateKey is a pass", () => {
-  const t = [{ path: "/internal/debug/config", status: 200, resBody: { signerPrivateKey: "0xabc", other: 1 } }];
-  assert.equal(debugLeak.check(t).pass, true);
-  assert.equal(debugLeak.check([{ path: "/internal/debug/config", status: 404, resBody: {} }]).pass, false);
+const KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+const ADDR = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+const leakBody = { signerPrivateKey: KEY, signerAddress: ADDR, chainId: 1 };
+const dbgCall = (reqHeaders, over = {}) => ({ method: "GET", path: "/internal/debug/config", status: 200, reqHeaders, resBody: leakBody, ...over });
+
+test("debug-route-signer-key-leak: a bare 200 with a real key is the proof; a junk-token call only supports it", () => {
+  // Both calls 200 with the same body: still a pass, and the junk call is mentioned.
+  const both = debugLeak.check([dbgCall({ host: "lab" }), dbgCall({ authorization: "Bearer junk" })]);
+  assert.equal(both.pass, true);
+  assert.match(both.detail, /no credentials at all/);
+  assert.match(both.detail, /junk token the server never issued also got 200/);
+  assert.doesNotMatch(both.detail, new RegExp(KEY));
+  // Issue 7: bare 200 + key, but a junk token is REFUSED (401). A real leak.
+  const refused = debugLeak.check([dbgCall({ host: "lab" }), dbgCall({ authorization: "Bearer junk" }, { status: 401, resBody: { error: "bad token" } })]);
+  assert.equal(refused.pass, true);
+  assert.match(refused.detail, /answered 401/);
+  // The bare call alone is enough (no junk call at all).
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" })]).pass, true);
+  // A body that carries a timestamp differs between the calls: still a pass.
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" }, { resBody: { ...leakBody, now: 1 } }), dbgCall({ authorization: "Bearer junk" }, { resBody: { ...leakBody, now: 2 } })]).pass, true);
+  // A junk-token 200 whose body differs entirely does not hide the bare leak.
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" }), dbgCall({ authorization: "Bearer junk" }, { resBody: { ...leakBody, chainId: 2 } })]).pass, true);
+});
+
+test("debug-route-signer-key-leak: the lab's leaked key really is a valid 66-char key for the reported address", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../packs/web/lab/dapp/oracle/server.mjs", import.meta.url), "utf8");
+  const key = /signerPrivateKey:\s*"(0x[0-9a-f]+)"/.exec(src)[1];
+  assert.equal(key.length, 66);
+  const { Wallet } = await import("ethers");
+  assert.equal(new Wallet(key).address, /signerAddress:\s*"(0x\w+)"/.exec(src)[1]);
+});
+
+test("debug-route-signer-key-leak: a key seen only on calls that carried credentials is not a pass", () => {
+  // Only ever called with a (real) session token: auth never shown to be unneeded.
+  const t = [verify(), dbgCall({ authorization: "Bearer t1" })];
+  const v = debugLeak.check(t);
+  assert.equal(v.pass, false);
+  assert.match(v.detail, /NO headers|no credentials/i);
+  // The "junk" token is actually a server-minted one, and there is no bare call.
+  assert.equal(debugLeak.check([verify(), dbgCall({ authorization: "Bearer t1" }), dbgCall({ authorization: "Bearer t1" })]).pass, false);
+  // A junk-token 200 alone is NOT the proof (it did send a credential header).
+  assert.equal(debugLeak.check([dbgCall({ authorization: "Bearer junk" })]).pass, false);
+  // The bare call was refused, whatever the junk call did.
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" }, { status: 401, resBody: { error: "no" } }), dbgCall({ authorization: "Bearer junk" })]).pass, false);
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" }, { status: 404 })]).pass, false);
+  // A bare 200 with no key field is not a leak.
+  assert.equal(debugLeak.check([dbgCall({ host: "lab" }, { resBody: { rpcUrl: "x" } })]).pass, false);
   assert.equal(debugLeak.check([]).pass, false);
+});
+
+test("debug-route-signer-key-leak: a malformed or mismatched key is not a pass (63 hex chars, wrong address)", () => {
+  const bad = (body) => [dbgCall({ host: "lab" }, { resBody: body }), dbgCall({ authorization: "Bearer junk" }, { resBody: body })];
+  assert.equal(debugLeak.check(bad({ signerPrivateKey: KEY.slice(0, -1), signerAddress: ADDR })).pass, false);
+  assert.equal(debugLeak.check(bad({ signerPrivateKey: KEY, signerAddress: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" })).pass, false);
+  assert.equal(debugLeak.check(bad({ signerPrivateKey: "0xabc", signerAddress: ADDR })).pass, false);
+});
+
+test("query strings do not hide a call from the oracles (BOLA and debug route)", () => {
+  // The proxy records the raw path without the query; the full url keeps the query.
+  const t = [verify(), { path: "/api/users/2/wallet", url: "http://lab:8080/api/users/2/wallet?x=1", status: 200, reqHeaders: { authorization: "Bearer t1" }, resBody: { id: 2, wallet: "0xabc", apiKey: "k" } }];
+  assert.equal(bola.check(t).pass, true);
 });
 
 const html = (over = {}) => ({ method: "GET", path: "/explorer", url: "http://lab:8080/explorer?q=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E", status: 200, resHeaders: { "content-type": "text/html; charset=utf-8" }, resBody: "<p>No results for <b><img src=x onerror=alert(1)></b></p>", ...over });
@@ -103,6 +161,144 @@ test("reflected-xss: an escaped page, plain text, a CSP, JSON, or a plain value 
   // The page must hold the REQUEST's value, not just any tag.
   assert.equal(xss.check([html({ resBody: "<p>nothing here</p>" })]).pass, false);
   assert.equal(xss.check([]).pass, false);
+});
+
+test("reflected-xss: the payload inside an attribute value or a <script> string is inert, not a pass", () => {
+  const url = "http://lab:8080/explorer?q=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E";
+  const P = "<img src=x onerror=alert(1)>";
+  assert.equal(xss.check([html({ url, resBody: `<input value="${P}">` })]).pass, false);
+  assert.equal(xss.check([html({ url, resBody: `<input value='${P}'>` })]).pass, false);
+  assert.equal(xss.check([html({ url, resBody: `<script>var q = "${P}";</script>` })]).pass, false);
+  assert.equal(xss.check([html({ url, resBody: `<textarea>${P}</textarea>` })]).pass, false);
+  assert.equal(xss.check([html({ url, resBody: `<!-- ${P} -->` })]).pass, false);
+  // An earlier, harmless tag with quotes does not confuse the scanner.
+  assert.equal(xss.check([html({ url, resBody: `<a href="/x" title='t'>l</a><p>${P}</p>` })]).pass, true);
+});
+
+test("reflected-xss: a breakout payload that closes the attribute or script is a pass", () => {
+  const brk = (q) => `http://lab:8080/explorer?q=${encodeURIComponent(q)}`;
+  const A = '"><img src=x onerror=alert(1)>';
+  assert.equal(xss.check([html({ url: brk(A), resBody: `<input value="${A}">` })]).pass, true);
+  const S = "</script><img src=x onerror=alert(1)>";
+  assert.equal(xss.check([html({ url: brk(S), resBody: `<script>var q = "${S}";</script>` })]).pass, true);
+});
+
+test("reflected-xss: only a CSP that really blocks inline script stops the pass", () => {
+  const withCsp = (csp) => xss.check([html({ resHeaders: { "content-type": "text/html", "content-security-policy": csp } })]).pass;
+  // Does not limit script at all -> still exploitable.
+  assert.equal(withCsp("frame-ancestors 'none'"), true);
+  assert.equal(withCsp("img-src 'self'; style-src 'self'"), true);
+  // Allows inline -> still exploitable.
+  assert.equal(withCsp("script-src 'self' 'unsafe-inline'"), true);
+  assert.equal(withCsp("default-src 'self' 'unsafe-inline'"), true);
+  // Blocks inline.
+  assert.equal(withCsp("script-src 'self'"), false);
+  assert.equal(withCsp("default-src 'none'"), false);
+  assert.equal(withCsp("script-src 'self' 'unsafe-inline' 'nonce-abc123'"), false);
+  assert.equal(withCsp("script-src 'sha256-xyz' 'unsafe-inline'"), false);
+  // Two policies: the blocking one wins.
+  assert.equal(withCsp("script-src 'unsafe-inline', script-src 'self'"), false);
+});
+
+const xssAt = (q, body, headers = {}) => xss.check([html({
+  url: `http://lab:8080/explorer?q=${encodeURIComponent(q)}`,
+  resBody: body,
+  resHeaders: { "content-type": "text/html", ...headers },
+})]);
+
+test("reflected-xss: only an EXECUTABLE vector counts (script tag, on*= handler, javascript: URL)", () => {
+  // Positive: each kind of real vector, reflected raw into live markup.
+  for (const P of ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "<svg/onload=alert(1)>", '<img src="x"onerror=alert(1)>', '<iframe src="javascript:alert(1)"></iframe>', "<a href=javascript:alert(1)>x</a>"]) {
+    assert.equal(xssAt(P, `<p>${P}</p>`).pass, true, P);
+  }
+  // Negative: markup a sanitizer lets through is not script.
+  for (const P of ["<b>hello</b>", "<i>x</i><u>y</u>", '<a href="/ok">x</a>', '<img src="x.png" alt="a">', "<div class=c>x</div>"]) {
+    assert.equal(xssAt(P, `<p>${P}</p>`).pass, false, P);
+  }
+  // Negative: "onerror=" only as text inside a quoted attribute value is not a handler.
+  assert.equal(xssAt('<a title="x onclick=y">t</a>', '<p><a title="x onclick=y">t</a></p>').pass, false);
+  // Negative: "< img" with a space is text, not a tag.
+  assert.equal(xssAt("< img src=x onerror=alert(1)>", "<p>< img src=x onerror=alert(1)></p>").pass, false);
+  // Negative: a <img src=javascript:> does not run in a modern browser.
+  assert.equal(xssAt("<img src=javascript:alert(1)>", "<p><img src=javascript:alert(1)></p>").pass, false);
+});
+
+test("reflected-xss: a bare javascript: value is live only inside a link-like attribute", () => {
+  const J = "javascript:alert(1)";
+  assert.equal(xssAt(J, `<a href="${J}">go</a>`).pass, true);
+  assert.equal(xssAt(J, `<iframe src='${J}'></iframe>`).pass, true);
+  // As page text, or in a non-URL attribute, it is inert.
+  assert.equal(xssAt(J, `<p>${J}</p>`).pass, false);
+  assert.equal(xssAt(J, `<a title="${J}">x</a>`).pass, false);
+  // Not at the start of the attribute value: not a javascript: scheme.
+  assert.equal(xssAt(J, `<a href="/x?u=${J}">x</a>`).pass, false);
+});
+
+test("reflected-xss: reflection inside noscript, iframe, noembed, noframes, xmp is inert unless it breaks out", () => {
+  const P = "<img src=x onerror=alert(1)>";
+  for (const tag of ["noscript", "iframe", "noembed", "noframes", "xmp"]) {
+    assert.equal(xssAt(P, `<${tag}>${P}</${tag}>`).pass, false, `${tag} swallows the payload`);
+    const B = `</${tag}>${P}`;
+    assert.equal(xssAt(B, `<${tag}>${B}</${tag}>`).pass, true, `${tag} breakout`);
+  }
+});
+
+test("reflected-xss: strict-dynamic, script-src-attr and script-src-elem are read the way a browser reads them", () => {
+  const SCRIPT = "<script>alert(1)</script>";
+  const HANDLER = "<img src=x onerror=alert(1)>";
+  const csp = (v) => ({ "content-security-policy": v });
+  // strict-dynamic makes browsers ignore 'unsafe-inline' (no nonce needed to block).
+  assert.equal(xssAt(SCRIPT, SCRIPT, csp("script-src 'strict-dynamic' 'unsafe-inline'")).pass, false);
+  assert.equal(xssAt(HANDLER, HANDLER, csp("script-src 'strict-dynamic' 'unsafe-inline' https:")).pass, false);
+  // 'unsafe-inline' alone still lets both run.
+  assert.equal(xssAt(SCRIPT, SCRIPT, csp("script-src 'unsafe-inline'")).pass, true);
+  // False negative fixed: script-src 'self' blocks a <script> but script-src-attr 'unsafe-inline' lets a handler run.
+  const split = "script-src 'self'; script-src-attr 'unsafe-inline'";
+  assert.equal(xssAt(HANDLER, HANDLER, csp(split)).pass, true);
+  assert.equal(xssAt(SCRIPT, SCRIPT, csp(split)).pass, false);
+  // The mirror: script-src-elem 'unsafe-inline' lets a <script> run, script-src 'self' still blocks a handler.
+  const elem = "script-src 'self'; script-src-elem 'unsafe-inline'";
+  assert.equal(xssAt(SCRIPT, SCRIPT, csp(elem)).pass, true);
+  assert.equal(xssAt(HANDLER, HANDLER, csp(elem)).pass, false);
+  // script-src-attr 'none' blocks a handler even when script-src allows inline.
+  assert.equal(xssAt(HANDLER, HANDLER, csp("script-src 'unsafe-inline'; script-src-attr 'none'")).pass, false);
+  // A value with both vectors: one open door is enough.
+  const BOTH = `${SCRIPT}${HANDLER}`;
+  assert.equal(xssAt(BOTH, BOTH, csp("script-src 'self'; script-src-attr 'unsafe-inline'")).pass, true);
+});
+
+test("reflected-xss: a <meta> CSP before the reflection blocks inline, one after it (or in a comment) does not", () => {
+  const P = "<img src=x onerror=alert(1)>";
+  const meta = (c) => `<meta http-equiv="Content-Security-Policy" content="${c}">`;
+  // False positive fixed: a meta CSP that blocks inline, placed before the reflection.
+  assert.equal(xssAt(P, `<head>${meta("script-src 'self'")}</head><p>${P}</p>`).pass, false);
+  assert.equal(xssAt(P, `<head><meta content="default-src 'none'" http-equiv='content-security-policy'></head><p>${P}</p>`).pass, false);
+  // A meta that does not limit script, or allows inline, is no defence.
+  assert.equal(xssAt(P, `<head>${meta("img-src 'self'")}</head><p>${P}</p>`).pass, true);
+  assert.equal(xssAt(P, `<head>${meta("script-src 'unsafe-inline'")}</head><p>${P}</p>`).pass, true);
+  // The meta only applies from where it sits: a reflection before it already ran.
+  assert.equal(xssAt(P, `<p>${P}</p>${meta("script-src 'self'")}`).pass, true);
+  // A commented-out meta is not a policy.
+  assert.equal(xssAt(P, `<!-- ${meta("script-src 'self'")} --><p>${P}</p>`).pass, true);
+  // Other meta tags are ignored.
+  assert.equal(xssAt(P, `<meta name="viewport" content="script-src 'self'"><p>${P}</p>`).pass, true);
+  // A header and a meta both apply.
+  assert.equal(xssAt(P, `${meta("script-src 'self'")}<p>${P}</p>`, { "content-security-policy": "img-src *" }).pass, false);
+});
+
+// KNOWN LIMIT (documented in packs/web/SKILL.md): attribute injection into an
+// existing tag has no tag of its own in the value, so the oracle does not see it.
+// It only misses a finding; it never invents one. This pins the boundary: if a
+// change makes it detect this, update this test and the doc together.
+test("reflected-xss: KNOWN LIMIT - an attribute-break payload with no tag of its own is a fail (missed, never false)", () => {
+  const A = '" autofocus onfocus="alert(1)';
+  assert.equal(xssAt(A, `<input value="${A}">`).pass, false);
+  const B = "' autofocus onfocus='alert(1)";
+  assert.equal(xssAt(B, `<input value='${B}'>`).pass, false);
+});
+
+test("reflected-xss: a ?query on the page path still matches (path is the raw path, no query)", () => {
+  assert.equal(xss.check([html({ path: "/explorer" })]).pass, true);
 });
 
 test("matchOracle returns the first oracle that passes, or null", () => {
@@ -216,6 +412,45 @@ test("mergeLeads sorts worst first and marks a path two tools flag as corroborat
   assert.equal(merged[2].corroborated, false);
 });
 
+test("docQueryUrls pulls documented input URLs out of the brief and the OpenAPI file", () => {
+  const brief = "It has `GET /explorer?q=<address or tx hash>`. Also /api/users/1 and https://x.test/a?b=1 and /search?term=a&page=2.";
+  assert.deepEqual(docQueryUrls(brief, "http://lab:8080/"), ["http://lab:8080/explorer?q=x", "http://lab:8080/search?term=a&page=2"]);
+  assert.deepEqual(docQueryUrls("no queries here /api/me", "http://lab:8080"), []);
+  assert.deepEqual(docQueryUrls(null, "http://lab:8080"), []);
+});
+
+test("scanWeb feeds dalfox the supplied input URLs, and reports 'no-input' (not 'ran') when it has none", async () => {
+  const dalfoxCalls = [];
+  const run = async ({ image, ws, cmd }) => {
+    if (image.includes("zaproxy")) { writeFileSync(join(ws, "zap.json"), JSON.stringify({ site: [] })); return { code: 0 }; }
+    if (image.includes("nuclei")) return { code: 0 };
+    dalfoxCalls.push(cmd[2]);
+    return { code: 0 };
+  };
+  const withUrls = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run, urls: ["http://lab:8080/explorer?q=x"] });
+  assert.deepEqual(dalfoxCalls, ["http://lab:8080/explorer?q=x"]);
+  assert.equal(withUrls.coverage.find((c) => c.engine === "dalfox").status, "ran");
+
+  dalfoxCalls.length = 0;
+  const none = await scanWeb({ net: "n", baseUrl: "http://lab:8080", run });
+  assert.deepEqual(dalfoxCalls, [], "dalfox is not launched with nothing to test");
+  const d = none.coverage.find((c) => c.engine === "dalfox");
+  assert.equal(d.status, "no-input");
+  assert.match(d.reason, /not a clean result/);
+  // The run view shows it as unavailable, with that reason, never as a clean run.
+  const view = prepassView({ pack: "web", coverage: none.coverage, leads: [] });
+  const tool = view.tools.find((t) => t.name === "dalfox");
+  assert.notEqual(tool.status, "ran");
+  assert.match(tool.reason, /not a clean result/);
+});
+
+test("prepass fails loudly, naming the build script, when the lab image is not built", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "web-noimg-"));
+  try {
+    await assert.rejects(() => web.prepass(ws, { image: "touchstone/no-such-lab:0" }), /not built[\s\S]*build-labs\.sh web/);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
 test("scanWeb runs all three tools, reads their files, and reports a failed tool as unavailable", async () => {
   const calls = [];
   const run = async ({ image, ws, network, cmd }) => {
@@ -261,6 +496,7 @@ await request("GET", "/api/users/2/wallet", { headers: { authorization: "Bearer 
 `,
   "debug-leak": `
 await request("GET", "/internal/debug/config");
+await request("GET", "/internal/debug/config", { headers: { authorization: "Bearer junk-token" } });
 `,
   "xss": `
 await request("GET", "/explorer?q=" + encodeURIComponent("<img src=x onerror=alert(1)>"));

@@ -23,12 +23,17 @@ transcript.
 - A lab: `lab/mcp/oracle/server.mjs` is one Express service. It is built into
   the image `touchstone/ai-mcp-lab:dev`. It starts fresh for the run and fresh
   again for every proof replay.
-  - `POST /mcp`: an MCP server (JSON-RPC 2.0 over HTTP) with five tools.
+  - `POST /mcp`: an MCP server (JSON-RPC 2.0 over HTTP) with six tools.
   - `POST /agent/chat`: a support assistant. It is a small rule-based stand-in
     for an LLM agent. It reads tool results as if they were orders. A real
     model can fail the same way. The stand-in makes the lab deterministic, so a
     replay gives the same result every time.
   - `POST /tickets`: a public form. This is the untrusted channel.
+  - `POST /mcp/approve`: the operator's approval step for one tool. After it,
+    `tools/list` serves that tool's current definition. The lab uses this to
+    plant a definition change after approval (a "rug pull").
+  - `attacker.example` resolves, inside the lab only, to a loopback sink. A
+    `fetch_url` call to it is the second place data can go.
 - `lab/mcp/BRIEF.md`: what the assistant is for, the surfaces, the base URL and
   the reader token.
 
@@ -69,9 +74,12 @@ Each oracle is a pure function over the recorded transcript (`pack.mjs`
 
 | Oracle | Impact | What it means |
 |--------|--------|----------------|
-| `prompt-injection-forbidden-tool` | Critical | A stranger's ticket text made the assistant run `send_email` or `delete_note`. The caller's own chat message never named that tool or its address. The tool name was in a ticket posted earlier in the same transcript. |
-| `fetch-url-scope-escape` | High | `fetch_url` should reach `docs.internal` only. A result that holds the internal service's API key proves it reached somewhere else. Seen through `/mcp` or through the assistant. |
-| `mcp-tool-scope-bypass` | High | A token that was never granted a tool's scope ran that tool through `/mcp` and got a 200 that says it ran. |
+| `prompt-injection-forbidden-tool` | Critical | A stranger's ticket text made the assistant run `send_email` or `delete_note`. The assistant's own label for the call (`why`) must say it came from a tool result. A caller message that only mentions the tool name does not hide it. The ticket must have been read with `read_note` in the same turn, before the call. |
+| `prompt-injection-data-exfil` | Critical | The same injection, with a READ tool: `fetch_url` to a host that is not `docs.internal`, carrying a secret in the URL, on an order from a planted ticket or a tool description. No write tool runs. The secret must come from the data the assistant READ, not from the attacker: a secret that already sits in the planted ticket, the chat message, an earlier request body or URL, or a listed tool description is attacker-supplied and does not count. (The lab ticket orders `d=@note:2`, and the assistant resolves it.) |
+| `fetch-url-scope-escape` | High | `fetch_url` should reach `docs.internal` only. A result that holds a configured secret pattern proves it reached somewhere else. Every content item and `structuredContent` is scanned. |
+| `mcp-tool-scope-bypass` | High | A token that was never granted a tool's scope ran that tool through `/mcp`, and the effect is real: the note read fine before the delete and is gone after it (or a second delete fails), or `send_email` returned a receipt `{sent:true,id}`. Each content item and `structuredContent` is parsed on its own. The first valid receipt counts. |
+| `tool-description-poisoning` | Critical | An earlier `tools/list` showed a tool description that names an effect tool. The assistant then ran that effect tool, and says it did so on an instruction found in that description. |
+| `mcp-tool-definition-rug-pull` | High | A tool's description or input schema hash differs between the last `tools/list` before and the first `tools/list` after a SUCCESSFUL `POST /mcp/approve` of that tool. A change with no accepted approve between the listings is only a LEAD: the oracle does not pass, and the verdict text carries the lead. A tool added later is not flagged. The detail names the changed part and both hashes. |
 
 The oracle checks the server's own replies, never the script's `console.log`.
 `prove()` tears down the live lab. It starts a new one and replays each saved
@@ -80,15 +88,32 @@ passes on that independent replay.
 
 ## What the oracles assume (lab-scoped)
 
-- `prompt-injection-forbidden-tool` infers cause from the tool name in an
-  earlier ticket and trusts the `toolCalls` the lab reports. That fits this lab.
-  A live agent needs its own trace of which tool ran and why.
-- `mcp-tool-scope-bypass` reads a 200 with `isError:false`. It does not read the
-  side effect afterwards (for example that the note is really gone). A stub that
-  always says OK would pass. A second recorded read would harden it.
-- `fetch-url-scope-escape` looks for the lab's `sk-lab-` key shape. A target that
-  leaks a differently shaped secret is a false negative. A patched target fails
-  correctly.
+- The path match uses the raw path. The proxy records `path` as the request
+  path with the query and fragment cut off (`req.url.split(/[?#]/)[0]`), not
+  normalised, so `/a/../mcp` stays as sent. `url` keeps the query. A call to `/mcp?x=1` is still seen.
+- The injection oracles trust the `why` label the assistant reports for each
+  tool call (`user asked`, `instruction found in a tool result`, `instruction
+  found in the description of tool X`). That fits this lab. A live agent needs
+  its own trace of which tool ran and why. Without a `why`, the older rule
+  applies: the caller's message must not name the tool or its address.
+- Secret shapes are configurable. The lab's two shapes (`sk-lab-...`,
+  `PAYROLL-KEY-...`) are built in. For another target set
+  `TOUCHSTONE_MCP_SECRET_PATTERNS` to a NEWLINE-separated list of regular
+  expression sources (one per line, so a quantifier like `{36,40}` keeps its
+  comma). A pattern that does not compile, or matches the empty string, throws
+  a loud error at `prepass` and at proof time. It is never skipped. The same
+  patterns scrub the stored proof, so a configured secret never lands in it raw.
+- The token table is the lab's own. A live target needs its own.
+- `mcp-tool-definition-rug-pull` needs the agent to call `tools/list` before and
+  after a successful approve of that tool. A rug pull with no listing in between
+  is not visible to a transcript oracle. A change with no approve is a lead only.
+
+## Building the lab images
+
+`npm run build:labs` (or `bash scripts/build-labs.sh [web|ai-mcp|inspector]`)
+builds `touchstone/ai-mcp-lab:dev` and the scanner image from the lockfiles in
+the repo. The prepass fails with an explicit error that points at this script
+when the lab image is missing. It does not quietly work from source alone.
 
 ## Secrets in proofs
 
@@ -102,11 +127,14 @@ renders each proof through `proofView` and checks this.
 
 | Bug | Root cause in the lab |
 |-----|-----------------------|
-| Prompt injection | The assistant treats a line in a tool result that starts with `IMPORTANT:` as an instruction. It runs the tool with its own service identity. That identity holds every scope. The caller's identity is never used. |
+| Prompt injection (write) | The assistant treats a line in a tool result that starts with `IMPORTANT:` as an instruction. It runs the tool with its own service identity. That identity holds every scope. The caller's identity is never used. |
+| Prompt injection (read exfil) | Same cause. The ordered tool is `fetch_url`. The host check is a substring test, so `attacker.example/...?ref=docs.internal` passes. The secret rides in the URL. |
 | Fetch scope | The scope check is `url.includes("docs.internal")`. A loopback URL with that text in its fragment passes. It reaches an internal credentials route. |
 | Weak scope | `tools/call` checks that a token exists. It never checks the token's scopes against the tool. |
+| Description poisoning | `lookup_customer`'s description ends with an `IMPORTANT:` order to send an email. The assistant reads descriptions as orders. |
+| Rug pull | After `POST /mcp/approve`, `search_notes` is served with a new description and a new `callback_url` input. Nothing re-asks for approval. |
 
-A clean scan misses all three. The tool list shows only that risky tools exist.
+A clean scan misses all of them. The tool list shows only that risky tools exist.
 
 ## Limits
 

@@ -37,7 +37,10 @@ tools, each run in Docker through `runTool()` (see `scan.mjs`):
 - ZAP baseline: header and info-leak alerts, and a spider that finds URLs
   that take input.
 - Nuclei: our own template for an exposed debug or config route.
-- dalfox: reflected XSS on the URLs ZAP found.
+- dalfox: reflected XSS on the URLs that take input: the ones ZAP found and the
+  `/path?query` URLs the brief and `openapi.yaml` document. With none known,
+  dalfox does not run. The coverage line says `no-input`, with a reason. That is
+  not a clean result.
 
 The result is a prepass record (`coverage` and `leads`). It shows in the run
 view as a fold: which tool ran, and the leads. The agent gets the leads in its
@@ -96,8 +99,15 @@ The four oracles, each pure functions over a transcript (`pack.mjs`
 |--------|--------|----------------|
 | `siwe-nonce-replay` | High | The identical signed SIWE message and signature, POSTed to `/siwe/verify` twice, mint two different sessions. A captured signature is a forever session-minting credential, not a one-time login. |
 | `bola-wallet-idor` | High | Signed in as one user, a call to `/api/users/:id` or `/api/users/:id/wallet` for a DIFFERENT id returns that user's wallet or API key. The route checks only that some session exists, never that it is the caller's own id. |
-| `debug-route-signer-key-leak` | Critical | An unauthenticated route returns the chain signer's private key. |
-| `reflected-xss` | Medium | A page writes a query value into its HTML unescaped, with no script-limiting CSP. The oracle needs the request's own markup, byte for byte, in a 200 HTML response. |
+| `debug-route-signer-key-leak` | Critical | An unauthenticated route returns the chain signer's private key. "Unauthenticated" is proven from the transcript: a bare call with no credential header returns 200 and the key (that call is the proof; a junk-token call that also returns it is support only), and the key is a real 64-hex key whose derived address equals the `signerAddress` the route reports. |
+| `reflected-xss` | Medium | A page writes a query value into its HTML with an executable vector in it (a `<script>` tag, an `on*=` handler attribute, or a `javascript:` URL in a link-like attribute; a plain `<b>x</b>` does not count) in a live place (not in a comment, an attribute value, or a raw-text element such as `<textarea>`, `<title>`, `<noscript>`, `<iframe>`, `<noembed>`, `<noframes>`, `<xmp>`, unless the payload closes it). CSP is read from the header and from a `<meta http-equiv>` before the reflection. A `<script>` asks `script-src-elem`; a handler or `javascript:` URL asks `script-src-attr`; both fall back to `script-src`, then `default-src`. Inline is allowed only with `'unsafe-inline'` and no nonce, hash or `'strict-dynamic'`. The query is read from the full URL. |
+
+Known limit of `reflected-xss`: it finds only a reflected value that brings its own
+tag. Attribute injection into an existing tag is NOT detected. A payload such as
+`" autofocus onfocus="alert(1)` written into `<input value="">` has no tag of its
+own, so the oracle says no. This only causes a MISSED finding, never a false one.
+`test/web.test.mjs` pins it as a current `fail`, so a future change that fixes it
+must update that test.
 
 ## Secrets in proofs
 
@@ -120,3 +130,11 @@ checks this.
   scanner could still add as a lead (never a finding on its own — this pack
   has no `forge`-style second proof path for anything outside the three
   shipped oracles).
+
+## Building the lab image
+
+`npm run build:labs` (or `bash scripts/build-labs.sh [web|ai-mcp|inspector]`)
+builds `touchstone/web-lab:dev` from `lab/dapp/oracle/package-lock.json`. This
+pack has no source to fall back on. If the image is missing, the prepass fails
+at once with an error that names this script. The scanner images (zaproxy,
+nuclei, dalfox) are pulled by tag on first use.

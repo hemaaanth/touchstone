@@ -58,9 +58,19 @@ function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {})
   });
 }
 
+// Fail loudly when a lab image is not built. Without this, `docker run` tries to
+// pull a local-only tag and the error reads "pull access denied". The packs have
+// no source to fall back on, so a missing image means the module cannot run.
+export async function requireImage(image, buildArg) {
+  const r = await docker(["image", "inspect", image]);
+  if (r.code !== 0) {
+    throw new Error(`lab image ${image} is not built. This pack has no source to fall back on, so it cannot run. Build it with: npm run build:labs -- ${buildArg}  (that is: bash scripts/build-labs.sh ${buildArg})`);
+  }
+}
+
 const PROXY_PORT = 8080;          // the port the proxy listens on (what scripts call)
 const ORIGIN_ALIAS = "origin";    // the lab's alias on the inner network
-const REC_MARKER = "__TOUCHSTONE_REC__";
+export const REC_MARKER = "__TOUCHSTONE_REC__";
 const PROXY_IMAGE = "node:20-slim";
 
 // The recording reverse proxy, run in its own container with built-in `http`
@@ -81,7 +91,7 @@ const PROXY_IMAGE = "node:20-slim";
 // Hop-by-hop headers are stripped on the way out (fetch sets its own), and the
 // response's content-encoding/length are stripped on the way back because
 // undici has already decoded the body we re-send.
-const RECORDER = `
+export const RECORDER = `
 import http from "node:http";
 const ORIGIN = process.env.ORIGIN_BASE_URL;
 const PROBE_SECRET = process.env.PROBE_SECRET || "";
@@ -111,7 +121,10 @@ http.createServer((req, res) => {
     }
     if (!probe) {
       const entry = {
-        method, path: req.url, url: ORIGIN + req.url,
+        // path is the RAW request path the origin received, minus ?query and
+        // #fragment. It is not normalised (no "//" or "/../" collapsing), so a
+        // matcher sees what the origin saw. The full URL stays in url.
+        method, path: req.url.split(/[?#]/)[0], url: ORIGIN + req.url,
         reqHeaders: req.headers, reqBody: reqBuf.length ? parse(reqBuf.toString("utf8")) : null,
         status, resHeaders, resBody: parse(resText),
       };
@@ -410,7 +423,7 @@ export async function runRequestScript(handle, script, { timeoutMs = 20_000 } = 
 // key) shows that secret in full, because that is the evidence.
 function exchange(e, i) {
   return {
-    label: `${i + 1}. ${e.method} ${e.path}`,
+    label: `${i + 1}. ${e.method} ${e.url ? e.url.replace(/^https?:\/\/[^/]+/, "") : e.path}`,
     request: { method: e.method, url: e.url ?? e.path, headers: e.reqHeaders, body: e.reqBody },
     response: { status: e.status, headers: e.resHeaders, body: e.resBody },
   };
