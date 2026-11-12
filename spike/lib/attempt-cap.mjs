@@ -12,11 +12,24 @@ export function attemptCap(name, env = process.env) {
   return n;
 }
 
-// The line a tool shows the model about what is left.
+// Where the run's live spend comes from. agent-run.mjs sets it to
+// inference.mjs runSpend, so this module does not load a provider itself.
+let spend = null;
+export const readSpendWith = (fn) => { spend = fn; };
+
+const usd = (n) => `$${n.toFixed(2)}`;
+function budgetLeft() {
+  const s = spend?.();
+  if (!s || !Number.isFinite(s.usd) || !Number.isFinite(s.budgetUsd)) return "The run's spend budget is the limit.";
+  return `${usd(Math.max(0, s.budgetUsd - s.usd))} of the ${usd(s.budgetUsd)} run budget left.`;
+}
+
+// The line a tool shows the model about what is left. With no count cap it
+// is the money left, because the budget is what stops the run.
 export function leftText(cap, used, noun) {
-  if (cap === Infinity) return `No fixed limit on ${noun} attempts. The run's spend budget is the limit.`;
+  if (cap === Infinity) return budgetLeft();
   const left = Math.max(0, cap - used);
-  return `${left} ${noun} attempt${left === 1 ? "" : "s"} left.`;
+  return `${left} ${noun} attempt${left === 1 ? "" : "s"} left. ${budgetLeft()}`;
 }
 
 // The "left" number for the audit-continue event. Null means no count cap.
