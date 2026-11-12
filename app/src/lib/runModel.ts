@@ -203,14 +203,30 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // so we REPLACE the block's label rather than append — a throttled/dropped
   // tick never loses or doubles prose. First snapshot creates the block at the
   // current transcript position; later ones update it in place.
-  const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string) => {
+  //
+  // Attempt numbers are not unique across turns. A follow-up from an older
+  // engine, an "audit-continue" pass and a fleet child's task ids can all
+  // start again at a number an earlier turn used. So the same key after a turn
+  // boundary is a new answer: it gets a new step at the current position, not
+  // the old step far above. The one exception is a late tick of the old
+  // answer itself: its text still starts with what that step shows.
+  const stream = new Map<string, Step>()
+  let turnKeys = new Set<string>()
+  const newTurn = () => {
+    turnKeys = new Set()
+  }
+  const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string, i: number) => {
     const k = `${kind}:${conv}:${attempt ?? 0}`
-    const existing = steps.find((s) => s.key === k)
-    if (existing) {
-      existing.label = text
+    const prev = stream.get(k)
+    if (prev && (turnKeys.has(k) || (prev.label !== "" && text.startsWith(prev.label)))) {
+      prev.label = text
+      turnKeys.add(k)
       return
     }
-    steps.push({ key: k, kind, phase, conv, label: text })
+    const step: Step = { key: prev ? `${k}@${i}` : k, kind, phase, conv, label: text }
+    steps.push(step)
+    stream.set(k, step)
+    turnKeys.add(k)
   }
   // Fleet: update one child's node in place (by id). No-op for an unknown id.
   const patchAgent = (id: string, patch: Partial<AgentNode>) => {
@@ -238,6 +254,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       }
       case "opened": {
         phase = e.mode === "decide" ? "decide" : "run"
+        newTurn()
         // The "decide" pass is the app's own automatic record step — it reopens
         // the run only to replay it and record the proven finding. There is no
         // operator gate, so it gets no visible step here; the honest work of the
@@ -327,20 +344,20 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "thinking-delta": {
         // The agent's reasoning, streamed as a growing snapshot. Updates the
         // live "Thinking…" status and the collapsible reasoning block.
-        streamStep("reasoning", str(e.conv) || who || "root", num(e.attempt), str(e.text))
+        streamStep("reasoning", str(e.conv) || who || "root", num(e.attempt), str(e.text), i)
         activity = "thinking"
         break
       }
       case "assistant-delta": {
         // The agent's prose answer, streamed as a growing snapshot.
-        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text))
+        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text), i)
         activity = "typing"
         break
       }
       case "say": {
         // A finalized assistant message (the engine may emit this instead of, or
         // after, the deltas). Same block key, so it just lands the final text.
-        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text))
+        streamStep("say", str(e.conv) || who || "root", num(e.attempt), str(e.text), i)
         activity = "typing"
         break
       }
@@ -586,6 +603,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         break
       case "audit-continue":
+        newTurn()
         steps.push({
           key,
           kind: "note",
@@ -622,6 +640,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
           if (s) s.state = "admitted"
         }
         steps.push({ key, kind: "operator", phase, label: str(e.text), ...(id ? { subId: id } : {}) })
+        newTurn()
         break
       }
       case "no-finding":
@@ -662,6 +681,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       // An operator message to an idle run starts a follow-up worker.
       case "reply-start":
+        newTurn()
         closed = false
         replying = true
         replyStartedAt = typeof e.t === "number" ? e.t : null
@@ -784,6 +804,10 @@ interface RunEntry {
   state: RunState | null
   listeners: Set<() => void>
   loading: boolean
+  // The open stream, if any. `gen` counts loads: a stream only writes while
+  // its load is the latest.
+  stop?: () => void
+  gen: number
 }
 
 const entries = new Map<string, RunEntry>()
@@ -836,7 +860,7 @@ function sameBrief(a: RunBrief | undefined, b: RunBrief): boolean {
 function entryFor(id: string): RunEntry {
   let en = entries.get(id)
   if (!en) {
-    en = { events: [], state: null, listeners: new Set(), loading: false }
+    en = { events: [], state: null, listeners: new Set(), loading: false, gen: 0 }
     entries.set(id, en)
   }
   return en
@@ -861,16 +885,17 @@ function commit(id: string, en: RunEntry, events: RunEvent[]) {
 }
 
 function follow(id: string, en: RunEntry) {
+  const gen = en.gen
   let queue: RunEvent[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = () => {
     timer = null
-    if (!queue.length) return
+    if (!queue.length || en.gen !== gen) return
     const batch = queue
     queue = []
     commit(id, en, [...en.events, ...batch])
   }
-  streamRun(
+  en.stop = streamRun(
     id,
     (e) => {
       queue.push(e)
@@ -878,6 +903,7 @@ function follow(id: string, en: RunEntry) {
     },
     en.events.length,
     () => {
+      if (en.gen !== gen) return
       flush()
       // The stream dropped before the run closed: load it fresh next time.
       if (!en.state?.closed) en.loading = false
@@ -892,6 +918,11 @@ export function loadRun(id: string) {
   en.loading = true
   fetchRun(id)
     .then((view) => {
+      // The snapshot replaces the events. A stream still open from an earlier
+      // load would add its events again on top, so stop it first.
+      en.gen++
+      en.stop?.()
+      en.stop = undefined
       commit(id, en, view.events ?? [])
       if (!en.state?.closed) follow(id, en)
     })
