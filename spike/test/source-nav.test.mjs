@@ -304,3 +304,52 @@ test('with the engine: resolve_symbol/read_symbol on ERC20 names resolve to src/
     assert.equal(JSON.stringify(stale.body).includes('StalePoc'), false, 'own stale PoC is not indexed');
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
+
+// A vendored symbol frequently shares a NAME with a src/ symbol (forge-std ships
+// its own Test, IERC20, console, SafeMath that a target shadows). The vendor
+// input-map (toStagePath/mapIn) exists so a hunter who sees a result at
+// "vendor/..." can pass that path straight back as a file_path disambiguator and
+// select the VENDORED copy — on read_symbol, not just resolve_symbol. Nothing
+// else pins that round trip: a future edit to the input map could silently make a
+// vendor-path read return the src shadow's body instead. Both bodies are distinct
+// so a wrong pick is unambiguous.
+test('with the engine: a vendor/ file_path disambiguator reads the VENDORED body, not the src/ shadow of the same name', { skip: (await resolveCbmBinary()) ? false : 'codebase-memory-mcp binary not installed' }, async () => {
+  const ws = workspace();
+  mkdirSync(join(ws, 'vendor', 'forge-std'), { recursive: true });
+  // Same contract + method name in both roots; bodies differ so the pick is provable.
+  writeFileSync(join(ws, 'src', 'Shared.sol'),
+    'pragma solidity ^0.8.0;\ncontract Shared {\n  function dualName(uint256 a) public pure returns (uint256) { return a + 1; }\n}\n');
+  writeFileSync(join(ws, 'vendor', 'forge-std', 'Shared.sol'),
+    'pragma solidity ^0.8.0;\ncontract Shared {\n  function dualName(uint256 b) public pure returns (uint256) { return b + 42; }\n}\n');
+  try {
+    // Undisambiguated: the name exists in both roots.
+    const both = await call(ws, 'resolve_symbol', { name: 'dualName' });
+    assert.equal(both.isError, false, JSON.stringify(both.body));
+    assert.equal(both.body.total_candidates, 2, `dualName exists in src/ and vendor/: ${JSON.stringify(both.body)}`);
+
+    // A vendor/ file_path selects exactly the vendored candidate...
+    const vpick = await call(ws, 'resolve_symbol', { name: 'dualName', file_path: 'vendor/forge-std/Shared.sol' });
+    assert.equal(vpick.body.total_candidates, 1, `vendor file_path narrows to one: ${JSON.stringify(vpick.body)}`);
+    assert.equal(vpick.body.candidates[0].file_path, 'vendor/forge-std/Shared.sol');
+
+    // ...and read_symbol with that file_path returns the VENDORED body, not src's.
+    const vread = await call(ws, 'read_symbol', { name: 'dualName', file_path: 'vendor/forge-std/Shared.sol' });
+    assert.equal(vread.isError, false, JSON.stringify(vread.body));
+    const vbody = JSON.stringify(vread.body);
+    assert.match(vread.body.source, /return b \+ 42/, `read returns the vendored body: ${vbody}`);
+    assert.equal(vread.body.source.includes('return a + 1'), false, 'read did NOT return the src/ shadow body');
+    // The agent-facing PATH + source stay clean: the staging sentinel never leaks
+    // into a file_path or the source the hunter reads. (qualified_name/parent_class
+    // deliberately keep the sentinel as opaque round-trip tokens — see pack.mjs.)
+    assert.equal(vread.body.file_path, 'vendor/forge-std/Shared.sol');
+    assert.equal(vread.body.resolved.file_path, 'vendor/forge-std/Shared.sol');
+    assert.equal(vread.body.source.includes(VENDOR_STAGE), false, `no ${VENDOR_STAGE} sentinel in the source: ${vread.body.source}`);
+
+    // Regression guard: the vendor input-map must not touch a src/ disambiguator.
+    const sread = await call(ws, 'read_symbol', { name: 'dualName', file_path: 'src/Shared.sol' });
+    assert.equal(sread.isError, false, JSON.stringify(sread.body));
+    const sbody = JSON.stringify(sread.body);
+    assert.match(sbody, /return a \+ 1/, `src file_path still reads the src body: ${sbody}`);
+    assert.equal(sbody.includes('return b + 42'), false, 'src read did NOT return the vendored body');
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
