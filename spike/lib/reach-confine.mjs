@@ -28,12 +28,22 @@
 // networks, and the one bridge between them. Every byte the client sends toward a
 // target is forced through the proxy, where the grant allow-list decides it.
 //
-// NOT YET THE DISPATCHER. This module builds and proves the boundary
-// (spike/test/reach-confine.test.mjs). Wiring a full live run's tool execution to
-// run INSIDE this client container is the remaining step (it touches the agent
-// tool-execution path); until that lands, a live target is deliberately not
-// dispatchable (lib/targets.mjs isRunnable). This is the built boundary that
-// makes "live" honest: the refusal is pre-flight, the confinement is real.
+// THE TOOL-EXECUTION SEAM NOW EXISTS. The handle's `runConfined(cmd, opts)` runs
+// a live run's TOOL inside this client container — the confined analog of
+// lib/wrap.mjs runTool, proven by spike/test/reach-confine-exec.test.mjs (a real
+// tool container reaches the granted host through the gate and has no route to a
+// non-granted host or a raw IP). The boundary (reach-confine.test.mjs) and the
+// primitive that runs tools inside it (runConfined) are both built and proven.
+//
+// WHAT REMAINS FOR A DISPATCHABLE LIVE TARGET. Two wires, not a boundary:
+//   1. lib/reach.mjs openReach() still starts the cooperating-proxy (option a)
+//      for a live run; it must instead stand up this confineReach boundary and
+//      hand the run a runConfined bound to it.
+//   2. lib/targets.mjs isRunnable() still refuses "live", and no live pack yet
+//      drives runConfined in a tool loop to a proof on a declared proofSurface.
+// Both are dispatcher wiring + a live pack, not a missing boundary. Until they
+// land a live target stays non-runnable, so the refusal is pre-flight and the
+// confinement — now including tool execution — is real, not advisory.
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -175,6 +185,41 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     // address is unreachable (no route), so a bypass attempt cannot leave.
     runClient: (nodeArgs, { timeoutMs = 20_000 } = {}) =>
       docker(["run", "--rm", "--network", netClient, ...HARDEN, "--entrypoint", "node", PROXY_IMAGE, ...nodeArgs], { timeoutMs }),
+
+    // Run a live run's TOOL inside the boundary — the dispatch primitive the
+    // targets.mjs doc names as the last missing step. This is the confined
+    // analog of lib/wrap.mjs runTool: one hardened container per call, a
+    // workspace mounted at /work, output parsed by the caller. The difference
+    // is the network. runTool uses `--network none` (an offline lab tool);
+    // runConfined puts the tool on `netClient`, whose ONLY egress is the gate,
+    // and pre-wires the gate under the standard proxy env vars (HTTP_PROXY /
+    // HTTPS_PROXY, honored by curl, git, most HTTP clients) and Touchstone's own
+    // TOUCHSTONE_SCOPE_PROXY. So a tool that reaches the granted host routes
+    // through the grant automatically; a tool that opens a raw socket to
+    // anything else has no route (same boundary runClient proves). The tool
+    // never has to cooperate: the network, not a policy, is the boundary.
+    //   cmd         the tool argv (for the image's entrypoint)
+    //   image       the pinned tool image (default: the proxy image, for node tools)
+    //   entrypoint  override the image entrypoint (e.g. "node" for a node image)
+    //   ws          host dir mounted read-write at /work, or null
+    //   user        "uid:gid" so output files stay the caller's (as runTool does)
+    //   env         extra -e VAR=value pairs for the tool
+    // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
+    runConfined: (cmd, { image = PROXY_IMAGE, entrypoint = null, ws = null, user = null, env = {}, timeoutMs = 60_000, maxBuffer = 16 * 1024 * 1024 } = {}) => {
+      const gate = gateUrl;
+      const args = [
+        "run", "--rm", "--network", netClient, ...HARDEN,
+        ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
+        ...(user ? ["--user", user] : []),
+        "-e", `HTTP_PROXY=${gate}`, "-e", `http_proxy=${gate}`,
+        "-e", `HTTPS_PROXY=${gate}`, "-e", `https_proxy=${gate}`,
+        "-e", `TOUCHSTONE_SCOPE_PROXY=${gate}`, "-e", `TOUCHSTONE_SCOPE_GATE=${gate}`,
+        ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
+        ...(entrypoint ? ["--entrypoint", entrypoint] : []),
+        image, ...cmd,
+      ];
+      return docker(args, { timeoutMs, maxBuffer });
+    },
     stop: cleanup,
   };
 }
