@@ -30,21 +30,22 @@ The table above lists what this pack runs plus the three it compared and rejecte
 (Gato-X, GuardDog, Kingfisher). The M13/M14 research and the coverage audit name
 more OSS tools. Each gets a verdict so a deliberate skip and an un-examined gap
 differ. The driving facts: this pack audits a **pinned offline snapshot** and
-never touches live GitHub settings or an SCM API; workflow security is carried by
-the zizmor + poutine ensemble; Gato-X is already the read-only reference for the
-remote-enumeration class. The live product has live scopes, but this pack has no
-live path yet (`pack.mjs` has no `live` flag). Tools that need an SCM token are
-backlog here, and each names the token and adapter it needs.
+never touches live GitHub settings or an SCM API. Workflow security is carried by
+the zizmor + poutine ensemble; Gato-X is the read-only reference for the
+remote-enumeration class. `spike/lib/targets.mjs:341-342` refuses a live target
+for any pack without `live: true`, and this pack has none. Every tool that needs
+an SCM token is blocked on that missing live path. Each reason still names the
+token it needs and the gap it would close.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
-| OSSF Scorecard | Repo posture scored via GitHub API | backlog — live repo posture | Needs a read-only SCM token on a live SCM scope, plus a lead adapter. It closes branch protection, review and release settings that a snapshot cannot show. |
+| OSSF Scorecard | Repo posture scored via GitHub API | blocked — no supply-chain live path | Needs a read-only SCM token plus a live SCM scope, and the pack has no live path. It would close branch protection, review and release settings that a snapshot cannot show. |
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
-| Legitify | GitHub/GitLab org + repo misconfig via API | backlog — live org and repo misconfig | Needs an SCM API token and a live scope. Same remote class as Gato-X, which stays the read-only reference. |
-| chain-bench | CIS supply-chain benchmark against an SCM | backlog — live supply-chain benchmark | Needs SCM API access and a live scope. It closes live org settings; a snapshot scan cannot reach them. |
-| cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing/verification tool, not a scanner. It takes a signed artifact, a verifier call and a trust-root policy from the operator. Verification needs a live transparency log or registry, so it also needs the live path this pack lacks. |
+| Legitify | GitHub/GitLab org + repo misconfig via API | blocked — no supply-chain live path | Needs an SCM API token plus the missing live path. Same remote class as Gato-X, which stays the read-only reference. It would close org and repo settings enumeration. |
+| chain-bench | CIS supply-chain benchmark against an SCM | blocked — no supply-chain live path | Needs SCM API access plus the missing live path. It would close live org settings; a snapshot scan cannot reach them. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | blocked — no supply-chain live path | A signing/verification tool, not a scanner. It needs a signed artifact, a verifier call and a trust-root policy from the operator. Verification needs a live transparency log or registry, so it is blocked on the same missing live path. |
 | octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
-| raven | CI/CD pipeline graph scanner | backlog — cross-repo pipeline graph | Ingests workflows from the GitHub API into a graph DB, so it needs an SCM token and a live scope. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
+| raven | CI/CD pipeline graph scanner | blocked — no supply-chain live path | Ingests workflows from the GitHub API into a graph DB, so it needs an SCM token and the missing live path. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
 
 ## Comparison observed

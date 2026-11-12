@@ -27,8 +27,8 @@ Only a replayed script that an oracle accepts is a finding.
 | LLM Guard, NeMo Guardrails, Rebuff | Apache-2.0 / Apache-2.0 / Apache-2.0 | Defense filters, not scanners | n/a | read only. They are fixes to suggest, not tools to run |
 | MCP servers' own test suites | per project | n/a | n/a | n/a. Out of scope: we test a server the operator runs, as a black box |
 | ramparts (MCP scanner) | Apache-2.0 (check current repo) | CLI | **No** if its risk analysis of tool descriptions calls a model/API, like mcp-scan | skip: same offline break as mcp-scan; it sends tool text off-machine. For enumeration MCP Inspector already covers us, and our oracles judge harm. Revisit if it gains a fully local mode |
-| mcp-shield | MIT (check current repo) | CLI | Pattern scan of tool descriptions; local if it ships no model call | skip for this lab: a text pattern is a lead, and our `tool-description-poisoning` oracle already proves that class from the transcript. Backlog as a lead source for a real server if fully local |
-| AI-Infra-Guard | per repo | CLI + fingerprint DB | Needs its fingerprint DB; targets real AI deployments | skip: a broad AI-infra fingerprint scanner whose HTTP fingerprints overlap Nuclei. Out of this lab's black-box single-MCP scope |
+| mcp-shield | MIT (check current repo) | CLI | Pattern scan of tool descriptions; local if it ships no model call | backlog — MCP description leads. A text pattern is a lead, and our `tool-description-poisoning` oracle already proves that class from the transcript, so it adds nothing on the lab. Wiring it for a real server requires a fully local mode, with no model or API call. |
+| AI-Infra-Guard | per repo | CLI + fingerprint DB | Needs its fingerprint DB; targets real AI deployments | skip — overlap (assumed, not tested): its HTTP fingerprints are assumed to overlap Nuclei; it was not run. Out of this lab's black-box single-MCP scope |
 | Agentic Radar | per repo | Static analysis of agent source/workflow | Analyzes the agent's own source and tool graph | skip: different input. This pack tests a server as a black box and does not have the agent's source to analyze |
 
 ## Gaps in our wrapping
