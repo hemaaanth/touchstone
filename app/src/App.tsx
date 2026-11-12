@@ -72,7 +72,15 @@ export function App() {
       startRun(alias, targetId, budgetUsd, pack, mode)
         .then((run) => {
           setRuns((prev) => [
-            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
+            {
+              id: run.id,
+              alias: run.alias,
+              status: run.status,
+              startedAt: run.startedAt,
+              title: null,
+              severity: null,
+              scopeTitle: run.scope?.title ?? run.target ?? null,
+            },
             ...prev.filter((r) => r.id !== run.id),
           ])
           setView({ kind: "run", id: run.id })
@@ -99,6 +107,7 @@ export function App() {
           status: b.status,
           archived: b.archived,
           title: b.pending?.title ?? r.title,
+          scopeTitle: r.scopeTitle ?? b.scope?.title ?? null,
           severity: b.pending?.severity ?? r.severity,
         }
       }),
