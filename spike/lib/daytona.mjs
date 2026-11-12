@@ -48,7 +48,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
 
@@ -206,18 +206,27 @@ const START_DOCKER = `sh -c '(pgrep dockerd >/dev/null || (nohup dockerd-entrypo
 const machines = new Map(); // pool key -> Promise<machine>
 let snapshotReady = null;
 
-// The run workspace a path belongs to: the nearest dir (itself or a parent)
-// holding .touchstone.json. A lab target may have no .touchstone.json. So a
-// makeWorkspace dir (`<tmp>/redteam-run-*`) also counts as a run root.
-// Null for a scratch dir outside any run.
+// The run workspace a path belongs to. Null for a scratch dir outside any run.
+// Inside the tmp base, only a makeWorkspace dir (`<tmp>/redteam-run-*`)
+// counts. A .touchstone.json there means nothing: a target repo can commit
+// one, and a pack scan copies the repo into its own tmp scratch dir. So a
+// touchstone-scan-*, infra-scan-* or touchstone-evidence-* dir is never a run.
+// The walk also never goes past the tmp base.
+// Outside tmp (a real operator repo), the nearest dir (itself or a parent)
+// holding .touchstone.json is the run root.
 export function runRoot(dir, tmp = tmpdir()) {
   if (!dir) return null;
   let d = resolve(dir);
   const base = resolve(tmp);
+  const rel = relative(base, d);
+  if (rel === "") return null;
+  if (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
+    const top = rel.split(sep)[0];
+    return top.startsWith("redteam-run-") ? join(base, top) : null;
+  }
   for (;;) {
     if (existsSync(join(d, ".touchstone.json"))) return d;
     const up = dirname(d);
-    if (up === base && basename(d).startsWith("redteam-run-")) return d;
     if (up === d) return null;
     d = up;
   }

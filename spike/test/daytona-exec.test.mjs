@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { closeRun, delta, execConfig, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
 
@@ -133,16 +133,21 @@ test("scan and delta find new, changed, and removed entries", () => {
   }
 });
 
+// Outside the tmp base (a real operator repo), the nearest .touchstone.json
+// names the run. Here d plays a repo path: the tmp base is another dir.
 test("runRoot finds the run workspace above a path", () => {
   const d = mkdtempSync(join(tmpdir(), "dtn-root-"));
+  const base = mkdtempSync(join(tmpdir(), "dtn-base-"));
   try {
     mkdirSync(join(d, "sub", "deep"), { recursive: true });
-    assert.equal(runRoot(join(d, "sub")), null);
+    assert.equal(runRoot(join(d, "sub"), base), null);
     writeFileSync(join(d, ".touchstone.json"), "{}");
-    assert.equal(runRoot(join(d, "sub", "deep")), d);
+    assert.equal(runRoot(join(d, "sub", "deep"), base), d);
+    assert.equal(runRoot(d, base), d);
     assert.equal(runRoot(null), null);
   } finally {
     rmSync(d, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
   }
 });
 
@@ -161,7 +166,7 @@ test("runRoot treats a makeWorkspace dir as a run root without .touchstone.json"
 });
 
 test("runTool falls back to local Docker when the Daytona API fails", { skip: !hasDocker && "no docker" }, async () => {
-  const ws = mkdtempSync(join(tmpdir(), "dtn-fb-"));
+  const ws = mkdtempSync(join(tmpdir(), "redteam-run-")); // a run workspace
   const saved = { exec: process.env.TOUCHSTONE_EXEC, key: process.env.DAYTONA_API_KEY, fetch: globalThis.fetch, log: console.log };
   const events = [];
   let calls = 0;
@@ -171,7 +176,6 @@ test("runTool falls back to local Docker when the Daytona API fails", { skip: !h
     globalThis.fetch = async () => { calls++; throw new Error("network down"); };
     console.log = (l) => { if (String(l).startsWith("EVENT ")) events.push(JSON.parse(String(l).slice(6))); };
     writeFileSync(join(ws, "in.txt"), "hello");
-    writeFileSync(join(ws, ".touchstone.json"), "{}"); // a run workspace
     const { runTool } = await import("../lib/wrap.mjs");
     const r = await runTool({ image: "debian:bookworm-slim", ws, cmd: ["sh", "-c", "cat in.txt; echo made > out.txt"] });
     assert.equal(r.code, 0);
@@ -190,6 +194,7 @@ test("runTool falls back to local Docker when the Daytona API fails", { skip: !h
     if (saved.exec === undefined) delete process.env.TOUCHSTONE_EXEC; else process.env.TOUCHSTONE_EXEC = saved.exec;
     if (saved.key === undefined) delete process.env.DAYTONA_API_KEY; else process.env.DAYTONA_API_KEY = saved.key;
     rmSync(ws, { recursive: true, force: true });
+    rmSync(`${ws}.daytona.json`, { force: true });
   }
 });
 
@@ -276,11 +281,18 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
 }
 
 // Run fn against a fresh copy of daytona.mjs and the fake API.
+// A run workspace is a makeWorkspace dir (`<tmp>/redteam-run-*`), as in a
+// real run. newRun makes another one; all are removed at the end.
 async function withFake(opts, fn) {
   const d = mkdtempSync(join(tmpdir(), "dtn-m1-"));
-  const ws = join(d, "ws");
-  mkdirSync(ws);
-  writeFileSync(join(ws, ".touchstone.json"), "{}");
+  const runs = [];
+  const newRun = () => {
+    const r = mkdtempSync(join(tmpdir(), "redteam-run-"));
+    writeFileSync(join(r, ".touchstone.json"), "{}");
+    runs.push(r);
+    return r;
+  };
+  const ws = newRun();
   const keys = ["TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS"];
   const saved = { env: Object.fromEntries(keys.map((k) => [k, process.env[k]])), fetch: globalThis.fetch, log: console.log };
   const fake = fakeDaytona(opts);
@@ -293,7 +305,7 @@ async function withFake(opts, fn) {
     globalThis.fetch = fake.fetch;
     console.log = (l) => { if (String(l).startsWith("EVENT ")) events.push(JSON.parse(String(l).slice(6))); };
     const mod = await import(`../lib/daytona.mjs?fake=${Math.random()}`);
-    await fn({ mod, ws, fake, events, sidecar: () => JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8")) });
+    await fn({ mod, ws, newRun, fake, events, sidecar: () => JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8")) });
     await mod.closeRun(ws);
     await new Promise((r) => setTimeout(r, 20)); // let background deletes finish
   } finally {
@@ -301,6 +313,10 @@ async function withFake(opts, fn) {
     console.log = saved.log;
     for (const [k, v] of Object.entries(saved.env)) v === undefined ? delete process.env[k] : (process.env[k] = v);
     rmSync(d, { recursive: true, force: true });
+    for (const r of runs) {
+      rmSync(r, { recursive: true, force: true });
+      rmSync(`${r}.daytona.json`, { force: true });
+    }
   }
 }
 
@@ -374,10 +390,8 @@ test("A: a bad solc version in warm is never sent to the machine", async () => {
 // C: a fuzz scratch dir sits in tmp, outside any run. Before, it reused the
 // last machine its agent used, from any run. Now the caller names the run.
 test("C: scratch calls from two runs use each run's own machine and drop their remote copy", async () => {
-  await withFake({}, async ({ mod, ws, fake, events, sidecar }) => {
-    const wsB = join(dirname(ws), "wsB");
-    mkdirSync(wsB);
-    writeFileSync(join(wsB, ".touchstone.json"), "{}");
+  await withFake({}, async ({ mod, ws, newRun, fake, events, sidecar }) => {
+    const wsB = newRun();
     const s1 = mkdtempSync(join(tmpdir(), "redteam-fuzz-"));
     const s2 = mkdtempSync(join(tmpdir(), "redteam-fuzz-"));
     try {
@@ -432,10 +446,8 @@ test("C2: a pack scan scratch dir with no run runs locally and makes no machine"
 });
 
 test("C2: a run-scoped call still gets its run's own machine, deleted with the run", async () => {
-  await withFake({}, async ({ mod, ws, fake, events, sidecar }) => {
-    const wsB = join(dirname(ws), "wsB");
-    mkdirSync(wsB);
-    writeFileSync(join(wsB, ".touchstone.json"), "{}");
+  await withFake({}, async ({ mod, ws, newRun, fake, events, sidecar }) => {
+    const wsB = newRun();
     assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
     assert.equal((await mod.remoteDocker(ARGS(wsB), { ws: wsB }))?.stdout, "hi");
     // A scratch dir of run B, named by root, uses run B's machine.
@@ -458,6 +470,52 @@ test("C2: a run-scoped call still gets its run's own machine, deleted with the r
     assert.ok(!fake.log.includes(`delete ${used[0]}`));
     assert.deepEqual(await mod.closeRun(ws), [used[0]]);
     assert.ok(fake.log.includes(`delete ${used[0]}`));
+  });
+});
+
+// A target repo can commit .touchstone.json, and the supply-chain scan copies
+// the repo into a tmp scratch dir. A stray .touchstone.json can also sit in
+// tmp itself. Neither may make the scratch dir a run: inside tmp only a
+// redteam-run-* dir counts, and runRoot never walks past the tmp base.
+test("C2: a planted .touchstone.json cannot make a tmp scan dir a run", async () => {
+  // Above: a fake tmp base with its own .touchstone.json.
+  const base = mkdtempSync(join(tmpdir(), "dtn-base-"));
+  const fakeScan = join(base, "touchstone-scan-abc");
+  mkdirSync(join(fakeScan, "sub"), { recursive: true });
+  writeFileSync(join(base, ".touchstone.json"), "{}");
+  writeFileSync(join(fakeScan, ".touchstone.json"), "{}");
+  try {
+    assert.equal(runRoot(fakeScan, base), null);
+    assert.equal(runRoot(join(fakeScan, "sub"), base), null);
+    assert.equal(runRoot(base, base), null);
+    for (const p of ["infra-scan-x", "touchstone-evidence-x", "redteam-fuzz-x"]) {
+      mkdirSync(join(base, p));
+      writeFileSync(join(base, p, ".touchstone.json"), "{}");
+      assert.equal(runRoot(join(base, p), base), null, p);
+    }
+    // A real run in the same tmp base still resolves.
+    const run = join(base, "redteam-run-xyz");
+    mkdirSync(join(run, "sub"), { recursive: true });
+    assert.equal(runRoot(join(run, "sub"), base), run);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+  // In the real tmp: the scan of such a repo runs on local Docker.
+  await withFake({}, async ({ mod, fake, events }) => {
+    const s = mkdtempSync(join(tmpdir(), "touchstone-scan-"));
+    try {
+      writeFileSync(join(s, ".touchstone.json"), JSON.stringify({ kind: "lab", pack: "supply-chain" }));
+      assert.equal(runRoot(s), null);
+      assert.equal(await mod.remoteDocker(ARGS(s), { ws: s }), null);
+      assert.equal(events.at(-1).ev, "exec-fallback");
+      assert.match(events.at(-1).reason, /no run/);
+      assert.ok(!events.some((e) => e.ev === "exec" && e.backend === "daytona"), "ran on Daytona");
+      assert.ok(!fake.log.some((l) => l.startsWith("create")), "a machine was made");
+      assert.ok(!existsSync(`${s}.daytona.json`), "a sidecar was written");
+    } finally {
+      rmSync(s, { recursive: true, force: true });
+      rmSync(`${s}.daytona.json`, { force: true });
+    }
   });
 });
 
