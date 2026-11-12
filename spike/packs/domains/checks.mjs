@@ -55,7 +55,11 @@ export function domainLeads(snapshot, analysis) {
     const provider = PROVIDERS.find(p => p.target.test(target));
     if (!provider) continue;
     const page = snapshot.http.find(r => new URL(r.url).hostname === name && r.body.includes(provider.fingerprint));
-    if (page) add('subdomain-takeover-fingerprint', name, 'high', 'The CNAME points to ' + target + ' (' + provider.name + '). At capture time the host served the provider page for an unclaimed resource. Anyone who claims that resource there could serve content on ' + name + '. The snapshot proves the page, not that a claim succeeds.');
+    if (page) {
+      add('subdomain-takeover-fingerprint', name, 'high', 'The CNAME points to ' + target + ' (' + provider.name + '). At capture time the host served the provider page for an unclaimed resource. Anyone who claims that resource there could serve content on ' + name + '. The snapshot proves the page, not that a claim succeeds.');
+      // A second engine that agrees ranks the lead first.
+      if (snapshot.discovery?.nuclei?.some(h => h.template === 'github-takeover' && new URL(h.url).hostname === name)) leads.at(-1).engines = ['touchstone', 'nuclei'];
+    }
   }
   const seenPolicies = new Set(), seenScripts = new Set();
   for (const page of analysis.pages) {
@@ -109,16 +113,40 @@ export function domainLeads(snapshot, analysis) {
   return leads.sort((a, b) => rank[a.severity] - rank[b.severity]);
 }
 
+// Surface turns the snapshot into a typed inventory. Every row is a lead. None is a vulnerability.
+// Each row says what it is, how it was found, and which pack takes it next.
+const WALLET = /(?:ethers|web3|walletconnect|connect-kit|wagmi|viem|ethereum|wallet)/i;
+export function classifyService(response) {
+  const type = response.headers['content-type'] ?? '';
+  if (PROVIDERS.some(p => response.body.includes(p.fingerprint))) return { kind: 'provider-error-page', next: 'domains', why: 'it serves a cloud provider page for a missing resource' };
+  if (/json/.test(type) || /\/rpc\b/.test(new URL(response.url).pathname)) return { kind: 'api-endpoint', next: 'web', why: 'it answers like an API or RPC endpoint' };
+  if (type.includes('text/html') && (WALLET.test(response.body) || /connect\s+wallet/i.test(response.body))) return { kind: 'wallet-frontend', next: 'domains', why: 'the page loads wallet code or shows a connect control' };
+  return { kind: 'web-page', next: 'web', why: 'it serves a web page' };
+}
+export function classifyHost(name, root, records) {
+  const cname = records.find(r => r.type === 'CNAME' && r.answers.length)?.answers[0];
+  if (name === root) return { kind: 'apex', next: 'domains', why: 'it is the registered domain' };
+  if (cname && PROVIDERS.some(p => p.target.test(cname))) return { kind: 'provider-cname', next: 'domains', why: 'its CNAME points to ' + cname + ', a claimable provider name' };
+  if (cname) return { kind: 'cname', next: 'domains', why: 'it is an alias of ' + cname };
+  return { kind: 'address', next: 'domains', why: 'it resolves to an address' };
+}
 export function surfaceLeads(snapshot, analysis) {
   const assets = new Map();
   const root = analysis.zone.$origin.replace(/\.$/, '');
-  const add = (type, where, detail, source) => {
+  const sources = snapshot.discovery?.sources ?? {};
+  const add = (type, where, detail, source, info) => {
     const key = type + ':' + where;
-    if (!assets.has(key)) assets.set(key,{id:sha256(key).slice(0,16),check:'discovered-'+type,type,where,description:detail,engine:source,impact:'Informational',severity:'informational',scope:'lab',nextPack:type === 'service' ? 'web' : 'domains'});
+    if (assets.has(key)) return;
+    const found = (sources[type === 'host' ? where : new URL(where).hostname] ?? [source]).join(', ');
+    assets.set(key, { id: sha256(key).slice(0, 16), check: 'discovered-' + type, type, where, kind: info.kind, foundBy: found, description: detail + ' Kind: ' + info.kind + ' (' + info.why + '). Found by: ' + found + '. Next pack: ' + info.next + '.', engine: source, impact: 'Informational', severity: 'informational', scope: snapshot.discovery?.source ?? 'lab', nextPack: info.next });
   };
-  for (const type of ['a','aaaa','cname','srv']) for (const record of analysis.zone[type] ?? []) add('host',fqdn(record.name,root),'Captured zone record: ' + type.toUpperCase(),'dns-zonefile');
-  for (const response of snapshot.http) add('service',new URL(response.url).origin,'Captured HTTP status ' + response.status,'httpx/capture');
-  for (const record of analysis.zone.srv ?? []) add('service','tcp://' + fqdn(record.target,root) + ':' + record.port,'SRV record advertises this service. HTTP reachability is separate.','dns-zonefile');
+  const hosts = new Set();
+  for (const type of ['a', 'aaaa', 'cname', 'srv']) for (const record of analysis.zone[type] ?? []) hosts.add(fqdn(record.name, root));
+  for (const name of [...hosts].sort()) add('host', name, 'Captured zone record.', 'dns-zonefile', classifyHost(name, root, snapshot.dns.filter(r => r.host === name)));
+  // A site's root page names its kind. Other captured files only add the origin if no root page exists.
+  const rootFirst = [...snapshot.http].sort((x, y) => (new URL(x.url).pathname === '/' ? 0 : 1) - (new URL(y.url).pathname === '/' ? 0 : 1));
+  for (const response of rootFirst) add('service', new URL(response.url).origin, 'Captured HTTP status ' + response.status + '.', 'httpx', classifyService(response));
+  for (const record of analysis.zone.srv ?? []) add('service', 'tcp://' + fqdn(record.target, root) + ':' + record.port, 'SRV record advertises this service. HTTP reachability is separate.', 'dns-zonefile', { kind: 'srv-service', next: 'web', why: 'a SRV record advertises it' });
   return [...assets.values()];
 }
 
