@@ -156,6 +156,9 @@ Raw scanner stdout and stderr exist only in memory and are discarded after parsi
 
 ## Limits
 
+The `evm-private-key` check reads the statement that holds the hex. The key word must come before it, joined by `=`, `:`, `(`, `,`, `+`, `=>`, `||`, `??` or `return`. A `bytes32`, `_ROLE` or `keccak256` skips only its own statement, not the whole line.
+Semgrep sinks name the HTTP methods of `axios` and `got` (`post`, `get`, `put`, `patch`, `request`, `delete`, `head`, and `stream` for `got`). Config calls such as `axios.create` and `got.extend` are not sinks.
+
 The target is a Git root (committed bytes are pinned) or a plain folder.
 A Git scan reads committed files only. Untracked and ignored files are counted, not read. Use `--worktree` to read them.
 Only regular text files are read. A source file is at most 512 KiB. Source text totals at most 8 MiB.
@@ -166,6 +169,7 @@ Known evasions. The dependency checks are static and heuristic. They miss:
 
 - an exfil that splits the secret read and the network call across two files, or more than 8 lines apart;
 - a secret read through destructuring, such as `const { PRIVATE_KEY } = process.env`, before the sink;
+- a key labeled only by a trailing comment, such as `const PK = "0x.."; // deployer private key`. This is on purpose. The same rule keeps `// not a private key` clean;
 - minified or bundled code, and `.d.ts` files (skipped on purpose, because they caused false positives);
 - module names built at run time, and native or binary add-ons;
 - a hijacked canonical package that is locked with a valid integrity hash.
@@ -181,7 +185,7 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 
 ## Verification recorded
 
-- The focused supply-chain tests pass: 33 tests (14 first delivery, 10 repair 1, 2 repair 2, 7 deep review).
+- The focused supply-chain tests pass: 36 tests (14 first delivery, 10 repair 1, 2 repair 2, 7 deep review, 3 re-review).
 - The full `bun run test` in `spike/` passes (count in the repair report).
 - The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
 - One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.

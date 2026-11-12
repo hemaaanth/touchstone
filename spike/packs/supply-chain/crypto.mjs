@@ -49,6 +49,9 @@ const SIGNER_NAME = /Wallet|Signer|Keypair|sign|send/i;
 // ethers v6 ways to make a signer from secret material.
 const SIGNER_FACTORY = /^(?:from(?:Phrase|Mnemonic|PrivateKey|SecretKey|Seed|EncryptedJson\w*)|createRandom)$/;
 const WINDOW = 8;
+const KEY_WORD = /(?:private[_-]?key|deployer|accounts|secret[_-]?key)/i;
+const ASSIGNED = /(?:[:=\[(,+]|=>|\|\||\?\?|\breturn|\bis)\s*["'`]?\s*$/;
+const ROLE_OR_HASH = /\bbytes32\b|_ROLE\b|keccak256/i;
 const vendoredName = (file) => file.match(/^(?:.*\/)?node_modules\/((?:@[^/]+\/)?[^/]+)\//)?.[1] ?? null;
 const esc = (x) => x.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 const isManifest = (file) => posix.basename(file) === "package.json";
@@ -181,13 +184,16 @@ export function cryptoLeads(snapshot) {
       const text = lines[i];
       // A random bytes32 is not necessarily a key. Require key/account context.
       // A minified bundle holds long hex constants. A real committed key sits on a short line.
-      if ((text.length <= 1000 || !(vendoredName(file) || /\.min\.[cm]?js$/.test(file))) && /(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(text)) {
-        // A role or hash constant is not a key: bytes32 declarations, _ROLE names and keccak256 values.
-        if (/\bbytes32\b|_ROLE\b|keccak256/i.test(text)) continue;
+      if ((text.length <= 1000 || !(vendoredName(file) || /\.min\.[cm]?js$/.test(file))) && KEY_WORD.test(text)) {
         for (const m of text.matchAll(/(?<![a-fA-F0-9])(?:0x)?[a-fA-F0-9]{64}(?![a-fA-F0-9])/g)) {
-          // The hex must be assigned or listed after the key word: KEY=0x.., "key": "0x..", accounts: ["0x.."].
+          // Look at the statement that holds the hex: the text after the last `;` before it.
           const before = text.slice(0, m.index);
-          if (!/(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(before) || !/(?:[:=\[(,]|\bis)\s*["'`]?\s*$/.test(before)) continue;
+          const statement = before.slice(before.lastIndexOf(";") + 1);
+          // The hex must follow a key word and be assigned, listed, returned or used as a fallback:
+          // KEY=0x.., "key": "0x..", accounts: ["0x.."], env.KEY || "0x..", () => "0x..", return "0x..", "0x" + "..".
+          if (!KEY_WORD.test(statement) || !ASSIGNED.test(statement)) continue;
+          // A role or hash constant is not a key: bytes32 declarations, _ROLE names and keccak256 values.
+          if (ROLE_OR_HASH.test(statement)) continue;
           try {
             const address = new Wallet(m[0].startsWith("0x") ? m[0] : `0x${m[0]}`).address;
             add("evm-private-key", file, i + 1, "Exposed EVM signing key. No balance or live-use claim.", m[0], { address });
