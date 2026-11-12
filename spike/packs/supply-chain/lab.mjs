@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -7,6 +7,10 @@ import { Wallet } from "ethers";
 export async function makeLabWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "touchstone-supply-"));
   cpSync(new URL("./lab/", import.meta.url), ws, { recursive: true });
+  // The repo ignores node_modules/. The plant lives in lab/plant and is vendored in the lab workspace.
+  mkdirSync(join(ws, "node_modules"));
+  renameSync(join(ws, "plant/ethres"), join(ws, "node_modules/ethres"));
+  rmSync(join(ws, "plant"), { recursive: true });
   const wallet = Wallet.createRandom();
   const deployer = Wallet.createRandom();
   writeFileSync(join(ws, "wallet.env"), `# Throwaway lab wallet. Never fund it.\nPRIVATE_KEY=${wallet.privateKey}\nMNEMONIC="${wallet.mnemonic.phrase}"\n`, { mode: 0o600 });

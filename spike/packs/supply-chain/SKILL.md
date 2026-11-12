@@ -16,7 +16,7 @@ The pack uses ethers 6.16.0 (a spike dependency) for offline secp256k1 and BIP-3
 It does not implement cryptography itself.
 No dependency in the target lab is installed.
 
-Pull the five images listed in `scanners.mjs` before going offline.
+Pull the images listed in `scanners.mjs` before going offline (zizmor, poutine, gitleaks, trufflehog, osv-scanner, semgrep, syft, grype).
 The wrapper pins each image by digest.
 See `TOOLS.md` for licenses, sizes, comparison results, and skipped candidates.
 
@@ -38,6 +38,38 @@ The workflow is data only. Never upload or execute it on GitHub.
 The smoke run calls the actual tools through `runTool()`.
 It checks the submit gate, duplicate gate, evidence replay, offline advisory match, signer grouping, and absence of secret values from public output.
 It spends no model money.
+
+## Grype database
+
+Grype needs its vulnerability database (3.4 GB). A scan never downloads it.
+An operator runs this once, with the network:
+
+```sh
+node spike/packs/supply-chain/refresh-db.mjs
+```
+
+The cache is `~/.cache/touchstone/grype-db`. Set `TOUCHSTONE_GRYPE_DB` to move it.
+Without the database, Grype reports a coverage gap. A gap never means clean.
+
+## Scan a real repo or folder
+
+```sh
+node spike/packs/supply-chain/scan.mjs <folder> [--json]
+```
+
+The folder can be a Git root or a plain folder.
+The scan runs every tool in Docker with no network.
+It replays each lead and prints redacted rows.
+Binary, oversized and over-budget files are skipped and listed.
+Scan only code you are allowed to scan.
+
+## Dependency and signer checks
+
+- `dependency-reaches-signer`: a suspect package is imported by a file that handles signer material.
+- `dependency-exfil-code`: vendored code reads secrets and calls the network.
+- `dependency-not-in-lockfile`: a vendored package has no lockfile entry.
+- The lab vendors an inert `node_modules/ethres` that looks like `ethers`. OSV and Grype do not know it. Our checks and Semgrep do.
+- All hits on one package share the root cause `malicious-dependency:<package>`.
 
 ## Live lab run
 
@@ -105,8 +137,9 @@ Raw scanner stdout and stderr exist only in memory and are discarded after parsi
 
 ## Limits
 
-The target must be a standalone Git root with a committed, clean source tree.
-Only regular text files are accepted. A source file is at most 512 KiB. Source text totals at most 8 MiB.
+The target is a Git root (committed bytes are pinned) or a plain folder.
+Only regular text files are read. A source file is at most 512 KiB. Source text totals at most 8 MiB.
+Other files are skipped and listed in the record. They are never silently dropped.
 This pack audits the pinned HEAD tree, not deleted Git history.
 It has no source-fetching tool, package install tool, credential verification, chain access, or GitHub API mode.
 EVM scalar checks require key/account context. Mnemonics are single-line English phrases. Encrypted keystores must use the V3 AES-128-CTR shape.
@@ -115,9 +148,10 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 
 ## Verification recorded
 
-- The focused supply-chain tests pass: seven tests.
-- The configured spike test command passes: 38 tests. Use `bun run test` in `spike/`; the module-mock flag is required by the Platform tests.
-- The no-spend smoke replays 12 root causes with all five selected tools available offline. It checks that source secrets are absent from public output.
-- One live CLI run used NEAR `qwen-abl` with a $1 run budget. It submitted 12 findings. All 12 passed final evidence replay. Its recorded cost is $0.01300563.
-- The live record is `spike/results/agent/run-qwen-abl.json`. Runtime records are not part of this pack's commit.
-- The live engine's top-level `pocProved` flag remains Forge-specific. The evidence findings have `proof.kind: "evidence"` and `proof.status: "pass"`. Platform owns that record-field fix.
+- The focused supply-chain tests pass: 14 tests.
+- The full `bun run test` in `spike/` passes: 232 tests.
+- The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
+- One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.
+- The live record has no raw secret. Secrets show as `[REDACTED]` with a SHA-256.
+- The live engine's top-level `pocProved` flag remains Forge-specific. Platform owns that record-field fix.
+- The server's `proofView()` turns each finding into the card that `EvidenceProofCard` draws. A browser check of the app is not done.

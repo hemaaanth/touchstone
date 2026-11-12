@@ -7,9 +7,19 @@ import { loadSnapshot } from "../../lib/proof-evidence.mjs";
 const ws = await makeLabWorkspace();
 try {
   const prep = await pack.prepass(ws, { emit: () => {} });
-  assert.ok(prep.record.coverage.every((r) => r.status === "ok"), JSON.stringify(prep.record.coverage));
+  // A missing grype database is a reported gap, never a clean result. Any other non-ok status fails.
+  const gaps = prep.record.coverage.filter((r) => r.status !== "ok");
+  assert.ok(gaps.every((r) => r.engine === "grype" && r.status === "gap"), JSON.stringify(prep.record.coverage));
+  if (gaps.length) console.error("note: grype database missing. Run packs/supply-chain/refresh-db.mjs for full coverage.");
+  assert.ok(prep.record.coverage.length >= 7, "Every named tool must report coverage");
   const leads = prep.record.leads;
-  for (const check of ["evm-private-key", "rpc-provider-key", "evm-keystore", "crypto-package-lookalike", "GHSA-35jh-r3h4-6jhm", "zizmor/unpinned-uses"]) assert.ok(leads.some((l) => l.check === check), `Missing ${check}`);
+  for (const check of ["evm-private-key", "rpc-provider-key", "evm-keystore", "crypto-package-lookalike", "dependency-reaches-signer", "GHSA-35jh-r3h4-6jhm", "zizmor/unpinned-uses"]) assert.ok(leads.some((l) => l.check === check), `Missing ${check}`);
+  // The planted dependency: only our own check and semgrep see it. A lockfile or advisory scan does not.
+  const plant = leads.find((l) => l.rootCause === "malicious-dependency:ethres");
+  assert.ok(plant && plant.check === "dependency-reaches-signer", "The planted dependency must lead as a signer reach");
+  assert.ok(plant.engines.includes("semgrep"), "Semgrep must corroborate the planted dependency");
+  assert.ok(!leads.some((l) => ["osv", "grype"].includes(l.engines[0]) && /ethres/.test(l.rootCause)), "No advisory scanner knows the planted dependency");
+  if (!gaps.length) assert.ok(leads.some((l) => l.engines.includes("grype") && l.engines.includes("osv")), "Grype and OSV must agree on lodash");
   assert.ok(leads.some((l) => l.support.some((s) => s.check === "bip39-mnemonic")), "Mnemonic must corroborate the same signer");
   assert.ok(leads.some((l) => l.evidence.check === "tool:poutine" && l.evidence.where.rule === "untrusted_checkout_exec"), "Workflow replay must confirm the execution chain");
   const state = { poc: 0, passed: new Map(), found: [] };

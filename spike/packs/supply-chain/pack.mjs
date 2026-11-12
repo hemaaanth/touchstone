@@ -18,19 +18,26 @@ function rootCause(l, signers) {
   const signer = l.secret && signers.get(l.secret.sha256);
   if (signer) return `signer:${signer}`;
   if (l.secret) return `secret:${l.file}:${l.secret.sha256}`;
-  if (l.engine === "osv") return `dependency:${l.file}:${l.package}`;
+  const vendored = l.file?.match(/^(?:.*\/)?node_modules\/((?:@[^/]+\/)?[^/]+)\//)?.[1];
+  if (l.engine === "semgrep" && vendored) return `malicious-dependency:${vendored}`;
+  if (l.engine === "semgrep") return `semgrep:${l.file}:${l.lines[0]}`;
+  if (["crypto-package-lookalike", "dependency-reaches-signer", "dependency-exfil-code", "dependency-not-in-lockfile"].includes(l.check)) return `malicious-dependency:${l.package}`;
+  if (["osv", "grype"].includes(l.engine)) return `dependency:${l.file}:${l.package}`;
   if (["untrusted_checkout_exec", "zizmor/dangerous-triggers"].includes(l.check)) return `untrusted-execution:${l.file}`;
   if (l.check === "zizmor/unpinned-uses") return `action-pins:${l.file}`;
   return `${l.check}:${l.file}:${l.lines[0]}:${l.package ?? ""}`;
 }
 
 export async function prepass(ws, { emit = () => {} } = {}) {
-  const { snapshot, snapshotHash } = prepareSnapshot(ws);
+  // A real-folder run keeps its source path in .touchstone.json. A lab reads its own workspace.
+  let source = ws;
+  try { const cfg = JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8")); if (typeof cfg.source === "string") source = cfg.source; } catch { /* no config: lab layout */ }
+  const { snapshot, snapshotHash } = prepareSnapshot(ws, source);
   const scans = await Promise.all(Object.keys(SCANNERS).map((engine) => scanSnapshot(snapshot, engine)));
   const raw = [...cryptoLeads(snapshot), ...scans.flatMap((r) => r.leads).filter((l) => !["zizmor/anonymous-definition", "zizmor/concurrency-limits"].includes(l.check))];
   const signers = new Map(raw.filter((l) => l.address && l.secret && !l.addressSource).map((l) => [l.secret.sha256, l.address]));
   const groups = new Map();
-  for (const lead of raw.sort((a, b) => (rank[a.impact] ?? 9) - (rank[b.impact] ?? 9))) {
+  for (const lead of raw.sort((a, b) => (rank[a.impact] ?? 9) - (rank[b.impact] ?? 9) || (b.check === "dependency-reaches-signer") - (a.check === "dependency-reaches-signer"))) {
     const evidence = { check: lead.engine === "Touchstone" ? lead.check : `tool:${lead.engine}`, where: lead.where, snapshotHash };
     const root = rootCause(lead, signers);
     const existing = groups.get(root);
@@ -45,8 +52,9 @@ export async function prepass(ws, { emit = () => {} } = {}) {
     } else groups.set(root, { ...lead, rootCause: root, evidence, commit: snapshot.commit, engines: [lead.engine], corroborated: false, support: [] });
   }
   const leads = [...groups.values()].map((l, i) => ({ ...l, id: String(i + 1) }));
-  const coverage = scans.map(({ engine, status, code, timedOut, leads }) => ({ engine, status, code, timedOut, leads: leads.length }));
-  const record = { pack: "supply-chain", snapshotHash, commit: snapshot.commit, coverage, leads };
+  const coverage = scans.map(({ engine, status, code, timedOut, reason, leads }) => ({ engine, status, code, timedOut, ...(reason ? { reason } : {}), leads: leads.length }));
+  const skipped = snapshot.skipped ?? [];
+  const record = { pack: "supply-chain", snapshotHash, commit: snapshot.commit, coverage, ...(skipped.length ? { skipped: { count: skipped.length, sample: skipped.slice(0, 20) } } : {}), leads };
   writeFileSync(reportFile(ws), JSON.stringify(record), { mode: 0o600 });
   emit({ ev: "supply-chain-prepass", coverage, leads: leads.length, snapshotHash, commit: snapshot.commit });
   return { env: { SUPPLY_CHAIN_BRIEF: JSON.stringify({ coverage, leads }) }, record };
