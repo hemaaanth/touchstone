@@ -27,7 +27,7 @@ import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { openReach } from "../../spike/lib/reach.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -126,7 +126,14 @@ export function listScopes() {
 //   { title, files }   one folder (legacy)
 //   { title, repo }    one GitHub repo, audited as Solidity (legacy)
 //   { title, brief }   pasted markdown with links (legacy)
-export function addScope({ title, brief, blurb, files, repo, members, pack } = {}) {
+//   { kind: "live", title, hosts, pack?, permission: true }
+//       real websites. `permission` is the operator's checkbox; it becomes the
+//       grant that lets a run reach these hosts.
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission } = {}) {
+  if (kind === "live") {
+    const live = addLiveScope({ title, hosts, pack, blurb, permission })
+    return { ...targetSummary(live), runnable: true }
+  }
   const scope = members !== undefined
     ? addMembersScope({ title, members, pack, blurb })
     : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })

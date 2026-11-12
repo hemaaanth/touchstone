@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { addGrant, readGrants, removeGrant } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -397,6 +398,55 @@ export function addRepoScope({ title, repo } = {}) {
   return addScope({ title, members: [{ kind: "repo", url: repo }], pack: "contracts" });
 }
 
+// ---- Live sites ------------------------------------------------------------
+//
+// A live scope is one or more real websites the operator wants tested. The
+// operator ticks one box to say they have permission to test them. We record
+// that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
+// (reach.mjs) lets a run reach exactly these hosts. Removing the scope removes
+// its grant. There is no separate grant step.
+export function addLiveScope({ title, hosts, pack, blurb, permission } = {}) {
+  if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
+  const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
+  if (!list.length) throw new Error("A live scope needs at least one website.");
+  if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
+  const id = `live-${slugify(String(title || list[0]))}-${randomUUID().slice(0, 8)}`;
+  // The grant checks and normalizes each host (no public-suffix wildcards, no
+  // private addresses). It throws before anything is saved.
+  const grant = addGrant({
+    hosts: list,
+    kind: "authorized",
+    approvedBy: "operator (permission checkbox)",
+    note: "Confirmed when the live scope was added.",
+    scopeId: id,
+  });
+  const t = String(title || "").trim() || grant.hosts.join(" + ").slice(0, 120);
+  if (t.length > 120) {
+    removeGrant(grant.id);
+    throw new Error("Use a scope name of 1 to 120 characters.");
+  }
+  const scope = {
+    id,
+    kind: "live",
+    title: t,
+    blurb: String(blurb || "").trim(),
+    pack: String(pack || "").trim() || "web",
+    entry: grant.hosts[0],
+    signal: "agent",
+    hosts: grant.hosts,
+    permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
+    proofSurface: {
+      kind: "live",
+      note: "Real requests to the websites listed here. You confirmed you have permission to test them.",
+    },
+    createdAt: Date.now(),
+  };
+  const all = readScopes();
+  all.unshift(scope);
+  writeScopes(all);
+  return scope;
+}
+
 export function getUserScope(id) {
   return readScopes().find((s) => s.id === id) ?? null;
 }
@@ -407,6 +457,8 @@ export function removeScope(id) {
   const next = all.filter((s) => s.id !== id);
   if (next.length === all.length) return false;
   writeScopes(next);
+  // A live scope's permission goes with it.
+  for (const g of readGrants()) if (g.scopeId === id) removeGrant(g.id);
   return true;
 }
 

@@ -281,7 +281,9 @@ export type TargetScopeMember =
 export interface TargetScope {
   id: string
   title: string
-  kind: "lab" | "local-source" | "brief" | "scope"
+  kind: "lab" | "local-source" | "brief" | "scope" | "live"
+  // A live scope's websites: the hosts a run may reach.
+  hosts?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
   blurb: string

@@ -34,18 +34,15 @@
 //                     proxy confines its egress to exactly those hosts. The kind
 //                     only names a host; the grant is what authorizes the reach.
 //
-//                     NOT YET DISPATCHABLE. The grant pre-flight and the
-//                     ENFORCEABLE confinement boundary both exist and are proven
-//                     (spike/lib/reach-confine.mjs runs live-target traffic inside
-//                     a Docker --internal network whose only egress is the scope
-//                     proxy; spike/test/reach-confine.test.mjs proves a bypassing
-//                     client cannot escape it). What is NOT yet wired is the agent
-//                     tool-execution path that would run a live run's tools INSIDE
-//                     that confined container. Until that lands, a live target is
-//                     deliberately NOT runnable (isRunnable returns false): we
-//                     refuse to offer a target the dispatcher cannot yet confine.
-//                     This is pre-flight refusal + a built-but-undispatched
-//                     boundary, never an advisory one.
+//                     RUNNABLE. The operator adds a live scope with a
+//                     permission checkbox; that tick is recorded as a grant
+//                     (scopes-store.mjs addLiveScope). createRun calls openReach,
+//                     which starts the scope proxy and hands its address to the
+//                     worker (TOUCHSTONE_SCOPE_PROXY). The proxy is cooperative:
+//                     target traffic that uses it is limited to the granted
+//                     hosts. The agent's model calls do not go through it. The
+//                     stronger Docker boundary (reach-confine.mjs) exists but a
+//                     live run does not use it yet.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
@@ -227,14 +224,9 @@ function isRunnable(target) {
   if (target.kind === "brief") return true
   if (target.kind === "local-source") return (target.files?.length ?? 0) > 0
   if (target.kind === "scope") return Boolean(PACKS[packOf(target)]) && (target.members?.length ?? 0) > 0
-  // A live target is NOT runnable yet, even when it names a host and carries a
-  // grant. The grant pre-flight and the enforceable confinement boundary both
-  // exist and are proven (spike/lib/reach-confine.mjs), but the dispatcher does
-  // not yet run a live run's tools INSIDE that confined container. We refuse to
-  // offer a target we cannot yet confine on dispatch, so "live" stays non-runnable
-  // until that wiring lands. (reachHosts is still read for the summary, so the UI
-  // shows which hosts the target names and that a grant would be required.)
-  if (target.kind === "live") return false
+  // A live target runs when it names at least one host and its module exists.
+  // The grant check happens at run start (createRun -> openReach), not here.
+  if (target.kind === "live") return reachHosts(target).length > 0 && Boolean(PACKS[packOf(target)])
   return false
 }
 
@@ -314,6 +306,23 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
     // The links are the only URLs fetch_source may fetch (lib/fetch.mjs).
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
+    return ws
+  }
+  if (target.kind === "live") {
+    // No code to copy. The workspace holds a short brief that names the
+    // websites, so the agent knows what it may test.
+    const hosts = reachHosts(target)
+    const ws = makeBriefWorkspace()
+    const lines = [
+      `# ${target.title || "Live scope"}`,
+      "",
+      "Live websites. The operator confirmed they have permission to test them.",
+      "",
+      ...hosts.map((h) => `- ${h}`),
+    ]
+    if (target.blurb) lines.push("", String(target.blurb))
+    writeFileSync(path.join(ws, "BRIEF.md"), lines.join("\n") + "\n")
+    writeTouchstone(ws, { kind: "live", pack, modules, hosts })
     return ws
   }
   throw new Error(`target kind not yet runnable: ${target.kind}`)

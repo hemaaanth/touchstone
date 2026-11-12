@@ -225,9 +225,19 @@ export async function handleScopes(req, res) {
   }
 
   if (parts.length === 2 && req.method === "POST") {
+    // A live scope also records the operator's permission to reach real hosts,
+    // so it needs the console token, like a Settings write. A web page or the
+    // agent cannot add one.
     const body = await readBody(req)
+    if (body?.kind === "live") {
+      const refusal = settingsWriteRefusal(req)
+      if (refusal) {
+        send(res, refusal.status, { error: refusal.error })
+        return true
+      }
+    }
     try {
-      send(res, 201, addScope({ title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
