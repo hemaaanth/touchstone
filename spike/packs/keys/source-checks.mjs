@@ -12,11 +12,39 @@
 
 const IMPACT = { High: "High", Medium: "Medium", Low: "Low" };
 
-// Replace comments with spaces. Keep newlines so line numbers stay right.
+// ONE pass that neutralizes the file before anything else reads it. Comments and the
+// insides of string literals become spaces. Newlines stay, so line numbers stay right. The
+// walk is string-aware: a `//` inside a string is not a comment (`"see http://x.io"`), and a `(`
+// or a quote inside a comment or a string is not code. Every later step (functions, modifiers,
+// paren matching, gates) reads this text, so none of them can be fooled by a string.
 export function stripComments(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+  const blank = (text) => text.replace(/[^\n]/g, " ");
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    if (c === "/" && source[i + 1] === "/") {
+      let end = source.indexOf("\n", i);
+      if (end < 0) end = source.length;
+      out += " ".repeat(end - i);
+      i = end;
+    } else if (c === "/" && source[i + 1] === "*") {
+      const close = source.indexOf("*/", i + 2);
+      const end = close < 0 ? source.length : close + 2;
+      out += blank(source.slice(i, end));
+      i = end;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== c && source[j] !== "\n") j += source[j] === "\\" ? 2 : 1;
+      const closed = source[j] === c;
+      out += c + blank(source.slice(i + 1, Math.min(j, source.length))) + (closed ? c : "");
+      i = closed ? j + 1 : Math.min(j, source.length);
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
 }
 
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
@@ -98,9 +126,6 @@ const HELPER_CALL = /\b_(?:check|only|require|enforce|ensure|auth|validate|asser
 const NOT_GATES = new Set(["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override", "returns", "nonReentrant", "whenNotPaused", "whenPaused", "noDelegateCall", "lock"]);
 const ARGS = "\\((?:[^()]|\\([^()]*\\))*\\)";
 
-// Blank string literals, so a `(` or `)` inside a message cannot unbalance a condition.
-const blankStrings = (text) => text.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, (m) => `"${" ".repeat(m.length - 2)}"`);
-
 // How one condition tests the caller: { pos, neg } or null. Counts only a real auth test:
 // the caller compared (`==`, `!=`) to something that is not zero or `tx.origin`, the caller
 // looked up as the WHOLE condition (`admins[msg.sender]`, `!blocked[msg.sender]`), or the caller
@@ -137,34 +162,112 @@ function firstArg(text) {
   return text;
 }
 
-// The statement an `if` runs: a block, or one statement up to `;`. Returns its text and the rest.
-function branchOf(rest) {
-  const text = rest.trimStart();
-  if (text.startsWith("{")) {
-    const end = matchClose(text, 0, "{", "}");
-    return end < 0 ? { branch: text, tail: "" } : { branch: text.slice(1, end), tail: text.slice(end + 1) };
+// ---- A small statement reader, so a gate is judged by control flow, not by where words appear.
+// The text is already neutral (see stripComments). `statements(body)` returns the top-level
+// statements of one body in order. `unchecked { ... }` is read as if its inside were top level.
+// Each statement is { type, text, end } plus: a "guard" (`require`, `assert`) has `cond`; an
+// "if" has `cond`, `then` and `else` (the text of each branch, `else` is null when absent).
+const BLOCK_WORDS = new Set(["unchecked", "do", "else", "assembly", "try", "catch"]);
+
+function readBranch(body, from) {
+  let i = from;
+  while (i < body.length && /\s/.test(body[i])) i++;
+  if (body[i] === "{") {
+    const close = matchClose(body, i, "{", "}");
+    return close < 0 ? { text: body.slice(i + 1), end: body.length } : { text: body.slice(i + 1, close), end: close + 1 };
   }
-  const end = text.indexOf(";");
-  return end < 0 ? { branch: text, tail: "" } : { branch: text.slice(0, end + 1), tail: text.slice(end + 1) };
+  const st = readStatement(body, i);
+  return { text: body.slice(i, st.end), end: st.end };
 }
 
-// True when a guard statement tests the caller. The condition is the balanced text inside the
-// parentheses of that one `require`, `assert` or `if`, so a later statement never counts.
-// - `require` and `assert` fail the call on a false condition, so any caller test is a gate.
-// - an `if` is a gate only when its branch ends the call (`revert`, or `return` after a negative
-//   test), or when a positive test wraps the rest of the function (or the other branch reverts).
-function guardsCaller(text) {
-  const body = blankStrings(text);
-  for (const m of body.matchAll(/\b(require|assert|if)\s*\(/g)) {
-    const open = m.index + m[0].length - 1;
+function readStatement(body, i) {
+  const head = body.slice(i).match(/^(if|require|assert)\s*\(/);
+  if (head) {
+    const open = i + head[0].length - 1;
     const close = matchClose(body, open, "(", ")");
-    if (close < 0) continue;
-    const tests = callerTests(firstArg(body.slice(open + 1, close)));
+    if (close < 0) return { type: "other", text: body.slice(i), end: body.length };
+    const cond = body.slice(open + 1, close);
+    if (head[1] !== "if") {
+      const semi = body.indexOf(";", close);
+      const end = semi < 0 ? body.length : semi + 1;
+      return { type: "guard", cond, text: body.slice(i, end), end };
+    }
+    const then = readBranch(body, close + 1);
+    let end = then.end;
+    let other = null;
+    const after = body.slice(end).match(/^\s*else\b/);
+    if (after) {
+      other = readBranch(body, end + after[0].length);
+      end = other.end;
+    }
+    return { type: "if", cond, then: then.text, else: other ? other.text : null, text: body.slice(i, end), end };
+  }
+  let depth = 0;
+  for (let j = i; j < body.length; j++) {
+    const c = body[j];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === ";" && depth === 0) return { type: "other", text: body.slice(i, j + 1), end: j + 1 };
+    else if (c === "{" && depth === 0) {
+      const word = body.slice(i, j).match(/([A-Za-z_]\w*)\s*$/)?.[1];
+      const options = word && !BLOCK_WORDS.has(word) && /[.\w]\s*$/.test(body.slice(i, j)); // call{value: v}(...) or new C{salt: s}()
+      if (options) continue;
+      const close = matchClose(body, j, "{", "}");
+      const end = close < 0 ? body.length : close + 1;
+      return { type: /^unchecked\b/.test(body.slice(i)) ? "unchecked" : "other", text: body.slice(i, end), inner: body.slice(j + 1, close < 0 ? undefined : close), end };
+    }
+  }
+  return { type: "other", text: body.slice(i), end: body.length };
+}
+
+function statements(body) {
+  const out = [];
+  let i = 0;
+  while (i < body.length) {
+    while (i < body.length && /\s/.test(body[i])) i++;
+    if (i >= body.length) break;
+    const st = readStatement(body, i);
+    if (st.type === "unchecked") out.push(...statements(st.inner));
+    else out.push(st);
+    i = Math.max(st.end, i + 1);
+  }
+  return out;
+}
+
+// A local declaration (`bool z = ...`, `S storage s = ...`) is not a state write.
+const LOCAL_DECL = /^(?:address(?:\s+payable)?|bool|string|bytes\d*|u?int\d*|[A-Z][\w.]*)(?:\[\d*\])*\s+(?:(?:memory|storage|calldata)\s+)?[A-Za-z_]\w*\s*(?:=|;)/;
+const BARE_CALL = /^(?!emit\b|revert\b|return\b|require\b|assert\b|_\s*;)[A-Za-z_$][\w$.]*\s*(?:\{[^{}]*\})?\s*\(/;
+// Does a statement change state? Unsure counts as yes: a missed write would hide a gap, and a
+// wrongly counted write only keeps a lead alive.
+function writesState(st) {
+  if (st.type === "guard") return false;
+  if (st.type === "if") return statements(st.then).some(writesState) || (st.else ? statements(st.else).some(writesState) : false);
+  const text = st.text.trim();
+  if (st.inner !== undefined) return statements(st.inner).some(writesState);
+  if (LOCAL_DECL.test(text) && !/\.(?:call|delegatecall|transfer|send)\b/.test(text)) return false;
+  return /(?<![=!<>])=(?![=>])|\bdelete\b|\+\+|--|\.(?:call|delegatecall|transfer|send)\b|\b(?:selfdestruct|sstore)\s*\(/.test(text) || BARE_CALL.test(text);
+}
+
+// True when a guard DOMINATES the work: the call cannot get past it without passing the test.
+// - `require` / `assert` at top level: a failed test reverts, and a revert undoes any write
+//   made before it, so position does not matter. One nested in a branch is not a gate.
+// - a top-level `if` whose branch reverts is the same. A branch that only `return`s (after a
+//   negative test) is a gate only when no write ran before it: the write would stay.
+// - a positive test (`if (msg.sender == owner) { ... }`) is a gate only when every state write
+//   of the body sits inside that block, or the other branch reverts. A write before or after
+//   the block is not gated by it.
+function guardsCaller(text) {
+  const sts = statements(text);
+  for (let k = 0; k < sts.length; k++) {
+    const st = sts[k];
+    if (st.type !== "guard" && st.type !== "if") continue;
+    const tests = callerTests(firstArg(st.cond));
     if (!tests) continue;
-    if (m[1] !== "if") return true;
-    const { branch, tail } = branchOf(body.slice(close + 1));
-    if (/\brevert\b|\bthrow\b/.test(branch) || (tests.neg && /\breturn\b/.test(branch))) return true;
-    if (tests.pos && (tail.trim() === "" || (/^\s*else\b/.test(tail) && /\brevert\b/.test(tail)))) return true;
+    if (st.type === "guard") return true;
+    if (/\brevert\b|\bthrow\b/.test(st.then)) return true;
+    if (tests.neg && /\breturn\b/.test(st.then) && !sts.slice(0, k).some(writesState)) return true;
+    if (tests.pos && st.else && /^\s*revert\b/.test(st.else)) return true;
+    if (tests.pos && !sts.some((other, j) => j !== k && writesState(other))) return true;
   }
   return false;
 }

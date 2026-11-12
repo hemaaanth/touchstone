@@ -120,7 +120,14 @@ and no control change in the replay is a note and not a finding.
 - Fixed transaction list. The agent reads a range. It does not send transactions
   on the lab chain.
 - Alert delivery (Slack, pager) is not part of this pack. See TOOLS.md.
+- Source checks read text, not a compiler tree. Strings and comments are blanked first, in one pass, so a `//` inside a string is safe.
+- The caller gate is a small control-flow check. A `require` or `assert` on the caller gates the function wherever it stands, because a revert undoes earlier writes. An `if` gates only when its revert branch, or its block around every state write, dominates the write. A write before a non-reverting `if`, or outside it, is not gated.
+- Known limits, documented and not chased: `else if` chains are judged by the text after `else`. A bare call statement counts as a write, so a lead stays alive when unsure. Helper calls such as `_checkOwner(` are trusted and not checked for position. A typehash written only inside a string no longer satisfies `signature-no-domain`. A lookup with the caller in a non-last bracket (`nest[msg.sender][1]`) is not a gate.
 
 ## Control harm needs an outsider
 
 The owner or admin of a proxy may change the owner or admin. The engine rejects such a proof. It records the caller of each storage write and the owner and admin the proxy held just before it. A change by a caller that already held that role is not harm. Change control as an outsider, for example through the open `upgradeTo` and then an implementation that writes slot 0.
+
+Authority means who could write the slot at that time, not who the value points at. A write teaches the engine a new owner or admin only when its writer is entitled: the constructor of that contract, a setUp fixture, a writer that already held the role, or the test contract writing an empty slot for the first time. An outsider's takeover is not adopted. So the next write by that outsider is still harm. A UUPS proxy keeps its owner in slot 0 with no admin slot. The same rule covers it, so the owner's own upgrade is clean in source mode.
+
+Known limits: an OpenZeppelin 5 namespaced owner (not slot 0) is not tracked in source mode, so a legitimate owner upgrade there can be flagged. An initialization done as `vm.prank(owner); initialize(owner)` by a caller other than the test contract is not adopted.

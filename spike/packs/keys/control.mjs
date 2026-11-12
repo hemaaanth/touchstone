@@ -69,11 +69,11 @@ export function controlChanges(trace, lab) {
     // Safe writes are not gated: a Safe changes itself through its own call. The gate does not
     // need a lab proxy: source mode has none, and an admin's EIP-1967 upgrade is still legitimate.
     const meta = trace.writeMeta?.[index];
-    // With a lab proxy slot 0 is its owner, so owner and admin both count as authority. Without
-    // a lab (source mode) slot 0 is not read as control, so it must not make anyone an authority
-    // either: an outsider who took slot 0 would then hide the next write. Only the admin counts.
-    const authority = lab.proxy ? meta?.authority : meta?.admin;
-    if (!write.setup && !isSafe(write.context, trace) && meta?.caller && (authority ?? []).includes(meta.caller)) return;
+    // The authority snapshot is the same in both modes (see lib/control-trace.mjs): the owner
+    // (slot 0) and EIP-1967 admin that the contract itself or a prior authority set. A UUPS
+    // proxy keeps its owner in slot 0 and has no admin slot, so slot 0 must count here too.
+    // An outsider's write never joins the snapshot, so a takeover cannot hide the next write.
+    if (!write.setup && !isSafe(write.context, trace) && meta?.caller && (meta.authority ?? []).includes(meta.caller)) return;
     changes.push({ target: write.context, field, slot: write.slot, before: write.before, after: write.after });
   });
   // EIP-7702: etch of a delegation designator on a lab EOA, then a call that ran the delegate.

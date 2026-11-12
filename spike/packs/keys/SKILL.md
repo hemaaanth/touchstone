@@ -136,3 +136,6 @@ and handler writes at that account, so it counts as `control`.
 - Safe 1.4.1 only. Older singletons are not deployed in the lab.
 - Local EVM only. No fork, no live network, no real keys.
 - Hardware wallet, MPC and key-ceremony checks are not covered. See TOOLS.md.
+- Source checks read text, not a compiler tree. Strings and comments are blanked first, in one pass, so a `//` inside a string is safe.
+- The caller gate is a small control-flow check. A `require` or `assert` on the caller gates the function wherever it stands, because a revert undoes earlier writes. An `if` gates only when its revert branch, or its block around every state write, dominates the write. A write before a non-reverting `if`, or outside it, is not gated.
+- Known limits, documented and not chased: `else if` chains are judged by the text after `else`. A bare call statement counts as a write, so a lead stays alive when unsure. Helper calls such as `_checkOwner(` are trusted and not checked for position. A typehash written only inside a string no longer satisfies `signature-no-domain`. A lookup with the caller in a non-last bracket (`nest[msg.sender][1]`) is not a gate.

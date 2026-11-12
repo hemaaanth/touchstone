@@ -18,7 +18,7 @@
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
 // address received. The address-shaped words in its storage come from Execution only.
-// - writeMeta[i] = { caller, authority, admin } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender, and the owner
+// - writeMeta[i] = { caller, authority } for writes[i] (kept apart so `writes` keeps its shape): who the contract saw as msg.sender, and the owner
 //   (slot 0) and EIP-1967 admin the contract held just before the write. They come from the
 //   SSTOREs of every trace, constructors included. A write whose caller already held
 //   authority is a legitimate change, not a takeover. control.mjs decides.
@@ -61,18 +61,26 @@ export function extractControlTrace(traces) {
         if (change.reason !== "SSTORE" || word(change.value) === word(change.had_value)) continue;
         if (!ok(i)) continue;
         const mine = held[context] ?? {};
+        const authority = [asAddress(mine[OWNER_SLOT]), asAddress(mine[ADMIN_SLOT])].filter(Boolean);
+        const caller = senderOf();
         if (execution && !under(i, (x) => x.kind === "CREATE")) {
           const setup = under(i, (x) => lc(String(x.data ?? "").slice(0, 10)) === SAFE_SETUP);
-          const authority = [asAddress(mine[OWNER_SLOT]), asAddress(mine[ADMIN_SLOT])].filter(Boolean);
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
-          out.writeMeta.push({ caller: senderOf(), authority, admin: [asAddress(mine[ADMIN_SLOT])].filter(Boolean) });
+          out.writeMeta.push({ caller, authority });
         }
-        // Inside a constructor only the contract being built may set its own authority. A
-        // constructor that writes ANOTHER contract's owner slot must not teach the gate that
-        // its writer is the owner.
+        if (key !== OWNER_SLOT && key !== ADMIN_SLOT) continue;
+        // Authority is who COULD write this slot, not who the current value points at. A write
+        // teaches the snapshot only when its writer is entitled to make it:
+        // - a constructor of the contract itself (another contract's constructor never is);
+        // - fixture: any write in a Setup trace;
+        // - a writer that already held authority (a legitimate hand-over);
+        // - the first write to an empty slot by the test contract (its own initialization).
+        // An outsider's takeover is NOT adopted, so it cannot hide the writes that follow it.
         let building = null;
         for (let n = arena[i]; n && !building; n = arena[n.parent]) if (n.trace?.kind === "CREATE") building = lc(n.trace.address);
-        if ((key === OWNER_SLOT || key === ADMIN_SLOT) && (building === null || building === context)) (held[context] ??= {})[key] = word(change.value);
+        const first = word(change.had_value) === word("0x0") && caller === out.testContract;
+        const entitled = building !== null ? building === context : !execution || authority.includes(caller) || first;
+        if (entitled) (held[context] ??= {})[key] = word(change.value);
       }
       if (t.kind !== "CALL" || !t.success || !ok(i)) return;
       if (address === VM && selector === ETCH) {

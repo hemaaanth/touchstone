@@ -408,3 +408,41 @@ test("real caller tests are still gates", () => {
     'require(hasRole(keccak256("A"), msg.sender));',
   ]) assert.equal(impactOf(setOwnerBody(body)), undefined, body);
 });
+
+// ---- repair cycle 4 ----
+const withBody = (body, extra = "") => scan(`contract C { address public owner; address last; bool d; ${extra}
+  function setOwner(address n) external { ${body} } }`);
+
+test("a // inside a string is not a comment: a guard next to a URL still gates", () => {
+  assert.equal(impactOf(withBody('require(msg.sender == owner, "see http://x.io"); owner = n;')), undefined);
+  assert.equal(impactOf(withBody('if (msg.sender != owner) revert("see http://x.io"); owner = n;')), undefined);
+  // And a comment-looking string does not hide a later ungated write.
+  assert.equal(impactOf(withBody('d = true; string memory s = "// ("; owner = n;')), "High");
+  // A real comment is still ignored.
+  assert.equal(impactOf(withBody("// require(msg.sender == owner);\n owner = n;")), "High");
+});
+
+test("a write before an if-gate, or outside a positive if-gate, is not gated", () => {
+  assert.equal(impactOf(withBody("owner = n; if (msg.sender == last) { d = true; }")), "High");
+  assert.equal(impactOf(withBody("if (msg.sender == last) { d = true; } owner = n;")), "High");
+  assert.equal(impactOf(withBody("owner = n; if (msg.sender != last) { return; }")), "High");
+  assert.equal(impactOf(withBody("if (d) require(msg.sender == last); owner = n;")), "High");
+  assert.equal(impactOf(withBody("if (d) { require(msg.sender == last); } owner = n;")), "High");
+});
+
+test("a guard that dominates the write is a gate, wherever the write is", () => {
+  for (const body of [
+    "owner = n; require(msg.sender == last);",            // a revert undoes the write
+    "owner = n; if (msg.sender != last) revert();",
+    "if (msg.sender != last) { return; } owner = n;",     // returns before any write
+    "if (msg.sender == last) { owner = n; }",             // the whole write is inside the block
+    "if (msg.sender == last) { owner = n; } emit E();",   // a trailing non-write is fine
+    "if (msg.sender == last) { owner = n; } else { revert(); }",
+    "unchecked { require(msg.sender == last); } owner = n;",
+  ]) assert.equal(impactOf(withBody(body, "event E();")), undefined, body);
+});
+
+test("a lookup counts only when the caller is the last index", () => {
+  assert.equal(impactOf(withBody("require(nest[msg.sender][1]); owner = n;", "mapping(address=>mapping(uint=>bool)) nest;")), "High");
+  assert.equal(impactOf(withBody("require(nest[1][msg.sender]); owner = n;", "mapping(uint=>mapping(address=>bool)) nest;")), undefined);
+});
