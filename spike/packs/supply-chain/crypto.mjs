@@ -17,60 +17,137 @@ function nearName(a, b) {
 const lookalike = (name) => (canonical.includes(name) ? null : canonical.find((known) => nearName(name.toLowerCase(), known)) ?? null);
 
 // Dependency checks. A scanner that reads advisories cannot see these.
-// 1. A vendored package that reads env secrets or signer fields and sends them out.
-// 2. A suspect package that a signer-handling source file imports.
+// 1. Vendored code that reads a secret or signer field and, a few lines away, sends data out.
+// 2. A suspect package that a source file imports AND uses to build or call a signer.
 // 3. A package.json dependency that its own lockfile does not list.
+// A package the lockfile pins by integrity hash, under its own name, from the npm registry is not suspect.
+// Known limits (see SKILL.md): exfil split across two files, env destructuring, minified bundles,
+// and code that builds the module name at run time are not seen.
 const CODE = /\.[cm]?[jt]sx?$/;
-const SIGNER = /\b(?:Wallet|Signer|Keypair|privateKey|mnemonic|signTransaction|signMessage|sendTransaction)\b|DEPLOYER_KEY|PRIVATE_KEY/;
+const TYPES = /\.d\.[cm]?ts$/;
 const SINK = /\b(?:https?\.(?:request|get)|fetch|net\.connect|dns\.resolve\w*)\s*\(|new\s+(?:XMLHttpRequest|WebSocket)\b/;
-const SECRET_READ = /process\.env\s*(?:\.\s*\w*(?:KEY|SECRET|TOKEN|MNEMONIC|SEED|PASS)\w*|\[|[,)}])|\.(?:privateKey|mnemonic|signingKey)\b/;
+const KEYWORD = "KEY|SECRET|TOKEN|MNEMONIC|SEED|PASS";
+// A named env secret or a signer field. A bare `process.env` (copied whole) is not a secret read.
+const SECRET_READ = new RegExp(`process\\.env\\s*\\.\\s*\\w*(?:${KEYWORD})\\w*|process\\.env\\s*\\[\\s*["'\`][^"'\`]*(?:${KEYWORD})[^"'\`]*["'\`]\\s*\\]|\\.(?:privateKey|mnemonic|signingKey)\\b`);
+const SIGNER_MATERIAL = /PRIVATE_KEY|DEPLOYER_KEY|\bprivateKey\b|\bmnemonic\b/;
+const SIGNER_NAME = /Wallet|Signer|Keypair|sign|send/i;
+const WINDOW = 8;
 const vendoredName = (file) => file.match(/^(?:.*\/)?node_modules\/((?:@[^/]+\/)?[^/]+)\//)?.[1] ?? null;
 const esc = (x) => x.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+const isManifest = (file) => posix.basename(file) === "package.json";
+const lineAt = (text, index) => text.slice(0, index).split("\n").length;
+
+// Comments are not code. Keep line numbers: block comments keep their newlines.
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+const minified = (src) => src.length > 2000 && src.length / (src.split("\n").length) > 300;
+
+// True when the lockfile pins this vendored package by integrity hash, under its own name, from the registry.
+function lockedWithIntegrity(file, pkg, lockOf) {
+  const m = file.match(/^((?:.*?\/)?)(node_modules\/.+)$/);
+  if (!m) return false;
+  const lock = lockOf(`${m[1]}package-lock.json`);
+  if (!lock) return false;
+  const path = `${m[2].slice(0, m[2].lastIndexOf("node_modules/"))}node_modules/${pkg}`;
+  const entry = lock.packages?.[path] ?? (path === `node_modules/${pkg}` ? lock.dependencies?.[pkg] : undefined);
+  if (!entry?.integrity || (entry.name && entry.name !== pkg)) return false;
+  return !entry.resolved || /^https:\/\/registry\.(?:npmjs\.org|yarnpkg\.com)\//.test(entry.resolved);
+}
+
+// Local names a file binds to an import or require of pkg, with the line of the first one.
+function importOf(src, pkg) {
+  const q = `["'\`]${esc(pkg)}(?:/[^"'\`]*)?["'\`]`;
+  const patterns = [new RegExp(`import\\s+([^;]*?)\\s+from\\s*${q}`), new RegExp(`(?:const|let|var)\\s+([^;=]*?)\\s*=\\s*(?:await\\s+)?require\\s*\\(\\s*${q}\\s*\\)`)];
+  let line = 0;
+  const names = [];
+  for (const re of patterns) {
+    const m = re.exec(src);
+    if (!m) continue;
+    line = line ? Math.min(line, lineAt(src, m.index)) : lineAt(src, m.index);
+    names.push(...(m[1].replace(/[\w$]+\s+as\s+/g, "").match(/[A-Za-z_$][\w$]*/g) ?? []).filter((n) => !["type", "default", "as"].includes(n)));
+  }
+  if (!line) {
+    const bare = new RegExp(`(?:require\\s*\\(|import\\s*\\(?)\\s*${q}`).exec(src);
+    if (bare) line = lineAt(src, bare.index);
+  }
+  return { line, names };
+}
+
+// Does the file use the imported binding to build or call a signer? A keyword elsewhere in the file does not count.
+function usesAsSigner(src, names) {
+  for (const raw of names) {
+    const b = esc(raw);
+    for (const m of src.matchAll(new RegExp(`\\bnew\\s+${b}\\b(?:\\.([\\w$]+))?\\s*\\(([^;]{0,200})`, "g"))) if (SIGNER_NAME.test(m[1] ?? raw) || SIGNER_MATERIAL.test(m[2])) return true;
+    for (const m of src.matchAll(new RegExp(`\\b${b}\\.([\\w$]+)`, "g"))) if (SIGNER_NAME.test(m[1])) return true;
+    for (const m of src.matchAll(new RegExp(`\\b${b}\\s*\\(([^;]{0,200})`, "g"))) if (SIGNER_MATERIAL.test(m[1])) return true;
+  }
+  return false;
+}
 
 function dependencyLeads(snapshot, add) {
+  const locks = new Map();
+  const lockOf = (path) => {
+    if (!locks.has(path)) { try { locks.set(path, Object.hasOwn(snapshot.files, path) ? JSON.parse(snapshot.files[path]) : null); } catch { locks.set(path, null); } }
+    return locks.get(path);
+  };
+  // suspects: package -> { impact, why }. High needs code evidence. A lookalike name alone is never a suspect.
   const suspects = new Map();
-  const suspect = (pkg, why) => suspects.set(pkg, [...(suspects.get(pkg) ?? []), why]);
+  const suspect = (pkg, impact, why) => {
+    const cur = suspects.get(pkg) ?? { impact, why: [] };
+    if (impact === "High") cur.impact = "High";
+    if (!cur.why.includes(why)) cur.why.push(why);
+    suspects.set(pkg, cur);
+  };
+  const vendored = new Map();
   for (const [file, source] of Object.entries(snapshot.files)) {
     const pkg = vendoredName(file);
-    if (!pkg || !CODE.test(file)) continue;
-    const lines = source.split("\n");
-    const read = SECRET_READ.test(source), at = lines.findIndex((t) => SINK.test(t));
-    if (read && at >= 0) {
-      add("dependency-exfil-code", file, at + 1, `Vendored package ${pkg} reads secret or signer values and sends data out. Static match only. Nothing was run.`, null, { package: pkg });
-      suspect(pkg, "exfil-code");
-    }
+    if (!pkg) continue;
+    if (!vendored.has(pkg)) vendored.set(pkg, lockedWithIntegrity(file, pkg, lockOf));
+    if (!CODE.test(file) || TYPES.test(file) || !SECRET_READ.test(source) || !SINK.test(source) || minified(source)) continue;
+    const trusted = vendored.get(pkg);
+    if (trusted && canonical.includes(pkg)) continue;
+    const lines = stripComments(source).split("\n");
+    const reads = lines.flatMap((t, i) => (SECRET_READ.test(t) ? [i] : []));
+    const at = lines.findIndex((t, i) => SINK.test(t) && reads.some((r) => Math.abs(r - i) <= WINDOW));
+    if (at < 0) continue;
+    const impact = trusted ? "Medium" : "High";
+    add("dependency-exfil-code", file, at + 1, `Vendored package ${pkg} reads secret or signer values and sends data out within ${WINDOW} lines. Static match only. Nothing was run.`, null, { package: pkg, impact });
+    if (!trusted) suspect(pkg, "High", "exfil-code");
   }
+  for (const [pkg, trusted] of vendored) if (!trusted && lookalike(pkg)) suspect(pkg, "Medium", "lookalike-not-locked");
   for (const [file, source] of Object.entries(snapshot.files)) {
-    if (!file.endsWith("package.json") || vendoredName(file)) continue;
+    if (!isManifest(file) || vendoredName(file)) continue;
     let obj;
     try { obj = JSON.parse(source); } catch { continue; }
     const names = [...new Set(Object.keys({ ...obj?.dependencies, ...obj?.devDependencies, ...obj?.optionalDependencies }))];
-    for (const name of names) if (lookalike(name)) suspect(name, "lookalike");
     const lockPath = posix.join(posix.dirname(file), "package-lock.json");
-    if (!Object.hasOwn(snapshot.files, lockPath)) continue;
-    let lock;
-    try { lock = JSON.parse(snapshot.files[lockPath]); } catch { continue; }
-    const listed = new Set([...Object.keys(lock?.packages ?? {}).map((k) => k.replace(/^.*node_modules\//, "")), ...Object.keys(lock?.dependencies ?? {})]);
+    const lock = lockOf(lockPath);
+    if (!lock) continue;
+    const listed = new Set([...Object.keys(lock.packages ?? {}).map((k) => k.replace(/^.*node_modules\//, "")), ...Object.keys(lock.dependencies ?? {})]);
     const lines = source.split("\n");
     for (const name of names) if (!listed.has(name)) {
       add("dependency-not-in-lockfile", file, lines.findIndex((t) => t.includes(JSON.stringify(name))) + 1, `Package ${name} is in package.json but not in ${lockPath}. A lockfile scan never sees it.`, null, { package: name });
+      if (lookalike(name)) suspect(name, "Medium", "lookalike-not-locked");
     }
   }
   for (const [file, source] of Object.entries(snapshot.files)) {
-    if (!CODE.test(file) || vendoredName(file) || !SIGNER.test(source)) continue;
-    const lines = source.split("\n");
-    for (const pkg of suspects.keys()) {
-      const re = new RegExp(`(?:require\\s*\\(|from|import\\s*\\()\\s*["']${esc(pkg)}(?:/[^"']*)?["']`);
-      const at = lines.findIndex((t) => re.test(t));
-      if (at >= 0) add("dependency-reaches-signer", file, at + 1, `${file} imports suspect package ${pkg} and handles signer material (${suspects.get(pkg).join(", ")}). Static match only.`, null, { package: pkg });
+    if (!CODE.test(file) || TYPES.test(file) || vendoredName(file)) continue;
+    let src;
+    for (const [pkg, { impact, why }] of suspects) {
+      if (!source.includes(pkg)) continue;
+      src ??= stripComments(source);
+      const { line, names } = importOf(src, pkg);
+      if (line && usesAsSigner(src, names)) add("dependency-reaches-signer", file, line, `${file} imports suspect package ${pkg} and uses it to build or call a signer (${why.join(", ")}). Static match only.`, null, { package: pkg, impact });
     }
   }
 }
 
 export function cryptoLeads(snapshot) {
   const leads = [];
+  const seen = new Set();
   const add = (check, file, line, description, secret, extra = {}) => {
     const summary = secret ? redactSecret(secret) : undefined;
+    // One lead per secret per file. The same key on many lines is one exposure.
+    if (summary) { const key = `${check}:${file}:${summary.sha256}:${extra.provider ?? ""}`; if (seen.has(key)) return; seen.add(key); }
     leads.push({ engine: "Touchstone", check, impact: ["crypto-package-lookalike", "dependency-not-in-lockfile"].includes(check) ? "Low" : "High",
       file, lines: [line], where: { file, line, ...(summary ? { fingerprint: summary.sha256 } : {}), ...(extra.package ? { package: extra.package } : {}) }, description,
       ...(summary ? { secret: summary } : {}), ...extra });
@@ -80,7 +157,8 @@ export function cryptoLeads(snapshot) {
     for (let i = 0; i < lines.length; i++) {
       const text = lines[i];
       // A random bytes32 is not necessarily a key. Require key/account context.
-      if (/(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(text)) {
+      // A minified bundle holds long hex constants. A real committed key sits on a short line.
+      if ((text.length <= 1000 || !(vendoredName(file) || /\.min\.[cm]?js$/.test(file))) && /(private[_-]?key|deployer|accounts|secret[_-]?key)/i.test(text)) {
         for (const m of text.matchAll(/(?<![a-fA-F0-9])(?:0x)?[a-fA-F0-9]{64}(?![a-fA-F0-9])/g)) {
           try {
             const address = new Wallet(m[0].startsWith("0x") ? m[0] : `0x${m[0]}`).address;
@@ -114,7 +192,7 @@ export function cryptoLeads(snapshot) {
         add("evm-keystore", file, lines.findIndex((s) => s.includes('"ciphertext"')) + 1,
           "Encrypted EVM keystore is in source. Address is declared metadata, not a decrypted or proven signing key.", c.ciphertext, { address: getAddress(`0x${obj.address.toLowerCase()}`), addressSource: "keystore-metadata" });
       }
-      if (file.endsWith("package.json")) {
+      if (isManifest(file)) {
         for (const name of new Set(Object.keys({ ...obj.dependencies, ...obj.devDependencies, ...obj.optionalDependencies, ...obj.peerDependencies }))) {
           const target = lookalike(name);
           if (target) add("crypto-package-lookalike", file, lines.findIndex((s) => s.includes(JSON.stringify(name))) + 1,

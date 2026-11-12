@@ -7,7 +7,8 @@ import { Wallet } from "ethers";
 export async function makeLabWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "touchstone-supply-"));
   cpSync(new URL("./lab/", import.meta.url), ws, { recursive: true });
-  // The repo ignores node_modules/. The plant lives in lab/plant and is vendored in the lab workspace.
+  // Touchstone's own .gitignore ignores node_modules/, so the plant is stored in lab/plant.
+  // The lab workspace is a separate Git repo with no .gitignore. node_modules is committed there, so the scan reads it.
   mkdirSync(join(ws, "node_modules"));
   renameSync(join(ws, "plant/ethres"), join(ws, "node_modules/ethres"));
   rmSync(join(ws, "plant"), { recursive: true });

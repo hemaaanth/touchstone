@@ -54,20 +54,35 @@ Without the database, Grype reports a coverage gap. A gap never means clean.
 ## Scan a real repo or folder
 
 ```sh
-node spike/packs/supply-chain/scan.mjs <folder> [--json]
+node spike/packs/supply-chain/scan.mjs <folder> [--json] [--worktree] [--skipped-out <file>]
 ```
 
 The folder can be a Git root or a plain folder.
 The scan runs every tool in Docker with no network.
 It replays each lead and prints redacted rows.
-Binary, oversized and over-budget files are skipped and listed.
 Scan only code you are allowed to scan.
+
+**Scope.** A Git root is scanned as *committed files only*. The output says so.
+Untracked files (such as `.env`) and ignored files (such as `node_modules/`) are not read.
+The scan counts them and prints the counts, with a per-folder summary, as a coverage gap.
+A file deleted in the working tree is still read from its commit.
+Add `--worktree` to read untracked and ignored files too. That mode has no commit pin.
+A plain folder is read as it is.
+
+**Skipped files.** Binary, oversized and over-budget files are skipped.
+The output prints counts per reason and per top-level folder.
+The full list is written to a file (`--skipped-out`, default under `~/.cache/touchstone/scans/`).
+A skipped code file inside `node_modules/<package>` raises a coverage gap. That package was not fully checked.
+An empty folder prints a clear message and exits 1.
 
 ## Dependency and signer checks
 
 - `dependency-reaches-signer`: a suspect package is imported by a file that handles signer material.
-- `dependency-exfil-code`: vendored code reads secrets and calls the network.
-- `dependency-not-in-lockfile`: a vendored package has no lockfile entry.
+- `dependency-exfil-code`: vendored code reads a secret and calls the network within 8 lines, after comments are removed. Type files (`.d.ts`) and minified bundles are skipped.
+- `dependency-not-in-lockfile`: a package is declared in `package.json` but the lockfile next to it has no entry. A lockfile scan never sees it. Low impact. It is a suspect only when its name also looks like a known crypto package.
+- Trust rule: a package that is locked under its own name with an integrity hash and a registry source is trusted. Its code hits are Medium, not High. The canonical packages (`ethers`, `viem`, `web3` and so on) are skipped.
+- A name that only looks like a crypto package (such as `view` or `web`) is Low. It is never a suspect by itself.
+- `dependency-reaches-signer` needs the imported binding to be used as a signer, such as `new Wallet(process.env.DEPLOYER_KEY)`. The word `Wallet` in a comment does not count. A lookalike that is not locked is capped at Medium.
 - The lab vendors an inert `node_modules/ethres` that looks like `ethers`. OSV and Grype do not know it. Our checks and Semgrep do.
 - All hits on one package share the root cause `malicious-dependency:<package>`.
 
@@ -138,9 +153,23 @@ Raw scanner stdout and stderr exist only in memory and are discarded after parsi
 ## Limits
 
 The target is a Git root (committed bytes are pinned) or a plain folder.
+A Git scan reads committed files only. Untracked and ignored files are counted, not read. Use `--worktree` to read them.
 Only regular text files are read. A source file is at most 512 KiB. Source text totals at most 8 MiB.
-Other files are skipped and listed in the record. They are never silently dropped.
+Other files are skipped. The record keeps counts per reason and per folder, and the full list goes to a file next to the run. It never lives only in memory.
 This pack audits the pinned HEAD tree, not deleted Git history.
+
+Known evasions. The dependency checks are static and heuristic. They miss:
+
+- an exfil that splits the secret read and the network call across two files, or more than 8 lines apart;
+- a secret read through destructuring, such as `const { PRIVATE_KEY } = process.env`, before the sink;
+- minified or bundled code, and `.d.ts` files (skipped on purpose, because they caused false positives);
+- module names built at run time, and native or binary add-ons;
+- a hijacked canonical package that is locked with a valid integrity hash.
+
+A clean result is never proof of a clean dependency tree. OSV and Grype cover known advisories. Semgrep covers our own rules.
+
+Network and host exceptions. Every scanner runs in Docker with `--network none` and no host execution.
+Two steps are different. `refresh-db.mjs` uses the network, and an operator runs it. `snapshot.mjs` runs host `git` to read the repository (`ls-files`, `cat-file`). It never runs target code.
 It has no source-fetching tool, package install tool, credential verification, chain access, or GitHub API mode.
 EVM scalar checks require key/account context. Mnemonics are single-line English phrases. Encrypted keystores must use the V3 AES-128-CTR shape.
 The OSV npm slice contains only the lab's Lodash advisory. Do not treat it as a full registry scan.
@@ -148,8 +177,8 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 
 ## Verification recorded
 
-- The focused supply-chain tests pass: 14 tests.
-- The full `bun run test` in `spike/` passes: 232 tests.
+- The focused supply-chain tests pass: 24 tests (14 first delivery, 10 repair regressions).
+- The full `bun run test` in `spike/` passes (count in the repair report).
 - The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
 - One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.
 - The live record has no raw secret. Secrets show as `[REDACTED]` with a SHA-256.

@@ -75,6 +75,8 @@ export async function scanSnapshot(snapshot, engine) {
       writeFileSync(join(dir, ".scanner-sbom.json"), sbom.stdout, { mode: 0o600 });
     }
     let cmd = spec.cmd;
+    // Zizmor exits with an error when there is nothing to audit. That is a scope fact, not a scanner failure.
+    if (engine === "zizmor" && !Object.keys(snapshot.files).some((f) => /(^|\/)(\.github\/workflows\/[^/]+\.ya?ml|action\.ya?ml|dependabot\.ya?ml)$/.test(f))) return { engine, status: "ok", code: 0, timedOut: false, reason: "no workflow or action files in snapshot", leads: [] };
     if (engine === "osv") {
       const locks = Object.keys(snapshot.files).filter((f) => /(^|\/)package-lock\.json$/.test(f) && !/(^|\/)node_modules\//.test(f)).slice(0, 25);
       // No npm lockfile is a finding about scope, not a scanner error.
