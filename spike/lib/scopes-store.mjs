@@ -500,8 +500,14 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   }
   const name = String(title || "").trim();
   if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
-  const packId = String(pack || "").trim() || "web";
-  if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
+  // `pack` is one module or a list: the modules the operator ticked for these
+  // websites. The first is the scope's default. targets.mjs (eligiblePacks) adds
+  // the modules every website allows.
+  const ids = [...new Set([pack].flat().map((p) => String(p ?? "").trim()).filter(Boolean))];
+  if (!ids.length) ids.push("web");
+  for (const p of ids) if (!/^[a-z][a-z0-9-]{0,39}$/.test(p)) throw new Error(`unknown module: ${p}`);
+  const packId = ids[0];
+  if (ids.length > 1 && ids.includes("supply-chain")) throw new Error("The supply-chain module takes GitHub repos, not websites. Add it as its own scope.");
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
   // A supply-chain live scope names GitHub repos or orgs, not websites. Its grant
   // covers only the two read-only GitHub hosts. The pack checks each repo
@@ -540,6 +546,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,
+    ...(github ? {} : { packs: ids }),
     entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,

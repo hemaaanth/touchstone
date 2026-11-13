@@ -255,9 +255,14 @@ export interface ModelChoice {
   abliterated: boolean
 }
 
-// Total spent across all runs, and the default budget for one run.
+// Total spent across all runs (the spend ledger), the total spend cap every
+// run stops at, and the default budget for one run. usd and capUsd are null
+// when the ledger or the cap cannot be read; ledgerError then says why, and
+// no new run can start.
 export interface SpendState {
-  usd: number
+  usd: number | null
+  capUsd: number | null
+  ledgerError: string | null
   budgetUsd: number
 }
 
@@ -274,7 +279,8 @@ export interface ProofSurface {
 // scope's pack: "forge" for Solidity under Contracts, else "none".
 export type TargetScopeMember =
   | { kind: "repo"; url: string; proof: string }
-  | { kind: "folder"; name: string; files: number; proof: string }
+  // `path` is set in the scope list for a folder the server reads in place.
+  | { kind: "folder"; name: string; path?: string; files: number; proof: string }
 
 // One scope from the target library. `kind` is lab | local-source | brief |
 // scope (repos and folders mixed, any language);
@@ -290,6 +296,8 @@ export interface TargetScope {
   origins?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
+  // Every module this scope allows. A run picks one of them at start.
+  packs?: string[]
   blurb: string
   entry: string
   files?: string[]
@@ -307,6 +315,22 @@ export interface PackChoice {
   proof: string
   // The module's tools can be aimed at a real host.
   live?: boolean
+  // What the pack's own lab stands in for. "rule-based" means the lab
+  // assistant is a rule-based stand-in, not a model.
+  labTarget?: string
+  // Where the pack's tools reach. The engine sends each field only when the pack
+  // sets it (spike/packs/index.mjs packList). See spike/packs/README.md.
+  // true: no tool reaches a network.
+  offline?: boolean
+  // What the host fetches for a run: "github" (the scope's GitHub links),
+  // "solc" (the compilers those files pin).
+  fetches?: string[]
+  // "open": a live run's scanners use the open bridge network.
+  scanNet?: string
+  // "github": a live grant names GitHub repos or orgs, not hosts.
+  grants?: string
+  // "cloud-http": one check also gets an HTTP replay on a private practice cloud.
+  extraProof?: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
@@ -362,6 +386,8 @@ export interface RunEvent {
 //   bulletin-post    { id, author, text, kind?, severity?,        fleet: a Bulletin note
 //                      tags?, lane? }
 //   agent-spend      { id, usd }                                  fleet: child's spend SNAPSHOT
+//   lead             { id, severity, file, line, title, reason,   a recorded lead with its
+//                      proof?, agent? }                           evidence; never proven
 //   finding-submitted { n, title, severity, poc }                 agent submits one of
 //                                                                 many; audit goes on
 //   submit-rejected  { poc, reason }                              not passed / duplicate
@@ -455,6 +481,22 @@ export interface BulletinNote {
   tags: string[]
   lane: "trusted" | "evidence"
   stepKey: string // key of the event that posted it, for linking back
+}
+
+// One lead an agent recorded (Review's record_lead), with its evidence. A lead
+// is not a finding: nothing marks it proven. `author` is a child id or
+// COORDINATOR (the root agent, also a solo run's one agent).
+export interface RunLead {
+  id: string
+  author: string
+  t: number | null
+  severity: Severity | null
+  file: string
+  line: number
+  title: string
+  reason: string
+  proof: string | null
+  stepKey: string
 }
 
 // One operator steer across its two-phase life. "pending" — typed, shown as a

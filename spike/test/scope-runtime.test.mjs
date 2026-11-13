@@ -39,7 +39,7 @@ test("a non-Solidity scope runs under Review: no Foundry, replay off, no way to 
   assert.equal(cfg.pack, "review");
   const pack = packFor(cfg);
   const names = pack.tools(ws, {}).map((t) => t.name);
-  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "fetch_source"]);
+  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "record_lead", "fetch_source"]);
   assert.ok(!names.includes("submit_finding") && !names.includes("run_poc"));
   // Even a forged finding list proves nothing.
   assert.deepEqual(await pack.prove(ws, [{ title: "x", severity: "critical", poc: "X" }], [], () => {}), []);
@@ -110,4 +110,28 @@ test("a fetched clone loses symlinks, hidden files, and secret files", () => {
   assert.equal(pruneClone(d), 4);
   assert.ok(existsSync(path.join(d, "src/a.ts")));
   assert.ok(!existsSync(path.join(d, ".env")) && !existsSync(path.join(d, "src/pw")) && !existsSync(path.join(d, "src/server.pem")));
+});
+
+test("a code scope allows Code review always, and Contracts only with Solidity or a repo", () => {
+  const go = addScope({ title: "go only", members: [folder("api", [["main.go", "package main\n"]])] });
+  assert.deepEqual(targetSummary(go).packs, ["review"]);
+  assert.throws(() => pickTarget({ id: go.id, pack: "contracts" }), /belongs to pack "review"/);
+
+  const sol = addScope({ title: "sol", members: [folder("c", [["src/V.sol", "contract V {}\n"]])] });
+  assert.deepEqual(targetSummary(sol).packs, ["contracts", "review"]);
+  // A run that picks Code review gets that module's proof surface: none.
+  const view = pickTarget({ id: sol.id, pack: "review" });
+  assert.equal(view.pack, "review");
+  assert.equal(view.signal, "agent");
+  assert.equal(targetSummary(view).proofSurface.kind, "none");
+  assert.deepEqual(targetSummary(view).members.map((m) => m.proof), ["none"]);
+  const ws = prepareWorkspace(view, { modules: planModules(view, undefined, PACKS.review) });
+  cleanup.push(ws);
+  assert.equal(readTouchstone(ws).pack, "review");
+  assert.ok(!existsSync(path.join(ws, "foundry.toml")));
+  // With no module named, the scope's own module is the default.
+  assert.equal(pickTarget({ id: sol.id }).pack, "contracts");
+
+  const repo = addScope({ title: "repo", members: [{ kind: "repo", url: "https://github.com/acme/svc" }] });
+  assert.deepEqual(targetSummary(repo).packs, ["review", "contracts"]);
 });

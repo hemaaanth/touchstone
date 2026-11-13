@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "tolerance": 1,
+  "fuzzylist": [
+    "tidekeep.test"
+  ],
+  "whitelist": [
+    "tide-keep.test"
+  ],
+  "blacklist": [
+    "unrelated-drainer.test",
+    "tidekep.test",
+    "tidekeep-airdrop.test",
+    "tide-keep.test"
+  ]
+}

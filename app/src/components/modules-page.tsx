@@ -2,17 +2,17 @@ import { useMemo } from "react"
 import { Boxes, ChevronRight } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
-import { packOf, PLAN_STEP, plural, proofKind, scopedRuns, tierLabel, type CatalogState, type ScopedRun } from "@/lib/catalog"
+import { moduleAside, moduleNote, packOf, PLAN_STEP, planStepState, plural, proofKind, scopedRuns, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { ago } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Empty, Label, PageBody, PageHeader, RunLinks, UncountedNote } from "@/components/page-parts"
+import { Empty, Label, PageBody, PageHeader, RunLinks } from "@/components/page-parts"
 
 // The attack modules the agent can run. One row per pack the engine's loader
 // lists (GET /api/models `packs`). Closed, a row shows the pack, how it proves
-// a finding, and what it has covered: its scopes, its runs, its proven
-// findings. Open, it shows the pipeline and tools its latest run actually used.
-// Nothing here is a claim the engine has not made in a recorded run.
+// a finding, and where its tools reach, from the pack's reach fields. Open, it
+// says that in sentences, then the pipeline and tools its latest run actually
+// used.
 export function ModulesPage({
   catalog,
   packs,
@@ -28,15 +28,12 @@ export function ModulesPage({
   briefs: Record<string, RunBrief>
   onOpenRun: (id: string) => void
 }) {
-  const { scoped, loading, unscoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
+  const { scoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader icon={Boxes} title="Modules" />
       <PageBody>
-        <p className="mb-4 text-xs text-muted-foreground">
-          Each module brings its own tools and replay. A finding is real only when that replay passes.
-        </p>
         {catalog === "loading" ? (
           <Empty>Loading…</Empty>
         ) : catalog === "error" && packs.length === 0 ? (
@@ -57,7 +54,6 @@ export function ModulesPage({
             ))}
           </ul>
         )}
-        <UncountedNote loading={loading} unscoped={unscoped} />
       </PageBody>
     </div>
   )
@@ -75,7 +71,8 @@ function PackRow({
   onOpenRun: (id: string) => void
 }) {
   const proof = proofKind(p)
-  const tier = tierLabel(p.tier)
+  const aside = moduleAside(p)
+  const note = moduleNote(p)
   const runnable = scopes.filter((t) => t.runnable).length
   const proven = runs.reduce((n, r) => n + r.brief.proven, 0)
   // The latest run that recorded each part. A run that predates the event
@@ -91,7 +88,7 @@ function PackRow({
           <span className="text-sm font-medium">{p.title}</span>
           <p className="mt-1 truncate text-xs text-muted-foreground">
             {proof.label}
-            {tier ? ` · ${tier}` : ""}
+            {aside ? ` · ${aside}` : ""}
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1 text-[11px] text-muted-foreground tabular-nums sm:flex-row sm:gap-3">
@@ -105,9 +102,7 @@ function PackRow({
           <div className="flex flex-col gap-1">
             <Label>Proof</Label>
             <p className="text-xs leading-relaxed">{proof.detail}</p>
-            {tier === "Passive" ? (
-              <p className="text-xs leading-relaxed text-muted-foreground">Passive: it runs only in our own offline sandbox.</p>
-            ) : null}
+            {note ? <p className="text-xs leading-relaxed text-muted-foreground">{note}</p> : null}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -117,7 +112,7 @@ function PackRow({
                 {planRun.brief.modules.map((m) => (
                   <li key={m.id} className="flex flex-wrap items-baseline gap-x-2 text-xs">
                     <span className={cn("font-medium", !m.on && "text-muted-foreground")}>{PLAN_STEP[m.id] ?? m.id}</span>
-                    <span className="text-muted-foreground">{m.on ? (m.fixed ? "always on" : "on") : "off"}</span>
+                    <span className="text-muted-foreground">{planStepState(m)}</span>
                     {!m.on && m.reason ? <span className="basis-full text-[11px] text-muted-foreground">{m.reason}</span> : null}
                   </li>
                 ))}

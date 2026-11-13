@@ -113,7 +113,24 @@ function requireSession(req, res, next) {
 const app = express();
 app.use(express.json());
 
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// BUG 6: /healthz is a documented, public, unauthenticated route, but it also
+// honours an UNDOCUMENTED `debug` query parameter. With no `debug`, it is the
+// plain health probe operators expect. With `debug` present it reflects the
+// value back and adds internal detail (the staging build tag and the signer
+// address, not the key). No page or spec mentions the parameter, so the prepass
+// scanners (zap spider, nuclei templates, dalfox, ffuf path discovery) never
+// send it -- only a parameter-mining tool (Arjun) that guesses the NAME finds
+// it. This models a leftover debug flag / hidden feature on a shipped endpoint.
+// Plain `/healthz` behaviour is unchanged, so this is additive for other tools.
+app.get("/healthz", (req, res) => {
+  const out = { ok: true };
+  if ("debug" in req.query) {
+    out.debug = String(req.query.debug); // reflected -> a param miner flags it
+    out.build = "staging";
+    out.signerAddress = LEAKED_SIGNER.signerAddress; // internal detail, not the key
+  }
+  res.json(out);
+});
 
 app.get("/siwe/nonce", (_req, res) => {
   res.json({ nonce: freshNonce() });
@@ -177,6 +194,26 @@ app.get("/api/users/:id/wallet", requireSession, (req, res) => {
 // by reading the spec.
 app.get("/internal/debug/config", (_req, res) => {
   res.json(LEAKED_SIGNER);
+});
+
+// BUG 3b: a second undocumented, unauthenticated operations route. Unlike
+// /internal/debug/config it carries no nuclei template and is not linked from
+// any page, so the prepass scanners (zap spider, nuclei templates, dalfox)
+// never reach it. It is here to be found only by brute-force path discovery
+// (ffuf) against a wordlist. It leaks internal counters and the signer address
+// (not the key) -- a real, if lower-severity, information exposure.
+let requestCount = 0;
+app.use((_req, _res, next) => { requestCount += 1; next(); });
+app.get("/internal/metrics", (_req, res) => {
+  res.json({
+    service: "touchstone-dapp-oracle",
+    uptimeSec: Math.round(process.uptime()),
+    requests: requestCount,
+    sessionsOpen: sessions.size,
+    noncesLive: nonces.size,
+    signerAddress: LEAKED_SIGNER.signerAddress,
+    buildEnv: "staging",
+  });
 });
 
 // The public landing page. It links to the explorer so a crawler can find it.

@@ -17,7 +17,7 @@ The pack uses ethers 6.16.0 (a spike dependency) for offline secp256k1 and BIP-3
 It does not implement cryptography itself.
 No dependency in the target lab is installed.
 
-Pull the images listed in `scanners.mjs` before going offline (zizmor, poutine, gitleaks, trufflehog, osv-scanner, semgrep, syft, grype).
+Pull the images listed in `scanners.mjs` before going offline (zizmor, poutine, gitleaks, trufflehog, osv-scanner, semgrep, syft, grype). Build the cosign image too: `docker build -t touchstone-cosign:v3.1.4 spike/packs/supply-chain/cosign`.
 The wrapper pins each image by digest.
 See `TOOLS.md` for licenses, sizes, comparison results, and skipped candidates.
 
@@ -69,6 +69,12 @@ The scan counts them and prints the counts, with a per-folder summary, as a cove
 A file deleted in the working tree is still read from its commit.
 Add `--worktree` to read untracked and ignored files too. That mode has no commit pin.
 A plain folder is read as it is.
+
+**Signed artifacts.** Add `--cosign-key <public key PEM file> --cosign-artifacts <path>[,...]`.
+The two flags go together. The paths are in the target.
+cosign checks each artifact offline against that one pinned key. The bundle must be next to the artifact: `<path>.sigstore.json`, `.sigstore` or `.bundle`.
+A bad signature is a High lead. A missing bundle is a Medium lead. A good signature gives no lead.
+Build the image once: `docker build -t touchstone-cosign:v3.1.4 spike/packs/supply-chain/cosign`. Without it, signed artifacts are a coverage gap.
 
 ## Scan a GitHub repo or org (live)
 
@@ -207,6 +213,7 @@ It has no package install tool, credential verification, or chain access. It doe
 EVM scalar checks require key/account context. Mnemonics are single-line English phrases. Encrypted keystores must use the V3 AES-128-CTR shape.
 The OSV npm slice contains only the lab's Lodash advisory. Do not treat it as a full registry scan.
 Scanner failures are reported as coverage gaps. They never mean the repository is safe.
+cosign checks key-based bundles only, offline, without a transparency log. Keyless bundles and a trusted root are not wired. Binary artifacts are skipped by the snapshot, so they are a gap. A cosign lead shows only that the pinned key did not sign those bytes.
 
 ## Verification recorded
 
