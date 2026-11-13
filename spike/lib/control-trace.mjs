@@ -29,6 +29,12 @@
 //   revert does not undo it. A target the test impersonated is no target at all (not a
 //   victim, token or takeover context): the move is the test acting as that target, not
 //   an exploit (see lib/proof.mjs).
+// - tampers: cheatcodes that write a contract's storage or fake its call answers, with the
+//   address they act on: { target, how, slot?, kept }. `store` also keeps its slot. Read from
+//   EVERY trace, for any call kind, kept or not (fail closed: an entry can only drop a target).
+//   `loadAllocs` can write any account, so its target is "*". The harm gate refuses a scope
+//   target in this list as the source of proven harm (see lib/proof.mjs). vm.store and
+//   vm.mockCall leave no SSTORE step, so the call itself is the only trace of them.
 // - calls (from the "Execution" trace only): successful CALL nodes, in order, to see
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
@@ -80,6 +86,24 @@ const IMPERSONATE = new Set(IMPERSONATION_SIGS.map(selector4));
 // contract can never be a real tx.origin, so an origin prank AS a target is the
 // test acting as that target too: record it as well (fail closed).
 const WITH_ORIGIN = new Set(IMPERSONATION_SIGS.filter((s) => s.includes("(address,address")).map(selector4));
+// Cheatcodes that write storage or fake call answers: [signature, how, index of the address
+// argument (in 32-byte words), or -1 for "any account"]. From the pinned forge-std Vm.sol,
+// plus the bytes4 and bool overloads newer forge accepts. A test may declare its own
+// interface, so the selector is what counts.
+const TAMPER_SIGS = [
+  ["store(address,bytes32,bytes32)", "store", 0],
+  ["copyStorage(address,address)", "copyStorage", 1], // writes `to`, the second address
+  ["setArbitraryStorage(address)", "setArbitraryStorage", 0],
+  ["setArbitraryStorage(address,bool)", "setArbitraryStorage", 0],
+  ["loadAllocs(string)", "loadAllocs", -1],
+  ...["mockCall", "mockCallRevert"].flatMap((name) => [
+    `${name}(address,bytes,bytes)`, `${name}(address,uint256,bytes,bytes)`,
+    `${name}(address,bytes4,bytes)`, `${name}(address,uint256,bytes4,bytes)`,
+  ].map((sig) => [sig, name, 0])),
+  ["mockCalls(address,bytes,bytes[])", "mockCalls", 0],
+  ["mockCalls(address,uint256,bytes,bytes[])", "mockCalls", 0],
+];
+const TAMPER = new Map(TAMPER_SIGS.map(([sig, how, arg]) => [selector4(sig), { how, arg }]));
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -91,7 +115,7 @@ const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces) {
-  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], calls: [] };
+  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
   const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
@@ -184,6 +208,12 @@ export function extractControlTrace(traces) {
           // mockFunction(callee, target, data): the FIRST word is the callee whose
           // code is replaced. No code is recorded, as for cloneAccount.
           out.etches.push({ index: out.calls.length, target: "0x" + data.slice(24, 64), code: "0x", kept });
+        } else if (TAMPER.has(selector)) {
+          // Forge writes the state DB (or keeps the mock in its inspector) directly. Record
+          // it whether or not the frame was kept: an entry can only drop a target.
+          const { how, arg } = TAMPER.get(selector);
+          const target = arg < 0 ? "*" : "0x" + data.slice(arg * 64 + 24, arg * 64 + 64);
+          out.tampers.push({ target, how, ...(how === "store" ? { slot: "0x" + data.slice(64, 128) } : {}), kept });
         } else if (IMPERSONATE.has(selector)) {
           // The impersonated msg.sender is the first address argument. Forge keeps
           // prank state in its inspector, not in EVM state, so a revert does NOT

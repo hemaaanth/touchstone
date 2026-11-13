@@ -268,11 +268,16 @@ test('agent-run mounts the nav tools + prompt only for contracts/review, and onl
   const src = readFileSync(new URL('../agent-run.mjs', import.meta.url), 'utf8');
   const gate = src.match(/const navy = (.+);/);
   assert.ok(gate, 'a single `navy` gate exists');
-  assert.match(gate[1], /pack\.id === "contracts"/);
-  assert.match(gate[1], /pack\.id === "review"/);
-  assert.equal((gate[1].match(/pack\.id ===/g) ?? []).length, 2, 'no other pack is gated in');
+  // The two code-reading packs, named once, and a joined run when any module is
+  // one of them.
+  const reads = src.match(/const readsCode = \(id\) => (.+);/);
+  assert.ok(reads, 'one `readsCode` list exists');
+  assert.match(reads[1], /id === "contracts"/);
+  assert.match(reads[1], /id === "review"/);
+  assert.equal((reads[1].match(/id ===/g) ?? []).length, 2, 'no other pack is gated in');
+  assert.match(gate[1], /pack\.readsCode === true/, 'a joined code run is gated in too');
   assert.match(gate[1], /await resolveCbmBinary\(\)\) !== null/, 'gated on the binary actually resolving');
-  assert.match(src, /pack\.system\(ws\) \+ \(navy \? NAV_SYSTEM : ""\)/, 'prompt only when navy');
+  assert.match(src, /const navText = navy \?/, 'prompt only when navy');
   assert.match(src, /\.\.\.pack\.tools\(ws, state\), \.\.\.\(navy \? sourceNavTools\(ws\) : \[\]\)/, 'tools only when navy');
   // Both gated packs are real, selectable packs; every other pack is unchanged
   // because the gate names exactly those two ids (asserted above).

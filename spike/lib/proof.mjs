@@ -709,6 +709,33 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 // compiled artifacts) the gate falls back to the slot-0/EIP-1967 heuristic in
 // control-trace.mjs; a real replay always passes the layout, so production harm
 // is judged from the layout, never a position guess.
+// The scope targets the test tampered with: address -> "0x… (Name) via vm.how[, vm.how]".
+// One store is exempt: a write of a scope token's balance slot, at a base the
+// compiled layout names, for a holder that is itself a scope target. That is how
+// forge-std deal(token, holder, amount) funds the victim in a fixture; it only
+// sets what the victim holds, and the gate measures the loss from that value.
+// A balance written for any other holder (the attacker, the test) is refused:
+// in a share token it would be a forged claim on the victim's assets.
+function tamperedTargets(controlTrace, targets, balances) {
+  const out = new Map();
+  const scope = [...targets.keys()];
+  const funding = (t) => {
+    if (t.how !== "store" || !t.slot) return false;
+    const bases = balances?.get(targets.get(lc(t.target)) ?? "") ?? [];
+    return bases.some((base) => scope.some((holder) => mappingSlot(holder, base) === word(t.slot)));
+  };
+  for (const t of controlTrace?.tampers ?? []) {
+    const hit = t.target === "*" ? scope : [lc(t.target)].filter((a) => targets.has(a));
+    for (const a of hit) {
+      if (funding(t)) continue;
+      const prev = out.get(a);
+      if (!prev) out.set(a, `${a} (${targets.get(a)}) via vm.${t.how}`);
+      else if (!prev.includes(`vm.${t.how}`)) out.set(a, `${prev}, vm.${t.how}`);
+    }
+  }
+  return out;
+}
+
 export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null, balances = null } = {}) {
   const { targets, invoked, net } = scanTargets(traces, scope);
   for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
@@ -724,14 +751,23 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     const a = lc(p);
     if (targets.has(a)) { impersonated.push(`${a} (${targets.get(a)})`); targets.delete(a); }
   }
+  // A target whose storage the test wrote with a cheatcode (vm.store, copyStorage,
+  // setArbitraryStorage, loadAllocs), or whose call answers it faked (vm.mockCall,
+  // mockCalls, mockCallRevert), cannot be the source of proven harm: the loss may be
+  // what the cheatcode granted (an allowance, an owner slot, a credit). Kept or not,
+  // in setUp() or the body: fail closed, like an etch.
+  const tampered = tamperedTargets(controlTrace, targets, balances);
+  for (const a of tampered.keys()) targets.delete(a);
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
-  // Not proven. When the test impersonated a target, say so first, so the agent can
-  // repair its PoC; then keep the base reason, which may be the true cause.
+  // Not proven. When the test impersonated or tampered with a target, say so first,
+  // so the agent can repair its PoC; then keep the base reason, which may be the
+  // true cause.
+  const notes = [];
+  if (impersonated.length) notes.push(`the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp().`);
+  if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions, or use vm.store / vm.mockCall only on contracts outside the scope (forge-std deal() that funds a scope contract's token balance is fine).`);
   const refuse = (reason) => ({
     ok: false,
-    reason: impersonated.length
-      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp(). Without that target: ${reason}`
-      : reason,
+    reason: notes.length ? `${notes.join(" ")} Without that target: ${reason}` : reason,
     targets: names,
   });
   if (!targets.size) return refuse("the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target");

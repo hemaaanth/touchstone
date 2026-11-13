@@ -83,6 +83,21 @@ mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmS
 const realReach = await import("../lib/reach.mjs");
 const openReach = (target, opts) => (target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts));
 mock.module("../lib/reach.mjs", { exports: { ...realReach, openReach } });
+// A fetch with no network: it writes the tree the real one would.
+const realFetch = await import("../lib/fetch.mjs");
+const fetchClones = [];
+mock.module("../lib/fetch.mjs", {
+  exports: {
+    ...realFetch,
+    fetchSource: async (ws, url) => {
+      fetchClones.push({ ws, url });
+      mkdirSync(path.join(ws, "vendor", "acme__lib", "src"), { recursive: true });
+      writeFileSync(path.join(ws, "vendor", "acme__lib", "src", "Vault.sol"), "contract Vault {}\n");
+      writeFileSync(path.join(ws, "vendor", "acme__lib", "src", "app.ts"), "export const a = 1\n");
+      return { where: path.join("vendor", "acme__lib"), files: [{ path: "vendor/acme__lib/src/Vault.sol", pragmas: [] }], note: "fetched" };
+    },
+  },
+});
 
 const dir = mkdtempSync(path.join(tmpdir(), "run-continuity-"));
 const RESULTS = path.join(dir, "results");
@@ -857,6 +872,55 @@ test("a joined worker that dies after submitting still records the finding, unpr
       Object.assign(PACKS.domains, real);
     }
   });
+});
+
+test("a joined run the SERVER builds plans fetch, holds the fetch tools, and both modules can read", async () => {
+  const { packFor } = await import("../packs/index.mjs");
+  const { readTouchstone } = await import("../lib/sandbox.mjs");
+  fetchClones.length = 0;
+  scripts.push({
+    act: async (call) => {
+      writeFileSync(call.args[3], "");
+      const ws = call.args[4];
+      const pack = packFor(readTouchstone(ws));
+      const tools = new Map(pack.tools(ws, { poc: 0, found: [], passed: new Map() }).map((t) => [t.name, t]));
+      call.tools = [...tools.keys()];
+      await tools.get("fetch_source_review").execute({ url: REPO });
+      call.reviewList = (await tools.get("list_sources_review").execute({})).output.map((o) => o.text).join("");
+      call.contractsList = (await tools.get("list_sources_contracts").execute({})).output.map((o) => o.text).join("");
+    },
+    events: [fetched, done],
+  });
+  const { id } = await createRun({ targetId: scope.id, packs: ["review", "contracts"], mode: "solo" });
+  const r = await settle(id);
+  made.push(spawns.at(-1).args[4]);
+  // The server's plan has the fetch step, as a one-module run does.
+  const plan = r.events.find((e) => e.ev === "modules").modules;
+  assert.equal(plan.find((m) => m.id === "fetch")?.on, true, "the server plan turns fetch on");
+  // The tools are the run's own, suffixed.
+  assert.ok(spawns.at(-1).tools.includes("fetch_source_review") && spawns.at(-1).tools.includes("fetch_source_contracts"));
+  // One clone, and both modules list the fetched file.
+  assert.equal(fetchClones.length, 1);
+  assert.match(spawns.at(-1).reviewList, /vendor\/acme__lib\/src\/app\.ts/);
+  assert.match(spawns.at(-1).contractsList, /vendor\/acme__lib\/src\/Vault\.sol/);
+});
+
+test("a joined run that read its scope is not a coverage error; one that did not is", async () => {
+  // 2d removed BRIEF.md, so the coverage count is the only honest "was it read".
+  scripts.push({ act: work, events: [fetched, done] });
+  const read = await createRun({ targetId: scope.id, packs: ["review", "contracts"], mode: "solo" });
+  const r = await settle(read.id);
+  made.push(spawns.at(-1).args[4]);
+  assert.equal(r.status === "error", false, r.error ?? "");
+  assert.notEqual(r.errorInfo?.kind, "coverage");
+
+  scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+  const unread = await createRun({ targetId: scope.id, packs: ["review", "contracts"], mode: "solo" });
+  const r2 = await settle(unread.id);
+  made.push(spawns.at(-1).args[4]);
+  assert.equal(r2.status, "error");
+  assert.equal(r2.errorInfo?.kind, "coverage");
+  assert.match(r2.error, /1 of 1 scope member was not read/);
 });
 
 test("a joined follow-up refuses a duplicate of a finding the run already holds", async () => {
