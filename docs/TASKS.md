@@ -103,7 +103,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 |--------|-------|------|------------|
 | 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 with the author |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) |
-| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`) |
+| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`); `984fc07` reviewed NOT READY (`thr_vw5bjhk5kb`): two Majors; repair round 1 with the author |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
@@ -169,12 +169,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| B1 | review | Run header: drop the status word ("Failed", "Running", "Proven"). The dot says it. Keep the word for screen readers and in the dot's tooltip. Candidate `ui/run-view-polish` `984fc07`; reviewer `thr_vw5bjhk5kb`. |
-| B2 | review | Chat start jitter: the first box turns into an indented "tool scan" dropdown. Make the start of a run one calm, stable layout with no jump and no odd indent. |
-| B3 | review | The side panel changes width when it opens and closes. Same width in both states. |
+| B1 | doing | Run header: drop the status word ("Failed", "Running", "Proven"). The dot says it. Keep the word for screen readers and in the dot's tooltip. Candidate `ui/run-view-polish` `984fc07`; reviewer `thr_vw5bjhk5kb`. |
+| B2 | doing | Chat start jitter: the first box turns into an indented "tool scan" dropdown. Make the start of a run one calm, stable layout with no jump and no odd indent. |
+| B3 | doing | The side panel changes width when it opens and closes. Same width in both states. Review of `984fc07`: the 320px folded panel now covers chat content at 1184 (and at 1440 with the sidebar). Repair round 1. |
 | B4 | todo | Top-left "Touchstone" header is sticky at the same height as the run header but has no bottom rule. Add the rule so both line up as one bar. |
-| B5 | review | Finding pills show two status words ("Critical" + "Waiting"). Use icons and one indicator. Easier to scan. |
-| B6 | review | Error states: use the assistant-ui error-state and tool-error patterns (https://www.assistant-ui.com/elements/error-state, https://www.assistant-ui.com/elements/tool-error). Sentence case, proper copy, in the theme. No flash or jitter when the user presses Enter. |
+| B5 | doing | Finding pills show two status words ("Critical" + "Waiting"). Use icons and one indicator. Easier to scan. |
+| B6 | doing | Error states: use the assistant-ui error-state and tool-error patterns (https://www.assistant-ui.com/elements/error-state, https://www.assistant-ui.com/elements/tool-error). Sentence case, proper copy, in the theme. No flash or jitter when the user presses Enter. Review of `984fc07`: a refusal slower than 180 ms still flashes a message and a Thinking row. Repair round 1. |
 | B7 | todo | Run Info panel: modules and model are a plain text list. Modules become colored pills (see C1). Model reads cleanly. |
 
 ## C. One design language
