@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react"
 import { fetchRun, HttpError, streamRun } from "./api"
 import { isTerminal } from "./format"
-import { repairFinalSay } from "./final-text"
+import { closingHeld, repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
@@ -94,6 +94,9 @@ export interface Step {
   // The text is in `label`. The same step shows in both agents' threads.
   from?: string
   to?: string
+  // A "say" step made from the run's closing words, when the stream did not
+  // already hold them (an old record).
+  closing?: boolean
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -183,6 +186,9 @@ export interface RunState {
   // The run's pipeline plan, from the `modules` event at run start. Null on a
   // run that predates the event.
   modules: ModulePlanEntry[] | null
+  // The provider and model id the run started with, from the `provider` event.
+  // Null on a run that predates the event.
+  provider: { id: string; model: string } | null
   // The operator stopped the run's last piece of work. A follow-up clears it.
   stopped: boolean
 }
@@ -197,6 +203,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let errorInfo: RunFailure | null = null
   let coverage: RunFailure | null = null
   let finalText: string | null = null
+  // The closing step added at the run's end, until the run's status settles.
+  // If the run then ends as an error other than a coverage gap, the words go.
+  let closing: Step | null = null
   let closed = false
   let replying = false
   let replyStartedAt: number | null = null
@@ -215,6 +224,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let findingId: string | null = null
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
+  let provider: { id: string; model: string } | null = null
   let stopped = false
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -234,9 +244,16 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // answer itself: its text still starts with what that step shows.
   const stream = new Map<string, Step>()
   let turnKeys = new Set<string>()
+  // Where the current turn starts in `steps`. The closing words are checked
+  // and repaired only against the main agent's prose of this turn: an earlier
+  // turn's answer or a child's words are other texts, and stay as they are.
+  let turnStart = 0
   const newTurn = () => {
     turnKeys = new Set()
+    closing = null
+    turnStart = steps.length
   }
+  const turnProse = () => steps.slice(turnStart).filter((s) => !s.agent)
   const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string, i: number) => {
     const k = `${kind}:${conv}:${attempt ?? 0}`
     const prev = stream.get(k)
@@ -268,6 +285,10 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "provider":
+        // The provider and model the run started with. No step.
+        if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
+        break
       case "modules": {
         // The pipeline plan. It shows on the Modules page, not in the
         // transcript, so it adds no step.
@@ -689,9 +710,18 @@ export function reduceEvents(events: RunEvent[]): RunState {
         newTurn()
         break
       }
-      case "no-finding":
+      case "no-finding": {
+        // The agent's closing words. The stream usually holds them already,
+        // whole: then they show there, once. Otherwise (an old record) they
+        // become a prose step here, at the run's end, so a later turn shows
+        // below them.
         finalText = str(e.final) || null
+        if (finalText && !closingHeld(turnProse(), finalText) && !repairFinalSay(turnProse(), finalText)) {
+          closing = { key, kind: "say", phase, conv: "root", label: finalText, closing: true }
+          steps.push(closing)
+        }
         break
+      }
       case "coverage":
         coverage = e.info && typeof e.info === "object" ? (e.info as RunFailure) : null
         break
@@ -699,7 +729,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // The streamed prose can end one chunk short. The settled event holds the
         // whole answer, so the last prose step takes it. Old records get the same repair.
         const summary = e.summary as { final?: { text?: unknown } } | undefined
-        repairFinalSay(steps, summary?.final?.text)
+        repairFinalSay(turnProse(), summary?.final?.text)
         break
       }
       case "run-complete":
@@ -723,6 +753,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (typeof e.error === "string") error = e.error
         // The classified failure the server attached to a terminal error status.
         if (e.errorInfo && typeof e.errorInfo === "object") errorInfo = e.errorInfo as RunFailure
+        // The run's end status decides if the closing step stays: it does for
+        // "no-finding" and for a coverage gap, not for another end.
+        if (closing && ["recorded", "denied", "error", "no-finding"].includes(status)) {
+          const keep = status === "no-finding" || (status === "error" && errorInfo?.kind === "coverage")
+          if (!keep) steps.splice(steps.indexOf(closing), 1)
+          closing = null
+        }
         break
       case "closed":
         closed = true
@@ -834,6 +871,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     findingId,
     prepass,
     modules,
+    provider,
     stopped,
   }
 }

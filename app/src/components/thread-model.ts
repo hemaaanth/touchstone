@@ -2,6 +2,7 @@ import { createContext } from "react"
 import type { ThreadMessageLike } from "@assistant-ui/react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
 import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
+import { packOf } from "@/lib/catalog"
 import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
 import { isTerminal } from "@/lib/format"
@@ -240,14 +241,6 @@ export function buildMessages(
   flushSpawn()
   flushGroup()
 
-  // Closing prose (the agent's words when nothing could be proven). A run that
-  // did not read its whole scope ends as a coverage error, but its words stay.
-  const closing = status === "no-finding" || (status === "error" && state.errorInfo?.kind === "coverage")
-  if (owner == null && closing && state.finalText) {
-    if (!buf) buf = open("final")
-    ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
-  }
-
   flush()
   return msgs
 }
@@ -458,4 +451,10 @@ export async function sendCopy(
     update((xs) => xs.filter((x) => x.id !== copy.id))
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// The run's modules (packs), for Run Info. Today a run has one: its scope's
+// pack. The line takes a list, so a run that holds several shows them all.
+export function runModules(state: RunState): string[] {
+  return state.scope ? [packOf(state.scope)] : []
 }
