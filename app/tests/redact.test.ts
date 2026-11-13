@@ -634,3 +634,25 @@ describe("redact: a long run in the middle of the input finishes in linear time 
     expect(text(`x("DB_PASSWORD=s3cret12")`)).toBe(`x("DB_PASSWORD=s3cret12")`)
   })
 })
+
+describe("redact: a 0x address stays in code, flags, queries and header lines (final review B2)", () => {
+  const ADDR = "0x" + "ab12".repeat(10)
+  const KEY = "0x" + "ab12".repeat(16)
+  test("each address row stays as written", () => {
+    for (const s of [
+      `address token = ${ADDR};`,
+      `address constant TOKEN = ${ADDR};`,
+      `const rewardToken = "${ADDR}";`,
+      `TOKEN=${ADDR} forge test`,
+      `node poc.mjs --token ${ADDR} --amount 5`,
+      `curl "http://lab/api/price?token=${ADDR}"`,
+      `Token: ${ADDR}, amount: 5`,
+      `Pool created, token: ${ADDR} and the attacker drains it`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a 64-hex private key under a secret name stays masked", () => {
+    expect(text(`cast send --private-key ${KEY} ${ADDR}`)).toBe(`cast send --private-key [REDACTED] ${ADDR}`)
+    expect(text(`PRIVATE_KEY=${KEY} forge script`)).toBe("PRIVATE_KEY=[REDACTED] forge script")
+    expect(text(`Token: ${KEY}`)).toBe("Token: [REDACTED]")
+  })
+})

@@ -19,6 +19,8 @@ const MARKER = /^\[REDACTED[^\]\r\n]{0,80}\]$/
 // not kept: randomBytes(20).toString("hex") makes tokens of that shape.
 const PLAIN_VALUE = /^(?:|0x[0-9a-fA-F]{40})$/
 const keepUnder = (v) => MARKER.test(v) || PLAIN_VALUE.test(v)
+// A header line whose value starts with a 0x address: "Token: 0x…, amount: 5".
+const ADDRESS_LEAD = /^0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/
 
 // Object keys and header-cell names whose value is a credential.
 const SECRET_KEY = /^(?:token|bearer|password|passwd|pwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
@@ -206,7 +208,7 @@ function maskQuoteHeader(m, lead, name, sep, raw) {
 const FINGERPRINT = /^[^\s:]{1,512}:[0-9a-f]{64}$/
 
 function maskHeaderValue(name, value) {
-  if (!secretName(name) || value.startsWith("[REDACTED") || keepUnder(value)) return null
+  if (!secretName(name) || value.startsWith("[REDACTED") || keepUnder(value) || ADDRESS_LEAD.test(value)) return null
   if (/^secret$/i.test(name) && FINGERPRINT.test(value)) return null
   if (/authorization$/i.test(name)) {
     const m = /^([A-Za-z][\w-]*)([ \t]+)([\s\S]+)$/.exec(value)
@@ -271,7 +273,7 @@ function maskPairValue(name, value) {
 function maskQuery(m, head, name, value) {
   if (!secretName(name) && !QUERY_NAME.test(name)) return m
   const v = value.slice(0, tailStart(value, ".:!?"))
-  return secretish(v, 6) ? head + MARK + value.slice(v.length) : m
+  return secretish(v, 6) && !keepUnder(v) ? head + MARK + value.slice(v.length) : m
 }
 
 function maskCookieArg(m, head, q, quoted, bare) {
@@ -282,7 +284,7 @@ function maskCookieArg(m, head, q, quoted, bare) {
 
 function maskFlag(m, head, name, q, quoted, bare) {
   const v = quoted ?? bare
-  if (!secretName(name) || !secretish(v, 6)) return m
+  if (!secretName(name) || !secretish(v, 6) || keepUnder(v)) return m
   return q ? `${head}${q}${MARK}${q}` : head + MARK
 }
 
@@ -298,7 +300,7 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
     v = bare.slice(0, cut)
     rest = bare.slice(cut)
   }
-  if (!secretName(name) || !secretish(v, 6) || (bare != null && MEMBER_PATH.test(v))) return m
+  if (!secretName(name) || !secretish(v, 6) || keepUnder(v) || (bare != null && MEMBER_PATH.test(v))) return m
   const q = dq != null ? '"' : sq != null ? "'" : ""
   return `${name}${sep}${q}${MARK}${q}${rest}`
 }
