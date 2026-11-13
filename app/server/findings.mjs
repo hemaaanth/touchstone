@@ -179,10 +179,18 @@ function normalize(raw, { id, runId, finding }) {
   const lastAttempt = pocCalls.length ? pocCalls[pocCalls.length - 1]?.args?.test_source ?? null : null
   const testSource = submittedSource || transcriptSource || (forgeProven ? null : lastAttempt) || null
 
-  // The write-up is this finding's own submit_finding call. A run can submit
-  // several findings, so match on the test contract it names.
-  const submits = (t.calls || []).filter((x) => x.name === "submit_finding")
-  const submit = submits.find((x) => x.args?.poc_contract === finding.poc) || (submits.length === 1 ? submits[0] : null)
+  // The write-up is this finding's own submit call. A run can submit several
+  // findings, so match on the label or the test contract it names. In a joined
+  // run a tool name that two modules share ends in the module id
+  // (submit_finding_web, submit_finding_contracts; spike/packs/multi.mjs), and
+  // two modules may share a label, so only this finding's module's call counts.
+  // A plain submit_finding is a one-module run, an old record, or the one
+  // module of a joined run that has the tool.
+  const ownTool = finding.pack ? `submit_finding_${String(finding.pack).replace(/[^A-Za-z0-9_]/g, "_")}` : null
+  const joined = Array.isArray(r.packs) && r.packs.length > 1
+  const submits = (t.calls || []).filter((x) => x.name === "submit_finding" || (ownTool && x.name === ownTool))
+  const named = (x) => x.args?.label ?? x.args?.poc_contract
+  const submit = submits.find((x) => finding.poc != null && named(x) === finding.poc) || (!joined && submits.length === 1 ? submits[0] : null)
   const readSrc = (t.results || []).find((x) => x.name === "read_source")
 
   const modelName = Object.keys((r.usage && r.usage.models) || {})[0] || null
@@ -437,7 +445,11 @@ export async function getFinding(id, { events: withEvents = true } = {}) {
   const all = await readRuns()
   const found = all.find((f) => f.id === id) || null
   if (!found) return null
-  const { _index, ...finding } = found
+  const { _index, ...rest } = found
+  // When the run started (ms), as the list sends it. `ms` is the run's
+  // duration, so a reader that wants a date uses this (replay-bundle.mjs
+  // provenDate takes `at` first).
+  const finding = { ...rest, at: await runStartedAt(rest.runId) }
   if (!withEvents) return { ...finding, events: [] }
   // The transcript belongs to the run, which may hold several findings.
   const events = await readEvents(finding.runId)
