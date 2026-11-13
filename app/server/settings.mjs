@@ -17,7 +17,7 @@ import {
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
-import { spent } from "../../spike/lib/inference.mjs"
+import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
@@ -34,18 +34,10 @@ import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 // Note: the Vite dev server answers CORS preflights for localhost origins. So
 // a page on another localhost port can send a JSON POST. The Origin == Host
 // rule and the token are what refuse it.
-// The token is TOUCHSTONE_GRANT_TOKEN, else a random one printed once to the
-// server terminal. It is the same env var and header T7's grant routes use.
-// The same single token T7's grant routes use (grant-store.GRANT_TOKEN), so the
-// operator has exactly one console token for every mutating console action.
+// The token is grant-store.GRANT_TOKEN, the same single token T7's grant routes
+// use. The operator never types it. The dev server writes it into the page it
+// serves (vite.config.ts), and the page sends it back on each write.
 export const SETTINGS_TOKEN = GRANT_TOKEN
-let tokenAnnounced = false
-function announceToken() {
-  if (tokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
-  tokenAnnounced = true
-  process.stderr.write(`[settings] to change Settings, paste this console token on the Settings page (header x-touchstone-grant-token): ${SETTINGS_TOKEN}\n`)
-}
-announceToken()
 
 // Why this write is refused, as { status, error }, or null when it may go on.
 export function settingsWriteRefusal(req) {
@@ -64,7 +56,7 @@ export function settingsWriteRefusal(req) {
   }
   const token = h["x-touchstone-grant-token"]
   if (!token || token !== SETTINGS_TOKEN) {
-    return { status: 403, error: "missing or wrong console token. Paste the token the server printed at start" }
+    return { status: 403, error: "this page is out of date. Reload it" }
   }
   return null
 }
@@ -80,6 +72,47 @@ export const APP_DEFAULT_RUN_BUDGET_USD = 5
 
 export function appRunBudgetUsd(cfg = readConfig()) {
   return cfg.runBudgetUsd == null ? APP_DEFAULT_RUN_BUDGET_USD : runBudgetUsd(cfg)
+}
+
+// The total spend cap: every app run stops once the shared ledger
+// (spike/spend.json, or SPEND_LEDGER) reaches it. The owner's default is $50.85.
+// providers.json may set spendCapUsd. SPEND_CAP_USD in the server's env can
+// only lower the cap, never raise it. A value that is not a positive dollar
+// amount throws, so the cap is never "no limit". Read-only in the console.
+export const APP_DEFAULT_SPEND_CAP_USD = DEFAULT_SPEND_CAP_USD
+export function appSpendCapUsd(cfg = readConfig()) {
+  return spendCapUsd(cfg)
+}
+
+// Why a new run (or a follow-up) may not start under the total cap, or null.
+// Fails closed: an unreadable ledger or an unusable cap refuses the run.
+export function spendCapRefusal(cfg = readConfig()) {
+  let capUsd
+  try {
+    capUsd = appSpendCapUsd(cfg)
+  } catch (err) {
+    return `Run refused: ${err.message}`
+  }
+  const ledger = ledgerState()
+  if (ledger.error) return `Run refused: ${ledger.error}`
+  if (ledger.usd >= capUsd) {
+    return `Run refused: the total spend cap is reached. The spend ledger shows $${ledger.usd.toFixed(2)} of the $${capUsd.toFixed(2)} total cap. Raise the total cap (spendCapUsd or SPEND_CAP_USD) to start new runs.`
+  }
+  return null
+}
+
+// The ledger total and the total cap for screens. Never throws: a broken
+// ledger or cap shows as an error line instead of a number.
+export function totalSpendState(cfg = readConfig()) {
+  const ledger = ledgerState()
+  let capUsd = null
+  let capError = null
+  try {
+    capUsd = appSpendCapUsd(cfg)
+  } catch (err) {
+    capError = err.message
+  }
+  return { usd: ledger.usd, capUsd, ledgerError: ledger.error ?? capError }
 }
 
 function keyState(p) {
@@ -118,7 +151,7 @@ export function getSettings() {
     default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
-    spend: { usd: spent(), budgetUsd: appRunBudgetUsd(cfg) },
+    spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
   }

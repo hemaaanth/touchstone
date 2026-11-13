@@ -28,9 +28,10 @@ import {
   readLabHandle,
   runRequestScript,
   startLab,
-  stopLab,
   teardownPersistedLab,
   writeLabHandle,
+  writeScanHandle,
+  teardownPersistedScan,
   requireImage,
 } from "../../lib/proof-http.mjs";
 
@@ -617,16 +618,16 @@ function tools(ws, state) {
 async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   if (isLive(ws)) return livePrepass(ws, { emit, reach });
   await requireImage(image, "web");
-  const handle = await startLab({ image });
+  const handle = await startLab({ image, onStart: (partial) => writeLabHandle(ws, partial) });
   writeLabHandle(ws, handle);
   emit({ ev: "web-lab-started", image, alias: handle.alias });
 
   // A second, throwaway lab: scanner traffic must not touch the one the agent
   // will explore, or it would pollute the recorded transcripts and lab state.
   let scan = { coverage: [], leads: [] };
-  let scanLab = null;
   try {
-    scanLab = await startLab({ image });
+    const scanLab = await startLab({ image, onStart: (partial) => writeScanHandle(ws, partial) });
+    writeScanHandle(ws, scanLab);
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
     // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
     const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
@@ -637,7 +638,7 @@ async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {
-    if (scanLab) await stopLab(scanLab).catch(() => {});
+    await teardownPersistedScan(ws).catch(() => {});
   }
   const record = { pack: "web", coverage: scan.coverage, leads: scan.leads };
   writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));
@@ -755,6 +756,9 @@ export default {
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
+  // network. Only the request scripts and replays go through the grant gate.
+  scanNet: "open",
   system: (ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM),
   tools,
   kickoff,

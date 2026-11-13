@@ -61,14 +61,14 @@ export function ExportReport({ findingId }: { findingId: string }) {
 // One disclosure pattern for every folded section — Run details, Raw replay
 // output. Same chevron (rotates down when open), same quiet label. Closed by
 // default; progressive disclosure per restraint.md.
-export function Fold({ label, children }: { label: string; children: ReactNode }) {
+export function Fold({ label, children, keepMounted = false }: { label: string; children: ReactNode; keepMounted?: boolean }) {
   return (
     <Collapsible>
       <CollapsibleTrigger className="group flex w-full items-center gap-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
         <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[panel-open]:rotate-90" />
         {label}
       </CollapsibleTrigger>
-      <CollapsibleContent>
+      <CollapsibleContent keepMounted={keepMounted}>
         <div className="pt-4 pl-[22px]">{children}</div>
       </CollapsibleContent>
     </Collapsible>

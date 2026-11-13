@@ -38,11 +38,33 @@ const grantsFile = () => process.env.TOUCHSTONE_GRANTS_FILE || path.join(DATA_DI
 export const GRANT_KINDS = ["operator-owned", "authorized"];
 
 // One shared console token for every mutating console action — both the live-reach
-// grant routes and the settings-write guard import THIS. TOUCHSTONE_GRANT_TOKEN
-// pins it (tests, or an operator who wants a known value); otherwise one random
-// token is minted per process. Single source => the operator sees and pastes one
+// grant routes and the settings-write guard import THIS. Single source => one
 // token, never two that happen to share the x-touchstone-grant-token header.
-export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || randomUUID();
+//
+// The token is made once and saved next to the grants file, so it stays the same
+// across server restarts and an open page keeps working. The operator never
+// types it: the dev server writes it into the page it serves. It is saved in
+// a file, NOT in process.env, because the agent child inherits the server's env
+// and must never hold the token. TOUCHSTONE_GRANT_TOKEN pins a known value for
+// tests; TOUCHSTONE_GRANT_TOKEN_FILE moves the file so a test uses a throwaway.
+function savedToken() {
+  const file = process.env.TOUCHSTONE_GRANT_TOKEN_FILE || path.join(DATA_DIR, "console-token");
+  try {
+    const saved = readFileSync(file, "utf8").trim();
+    if (saved) return saved;
+  } catch {
+    /* no file yet */
+  }
+  const token = randomUUID();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, token + "\n", { mode: 0o600 });
+  } catch {
+    /* a read-only disk: the token lasts for this process only */
+  }
+  return token;
+}
+export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || savedToken();
 
 // Read the whole store. A missing file or unparsable JSON yields an empty list,
 // so a hand-edited or absent file degrades to "no grants", never a throw.

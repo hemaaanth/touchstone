@@ -1,0 +1,4 @@
+$ORIGIN com.
+$TTL 300
+@ IN SOA ns.test. hostmaster.test. 2026111201 3600 600 86400 300
+@ IN NS ns.test.

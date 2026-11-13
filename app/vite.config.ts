@@ -6,6 +6,8 @@ import { defineConfig, type Plugin } from 'vite'
 import { handleApi } from './server/api.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
 import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings, handleGrants } from './server/runs-http.mjs'
+// @ts-expect-error — plain .mjs module, no types needed
+import { SETTINGS_TOKEN } from './server/settings.mjs'
 
 // The whole backend, in-process inside Vite's dev server. The Vite dev server
 // is a real long-lived Node process, so it can spawn the agent engine, hold an
@@ -18,6 +20,10 @@ import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings,
 function touchstoneApi(): Plugin {
   return {
     name: 'touchstone-api',
+    // The server writes the console token into the page, and the page sends it
+    // back on each write (src/lib/console-token.ts). The operator never sees
+    // it. A page on another site cannot read this page, so it has no token.
+    transformIndexHtml: () => [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: SETTINGS_TOKEN }, injectTo: 'head' }],
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (!req.url || !req.url.startsWith('/api/')) return next()

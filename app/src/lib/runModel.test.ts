@@ -51,6 +51,15 @@ test("inside one turn a snapshot that changes still updates in place", () => {
   assert.deepEqual(rows([say(0, "draft"), say(0, "final")]), ["say:final"])
 })
 
+test("a server restart shows which step started again, and its new steps stay separate", () => {
+  const out = rows([say(0, "Before the restart"), ev("phase-restarted", { phase: "agent" }), say(0, "After it")])
+  assert.deepEqual(out, ["say:Before the restart", "note:The server restarted, so the agent turn started again", "say:After it"])
+  assert.deepEqual(rows([ev("phase-restarted", { phase: "prepass" })]), ["note:The server restarted, so the tool scan started again"])
+})
+
+test("a stop request shows before the run stops", () => {
+  assert.deepEqual(rows([ev("stop-requested"), ev("stopped")]), ["note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+})
 
 class FakeEventSource {
   static sources: FakeEventSource[] = []
@@ -291,4 +300,39 @@ test("after a drop an open snapshot follows from its own length and appends live
     assert.equal(fetches(), 2)
     assert.equal(FakeEventSource.sources.length, 2)
   })
+})
+
+// A recorded run that did not read its whole scope keeps a coverage warning.
+// A later cleared note (a follow-up that read the rest) removes it.
+test("a coverage note on a recorded run is kept as a warning, and a cleared note removes it", () => {
+  const info = { kind: "coverage", title: "Part of the scope was not read", hint: "h", detail: "d", message: "m", retryable: false, spentUsd: 0 }
+  const recorded = [ev("coverage", { info }), ev("status", { status: "recorded", decision: "approve" })]
+  const s = reduceEvents(recorded)
+  assert.equal(s.status, "recorded")
+  assert.equal(s.coverage?.title, "Part of the scope was not read")
+  assert.equal(s.errorInfo, null)
+  assert.equal(reduceEvents([...recorded, ev("coverage", { info: null })]).coverage, null)
+})
+
+// A Review lead arrives as a `lead` event the moment the agent records it. The
+// run view lists it under Leads with its evidence, worst first, one per id.
+// A lead is never proven, whatever the event says.
+test("lead events fill state.leads with evidence, one per id, worst first, never proven", () => {
+  const state = reduceEvents([
+    ev("lead", { t: 1, id: "lead-a", severity: "medium", file: "src/svg.ts", line: 12, title: "SVG script passes through", reason: "no sanitizer", agent: "a-52" }),
+    ev("lead", { t: 2, id: "lead-b", severity: "high", file: "src/avatar.ts", line: 88, title: "SSRF via avatar URL", reason: "fetch with no host check", proof: "hit 169.254.169.254" }),
+    ev("lead", { t: 3, id: "lead-a", severity: "medium", file: "src/svg.ts", line: 12, title: "SVG script passes through", reason: "no sanitizer on render", agent: "a-52", proven: true }),
+    ev("lead", { t: 4, id: "", file: "", line: 0 }),
+  ])
+  assert.deepEqual(
+    state.leads.map((l) => [l.id, l.severity, l.file, l.line, l.author]),
+    [
+      ["lead-b", "high", "src/avatar.ts", 88, "coordinator"],
+      ["lead-a", "medium", "src/svg.ts", 12, "a-52"],
+    ],
+  )
+  assert.equal(state.leads[1].reason, "no sanitizer on render")
+  assert.equal(state.leads[0].proof, "hit 169.254.169.254")
+  assert.ok(state.leads.every((l) => !("proven" in l)))
+  assert.deepEqual(state.findings, [])
 })

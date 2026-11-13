@@ -17,6 +17,8 @@ true. It proves each one with a Foundry test. The test runs offline in Docker.
 
 - A lab: `src/KeysLab.sol` deploys a real Safe 1.4.1. The pre-pass writes the
   Safe code to `lib/safe-artifacts/`. A test loads it with `vm.getCode`.
+  `src/CosignVault.sol` is a small co-signing vault beside the Safes. Its `required`
+  quorum is never set.
 - A chain observation. The pre-pass writes `chain-observation.json` into the
   workspace. The agent reads it through `safe_state`.
 
@@ -51,8 +53,9 @@ first. A lead only one reader returned ranks lower.
 
 The pre-pass also reads `src/**/*.sol` with our own text checks. They need no lab world.
 A real Foundry folder gets them too. Each lead names the contract, function, file and
-line. A lead is never a finding. Aderyn runs on the same source. A lead both return is
-`corroborated`.
+line. A lead is never a finding. Slither and Aderyn run on the same source, in Docker with
+no network. A lead two engines return is `corroborated`. Slither leads (for example
+`uninitialized-state`) and Aderyn leads reach the agent in the brief.
 
 | Check | Impact | What it means |
 |-------|--------|---------------|
