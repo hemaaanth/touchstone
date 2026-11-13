@@ -106,6 +106,16 @@ export const TARGETS = [
     proofSurface: SANDBOX_FOUNDRY,
   },
   {
+    id: "vault-shares",
+    title: "ShareVault · share math",
+    kind: "lab",
+    blurb: "A share vault that ships its own property suite. withdraw rounds the shares it burns down, so small withdrawals are free; redeem books shares as assets, so the vault turns insolvent after yield.",
+    entry: "src/ShareVault.sol",
+    signal: "symbolic",
+    dir: "lab/vault-shares",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
+  {
     id: "vault-bytecode",
     title: "Vault · bytecode only",
     kind: "lab",

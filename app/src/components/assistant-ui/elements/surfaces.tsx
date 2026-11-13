@@ -65,7 +65,7 @@ export type Mark = "running" | "writing" | "done" | "pass" | "fail" | "proven" |
 const MARK: Record<Mark, { word: string; ink: string }> = {
   running: { word: "Running", ink: "text-muted-foreground" },
   writing: { word: "Writing", ink: "text-muted-foreground" },
-  waiting: { word: "Waiting", ink: "text-warn" },
+  waiting: { word: "Waiting", ink: "text-muted-foreground" },
   done: { word: "Done", ink: "text-muted-foreground" },
   pass: { word: "Passed", ink: "text-foreground" },
   proven: { word: "Proven", ink: "text-ok" },
