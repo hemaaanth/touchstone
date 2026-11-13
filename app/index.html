@@ -9,9 +9,16 @@
     <script>
       // The console follows the system's light or dark setting, live. This
       // runs before the first paint, so the page never flashes the wrong theme.
+      // The meta tag then names the one scheme in use, as the root's CSS
+      // color-scheme does (src/tokens.css): a browser's forced dark mode has no
+      // reason to recolour a page that already says it is dark.
       ;(() => {
         const dark = window.matchMedia("(prefers-color-scheme: dark)")
-        const apply = () => document.documentElement.classList.toggle("dark", dark.matches)
+        const meta = document.querySelector('meta[name="color-scheme"]')
+        const apply = () => {
+          document.documentElement.classList.toggle("dark", dark.matches)
+          if (meta) meta.content = dark.matches ? "dark" : "light"
+        }
         apply()
         dark.addEventListener("change", apply)
       })()

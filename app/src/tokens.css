@@ -4,6 +4,11 @@
    CSS: only the :root block and the .dark block. */
 
 :root {
+    /* The scheme the page really uses, declared on the root for each theme. A
+       browser that recolours pages for its own dark mode (Chrome's auto dark,
+       Samsung Internet's "prefer media query" setting) leaves a page alone that
+       says it is already dark. index.html keeps the meta tag in step. */
+    color-scheme: light;
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -20,7 +25,9 @@
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
     --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
+    /* Field edges (inputs, selects, the composer): one step stronger than
+       --border, so a field reads as a field on white (N6). */
+    --input: oklch(0.87 0 0);
     --ring: oklch(0.708 0 0);
     --chart-1: oklch(0.646 0.222 41.116);
     --chart-2: oklch(0.6 0.118 184.704);
@@ -59,6 +66,7 @@
 }
 
 .dark {
+    color-scheme: dark;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);

@@ -721,7 +721,7 @@ export function RunHeader({
   // title never moves when the status changes.
   const head = runHeadStatus(state, status)
   return (
-    <header className={cn("flex h-12 shrink-0 items-center border-b px-5 pe-3 max-md:px-3", narrow ? "gap-2" : "gap-2.5")}>
+    <header className={cn("flex h-12 shrink-0 items-center border-b bg-background px-5 pe-3 max-md:px-3", narrow ? "gap-2" : "gap-2.5")}>
       <SidebarTrigger className="-ml-1 md:hidden" />
       <TooltipProvider delay={300}>
         <Tooltip>
@@ -779,7 +779,7 @@ function PeekHeader({
   const to = a?.endedAt ?? runEnd(state)
   const look = agentLook(state, a)
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
+    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b bg-background px-5 pe-3">
       {back}
       <span className={cn("size-[7px] shrink-0 rounded-full", look.dot)} />
       <span className="min-w-0 truncate text-sm font-medium">{agentName(state, id)}</span>
@@ -806,7 +806,7 @@ function PeekHeader({
 function MissingFile({ back, onClose }: { back: React.ReactNode; onClose: () => void }) {
   return (
     <>
-      <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
+      <header className="flex h-12 shrink-0 items-center gap-2.5 border-b bg-background px-5 pe-3">
         {back}
         <span className="text-sm text-muted-foreground">Loading file…</span>
         <Button variant="ghost" size="icon-sm" className="ml-auto text-muted-foreground" aria-label="Close" onClick={onClose}>
