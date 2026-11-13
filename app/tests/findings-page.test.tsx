@@ -372,7 +372,7 @@ describe("a row: red only on a proven finding, green only after a replay", () =>
 
 // ── N2: still columns, and one date range ──────────────────────────────────
 
-const { fromDayRange, parseDay, rangeLabel, toDayRange } = await import("../src/lib/findings-view")
+const { fromDayRange, normaliseDays, parseDay, rangeLabel, toDayRange } = await import("../src/lib/findings-view")
 const { FINDING_ROW_COLS, FindingsLoading } = await import("../src/components/findings-page")
 
 describe("the date range (one picker for the view's two days)", () => {
@@ -416,6 +416,39 @@ describe("the date range (one picker for the view's two days)", () => {
       const day = new Date(f.at as number)
       expect(day >= d(2026, 9, 10) && day < d(2026, 9, 13)).toBe(true)
     }
+  })
+})
+
+describe("a stored view's days are made safe when read (review m2, m3)", () => {
+  const NOW = new Date(2026, 10, 13)
+  const view = (from: string, to: string) => normaliseDays({ ...DEFAULT_VIEW, from, to })
+
+  test("m2: a 'to' before 'from' (saved by the old two inputs) is dropped: the label reads 'From …', the filter keeps rows", () => {
+    const v = view("2026-09-12", "2026-09-01")
+    expect([v.from, v.to]).toEqual(["2026-09-12", ""])
+    expect(rangeLabel(v.from, v.to, NOW)).toBe("From Sep 12")
+    // Unnormalised, the same view shows an inverted label and filters to nothing.
+    expect(filterFindings(many, { ...DEFAULT_VIEW, from: "2026-09-12", to: "2026-09-01" })).toHaveLength(0)
+    expect(filterFindings(many, v).length).toBeGreaterThan(0)
+  })
+
+  test("m3: a day that is not a real date is no bound, in the label and in the filter", () => {
+    for (const [from, to] of [["bogus", ""], ["", "2026-02-30"], ["2026-13-01", "nope"]]) {
+      const v = view(from, to)
+      expect([v.from, v.to]).toEqual(["", ""])
+      expect(rangeLabel(v.from, v.to, NOW)).toBe("Any date")
+      expect(filterFindings(many, v)).toHaveLength(filterFindings(many, DEFAULT_VIEW).length)
+    }
+    // One bad end, one good end: the good one stays.
+    expect([view("bogus", "2026-09-20").from, view("bogus", "2026-09-20").to]).toEqual(["", "2026-09-20"])
+    // Unnormalised, a bad 'from' drops every dated row (the old filter compared the raw string).
+    expect(filterFindings(many, { ...DEFAULT_VIEW, from: "bogus" })).toHaveLength(0)
+  })
+
+  test("a valid view is returned as it is", () => {
+    const v = { ...DEFAULT_VIEW, from: "2026-09-01", to: "2026-09-12" }
+    expect(normaliseDays(v)).toBe(v)
+    expect(normaliseDays(DEFAULT_VIEW)).toBe(DEFAULT_VIEW)
   })
 })
 

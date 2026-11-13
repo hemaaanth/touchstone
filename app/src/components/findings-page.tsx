@@ -3,7 +3,7 @@ import { Bot, Bug, CalendarDays, Check, ChevronRight, FileArchive, FileText, Pan
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, fromDayRange, isFiltered, moduleOf, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, fromDayRange, isFiltered, moduleOf, normaliseDays, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -40,7 +40,7 @@ function readView(): FindingsView {
     }
     if (!SORTS.some((s) => s.value === view.sort)) view.sort = DEFAULT_VIEW.sort
     if (view.dismissed !== "show") view.dismissed = "hide"
-    return view
+    return normaliseDays(view)
   } catch {
     return { ...DEFAULT_VIEW }
   }
