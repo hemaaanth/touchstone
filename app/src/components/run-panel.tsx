@@ -4,6 +4,7 @@ import type { AgentNode, ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
 import { ModulePills } from "@/components/module-pill"
@@ -494,7 +495,15 @@ function RunInfo({
         <ModelLine key="model" provider={state.provider?.id ?? null} id={state.provider?.model ?? model} agents={mode === "fleet" ? state.agents.length : null} />
       ) : null,
     ],
-    ["Scope", state.scope?.title ?? null],
+    [
+      "Scope",
+      state.scope?.title || state.brief ? (
+        <span key="scope" className="flex flex-col gap-0.5">
+          {state.scope?.title ? <span>{state.scope.title}</span> : null}
+          {state.brief ? <ScopeBrief text={state.brief} /> : null}
+        </span>
+      ) : null,
+    ],
     [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={packs} compact /> : null],
     ["Steps", steps.length ? steps.join(" · ") : null],
   ]
@@ -509,6 +518,21 @@ function RunInfo({
           </div>
         ))}
     </dl>
+  )
+}
+
+// The scope brief the agent got: one quiet line, the text one click away.
+function ScopeBrief({ text }: { text: string }) {
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="group -mx-1 flex items-center gap-1 rounded-sm px-1 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <ChevronRight className="size-3 shrink-0 transition-transform group-data-[panel-open]:rotate-90" />
+        Scope brief applied
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <p className="mt-1 max-h-48 overflow-y-auto rounded-md bg-muted/50 px-2 py-1.5 leading-relaxed whitespace-pre-wrap text-muted-foreground">{text}</p>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 

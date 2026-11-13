@@ -32,7 +32,6 @@ function workspace() {
   dirs.push(ws);
   mkdirSync(join(ws, "src/svc"), { recursive: true });
   writeFileSync(join(ws, "src/svc/server.js"), SRC);
-  writeFileSync(join(ws, "BRIEF.md"), "# Scope\n- src/svc\n");
   writeFileSync(join(ws, ".touchstone.json"), JSON.stringify({ pack: "review" }));
   const events = join(ws, "events.jsonl");
   writeFileSync(events, "");
