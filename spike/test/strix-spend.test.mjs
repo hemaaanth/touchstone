@@ -18,7 +18,7 @@ process.env.RUN_BUDGET_USD = "5";
 delete process.env.SPEND_CAP_USD;
 delete process.env.STRIX_BUDGET_USD;
 
-const FAKE = { id: "fake", label: "Fake", baseUrl: "http://127.0.0.1:9", keyEnv: null, models: { m: { id: "fake-model", input: 1, output: 5 } } };
+const FAKE = { id: "fake", label: "Fake", baseUrl: "http://127.0.0.1:9", keyEnv: null, models: { m: { id: "fake-model", input: 1, output: 5, context: 100_000, maxOut: 10_000 } } };
 const realProviders = await import("../lib/providers.mjs");
 mock.module("../lib/providers.mjs", { namedExports: {
   ...realProviders,
@@ -43,7 +43,7 @@ mock.module("../lib/strix.mjs", { namedExports: {
   },
 } });
 
-const { livePrepass } = await import("../packs/web/live.mjs");
+const { livePrepass, strixWorstUsd } = await import("../packs/web/live.mjs");
 const { runSpend } = await import("../lib/inference.mjs");
 
 const ledger = (totalUsd) => writeFileSync(LEDGER, JSON.stringify({ totalUsd, calls: 0, byModel: {} }));
@@ -71,16 +71,28 @@ test("strix: three $4.30 scans in one process all run and all go on the ledger",
   assert.equal(runSpend().usd, 0);
 });
 
-test("strix: no scan starts when its budget would pass the total cap", async () => {
-  // $50.50 spent: a $0.50 scan would end at $51.00, over the $50.85 cap.
-  ledger(50.5);
-  const r = await prepass();
-  assert.equal(scans, 0);
-  assert.equal(strixOf(r).status, "unavailable");
-  assert.match(strixOf(r).reason, /Total spend cap reached/);
-  assert.equal(total(), 50.5);
-  // $50.30 spent: the scan fits, so it runs.
-  ledger(50.3);
+test("strix: no scan starts when its budget plus one full turn would pass the total cap", async () => {
+  // The fake model's worst turn: 100k in at $1/1M plus 10k out at $5/1M = $0.15.
+  // So a scan can spend $0.50 + $0.15 = $0.65 against the $50.85 cap.
+  assert.ok(Math.abs(strixWorstUsd(FAKE.models.m) - 0.65) < 1e-9);
+  // $50.50 spent: the $0.50 budget alone passes the cap.
+  // $50.25 spent: the budget alone fits ($50.75), but one more turn ($50.90) does not.
+  for (const spentUsd of [50.5, 50.25]) {
+    ledger(spentUsd);
+    const r = await prepass();
+    assert.equal(scans, 0, `$${spentUsd} spent`);
+    assert.equal(strixOf(r).status, "unavailable");
+    assert.match(strixOf(r).reason, /Total spend cap reached/);
+    assert.equal(total(), spentUsd);
+  }
+  // $50.10 spent: budget and one turn fit ($50.75), so it runs.
+  ledger(50.1);
   assert.equal(strixOf(await prepass()).status, "ok");
   assert.equal(scans, 1);
+});
+
+test("strix: a model with no window, answer size or price counts as an expensive one", () => {
+  // 1M in at $1/1M plus 65536 out at $5/1M, on top of the $0.50 budget.
+  assert.ok(Math.abs(strixWorstUsd({ id: "x" }) - (0.5 + 1 + 0.32768)) < 1e-9);
+  assert.ok(Math.abs(strixWorstUsd({ id: "x", input: 0, output: 0 }) - 0.5) < 1e-9);
 });

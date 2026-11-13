@@ -220,7 +220,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
-| G7 | doing | Part A merged `d1caa23` (Heimdall comment and licence note). Part B `fix/wave-spend-cap`: review of `b31b23c` NOT READY (`thr_yzqyhqy2tj`): a model with no price is charged $0 for its Strix scan. Repair round 1 with author `thr_xjgfmpmrg3`. |
+| G7 | done | Part A merged `d1caa23` (Heimdall comment and licence note). Part B merged `f723d57` (`fix/wave-spend-cap` `51fce60`): Strix cap check reserves budget plus one worst turn; a model with no price is charged at the fallback prices. Review READY after one repair round (`thr_yzqyhqy2tj`). Known gap stays: up to six unrecorded attempts before a response header (comment in `provider.mjs`). |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
 | G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
@@ -229,7 +229,9 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
+| H1 | doing | PR 4 (harm gate), `merge/pr-4` `4915bde`: re-review NOT READY (`thr_qxi2n9w6dn`). Three bypasses inside the claim (cheatcode by STATICCALL, prank in a reverted frame, delegate prank as the token) and `mockFunction`. None is a regression: `main` proves all of them, and the candidate already stops 10 forged cases that `main` proves. Repair round 2 with author `thr_sfn46di74u`. PR 3 is its twin; close it when PR 4 merges. |
+| H1b | todo | Harm gate, tamper class: `vm.store` and `vm.mockCall` on a scope target forge a drain (also on `main`). Needs a rule that keeps real PoCs that use `vm.store` for fixture. Plus a backstop for unknown cheatcodes (a call whose caller is not its parent frame). Own reviewer. Wave 3. |
+| H1c | todo | A PoC body that calls forge-std `deal(token, …)` makes more than 8 MiB of trace and can never be proven (`sandbox.mjs:237`). Fails closed, but costs true positives. Raise the cap or tell the agent to put `deal` in `setUp`. Wave 3. |
 | H2 | review | PR 7 (report redaction), `merge/pr-7` 5265d20: author done (10 commits after the merge with main, 246 app tests pass). Final delta review runs (thread `thr_tjjx45bfz5`). Open by design: JSON escaped three or more times (see H2b). Blocks F2. |
 | H2b | todo | Follow-up to PR 7: redact JSON at every escape level by decoding each level, instead of one regex per depth. Wave 3. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
