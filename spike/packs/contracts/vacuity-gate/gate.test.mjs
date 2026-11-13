@@ -227,6 +227,37 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     console.log(`FeeVaultInvariantsFixed killRate ${verdict.killRate}`);
   });
 
+  // Every forge call goes through runTool: pinned digest, --pull=never,
+  // --network none, forge-std read-only. A fake docker records each argv.
+  it("every forge call is an offline runTool call on the pinned image", async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-docker-"));
+    const record = path.join(temp, "calls");
+    try {
+      fs.writeFileSync(path.join(temp, "docker"), `#!/bin/sh\nprintf "%s\\n" "$@" "--end--" >> "${record}"\n` +
+        'case "$1" in image|volume) exit 0;; esac\nexit 1\n', { mode: 0o755 });
+      const { status, verdict } = await new Promise((resolve) => execFile(process.execPath,
+        [path.join(dir, "gate.mjs"), "--project", project, "--test", "test/ReviewProof.t.sol"],
+        { encoding: "utf8", env: { ...process.env, PATH: `${temp}:${process.env.PATH}` } },
+        (error, stdout) => resolve({ status: error ? error.code : 0, verdict: JSON.parse(stdout) })));
+      assert.equal(status, 1);
+      assert.equal(verdict.pass, false);
+      const calls = fs.readFileSync(record, "utf8").split("--end--\n").filter(Boolean).map((c) => c.trim().split("\n"));
+      assert.ok(!calls.some((c) => c[0] === "pull" || c.includes("--pull=always")));
+      const runs = calls.filter((c) => c[0] === "run");
+      assert.ok(runs.length >= 1);
+      for (const c of runs) {
+        assert.deepEqual(c.slice(0, 5), ["run", "--rm", "--pull=never", "--network", "none"]);
+        assert.equal(c.filter((a) => a === "--network").length, 1);
+        assert.ok(c.includes(image));
+        assert.deepEqual(c.slice(c.indexOf("--entrypoint"), c.indexOf("--entrypoint") + 2), ["--entrypoint", "forge"]);
+        assert.ok(c.some((a) => a.endsWith(":/forge-std/src:ro")));
+        assert.match(c[c.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/);
+      }
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("external symlinked test is rejected before reading outside the project", async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-symlink-"));
     try {
