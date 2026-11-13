@@ -85,6 +85,8 @@ export function parseJwtCrack(stdout) {
 export function jwtLeads(verdict) {
   if (!verdict?.cracked) return [];
   const secret = cap(verdict.secret, 120);
+  // shortcut: the lead carries the cracked word; fine for the lab key, redact
+  // before these tools run on a live target.
   return [{
     engine: "jwt-tool",
     check: "jwt-weak-hmac-key",
