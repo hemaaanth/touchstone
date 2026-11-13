@@ -185,8 +185,11 @@ function lowerKeys(obj) {
 //   1. the test made a successful call into a scope target, and
 //   2. an effect on a scope target the gate accepts as harm, by ANY channel:
 //      - funds (ETH):   a target's net native ETH went DOWN during the test body;
-//      - funds (token): a target was a net LOSER of an ERC-20 token in the body,
-//        read from the real `Transfer` logs the EVM emitted (see tokenDrains); or
+//      - funds (token): a target was a net LOSER of an ERC-20 balance in the body,
+//        read from that token's balance storage (see balanceDrains). The token
+//        must be a scope contract whose compiled layout names a balance mapping,
+//        and the victim's slot for that mapping must actually decrease. A
+//        Transfer log is not that proof; or
 //      - control: the test body re-pointed one of a target's CONTROL slots to a
 //        new address, by a caller that did not already hold that authority (a
 //        takeover, not an ordinary write). Which slots are control pointers comes
@@ -205,9 +208,11 @@ function lowerKeys(obj) {
 // the scope's code, so it stops being a target.
 //
 // Known limits, on purpose for this cycle:
-// - The token channel measures fungible ERC-20 value only. An NFT (ERC-721) theft
-//   emits a Transfer with an indexed tokenId and no value, so it is not counted as
-//   a drain; per-token-id accounting is a later cycle.
+// - The token channel measures fungible balances only: a `mapping(address => uint)`
+//   the layout names as a balance. An NFT (ERC-721) moves a token id, not one of
+//   those mappings, so it is not counted; per-token-id accounting is a later cycle.
+//   A Transfer log is not a drain either. Any frame can emit one, and a token can
+//   emit one without writing its balance, so an unauthenticated log never counts.
 // - A control variable packed ABOVE offset 0 in its slot (an address sharing a
 //   slot with another field) is left out: we only read a clean 20-byte address
 //   word, so we miss an exotic packing rather than misread it. This keeps the gate
@@ -429,70 +434,27 @@ function scanTargets(traces, scope) {
   return { targets, invoked, net };
 }
 
-// ERC-20 `Transfer(address indexed from, address indexed to, uint256 value)`.
-const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-const topicAddr = (t) => { const h = hex(t); return h.length >= 40 ? "0x" + h.slice(-40) : null; };
-
-// The token-drain channel. The native-ETH funds channel sees `t.value` only, so a
-// drain of ERC-20 balances — the most common DeFi harm — is invisible to it. Here
-// we read the real `Transfer` logs the EVM emitted in the test body and net them
-// per (token, holder). A scope target that is a net LOSER of a token it does not
-// itself issue was drained. Body only, success-gated — the same rules the ETH
-// channel uses, so setUp funding is fixture and a rolled-back transfer does not
-// count. Returns [{ token, victim, lostUnits }], biggest loss first.
-function tokenDrains(traces, targets) {
-  const net = new Map(); // token -> Map(holder -> signed units)
-  const bump = (token, holder, delta) => {
-    if (!holder) return;
-    const m = net.get(token) ?? new Map();
-    m.set(holder, (m.get(holder) ?? 0n) + delta);
-    net.set(token, m);
-  };
-  for (const entry of Array.isArray(traces) ? traces : []) {
-    if ((Array.isArray(entry) ? entry[0] : null) !== "Execution") continue;
-    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
-    if (!Array.isArray(arena)) continue;
-    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
-    arena.forEach((node, i) => {
-      if (!ok(i)) return;
-      const token = lc(node?.trace?.address);
-      if (!token) return;
-      for (const log of node?.logs ?? []) {
-        const raw = log?.raw_log ?? log;
-        const topics = raw?.topics;
-        if (!Array.isArray(topics) || topics.length < 3 || lc(topics[0]) !== TRANSFER_TOPIC) continue;
-        let amount = 0n;
-        try { amount = BigInt(raw.data ?? "0x0"); } catch { amount = 0n; }
-        if (amount <= 0n) continue; // a 0-value or NFT (indexed tokenId, empty data) transfer is not a fungible drain
-        bump(token, topicAddr(topics[1]), -amount);
-        bump(token, topicAddr(topics[2]), amount);
-      }
-    });
-  }
-  const drains = [];
-  for (const [token, holders] of net.entries()) {
-    for (const [holder, delta] of holders.entries()) {
-      if (delta >= 0n || holder === token || !targets.has(holder)) continue;
-      drains.push({ token, victim: holder, lostUnits: (-delta).toString() });
-    }
-  }
-  drains.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : 1));
-  return drains;
-}
-
-// The storage token-drain channel — ground truth, event-independent. The event
-// channel above trusts the token to emit a `Transfer` log; a hostile or sloppy
-// in-scope token need not, and a harm gate must not depend on an advisory event.
-// Here we read the drain from the balance mappings themselves. For each scope
-// target token K with a balance mapping at base slot p (from scopeBalances), and
-// each scope-target holder H, the live balance sits at keccak256(pad32(H).pad32(p)).
-// We net every execution SSTORE to that slot — controlTrace.writes is already body
-// only and success-gated, the same rules the ETH and event channels use, so setUp
-// funding is fixture and a reverted write does not count. A scope target that nets
-// a LOSS of a token it does not itself issue was drained. `balances` is
-// scopeBalances(ws); an empty map (no layout, e.g. synthetic unit traces) yields
-// no drains and the gate falls through to the event channel. Returns
-// [{ token, victim, lostUnits }], biggest loss first.
+// The token-drain channel. Native ETH is `t.value`; an ERC-20 drain is not. It is
+// also not a Transfer log. Any frame can emit Transfer(victim, attacker, amount):
+// the test contract, a helper defined in the test file, or the token itself. The
+// topic does not authenticate the emitter, so a log never counts as a drain on
+// its own — including a log from a token whose balance layout we checked. The
+// layout is what authenticates the read: it names the balance mapping. The drain
+// is that slot moving.
+//
+// For each scope token K with a balance mapping at base slot p (from
+// scopeBalances), and each scope-target holder H, the live balance sits at
+// keccak256(pad32(H).pad32(p)). We net every execution SSTORE to that slot.
+// controlTrace.writes is already body-only and success-gated, the same rules the
+// ETH channel uses, so setUp funding is fixture and a reverted write does not
+// count. A scope target that nets a LOSS of a token it does not itself issue was
+// drained. A log the slot does not confirm is a lie, whoever emitted it. An
+// external token or a balance under a name the layout filter skips has no checked
+// slot, so its logs do not count either: a missed real drain, not a forged one.
+//
+// `balances` is scopeBalances(ws). An empty map (no layout, e.g. synthetic unit
+// traces that pass none) yields no drains. Returns [{ token, victim, lostUnits }],
+// biggest loss first.
 function balanceDrains(controlTrace, targets, balances) {
   if (!balances || !balances.size) return [];
   const writes = controlTrace?.writes ?? [];
@@ -547,8 +509,10 @@ function balanceDrains(controlTrace, targets, balances) {
 //     a named control slot of the proxy, so a takeover through the proxy is missed.
 //   - Control roles under non-standard names (controller/manager/minter/keeper) and
 //     balances under non-standard names (_rOwned, struct-wrapped amounts) are not in
-//     CONTROL_NAMES / BALANCE_NAMES; those token drains fall back to Transfer logs,
-//     which an event-less token defeats.
+//     CONTROL_NAMES / BALANCE_NAMES. Those token drains are not proven. A Transfer
+//     log is not a substitute: the topic does not authenticate the emitter. An
+//     external token (no compiled layout in scope) is the same miss. Both fail
+//     closed rather than credit a forged log.
 //
 // The layout-aware control channel. A storage write is a TAKEOVER only when it
 // re-points a control pointer the writer was not entitled to set. Which slots are
@@ -601,11 +565,9 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     const [victim, wei] = losses[0];
     return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
   }
-  // Prefer the ground-truth storage read; fall back to the Transfer-log channel
-  // for tokens outside scope (a real external ERC-20 whose balance layout we do
-  // not have, but whose standard event we can still net).
-  const storageDrains = balanceDrains(controlTrace, targets, balances);
-  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets);
+  // Token harm is a checked balance slot that moved. There is no log fallback:
+  // when no slot moved, a Transfer from any emitter is unauthenticated.
+  const drains = balanceDrains(controlTrace, targets, balances);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };

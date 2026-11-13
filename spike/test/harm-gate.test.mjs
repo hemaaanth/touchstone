@@ -1,6 +1,7 @@
 // The forge harm gate: a passing test is not a proof. A finding is proven only
 // when its replay calls a contract deployed from the audited scope AND harms it,
-// by ETH leaving it (funds) or a storage write in it (control).
+// by ETH leaving it (funds), a checked token-balance slot moving (funds), or a
+// control-slot write (control). A Transfer log is not a drain.
 //
 //   node --test spike/test/harm-gate.test.mjs
 //
@@ -13,8 +14,9 @@ import { execFileSync } from "node:child_process";
 import { rmSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { keccak256 } from "ethers";
 import { judgeHarm } from "../lib/proof.mjs";
-import { extractControlTrace } from "../lib/control-trace.mjs";
+import { extractControlTrace, word } from "../lib/control-trace.mjs";
 import { gate, proveFindings } from "../lib/record.mjs";
 import { isProven } from "../lib/proof-view.mjs";
 import { makeWorkspace } from "../lib/sandbox.mjs";
@@ -128,6 +130,106 @@ test("harm gate: a target the test etched over in setUp() is no longer a target 
   assert.match(harm.reason, /deployed no contract from the audited scope/);
   const finding = { severity: "high", poc: "X", forgePassed: true, pocProved: true, proof: { kind: "forge", status: "pass", pass: true, harm } };
   assert.equal(isProven(finding), false);
+});
+
+// ERC-20 Transfer(address indexed from, address indexed to, uint256 value).
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const padTopic = (a) => "0x" + a.slice(2).padStart(64, "0");
+const ONE_ETH = "0x" + (10n ** 18n).toString(16).padStart(64, "0");
+const transferLog = (from, to, data = ONE_ETH) => ({ raw_log: { topics: [TRANSFER_TOPIC, padTopic(from), padTopic(to)], data } });
+
+// A second scope contract that issues a balance. The vault holds it. The slot is
+// the same one balanceDrains computes, so a body SSTORE there is a real drain.
+const TOKEN = "0x1111111111111111111111111111111111111111";
+const TOKEN_CODE = "60806040aa";
+const SCOPE_PAIR = [
+  { name: "Tok", path: "src/Tok.sol", code: TOKEN_CODE },
+  { name: "Vault", path: "src/Vault.sol", code: "6080aa__$0123456789abcdef0123456789abcdef01$__bb" },
+];
+const BAL_BASE = word("0x0");
+const pairBalances = new Map([["Tok", [BAL_BASE]]]);
+const vaultBalSlot = word(keccak256(word(VAULT) + BAL_BASE.slice(2)));
+const pairSetup = (...extra) => ["Setup", { arena: [
+  node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x0a9254e4" }),
+  node(0, { kind: "CREATE", address: TOKEN, caller: TEST, data: "0x" + TOKEN_CODE }),
+  node(0, { kind: "CREATE", address: VAULT, caller: TEST, data: VAULT_INIT }),
+  ...extra,
+]}];
+const judgePair = (traces) => judgeHarm(traces, { scope: SCOPE_PAIR, controlTrace: extractControlTrace(traces), balances: pairBalances });
+
+test("harm gate: a forged Transfer log from the test contract is not a token drain", () => {
+  // The reviewer's trace. The vault's balance layout is in hand and no slot moved,
+  // then the test itself emits Transfer(vault, attacker, 1 ether). The old gate
+  // fell back to that log and returned funds harm.
+  const root = node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" });
+  root.logs = [transferLog(VAULT, ATTACKER)];
+  const traces = [setup(), ["Execution", { arena: [
+    root,
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x01e1d114" }),
+  ]}]];
+  const h = judgeHarm(traces, { scope: SCOPE, controlTrace: extractControlTrace(traces), balances: new Map([["Vault", [BAL_BASE]]]) });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: a forged Transfer log from a non-scope helper is not a token drain", () => {
+  const helper = node(0, { kind: "CALL", address: HELPER, caller: TEST, data: "0xdeadbeef" });
+  helper.logs = [transferLog(VAULT, ATTACKER)];
+  const traces = [setup(), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x01e1d114" }),
+    helper,
+  )];
+  const h = verdict(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: a Transfer log from a token whose balance slot did not move is not a drain", () => {
+  // The emitter is a real scope token and its balance layout was checked. The log
+  // is still unauthenticated: the slot did not move, so the token is lying.
+  const lie = node(0, { kind: "CALL", address: TOKEN, caller: TEST, data: "0x12345678" });
+  lie.logs = [transferLog(VAULT, ATTACKER)];
+  const traces = [pairSetup(), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x01e1d114" }),
+    lie,
+  )];
+  const h = judgePair(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: ETH funded in setUp and drained in the body is still funds harm", () => {
+  // Documented case. setUp's credit is fixture and is left out of the net, so the
+  // body's withdrawal of that same ether is still a drain.
+  const traces = [setup(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, value: ONE_ETH }),
+  ), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(1, { kind: "CALL", address: TEST, caller: VAULT, value: ONE_ETH }),
+  )];
+  const h = verdict(traces);
+  assert.equal(h.ok, true);
+  assert.equal(h.kind, "funds");
+  assert.equal(h.victim, VAULT);
+  assert.equal(h.lostWei, (10n ** 18n).toString());
+});
+
+test("harm gate: a balance slot funded in setUp and drained in the body is still funds harm", () => {
+  // Same exclusion for tokens. The mint is a setUp SSTORE, so it is not netted
+  // against the body's debit. No Transfer log is required.
+  const traces = [pairSetup(
+    node(0, { kind: "CALL", address: TOKEN, caller: TEST, data: "0x40c10f19", steps: [sstore(vaultBalSlot, "0x0", ONE_ETH)] }),
+  ), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(0, { kind: "CALL", address: TOKEN, caller: VAULT, data: "0xa9059cbb", steps: [sstore(vaultBalSlot, ONE_ETH, "0x0")] }),
+  )];
+  const h = judgePair(traces);
+  assert.equal(h.ok, true);
+  assert.equal(h.kind, "funds");
+  assert.equal(h.asset, "token");
+  assert.equal(h.victim, VAULT);
+  assert.equal(h.token, TOKEN);
+  assert.equal(h.lostUnits, (10n ** 18n).toString());
 });
 
 test("gate(): a passing replay with no harm verdict, or a failed one, is not a pass", () => {
@@ -270,7 +372,7 @@ test("forge: contracts submit_finding refuses a passing tautology with reason no
 // repair had to fix, with the matching benign negative so no fix is a new false
 // positive. These replace position/value guesses with the compiled storage layout
 // and add an ERC-20 token channel. See lib/proof.mjs scopeLayouts / layoutTakeovers
-// / tokenDrains.
+// / balanceDrains.
 
 // Shorthand: drop the lab's Vault, write scope `src` files, prove one PoC contract.
 async function proveScope(ws, files, poc, body) {
@@ -571,4 +673,58 @@ contract PayTest is Test {
   assert.equal(f.proof.harm.ok, true);
   assert.equal(f.proof.harm.kind, "control");
   assert.equal(isProven(f), true);
+});
+
+// Forged Transfer logs. The test calls a scope vault and then emits
+// Transfer(vault, attacker, 1 ether) from the test contract itself. No balance
+// slot moves. That log used to be judged funds harm, because an empty storage
+// result fell back to event logs from any emitter.
+const FORGED_LOG = HEAD + `import "../src/Vault.sol";
+contract ForgedLogTest is Test {
+  Vault v;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function setUp() public { v = new Vault(); }
+  function test_forge() public {
+    assertEq(v.totalAssets(), 0);
+    emit Transfer(address(v), address(0xBEEF), 1 ether);
+  }
+}
+`;
+
+test("forge: a Transfer log emitted by the test contract is NOT a token drain", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB);
+  workspaces.push(ws);
+  const f = await prove(ws, "ForgedLogTest", FORGED_LOG);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /moved no ETH out of it and took over none of its control slots/);
+  assert.equal(isProven(f), false);
+});
+
+// The same forgery, emitted by an in-scope token whose balance layout the gate
+// did check. The layout names the slot; the slot did not move, so the log is a
+// lie and is not a drain.
+test("forge: a Transfer log from an in-scope token whose balance did not move is NOT a drain", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Liar.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Liar {
+  mapping(address => uint256) public balanceOf;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function lie(address from, address to, uint256 a) external { emit Transfer(from, to, a); }
+}
+contract Holder {
+  function ping() external {}
+}
+` }, "LiarTest", `import "../src/Liar.sol";
+contract LiarTest is Test {
+  Liar liar; Holder holder;
+  function setUp() public { liar = new Liar(); holder = new Holder(); }
+  function test_lie() public { holder.ping(); liar.lie(address(holder), address(0xBEEF), 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /moved no ETH out of it and took over none of its control slots/);
+  assert.equal(isProven(f), false);
 });
