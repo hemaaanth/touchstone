@@ -3,6 +3,7 @@
 // reach exactly those hosts. Removing the scope removes the grant.
 //
 // Throwaway stores via TOUCHSTONE_SCOPES_FILE and TOUCHSTONE_GRANTS_FILE.
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -260,4 +261,38 @@ test("if the scope cannot be saved, its grant is rolled back", () => {
 test("a live scope is never picked at random, only by id", () => {
   addLiveScope({ hosts: ["a.example.com"], pack: "review", permission: true });
   assert.throws(() => pickTarget({ pack: "review" }), /no runnable targets/);
+});
+
+// A scope allows several modules. A run picks one of them at start.
+test("a website scope allows the ticked modules plus the always-on ones", () => {
+  const scope = addLiveScope({ hosts: ["app.example.com"], pack: ["ai-mcp", "web"], token: "caller-token", permission: true });
+  assert.equal(scope.pack, "ai-mcp");
+  assert.deepEqual(scope.packs, ["ai-mcp", "web"]);
+  const row = listTargets().find((t) => t.id === scope.id);
+  assert.deepEqual(row.packs, ["ai-mcp", "web", "domains", "surface", "phishing"]);
+  assert.equal(readGrants().length, 1, "one scope, one grant");
+});
+
+test("a run sees the scope under the module it picked, and only AI and MCP gets the token", () => {
+  const scope = addLiveScope({ hosts: ["app.example.com"], pack: ["web", "ai-mcp"], token: "caller-token", permission: true });
+  assert.equal(pickTarget({ id: scope.id }).pack, "web", "the first ticked module is the default");
+  assert.equal(pickTarget({ id: scope.id, pack: "ai-mcp" }).mcp.token, "caller-token");
+  for (const pack of ["web", "domains", "phishing"]) {
+    const view = pickTarget({ id: scope.id, pack });
+    assert.equal(view.pack, pack);
+    assert.equal(view.mcp, undefined, `${pack} must not get the caller token`);
+  }
+  // Phishing needs the owned list; a scope that lists none has none.
+  assert.deepEqual(pickTarget({ id: scope.id, pack: "phishing" }).owned, []);
+  assert.throws(() => pickTarget({ id: scope.id, pack: "contracts" }), /belongs to pack/);
+  // The saved scope is not changed by a pick.
+  assert.equal(readScopes()[0].mcp.token, "caller-token");
+});
+
+test("a module that was not ticked is refused, and supply-chain is never mixed with websites", () => {
+  const scope = addLiveScope({ hosts: ["app.example.com"], pack: ["web"], permission: true });
+  assert.throws(() => pickTarget({ id: scope.id, pack: "ai-mcp" }), /belongs to pack/);
+  assert.throws(() => pickTarget({ id: scope.id, pack: "supply-chain" }), /belongs to pack/);
+  assert.throws(() => addLiveScope({ hosts: ["app.example.com"], pack: ["web", "supply-chain"], permission: true }), /GitHub repos/);
+  assert.equal(readGrants().length, 1, "the refused scope wrote no grant");
 });

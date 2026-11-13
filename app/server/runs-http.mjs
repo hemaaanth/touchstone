@@ -4,16 +4,27 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, namesLocalPath } from "./runs.mjs"
+import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
-import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
-import { readGrants, addGrant, removeGrant, grantActive, GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, settingsWriteRefusal } from "./settings.mjs"
+import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
+import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
+import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
   res.setHeader("content-type", "application/json")
   res.end(JSON.stringify(json))
+}
+
+// The console guard (settings.mjs), at the entry of every handler in this file.
+// Returns true when it refused the request and sent the answer; the handler
+// then does not run. A read (GET) always passes.
+function refusedWrite(req, res) {
+  const refusal = consoleWriteRefusal(req)
+  if (refusal) send(res, refusal.status, { error: refusal.error })
+  return Boolean(refusal)
 }
 
 function readBody(req) {
@@ -34,10 +45,24 @@ function readBody(req) {
   })
 }
 
+// What the bundle is, in its own words: the first paragraph of its README.md.
+// The zip is stored, not compressed (replay-bundle.mjs zipStore), and README.md
+// is its first entry, so the text is read straight from the first local header.
+// Null when the zip does not start that way.
+export function readmeHead(zip) {
+  if (!Buffer.isBuffer(zip) || zip.length < 30 || zip.readUInt32LE(0) !== 0x04034b50 || zip.readUInt16LE(8) !== 0) return null
+  const nameLen = zip.readUInt16LE(26)
+  const start = 30 + nameLen + zip.readUInt16LE(28)
+  if (zip.toString("utf8", 30, 30 + nameLen) !== "README.md") return null
+  const text = zip.toString("utf8", start, Math.min(start + zip.readUInt32LE(18), start + 4096))
+  return text.split(/\n\s*\n/)[0].trim() || null
+}
+
 export async function handleRuns(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","runs",...]
   if (parts[0] !== "api" || parts[1] !== "runs") return false
+  if (refusedWrite(req, res)) return true
 
   // GET /api/runs — list recent live runs
   if (parts.length === 2 && req.method === "GET") {
@@ -48,10 +73,12 @@ export async function handleRuns(req, res) {
   // POST /api/runs — start a real agent run. `modules`, when given, is the set of
   // toggleable module ids the operator left on; the orchestrator resolves it
   // against the scope so an unsupported module is off with a reason, not dropped.
+  // `packs` is the modules the ONE run covers: two or more build one joined run,
+  // one or none is today's single `pack`.
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, mode: body.mode }))
+      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -159,6 +186,7 @@ export async function handleFindings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","findings",id,"dismiss"]
   if (parts[0] !== "api" || parts[1] !== "findings") return false
+  if (refusedWrite(req, res)) return true
   if (parts.length === 4 && parts[3] === "dismiss" && req.method === "POST") {
     const id = decodeURIComponent(parts[2])
     const body = await readBody(req)
@@ -170,34 +198,77 @@ export async function handleFindings(req, res) {
     return true
   }
 
-  // GET /api/findings/:id/report?format=html|md|json — the shareable report of a
-  // finished run's finding (the finding, its proof, the harm, the fix). json is
-  // the structured report the UI renders; html is one self-contained page to
-  // share; md is for a README or an issue. The report invents nothing: the fix
-  // is shown only when the run stated one (report.mjs).
+  // GET /api/findings/:id/report?format=html|md|json|agent|bundle — the shareable
+  // report of a finished run's finding (the finding, its proof, the harm, the
+  // fix). json is the structured report the UI renders; html is one
+  // self-contained page to share; md is for a README or an issue; agent is a
+  // short brief for a coding agent. bundle is a zip a judge can unzip and
+  // rerun: the proof sources, foundry config, proof JSON, and fork parameters,
+  // with one command in README.md. The report invents nothing: the fix is shown
+  // only when the run stated one (report.mjs). bundle-check is the same build
+  // as bundle, answered as JSON: the values the zip could not judge, counted by
+  // shape, for the line next to the download.
+  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "agent", "bundle", "zip", "bundle-check"])
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
+    if (!REPORT_FORMATS.has(format)) {
+      send(res, 400, { error: `unknown format: use one of ${[...REPORT_FORMATS].join(", ")}` })
+      return true
+    }
     try {
       const finding = await getFinding(id)
       if (!finding) {
         send(res, 404, { error: "no such finding" })
         return true
       }
-      const report = buildReport(finding)
       const slug = String(id).replace(/[^\w.-]+/g, "-")
-      if (format === "html") {
+      if (format === "bundle" || format === "zip" || format === "bundle-check") {
+        const recorded = loadRecordedReplay(id)
+        const refused = bundleRefusal({ finding, recorded })
+        if (refused) {
+          send(res, 409, { error: refused })
+          return true
+        }
+        let plan
+        try {
+          plan = planReplayBundle({ finding, recorded })
+        } catch (err) {
+          // The builder refuses a zip that would leak a secret it cannot mask.
+          if (err?.refused !== true) throw err
+          send(res, 409, { error: err.message })
+          return true
+        }
+        const { zip, unjudged } = plan
+        if (format === "bundle-check") {
+          send(res, 200, { bundle: true, bytes: zip.length, unjudged, note: unjudged.length ? UNJUDGED_NOTE : null, about: readmeHead(zip) })
+          return true
+        }
+        res.statusCode = 200
+        // Counts by shape only, never a value. JSON is ASCII here: the texts are fixed.
+        res.setHeader("x-touchstone-unjudged", JSON.stringify(unjudged.map(({ shape, count }) => ({ shape, count }))))
+        res.setHeader("content-type", "application/zip")
+        res.setHeader("content-disposition", `attachment; filename="touchstone-replay-${slug}.zip"`)
+        res.end(zip)
+      } else if (format === "html") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/html; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.html"`)
         res.end(renderReportHtml(report))
       } else if (format === "md" || format === "markdown") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/markdown; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
         res.end(renderReportMarkdown(report))
+      } else if (format === "agent") {
+        // The short brief for a coding agent (report.mjs renderReportAgent).
+        res.statusCode = 200
+        res.setHeader("content-type", "text/plain; charset=utf-8")
+        res.end(renderReportAgent(buildReport(finding)))
       } else {
-        send(res, 200, report)
+        send(res, 200, buildReport(finding))
       }
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
@@ -214,10 +285,13 @@ export async function handleFindings(req, res) {
 //                                folders, mixed), or a legacy { title, files },
 //                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
+//   POST   /api/scopes/:id/brief — set or clear its brief ({ brief }); text for
+//                                the model only, it changes no reach or grant
 export async function handleScopes(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","scopes",...]
   if (parts[0] !== "api" || parts[1] !== "scopes") return false
+  if (refusedWrite(req, res)) return true
 
   if (parts.length === 2 && req.method === "GET") {
     send(res, 200, { scopes: listScopes() })
@@ -225,23 +299,26 @@ export async function handleScopes(req, res) {
   }
 
   if (parts.length === 2 && req.method === "POST") {
-    // A live scope also records the operator's permission to reach real hosts,
-    // so it needs the console token, like a Settings write. A web page or the
-    // agent cannot add one.
-    // This covers the private-lab opt-in (allowPrivate) too: it only acts on
-    // the live path, so it can never skip this token check.
+    // Every scope create passed the console guard above. A live scope records
+    // the operator's permission to reach real hosts, and a local folder path
+    // makes the server read this machine's disk. A web page or the agent
+    // cannot add either.
     const body = await readBody(req)
-    // A local folder path makes the server read this machine's disk, so it
-    // needs the token too.
-    if (body?.kind === "live" || namesLocalPath(body)) {
-      const refusal = settingsWriteRefusal(req)
-      if (refusal) {
-        send(res, refusal.status, { error: refusal.error })
-        return true
-      }
-    }
     try {
       send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 4 && parts[3] === "brief" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      // A body that did not parse reads as {}. It must not clear the brief.
+      if (typeof body.brief !== "string") throw new Error("Send the brief as text: { brief }. An empty text clears it.")
+      const scope = setScopeBrief(decodeURIComponent(parts[2]), body.brief)
+      send(res, 200, { id: scope.id, brief: scope.brief ?? "" })
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -263,72 +340,8 @@ export async function handleScopes(req, res) {
 
 // A grant is the operator's written permission to reach a live host, so ADDING
 // or REVOKING one must be unforgeable by a web page the operator happens to visit
-// AND by the agent itself. Three checks together make it so:
-//
-//   1. A per-session capability token. Minted once per server process and printed
-//      to the server's console (OUTSIDE the HTTP surface, below). Only someone who
-//      can see the terminal — the operator — reads it. A cross-origin page cannot
-//      read it; the agent child is never handed it (it lives in a module variable,
-//      not in process.env, unless a test sets TOUCHSTONE_GRANT_TOKEN).
-//   2. Same-origin. A request that carries a foreign Origin is refused, so a
-//      visited page cannot drive a mutation even as a no-cors request.
-//   3. JSON only. A grant POST must be application/json — a content type a no-cors
-//      cross-origin request cannot set without a preflight it is not allowed.
-//
-// A drive-by page fails all three; the agent fails the token. A test sets
-// TOUCHSTONE_GRANT_TOKEN to a known value and skips the console print.
-let grantTokenAnnounced = false
-function announceGrantToken() {
-  if (grantTokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
-  grantTokenAnnounced = true
-  // This line IS where the operator reads the token; it is not a log of a secret
-  // held elsewhere. Never sent over HTTP.
-  try {
-    process.stderr.write(`[grants] to add or revoke a live-reach grant, send header  x-touchstone-grant-token: ${GRANT_TOKEN}\n`)
-  } catch {
-    /* ignore a closed pipe */
-  }
-}
-
-// Guard a grant mutation (POST, DELETE). Returns true if the caller may proceed;
-// otherwise it has already sent the refusal and returns false. Exported so other
-// state-changing console routes can reuse the one forgery defense.
-export function grantMutationAllowed(req, res) {
-  // Same-origin, fail-closed: an Origin MUST be present and its host MUST equal
-  // our Host. A browser always sends Origin on a state-changing (POST/DELETE)
-  // request, same-origin or not, so a mutation with no Origin is not the console
-  // — it is a non-browser caller or a stripped request, and we refuse it rather
-  // than wave it through. A same-origin fetch sends a matching Origin; a
-  // cross-origin one sends a foreign Origin (or, for no-cors, cannot set the JSON
-  // content-type the POST check below requires either).
-  const origin = req.headers["origin"]
-  let originHost = null
-  try {
-    originHost = origin ? new URL(origin).host : null
-  } catch {
-    originHost = null
-  }
-  const host = req.headers["host"]
-  if (!originHost || !host || originHost !== host) {
-    send(res, 403, { error: "a grant can only be changed from the console's own origin (a same-origin request with a matching Origin header)" })
-    return false
-  }
-  // JSON only on POST (DELETE carries no body).
-  if (req.method === "POST") {
-    const ct = String(req.headers["content-type"] || "")
-    if (!/^application\/json\b/i.test(ct)) {
-      send(res, 415, { error: "a grant POST must be application/json" })
-      return false
-    }
-  }
-  // The capability token, unforgeable by a page or the agent.
-  const token = req.headers["x-touchstone-grant-token"]
-  if (!token || token !== GRANT_TOKEN) {
-    send(res, 403, { error: "a valid x-touchstone-grant-token is required to add or revoke a grant" })
-    return false
-  }
-  return true
-}
+// AND by the agent itself. The console guard (settings.mjs) makes it so: the
+// console token, the same origin, and JSON only. The token is never printed.
 
 // Grants — the operator's written permission to reach a live host (grant-store).
 // A grant names the hosts in scope, who approved it, and when; it fills the
@@ -343,7 +356,7 @@ export async function handleGrants(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","grants",...]
   if (parts[0] !== "api" || parts[1] !== "grants") return false
-  announceGrantToken()
+  if (refusedWrite(req, res)) return true
 
   if (parts.length === 2 && req.method === "GET") {
     const now = Date.now()
@@ -352,7 +365,6 @@ export async function handleGrants(req, res) {
   }
 
   if (parts.length === 2 && req.method === "POST") {
-    if (!grantMutationAllowed(req, res)) return true
     const body = await readBody(req)
     try {
       send(res, 201, addGrant({ hosts: body.hosts, kind: body.kind, ownership: body.ownership, approvedBy: body.approvedBy, note: body.note, scopeId: body.scopeId, expiresAt: body.expiresAt }))
@@ -363,9 +375,16 @@ export async function handleGrants(req, res) {
   }
 
   if (parts.length === 3 && req.method === "DELETE") {
-    if (!grantMutationAllowed(req, res)) return true
     const id = decodeURIComponent(parts[2])
-    if (!removeGrant(id)) {
+    let removed
+    try {
+      removed = removeGrant(id)
+    } catch (err) {
+      // A store refusal (busy, damaged, a bad lock path): its sentence, as the other store routes give it.
+      send(res, 400, { error: String(err?.message ?? err) })
+      return true
+    }
+    if (!removed) {
       send(res, 404, { error: "no such grant" })
       return true
     }
@@ -398,8 +417,7 @@ export async function handleSettings(req, res) {
   if (parts[0] !== "api" || parts[1] !== "settings") return false
   const route = `${req.method} ${parts.slice(2, 3).join("/")}`
   // Every write is guarded: a cross-site page must not repoint a key or a baseUrl.
-  const refused = req.method !== "GET" && settingsWriteRefusal(req)
-  if (refused) return send(res, refused.status, { error: refused.error }), true
+  if (refusedWrite(req, res)) return true
   try {
     if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
     if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true

@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck, ShieldQuestionMark } from "lucide-react"
-import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
+import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck, ShieldQuestionMark } from "lucide-react"
+import type { ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
-import { cardFor, type CardState } from "@/components/thread-model"
+import { ModulePills } from "@/components/module-pill"
+import { ProviderLogo } from "@/components/provider-logo"
+import { TruncatedText } from "@/components/page-parts"
+import { agentLook, cardFor, inRunOrder, runInterruption, runModules, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
+import { ResizeHandle } from "@/components/resize-handle"
+import { Hint, ProofIcon, ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { CandidateList } from "@/components/candidates"
 import {
-  AGENT_WORD,
   agentName,
-  dotClass,
   fleetSpend,
   isLiveAgent,
   runBudget,
@@ -25,15 +29,17 @@ import {
 
 // The run panel. It floats in the chat's top-right corner on every run, fleet
 // or solo, phone or desktop. It is a stack of sections, like the assistant-ui
-// MCP server panel: Info, Agents, Bulletin, Findings & Proofs, and Files. Each
+// MCP server panel: Info, Agents, Bulletin, Leads, Findings & Proofs, and Files. Each
 // section row shows a count and a short status. One section is open at a time
 // and scrolls inside itself. The top row folds the whole panel to one line, so
 // it never hides the chat for long. A click on an agent, a finding's proof or a
 // file opens it in the run drawer.
 // Findings & Proofs holds what the run claims and what its replay showed.
 // Files holds what the run wrote to get there: test files, sources, reports.
+// Leads holds what the agents recorded with record_lead: each lead's file, line
+// and reason. A lead is never proven, so it never shows in Findings & Proofs.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "candidates" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "leads" | "findings" | "candidates" | "files"
 
 export function RunPanel({
   state,
@@ -49,6 +55,12 @@ export function RunPanel({
   openDoc,
   openVersion,
   onFile,
+  width,
+  onWidth,
+  initialWidth,
+  compact = false,
+  control,
+  packs,
 }: {
   state: RunState
   live: boolean
@@ -64,7 +76,19 @@ export function RunPanel({
   openDoc: string | null
   openVersion: string | null
   onFile: (fileId: string, versionId?: string) => void
+  // The panel's width, open or folded, and the width a reset goes back to.
+  width: number
+  onWidth: (w: number) => void
+  initialWidth: number
+  // On a narrow screen the folded line is the top bar's PanelControl, so the
+  // panel shows only when open, fills the width it is given, and has no drag
+  // edge. Escape gives focus back to that control.
+  compact?: boolean
+  control?: React.RefObject<HTMLButtonElement | null>
+  // The server's module list, for the pills' titles and order.
+  packs?: PackChoice[]
 }) {
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const agents = state.agents
   const notes = state.bulletin
   // Replay proofs belong to their findings, not to the run's working files.
@@ -80,30 +104,47 @@ export function RunPanel({
   const showAgents = mode === "fleet" || agents.length > 0
 
   const active = agents.filter(isLiveAgent).length
-  const failed = agents.filter((a) => a.state === "failed").length
-  const agentStatus = failed ? `${failed} failed` : active ? `${active} active` : null
+  // A restart's cut-off is not a failure: it counts on its own, in muted ink.
+  const cut = agents.filter((a) => a.id in state.cutOff).length
+  const failed = agents.filter((a) => a.state === "failed" && !(a.id in state.cutOff)).length
+  const agentStatus = failed ? `${failed} failed` : active ? `${active} active` : cut ? `${cut} interrupted` : null
   const held = notes.filter((n) => n.lane === "evidence").length
   const leads = notes.filter((n) => n.lane !== "evidence" && n.kind === "lead").length
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
+  // Recorded leads. A Review run always shows the section, so "0" is visible.
+  const recordedLeads = state.leads
+  const showLeads = recordedLeads.length > 0 || state.scope?.pack === "review"
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
   // The folded line. Each count bumps when it goes up.
-  const summary = [
-    showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
-    showBulletin ? counted(notes.length, "note") : null,
-    counted(found.length, "finding"),
-    state.candidates.length ? counted(state.candidates.length, "candidate") : null,
-    counted(docs.length, "file"),
-  ].filter((p) => p != null)
+  const summary = panelSummary(state, mode)
+  // Escape folds the panel and gives focus back to its toggle. The drawer
+  // also closes on Escape; the panel takes the key first.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "Escape" || !open || e.defaultPrevented) return
+    e.preventDefault()
+    onOpenChange(false)
+    ;(compact ? control?.current : toggleRef.current)?.focus()
+  }
 
+  // One width, open or folded, so the corner never jumps when it folds. The
+  // run chat owns the width: the top bar keeps the same room for the folded
+  // line. The operator can drag the left edge; the width is kept across reloads.
   return (
     <div
+      id="run-panel"
+      style={compact ? undefined : { width }}
+      onKeyDown={onKeyDown}
       className={cn(
-        "pointer-events-auto flex max-h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-lg backdrop-blur-md",
-        open ? "w-[320px] max-w-[calc(100vw-1.5rem)]" : "w-auto",
+        "pointer-events-auto relative flex max-h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/95 backdrop-blur-md",
+        open && "shadow-lg",
+        compact && "w-full",
       )}
     >
+      {compact ? null : <ResizeHandle edge="left" width={width} onWidth={onWidth} initial={initialWidth} label="Resize panel" />}
       <button
+        ref={toggleRef}
+        hidden={compact}
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
@@ -139,7 +180,7 @@ export function RunPanel({
             expanded={section === "info"}
             onToggle={() => toggle("info")}
           >
-            <RunInfo state={state} live={live} mode={mode} model={model} />
+            <RunInfo state={state} live={live} mode={mode} model={model} packs={packs} />
           </Section>
           {showAgents ? (
             <Section
@@ -164,6 +205,18 @@ export function RunPanel({
               onToggle={() => toggle("bulletin")}
             >
               <BulletinList state={state} onAgent={onAgent} />
+            </Section>
+          ) : null}
+          {showLeads ? (
+            <Section
+              icon={Flag}
+              label="Leads"
+              count={recordedLeads.length}
+              status={recordedLeads.length ? "Not proven" : null}
+              expanded={section === "leads"}
+              onToggle={() => toggle("leads")}
+            >
+              <LeadList leads={recordedLeads} state={state} onAgent={onAgent} />
             </Section>
           ) : null}
           <Section
@@ -258,21 +311,74 @@ const CARD_WORD: Record<CardState, string> = {
   dropped: "Not recorded",
 }
 
-// One header pill per finding state the run has, in ladder order. A state
-// with no findings shows no pill. Only "proven" takes the green accent.
+// One header pill per finding state the run has, in ladder order: the state's
+// icon and its count, with the word in the tooltip. A state with no findings
+// shows no pill. Only "proven" takes the green accent.
 const PILL_ORDER: CardState[] = ["proven", "replaying", "waiting", "unproven", "dropped"]
-const PILL_WORD: Record<CardState, string> = {
-  proven: "proven",
-  replaying: "replaying",
-  waiting: "awaiting",
-  unproven: "not reproduced",
-  dropped: "not recorded",
-}
 
 function statePills(items: PanelFinding[]): Pill[] {
   return PILL_ORDER.map((card) => ({ card, n: items.filter((f) => f.card === card).length }))
     .filter((p) => p.n > 0)
-    .map(({ card, n }) => ({ key: card, n, text: PILL_WORD[card], title: `${n} ${CARD_WORD[card]}`, ok: card === "proven" }))
+    .map(({ card, n }) => ({ key: card, n, state: card, title: `${n} ${CARD_WORD[card].toLowerCase()}`, ok: card === "proven" }))
+}
+
+// The folded line's counts: agents (or Solo), notes, leads, findings,
+// candidates (only when the run has one), files.
+function panelSummary(state: RunState, mode: RunMode) {
+  const notes = state.bulletin
+  const showAgents = mode === "fleet" || state.agents.length > 0
+  const showBulletin = mode === "fleet" || notes.length > 0
+  const showLeads = state.leads.length > 0 || state.scope?.pack === "review"
+  return [
+    showAgents ? counted(state.agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
+    showBulletin ? counted(notes.length, "note") : null,
+    showLeads ? counted(state.leads.length, "lead") : null,
+    counted(panelFindings(state).length, "finding"),
+    state.candidates.length ? counted(state.candidates.length, "candidate") : null,
+    counted(state.artifacts.filter((d) => d.kind !== "proof").length, "file"),
+  ].filter((p) => p != null)
+}
+
+// The folded panel on a narrow screen: one small button in the top bar, so
+// the run title keeps the bar. It shows the finding count; its name reads the
+// whole folded line. Its width is fixed, so a count or a live run ending never
+// moves the title.
+export function PanelControl({
+  state,
+  mode,
+  open,
+  onOpenChange,
+  ref,
+}: {
+  state: RunState
+  mode: RunMode
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  ref: React.RefObject<HTMLButtonElement | null>
+}) {
+  const summary = panelSummary(state, mode)
+  const findings = panelFindings(state).length
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={() => onOpenChange(!open)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && open) {
+          e.preventDefault()
+          onOpenChange(false)
+        }
+      }}
+      aria-expanded={open}
+      aria-controls="run-panel"
+      aria-label={`Run panel: ${summary.map((p) => (p.n != null ? `${p.n} ${p.word}` : p.word)).join(", ")}`}
+      className="flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border border-border/60 bg-popover/95 text-xs text-muted-foreground tabular-nums outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <ShieldCheck className="size-3.5 shrink-0" />
+      <Bump n={findings} />
+      <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
+    </button>
+  )
 }
 
 // One count of the folded line, like "3 files". Its number bumps on its own.
@@ -285,7 +391,7 @@ const counted = (n: number, word: string): { key: string; n: number | null; word
 interface Pill {
   key: string
   n: number
-  text: string
+  state: CardState
   title: string
   ok: boolean
 }
@@ -331,16 +437,17 @@ function Section({
         {pills?.length ? (
           <span className="ml-auto flex min-w-0 flex-wrap justify-end gap-1">
             {pills.map((p) => (
-              <span
+              <Hint
                 key={p.key}
-                title={p.title}
+                label={p.title}
                 className={cn(
-                  "rounded-full px-1.5 py-px text-[11px] leading-[14px] font-medium whitespace-nowrap tabular-nums",
+                  "gap-1 rounded-full py-px pr-1.5 pl-1 text-[11px] leading-[14px] font-medium whitespace-nowrap tabular-nums",
                   p.ok ? "bg-ok/10 text-ok" : "bg-foreground/[0.07] text-muted-foreground",
                 )}
               >
-                <Bump n={p.n} /> {p.text}
-              </span>
+                <ProofIcon state={p.state} className="size-3 text-current" />
+                <Bump n={p.n} />
+              </Hint>
             ))}
           </span>
         ) : null}
@@ -377,28 +484,58 @@ const empty = "px-3 py-2.5 text-xs text-muted-foreground"
 
 // What the run is: its mode, how long it has run, what it has spent against
 // its budget, the model, the scope, and the pipeline steps it turned on.
-function RunInfo({ state, live, mode, model }: { state: RunState; live: boolean; mode: RunMode; model: string }) {
+function RunInfo({
+  state,
+  live,
+  mode,
+  model,
+  packs,
+}: {
+  state: RunState
+  live: boolean
+  mode: RunMode
+  model: string
+  packs?: PackChoice[]
+}) {
   const now = useNow(live)
   const t0 = runStart(state)
   const t1 = live ? now : runEnd(state)
   const budget = runBudget(state)
+  const modules = runModules(state)
+  const cut = runInterruption(state, state.status)
   const steps = (state.modules ?? []).filter((m) => m.on).map((m) => PLAN_STEP[m.id] ?? m.id)
   const rows: [string, React.ReactNode][] = [
-    ["Mode", mode === "fleet" ? "Fleet" : "Solo"],
-    ["Runtime", t0 != null && t1 != null ? span(t1 - t0) : null],
-    ["Spend", <Spend key="spend" usd={fleetSpend(state)} budget={budget} />],
-    ["Model", model || null],
-    ["Scope", state.scope?.title ?? null],
+    // A run a restart cut off, or one whose agents it cut off: a neutral word
+    // and the plain reason. Not red: nothing failed.
     [
-      "Modules",
-      steps.length ? (
-        <span key="modules" className="flex flex-col gap-0.5">
-          {steps.map((s) => (
-            <span key={s}>{s}</span>
-          ))}
+      "State",
+      cut ? (
+        <span key="state" className="flex flex-col gap-0.5">
+          <span>{cut.ended ? "Interrupted" : `${cut.agents.length} ${cut.agents.length === 1 ? "agent" : "agents"} interrupted`}</span>
+          <span className="text-muted-foreground">{cut.reason}</span>
         </span>
       ) : null,
     ],
+    ["Mode", mode === "fleet" ? "Fleet" : "Solo"],
+    ["Runtime", t0 != null && t1 != null ? span(t1 - t0) : null],
+    ["Spend", <Spend key="spend" usd={fleetSpend(state)} budget={budget} />],
+    [
+      "Model",
+      state.provider || model ? (
+        <ModelLine key="model" provider={state.provider?.id ?? null} id={state.provider?.model ?? model} agents={mode === "fleet" ? state.agents.length : null} />
+      ) : null,
+    ],
+    [
+      "Scope",
+      state.scope?.title || state.brief ? (
+        <span key="scope" className="flex flex-col gap-0.5">
+          {state.scope?.title ? <span>{state.scope.title}</span> : null}
+          {state.brief ? <ScopeBrief text={state.brief} /> : null}
+        </span>
+      ) : null,
+    ],
+    [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={inRunOrder(packs, modules)} compact /> : null],
+    ["Steps", steps.length ? steps.join(" · ") : null],
   ]
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 px-3 pt-1 pb-2.5 text-xs">
@@ -411,6 +548,45 @@ function RunInfo({ state, live, mode, model }: { state: RunState; live: boolean;
           </div>
         ))}
     </dl>
+  )
+}
+
+// The scope brief the agent got: one quiet line, the text one click away.
+function ScopeBrief({ text }: { text: string }) {
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="group -mx-1 flex items-center gap-1 rounded-sm px-1 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <ChevronRight className="size-3 shrink-0 transition-transform group-data-[panel-open]:rotate-90" />
+        Scope brief applied
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <p className="mt-1 max-h-48 overflow-y-auto rounded-md bg-muted/50 px-2 py-1.5 leading-relaxed whitespace-pre-wrap text-muted-foreground">{text}</p>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+// The model as one line: the provider's mark, then the model id, cut in the
+// middle with the whole id in a tooltip. A fleet's children run on the
+// coordinator's model, so the line says who uses it.
+function ModelLine({ provider, id, agents }: { provider: string | null; id: string; agents: number | null }) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {provider ? (
+          <>
+            <ProviderLogo id={provider} label={provider} className="size-4 rounded-[4px] [&>span]:size-2.5" />
+            <span className="sr-only">{provider}: </span>
+          </>
+        ) : null}
+        <TruncatedText text={id} middle tail={12} mono />
+      </span>
+      {agents != null ? (
+        <span className="text-muted-foreground">
+          {agents ? `Coordinator and ${agents === 1 ? "its agent" : `all ${agents} agents`}` : "Coordinator"}
+        </span>
+      ) : null}
+    </span>
   )
 }
 
@@ -453,9 +629,8 @@ function AgentList({
       {agents.map((a) => (
         <Row
           key={a.id}
-          dot={a.state}
+          look={agentLook(state, a)}
           name={a.name || a.title}
-          word={AGENT_WORD[a.state]}
           sub={a.title && a.name ? a.title : null}
           t2={a.tier === "T2"}
           selected={a.id === selected}
@@ -472,17 +647,15 @@ function AgentList({
 }
 
 function Row({
-  dot,
+  look,
   name,
-  word,
   sub,
   t2 = false,
   selected,
   onClick,
 }: {
-  dot: AgentNode["state"]
+  look: ReturnType<typeof agentLook>
   name: string
-  word: string
   sub: string | null
   t2?: boolean
   selected: boolean
@@ -498,16 +671,17 @@ function Row({
         selected && "bg-foreground/5 hover:bg-foreground/5",
       )}
     >
-      <span className={cn("mt-1 size-[7px] shrink-0 rounded-full", dotClass(dot))} />
+      <span className={cn("mt-1 size-[7px] shrink-0 rounded-full", look.dot)} />
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{name}</span>
-          <span className={cn("shrink-0 text-[11px] leading-[14px]", dot === "failed" ? "text-bad" : "text-muted-foreground")}>
-            {word}
+          <span className={cn("shrink-0 text-[11px] leading-[14px]", look.bad ? "text-bad" : "text-muted-foreground")}>
+            {look.word}
           </span>
           {t2 ? <TierTag /> : null}
         </span>
         {sub ? <span className="truncate text-xs leading-4 text-muted-foreground">{sub}</span> : null}
+        {look.reason ? <span className="text-xs leading-4 text-muted-foreground">{look.reason}</span> : null}
       </span>
     </button>
   )
@@ -550,7 +724,6 @@ function FindingRow({
   onFile: (fileId: string, versionId?: string) => void
 }) {
   const proven = f.card === "proven"
-  const Icon = proven ? ShieldCheck : Shield
   const proofId = f.proofId
   return (
     <button
@@ -564,18 +737,15 @@ function FindingRow({
         active && "bg-foreground/5 enabled:hover:bg-foreground/5",
       )}
     >
-      <Icon className={cn("mt-px size-3.5 shrink-0", proven ? "text-ok" : "text-muted-foreground")} />
+      <ProofMark state={f.card} tip={CARD_WORD[f.card]} className="mt-px" />
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <span className="flex min-w-0 items-baseline gap-2">
+        <span className="flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{f.title}</span>
-          <span className={cn("ml-auto shrink-0 text-[11px] leading-[14px]", proven ? "text-ok" : "text-muted-foreground")}>
-            {CARD_WORD[f.card]}
-          </span>
+          <SeverityMark severity={f.severity} proven={proven} className="ml-auto" />
         </span>
-        <span className="flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
-          <span className="shrink-0 capitalize">{f.severity}</span>
-          {f.poc ? <span className="min-w-0 truncate font-mono text-[11px]">{f.poc}</span> : null}
-        </span>
+        {f.poc ? (
+          <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-muted-foreground">{f.poc}</span>
+        ) : null}
       </span>
     </button>
   )
@@ -593,6 +763,43 @@ export function TierTag({ tier = "T2", className }: { tier?: "T1" | "T2"; classN
     >
       {tier} · {tier === "T2" ? "untrusted" : "trusted"}
     </span>
+  )
+}
+
+// The leads the agents recorded, worst first. Each shows its severity, where it
+// is (file:line), what an attacker does, why the agent thinks it holds, and what
+// would prove it. Every lead reads "not proven": nothing in this run proves it.
+function LeadList({ leads, state, onAgent }: { leads: RunLead[]; state: RunState; onAgent: (id: string) => void }) {
+  if (!leads.length) return <p className={empty}>No leads recorded yet.</p>
+  return (
+    <div className="flex flex-col pb-2">
+      {leads.map((l) => {
+        const child = state.agents.some((a) => a.id === l.author)
+        return (
+          <div key={l.id} className="flex flex-col gap-1 px-3 py-2">
+            <p className="flex items-center gap-2 text-[11px] leading-[14px]">
+              <SeverityMark severity={l.severity} />
+              <span className="text-muted-foreground">Lead · not proven</span>
+              {child ? (
+                <button
+                  type="button"
+                  className="ml-auto rounded-sm text-muted-foreground outline-none hover:text-foreground hover:underline"
+                  onClick={() => onAgent(l.author)}
+                >
+                  {agentName(state, l.author)}
+                </button>
+              ) : null}
+            </p>
+            <p className="text-[13px] leading-4 font-semibold">{l.title || "Untitled lead"}</p>
+            <p className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted-foreground" title={`${l.file}:${l.line}`}>
+              {l.file}:{l.line}
+            </p>
+            {l.reason ? <p className="text-xs whitespace-pre-wrap text-muted-foreground">{l.reason}</p> : null}
+            {l.proof ? <p className="text-xs whitespace-pre-wrap text-muted-foreground">Would prove it: {l.proof}</p> : null}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -671,8 +878,9 @@ function NoteHead({
         <span className="text-[11px] leading-[14px] text-muted-foreground tabular-nums">{span(note.t - t0)}</span>
       ) : null}
       {note.kind === "lead" && note.lane !== "evidence" ? (
-        <span className="text-[11px] leading-[14px] text-warn">
-          Lead{note.severity ? <span className="capitalize"> · {note.severity}</span> : null}
+        <span className="flex items-center gap-1.5 self-center text-[11px] leading-[14px] text-muted-foreground">
+          Lead
+          {note.severity ? <SeverityMark severity={note.severity} /> : null}
         </span>
       ) : null}
     </p>

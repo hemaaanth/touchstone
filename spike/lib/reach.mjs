@@ -10,7 +10,7 @@
 //      explicit allow-list here, not the live set, so a new or unknown kind is
 //      refused by default, never waved through by accident.
 //   2. CONFINEMENT. When a live run is allowed, a scope proxy is started here
-//      whose allow-list is exactly the hosts of the grants that cover this run.
+//      whose allow-list is exactly this target's own hosts.
 //      The proxy's URL and allow-list ride into the run, so the module's network
 //      seam (the http-proof request tool, the browser seam) reaches the granted
 //      host and nothing else. The grant pre-flight (requireGrant) REFUSES; the
@@ -20,7 +20,8 @@
 // launch (app/server/runs.mjs createRun) and hands the module a confined handle.
 // Swapping a module's direct network for this gated one happens here, behind the
 // seam, with no change to any module (WAVE2.md SEAM rule).
-import { requireGrant, normalizeHost } from "./grant-store.mjs";
+import { requireGrant, normalizeHost, getGrant, grantActive, hostCovers } from "./grant-store.mjs";
+import { getUserScope } from "./scopes-store.mjs";
 import { startScopeProxy } from "./scope-proxy.mjs";
 import { confineReach } from "./reach-confine.mjs";
 
@@ -68,10 +69,28 @@ export function reachHosts(target) {
   return out;
 }
 
+// Does this scope's own grant allow private and loopback addresses? Both the
+// scope's saved permission and the grant it names must say so. A grant of
+// another scope does not count, and a target with no saved permission gets no.
+export function allowsPrivate(target, { now = Date.now() } = {}) {
+  const p = target?.permission;
+  if (p?.allowPrivate !== true || typeof p.grantId !== "string") return false;
+  const grant = getGrant(p.grantId);
+  return Boolean(grant) && grantActive(grant, now) && grant.allowPrivate === true;
+}
+
 // The gate decision, with no network I/O. Returns { hosts, networkKind, grants },
 // or throws a clear refusal. Pure, so the default-deny rule is easy to test on
-// its own. `grants` is the covering grants (empty for an offline run).
-export function enforceReach(target, { now = Date.now() } = {}) {
+// its own. `grants` is the grants this run uses (empty for an offline run).
+//
+// WHICH GRANT. A live scope the operator saved is bound to its OWN grant: the
+// one its permission tick wrote (scope.permission.grantId). Only that grant
+// counts. A grant of another scope that covers the same host does not let this
+// scope run, and does not add its hosts or its private-address opt-in to this
+// run. A saved live scope with no permission is refused. A target that is not a
+// saved scope (a direct call with a host list) may use any active grant that
+// covers its hosts.
+export function enforceReach(target, { now = Date.now(), grantIds } = {}) {
   const hosts = reachHosts(target);
   const networkKind = isNetworkKind(target && target.kind);
   if (networkKind && !hosts.length) {
@@ -81,21 +100,29 @@ export function enforceReach(target, { now = Date.now() } = {}) {
         `Only ${[...NON_NETWORK_KINDS].join(", ")} may run with no host.`,
     );
   }
-  // A host present (on ANY kind) always needs a grant. requireGrant throws a
-  // refusal that names the first uncovered host. An offline kind with no host
-  // skips the gate entirely, exactly as before — no behavior change for labs.
-  const grants = hosts.length ? requireGrant(hosts, now) : [];
+  if (!hosts.length) return { hosts, networkKind, grants: [] };
+  const bound = target.permission && typeof target.permission === "object";
+  // The grants this run may use. null means any grant in the store.
+  let pool = bound ? [getGrant(target.permission.grantId)] : null;
+  // A resumed run may use only its original active grants. A replacement grant
+  // cannot widen the scope or revive a run after its first grant was revoked.
+  if (grantIds != null) pool = (pool ?? grantIds.map(getGrant)).filter((g) => g && grantIds.includes(g.id));
+  // A live scope SAVED in the scope store must carry its own permission. One
+  // without it (an old or hand-edited scope file) is refused, never matched to
+  // another scope's grant. A direct call with a host list (no saved scope)
+  // keeps the old rule below. A resumed run (grantIds) keeps only its own
+  // saved grants above.
+  if (pool == null && target.kind === "live" && getUserScope(target.id)) {
+    throw new Error("Refused: this live scope has no saved permission, so no grant counts for it. Add the scope again and tick the permission box.");
+  }
+  if (pool == null) return { hosts, networkKind, grants: requireGrant(hosts, now) };
+  const grants = hosts.map((host) => {
+    const grant = pool.find((g) => grantActive(g, now) && g.hosts.some((h) => hostCovers(h, host)));
+    if (grant) return grant;
+    if (grantIds != null) throw new Error(`Refused: the saved grant for ${host} is missing or expired. Start a new run with a current grant.`);
+    throw new Error(`Refused: this scope's own grant does not cover ${host}. The grant was removed, has expired, or does not name that host. A grant of another scope does not count. Add the scope again to confirm permission.`);
+  }).filter((g, i, all) => all.findIndex((x) => x.id === g.id) === i);
   return { hosts, networkKind, grants };
-}
-
-// The resolved allow-list for a run: the hosts of the grants that COVER it, not
-// every grant in the store. Confining to the covering grants means a run reaches
-// only what its own target's grant permits, never a host some unrelated grant
-// happens to allow.
-function allowFromGrants(grants) {
-  const allow = [];
-  for (const g of grants) for (const h of g.hosts) if (!allow.includes(h)) allow.push(h);
-  return allow;
 }
 
 // Open a run's reach. Enforces the gate; for a live run it starts a confinement
@@ -117,8 +144,8 @@ function allowFromGrants(grants) {
 // capture the agent's own model-inference calls, which go to the provider (an
 // un-granted host) and the gate would wrongly block them. The gate confines
 // TARGET-bound traffic, not the agent's thinking.
-export async function openReach(target, { now = Date.now(), mode = "proxy", proxyHost = "127.0.0.1" } = {}) {
-  const { hosts, networkKind, grants } = enforceReach(target, { now });
+export async function openReach(target, { now = Date.now(), mode = "proxy", proxyHost = "127.0.0.1", grantIds } = {}) {
+  const { hosts, networkKind, grants } = enforceReach(target, { now, grantIds });
   if (!hosts.length) {
     return {
       live: false,
@@ -132,11 +159,13 @@ export async function openReach(target, { now = Date.now(), mode = "proxy", prox
       stop: async () => {},
     };
   }
-  const allow = allowFromGrants(grants);
+  // The allow-list is the target's own hosts, each one covered by a grant
+  // above. It is never the grant's host list: a grant that also names other
+  // hosts does not widen this run.
+  const allow = hosts;
   // A grant that opted into private space (the operator's own LAN, or a test's
-  // 127.0.0.1) lets the proxy reach it; a public-host grant never does. If ANY
-  // covering grant opted in, the run may reach the private hosts those grants
-  // name — the allow-list still confines WHICH hosts.
+  // 127.0.0.1) lets the proxy reach it; a public-host grant never does. Only
+  // the grants this run uses count — the allow-list still confines WHICH hosts.
   const allowPrivate = grants.some((g) => g.allowPrivate === true);
   if (mode === "confine") {
     const confine = await confineReach({ allowedHosts: allow, allowPrivate });

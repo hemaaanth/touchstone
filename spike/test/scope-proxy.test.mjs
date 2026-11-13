@@ -5,6 +5,7 @@
 // a non-allowed host is blocked with 403, logged, and never reaches a target.
 //
 //   node --test spike/test/scope-proxy.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";

@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react"
-import { fetchRun, streamRun } from "./api"
+import { fetchRun, HttpError, streamRun } from "./api"
 import { isTerminal } from "./format"
-import { repairFinalSay } from "./final-text"
+import { closingHeld, repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
@@ -13,8 +13,10 @@ import type {
   ModulePlanEntry,
   PendingApproval,
   PrepassTool,
+  ProofKind,
   PrepassView,
   RunEvent,
+  RunLead,
   RunStatus,
   Severity,
   SteerEntry,
@@ -52,6 +54,20 @@ export type StepKind =
   | "message"
   | "agent-error"
   | "submitted"
+  // A quiet line from the system, e.g. "the workspace was rebuilt".
+  | "system"
+  // A follow-up that stopped. `label` is the reason; `detail` is the raw output.
+  | "reply-error"
+
+// A server error can be one sentence, a blank line, then raw output (a
+// process's last lines). The sentence is for reading; the raw part is shown as
+// preformatted text.
+export function splitRaw(error: string): { text: string; raw: string | null } {
+  const at = error.search(/\n[ \t]*\n/)
+  if (at < 0) return { text: error.trim(), raw: null }
+  const raw = error.slice(at).replace(/^\s*\n/, "").trimEnd()
+  return { text: error.slice(0, at).trim(), raw: raw.trim() ? raw : null }
+}
 
 export interface Step {
   key: string
@@ -80,6 +96,12 @@ export interface Step {
   // The text is in `label`. The same step shows in both agents' threads.
   from?: string
   to?: string
+  // A "say" step made from the run's closing words, when the stream did not
+  // already hold them (an old record).
+  closing?: boolean
+  // A child's handoff or end that a server restart cut off (the server's
+  // `subagent-done` with `interrupted: true`). It did not fail.
+  cut?: boolean
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -93,7 +115,7 @@ export const severityRank = (s: string | undefined) => SEV_RANK[String(s ?? "").
 // the headline action; `detail` is the real engine/gateway error text; `hint`
 // is the one concrete next step; `spentUsd` is what the run actually cost.
 export interface RunFailure {
-  kind: "transient" | "account" | "budget" | "cutoff" | "model" | "crash" | "unknown"
+  kind: "transient" | "account" | "budget" | "cutoff" | "coverage" | "model" | "crash" | "unknown"
   title: string
   hint: string
   detail: string
@@ -103,6 +125,16 @@ export interface RunFailure {
   reason?: string
 }
 
+// The one module of a run from before the `packs` event: the scope's own pack,
+// and Contracts for a record older than modules (as the server's view says).
+const ownPack = (s: unknown): string[] => (s ? [(s as TargetScope).pack ?? "contracts"] : [])
+
+// The step label of one read_source call.
+function readLabel(file: string, scope: TargetScope | null): string {
+  if (file.replace(/^\.\//, "") !== "BRIEF.md") return `Read ${file || "a source file"}`
+  return scope && ["brief", "scope", "live"].includes(scope.kind) ? "Read the scope brief" : "Looked for a BRIEF.md file"
+}
+
 export interface RunState {
   events: RunEvent[]
   steps: Step[]
@@ -110,6 +142,12 @@ export interface RunState {
   // until it arrives (or on an old run that predates the event). The header
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
+  // Every module this run covers. One entry for a one-module run and for any
+  // record from before the `packs` event; empty until the scope is known.
+  packs: string[]
+  // The operator's scope brief the agent got, from the last `brief` event.
+  // Null when the run had none or it was removed in a later follow-up.
+  brief: string | null
   status: RunStatus
   // The worst finding submitted so far (null until the first one).
   pending: PendingApproval | null
@@ -120,6 +158,9 @@ export interface RunState {
   // The structured, classified failure behind `error`. Null unless the run ended
   // in an error state. Drives the error card; `error` stays the plain fallback.
   errorInfo: RunFailure | null
+  // A recorded run that did not read its whole scope: what was not read. A
+  // warning beside the finding, not an error. Null when the scope was covered.
+  coverage: RunFailure | null
   finalText: string | null // the agent's words when it could not prove anything
   // No worker is running. A follow-up message reopens the run (`reply-start`)
   // and a later `closed` ends it again.
@@ -143,6 +184,8 @@ export interface RunState {
   agents: AgentNode[]
   // Fleet: the run's shared Bulletin, in post order. Empty without a fleet.
   bulletin: BulletinNote[]
+  // Leads the agents recorded, worst first, one per id. Never proven.
+  leads: RunLead[]
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
@@ -167,6 +210,12 @@ export interface RunState {
   // The run's pipeline plan, from the `modules` event at run start. Null on a
   // run that predates the event.
   modules: ModulePlanEntry[] | null
+  // The provider and model id the run started with, from the `provider` event.
+  // Null on a run that predates the event.
+  provider: { id: string; model: string } | null
+  // The agents a server restart cut off mid-turn, each with the server's plain
+  // reason. An agent leaves this list when it works again.
+  cutOff: Record<string, string>
   // The operator stopped the run's last piece of work. A follow-up clears it.
   stopped: boolean
 }
@@ -179,7 +228,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let decision: Verdict | null = null
   let error: string | null = null
   let errorInfo: RunFailure | null = null
+  let coverage: RunFailure | null = null
   let finalText: string | null = null
+  // The closing step added at the run's end, until the run's status settles.
+  // If the run then ends as an error other than a coverage gap, the words go.
+  let closing: Step | null = null
   let closed = false
   let replying = false
   let replyStartedAt: number | null = null
@@ -187,9 +240,14 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
+  // Every module this ONE run covers. Empty until the `packs` event (or the
+  // scope, whose `pack` is the run's own on a one-module record).
+  let packs: string[] = []
+  let brief: string | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
+  const leads: RunLead[] = []
   const findings: FindingSummary[] = []
   const candidates: Candidate[] = []
   const dropCandidate = (poc: string) => {
@@ -202,6 +260,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let findingId: string | null = null
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
+  let provider: { id: string; model: string } | null = null
+  const cutOff: Record<string, string> = {}
   let stopped = false
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -221,9 +281,16 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // answer itself: its text still starts with what that step shows.
   const stream = new Map<string, Step>()
   let turnKeys = new Set<string>()
+  // Where the current turn starts in `steps`. The closing words are checked
+  // and repaired only against the main agent's prose of this turn: an earlier
+  // turn's answer or a child's words are other texts, and stay as they are.
+  let turnStart = 0
   const newTurn = () => {
     turnKeys = new Set()
+    closing = null
+    turnStart = steps.length
   }
+  const turnProse = () => steps.slice(turnStart).filter((s) => !s.agent)
   const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string, i: number) => {
     const k = `${kind}:${conv}:${attempt ?? 0}`
     const prev = stream.get(k)
@@ -255,6 +322,21 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "packs": {
+        // The modules a joined run covers. It adds no step; the header and Run
+        // Info read it.
+        if (Array.isArray(e.packs)) packs = e.packs.map((p) => str(p)).filter(Boolean)
+        break
+      }
+      case "brief":
+        // The scope brief went into the agent's instructions. Run Info shows it;
+        // it is not a step. "" means a follow-up removed it.
+        brief = str(e.text) || null
+        break
+      case "provider":
+        // The provider and model the run started with. No step.
+        if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
+        break
       case "modules": {
         // The pipeline plan. It shows on the Modules page, not in the
         // transcript, so it adds no step.
@@ -299,7 +381,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "list", phase, label: "Listed the contract sources" })
         break
       case "read_source":
-        steps.push({ key, kind: "read", phase, label: `Read ${str(e.file) || "a source file"}` })
+        // Older runs of a scope got its text as a BRIEF.md file that Touchstone
+        // wrote; it was never a file of the repo. A lab never had one (the two
+        // labs that ship a BRIEF.md hand it over in the first message), so there
+        // the agent only looked for it.
+        steps.push({ key, kind: "read", phase, label: readLabel(str(e.file), scope) })
         break
       case "run_poc":
         steps.push({
@@ -441,6 +527,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       }
       case "subagent-spawned": {
         const id = str(e.id)
+        delete cutOff[id]
         const area = str(e.area) || "subagent"
         const title = str(e.title) || area
         steps.push({
@@ -477,11 +564,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "subagent-done": {
         const id = str(e.id)
         const st = e.status === "failed" ? "fail" : "pass"
+        // The server ends a child that a restart cut off as "failed" with
+        // `interrupted: true`. It shows as interrupted, not as failed.
+        const cut = e.interrupted === true
+        if (cut) cutOff[id] = str(e.error) || "The server restarted while this agent was working."
+        else delete cutOff[id]
         for (let j = steps.length - 1; j >= 0; j--) {
           const s = steps[j]
           if (s.kind === "subagent" && s.subId === id) {
             s.subState = e.status === "failed" ? "failed" : "done"
             s.state = st
+            if (cut) s.cut = true
             break
           }
         }
@@ -494,7 +587,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         // A failed child gets its own row in the main chat (Retry / Reassign).
         if (failed)
-          steps.push({ key, kind: "agent-error", phase, label: str(e.error) || "Stopped with an error", subId: id })
+          steps.push({ key, kind: "agent-error", phase, label: str(e.error) || "Stopped with an error", subId: id, ...(cut ? { cut } : {}) })
         break
       }
       case "agent-graph": {
@@ -508,6 +601,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       }
       case "agent-status": {
         const st = e.state === "idle" ? "idle" : "working"
+        if (st === "working") delete cutOff[str(e.id)]
         patchAgent(str(e.id), { state: st, ...(st === "idle" ? { activity: "idle" as const } : {}) })
         break
       }
@@ -535,6 +629,30 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         break
       }
+      case "lead": {
+        // One lead per id. A later event for the same id replaces it in place.
+        const id = str(e.id)
+        const file = str(e.file)
+        const line = num(e.line)
+        if (!id || !file || line == null || line < 1) break
+        const sev = str(e.severity).toLowerCase()
+        const lead: RunLead = {
+          id,
+          author: who || COORDINATOR,
+          t: num(e.t),
+          severity: sev in SEV_RANK ? (sev as Severity) : null,
+          file,
+          line,
+          title: str(e.title),
+          reason: str(e.reason),
+          proof: str(e.proof) || null,
+          stepKey: key,
+        }
+        const at = leads.findIndex((l) => l.id === id)
+        if (at >= 0) leads[at] = lead
+        else leads.push(lead)
+        break
+      }
       case "agent-spend": {
         const usd = num(e.usd)
         if (usd != null) patchAgent(str(e.id), { spendUsd: usd })
@@ -555,6 +673,10 @@ export function reduceEvents(events: RunEvent[]): RunState {
             dismissed: false,
             ms: num(e.ms),
             poc: str(e.poc) || undefined,
+            // The finding's own module and proof kind: in a joined run they
+            // differ from the scope's.
+            pack: str(e.pack) || undefined,
+            proofKind: isProofKind(e.proofKind) ? e.proofKind : undefined,
             stages:
               stages ?? {
                 hypothesis: true,
@@ -595,6 +717,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
           severity: (str(e.severity) || "medium") as Severity,
           poc,
           n,
+          ...(str(e.pack) ? { pack: str(e.pack) } : {}),
         }
         submitted.push(f)
         steps.push({ key, kind: "submitted", phase, label: f.title, finding: f })
@@ -665,14 +788,26 @@ export function reduceEvents(events: RunEvent[]): RunState {
         newTurn()
         break
       }
-      case "no-finding":
+      case "no-finding": {
+        // The agent's closing words. The stream usually holds them already,
+        // whole: then they show there, once. Otherwise (an old record) they
+        // become a prose step here, at the run's end, so a later turn shows
+        // below them.
         finalText = str(e.final) || null
+        if (finalText && !closingHeld(turnProse(), finalText) && !repairFinalSay(turnProse(), finalText)) {
+          closing = { key, kind: "say", phase, conv: "root", label: finalText, closing: true }
+          steps.push(closing)
+        }
+        break
+      }
+      case "coverage":
+        coverage = e.info && typeof e.info === "object" ? (e.info as RunFailure) : null
         break
       case "settled": {
         // The streamed prose can end one chunk short. The settled event holds the
         // whole answer, so the last prose step takes it. Old records get the same repair.
         const summary = e.summary as { final?: { text?: unknown } } | undefined
-        repairFinalSay(steps, summary?.final?.text)
+        repairFinalSay(turnProse(), summary?.final?.text)
         break
       }
       case "run-complete":
@@ -696,6 +831,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (typeof e.error === "string") error = e.error
         // The classified failure the server attached to a terminal error status.
         if (e.errorInfo && typeof e.errorInfo === "object") errorInfo = e.errorInfo as RunFailure
+        // The run's end status decides if the closing step stays: it does for
+        // "no-finding" and for a coverage gap, not for another end.
+        if (closing && ["recorded", "denied", "error", "no-finding"].includes(status)) {
+          const keep = status === "no-finding" || (status === "error" && errorInfo?.kind === "coverage")
+          if (!keep) steps.splice(steps.indexOf(closing), 1)
+          closing = null
+        }
         break
       case "closed":
         closed = true
@@ -717,8 +859,24 @@ export function reduceEvents(events: RunEvent[]): RunState {
         activity = "idle"
         steps.push({ key, kind: "note", phase, label: "You stopped the run. Send a message to continue." })
         break
-      case "reply-error":
-        steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
+      case "stop-requested":
+        steps.push({ key, kind: "note", phase, label: "Stopping the run" })
+        break
+      case "phase-restarted": {
+        const step = ({ setup: "setup", prepass: "tool scan", agent: "agent turn", proof: "proof check" } as Record<string, string>)[str(e.phase)] ?? "step"
+        newTurn()
+        steps.push({ key, kind: "note", phase, label: `The server restarted, so the ${step} started again` })
+        break
+      }
+      case "reply-error": {
+        const { text, raw } = splitRaw(str(e.error))
+        steps.push({ key, kind: "reply-error", phase, label: text, detail: raw ?? undefined })
+        break
+      }
+      case "workspace":
+        // The run's old workspace was gone, so the server built a new one.
+        if (str(e.state) === "rebuilt" && str(e.message).trim())
+          steps.push({ key, kind: "system", phase, label: str(e.message).trim() })
         break
       case "archived":
         archived = Boolean(e.archived)
@@ -765,12 +923,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
     events,
     steps,
     scope,
+    // One module on a one-module run and on an old record: the run's own pack.
+    // `scope` is reassigned inside the loop, which TS control flow cannot see.
+    packs: packs.length ? packs : ownPack(scope),
+    brief,
     status,
     pending,
     submitted,
     decision,
     error,
     errorInfo,
+    coverage,
     finalText,
     closed,
     replying,
@@ -781,6 +944,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
     activity,
     agents,
     bulletin,
+    // Worst first; the sort is stable, so equal severities keep arrival order.
+    leads: leads.toSorted((a, b) => severityRank(a.severity ?? undefined) - severityRank(b.severity ?? undefined)),
     findings,
     candidates,
     steers,
@@ -789,6 +954,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
     findingId,
     prepass,
     modules,
+    provider,
+    cutOff,
     stopped,
   }
 }
@@ -830,6 +997,12 @@ interface RunEntry {
   // The open stream, if any. `gen` counts loads: a stream only writes while
   // its load is the latest.
   stop?: () => void
+  // Only setRetry touches this. Invariant: at most one pending retry timer and
+  // at most one in-flight snapshot fetch per run id. (reloadRun may leave an
+  // older fetch running, but `gen` drops its result, so it schedules nothing.)
+  retry?: ReturnType<typeof setTimeout>
+  // Reloads in a row without a stream that stayed open 5 s. Sets the backoff.
+  failures: number
   gen: number
 }
 
@@ -883,7 +1056,7 @@ function sameBrief(a: RunBrief | undefined, b: RunBrief): boolean {
 function entryFor(id: string): RunEntry {
   let en = entries.get(id)
   if (!en) {
-    en = { events: [], state: null, listeners: new Set(), loading: false, gen: 0 }
+    en = { events: [], state: null, listeners: new Set(), loading: false, failures: 0, gen: 0 }
     entries.set(id, en)
   }
   return en
@@ -909,6 +1082,7 @@ function commit(id: string, en: RunEntry, events: RunEvent[]) {
 
 function follow(id: string, en: RunEntry) {
   const gen = en.gen
+  const opened = Date.now()
   let queue: RunEvent[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = () => {
@@ -928,10 +1102,38 @@ function follow(id: string, en: RunEntry) {
     () => {
       if (en.gen !== gen) return
       flush()
-      // The stream dropped before the run closed: load it fresh next time.
-      if (!en.state?.closed) en.loading = false
+      // The server owns the event list. Reload it instead of replaying an old
+      // since= URL. A stream that keeps failing waits on the backoff.
+      if (!en.state?.closed) {
+        en.loading = false
+        // The server sends `status` on every subscribe, so one message proves
+        // nothing. Only a stream that stayed open 5 s resets the backoff.
+        if (Date.now() - opened >= 5000) en.failures = 0
+        retryLoad(id, en)
+      }
     },
   )
+}
+
+// Load again after a dropped stream or a failed fetch. The first reload after a
+// healthy stream is at once; then 1 s, 2 s, 4 s, and 5 s each time after that.
+function retryLoad(id: string, en: RunEntry) {
+  const delay = en.failures ? Math.min(1000 * 2 ** (en.failures - 1), 5000) : 0
+  en.failures = Math.min(en.failures + 1, 4)
+  setRetry(id, en, delay)
+}
+
+// The one place that sets or clears the retry timer. It always clears the old
+// timer first, so a run never has two retry chains. `null` only clears.
+function setRetry(id: string, en: RunEntry, delay: number | null) {
+  clearTimeout(en.retry)
+  en.retry =
+    delay === null
+      ? undefined
+      : setTimeout(() => {
+          en.retry = undefined
+          loadRun(id)
+        }, delay)
 }
 
 // Load a run into the store if it is not there yet. Safe to call often.
@@ -939,18 +1141,26 @@ export function loadRun(id: string) {
   const en = entryFor(id)
   if (en.loading) return
   en.loading = true
+  // This fetch replaces any pending retry.
+  setRetry(id, en, null)
+  const gen = ++en.gen
   fetchRun(id)
     .then((view) => {
+      if (en.gen !== gen) return
       // The snapshot replaces the events. A stream still open from an earlier
       // load would add its events again on top, so stop it first.
-      en.gen++
       en.stop?.()
       en.stop = undefined
       commit(id, en, view.events ?? [])
       if (!en.state?.closed) follow(id, en)
     })
-    .catch(() => {
+    .catch((err) => {
+      if (en.gen !== gen) return
       en.loading = false
+      // A 4xx will not change on retry (deleted, forbidden). A 5xx or a network
+      // error is the server restarting, so it keeps retrying at most every 5 s.
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500) return
+      retryLoad(id, en)
     })
 }
 
@@ -958,11 +1168,20 @@ export function loadRun(id: string) {
 // an idle run, or after it is archived: an idle run keeps no stream, so the
 // new events are only in a fresh snapshot.
 export function reloadRun(id: string) {
-  entryFor(id).loading = false
+  const en = entryFor(id)
+  en.gen++
+  en.stop?.()
+  en.stop = undefined
+  en.failures = 0
+  en.loading = false
   loadRun(id)
 }
 
 // The reduced state of one run. Null only until its snapshot first loads.
+export function getRunState(id: string): RunState | null {
+  return entries.get(id)?.state ?? null
+}
+
 export function useRun(runId: string | null): RunState | null {
   const subscribe = useCallback(
     (cb: () => void) => {
@@ -1000,3 +1219,12 @@ export function onRunSettled(cb: (id: string) => void): () => void {
     settleListeners.delete(cb)
   }
 }
+
+// The header's Running word. A follow-up reply keeps the run's terminal status,
+// so `replying` counts as running while its stream is open. Before the run
+// loads, the sidebar's status decides.
+export function isRunningNow(state: RunState | null, status: RunStatus): boolean {
+  return state ? !state.closed && (!isTerminal(state.status) || state.replying) : status === "running"
+}
+
+const isProofKind = (x: unknown): x is ProofKind => x === "forge" || x === "http" || x === "evidence"

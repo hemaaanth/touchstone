@@ -31,7 +31,7 @@ import { parseNuclei } from "../web/scan.mjs";
 
 export const IMAGES = {
   inspector: "touchstone/mcp-inspector:0.17.2",
-  nuclei: "projectdiscovery/nuclei:v3.4.10",
+  nuclei: "projectdiscovery/nuclei:v3.4.10@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97",
   shield: "touchstone/mcp-shield:1.0.4",
   garak: "touchstone/garak:0.17.1",
 };
@@ -213,7 +213,7 @@ export async function scanMcp({ net, baseUrl, token, garak, only, run = runTool,
         const notes = [`${p.requests} of ${p.budget} requests used, ${p.replies} replies`];
         if (p.upstreamErrors) notes.push(`${p.upstreamErrors} requests failed`);
         if (p.probeErrors.length) notes.push(`probes that did not finish: ${p.probeErrors.join("; ")}`);
-        return { r, leads: p.leads, reason: `garak ran: ${notes.join(". ")}.` };
+        return { r, leads: p.leads, reason: `${notes.join(". ")}.` };
       }
       return { r: { ...r, code: r.code || 1 }, leads: [], reason: r.timedOut ? "garak timed out." : `garak failed: ${p.error}` };
     });

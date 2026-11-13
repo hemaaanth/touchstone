@@ -3,15 +3,25 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { assertReach, captureDomain, dnsRows, httpRows, inScope, originOf, parseSubfinder, scriptUrls, synthZone } from '../packs/domains/live.mjs';
+import { createLabNetwork, removeLabNetwork } from '../lib/lab-net.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-live-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { assertReach, captureDomain, dnsRows, httpRows, inScope, originOf, parseSubfinder, scriptUrls, synthZone } = await import('../packs/domains/live.mjs');
 
 test('a real target needs a grant that covers the domain', () => {
   assert.throws(() => assertReach({ network: 'bridge' }, 'example.com'), /grant/);
   assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['other.com'] }, 'example.com'), /grant/);
   assert.throws(() => assertReach(null, 'example.com'), /reach\.network/);
   assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, '-oX.example'), /Invalid domain/);
-  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'app.example.com'), ['example.com']);
+  // A live grant covers the exact name. Only a "*." entry covers a subdomain.
+  assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'app.example.com'), /grant/);
+  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['*.example.com'] }, 'app.example.com'), ['*.example.com']);
+  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'example.com'), ['example.com']);
 });
 
 test('a lab-looking network name is not a grant', () => {
@@ -20,18 +30,19 @@ test('a lab-looking network name is not a grant', () => {
   assert.throws(() => assertReach({ network: 'touchstone-domains-42', granted: true, scope: ['other.test'] }, 'touchstone.test'), /grant/);
 });
 
-test('a lab-named network must exist and really be --internal', () => {
-  const docker = args => execFileSync('docker', args, { stdio: 'ignore' });
+test('a lab-named network must exist and really be --internal', async () => {
   const open = 'touchstone-domains-test-open-' + process.pid, shut = 'touchstone-domains-test-shut-' + process.pid;
   const reach = network => ({ network, granted: true, scope: ['touchstone.test'] });
   assert.throws(() => assertReach(reach('touchstone-domains-test-missing-' + process.pid), 'touchstone.test'), /not found/);
   try {
-    docker(['network', 'create', open]);
-    docker(['network', 'create', '--internal', shut]);
+    for (const [name, args] of [[open, []], [shut, ['--internal']]]) {
+      const r = await createLabNetwork(name, args);
+      if (r.code !== 0) throw new Error(r.stderr);
+    }
     assert.throws(() => assertReach(reach(open), 'touchstone.test'), /not --internal/);
     assert.deepEqual(assertReach(reach(shut), 'touchstone.test'), ['touchstone.test']);
   } finally {
-    for (const name of [open, shut]) try { docker(['network', 'rm', name]); } catch {}
+    for (const name of [open, shut]) await removeLabNetwork(name);
   }
 });
 
@@ -90,4 +101,12 @@ test('default ports leave the origin bare', () => {
 test('the lab tools refuse a network Docker does not call --internal, whatever its name', async () => {
   const { captureTools } = await import('../packs/domains/tools.mjs');
   await assert.rejects(captureTools('/nonexistent', 'touchstone-domains-no-such-network'), /not found/);
+});
+
+test('script urls stay on the granted scheme and port pairs, not only the granted hosts', () => {
+  const pages = [{ url: 'https://app.example.com/', headers: { 'content-type': 'text/html' }, body: '<script src="/a.js"></script><script src="https://app.example.com:8443/b.js"></script><script src="http://app.example.com/c.js"></script><script src="http://app.example.com:8080/d.js"></script>' }];
+  // The default pairs: https 443 and http 80.
+  assert.deepEqual(scriptUrls(pages, ['example.com']).sort(), ['http://app.example.com/c.js', 'https://app.example.com/a.js']);
+  // A grant on https 8443 only.
+  assert.deepEqual(scriptUrls(pages, ['example.com'], [{ scheme: 'https', port: 8443 }]), ['https://app.example.com:8443/b.js']);
 });

@@ -31,6 +31,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { docker, dockerReady, confineReach, containerIp } from "../lib/reach-confine.mjs";
+import { createLabNetwork, removeLabNetwork } from "../lib/lab-net.mjs";
 
 const ready = await dockerReady();
 const skip = ready.ok ? false : ready.reason;
@@ -91,7 +92,7 @@ function rawToolScript(url) {
 
 before(async () => {
   if (skip) return;
-  const nt = await docker(["network", "create", "--internal", netTargets]);
+  const nt = await createLabNetwork(netTargets, ["--internal"], { docker });
   if (nt.code !== 0) throw new Error(`targets network create failed: ${nt.stderr}`);
   await startOrigin(grantedName, GRANTED_ALIAS, "GRANTED-ORIGIN");
   await startOrigin(evilName, EVIL_ALIAS, "EVIL-ORIGIN");
@@ -113,7 +114,7 @@ after(async () => {
   if (confine) await confine.stop();
   await docker(["rm", "-f", grantedName]);
   await docker(["rm", "-f", evilName]);
-  await docker(["network", "rm", netTargets]);
+  await removeLabNetwork(netTargets, { docker });
   if (ws) { try { rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ } }
 }, { timeout: 60_000 });
 

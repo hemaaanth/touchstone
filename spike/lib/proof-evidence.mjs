@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { evidenceReplay } from "./replay-bundle.mjs";
 
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -79,7 +80,13 @@ export async function proveFindings(ws, found, events, log = () => {}, { detecto
     let proof;
     try { proof = await confirmEvidence(pinned, finding.evidence, detectors); } catch { proof = failed(); }
     log(`Evidence replay: ${proof.status}`);
-    if (proof.status === "pass") out.push({ ...finding, proof, proven: true });
+    if (proof.status === "pass") {
+      // Keep the pin and the captured file names with the proof, never the
+      // file text: the snapshot is raw target files and may hold secrets.
+      let replay = null;
+      try { replay = evidenceReplay(pinned); } catch { replay = null; }
+      out.push({ ...finding, proof: replay ? { ...proof, replay } : proof, proven: true });
+    }
   }
   const rank = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
   return out.sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));

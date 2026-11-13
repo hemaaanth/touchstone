@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { Wallet } from "ethers";
+import { makeCosignLab } from "./cosign-lab.mjs";
 
 export async function makeLabWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "touchstone-supply-"));
@@ -17,10 +18,11 @@ export async function makeLabWorkspace() {
   writeFileSync(join(ws, "wallet.env"), `# Throwaway lab wallet. Never fund it.\nPRIVATE_KEY=${wallet.privateKey}\nMNEMONIC="${wallet.mnemonic.phrase}"\n`, { mode: 0o600 });
   writeFileSync(join(ws, "hardhat.config.js"), `// Throwaway lab config. Never deploy it.\nmodule.exports = { networks: { lab: {\n  url: "https://eth-mainnet.g.alchemy.com/v2/LabOnly_f63N8bcQ4mwJzP2hR7sV9xKa",\n  accounts: ["${deployer.privateKey}"]\n} } };\n`, { mode: 0o600 });
   writeFileSync(join(ws, "keystore.json"), await Wallet.createRandom().encrypt("throwaway-lab-password"), { mode: 0o600 });
+  const cosign = makeCosignLab(ws);
   const git = (args) => execFileSync("git", ["-C", ws, ...args], { stdio: "pipe", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
   git(["init", "--quiet"]);
   git(["add", "."]);
   git(["-c", "user.name=Touchstone lab", "-c", "user.email=lab@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Pin throwaway supply-chain lab"]);
-  writeFileSync(join(ws, ".touchstone.json"), JSON.stringify({ pack: "supply-chain", kind: "lab" }));
+  writeFileSync(join(ws, ".touchstone.json"), JSON.stringify({ pack: "supply-chain", kind: "lab", cosign }));
   return ws;
 }

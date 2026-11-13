@@ -28,13 +28,15 @@ import {
   readLabHandle,
   runRequestScript,
   startLab,
-  stopLab,
   teardownPersistedLab,
   writeLabHandle,
+  writeScanHandle,
+  teardownPersistedScan,
   requireImage,
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
+import { extraScans, foldScan } from "./discovery.mjs";
 import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubBody, scrubProof, scrubText } from "./redact.mjs";
@@ -489,6 +491,10 @@ function kickoff(ws, env = {}) {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
   if (brief) parts.push(`BRIEF.md:\n${brief}`);
+  // A live scope's bearer token goes only into this first message, the root
+  // agent's, as it did when the brief file held it. Fleet children never get it.
+  const token = isLive(ws) ? readTouchstone(ws).mcp?.token : null;
+  if (typeof token === "string" && token) parts.push(`Bearer token for this site: ${token}`);
   if (openapi) parts.push(`openapi.yaml (the documented routes — there may be more):\n${openapi}`);
   return parts.join("\n\n");
 }
@@ -586,7 +592,7 @@ function tools(ws, state) {
         oracleName: entry.oracleName,
       };
       state.found.push(finding);
-      event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
+      event("finding-submitted", { pack: "web", n, title: finding.title, severity: finding.severity, poc: label });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
@@ -619,24 +625,27 @@ function tools(ws, state) {
 async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   if (isLive(ws)) return livePrepass(ws, { emit, reach });
   await requireImage(image, "web");
-  const handle = await startLab({ image });
+  const handle = await startLab({ image, onStart: (partial) => writeLabHandle(ws, partial) });
   writeLabHandle(ws, handle);
   emit({ ev: "web-lab-started", image, alias: handle.alias });
 
   // A second, throwaway lab: scanner traffic must not touch the one the agent
   // will explore, or it would pollute the recorded transcripts and lab state.
   let scan = { coverage: [], leads: [] };
-  let scanLab = null;
   try {
-    scanLab = await startLab({ image });
+    const scanLab = await startLab({ image, onStart: (partial) => writeScanHandle(ws, partial) });
+    writeScanHandle(ws, scanLab);
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
     // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
     const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
     scan = await scanWeb({ net: scanLab.net, baseUrl: scanLab.netBaseUrl, urls: docQueryUrls(docs, scanLab.netBaseUrl) });
+    // Extra discovery tools (ffuf, ...) run against the same throwaway lab and
+    // fold their leads in. Each is fail-closed, so this never aborts the scan.
+    for (const extra of await extraScans({ net: scanLab.net, baseUrl: scanLab.netBaseUrl })) scan = foldScan(scan, extra);
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {
-    if (scanLab) await stopLab(scanLab).catch(() => {});
+    await teardownPersistedScan(ws).catch(() => {});
   }
   const record = { pack: "web", coverage: scan.coverage, leads: scan.leads };
   writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));
@@ -721,7 +730,8 @@ expects. The two well-known test key pairs are available when the site accepts t
 signPersonal(key, message) and buildSiwe(fields) are injected. If the site needs an
 account you have no key for, say so; never invent one.
 
-BRIEF.md names the site and its base URL. Read it first. The prepass scanners (zap,
+The scope section at the end of these instructions names the site and its base URL,
+and holds the operator's brief when there is one. Read it first. The prepass scanners (zap,
 nuclei, dalfox) ran against the real host; their leads are in your first message and in
 web_leads. Leads are hints. They cannot sign in, so they miss session and authorization
 bugs.
@@ -750,10 +760,16 @@ starting with "Fix:". Keep going without asking questions. Work from the real si
 export default {
   id: "web",
   title: "Web and sign-in",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "A dApp backend from the outside: its sign-in with Ethereum flow and its REST API.",
   tier: "P", // passive
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
+  // network. Only the request scripts and replays go through the grant gate.
+  scanNet: "open",
   system: (ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM),
   tools,
   kickoff,

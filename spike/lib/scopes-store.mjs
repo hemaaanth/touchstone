@@ -12,11 +12,11 @@
 // is the whole store; we read and rewrite it in full on each change. There is
 // one long-lived Node process (the Vite dev server), so there is no concurrent
 // writer to coordinate with.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, readGrants, removeGrant, privateLabHostError } from "./grant-store.mjs";
+import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -32,21 +32,49 @@ const SANDBOX_FOUNDRY = {
   note: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
 };
 
-// Read the whole store. Missing file or unparsable JSON yields an empty list, so
-// a hand-edited or absent file degrades to "no user scopes" instead of throwing.
+// The scopes for a mutation. A missing file is an empty store. A file that
+// exists but cannot be read or parsed throws, so a mutation never writes over it.
+// Exported for a reader that must tell a damaged store from a scope that is gone.
+export const loadScopes = () => loadStore(scopesFile(), "scope store");
+
+// Read the whole store for a list or a lookup. A missing file is an empty list.
+// A damaged file also reads as "no user scopes", so the list still renders. It
+// is never written over: every add and remove refuses it (loadScopes).
 export function readScopes() {
   try {
-    const raw = readFileSync(scopesFile(), "utf8");
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    return loadScopes();
   } catch {
     return [];
   }
 }
 
+// Temp file in the same directory, then rename (see saveStore).
 function writeScopes(arr) {
-  mkdirSync(path.dirname(scopesFile()), { recursive: true });
-  writeFileSync(scopesFile(), JSON.stringify(arr, null, 2));
+  saveStore(scopesFile(), arr);
+}
+
+// Add one new scope on top, under the store lock (grant-store withStoreLock).
+function addToStore(scope) {
+  withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    all.unshift(scope);
+    writeScopes(all);
+  });
+}
+
+// A sentence when the scope store file exists but cannot be read, else null.
+// The list then reads as empty (readScopes); the app shows this sentence.
+export function scopeStoreError() {
+  try {
+    loadScopes();
+    return null;
+  } catch (e) {
+    // Read on a page that changes nothing: no "Nothing was changed".
+    const text = String(e?.message ?? e)
+      .replace(/^Refused: /, "")
+      .replace(/ Nothing was changed\. Repair the file or move it away, then try again\.$/, " Its scopes are not shown, and none can be added or changed, until the file is repaired or moved away.");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
 }
 
 // A short url-safe slug from a title, for a readable scope id. Falls back to
@@ -88,7 +116,8 @@ export function extractLinks(md) {
 // what the operator actually wrote.
 export function addBriefScope({ title, brief, blurb } = {}) {
   const t = String(title || "").trim();
-  const body = String(brief || "").trim();
+  // The pasted markdown is the scope brief, so the same limit holds here.
+  const body = checkBrief(brief == null ? "" : String(brief));
   if (!t) throw new Error("a brief needs a title");
   if (!body) throw new Error("a brief needs some markdown");
   const links = extractLinks(body);
@@ -104,9 +133,7 @@ export function addBriefScope({ title, brief, blurb } = {}) {
     proofSurface: SANDBOX_FOUNDRY,
     createdAt: Date.now(),
   };
-  const all = readScopes();
-  all.unshift(scope);
-  writeScopes(all);
+  addToStore(scope);
   return scope;
 }
 
@@ -387,8 +414,9 @@ export function memberFilePaths(members) {
   return folders.flatMap((m) => m.files.map((f) => ({ path: folders.length === 1 ? f.path : `${m.name}/${f.path}`, content: f.content })));
 }
 
-// The BRIEF.md a scope run reads first: its members and where each one is.
-export function scopeBrief(scope) {
+// What a scope run is told about its members and where each one is. It goes
+// into the agent's instructions (targets.mjs scopeEnv), not into a file.
+export function scopeOutline(scope) {
   const lines = [`# ${scope.title}`, "", "One scope, tested as one unit. Its members:", ""];
   const several = scope.members.filter((m) => m.kind === "folder").length > 1;
   for (const m of scope.members) {
@@ -422,9 +450,7 @@ export function addScope({ title, members, pack: declared, blurb } = {}) {
     proofSurface: SCOPE_PACKS[pack],
     createdAt: Date.now(),
   };
-  const all = readScopes();
-  all.unshift(scope);
-  writeScopes(all);
+  addToStore(scope);
   return scope;
 }
 
@@ -500,8 +526,14 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   }
   const name = String(title || "").trim();
   if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
-  const packId = String(pack || "").trim() || "web";
-  if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
+  // `pack` is one module or a list: the modules the operator ticked for these
+  // websites. The first is the scope's default. targets.mjs (eligiblePacks) adds
+  // the modules every website allows.
+  const ids = [...new Set([pack].flat().map((p) => String(p ?? "").trim()).filter(Boolean))];
+  if (!ids.length) ids.push("web");
+  for (const p of ids) if (!/^[a-z][a-z0-9-]{0,39}$/.test(p)) throw new Error(`unknown module: ${p}`);
+  const packId = ids[0];
+  if (ids.length > 1 && ids.includes("supply-chain")) throw new Error("The supply-chain module takes GitHub repos, not websites. Add it as its own scope.");
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
   // A supply-chain live scope names GitHub repos or orgs, not websites. Its grant
   // covers only the two read-only GitHub hosts. The pack checks each repo
@@ -540,6 +572,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,
+    ...(github ? {} : { packs: ids }),
     entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
@@ -560,14 +593,47 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   // A grant with no scope would let runs reach the hosts with nothing in the
   // UI to remove it. Roll it back if the scope cannot be saved.
   try {
-    const all = readScopes();
-    all.unshift(scope);
-    writeScopes(all);
+    addToStore(scope);
   } catch (err) {
     removeGrant(grant.id);
     throw err;
   }
   return scope;
+}
+
+// ---- The scope brief --------------------------------------------------------
+//
+// Free text from the operator that every run of the scope receives, in the
+// agent's instructions (targets.mjs scopeEnv). It is guidance for the model
+// only. It never changes the grant, the allow-list, the modules or the tools:
+// nothing in reach.mjs, fetch.mjs or modules.mjs reads it. A "brief" scope
+// (older records) already holds its pasted markdown in this same field.
+export const BRIEF_MAX = 8000;
+
+// The brief as it is stored: trimmed, "" for none. Refuses a brief over the limit.
+export function checkBrief(text) {
+  if (text != null && typeof text !== "string") throw new Error("A scope brief must be text.");
+  const brief = String(text ?? "").trim();
+  if (brief.length > BRIEF_MAX) {
+    throw new Error(`A scope brief holds at most ${BRIEF_MAX.toLocaleString("en-US")} characters. This one has ${brief.length.toLocaleString("en-US")}. Shorten it and save again.`);
+  }
+  return brief;
+}
+
+// Set or clear the brief of one scope. Writes the store atomically (saveStore)
+// and refuses a damaged store (loadScopes). Returns the stored scope. An empty
+// brief removes the field, so the record looks like one that never had a brief.
+export function setScopeBrief(id, text) {
+  const brief = checkBrief(text);
+  return withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    const scope = all.find((s) => s.id === id);
+    if (!scope) throw new Error(`unknown scope: ${id}`);
+    if (brief) scope.brief = brief;
+    else delete scope.brief;
+    writeScopes(all);
+    return scope;
+  });
 }
 
 export function getUserScope(id) {
@@ -576,13 +642,17 @@ export function getUserScope(id) {
 
 // Remove a scope by id. Returns true if one was removed.
 export function removeScope(id) {
-  const all = readScopes();
-  const next = all.filter((s) => s.id !== id);
-  if (next.length === all.length) return false;
-  writeScopes(next);
-  // A live scope's permission goes with it.
-  for (const g of readGrants()) if (g.scopeId === id) removeGrant(g.id);
-  return true;
+  return withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    const next = all.filter((s) => s.id !== id);
+    if (next.length === all.length) return false;
+    // Read the grants first: a damaged grant store refuses the removal before the scope is gone.
+    const grants = loadGrants();
+    writeScopes(next);
+    // A live scope's permission goes with it.
+    for (const g of grants) if (g.scopeId === id) removeGrant(g.id);
+    return true;
+  });
 }
 
 export function hasScopesFile() {

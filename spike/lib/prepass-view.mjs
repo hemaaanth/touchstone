@@ -3,7 +3,11 @@
 // Every pack's prepass hook returns a `record` the run keeps as `prepass`. The
 // shapes differ:
 //   Contracts      { static: { tool, engines, suspects, top[] },
-//                    fuzz:   { tool, engines, applicable, suspects, top[] } }
+//                    fuzz:   { tool, engines, applicable, suspects, top[] },
+//                    symbolic: same keys plus status/reason (Halmos),
+//                    chimera:  same keys plus status/reason (Chimera),
+//                    mythril, heimdall: { tool, engines, status, reason, suspects, top[] }
+//                    (the last two only for a bytecode-only target) }
 //   supply chain   { coverage: [{ engine, status, code, timedOut, leads }],
 //                    leads: [{ check, impact, where, file, lines, description, engine }] }
 //   Keys, Chain watch { mode, block, suspects, corroborated, top: [{ check, impact, where }] }
@@ -41,7 +45,10 @@ function statusOf(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
   if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };
-  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: null };
+  // A run that finished can still carry a caveat ("7 of 8 operations errored",
+  // or a run that left some checks unchecked): keep it, so "ran" never reads
+  // as a clean pass when it is not one.
+  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: str(t.reason) || (Number(t.gaps) > 0 ? "Some checks did not run." : null) };
   const reason = str(t.reason)
     || (t.timedOut ? "Timed out." : t.code != null && t.code !== 0 ? `Exited with code ${str(t.code, 10)}.` : "")
     || (s === "unavailable" ? "Not available." : "The tool failed.");
@@ -87,11 +94,15 @@ function lead(l, toolNames) {
   };
 }
 
-// A Contracts record: the static and fuzz phases, each with a ranked top list.
+// The Contracts record's phases, each with a ranked top list. Every check of the
+// Contracts shape uses this one list, so a new phase cannot be lost in one of them.
+const CONTRACTS = [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"], ["chimera", "Chimera"], ["mythril", "Mythril"], ["heimdall", "Heimdall"]];
+const isContracts = (r) => CONTRACTS.some(([k]) => r[k]);
+
 function contracts(rec) {
   const tools = [];
   const leads = [];
-  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"]]) {
+  for (const [key, label] of CONTRACTS) {
     const p = rec[key];
     if (!p || typeof p !== "object") continue;
     const engines = arr(p.engines).map((e) => str(e, 40)).filter(Boolean);
@@ -108,7 +119,7 @@ export function prepassView(record) {
 
   let tools;
   let leads;
-  if (rec.static || rec.fuzz) {
+  if (isContracts(rec)) {
     ({ tools, leads } = contracts(rec));
   } else if (Array.isArray(rec.top) && !rec.leads && !rec.coverage && !rec.tools) {
     // One world scan with a ranked top list (the chain packs).
@@ -149,7 +160,7 @@ export function prepassView(record) {
 export function prepassFromResult(r) {
   const res = obj(r);
   if (res.prepass) return res.prepass;
-  if (res.static || res.fuzz) return { static: res.static, fuzz: res.fuzz };
+  if (isContracts(res)) return Object.fromEntries(CONTRACTS.filter(([k]) => res[k] != null).map(([k]) => [k, res[k]]));
   const out = {};
   for (const k of ["coverage", "tools", "leads", "mode", "pack", "suspects", "top"]) if (res[k] != null) out[k] = res[k];
   // `top` alone is the chain packs' shape; a result with only `pack` is not a prepass.

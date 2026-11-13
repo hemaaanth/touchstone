@@ -31,13 +31,49 @@ function fetches(target) {
 
 // Compute the plan. `requested`, when given, is the set of toggleable module ids
 // the operator wants on; omit it to default every available module on. Fixed
-// modules (agent, replay) ignore it.
-export function planModules(target, requested) {
+// modules (agent, replay) ignore it. `pack` is the run's pack manifest, when the
+// caller has it. A pack with `proof: "none"` gets its replay step off.
+// `chosen` is every module the run covers (one id, or the whole list of a joined
+// run). A joined run is only as provable as its best module: replay stays on
+// when ANY module can prove, and only a run made of proof-less modules gets it
+// off. With no `chosen`, the two tests below are the original ones, so a
+// one-module run plans exactly as before (a missing pack is Contracts).
+export function planModules(target, requested, pack, chosen) {
+  const all = Array.isArray(chosen) && chosen.length ? [...new Set(chosen)] : null;
+  const reviewOnly = all ? all.every((p) => p === "review") : target.pack === "review";
+  // The original test, kept word for word for the one-module path.
+  const otherModule = all ? all.some((p) => p && p !== "contracts") : Boolean(target.pack && target.pack !== "contracts");
   const want = (id, def) => (Array.isArray(requested) ? requested.includes(id) : def);
   const local = hasLocalSource(target);
   const mods = [];
 
   mods.push({ id: "agent", on: true, fixed: true, available: true, reason: "The agent always runs." });
+
+  // A joined run plans the UNION of what each of its modules gets alone on this
+  // target: the fetched sources when any member fetches, the Solidity engines when
+  // Contracts is a member and there is local source, replay only when a member has
+  // a replay (a review-only list must not turn it on). The reason lines are the
+  // same as the one-module branches below.
+  if (all) {
+    if (all.includes("contracts")) {
+      if (local) {
+        mods.push({ id: "static", on: want("static", true), available: true, reason: null });
+        mods.push({ id: "fuzz", on: want("fuzz", true), available: true, reason: null });
+      } else {
+        mods.push({ id: "static", on: false, available: false, reason: "no local source at start — a static analyzer has nothing to scan until the brief's code is fetched" });
+        mods.push({ id: "fuzz", on: false, available: false, reason: "no local source at start — there is nothing to fuzz until the brief's code is fetched" });
+      }
+    }
+    if (fetches(target) && all.some((id) => id === "contracts" || id === "review")) {
+      mods.push({ id: "fetch", on: true, available: true, reason: target.kind === "scope" ? "fetches the scope's repos into the workspace" : "fetches the brief's linked sources into the workspace" });
+    }
+    if (pack?.proof === "none") {
+      mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "No module of this run has a replay oracle that fits this code, so no finding can be proven. The run reports leads only." });
+    } else {
+      mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The replay of the module that recorded a finding is the only thing that makes it real." });
+    }
+    return mods;
+  }
 
   // A pack other than Contracts brings its own tools and its own proof. The
   // Solidity static and fuzz engines do not apply, so the plan is just the agent
@@ -45,13 +81,17 @@ export function planModules(target, requested) {
   // their own events.
   // The review pack has no replay oracle that fits its code. Say so: replay is
   // off and cannot be turned on, so no finding from this run is ever proven.
-  if (target.pack === "review") {
+  if (reviewOnly) {
     if (fetches(target)) mods.push({ id: "fetch", on: true, fixed: true, available: true, reason: "fetches the scope's repos into the workspace" });
     mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "No replay oracle fits this code, so no finding can be proven. The run reports leads only." });
     return mods;
   }
 
-  if (target.pack && target.pack !== "contracts") {
+  if (otherModule) {
+    if (pack?.proof === "none") {
+      mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "This module has no replay oracle, so no finding can be proven. The run reports leads only." });
+      return mods;
+    }
     mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The pack's proof step is the only thing that makes a finding real." });
     return mods;
   }

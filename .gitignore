@@ -50,7 +50,9 @@ spike/bun.lock
 # Run records the app writes on every run, and local review scratch. They are
 # runtime output, not source. Records already tracked stay tracked.
 spike/results/agent/run-*
+spike/results/agent/replay/
 spike/.review/
 
 # Throwaway Foundry experiments (build output and vendored libs), not the product
 spike-scratch/
+spike/results/agent/trash/

@@ -119,6 +119,9 @@ describe("the Candidates group", () => {
         openDoc={null}
         openVersion={null}
         onFile={() => {}}
+        width={360}
+        onWidth={() => {}}
+        initialWidth={360}
       />,
     )
 

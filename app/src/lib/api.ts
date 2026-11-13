@@ -13,11 +13,19 @@ import type {
   PackChoice,
   RunMode,
 } from "./types"
-import { tokenHeaders } from "./console-token"
+import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
+
+export class HttpError extends Error {
+  status: number
+  constructor(url: string, status: number) {
+    super(`${url} -> ${status}`)
+    this.status = status
+  }
+}
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`)
+  if (!res.ok) throw new HttpError(url, res.status)
   return (await res.json()) as T
 }
 
@@ -27,9 +35,44 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { "content-type": "application/json", ...tokenHeaders() },
     body: JSON.stringify(body),
   })
+  return writeResult<T>(url, res)
+}
+
+// A write refused because this page's console token is old. The app shows it
+// once (the stale-page notice, with Reload); a page's own error line can skip it.
+export class StalePageError extends Error {}
+
+// The answer to a write. A 403 means this page's console token is old: the app
+// is told (reportStalePage), and the caller gets the server's sentence as a
+// StalePageError.
+async function writeResult<T>(url: string, res: Response): Promise<T> {
   const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `${url} -> ${res.status}`)
+  if (!res.ok) {
+    const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
+    if (res.status === 403) {
+      reportStalePage(error)
+      throw new StalePageError(error)
+    }
+    throw new Error(error)
+  }
   return json as T
+}
+
+// A DELETE carries no body. It still carries the console token: the server
+// refuses every write without it.
+async function deleteJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: "DELETE", headers: tokenHeaders() })
+  return writeResult<T>(url, res)
+}
+
+// Rotate the console token (Settings). The old token stops working at once, in
+// this server and for the grant CLI. This page takes the new one and keeps
+// working; any other open console page gets 403 on its next write. The token
+// is never returned to the caller.
+export async function rotateConsoleToken(): Promise<void> {
+  const { token } = await postJson<{ token?: string }>("/api/console-token/rotate", {})
+  if (!token) throw new Error("The server did not send the new token. Reload the page.")
+  setConsoleToken(token)
 }
 
 export async function fetchFindings(): Promise<FindingSummary[]> {
@@ -37,9 +80,55 @@ export async function fetchFindings(): Promise<FindingSummary[]> {
   return data.findings
 }
 
-export function fetchFinding(id: string): Promise<Finding> {
-  return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}`)
+// `events: false` asks for the finding without its run's transcript
+// (`events` is then []). A run's events can be tens of MB.
+export function fetchFinding(id: string, { events = true }: { events?: boolean } = {}): Promise<Finding> {
+  return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}${events ? "" : "?events=0"}`)
 }
+
+// A finding's report as text, built and redacted by the server (report.mjs):
+// "md" is the Markdown report, "agent" the short brief for a coding agent.
+// Never build these in the browser: the stored record is not redacted.
+export async function fetchFindingText(id: string, format: "md" | "agent"): Promise<string> {
+  const url = `/api/findings/${encodeURIComponent(id)}/report?format=${format}`
+  const res = await fetch(url)
+  if (!res.ok) throw new HttpError(url, res.status)
+  return res.text()
+}
+
+// A finding's replay bundle, asked about before the download (H3c). The server
+// builds the zip and answers what it holds (`bundle-check`), or refuses it with
+// one sentence (409): a finding that is not proven, an evidence finding, or a
+// bundle that would hold a secret it can name.
+export type BundleCheck =
+  | {
+      ok: true
+      bytes: number
+      // The values the zip could not judge, counted by class. Never a value.
+      unjudged: { shape: string; count: number; text: string }[]
+      // "Check these before you share the bundle" when `unjudged` has counts.
+      note: string | null
+      // What the bundle is, in its README's own first words.
+      about: string | null
+    }
+  | { ok: false; error: string }
+
+export async function fetchBundleCheck(id: string): Promise<BundleCheck> {
+  const url = `/api/findings/${encodeURIComponent(id)}/report?format=bundle-check`
+  const res = await fetch(url)
+  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (res.status === 409) return { ok: false, error: typeof json.error === "string" ? json.error : "The server refused this bundle." }
+  if (!res.ok) throw new HttpError(url, res.status)
+  return {
+    ok: true,
+    bytes: Number(json.bytes) || 0,
+    unjudged: Array.isArray(json.unjudged) ? (json.unjudged as { shape: string; count: number; text: string }[]) : [],
+    note: typeof json.note === "string" ? json.note : null,
+    about: typeof json.about === "string" ? json.about : null,
+  }
+}
+
+export const bundleUrl = (id: string) => `/api/findings/${encodeURIComponent(id)}/report?format=bundle`
 
 // ---- Live runs.
 
@@ -59,21 +148,46 @@ export async function fetchModels(): Promise<{
   }>("/api/models")
 }
 
+// The sentences for a store file that cannot be read (scopes, grants). Empty
+// when both are fine. A damaged store lists as empty, so the page must say so.
+export async function fetchStoreErrors(): Promise<string[]> {
+  const data = await getJson<{ errors: string[] }>("/api/stores")
+  return data.errors
+}
+
 export async function fetchRuns(): Promise<RunSummary[]> {
   const data = await getJson<{ runs: RunSummary[] }>("/api/runs")
   return data.runs
 }
 
-// Start a run against a chosen scope. Omit targetId to let the server pick a
-// target at random from the library, so repeated Runs stop re-breaking one bug.
+// Start ONE run against a chosen scope, over one module or several. Omit
+// targetId to let the server pick a target at random from the library, so
+// repeated Runs stop re-breaking one bug. One module goes as `pack`, the old
+// shape; several go as `packs`, and the server builds one joined run.
+export interface RunStartBody {
+  alias: string
+  targetId?: string
+  budgetUsd?: number
+  mode?: RunMode
+  pack?: string
+  packs?: string[]
+}
+
+// The one body of a run start, split out so its shape is testable without a DOM.
+// A repeated module is sent once; a list of one is the old `pack`.
+export function runStartBody(alias: string, targetId: string | undefined, budgetUsd: number | undefined, modules: string[], mode?: RunMode): RunStartBody {
+  const packs = [...new Set(modules)]
+  return { alias, targetId, budgetUsd, mode, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
+}
+
 export function startRun(
   alias: string,
   targetId?: string,
   budgetUsd?: number,
-  pack?: string,
+  modules: string[] = [],
   mode?: RunMode,
 ): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack, mode })
+  return postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode))
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.
@@ -102,7 +216,8 @@ export function attachScope(body: {
   // The assistant's chat path and request budget for garak (ai-mcp only).
   assistant?: { path: string; budget: number }
   members?: ScopeMember[]
-  pack?: string
+  // A live scope takes the list of modules the operator ticked.
+  pack?: string | string[]
   repo?: string
   brief?: string
   files?: { path: string; content: string }[]
@@ -110,9 +225,14 @@ export function attachScope(body: {
   return postJson<TargetChoice>("/api/scopes", body)
 }
 
+// Set or clear a scope's brief (at most 8,000 characters; the server refuses more
+// with a sentence). Every run of the scope gets it in the agent's instructions.
+export function saveScopeBrief(id: string, brief: string): Promise<{ id: string; brief: string }> {
+  return postJson<{ id: string; brief: string }>(`/api/scopes/${encodeURIComponent(id)}/brief`, { brief })
+}
+
 export async function removeScope(id: string): Promise<void> {
-  const res = await fetch(`/api/scopes/${encodeURIComponent(id)}`, { method: "DELETE" })
-  if (!res.ok) throw new Error(`delete -> ${res.status}`)
+  await deleteJson(`/api/scopes/${encodeURIComponent(id)}`)
 }
 
 // Message a run. While the agent works, the text is injected into its current
@@ -164,7 +284,7 @@ export function fetchRun(id: string): Promise<RunView> {
 
 // Follow a run's event stream from event index `since` on (the events before
 // it came from fetchRun). Returns an unsubscribe function. `onEnd` fires once
-// when the stream stops, for any reason.
+// when the run closes or the caller unsubscribes.
 export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0, onEnd?: () => void): () => void {
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/stream?since=${since}`)
   let ended = false
@@ -184,7 +304,8 @@ export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0,
     onEvent(e)
     if (e.ev === "closed") end()
   }
-  // The server ends the stream after "closed"; any other drop also ends it.
+  // A native reconnect repeats the original since= URL and duplicates live events.
+  // The store reloads the authoritative snapshot after this stream ends.
   source.onerror = end
   return end
 }
@@ -205,15 +326,13 @@ export function saveProvider(body: {
   return postJson<SettingsState>("/api/settings/providers", body)
 }
 
-export async function deleteProvider(id: string): Promise<SettingsState> {
-  const res = await fetch(`/api/settings/providers/${encodeURIComponent(id)}`, { method: "DELETE", headers: tokenHeaders() })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `delete -> ${res.status}`)
-  return json as SettingsState
+export function deleteProvider(id: string): Promise<SettingsState> {
+  return deleteJson<SettingsState>(`/api/settings/providers/${encodeURIComponent(id)}`)
 }
 
-export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean }> {
-  return postJson<{ models: DiscoveredModel[]; keyUsed: boolean }>("/api/settings/discover", body)
+// keyNote: why the provider's key was not sent (another host), or null.
+export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean; keyNote?: string | null }> {
+  return postJson<{ models: DiscoveredModel[]; keyUsed: boolean; keyNote?: string | null }>("/api/settings/discover", body)
 }
 
 export function setDefaultModel(provider: string, model: string): Promise<SettingsState> {
@@ -222,4 +341,15 @@ export function setDefaultModel(provider: string, model: string): Promise<Settin
 
 export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
+}
+
+// Where tool calls run. An empty apiUrl or target clears the saved value.
+export function setExecution(body: {
+  backend: "local" | "daytona"
+  apiKey?: string
+  clearKey?: boolean
+  apiUrl?: string
+  target?: string
+}): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/execution", body)
 }

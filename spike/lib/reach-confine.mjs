@@ -46,9 +46,10 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 
 const LIB_DIR = dirname(fileURLToPath(import.meta.url));
-const PROXY_IMAGE = "node:20-slim";
+const PROXY_IMAGE = "node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0";
 const DEFAULT_PROXY_PORT = 8080;
 const GATE_ALIAS = "scope-gate"; // what the client names to reach the proxy
 const READY_MARKER = "__SCOPE_READY__";
@@ -115,13 +116,13 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
 
   const cleanup = async () => {
     await docker(["rm", "-f", proxyName]);
-    for (const n of createdNets) await docker(["network", "rm", n]);
+    for (const n of createdNets) await removeLabNetwork(n, { docker });
     if (entryDir) { try { rmSync(entryDir, { recursive: true, force: true }); } catch { /* ignore */ } }
   };
   const fail = async (msg) => { await cleanup(); throw new Error(`confineReach: ${msg}`); };
 
   // The client network: --internal, so a container on it has no default route.
-  const nc = await docker(["network", "create", "--internal", netClient]);
+  const nc = await createLabNetwork(netClient, ["--internal"], { docker });
   if (nc.code !== 0) return fail(`client network create failed: ${nc.stderr.trim().slice(0, 500)}`);
   createdNets.push(netClient);
 

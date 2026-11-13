@@ -22,6 +22,8 @@
 // report. That keeps them unit-testable with a finding object and no server.
 
 import { FONT_MONO, FONT_SANS, brandCss, markSvg } from "./brand.mjs"
+import { redactSecrets } from "./redact.mjs"
+import { formatAmount } from "../src/lib/amount.mjs"
 
 // Pull the fix and the harm narrative out of the engine's prose explanation.
 // The engine writes free prose; by convention a remediation sits under a "Fix:"
@@ -56,6 +58,16 @@ export function splitExplanation(explanation) {
 // (before/after rows), `transfers` (signed ETH deltas), and `gas`; an http proof
 // (proof-view.mjs) carries an `oracle` and request/response `exchanges`; an
 // evidence proof carries a `check` against a pinned snapshot.
+// One transfer's amount for the report. With the record's exact wei it reads
+// by the console's own rule (src/lib/amount.mjs): exact when it fits, else
+// rounded to the nearest, marked "≈" and followed by the exact wei, since a
+// report has no tooltip. Without it, the record's own text, as before.
+function moved(t) {
+  if (typeof t.netWei !== "string") return t.net ?? "?";
+  const a = formatAmount(t.netWei, { signed: true });
+  return a.approx ? `${a.text} (exactly ${a.exact})` : a.text;
+}
+
 function harmOf(finding) {
   const kind = finding.proofKind;
   const proof = finding.proof || {};
@@ -67,7 +79,7 @@ function harmOf(finding) {
       if (b.before !== b.after) lines.push(`${b.label}: ${b.before} → ${b.after}.`);
     }
     for (const t of Array.isArray(proof.transfers) ? proof.transfers : []) {
-      lines.push(`${t.label || t.address || "an account"} ${t.gained ? "gained" : "lost"} ${t.net ?? "?"}.`);
+      lines.push(`${t.label || t.address || "an account"} ${t.gained ? "gained" : "lost"} ${moved(t)}.`);
     }
     if (proof.gas != null) lines.push(`Gas used in the replay: ${proof.gas}.`);
   } else if (kind === "http") {
@@ -102,7 +114,10 @@ export function buildReport(finding) {
   for (const s of finding.staticScan?.top || []) leads.push({ from: finding.staticScan.tool || "static", check: s.check, impact: s.impact, where: s.where });
   for (const s of finding.fuzzScan?.top || []) leads.push({ from: finding.fuzzScan.tool || "fuzz", check: s.check, impact: s.impact, where: s.where });
 
-  return {
+  // Mask bearer tokens and other secrets last, so every format (html, markdown,
+  // json) is built from the same redacted report. Header names and proof
+  // facts stay; only the secret values change.
+  return redactSecrets({
     id: finding.id,
     runId: finding.runId,
     title: finding.title || "Untitled finding",
@@ -115,6 +130,8 @@ export function buildReport(finding) {
     // kept no events, so the report says the date was not recorded.
     runAt: Number.isFinite(finding.events?.[0]?.t) ? finding.events[0].t : null,
     proofKind: finding.proofKind || null,
+    // Where the bug is: a file, a URL, a line (whereOf).
+    where: whereOf(finding),
     proven,
     // The verdict ladder, as findings.mjs recorded it. Each stage is true only
     // because the data shows it.
@@ -146,7 +163,27 @@ export function buildReport(finding) {
       ms: finding.ms ?? null,
       generatedAt: Date.now(),
     },
-  };
+  });
+}
+
+// Where the bug is, read from the record: the file and line or the URL the
+// evidence cites, the URL the last replayed request hit, or the scope's entry
+// file. Null when the record names none of these.
+function whereOf(finding) {
+  const p = finding.proof || {}
+  if (finding.proofKind === "evidence") {
+    const cells = Array.isArray(p.cited) ? p.cited : []
+    const val = (name) => cells.find((c) => c?.name === name && !c.redacted)?.value
+    const file = val("file")
+    if (file) return val("line") ? `${file}:${val("line")}` : String(file)
+    if (val("where")) return String(val("where"))
+  }
+  if (finding.proofKind === "http") {
+    const ex = Array.isArray(p.exchanges) ? p.exchanges : []
+    const req = ex[ex.length - 1]?.request
+    if (req?.url) return `${req.method || "GET"} ${req.url}`
+  }
+  return finding.scope?.entry || null
 }
 
 // A preview of a long text: the head, with a clear marker when it was cut, so a
@@ -477,3 +514,55 @@ export function renderReportMarkdown(report) {
   out.push("", `---`, `Touchstone report · run ${r.runId || ""} · finding ${r.id || ""} · generated ${new Date(r.meta.generatedAt).toISOString()}`);
   return out.join("\n");
 }
+
+// The few sentences that say what is wrong: the narrative's prose without its
+// code blocks and headings, cut to three sentences.
+function firstSentences(text, n = 3) {
+  const prose = String(text || "")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+  // A sentence ends at ".", "!" or "?" before a space, so `msg.sender` stays whole.
+  const out = prose.split(/(?<=[.!?])\s+/).slice(0, n).join(" ")
+  return out.length > 700 ? `${out.slice(0, 700).trimEnd()}…` : out
+}
+
+// A short brief to paste to a coding agent: what, where, how it was proven and
+// the fix hint, with no chat history. Built from the redacted report, then
+// redacted again as one text, so a secret split across fields cannot pass.
+export function renderReportAgent(report) {
+  const r = report
+  const p = r.proof || {}
+  const how =
+    r.proofKind === "http"
+      ? p.oracle?.name
+        ? `An HTTP replay; the oracle "${p.oracle.name}" ${p.oracle.passed ? "fired" : "did not fire"}.`
+        : "An HTTP replay of the recorded requests."
+      : r.proofKind === "evidence"
+        ? p.check
+          ? `The evidence check "${p.check}" against a pinned snapshot${p.commit ? ` at commit ${p.commit}` : ""}.`
+          : "A pinned evidence check."
+        : p.rerunCommand
+          ? `Run \`${p.rerunCommand}\`${p.contract ? ` (test contract ${p.contract})` : ""}.`
+          : p.test
+            ? `The Foundry test ${p.test}${p.contract ? ` in ${p.contract}` : ""}.`
+            : "The record names no replay command."
+  const lines = [
+    `Finding: ${r.title}`,
+    `Severity: ${r.severity || "unrated"}`,
+    `State: ${r.proven ? "Proven by a replay." : "Not proven. A lead, not a replayed proof."}${r.dismissed ? " Dismissed by the operator." : ""}`,
+    `Where: ${r.where || r.target || "not recorded"}`,
+    `What is wrong: ${firstSentences(r.narrative) || "The run gave no explanation."}`,
+    `How it was proven: ${r.proven ? how : `Not proven. ${how}`}`,
+  ]
+  if (r.fixStated) lines.push(`Fix hint: ${firstSentences(r.fix)}`)
+  lines.push(`Touchstone finding ${r.id || ""}, run ${r.runId || ""}.`)
+  return redactSecrets({ text: lines.join("\n") }).text
+}
+
+// The replayable export (format=bundle on the report route). The zip builder
+// lives next to this file so the narrative renderers stay as they are.
+export { buildReplayBundle } from "./replay-bundle.mjs"

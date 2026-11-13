@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage as answer, fauxProvider, fauxText, fauxThinking, fauxToolCall as call } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineExtension, defineTool, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { createFleet, COORDINATOR_INSTRUCTIONS, SPLIT_TURN } from "../lib/fleet.mjs";
 import { event, withAgent } from "../lib/event.mjs";
@@ -226,4 +226,141 @@ test("child responses charge the run budget and block later model calls", { time
   const before = runSpend().usd;
   await r.run("another request");
   assert.equal(runSpend().usd, before);
+});
+
+// ---- A changed scope brief reaches a child that a later worker reopens (L26) ----
+
+// The change text, as the engine's briefChange gives it (targets.mjs): "" for no
+// change. The fleet takes the function as a parameter, so these tests need no store.
+const briefChange = (before, now) => ((before ?? "") === now ? "" : now ? `The operator changed the scope brief. Follow this one instead of the earlier one.\n\n${now}` : "The operator removed the scope brief. Do not follow the earlier one any more.");
+
+// One worker over a shared store: the first run, or a follow-up that reopens it.
+// The coordinator spawns or messages children as `plan(operator text)` says; every
+// child answers "ok". `seen` gets what each child was asked, and its instructions.
+async function worker(t, storage, { brief, changed = "", briefChange }, seen) {
+  t.mock.method(console, "log", () => {});
+  const faux = fauxProvider({ tokensPerSecond: 100000 });
+  faux.setResponses(Array.from({ length: 60 }, () => (request) => {
+    const { last, system } = requestInfo(request);
+    if (system.includes("trusted child")) {
+      if (last.role === "user") seen.push({ child: /trusted child (\w+)/.exec(system)[1], asked: text(last), system });
+      return answer("ok");
+    }
+    if (last.role !== "user" || text(last).startsWith("[Fleet report")) return answer("Done.");
+    const calls = text(last).split(";").map((part) => part.trim().split(" "));
+    return result(calls.map(([verb, name]) => (verb === "spawn" ? call("spawn_agent", { name, task: `Task of ${name}`, area: "area" }) : call("message_agent", { to: name, text: "Go on." }))));
+  }));
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const system = `Audit the lab only.${brief ? `\n\nBRIEF IN INSTRUCTIONS: ${brief}` : ""}`;
+  const fleet = createFleet({ system, costOf: () => 0, brief, changed, briefChange });
+  const registry = createRegistry();
+  registry.install(fleet.extension);
+  const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } } }, ctx);
+  await fleet.attach(harness, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: COORDINATOR_INSTRUCTIONS } });
+  return {
+    harness,
+    async say(content) {
+      await (await root.submit({ type: "input", content }, ctx)).wait(ctx);
+      await fleet.drain(ctx, { enforce: false });
+    },
+    async close() {
+      await fleet.close();
+      await harness.close(ctx);
+    },
+  };
+}
+
+test("a child reopened after the scope brief changed gets the new brief once; no change gives nothing extra; a new child has it in its instructions", { timeout: 20000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-brief-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
+  const db = join(dir, "session.sqlite");
+  const seen = [];
+  const asked = (child) => seen.filter((s) => s.child === child).map((s) => s.asked);
+
+  // The first run, with the first brief. Two children.
+  let w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the vault first.", briefChange }, seen);
+  await w.say("spawn Alpha; spawn Beta");
+  await w.close();
+  assert.deepEqual(asked("Alpha"), ["[From coordinator] Task of Alpha"], "a new child gets nothing extra: the brief is in its instructions");
+  assert.match(seen.find((s) => s.child === "Alpha").system, /BRIEF IN INSTRUCTIONS: Look at the vault first\./);
+
+  // A follow-up with the same brief reopens Alpha: nothing extra.
+  seen.length = 0;
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the vault first.", briefChange }, seen);
+  await w.say("message Alpha");
+  await w.close();
+  assert.deepEqual(asked("Alpha"), ["[From coordinator] Go on."]);
+
+  // The operator changed the brief. A follow-up reopens Alpha and spawns Gamma.
+  seen.length = 0;
+  const changed = briefChange("Look at the vault first.", "Look at the router only.");
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the router only.", changed, briefChange }, seen);
+  await w.say("message Alpha; spawn Gamma");
+  assert.deepEqual(asked("Alpha"), [`[From coordinator] Go on.\n\n${changed}`], "the reopened child reads the change, with the new brief");
+  assert.match(asked("Alpha")[0], /The operator changed the scope brief\. Follow this one instead of the earlier one\.[^]*Look at the router only\./);
+  // Its instructions still hold the first brief: the message is how it learns.
+  assert.match(seen.find((s) => s.child === "Alpha").system, /Look at the vault first\./);
+  assert.deepEqual(asked("Gamma"), ["[From coordinator] Task of Gamma"], "a child spawned now gets nothing extra");
+  assert.match(seen.find((s) => s.child === "Gamma").system, /BRIEF IN INSTRUCTIONS: Look at the router only\./);
+  // Once: a second message to Alpha in the same worker is plain.
+  seen.length = 0;
+  await w.say("message Alpha");
+  assert.deepEqual(asked("Alpha"), ["[From coordinator] Go on."]);
+  await w.close();
+
+  // A later follow-up, no new change. Beta was not reopened since the change: it still gets it. Alpha and Gamma do not.
+  seen.length = 0;
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the router only.", briefChange }, seen);
+  await w.say("message Alpha; message Beta; message Gamma");
+  assert.deepEqual(asked("Beta"), [`[From coordinator] Go on.\n\n${changed}`], "a child that missed the follow-up of the change still gets it");
+  assert.deepEqual([asked("Alpha"), asked("Gamma")], [["[From coordinator] Go on."], ["[From coordinator] Go on."]]);
+  await w.close();
+
+  // The operator removed the brief.
+  seen.length = 0;
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "", briefChange }, seen);
+  await w.say("message Gamma");
+  assert.deepEqual(asked("Gamma"), ["[From coordinator] Go on.\n\nThe operator removed the scope brief. Do not follow the earlier one any more."]);
+  await w.close();
+});
+
+test("a child from before the roster kept briefs gets the change this worker was told about, or nothing", { timeout: 20000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-brief-old-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
+  const db = join(dir, "session.sqlite");
+  const seen = [];
+  const asked = (child) => seen.filter((s) => s.child === child).map((s) => s.asked);
+  // The roster of an older run: its children have no `brief`.
+  const Roster = defineDoc({ kind: "touchstone.fleet", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ agents: [], jobs: {}, bulletin: [] }), checkpointWhen: () => false });
+  let w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the vault first.", briefChange }, seen);
+  await w.say("spawn Alpha; spawn Beta");
+  await w.harness.commit(async (tx) => { for (const a of (await tx.doc(Roster, ROOT_CONVERSATION_ID)).agents) delete a.brief; }, ctx);
+  assert.deepEqual((await w.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx)).agents.map((a) => [a.name, a.brief]), [["Alpha", undefined], ["Beta", undefined]]);
+  await w.close();
+
+  // A follow-up that was told of no change: the old child gets nothing extra.
+  seen.length = 0;
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the vault first.", briefChange }, seen);
+  await w.say("message Alpha");
+  await w.close();
+  assert.deepEqual(asked("Alpha"), ["[From coordinator] Go on."]);
+
+  // A follow-up that was told of a change: an old child gets that text.
+  seen.length = 0;
+  const changed = briefChange("Look at the vault first.", "Look at the router only.");
+  w = await worker(t, await openNodeSqliteStorage(db), { brief: "Look at the router only.", changed, briefChange }, seen);
+  await w.say("message Beta");
+  await w.close();
+  assert.deepEqual(asked("Beta"), [`[From coordinator] Go on.\n\n${changed}`]);
+});
+
+test("the engine gives the fleet the worker's brief, the change text and the change it was told about", () => {
+  // agent-run.mjs runs on import, so its wiring is pinned by its source.
+  const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
+  assert.match(src, /import \{[^}]*\bbriefChange\b[^}]*\} from "\.\/lib\/targets\.mjs"/);
+  assert.match(src, /createFleet\(\{ system, costOf, brief: process\.env\.SCOPE_BRIEF \?\? "", briefChange, changed: process\.env\.BRIEF_CHANGE \?\? "" \}\)/);
 });

@@ -12,6 +12,7 @@
 // gate's own container can reach it). Honest skip when docker is absent.
 //
 //   node --test spike/test/live-lane.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";

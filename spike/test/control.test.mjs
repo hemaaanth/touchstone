@@ -78,7 +78,7 @@ test("the test contract itself is never a victim", () => {
 
 const designator = (delegate) => "0xef0100" + delegate.slice(2);
 test("an etched 7702 designator on a lab EOA, then a call to it, is a delegation change", () => {
-  const t = trace({ etches: [{ index: 0, target: OWNER, code: designator(EVIL) }], calls: [{ address: OWNER, caller: TEST }] });
+  const t = trace({ etches: [{ index: 0, target: OWNER, code: designator(EVIL), kept: true }], calls: [{ address: OWNER, caller: TEST }] });
   const [change] = controlChanges(t, lab);
   assert.equal(change.field, "EIP-7702 delegation");
   assert.equal(change.target, OWNER);
@@ -88,11 +88,11 @@ test("an etched 7702 designator on a lab EOA, then a call to it, is a delegation
 
 test("a 7702 etch with no later call, on a non-lab EOA, with plain code, or to the same delegate is not control", () => {
   const call = [{ address: OWNER, caller: TEST }];
-  assert.deepEqual(controlChanges(trace({ etches: [{ index: 1, target: OWNER, code: designator(EVIL) }], calls: call }), lab), []);
-  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OTHER, code: designator(EVIL) }], calls: [{ address: OTHER, caller: TEST }] }), lab), []);
-  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OWNER, code: "0x6001600155" }], calls: call }), lab), []);
+  assert.deepEqual(controlChanges(trace({ etches: [{ index: 1, target: OWNER, code: designator(EVIL), kept: true }], calls: call }), lab), []);
+  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OTHER, code: designator(EVIL), kept: true }], calls: [{ address: OTHER, caller: TEST }] }), lab), []);
+  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OWNER, code: "0x6001600155", kept: true }], calls: call }), lab), []);
   const delegated = labOf({ ...obs, code: { [OWNER]: { delegate: EVIL } } }, KNOWN_KEYS);
-  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OWNER, code: designator(EVIL) }], calls: call }), delegated), []);
+  assert.deepEqual(controlChanges(trace({ etches: [{ index: 0, target: OWNER, code: designator(EVIL), kept: true }], calls: call }), delegated), []);
 });
 
 test("harmOf: control changes alone prove harm with kind control and show the changed field", () => {
@@ -189,8 +189,68 @@ test("extract: an etch is read from the cheatcode call data, in call order (the 
     node(0, { address: VM, caller: TEST, data }),
     node(0, { address: OWNER, caller: TEST }),
   ));
-  assert.deepEqual(out.etches, [{ index: 2, target: OWNER, code: "0x" + code }]);
+  assert.deepEqual(out.etches, [{ index: 2, target: OWNER, code: "0x" + code, kept: true }]);
   assert.deepEqual(controlChanges({ ...out, testContract: TEST }, lab).map((c) => c.field), ["EIP-7702 delegation"]);
+});
+
+// H1d n2: every etch is recorded, with a `kept` flag. The control pack proves a
+// delegation only from code that landed, so it ignores an etch in a reverted frame.
+test("extract: an etch in a reverted frame is recorded as not kept, and is no delegation change", () => {
+  const code = designator(EVIL).slice(2);
+  const data = "0xb4d6c782" + addrWord(OWNER).slice(2) + w(64).slice(2) + w(23).slice(2) + code + "00".repeat(9);
+  const out = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { address: TEST, caller: TEST, success: false }),
+    node(1, { address: VM, caller: TEST, data }),
+    node(0, { address: OWNER, caller: TEST }),
+  ));
+  assert.deepEqual(out.etches, [{ index: 1, target: OWNER, code: "0x" + code, kept: false }]);
+  assert.deepEqual(controlChanges({ ...out, testContract: TEST }, lab), []);
+});
+
+test("a designator etch with no kept flag is no delegation change (fail closed)", () => {
+  const t = trace({ etches: [{ index: 0, target: OWNER, code: designator(EVIL) }], calls: [{ address: OWNER, caller: TEST }] });
+  assert.deepEqual(controlChanges(t, lab), []);
+});
+
+// H1d n1: cloneAccount and mockFunction are recorded also when the call was not
+// kept. Forge keeps a mock in its inspector, and a recorded entry can only drop a
+// target, so the record must not depend on the frame's outcome.
+for (const [name, data] of [
+  ["cloneAccount", "0x533d61c9" + addrWord(EVIL).slice(2) + addrWord(OWNER).slice(2)],
+  ["mockFunction", "0xadf84d21" + addrWord(OWNER).slice(2) + addrWord(EVIL).slice(2) + w(96).slice(2) + w(0).slice(2)],
+]) {
+  test(`extract: a ${name} that was not kept is still recorded as an etch of the scope address`, () => {
+    for (const arena of [
+      arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data, success: false })),
+      arenaOf(node(null, { address: TEST }), node(0, { address: TEST, caller: TEST, success: false }), node(1, { address: VM, caller: TEST, data })),
+    ]) {
+      const out = extractControlTrace(arena);
+      assert.deepEqual(out.etches.map((e) => [e.target, e.kept]), [[OWNER, false]]);
+    }
+  });
+}
+
+// H1b: cheatcodes that write storage or fake answers are recorded with the address
+// they act on, in any frame, kept or not. store keeps its slot; copyStorage acts on
+// its SECOND address; loadAllocs can write any account ("*").
+test("extract: store, copyStorage, mockCall and loadAllocs are recorded as tampers, kept or not", () => {
+  const SLOT = w(7);
+  const out = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { address: VM, caller: TEST, data: "0x70ca10bb" + addrWord(SAFE).slice(2) + SLOT.slice(2) + w(1).slice(2) }),
+    node(0, { address: TEST, caller: TEST, success: false }),
+    node(2, { address: VM, caller: TEST, data: "0x203dac0d" + addrWord(OTHER).slice(2) + addrWord(PROXY).slice(2) }),
+    node(0, { kind: "STATICCALL", address: VM, caller: TEST, data: "0xb96213e4" + addrWord(OWNER).slice(2) + w(96).slice(2) + w(128).slice(2) }),
+    node(0, { address: VM, caller: TEST, data: "0xb3a056d7" + w(32).slice(2) + w(0).slice(2) }),
+  ));
+  assert.deepEqual(out.tampers, [
+    { target: SAFE, how: "store", slot: SLOT, kept: true },
+    { target: PROXY, how: "copyStorage", kept: false },
+    { target: OWNER, how: "mockCall", kept: true },
+    { target: "*", how: "loadAllocs", kept: true },
+  ]);
+  assert.deepEqual(out.writes, []);
 });
 
 test("extract: vm.store makes no SSTORE step, so it leaves no write", () => {

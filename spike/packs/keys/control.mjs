@@ -78,6 +78,9 @@ export function controlChanges(trace, lab) {
   });
   // EIP-7702: etch of a delegation designator on a lab EOA, then a call that ran the delegate.
   for (const etch of trace.etches ?? []) {
+    // Only code that landed proves a delegation: an etch in a reverted frame is undone.
+    // A missing flag is not kept (fail closed).
+    if (etch.kept !== true) continue;
     const eoa = lab.eoas.find((entry) => entry.address === lc(etch.target));
     const bytes = getBytes(etch.code || "0x");
     if (!eoa || bytes.length !== 23 || bytes[0] !== 0xef || bytes[1] !== 0x01 || bytes[2] !== 0x00) continue;

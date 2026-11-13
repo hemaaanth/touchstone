@@ -1,0 +1,7 @@
+$ORIGIN .
+$TTL 60
+. IN SOA a.root. hostmaster.root. ( 1 60 60 3600 60 )
+. IN NS a.root.
+a.root. IN A 172.30.44.53
+test. IN NS ns.test.
+ns.test. IN A 172.30.44.53

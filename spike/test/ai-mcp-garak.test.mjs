@@ -1,6 +1,7 @@
 // garak in the ai-mcp prepass: the parser, the live-only plan, and the
 // scanMcp wiring. No Docker: runTool is a stub that returns real garak output
 // recorded once from the echo stub (test/fixtures/garak/).
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -87,7 +88,7 @@ test("scanMcp: garak gets the chat URL, the budget and token in its env, the sca
   assert.deepEqual(c.env, { GARAK_BUDGET: "16", GARAK_DEADLINE_S: "480", MCP_TOKEN: "tok_live" });
   assert.equal(c.ws, undefined, "garak needs no workspace mount");
   assert.doesNotMatch(JSON.stringify(c), /openai|anthropic|api[-_]?key|hf_token/i);
-  assert.deepEqual(out.coverage, [{ engine: "garak", status: "ran", code: 0, timedOut: false, leads: 6, reason: "garak ran: 16 of 16 requests used, 16 replies." }]);
+  assert.deepEqual(out.coverage, [{ engine: "garak", status: "ran", code: 0, timedOut: false, leads: 6, reason: "16 of 16 requests used, 16 replies." }]);
   assert.equal(out.leads.filter((l) => l.engines.includes("garak")).length, 6);
 });
 

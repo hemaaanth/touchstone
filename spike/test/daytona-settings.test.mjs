@@ -1,5 +1,6 @@
 // Settings for the execution backend (app/server/settings.mjs). These tests
 // only read Settings, or fail before a write, so the saved file never changes.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";

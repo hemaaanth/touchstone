@@ -1,7 +1,7 @@
 // katana and jsluice in the live surface path: capture -> pinned snapshot -> inventory leads -> run view.
 // The capture tools are faked with recorded output. No request leaves the machine.
 // The snapshot analyzer is real: it runs in the domains tools image, offline.
-import { test, mock, beforeEach } from 'node:test';
+import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,12 +40,30 @@ const answers = {
   },
 };
 let current;
+// The domains-only tools are never run for real here. Each call is recorded and
+// answered with a refusal, so no request leaves the machine.
+let deepAnswers = {};
+const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
+  // The domains prepass asks CAA with drill through runTool. Answer a record present, so no CAA lead.
+  if (opts.entrypoint === 'drill') {
+    const name = opts.cmd[opts.cmd.indexOf('CAA') + 1];
+    return { code: 0, stdout: ';; ->>HEADER<<- rcode: NOERROR\n;; flags: qr rd ;\n;; ANSWER SECTION:\n' + name + '.\t60\tIN\tCAA\t0 issue "letsencrypt.org"\n', stderr: '', timedOut: false };
+  }
+  const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
+  if (deep) { calls.push({ name: deep, ...opts }); return { code: 125, stdout: '', stderr: 'not run in this test', timedOut: false, ...deepAnswers[deep]?.(opts) }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
   return { stderr: '', timedOut: false, ...answers[name](opts) };
 } } });
+// The capture loads grant-store, which reads the console token when it loads. Point it at
+// test values first, so no real token, grant or scope file is read (1h review F4).
+const store = mkdtempSync(join(tmpdir(), 'surface-wiring-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(store, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(store, 'scopes.json');
+after(() => rmSync(store, { recursive: true, force: true }));
 const { default: surface } = await import('../packs/surface/pack.mjs');
 const { default: domains } = await import('../packs/domains/pack.mjs');
 const { detectorsFor } = await import('../packs/domains/checks.mjs');
@@ -55,16 +73,23 @@ const { prepassView } = await import('../lib/prepass-view.mjs');
 
 // The fixture was recorded against the 127.0.0.1 lab, so the grant names that host and the lab port.
 const labPort = Number(new URL(JSON.parse(recorded.split('\n')[0]).request.endpoint).port);
-const reach = { network: 'bridge', granted: true, scope: ['touchstone.test', '127.0.0.1'], ports: [{ scheme: 'http', port: 80 }, { scheme: 'http', port: labPort }] };
+// allowPrivate: the lab host is a loopback address. The capture refuses one without the grant's opt-in.
+// A resolver the grant names: a live run needs one for checkdmarc and DNSViz (G1 repair item 6).
+// allowPrivate lets this loopback resolver pass the reach check, as the lab host is loopback.
+const reach = { network: 'bridge', granted: true, allowPrivate: true, resolver: '127.0.0.1', scope: ['touchstone.test', '127.0.0.1'], ports: [{ scheme: 'http', port: 80 }, { scheme: 'http', port: labPort }] };
 // The scripts the jsluice fixtures were recorded from, in the recorded file order.
 const labScripts = scriptBodies(recorded, [], ['127.0.0.1'], [{ scheme: 'http', port: labPort }]);
-async function prepass(pack) {
+// The run's reach as app/server/runs.mjs hands it to the prepass: openReach's confine boundary.
+// Nothing runs here: the capture only reads the two names.
+const CONFINE = { netClient: 'touchstone-reach-client-test', gateUrl: 'http://scope-gate:8080' };
+async function prepass(pack, runReach = { confine: CONFINE }) {
   current = mkdtempSync(join(tmpdir(), 'surface-katana-wiring-'));
   writeFileSync(join(current, '.touchstone.json'), JSON.stringify({ kind: 'live', pack: pack.id, domain: 'touchstone.test', reach }));
-  return { ws: current, ...(await pack.prepass(current, { emit: () => {} })) };
+  return { ws: current, ...(await pack.prepass(current, { emit: () => {}, reach: runReach })) };
 }
 beforeEach(() => {
   calls.length = 0;
+  deepAnswers = {};
   katana = { code: 0, stdout: recorded };
   jsluice = { urls: 'recorded', secrets: 'recorded' };
 });
@@ -77,9 +102,12 @@ test('a live surface run crawls with katana and shows the endpoints as leads', a
   try {
     const crawl = calls.find(c => c.name === 'katana');
     assert(crawl, 'katana ran');
-    assert.equal(crawl.network, 'bridge', 'katana uses the grant network');
+    // katana looks each name up again, so it runs where the scope proxy is its only way out.
+    assert.equal(crawl.network, CONFINE.netClient, 'katana uses the confined network');
+    assert.equal(crawl.cmd[crawl.cmd.indexOf('-proxy') + 1], CONFINE.gateUrl, 'katana sends every request through the scope proxy');
     assert.equal(crawl.timeoutMs, 180000);
-    assert.equal(crawl.cmd[crawl.cmd.indexOf('-cs') + 1], crawlScope(reach.scope, reach.ports), 'katana gets the grant hosts and ports');
+    assert.equal(crawl.cmd[crawl.cmd.indexOf('-cs') + 1], crawlScope(reach.scope, reach.ports, true), 'katana gets the grant hosts and ports, each host exact');
+    assert(crawl.cmd.includes('-dr'), 'a live crawl follows no redirect');
     assert.equal(readFileSync(join(ws, 'snapshot.json'), 'utf8').includes('"crawl"'), true, 'the crawl is pinned with the snapshot');
     const endpoints = record.leads.filter(l => l.check === 'discovered-endpoint');
     assert.equal(endpoints.length, 8);
@@ -142,6 +170,20 @@ test('endpoints on a port the grant does not name are dropped', async () => {
     assert.equal(record.leads.some(l => l.check === 'discovered-endpoint'), false);
     assert.equal(record.coverage.find(c => c.engine === 'katana').leads, 0);
   } finally { reach.ports = saved; }
+});
+
+test('a live surface run with no scope proxy does not crawl, and the run view says why', async () => {
+  for (const runReach of [null, { confine: null }]) {
+    calls.length = 0;
+    const { ws, record } = await prepass(surface, runReach);
+    rmSync(ws, { recursive: true, force: true });
+    assert.equal(calls.some(c => c.name === 'katana'), false, 'katana did not run');
+    const shown = prepassView(record).tools.find(t => t.name === 'katana');
+    assert.equal(shown.status, 'unavailable');
+    assert.match(shown.reason, /no scope proxy/);
+    // The script httpx fetched is still read, offline.
+    assert.equal(calls.find(c => c.name === 'jsluice')?.network, 'none');
+  }
 });
 
 test('a live domains run does not crawl', async () => {
@@ -230,4 +272,41 @@ test('a domains run does not run jsluice', async () => {
   const { ws } = await prepass(domains);
   rmSync(ws, { recursive: true, force: true });
   assert.equal(calls.some(c => c.name === 'jsluice'), false);
+});
+
+// M-D: checkdmarc, testssl and DNSViz belong to the domains pack. A surface
+// prepass must not run them, and its snapshot keeps the main-branch shape.
+test('a live surface run does not run the domains-only tools; a domains run does', async () => {
+  let { ws, record } = await prepass(surface);
+  const snapshot = JSON.parse(readFileSync(join(ws, 'snapshot.json'), 'utf8'));
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual(calls.filter(c => DEEP[c.name]).map(c => c.name), []);
+  for (const key of ['email', 'tls', 'dnssec']) assert.equal(key in snapshot, false, key);
+  assert.equal(record.coverage.some(c => /^(checkdmarc|testssl|dnsviz)/.test(c.engine)), false);
+  calls.length = 0;
+  ({ ws, record } = await prepass(domains));
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual([...new Set(calls.filter(c => DEEP[c.name]).map(c => c.name))], ['checkdmarc', 'dnsviz']);
+  assert.equal(record.coverage.find(c => c.engine === 'checkdmarc').status, 'unavailable');
+});
+
+// m3: an incomplete DNSViz assessment must mark the dnsviz rows unavailable in
+// the live capture, not leave them as ran. The answer is the recorded lab
+// assessment with its query answers removed, so the DNSKEY state is unread.
+test('a domains prepass marks the DNSViz rows unavailable for an incomplete assessment', async () => {
+  const doc = JSON.parse(readFileSync(new URL('../packs/domains/fixtures/dnsviz-unsigned.json', import.meta.url), 'utf8'));
+  delete doc['touchstone.test.'].queries;
+  deepAnswers.dnsviz = ({ cmd }) => {
+    if (cmd[0] === 'grok') writeFileSync(join(current, cmd[cmd.indexOf('-o') + 1].replace('/work/', '')), JSON.stringify(doc));
+    return { code: 0, stderr: '' };
+  };
+  const { ws, record } = await prepass(domains);
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual(calls.filter(c => c.name === 'dnsviz').map(c => c.cmd[0]), ['probe', 'grok']);
+  for (const engine of ['dnsviz-probe', 'dnsviz-grok']) {
+    const row = record.coverage.find(c => c.engine === engine);
+    assert.equal(row.status, 'unavailable', engine);
+    assert.equal(row.reason, 'incomplete assessment: no DNSKEY answer', engine);
+  }
+  assert(record.leads.some(l => l.check === 'dnssec-evidence-missing'));
 });

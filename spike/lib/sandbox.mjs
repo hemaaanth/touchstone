@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { SOLC_VERSION, closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
 
-const IMG = "ghcr.io/foundry-rs/foundry:latest";
+const IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
 const SVM_VOLUME = "foundry-svm";
 
@@ -64,7 +64,7 @@ function solcUse(ws) {
 // copied, so the agent cannot read the reference exploit.
 //
 // A Contracts target gets only what the agent may see: contract source, the
-// vendored libs, and the build config. A target whose .touchstone.json names
+// vendored libs, the build config, and the target's own test/ if it has one. A target whose .touchstone.json names
 // another pack gets a copy of the whole directory, with .git, because those packs
 // need no Foundry files and their proofs cite commits. Nothing is added to it.
 // In both cases the target's .touchstone.json, with its `pack`, goes into the
@@ -89,6 +89,8 @@ export function makeWorkspace(targetDir) {
   cpSync(join(targetDir, "lib"), join(ws, "lib"), { recursive: true });
   cpSync(join(targetDir, "foundry.toml"), join(ws, "foundry.toml"));
   if (existsSync(cfgFile)) cpSync(cfgFile, join(ws, ".touchstone.json"));
+  // A target's own test/ holds its property suites (Halmos check_ functions).
+  if (existsSync(join(targetDir, "test"))) cpSync(join(targetDir, "test"), join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   return ws;
 }
@@ -99,7 +101,8 @@ export function makeWorkspace(targetDir) {
 // of the target — a vendored forge-std and a foundry.toml whose libs include
 // vendor/, so a PoC can import both forge-std and the fetched code. src/ is left
 // empty; a brief's "source" is whatever gets fetched under vendor/. The caller
-// writes BRIEF.md and the .touchstone.json config.
+// writes the .touchstone.json config. The scope text reaches the agent in its
+// instructions (targets.mjs scopeEnv), not as a file here.
 export function makeBriefWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "redteam-run-"));
   mkdirSync(join(ws, "src"), { recursive: true });
@@ -221,12 +224,21 @@ export function warmFor(ws) {
   return [...out];
 }
 
+// The most forge output we read, on both paths. A replay JSON above it is cut,
+// and a cut trace is never judged: the call reports `overflow` and the proof
+// says why (see proofDelta). Measured on the pinned image (H1c): a replay of a
+// small token drain is about 0.4 MiB; the same drain with one forge-std
+// deal(token, …) in the test BODY is about 10 MiB, with two deals or
+// deal(…, true) about 20 MiB. The same deal in setUp() stays at 0.4 MiB. So the
+// cap stays, and the refusal tells the agent to move deal into setUp().
+export const FORGE_OUTPUT_CAP = 8 * 1024 * 1024;
+
 // Run forge on Daytona when it is on, else in local Docker. The files forge
 // writes come back, as they would locally. The proof gate needs them: it reads
 // the build artifacts in out/ (see scopeCode in proof.mjs).
 async function forgeRun(ws, args, timeoutMs) {
   if (daytonaOn()) {
-    const r = await remoteDocker(args, { ws, timeoutMs, maxBuffer: 8 * 1024 * 1024, owner: "1000:1000", warm: warmFor(ws) });
+    const r = await remoteDocker(args, { ws, timeoutMs, maxBuffer: FORGE_OUTPUT_CAP, owner: "1000:1000", warm: warmFor(ws) });
     if (r) return r;
   }
   return run(args, timeoutMs);
@@ -234,8 +246,10 @@ async function forgeRun(ws, args, timeoutMs) {
 
 const run = (args, timeoutMs) =>
   new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0 });
+    execFile("docker", args, { timeout: timeoutMs, maxBuffer: FORGE_OUTPUT_CAP }, (err, stdout, stderr) => {
+      // Above maxBuffer, node kills the child and keeps only the first bytes.
+      const overflow = err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0, overflow });
     });
   });
 
@@ -277,6 +291,8 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
     IMG, cmd,
   ];
   const r = await forgeRun(ws, args, timeoutMs);
+  // A cut output is never parsed: raw is empty and `overflow` says why.
+  if (r.overflow) return { raw: "", stderr: String(r.stderr).trim(), timedOut: r.timedOut, overflow: true };
   // forge prints the JSON object on stdout; warnings/errors go to stderr.
-  return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut };
+  return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut, overflow: false };
 }
