@@ -158,8 +158,10 @@ function normalize(raw, { id, runId, finding }) {
   // even with no root-transcript run_poc. isProven already refuses a failed
   // replay or a harm verdict that is not ok, so a failing or absent proof
   // cannot become proven through this path. A transcript pass still counts for
-  // records made before the harm gate, which have no proof.harm.
-  const harmOk = finding.proof?.pass === true && finding.proof?.harm?.ok === true
+  // records made before the harm gate, which have no proof.harm. The proof must
+  // be for this finding's own test: proveFindings sets proof.contract to its poc.
+  const p = finding.proof
+  const harmOk = p?.pass === true && p?.harm?.ok === true && (p.contract == null || p.contract === finding.poc)
   const transcriptPass = Boolean(proving && proving.pass)
   const forgeProven = isProven(finding) && (transcriptPass || harmOk)
 

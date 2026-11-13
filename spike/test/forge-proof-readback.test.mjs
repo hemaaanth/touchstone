@@ -252,3 +252,24 @@ test("a proof-only finding does not show the root's last run_poc of another cont
     rmSync(file, { force: true })
   }
 })
+
+// proveFindings always sets proof.contract to the finding's poc, so a mismatch
+// means the record was edited. A proof for another test proves nothing here.
+test("a stored proof for another contract does not prove the finding", async () => {
+  const stamp = "zz-forge-readback-0000000000-6"
+  const file = writeRun(stamp, [
+    { ...passing, poc: "Mine", proof: { ...passing.proof, contract: "Other" } },
+    { ...passing, n: 2, poc: "Mine", proof: { ...passing.proof, contract: "Mine" } },
+  ])
+  try {
+    const other = await getFinding(`${stamp}.1`)
+    assert.equal(other.stages.proven, false)
+    assert.equal(other.proof.pass, false)
+    assert.match(renderReportHtml(buildReport(other)), /Not proven/)
+    const mine = await getFinding(`${stamp}.2`)
+    assert.equal(mine.stages.proven, true)
+    assert.equal(mine.proof.pass, true)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
