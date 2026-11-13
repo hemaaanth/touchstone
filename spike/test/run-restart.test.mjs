@@ -3,7 +3,7 @@
 import { test, mock, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -92,6 +92,7 @@ const reportId = fixture("report-writing", "proof", [{ ev: "settled", t: 6 }, { 
 writeFileSync(join(dir, `run-${reportId}.json.tmp`), '{"result":');
 const terminalId = fixture("terminal-cleanup", "proof", [{ ev: "status", t: 6, status: "no-finding" }]);
 const stoppedId = fixture("operator-stopped", "prepass", [{ ev: "stop-requested", t: 6 }]);
+const loopId = fixture("restart-loop", "prepass", [1, 2, 3].map((t) => ({ ev: "phase-restarted", t: 5 + t, phase: "prepass" })));
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
 
 const { getRun, subscribe } = await import("../../app/server/runs.mjs");
@@ -203,4 +204,19 @@ test("operator stop and completed status are not restarted", async () => {
   assert.equal(getRun(finishedId).status, "no-finding");
   assert.equal(getRun(finishedId).events.filter((e) => e.ev === "phase-restarted").length, 0);
   assert.equal(envs.filter((e) => e.EVENTS_FILE?.includes(stoppedId) || e.EVENTS_FILE?.includes(finishedId)).length, 0);
+});
+
+test("recovery gives up after three restarts of the same run", async () => {
+  for (let i = 0; i < 100 && getRun(loopId)?.status !== "error"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const run = getRun(loopId);
+  assert.equal(run.status, "error");
+  assert.match(run.error, /recovery gave up after 3 restarts/);
+  assert.equal(run.events.filter((e) => e.ev === "phase-restarted").length, 3);
+  assert.equal(prepasses.filter((p) => p.includes("restart-loop")).length, 0);
+  for (let i = 0; i < 100 && !getRun(loopId).events.some((e) => e.ev === "closed"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(existsSync(join(dir, `run-${loopId}.state.json`)), false);
 });

@@ -1382,6 +1382,13 @@ function savedRun(id, events, mtime) {
   }
 }
 
+// A phase that crashes the server would otherwise restart on every boot.
+const MAX_RESTARTS = 3
+function checkRestarts(run) {
+  const restarts = run.events.filter((e) => e.ev === "phase-restarted").length
+  if (restarts >= MAX_RESTARTS) throw new Error(`recovery gave up after ${restarts} restarts; start a new run`)
+}
+
 async function resumeRun(run) {
   const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
   if (!state.target || (state.phase !== "setup" && !state.ws)) throw new Error("the saved workspace or target is missing; start a new run")
@@ -1394,6 +1401,7 @@ async function resumeRun(run) {
   run.fuzz = run.prepass?.fuzz ?? null
   run.settled = state.settled ?? null
   if (state.phase === "setup") {
+    checkRestarts(run)
     run.modules = state.modules ?? run.modules
     run.provider = state.provider ?? run.provider
     run.model = state.model ?? run.model
@@ -1433,6 +1441,7 @@ async function resumeRun(run) {
       return
     }
   }
+  checkRestarts(run)
   if (!existsSync(path.join(run.ws, ".touchstone.json"))) throw new Error("the saved workspace is missing; start a new run")
   run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
   // This event is a real retry marker. The old stream is never renumbered.
