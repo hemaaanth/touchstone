@@ -103,7 +103,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 |--------|-------|------|------------|
 | 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 done at `0fcb174`. The codex reviewer was blocked by its provider on the delta re-review; a Claude reviewer took over: `thr_e5hdgh5re9`, running. Delta re-review (`thr_e5hdgh5re9`): NOT READY, one Major: a server stop during a follow-up leaves the restored credential in the kept workspace, and the next follow-up says the opposite. Repair round 2 with the author. |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) **Merged** into main `3538912` (reviewed READY). |
-| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`); `984fc07` reviewed NOT READY (`thr_vw5bjhk5kb`): two Majors; repair round 1 with the author |
+| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`); `984fc07` reviewed NOT READY (`thr_vw5bjhk5kb`): two Majors; repair round 1 with the author Repair round 1 done at `d566037`: folded, the panel is one line in the top bar and covers no chat (48 measured cases); a slow refusal no longer changes the transcript; tooltips open on keyboard focus. Delta re-review running (`thr_vw5bjhk5kb`). |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. PR 4 repair round 2 done at `0bc016f`; delta re-review running (`thr_qxi2n9w6dn`). |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
@@ -114,7 +114,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Depends on |
 |--------|-------|-----------|
-| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. |
+| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. Author done at `2bab7ce` (E1 to E4, L12). Coordinator ruling: a change of the Daytona server host drops the saved key; the author adds it, then review. |
 | 2b Modules page redesign | E5 | 1b Running: `thr_daurqy4zav`, branch `ui/modules-page`. Author done at `57bd755` (210 app tests). Coordinator ruling: the name showed twice per row; the pill becomes the row's name (one optional `ListRow` prop opened in `page-parts.tsx`). Author repairs before review. Repaired at `c7534e0` (the pill is the row's name; `ListRow` got one optional `name` prop; 213 app tests). Review running: `thr_efvd29q5fv` (codex). |
 | 2c Run Info pills + sidebar rule | B7, B4 | 1b, PR 7 |
 | 2d Scope brief | D2 | 1a, 1b |
