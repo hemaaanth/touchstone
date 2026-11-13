@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 // The report module is plain .mjs (server side). We test its pure builders with
@@ -199,7 +199,7 @@ function section(readme: string, heading: string) {
 }
 
 describe("report: replay bundle", () => {
-  test("a forge snapshot zips the project, one replay command, and no secrets", () => {
+  test("a forge bundle ships the proof source and hashes, makes no re-run claim, and holds no secret", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-ws-"))
     try {
       mkdirSync(path.join(ws, "src"))
@@ -212,16 +212,17 @@ describe("report: replay bundle", () => {
       writeFileSync(path.join(ws, "lib", "forge-std", "src", "HasKey.sol"), `// https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_KEY}\ncontract HasKey { uint256 privateKey = uint256(1); }\n`)
       writeFileSync(path.join(ws, "lib", "forge-std", "test", "Leak.t.sol"), `// ${ALCHEMY_KEY}\ncontract Leak {}\n`)
       const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      // The record stores no forge command.
+      expect(replay.command).toBeUndefined()
+      expect(JSON.stringify(replay)).not.toContain("forge test")
       const zip = buildReplayBundle({
-        finding: { stages: { proven: true }, title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
-        recorded: { replay, proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        finding: { stages: { proven: true }, title: "Reentrancy drains the vault", at: Date.UTC(2026, 0, 15), proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "7" } } },
+        recorded: { replay, proof: { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "7" } } },
       })
-      expect(Buffer.isBuffer(zip)).toBe(true)
       expect(zip.subarray(0, 2).toString()).toBe("PK")
       expect(zip.includes(ALCHEMY_KEY)).toBe(false)
       expect(zip.includes(BEARER)).toBe(false)
       expect(zip.includes("BEGIN PRIVATE KEY")).toBe(false)
-
       const dir = mkdtempSync(path.join(tmpdir(), "replay-zip-"))
       try {
         unzip(zip, dir)
@@ -230,43 +231,28 @@ describe("report: replay bundle", () => {
         expect(files.has("test/AgentPoc.t.sol")).toBe(true)
         expect(files.has("foundry.toml")).toBe(true)
         expect(files.has("lib/forge-std/src/HasKey.sol")).toBe(true)
-        expect(files.get("lib/forge-std/src/HasKey.sol")).toContain("uint256 privateKey = uint256(1)")
         expect(files.has("lib/forge-std/test/Leak.t.sol")).toBe(false)
         expect(files.get("foundry.toml")).toContain('"${RPC_URL}"')
         expect(files.get("foundry.toml")).not.toContain(ALCHEMY_KEY)
         expect(files.get("src/Vault.sol")).toContain("// Authorization: Bearer [REDACTED]\n")
         const fork = JSON.parse(files.get("fork.json") || "")
         expect(fork).toEqual({ rpc: "${RPC_URL}", block: 18000000, forked: true })
+        // No re-run command, no check-harm, no "re-checked" wording.
         const readme = files.get("README.md") || ""
-        const cmd = section(readme, "Replay (offline)") || ""
-        const prepare = section(readme, "Prepare (once, online)") || ""
-        expect(commands(readme)).toEqual([prepare, cmd])
-        // A fork keeps the network for the RPC, and nothing else is fetched.
-        expect(cmd).toContain("docker run --rm --pull never -e RPC_URL ")
-        expect(cmd).not.toContain("--network none")
-        expect(cmd).toMatch(/ ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64} /)
-        expect(cmd).not.toContain(":latest")
-        expect(cmd).toContain("'forge test --offline --use 0.8.38 ")
-        expect(cmd).toContain('--fork-url "$RPC_URL"')
-        expect(cmd).toContain("--fork-block-number 18000000")
-        expect(cmd).toContain("--match-contract PocTest")
-        expect(cmd).toContain("--match-test testDrain")
-        expect(cmd).not.toContain(ALCHEMY_KEY)
-        expect(prepare).toContain("forge build --use 0.8.38")
-        const proof = JSON.parse(files.get("proof.json") || "")
-        expect(proof.replay.command).toBe(cmd)
-        expect(proof.replay.prepare).toBe(prepare)
-        expect(cmd.startsWith("sha256sum -c SHA256SUMS && ")).toBe(true)
-        expect(cmd).toContain("--json -vvvv' > replay.json && ")
-        expect(cmd.endsWith("node check-harm.mjs replay.json")).toBe(true)
-        for (const name of ["SHA256SUMS", "harm.json", "check-harm.mjs"]) expect(files.has(name)).toBe(true)
+        expect(commands(readme)).toEqual([])
+        expect(readme).not.toContain("forge test")
+        expect(readme).not.toContain("re-checked")
+        expect(files.has("check-harm.mjs")).toBe(false)
+        expect(files.has("harm.json")).toBe(false)
+        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on the operator's machine on 2026-01-15 (harm: an ETH drain). This folder holds the proof's source files for reading; it has no re-run command yet.")
+        // The hashes of every shipped file, and nothing about a command in proof.json.
         const sums = files.get("SHA256SUMS") || ""
         expect(sums).toContain("  test/AgentPoc.t.sol\n")
-        expect(sums).toContain("  harm.json\n")
         expect(sums).not.toContain("README.md")
         execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
-        writeFileSync(path.join(dir, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public { assertTrue(true); } }\n`)
-        expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
+        const proof = JSON.parse(files.get("proof.json") || "")
+        expect(proof.replay.command).toBeUndefined()
+        expect(proof.replay.prepare).toBeUndefined()
         expect(JSON.stringify(proof)).not.toContain(ALCHEMY_KEY)
       } finally {
         rmSync(dir, { recursive: true, force: true })
@@ -373,45 +359,6 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("line 1 of a forge README says which harm kind the folder re-checks and which it does not", () => {
-    const ws = mkdtempSync(path.join(tmpdir(), "replay-harmkind-"))
-    try {
-      mkdirSync(path.join(ws, "test"))
-      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\n`)
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest {}\n`)
-      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      const victim = "0x00000000000000000000000000000000000000aa"
-      const cases = [
-        { harm: { ok: true, kind: "funds", victim, lostWei: "1" }, line: "The harm (an ETH drain) is re-checked by `check-harm.mjs`.", exit: 1 },
-        { harm: { ok: true, kind: "funds", asset: "token", victim, token: "0x00000000000000000000000000000000000000bb", lostUnits: "5" }, line: "The harm (a token drain) is NOT re-checked by this folder.", exit: 2 },
-        { harm: { ok: true, kind: "control", victim, writes: 1 }, line: "The harm (a control takeover: a write to an owner, admin, or implementation slot) is NOT re-checked by this folder.", exit: 2 },
-      ]
-      for (const c of cases) {
-        const proof = { kind: "forge", pass: true, test: "testDrain()", harm: c.harm }
-        const dir = mkdtempSync(path.join(tmpdir(), "replay-harmkind-zip-"))
-        try {
-          unzip(buildReplayBundle({ finding: { title: "t", proofKind: "forge", proof, stages: { proven: true } }, recorded: { replay, proof } }), dir)
-          const readme = readTree(dir).get("README.md") || ""
-          expect(readme.split("\n")[0]).toBe(`PROVEN: the engine's proof gate passed this finding when it was recorded. ${c.line}`)
-          if (c.exit === 2) expect(readme).toContain("A passing replay here shows that the test still passes, not that the harm still happens.")
-          // A trace that passes but moves no ETH: an ETH drain fails, the other kinds cannot be checked.
-          writeFileSync(path.join(dir, "replay.json"), JSON.stringify({ "test/AgentPoc.t.sol:PocTest": { test_results: { "testDrain()": { status: "Success", traces: [] } } } }))
-          let code = 0
-          try {
-            execFileSync("node", ["check-harm.mjs", "replay.json"], { cwd: dir, stdio: "ignore" })
-          } catch (err) {
-            code = (err as { status?: number }).status ?? -1
-          }
-          expect(code).toBe(c.exit)
-        } finally {
-          rmSync(dir, { recursive: true, force: true })
-        }
-      }
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
-    }
-  })
-
   test("vendored forge-std ships byte for byte, the record keeps its hash, and no file in the zip is the cap mark", async () => {
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
@@ -447,22 +394,22 @@ describe("report: replay bundle", () => {
       for (const [name, text] of files) expect([name, /\[REDACTED: text of \d+ characters too long to check\]/.test(text)]).toEqual([name, false])
       const readme = files.get("README.md") || ""
       expect(readme).toContain("Vendored library files (`lib/forge-std`) are included unchanged")
-      expect(readme.split("\n")[0]).toBe("PROVEN: the engine's proof gate passed this finding when it was recorded. The harm (an ETH drain) is re-checked by `check-harm.mjs`.")
-      expect(commands(readme)).toHaveLength(2)
+      expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay")).toBe(true)
+      // No re-run command: a forge bundle ships files and hashes only.
+      expect(commands(readme)).toEqual([])
       expect(files.get("SHA256SUMS")).toContain("  lib/forge-std/src/safeconsole.sol\n")
       execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
       // The store's copy is the source; with it gone the engine's copy serves.
       rmSync(path.join(store, "lib"), { recursive: true, force: true })
       expect(loadReplayFiles(kept, store).files.find((f: { path: string }) => f.path === "lib/forge-std/src/Vm.sol").text).toBe(files.get("lib/forge-std/src/Vm.sol"))
-      // A vendored hash that neither the store nor the engine holds: left out, no command.
+      // A vendored hash that neither the store nor the engine holds: left out, named.
       const stale = { ...loaded, files: loaded.files.map((f: { path: string; vendored?: unknown }) => (f.path === "lib/forge-std/src/Vm.sol" ? { path: f.path, vendored: { lib: "forge-std", sha256: "0".repeat(64) } } : f)) }
       const out = mkdtempSync(path.join(tmpdir(), "replay-vendored-stale-"))
       try {
         unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: stale, proof } }), out)
-        const r = readTree(out).get("README.md") || ""
-        expect(r).toContain("- `lib/forge-std/src/Vm.sol` — a forge-std file that neither the record nor the engine holds any more")
-        expect(commands(r)).toEqual([])
-        expect(r.split("\n")[0]).toContain("This bundle cannot be re-run from this folder: 1 file was left out")
+        const r = readTree(out)
+        expect(r.has("lib/forge-std/src/Vm.sol")).toBe(false)
+        expect(r.get("README.md")).toContain("- `lib/forge-std/src/Vm.sol` — a forge-std file that neither the record nor the engine holds any more")
       } finally {
         rmSync(out, { recursive: true, force: true })
       }
@@ -470,221 +417,6 @@ describe("report: replay bundle", () => {
       rmSync(ws, { recursive: true, force: true })
       rmSync(store, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  // The vault lab with its PoC: each case below breaks one thing the build needs.
-  const skipCase = async (name: string, change: (ws: string) => void) => {
-    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
-    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
-    const ws = makeWorkspace(lab)
-    const dir = mkdtempSync(path.join(tmpdir(), `replay-skip-${name}-`))
-    try {
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
-      change(ws)
-      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "test_reentrancy_drains_vault()" })
-      const proof = { kind: "forge", pass: true, test: "test_reentrancy_drains_vault()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
-      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
-      const files = readTree(dir)
-      const readme = files.get("README.md") || ""
-      return { snap, files, readme, line1: readme.split("\n")[0], cmds: commands(readme) }
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
-      rmSync(dir, { recursive: true, force: true })
-    }
-  }
-  const NO_RERUN = "PROVEN: the engine's proof gate passed this finding when it was recorded. This bundle cannot be re-run from this folder: "
-
-  test("skip case: the plain lab keeps its command (the baseline for the cases below)", async () => {
-    const r = await skipCase("base", () => {})
-    expect(r.snap.omitted).toEqual([])
-    expect(r.cmds).toHaveLength(2)
-  })
-
-  test("skip case: an imported file that is a symbolic link is left out, and the bundle has no command", async () => {
-    const r = await skipCase("link", (ws) => {
-      const f = path.join(ws, "lib/forge-std/src/StdMath.sol")
-      const copy = path.join(ws, "StdMath.copy")
-      renameSync(f, copy)
-      symlinkSync(copy, f)
-    })
-    expect(r.snap.omitted.find((o: { path: string }) => o.path === "lib/forge-std/src/StdMath.sol")?.reason).toMatch(/^imported by lib\/forge-std\/src\/\w+\.sol, but a symbolic link; not followed$/)
-    expect(r.files.has("lib/forge-std/src/StdMath.sol")).toBe(false)
-    expect(r.cmds).toEqual([])
-    expect(r.line1.startsWith(NO_RERUN)).toBe(true)
-  })
-
-  test("skip case: an import through remappings into node_modules is left out, and the bundle has no command", async () => {
-    const r = await skipCase("node-modules", (ws) => {
-      mkdirSync(path.join(ws, "node_modules/@acme/lib"), { recursive: true })
-      writeFileSync(path.join(ws, "node_modules/@acme/lib/Acme.sol"), "library Acme {}\n")
-      writeFileSync(path.join(ws, "remappings.txt"), "@acme/=node_modules/@acme/\n")
-      const poc = path.join(ws, "test", "AgentPoc.t.sol")
-      writeFileSync(poc, `import "@acme/lib/Acme.sol";\n${readFileSync(poc, "utf8")}`)
-    })
-    expect(r.snap.omitted).toContainEqual({ path: "node_modules/@acme/lib/Acme.sol", reason: "imported by test/AgentPoc.t.sol, but node_modules/ is not included" })
-    expect(r.files.has("node_modules/@acme/lib/Acme.sol")).toBe(false)
-    expect(r.cmds).toEqual([])
-  })
-
-  test("skip case: an import into a hidden folder is left out, and the bundle has no command", async () => {
-    const r = await skipCase("hidden", (ws) => {
-      mkdirSync(path.join(ws, "src/.deps"), { recursive: true })
-      writeFileSync(path.join(ws, "src/.deps/Dep.sol"), "library Dep {}\n")
-      const v = path.join(ws, "src", "Vault.sol")
-      writeFileSync(v, readFileSync(v, "utf8").replace(/(pragma solidity[^;]*;)/, '$1\nimport "./.deps/Dep.sol";'))
-    })
-    expect(r.snap.omitted).toContainEqual({ path: "src/.deps/Dep.sol", reason: "imported by src/Vault.sol, but a hidden folder; not included" })
-    expect(r.cmds).toEqual([])
-  })
-
-  test("skip case: an import into a library's test folder is left out, and the bundle has no command", async () => {
-    const r = await skipCase("libtest", (ws) => {
-      mkdirSync(path.join(ws, "lib/forge-std/test/utils"), { recursive: true })
-      writeFileSync(path.join(ws, "lib/forge-std/test/utils/Helper.sol"), "library Helper {}\n")
-      const poc = path.join(ws, "test", "AgentPoc.t.sol")
-      writeFileSync(poc, `import "forge-std/../test/utils/Helper.sol";\n${readFileSync(poc, "utf8")}`)
-    })
-    expect(r.snap.omitted).toContainEqual({ path: "lib/forge-std/test/utils/Helper.sol", reason: "imported by test/AgentPoc.t.sol, but a library's test folder is not included" })
-    expect(r.cmds).toEqual([])
-  })
-
-  test("skip case: an imported file that cannot be read is left out, and the bundle has no command", async () => {
-    let locked = ""
-    try {
-      const r = await skipCase("unreadable", (ws) => {
-        locked = path.join(ws, "lib/forge-std/src/StdMath.sol")
-        chmodSync(locked, 0o000)
-      })
-      expect(r.snap.omitted).toContainEqual({ path: "lib/forge-std/src/StdMath.sol", reason: "a file that could not be read" })
-      expect(r.cmds).toEqual([])
-    } finally {
-      if (locked) try { chmodSync(locked, 0o644) } catch {}
-    }
-  })
-
-  test("skip case: an imported path that is not a regular file is left out, and the bundle has no command", async () => {
-    const r = await skipCase("fifo", (ws) => {
-      const f = path.join(ws, "lib/forge-std/src/StdMath.sol")
-      rmSync(f)
-      execFileSync("mkfifo", [f])
-    })
-    expect(r.snap.omitted.find((o: { path: string }) => o.path === "lib/forge-std/src/StdMath.sol")?.reason).toMatch(/^imported by lib\/forge-std\/src\/\w+\.sol, but not a regular file$/)
-    expect(r.cmds).toEqual([])
-  })
-
-  test("skip case: a proof that reads a file at run time has no command", async () => {
-    const r = await skipCase("readfile", (ws) => {
-      const poc = path.join(ws, "test", "AgentPoc.t.sol")
-      writeFileSync(poc, readFileSync(poc, "utf8").replace(/(function test_reentrancy_drains_vault\(\)[^{]*\{)/, '$1 vm.readFile("fixtures/x.json");'))
-    })
-    expect(r.snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls readFile(), a cheatcode that reads the disk or runs a program"])
-    expect(r.cmds).toEqual([])
-    expect(r.line1).toBe(`${NO_RERUN}test/AgentPoc.t.sol calls readFile(), a cheatcode that reads the disk or runs a program.`)
-  })
-
-  test("skip case: a skip that no source imports cannot matter, and the command stays", async () => {
-    const r = await skipCase("unused", (ws) => {
-      mkdirSync(path.join(ws, "node_modules/x"), { recursive: true })
-      writeFileSync(path.join(ws, "node_modules/x/Unused.sol"), "library Unused {}\n")
-      symlinkSync(path.join(ws, "src", "Vault.sol"), path.join(ws, "src", "VaultLink.sol"))
-      writeFileSync(path.join(ws, "src", ".Hidden.sol"), "library Hidden {}\n")
-    })
-    expect(r.snap.omitted).toEqual([])
-    expect(r.cmds).toHaveLength(2)
-  })
-
-  test("skip case: at bundle time an old record that lost an imported file gets no command", async () => {
-    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
-    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
-    const ws = makeWorkspace(lab)
-    const dir = mkdtempSync(path.join(tmpdir(), "replay-skip-old-"))
-    try {
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
-      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "test_reentrancy_drains_vault()" })
-      const old = { ...snap, files: snap.files.filter((f: { path: string }) => f.path !== "src/Vault.sol") }
-      const proof = { kind: "forge", pass: true, test: "test_reentrancy_drains_vault()" }
-      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: old, proof } }), dir)
-      const readme = readTree(dir).get("README.md") || ""
-      expect(readme).toContain("- `src/Vault.sol` — imported by test/AgentPoc.t.sol, but it is not in this folder")
-      expect(commands(readme)).toEqual([])
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("rerun condition: the keys lab PoC loads the Safe from JSON, so its bundle has no command", async () => {
-    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
-    const lab = new URL("../../spike/packs/keys/lab/", import.meta.url).pathname
-    const ws = makeWorkspace(lab)
-    const dir = mkdtempSync(path.join(tmpdir(), "replay-keys-"))
-    try {
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "DelegatedSetupTest.t.sol"), "utf8"))
-      const snap = snapshotForgeReplay(ws, { contract: "DelegatedSetupTest", test: "test_delegatedOwnerCanDrain()" })
-      expect(snap.omitted).toEqual([])
-      // Both the getCode-on-a-path read and the fs_permissions grant catch it.
-      expect(snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls getCode() on a path, and this folder holds only the .sol and config files"])
-      expect(snap.command).toBeNull()
-      const proof = { kind: "forge", pass: true, test: "test_delegatedOwnerCanDrain()", harm: { ok: true, kind: "control", victim: "0x" + "aa".repeat(20), writes: 1 } }
-      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "keys", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
-      const files = readTree(dir)
-      // The files still ship, so the finding is still inspectable.
-      expect(files.has("test/AgentPoc.t.sol")).toBe(true)
-      expect(files.has("foundry.toml")).toBe(true)
-      const readme = files.get("README.md") || ""
-      expect(commands(readme)).toEqual([])
-      // Line 1 names one true reason; both the grant and the getCode read apply.
-      expect(readme.split("\n")[0]).toMatch(/^PROVEN: .* This bundle cannot be re-run from this folder: (foundry\.toml grants file-system access|test\/AgentPoc\.t\.sol calls getCode\(\) on a path)/)
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("rerun condition: fs_permissions, ffi, a file cheatcode on any receiver, or getCode on a path each drops the command", () => {
-    const base = (extraToml: string, pocBody: string) => {
-      const ws = mkdtempSync(path.join(tmpdir(), "replay-cond-"))
-      try {
-        mkdirSync(path.join(ws, "src"))
-        mkdirSync(path.join(ws, "test"))
-        writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n${extraToml}`)
-        writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
-        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `interface Vm { function readFile(string calldata) external; }\ncontract PocTest {\n  Vm cheat = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function testDrain() public {\n${pocBody}\n  }\n}\n`)
-        return snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      } finally {
-        rmSync(ws, { recursive: true, force: true })
-      }
-    }
-    // A plain PoC keeps the command.
-    expect(base("", "    uint256 x = 1;").command).not.toBeNull()
-    // fs_permissions in any profile drops it.
-    expect(base('fs_permissions = [{ access = "read", path = "lib/x" }]\n', "    uint256 x = 1;").command).toBeNull()
-    expect(base("[profile.ci]\nffi = true\n", "    uint256 x = 1;").command).toBeNull()
-    // A file cheatcode on a renamed receiver (not vm.) drops it.
-    expect(base("", '    cheat.readFile("x.txt");').command).toBeNull()
-    // getCode on a .json path drops it; on X.sol:Name it does not.
-    expect(base("", '    cheat.getCode("lib/safe-artifacts/Safe.json");').command).toBeNull()
-    const okArtifact = base("", '    cheat.getCode("Vault.sol:Vault");')
-    expect(okArtifact.runtimeReads ?? []).toEqual([])
-    expect(okArtifact.command).not.toBeNull()
-  })
-
-  test("rerun condition: an import hidden behind a string that opens a comment is still a gap", () => {
-    const ws = mkdtempSync(path.join(tmpdir(), "replay-strimport-"))
-    try {
-      mkdirSync(path.join(ws, "src"))
-      mkdirSync(path.join(ws, "test"))
-      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n`)
-      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
-      // The string "/*" would start a comment in the stripped pass and hide the
-      // import; the raw-text pass still sees it, so the file is a gap.
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `string constant OPEN = "/*";\nimport "../src/missing/Hidden.sol";\n// close: */\ncontract PocTest {}\n`)
-      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      expect(snap.omitted.some((o: { reason: string }) => o.reason.includes("imported by test/AgentPoc.t.sol"))).toBe(true)
-      expect(snap.command).toBeNull()
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
     }
   })
 
@@ -739,7 +471,7 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("a source file over the redactor's cap, or one left out for a secret, leaves the bundle with no command", () => {
+  test("a source file over the redactor's cap, or one left out for a secret, is dropped and named, never shipped", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-overcap-"))
     try {
       mkdirSync(path.join(ws, "src"))
@@ -749,7 +481,6 @@ describe("report: replay bundle", () => {
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
       const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       expect(snap.omitted).toEqual([{ path: "src/Big.sol", reason: "over 64 KB, so the redactor cannot check it" }])
-      expect(snap.command).toBeNull()
       const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
       const readmeOf = (replay: unknown) => {
         const d = mkdtempSync(path.join(tmpdir(), "replay-overcap-zip-"))
@@ -758,30 +489,26 @@ describe("report: replay bundle", () => {
           const files = readTree(d)
           for (const [name, text] of files) expect([name, text.includes("too long to check")]).toEqual([name, false])
           expect(files.has("src/Big.sol")).toBe(false)
-          expect(files.has("check-harm.mjs")).toBe(false)
           return files.get("README.md") || ""
         } finally {
           rmSync(d, { recursive: true, force: true })
         }
       }
-      const readme = readmeOf(snap)
-      expect(readme.split("\n")[0]).toBe('PROVEN: the engine\'s proof gate passed this finding when it was recorded. This bundle cannot be re-run from this folder: 1 file was left out (see "Left out").')
-      expect(commands(readme)).toEqual([])
-      expect(readme).toContain("- `src/Big.sol` — over 64 KB, so the redactor cannot check it")
+      expect(readmeOf(snap)).toContain("- `src/Big.sol` — over 64 KB, so the redactor cannot check it")
       // An old record that holds the mark in place of code is caught at bundle time.
       const old = { ...snap, omitted: [], files: [...snap.files, { path: "src/Big.sol", text: "[REDACTED: text of 76012 characters too long to check]" }] }
       expect(readmeOf(old)).toContain("- `src/Big.sol` — over 64 KB, so the redactor cannot check it")
-      // A file left out for a secret also leaves no command.
+      // A file left out for a secret is named too.
       rmSync(path.join(ws, "src", "Big.sol"))
       writeFileSync(path.join(ws, "src", "Key.sol"), `// ${PEM}\ncontract Key {}\n`)
       const withKey = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       expect(withKey.omitted).toEqual([{ path: "src/Key.sol", reason: "secret file" }])
-      expect(commands(readmeOf(withKey))).toEqual([])
+      expect(readmeOf(withKey)).toContain("- `src/Key.sol` — secret file")
     } finally {
       rmSync(ws, { recursive: true, force: true })
     }
 
-    // A request script over the cap is left out, and there is no rerun.
+    // An HTTP request script over the cap is left out, and there is no rerun command.
     const script = `await request("GET", "/");\n// ${"x".repeat(70 * 1024)}\n`
     const proof = { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak", detail: "x", passed: true }, log: [{ label: "1", request: { method: "GET", url: "http://origin:8080/" }, response: { status: 200, body: "ok" } }] }
     const d = mkdtempSync(path.join(tmpdir(), "replay-overcap-http-"))
@@ -796,92 +523,60 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("the header and name checks ask the redactor: code is kept, a header value it would mask is refused", () => {
-    // From the real web record that the old check refused: a variable, not a value.
-    expect(leakShapes('    headers: { Authorization: "Bearer " + a.d.token }')).toEqual([])
-    expect(leakShapes('fetch(u, { headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" } })')).toEqual([])
-    // The bundle redacts first; what the redactor masks there, the check never sees.
-    expect(leakShapes(bundleText("x-api-key: process.env.API_KEY"))).toEqual([])
-    // A value the redactor masks on a bare line is a leak when the text kept it.
-    expect(leakShapes(`"note": "send Authorization: Bearer ${BEARER}"`)).toContain("a header in text")
-  })
-
-  test("a path the redactor would mask is left out and named by a placeholder, never shipped", () => {
-    // Made up.
-    const stripe = "sk_live_51Hq7Lm2Xp9Rt4Vw8Zb3Nc6Kd"
-    const github = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
-    const ws = mkdtempSync(path.join(tmpdir(), "replay-paths-"))
-    try {
-      mkdirSync(path.join(ws, "src", `${github}`), { recursive: true })
-      mkdirSync(path.join(ws, "test"))
-      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
-      writeFileSync(path.join(ws, "src", `key-${stripe}.sol`), "contract A {}\n")
-      writeFileSync(path.join(ws, "src", github, "B.sol"), "contract B {}\n")
-      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
-      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      const record = JSON.stringify(snap)
-      expect(record.includes(stripe)).toBe(false)
-      expect(record.includes(github)).toBe(false)
-      expect(snap.omitted).toEqual([
-        { path: "[REDACTED]", reason: "its path holds a value the redactor masks" },
-        { path: "[REDACTED]", reason: "its path holds a value the redactor masks" },
-      ])
-      const proof = { kind: "forge", pass: true, test: "testDrain()" }
-      const zip = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } })
-      expect(zip.includes(stripe)).toBe(false)
-      expect(zip.includes(github)).toBe(false)
-      // An old record that names such a path inline gets the same rule.
-      const old = { ...snap, omitted: [{ path: `src/key-${stripe}.sol`, reason: "binary" }], files: [...snap.files, { path: `src/${github}/C.sol`, text: "contract C {}\n" }] }
-      const again = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: old, proof } })
-      expect(again.includes(stripe)).toBe(false)
-      expect(again.includes(github)).toBe(false)
-    } finally {
-      rmSync(ws, { recursive: true, force: true })
-    }
-    expect(evidenceReplay({ snapshotHash: "a".repeat(64), snapshot: { files: { [`keys/${stripe}.txt`]: "x", "README.md": "y" } } }).snapshotFiles).toEqual(["[REDACTED]", "README.md"])
-  })
-
-  test("check-harm.mjs passes only when the replay moves the recorded wei", () => {
-    const ws = mkdtempSync(path.join(tmpdir(), "replay-harm-"))
-    const dir = mkdtempSync(path.join(tmpdir(), "replay-harm-zip-"))
-    try {
-      mkdirSync(path.join(ws, "test"))
-      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\n`)
-      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest {}\n`)
-      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      const vault = "0x00000000000000000000000000000000000000aa"
-      const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: vault, lostWei: "1000000000000000000" } }
-      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
-      const trace = (wei: string, status = "Success") => ({
-        "test/AgentPoc.t.sol:PocTest": { test_results: { "testDrain()": { status, traces: [["Execution", { arena: [
-          { parent: null, trace: { kind: "CALL", address: "0x00000000000000000000000000000000000000bb", caller: "0x00000000000000000000000000000000000000cc", success: true, value: "0x0" } },
-          { parent: 0, trace: { kind: "CALL", address: "0x00000000000000000000000000000000000000dd", caller: vault, success: true, value: wei } },
-        ] }]] } } },
-      })
-      const check = (body: unknown) => {
-        writeFileSync(path.join(dir, "replay.json"), JSON.stringify(body))
-        try {
-          execFileSync("node", ["check-harm.mjs", "replay.json"], { cwd: dir, stdio: "ignore" })
-          return 0
-        } catch (err) {
-          return (err as { status?: number }).status ?? -1
-        }
+  test("no forge bundle of any lab holds a re-run command or the word re-checked, and the keys bundle reads like the rest", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const labs = ["lab/vault-accounting", "lab/vault-reentrancy", "lab/vault-shares", "spike/packs/keys/lab", "spike/packs/chain-watch/lab"]
+    for (const rel of labs) {
+      const lab = new URL(`../../${rel}/`, import.meta.url).pathname
+      const oracleDir = path.join(lab, "oracle")
+      const chosen = readdirSync(oracleDir).find((f) => f.endsWith(".sol"))
+      const ws = makeWorkspace(lab)
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-nocmd-"))
+      try {
+        mkdirSync(path.join(ws, "test"), { recursive: true })
+        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(oracleDir, String(chosen)), "utf8"))
+        const snap = snapshotForgeReplay(ws, { contract: "X", test: "t()" })
+        const proof = { kind: "forge", pass: true, test: "t()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+        const readme = readTree(dir).get("README.md") || ""
+        expect([rel, commands(readme)]).toEqual([rel, []])
+        expect([rel, readme.includes("re-checked")]).toEqual([rel, false])
+        expect([rel, readme.includes("forge test")]).toEqual([rel, false])
+        expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay on the operator's machine")).toBe(true)
+      } finally {
+        rmSync(ws, { recursive: true, force: true })
+        rmSync(dir, { recursive: true, force: true })
       }
-      expect(check(trace("0xde0b6b3a7640000"))).toBe(0)
-      expect(check(trace("0x1"))).toBe(1)
-      expect(check(trace("0xde0b6b3a7640000", "Failure"))).toBe(1)
-      expect(check({})).toBe(1)
-      const harm = JSON.parse(readFileSync(path.join(dir, "harm.json"), "utf8"))
-      writeFileSync(path.join(dir, "harm.json"), JSON.stringify({ ...harm, harm: { ok: true, kind: "control", victim: vault } }))
-      expect(check(trace("0xde0b6b3a7640000"))).toBe(2)
+    }
+  })
+
+  test("an old record with a stored forge command and check-harm does not show them", () => {
+    const replay = {
+      version: 1, kind: "forge", contract: "PocTest", test: "testDrain",
+      command: "docker run --rm --pull never --network none ghcr.io/foundry-rs/foundry@sha256:dead 'forge test --offline'",
+      prepare: "docker pull ghcr.io/foundry-rs/foundry@sha256:dead",
+      fork: { rpc: "${RPC_URL}", block: null, forked: false },
+      files: [{ path: "foundry.toml", text: "[profile.default]\n" }, { path: "test/AgentPoc.t.sol", text: "contract PocTest {}\n" }],
+      omitted: [],
+    }
+    const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-oldcmd-"))
+    try {
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
+      const files = readTree(dir)
+      expect(commands(files.get("README.md") || "")).toEqual([])
+      expect(files.has("check-harm.mjs")).toBe(false)
+      expect(files.has("harm.json")).toBe(false)
+      expect((files.get("README.md") || "").includes("forge test")).toBe(false)
+      const proofJson = JSON.parse(files.get("proof.json") || "")
+      expect(proofJson.replay.command).toBeUndefined()
+      expect(proofJson.replay.prepare).toBeUndefined()
     } finally {
-      rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  test("a finding recorded before snapshots says the proof cannot be rerun", () => {
+  test("a finding recorded before snapshots ships what it has and names no command", () => {
     const zip = buildReplayBundle({ finding: forgeFinding })
     const dir = mkdtempSync(path.join(tmpdir(), "replay-old-"))
     try {
@@ -891,7 +586,7 @@ describe("report: replay bundle", () => {
       expect(files.has("foundry.toml")).toBe(false)
       const readme = files.get("README.md") || ""
       expect(commands(readme)).toHaveLength(0)
-      expect(readme).toContain("no command")
+      expect(readme).not.toContain("forge test")
       const fork = JSON.parse(files.get("fork.json") || "")
       expect(fork.rpc).toBe("${RPC_URL}")
       expect(fork.block).toBeNull()
@@ -1189,7 +884,8 @@ describe("report: replay bundle", () => {
         unzip(buildReplayBundle({ finding, recorded }), out)
         const files = readTree(out)
         expect(files.get("src/Vault.sol")).toContain("function withdraw")
-        expect(section(files.get("README.md") || "", "Replay (offline)")).toContain("forge test --offline")
+        expect(commands(files.get("README.md") || "")).toEqual([])
+        expect(files.get("README.md")).toContain("This folder holds the proof's source files for reading")
       } finally {
         rmSync(out, { recursive: true, force: true })
       }
@@ -1208,7 +904,7 @@ describe("report: replay bundle", () => {
           rmSync(d, { recursive: true, force: true })
         }
       })()
-      expect(readme).toContain("The replay files of this run are gone: the replay file does not match the hash in the record.")
+      expect(readme).toContain("The proof's source files of this run are gone: the replay file does not match the hash in the record.")
       expect(commands(readme)).toEqual([])
       rmSync(file)
       expect(loadRecordedReplay("m7-1.1").replay.filesLost).toBe("the replay file is no longer in the results folder")
@@ -1269,11 +965,11 @@ describe("report: replay bundle", () => {
     }
   })
 
-  // The real vault lab, snapshotted by proveFindings, then rerun from the zip
-  // with the README command, offline. Opt in with TOUCHSTONE_DOCKER_TESTS=1.
-  // It needs the Foundry image and solc 0.8.38 in the foundry-svm volume
-  // already; it never pulls and never fetches solc. The shared volume is only
-  // read: the replay gets a private copy, removed at the end.
+  // Guards the files, not a claim: a Foundry bundle has no re-run command, so
+  // this test builds its own forge invocation to prove the shipped folder is
+  // complete enough to compile and pass offline. Opt in with
+  // TOUCHSTONE_DOCKER_TESTS=1; it needs the Foundry image and solc 0.8.38 in
+  // the foundry-svm volume, and never pulls or fetches a compiler.
   const forgeReady = (() => {
     if (process.env.TOUCHSTONE_DOCKER_TESTS !== "1") return false
     try {
@@ -1287,11 +983,9 @@ describe("report: replay bundle", () => {
       return false
     }
   })()
-  ;(forgeReady ? test : test.skip)("proveFindings snapshot reruns offline with the README command", async () => {
+  ;(forgeReady ? test : test.skip)("a lab bundle's folder is complete enough to compile and pass offline", async () => {
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const { proveFindings } = await import("../../spike/lib/record.mjs")
-    // @ts-expect-error — plain .mjs module, no types
-    const { REPLAY_SVM_VOLUME } = await import("../../spike/lib/replay-bundle.mjs")
     const volume = `touchstone-replay-test-${process.pid}`
     execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" })
     execFileSync("docker", [
@@ -1310,59 +1004,31 @@ describe("report: replay bundle", () => {
         [{ ev: "run_poc-done", passed: true, contract: "VaultExploitTest" }],
       )
       expect(f.pocProved).toBe(true)
-      // The record keeps the paths and the store pointer; the files come back from the store.
+      // The record keeps the paths and the store pointer, no files and no command.
       expect(f.proof.replay.files).toBeUndefined()
-      for (const rel of ["src/Vault.sol", "foundry.toml", "test/AgentPoc.t.sol", "lib/forge-std/src/Vm.sol"]) expect(f.proof.replay.paths).toContain(rel)
+      expect(f.proof.replay.command).toBeUndefined()
       const replay = loadReplayFiles(f.proof.replay)
-      expect(replay.filesLost).toBeUndefined()
       const zip = buildReplayBundle({
         finding: { stages: { proven: true }, title: f.title, proofKind: "forge", proof: f.proof },
         recorded: { proof: f.proof, replay, pocProved: true },
       })
       unzip(zip, dir)
-      // forge-std ships as the engine installs it, so the proof compiles.
-      for (const rel of ["lib/forge-std/src/Vm.sol", "lib/forge-std/src/console.sol", "lib/forge-std/src/safeconsole.sol"]) {
-        expect(readFileSync(path.join(dir, rel), "utf8")).toBe(readFileSync(path.join(lab, rel), "utf8"))
-      }
+      // The README makes no re-run claim, and SHA256SUMS covers the shipped files.
       const readme = readFileSync(path.join(dir, "README.md"), "utf8")
-      const cmd = section(readme, "Replay (offline)") || ""
-      expect(cmd.startsWith("sha256sum -c SHA256SUMS && \\\n  docker run --rm --pull never --network none ")).toBe(true)
-      expect(cmd).toMatch(/ ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64} /)
-      expect(cmd).toContain("'forge test --offline --use 0.8.38 ")
-      expect(cmd).toContain("--match-contract VaultExploitTest")
-      expect(cmd).toContain("--match-test test_reentrancy_drains_vault")
-      expect(cmd).not.toContain("--fork-url")
-      expect(cmd).toContain(`-v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm `)
-      const run = cmd.replace(`-v ${REPLAY_SVM_VOLUME}:`, `-v ${volume}:`)
+      expect(commands(readme)).toEqual([])
+      expect(readme).not.toContain("forge test")
+      execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
+      // Build our own offline forge run over the shipped folder and confirm it
+      // compiles and the proof test passes: the bundle is complete.
+      const run = `docker run --rm --pull never --network none -v ${volume}:/home/foundry/.svm -v "$PWD":/work -w /work ghcr.io/foundry-rs/foundry:latest 'forge test --offline --use 0.8.38 --match-contract VaultExploitTest --match-test test_reentrancy_drains_vault'`
       let out = ""
       try {
-        out = execFileSync("bash", ["-c", run], {
-          cwd: dir,
-          encoding: "utf8",
-          timeout: 300_000,
-          maxBuffer: 16 * 1024 * 1024,
-        })
+        out = execFileSync("bash", ["-c", run], { cwd: dir, encoding: "utf8", timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })
       } catch (err) {
-        const failed = err as { stdout?: string; stderr?: string; message?: string }
-        throw new Error(`replay command failed\n${cmd}\n${failed.stdout || ""}\n${failed.stderr || ""}\n${failed.message || ""}`)
+        const e = err as { stdout?: string; stderr?: string; message?: string }
+        throw new Error(`forge over the bundle folder failed\n${e.stdout || ""}\n${e.stderr || ""}\n${e.message || ""}`)
       }
-      expect(f.proof.harm.kind).toBe("funds")
-      expect(out).toContain(`OK: test_reentrancy_drains_vault() passed and ${f.proof.harm.victim} lost ${f.proof.harm.lostWei} wei`)
-      // A PoC that only asserts true still passes forge. With the sums redone
-      // to hide the edit, the harm check must still refuse it.
-      const poc = path.join(dir, "test", "AgentPoc.t.sol")
-      const body = readFileSync(poc, "utf8")
-      writeFileSync(poc, body.replace(/(function test_reentrancy_drains_vault\(\)[^{]*\{)/, "$1 assertTrue(true); return;"))
-      expect(readFileSync(poc, "utf8")).not.toBe(body)
-      expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
-      execFileSync("bash", ["-c", "sha256sum test/AgentPoc.t.sol > .sum && grep -v '  test/AgentPoc.t.sol$' SHA256SUMS >> .sum && mv .sum SHA256SUMS"], { cwd: dir })
-      let tampered = 0
-      try {
-        execFileSync("bash", ["-c", run], { cwd: dir, stdio: "ignore", timeout: 300_000 })
-      } catch (err) {
-        tampered = (err as { status?: number }).status ?? -1
-      }
-      expect(tampered).toBe(1)
+      expect(out).toContain("[PASS] test_reentrancy_drains_vault")
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })

@@ -23,7 +23,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { Mnemonic, wordlists } from "ethers";
-import { pinnedSolc, warmFor } from "./sandbox.mjs";
 
 const MAX_FILE = 1_500_000;
 const MAX_TOTAL = 8_000_000;
@@ -64,7 +63,8 @@ function urlKeys(text) {
 }
 
 const HOME = homedir();
-// /home/foundry is the Foundry image's own home, used by the replay command.
+// A real home path is masked to ~, but /home/foundry is the Foundry image's
+// own home, not an operator path, so it is left alone.
 const HOME_PATH = /\/(?:home|Users)\/(?!foundry\b)[A-Za-z0-9._-]+/g;
 function homeToTilde(text) {
   let s = text;
@@ -384,64 +384,6 @@ function testIdent(raw) {
   return IDENT.test(s) ? s : null;
 }
 
-// The replay runs on the image digest the proof ran on, never `:latest`.
-// FALLBACK_IMAGE is the digest the labs were proven on; it is used only when
-// Docker cannot say which digest `:latest` is on this machine.
-const IMAGE_TAG = "ghcr.io/foundry-rs/foundry:latest";
-const IMAGE_DIGEST = /^ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64}$/;
-export const FALLBACK_IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
-// The judge's own solc cache. The prepare step fills it; the replay only reads it.
-export const REPLAY_SVM_VOLUME = "touchstone-replay-svm";
-const SOLC = /^\d+\.\d+\.\d+$/;
-
-function localImageDigest() {
-  try {
-    const out = execFileSync("docker", ["image", "inspect", "--format", "{{json .RepoDigests}}", IMAGE_TAG], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
-    return (JSON.parse(out) || []).find((d) => IMAGE_DIGEST.test(d)) || null;
-  } catch {
-    return null;
-  }
-}
-
-const imageOf = (image) => (IMAGE_DIGEST.test(String(image ?? "")) ? image : FALLBACK_IMAGE);
-
-// One shell command, run from the unzipped folder. The Foundry image's
-// entrypoint is `sh -c`, so the forge invocation is a single argument.
-// --offline and --use stop forge from fetching a compiler; --pull never stops
-// Docker from fetching an image. A proof that did not fork runs with
-// --network none. A fork needs the RPC, so it keeps the network, and RPC_URL
-// is expanded inside the container from the environment, never written here.
-export function forgeCommand({ contract, test, fork, solc, image } = {}) {
-  const args = ["forge", "test", "--offline"];
-  if (SOLC.test(String(solc ?? ""))) args.push("--use", solc);
-  if (fork?.forked) {
-    args.push("--fork-url", '"$RPC_URL"');
-    if (Number.isFinite(fork.block)) args.push("--fork-block-number", String(fork.block));
-  }
-  if (contract && IDENT.test(contract)) args.push("--match-contract", contract);
-  if (test && IDENT.test(test)) args.push("--match-test", test);
-  // The JSON trace is what check-harm.mjs reads, as the engine's own replay does.
-  args.push("--json", "-vvvv");
-  const net = fork?.forked ? " -e RPC_URL" : " --network none";
-  return `docker run --rm --pull never${net} -v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${imageOf(image)} '${args.join(" ")}'`;
-}
-
-// Run once, online, before the replay: fetch the pinned image and put each
-// solc the proof used in the judge's cache volume. A fresh volume is owned by
-// root, and forge runs as uid 1000, so the volume is handed over first.
-export function prepareCommand({ solc, solcs, image } = {}) {
-  const versions = [...new Set([solc, ...(Array.isArray(solcs) ? solcs : [])].filter((v) => SOLC.test(String(v ?? ""))))];
-  if (!versions.length) return null;
-  const img = imageOf(image);
-  const warm = versions.map((v) => `mkdir -p /tmp/w${v}/src && cd /tmp/w${v} && echo "pragma solidity ${v}; contract W {}" > src/W.sol && forge build --use ${v}`).join(" && ");
-  return [
-    `docker pull ${img}`,
-    `docker volume create ${REPLAY_SVM_VOLUME}`,
-    `docker run --rm -u 0 --entrypoint sh -v ${REPLAY_SVM_VOLUME}:/svm ${img} -c 'chown 1000:1000 /svm'`,
-    `docker run --rm -v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm ${img} '${warm}'`,
-  ].join(" && \\\n  ");
-}
-
 function forkFrom(toml, sources) {
   let block = null;
   let forked = false;
@@ -477,264 +419,39 @@ function keepPath(rel) {
 // Walk the workspace for the files a forge test needs. Dependency tests under
 // lib/ are skipped: they are not imported by the proof, and forge-std's own
 // tests ship sample provider keys.
-// Every file or folder the walk does not take, with the reason. A skip can
-// matter only when a kept source imports into it; importGaps finds those and
-// lists them under "Left out", so the bundle then has no command:
-// - a symbolic link (file or folder): not followed;
-// - a hidden file or folder (a name that starts with "."), a skipped folder
-//   (SKIP_DIRS: node_modules, out, cache, …), a library's own test folder;
-// - a path that is not a regular file (a socket, a device).
-// A file that keepPath does not take (not .sol, not the top foundry.toml or
-// remappings.txt) is not source; a proof that reads such a file at run time is
-// caught by runtimeReads. Read errors, binary content, the size limits, a
-// masked path, a secret and the cap mark are left out by snapshotForgeReplay.
+// Every .sol source and the top foundry.toml / remappings.txt, worst-rank
+// first. A symbolic link, a hidden name, a skipped folder (SKIP_DIRS) and a
+// library's own test/ are not taken; the bundle makes no re-run claim, so a
+// file the walk does not take is not a defect here. Read errors, binary
+// content, the size limits, a masked path, a secret and the cap mark are left
+// out by snapshotForgeReplay and listed under "Left out".
 function collectFiles(root) {
   const found = [];
-  const skipped = new Map();
-  const skippedDirs = [];
   const walk = (dir, parts) => {
     let entries = [];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch {
-      if (parts.length) skippedDirs.push({ dir: parts.join("/"), reason: "a folder that could not be read" });
-      return;
-    }
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      const rel = [...parts, e.name].join("/");
-      if (e.isSymbolicLink()) {
-        skipped.set(rel, "a symbolic link; not followed");
-        skippedDirs.push({ dir: rel, reason: "a symbolic link; not followed" });
-        continue;
-      }
+      if (e.name.startsWith(".") || e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
-        if (e.name.startsWith(".")) skippedDirs.push({ dir: rel, reason: "a hidden folder; not included" });
-        else if (SKIP_DIRS.has(e.name)) skippedDirs.push({ dir: rel, reason: `${e.name}/ is not included` });
-        else if ((e.name === "test" || e.name === "tests") && parts.includes("lib")) skippedDirs.push({ dir: rel, reason: "a library's test folder is not included" });
-        else walk(join(dir, e.name), [...parts, e.name]);
+        if (SKIP_DIRS.has(e.name)) continue;
+        if ((e.name === "test" || e.name === "tests") && parts.includes("lib")) continue;
+        walk(join(dir, e.name), [...parts, e.name]);
         continue;
       }
-      if (!e.isFile()) {
-        skipped.set(rel, "not a regular file");
-        continue;
-      }
-      if (e.name.startsWith(".")) {
-        skipped.set(rel, "a hidden file; not included");
-        continue;
-      }
+      if (!e.isFile()) continue;
+      const rel = [...parts, e.name].join("/");
       if (keepPath(rel)) found.push(rel);
     }
   };
   walk(root, []);
   found.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
-  return { paths: found, skipped, skippedDirs };
-}
-
-// The Solidity imports of one text. Comments are removed first, so a
-// commented-out import is not read.
-const IMPORT = /\bimport\s+(?:[^;"']*?\bfrom\s+)?["']([^"']+)["']/g;
-// The imports of one text, matched on the comment-stripped text AND on the raw
-// text. A string like "/*" cannot hide an import from the stripped pass; a
-// false hit from import-like text inside a string becomes a gap (no command),
-// which fails closed.
-function importsOf(text) {
-  const raw = String(text ?? "");
-  const code = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
-  return [...new Set([...code.matchAll(IMPORT), ...raw.matchAll(IMPORT)].map((m) => m[1]))];
-}
-function normPath(p) {
-  const out = [];
-  for (const part of String(p).split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (!out.length) return null;
-      out.pop();
-    } else out.push(part);
-  }
-  return out.join("/");
-}
-// Forge's resolution, as far as the folder needs it: a relative path from the
-// importing file; else the explicit remappings (remappings.txt, foundry.toml),
-// longest prefix first; else the automatic ones (lib/<name>/src/ or
-// lib/<name>/ for each library); else the path from the project root or from
-// each libs folder.
-function remappingsOf(texts, known) {
-  const toml = texts.get("foundry.toml") || "";
-  const quoted = (body) => [...String(body).matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
-  const libs = (() => {
-    const m = /^\s*libs\s*=\s*\[([^\]]*)\]/m.exec(toml);
-    const list = m ? quoted(m[1]) : [];
-    return list.length ? list.map((l) => normPath(l)).filter(Boolean) : ["lib"];
-  })();
-  const lines = [...String(texts.get("remappings.txt") || "").split("\n"), ...((/^\s*remappings\s*=\s*\[([\s\S]*?)\]/m.exec(toml) || [])[1] ? quoted(/^\s*remappings\s*=\s*\[([\s\S]*?)\]/m.exec(toml)[1]) : [])];
-  const explicit = [];
-  for (const raw of lines) {
-    const line = raw.trim();
-    const eq = line.indexOf("=");
-    if (!line || line.startsWith("#") || eq < 1) continue;
-    let prefix = line.slice(0, eq);
-    const colon = prefix.indexOf(":");
-    if (colon >= 0) prefix = prefix.slice(colon + 1);
-    explicit.push({ prefix, target: line.slice(eq + 1) });
-  }
-  const auto = [];
-  for (const lib of libs) {
-    const names = new Set([...known].filter((p) => p.startsWith(`${lib}/`)).map((p) => p.slice(lib.length + 1).split("/")[0]));
-    for (const name of names) {
-      const src = [...known].some((p) => p.startsWith(`${lib}/${name}/src/`));
-      auto.push({ prefix: `${name}/`, target: src ? `${lib}/${name}/src/` : `${lib}/${name}/` });
-    }
-  }
-  const byLength = (a, b) => b.prefix.length - a.prefix.length;
-  return { explicit: explicit.sort(byLength), auto: auto.sort(byLength), libs };
-}
-function importCandidates(from, spec, maps) {
-  if (spec.startsWith("./") || spec.startsWith("../")) return [normPath(`${from.split("/").slice(0, -1).join("/")}/${spec}`)].filter(Boolean);
-  const out = [];
-  const hit = maps.explicit.find((r) => spec.startsWith(r.prefix)) || maps.auto.find((r) => spec.startsWith(r.prefix));
-  if (hit) out.push(normPath(hit.target + spec.slice(hit.prefix.length)));
-  out.push(normPath(spec));
-  for (const lib of maps.libs) out.push(normPath(`${lib}/${spec}`));
-  return out.filter(Boolean);
-}
-
-// The imports of the kept sources that do not resolve to a kept file, as
-// "Left out" entries. `skipped` and `skippedDirs` (from collectFiles) give the
-// reason when the walk skipped the target; else it is not in the folder.
-export function importGaps(texts, { skipped = new Map(), skippedDirs = [], omitted = [] } = {}) {
-  const known = new Set(texts.keys());
-  for (const p of skipped.keys()) known.add(p);
-  const maps = remappingsOf(texts, known);
-  const listed = new Set(omitted.map((o) => o?.path).filter(Boolean));
-  const gaps = [];
-  for (const [from, text] of texts) {
-    if (!from.endsWith(".sol")) continue;
-    for (const spec of importsOf(text)) {
-      const cands = importCandidates(from, spec, maps);
-      if (cands.some((c) => texts.has(c))) continue;
-      const why = (c) => skipped.get(c) ?? skippedDirs.find((d) => c === d.dir || c.startsWith(`${d.dir}/`))?.reason ?? null;
-      const target = cands.find((c) => why(c)) ?? cands[0] ?? spec;
-      const shown = pathMasked(target) ? MASKED_PATH : target;
-      if (listed.has(target) || listed.has(shown)) continue;
-      listed.add(target);
-      gaps.push({ path: shown, reason: `imported by ${from}, but ${why(target) ?? "it is not in this folder"}` });
-    }
-  }
-  return gaps;
-}
-
-// A proof that reads a file or runs a program at run time needs more than the
-// .sol and config files this folder holds. Engine library files are not
-// checked: they define these helpers, and a proof that only imports them
-// reads nothing.
-// The file-system and program cheatcodes, taken from the Filesystem section of
-// the vendored forge-std Vm.sol (between "======== Filesystem ========" and the
-// next "========" marker). ffi, tryFfi and the artifact helpers live in that
-// section, so the set matches the pinned forge-std. A call to any of these on
-// ANY receiver (vm., cheats., hevm., a renamed Vm variable) means the proof
-// needs more than this folder. The artifact helpers (getCode and the like) are
-// allowed only for an `X.sol` or `X.sol:Name` argument, which forge resolves
-// from the compiled out/ with no file read; any other argument, or a
-// non-literal one, drops the command.
-const ARTIFACT_CHEATS = new Set(["getCode", "getDeployedCode", "deployCode", "deployCodeTo"]);
-let fileCheatSet = null;
-function fileCheats() {
-  if (fileCheatSet) return fileCheatSet;
-  let names = [];
-  try {
-    const entry = [...(vendored().get("lib/forge-std/src/Vm.sol")?.values() ?? [])][0];
-    const src = entry ? readFileSync(entry.abs, "utf8") : "";
-    const at = src.indexOf("======== Filesystem ========");
-    const end = src.indexOf("========", at + 30);
-    const section = at >= 0 ? src.slice(at, end >= 0 ? end : undefined) : "";
-    names = [...section.matchAll(/\bfunction\s+([A-Za-z0-9_]+)\s*\(/g)].map((m) => m[1]);
-  } catch {
-    names = [];
-  }
-  // A backstop if the vendored Vm.sol is not readable, so the rule never opens.
-  const fallback = ["readFile", "readFileBinary", "readLine", "readDir", "readLink", "writeFile", "writeFileBinary", "writeLine", "closeFile", "copyFile", "createDir", "removeDir", "removeFile", "exists", "isFile", "isDir", "fsMetadata", "projectRoot", "prompt", "promptSecret", "promptSecretUint", "promptUint", "promptAddress", "ffi", "tryFfi", "getCode", "getDeployedCode", "deployCode", "deployCodeTo", "getArtifactPathByCode", "getArtifactPathByDeployedCode"];
-  fileCheatSet = new Set(names.length ? names : fallback);
-  return fileCheatSet;
-}
-function importsFree(text) {
-  return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
-}
-// The first string literal that follows "(", or null when the first argument
-// is not a plain string literal.
-function firstStringArg(afterParen) {
-  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/.exec(afterParen);
-  return m ? m[2] : null;
-}
-const ARTIFACT_NAME = /^[^"'\s]+\.sol(?::[A-Za-z0-9_$]+)?$/;
-// Each kept source that calls a file-system or ffi cheatcode, as a reason. The
-// raw text and the comment-stripped text are both scanned, so a call hidden
-// after a "/*" inside a string is still caught. A vendored library file defines
-// these cheatcodes but does not call them, so it is not scanned.
-export function runtimeReads(texts, vendoredPaths = new Set()) {
-  const names = fileCheats();
-  const CALL = new RegExp("\\.\\s*(" + [...names].join("|") + ")\\s*\\(([\\s\\S]{0,200})", "g");
-  const out = new Set();
-  for (const [path, text] of texts) {
-    if (!path.endsWith(".sol") || vendoredPaths.has(path)) continue;
-    for (const body of [String(text ?? ""), importsFree(text)]) {
-      CALL.lastIndex = 0;
-      let m;
-      while ((m = CALL.exec(body))) {
-        const name = m[1];
-        if (ARTIFACT_CHEATS.has(name)) {
-          const arg = firstStringArg(m[2]);
-          if (arg !== null && ARTIFACT_NAME.test(arg)) continue; // X.sol[:Name]: from out/, no file
-          out.add(`${path} calls ${name}() on a path, and this folder holds only the .sol and config files`);
-        } else {
-          out.add(`${path} calls ${name}(), a cheatcode that reads the disk or runs a program`);
-        }
-      }
-    }
-  }
-  return [...out];
-}
-
-// foundry.toml grants that let a proof reach outside the .sol and config files:
-// file-system access (fs_permissions) or program execution (ffi = true), in any
-// profile. forge itself denies these without the grant, so the grant is the
-// signal that the proof may need more than this folder.
-export function tomlGrant(texts) {
-  const toml = texts.get("foundry.toml") || "";
-  if (/^\s*fs_permissions\s*=/m.test(toml) || /\bfs_permissions\s*=\s*\[/.test(toml)) return "foundry.toml grants file-system access (fs_permissions), so the proof may read files this folder does not hold";
-  if (/\bffi\s*=\s*true\b/.test(toml)) return "foundry.toml enables program execution (ffi = true)";
-  return null;
-}
-
-// The one place that decides whether the bundle keeps its replay command. It
-// keeps the command only when EVERY condition holds; anything else means no
-// command, line 1 says why, and the files still ship. (A deny list let three
-// shapes through across reviews, so this is a positive list.)
-//   1. the folder holds foundry.toml and a proof test;
-//   2. no file was left out (omitted), which includes every import of every
-//      kept source resolving inside the folder (importGaps);
-//   3. foundry.toml grants no file-system access and no program execution;
-//   4. no kept source calls a forge-std file-system or ffi cheatcode (or an
-//      artifact cheatcode on a path that is not X.sol[:Name]).
-export function rerunBlock({ haveProject, filesLost, omitted, reads, grant }) {
-  if (!haveProject) return filesLost ? `the replay files of this run are gone (${filesLost})` : "it does not hold both foundry.toml and a proof test";
-  if (omitted.length) return `${omitted.length} ${omitted.length === 1 ? "file was" : "files were"} left out (see "Left out")`;
-  if (grant) return grant;
-  if (reads.length) return reads.join("; ");
-  return null;
-}
-
-// The solc the proof ran with, read the way forgeTest reads it: the workspace
-// pin (`--use`), or null for "auto", where forge picks per pragma. `solcs` is
-// every version the replay cache needs, the same list warmFor gives Daytona.
-function readSolc(ws) {
-  const pin = pinnedSolc(ws);
-  return pin === "auto" ? { solc: null, solcs: warmFor(ws) } : { solc: pin, solcs: [pin] };
+  return found;
 }
 
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const { paths, skipped, skippedDirs } = collectFiles(ws);
-  // The raw text of each kept source, for the import check only. It is not stored.
-  const texts = new Map();
+  const paths = collectFiles(ws);
   const files = [];
   const omitted = [];
   let total = 0;
@@ -755,7 +472,6 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     if (lib) {
       total += buf.length;
       files.push({ path: rel, vendored: lib });
-      texts.set(rel, buf.toString("utf8"));
       continue;
     }
     if (buf.length > MAX_FILE) {
@@ -778,16 +494,9 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     total += raw.length;
     const out = forgeFileText(rel, raw);
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
-    else {
-      files.push({ path: rel, text: out.text });
-      texts.set(rel, raw);
-    }
+    else files.push({ path: rel, text: out.text });
   }
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
-  // A skip that a kept source imports into is a file the build needs.
-  omitted.push(...importGaps(texts, { skipped, skippedDirs, omitted }));
-  const reads = runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)));
-  const grant = tomlGrant(texts);
   let toml = "";
   try {
     if (paths.includes("foundry.toml")) toml = readFileSync(join(ws, "foundry.toml"), "utf8");
@@ -798,23 +507,17 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   // Fork detection reads the original toml (endpoints still present) and the
   // scrubbed sources (block numbers are not secrets). The URL itself is not kept.
   const fork = forkFrom(toml, sources);
-  const replay = {
+  // No re-run command is stored: a Foundry bundle ships files, hashes and the
+  // README, not a command (see forgeReadme).
+  return {
     version: 1,
     kind: "forge",
     contract: testIdent(contract),
     test: testIdent(test),
-    ...readSolc(ws),
-    image: localImageDigest() || FALLBACK_IMAGE,
     fork,
     files,
     omitted,
-    ...(reads.length ? { runtimeReads: reads } : {}),
   };
-  replay.prepare = prepareCommand(replay);
-  const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
-  // One rule decides the command, here and at bundle time.
-  replay.command = rerunBlock({ haveProject, filesLost: null, omitted, reads, grant }) ? null : forgeCommand(replay);
-  return replay;
 }
 
 // The replay files leave the run record. Each forge finding held about 820 KB
@@ -1008,8 +711,6 @@ function proofJson(proof, replay) {
   }
   if (replay) {
     body.replay = {
-      command: replay.command || null,
-      ...(replay.prepare ? { prepare: replay.prepare } : {}),
       fork: replay.fork || null,
       contract: replay.contract || null,
       test: replay.test || null,
@@ -1099,13 +800,6 @@ function omittedList(omitted) {
   return `\n\n## Left out\n\n${rows.map((o) => `- ${o.path ? `\`${o.path}\` — ` : ""}${o.reason}`).join("\n")}\n`;
 }
 
-// The replay a reader runs: check the files, rerun the proof, check the harm.
-function replaySteps(command) {
-  return `sha256sum -c SHA256SUMS && \\\n  ${command} > replay.json && \\\n  node check-harm.mjs replay.json`;
-}
-
-const CHECK_HARM = new URL("./replay-check-harm.mjs", import.meta.url);
-
 function sha256Sums(entries) {
   return entries
     .filter((e) => e.name !== "README.md")
@@ -1118,38 +812,25 @@ function vendoredNote(libs) {
   return ` Vendored library files (${libs.map((l) => `\`lib/${l}\``).join(", ")}) are included unchanged: each one is byte-identical (SHA-256) to the copy the engine installs, so it is public library code and is not redacted. A library's own public sample values stay as the library ships them, such as the sample RPC keys in forge-std's \`StdChains.sol\`.`;
 }
 
-function forgeReadme({ title, replay, command, prepare, fork, harm, libs = [], noRerun = null }) {
+// A Foundry bundle ships files, hashes and this README. It makes no re-run
+// claim: closing the "claims a re-run it cannot do" class needs every
+// workspace file, which is a later task. The README says what the folder is
+// and what it is not.
+function forgeReadme({ title, replay, fork, libs = [] }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
-  if (!command) {
-    return `# Replay this finding
-
-**${title || "Finding"}** · Foundry
-
-There is no command that can rerun the proof from this folder: ${noRerun || "the snapshot is not complete"}. The files that are here are the recorded ones. \`proof.json\` is the recorded verdict. \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.${vendoredNote(libs)}
-
-No provider key and no bearer token from the run is included.
-${omittedList(replay?.omitted)}`;
-  }
   const forkNote = fork?.forked
-    ? `This proof forked a chain. Export \`RPC_URL\` to an archive endpoint before the replay. The fork is the only network use, so the replay keeps the network. \`fork.json\` records the block as ${block}. The endpoint is not in this folder.`
-    : `This proof did not fork a chain, so the replay runs with \`--network none\`. \`fork.json\` still records \`rpc\` as ${rpcShown} and \`block\` as ${block}, so a later fork has a place to put an endpoint.`;
-  const solc = replay?.solc
-    ? `The replay compiles with solc ${replay.solc} (\`--use\`), the version the proof used.`
-    : `The proof did not pin one solc, so forge picks per pragma from the cache.`;
-  const image = `It runs on the image digest the proof ran on, with \`--pull never\` and \`forge --offline\`, so neither Docker nor forge fetches anything.`;
-  const prep = prepare
-    ? fence(prepare, "Prepare (once, online)", `This pulls the pinned image and puts the solc the proof used into the \`${REPLAY_SVM_VOLUME}\` volume. It is the only step that uses the network for a proof that did not fork.`)
-    : `\n\n## Prepare\n\nThis record does not name the solc the proof used. Put a matching solc into the \`${REPLAY_SVM_VOLUME}\` volume before the replay, or the offline replay cannot compile.\n`;
-  return `# Replay this finding
+    ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder.`
+    : `The proof did not fork a chain; \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.`;
+  return `# Proof source for this finding
 
 **${title || "Finding"}** · Foundry
 
-The proof test, the scope sources, and the Foundry config are in this folder. \`proof.json\` is the recorded verdict. Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.${vendoredNote(libs)}
+This folder holds the proof's source files for reading: the proof test, the scope sources, and the Foundry config. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
 
-${forkNote} ${solc} ${image} No provider key and no bearer token from the run is in this folder.
+Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.${vendoredNote(libs)} No provider key and no bearer token from the run is in this folder.
 
-The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in this folder, the proof test included, differs from what was recorded. Forge then reruns the named test and writes its JSON trace to \`replay.json\`. \`node check-harm.mjs\` (Node 18 or later) reads that trace and checks it against \`harm.json\`, the harm the engine recorded. It exits 0 when the test passed and the victim lost the recorded wei, 1 when not, and 2 when it cannot check. ${harmCheck(harm).long}
-${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedList(replay?.omitted)}`;
+This bundle has no re-run command yet: it is the proof's source to read, not a folder you run. Touchstone proved the finding by its own replay when it was recorded (see line 1 and \`proof.json\`).
+${omittedList(replay?.omitted)}`;
 }
 
 // An http proof against a pack lab can run again: the lab image is built
@@ -1256,28 +937,35 @@ function finish(entries, head) {
   return { zip: zipStore([...readme, ...entries]), unjudged };
 }
 
-// What check-harm.mjs re-checks for this finding's harm, in the words the
-// README uses. It reads the forge JSON trace, so it sees ETH moved by calls.
-// The gate reads a token drain and a control takeover from the replay's
-// storage writes (lib/control-trace.mjs), and that reader is not in the zip.
-function harmCheck(harm) {
-  const not = (what) => ({
-    short: `The harm (${what}) is NOT re-checked by this folder.`,
-    long: `This finding's harm is ${what}. The engine's gate read it from the replay's storage writes (\`lib/control-trace.mjs\`), and this folder does not hold that reader, so \`check-harm.mjs\` exits 2 for it. A passing replay here shows that the test still passes, not that the harm still happens.`,
-  });
-  if (!harm || harm.ok !== true) return { short: "The record holds no proven harm, so nothing is re-checked.", long: "The record holds no proven harm, so `check-harm.mjs` has nothing to compare and exits 2." };
-  if (harm.kind === "funds" && !harm.asset) return { short: "The harm (an ETH drain) is re-checked by `check-harm.mjs`.", long: "This finding's harm is an ETH drain, and `check-harm.mjs` re-checks it: the victim must lose the recorded wei in the replay trace." };
-  if (harm.kind === "funds" && harm.asset === "token") return not("a token drain");
-  if (harm.kind === "control") return not("a control takeover: a write to an owner, admin, or implementation slot");
-  return not(`of the kind "${String(harm.kind).replace(/[^\w -]/g, "").slice(0, 40)}"`);
-}
-
 // Line 1 of every README. The normalized finding's stages.proven is the app's
 // verdict; a raw record falls back to pocProved. Anything else is not proven.
 // bundleRefusal lets only a proven finding through, so line 1 starts PROVEN.
 // It goes on to say whether this folder can rerun the proof.
 function verdictLine(rest = "") {
   return `PROVEN: the engine's proof gate passed this finding when it was recorded.${rest ? ` ${rest}` : ""}\n\n`;
+}
+
+// The harm kind as a short noun, from the recorded harm, for line 1.
+function harmNoun(harm) {
+  if (!harm || harm.ok !== true) return null;
+  if (harm.kind === "funds" && !harm.asset) return "an ETH drain";
+  if (harm.kind === "funds" && harm.asset === "token") return "a token drain";
+  if (harm.kind === "control") return "a control takeover";
+  return `the recorded harm`;
+}
+// The run's own date (UTC), from the normalized finding or the record, or null.
+function provenDate({ finding, recorded } = {}) {
+  const at = [finding?.at, finding?.ms, recorded?.at, recorded?.ms].find((v) => Number.isFinite(v) && v > 0);
+  if (!at) return null;
+  try { return new Date(at).toISOString().slice(0, 10); } catch { return null; }
+}
+// Line 1 of a Foundry bundle README. bundleRefusal lets only a proven finding
+// reach here, so it states the proof plainly, with the date and harm kind from
+// the record, and says the folder is source to read, not a folder to re-run.
+function forgeLine1({ finding, recorded, harm }) {
+  const date = provenDate({ finding, recorded });
+  const noun = harmNoun(harm);
+  return `PROVEN: Touchstone proved this finding by its own replay on the operator's machine${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}. This folder holds the proof's source files for reading; it has no re-run command yet.\n\n`;
 }
 
 function forgeBundle({ finding, recorded, replay, proof }) {
@@ -1321,51 +1009,29 @@ function forgeBundle({ finding, recorded, replay, proof }) {
     if (out.reason) omitted.push({ path: "test/AgentPoc.t.sol", reason: out.reason });
     testSource = out.text ?? null;
   }
-  // The build must find every import in this folder. A record written before
-  // this check, or one that lost a file, is checked here again.
-  const texts = new Map(files.map((f) => [f.path, f.text]));
-  if (testSource && !texts.has("test/AgentPoc.t.sol") && !files.some((f) => f.path.startsWith("test/"))) texts.set("test/AgentPoc.t.sol", testSource);
-  omitted.push(...importGaps(texts, { omitted }));
-  const reads = runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)));
-  const grant = tomlGrant(texts);
   replay = replay && { ...replay, omitted };
-  const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
-  // A file the proof may need is not here: the replay would not compile, so
-  // the bundle has no command and says why on line 1.
-  const noRerun = rerunBlock({ haveProject, filesLost: replay?.filesLost, omitted, reads, grant });
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
-  // Rebuild the command from the recorded fields, so a record written before
-  // the offline command still gets one.
-  const command = noRerun ? null : forgeCommand({ ...replay, fork });
-  const prepare = noRerun ? null : prepareCommand(replay);
   const harm = proof?.harm ?? null;
   const readme = files.length
-    ? forgeReadme({ title, replay, command, prepare, fork, harm, libs, noRerun })
-    : `# Replay this finding
+    ? forgeReadme({ title, replay, fork, libs })
+    : `# Proof source for this finding
 
 **${title}** · Foundry
 
-${replay?.filesLost ? `The replay files of this run are gone: ${replay.filesLost}.` : "This run was recorded before the workspace was snapshotted, and the workspace is deleted after record."} ${testSource ? "The proof test source is in `test/AgentPoc.t.sol`." : "The proof test source was not on the recorded proof."} The scope sources and \`foundry.toml\` were not kept, so there is no command that can rerun the proof from this folder.
+${replay?.filesLost ? `The proof's source files of this run are gone: ${replay.filesLost}.` : "This run was recorded before the workspace was snapshotted, and the workspace is deleted after record."} ${testSource ? "The proof test source is in `test/AgentPoc.t.sol`." : "The proof test source was not on the recorded proof."} The scope sources and \`foundry.toml\` were not kept.
 
 \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as null. No provider key is included.
 ${omittedList(omitted)}`;
   const entries = [];
-  pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
+  pushFile(entries, "proof.json", proofJson(proof, replay));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   // A vendored file is the public library as the engine ships it: not
   // checked for leaks and not counted, like the engine's own files.
   for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true });
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
-  if (command) {
-    const harm = { contract: replay?.contract || null, test: replay?.test || null, harm: bundleValue(proof?.harm ?? null), transfers: bundleValue(proof?.transfers ?? []) };
-    pushFile(entries, "harm.json", JSON.stringify(harm, null, 2) + "\n");
-    pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"), { own: true });
-    pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
-  }
-  // Line 1 also says what the folder re-checks, or that it cannot rerun the
-  // proof at all, so a reader of one line is not misled.
-  const line1 = verdictLine(command ? harmCheck(harm).short : `This bundle cannot be re-run from this folder: ${noRerun}.`);
-  return finish(entries, line1 + readme);
+  // The hashes of every file the bundle ships, so a reader can check the folder.
+  if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
+  return finish(entries, forgeLine1({ finding, recorded, harm }) + readme);
 }
 
 function httpBundle({ finding, recorded, proof }) {
