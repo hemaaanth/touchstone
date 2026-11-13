@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -10,11 +11,11 @@ import path from "node:path"
 // to the right status codes. A throwaway store via TOUCHSTONE_GRANTS_FILE, set
 // before the module loads, so the real spike/data/grants.json is never touched.
 const dir = mkdtempSync(path.join(tmpdir(), "grants-http-test-"))
-process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json")
+useEnv({ TOUCHSTONE_GRANTS_FILE: path.join(dir, "grants.json") })
 // A known token, set before the module loads, so the test can forge the header
 // the operator would read from the console. Also skips the console print.
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleGrants } = await import("../server/runs-http.mjs")

@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -9,13 +10,9 @@ import path from "node:path"
 // results folder, set before the server modules load.
 // bun runs every test file in one process: put the old value back at the end.
 const results = mkdtempSync(path.join(tmpdir(), "replay-evidence-results-"))
-const prevResults = process.env.TOUCHSTONE_RESULTS_DIR
-process.env.TOUCHSTONE_RESULTS_DIR = results
-afterAll(() => {
-  if (prevResults === undefined) delete process.env.TOUCHSTONE_RESULTS_DIR
-  else process.env.TOUCHSTONE_RESULTS_DIR = prevResults
-  rmSync(results, { recursive: true, force: true })
-})
+// useEnv puts the old value back at the end.
+useEnv({ TOUCHSTONE_RESULTS_DIR: results })
+afterAll(() => rmSync(results, { recursive: true, force: true }))
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")

@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -9,7 +10,7 @@ import { ReplayProof } from "../src/components/replay-proof"
 // A record whose token harm carries decimals a token cannot have (-1) must not
 // blank the page or fail the report: the amount reads in raw units.
 const dir = mkdtempSync(path.join(tmpdir(), "bad-decimals-test-"))
-process.env.TOUCHSTONE_RESULTS_DIR = dir
+useEnv({ TOUCHSTONE_RESULTS_DIR: dir })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const harm = { ok: true, kind: "funds", asset: "token", victim: "0x5615deb798bb3e4dfa0139dfa1b3d433cc23b72f", token: "0x1111111111111111111111111111111111111111", lostUnits: "1500000", symbol: "USDC", decimals: -1, targets: [{ address: "0x5615deb798bb3e4dfa0139dfa1b3d433cc23b72f", name: "TokenVault" }] }
