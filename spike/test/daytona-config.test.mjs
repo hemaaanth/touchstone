@@ -1,13 +1,21 @@
-// E2: the Daytona server URL and region (target) settings.
-// These tests only read config, or fail before a write, so the saved file
-// never changes.
-import { test } from "node:test";
+// E2: the Daytona server URL and region (target) settings, and the saved key
+// that goes only to the host it was saved for.
+// Settings are read and written in memory here, so the saved file never changes.
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 
 const TOKEN = "e2-test-token";
 process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN;
-const { DEFAULT_API_URL, DEFAULT_TARGET, execConfig } = await import("../lib/daytona.mjs");
+const providersUrl = new URL("../lib/providers.mjs", import.meta.url).href;
+const realProviders = await import(providersUrl);
+let store = {};
+const readConfig = () => structuredClone({ default: null, capUsd: null, providers: {}, ...store });
+const writeConfig = (cfg) => {
+  store = structuredClone(cfg);
+};
+mock.module(providersUrl, { exports: { ...realProviders, readConfig, writeConfig } });
+const { DEFAULT_API_URL, DEFAULT_TARGET, daytonaOn, execConfig } = await import("../lib/daytona.mjs");
 const { getSettings, setExecution } = await import("../../app/server/settings.mjs");
 
 test("execConfig: server URL and region come from env, then Settings, then the default", () => {
@@ -74,4 +82,78 @@ test("a bad server URL through the guarded settings write gets 400 with the mess
   assert.equal(await handleSettings(r, res), true);
   assert.equal(res.statusCode, 400, res.body);
   assert.match(res.body, /must start with https:\/\//);
+});
+
+// Run fn with these env vars (undefined deletes one), then put them back.
+function withEnv(vars, fn) {
+  const keep = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  try {
+    for (const [k, v] of Object.entries(vars)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(keep)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+const NO_ENV = { DAYTONA_API_KEY: undefined, DAYTONA_API_URL: undefined, DAYTONA_TARGET: undefined, TOUCHSTONE_EXEC: undefined };
+const KEY = "dtn_saved_key_value_9z9z";
+const NEW_KEY = "dtn_new_key_value_7y7y";
+
+test("a new server host drops the saved key, and the key is never in a response", () => {
+  withEnv(NO_ENV, () => {
+    for (const apiUrl of ["https://other.example/api", "https://app.daytona.io:8443/api"]) {
+      store = { execution: { backend: "local", apiKey: KEY } };
+      const res = setExecution({ backend: "local", apiUrl });
+      assert.equal(store.execution.apiKey, undefined, apiUrl);
+      assert.equal(res.execution.key.set, false, apiUrl);
+      assert.ok(!JSON.stringify(res).includes(KEY), "the key must not leave the server");
+    }
+  });
+});
+
+test("a new server host with a new key keeps the new key, bound to that host", () => {
+  withEnv(NO_ENV, () => {
+    store = { execution: { backend: "local", apiKey: KEY } };
+    const res = setExecution({ backend: "local", apiUrl: "https://other.example/api", apiKey: NEW_KEY });
+    assert.equal(store.execution.apiKey, NEW_KEY);
+    assert.equal(store.execution.keyHost, "other.example");
+    assert.equal(res.execution.key.set, true);
+    assert.equal(res.execution.key.last4, "7y7y");
+    assert.ok(!JSON.stringify(res).includes(NEW_KEY), "the key must not leave the server");
+  });
+});
+
+test("a new path, case or default port on the same host keeps the saved key", () => {
+  withEnv(NO_ENV, () => {
+    for (const apiUrl of ["https://app.daytona.io/v2/api", "https://APP.Daytona.io:443/api"]) {
+      store = { execution: { backend: "local", apiKey: KEY, apiUrl: "https://app.daytona.io/api" } };
+      const res = setExecution({ backend: "local", apiUrl });
+      assert.equal(store.execution.apiKey, KEY, apiUrl);
+      assert.equal(res.execution.key.set, true, apiUrl);
+      assert.ok(!JSON.stringify(res).includes(KEY), "the key must not leave the server");
+    }
+  });
+});
+
+test("a server URL from the env on another host gets no saved key, with a reason", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://elsewhere.example/api", TOUCHSTONE_EXEC: "daytona" }, () => {
+    store = { execution: { backend: "daytona", apiKey: KEY, keyHost: "app.daytona.io" } };
+    const c = execConfig();
+    assert.equal(c.apiKey, "");
+    assert.match(c.keyHeld, /saved key is for app\.daytona\.io, not elsewhere\.example/);
+    assert.equal(daytonaOn(), false, "no key means local Docker");
+    const s = getSettings();
+    assert.equal(s.execution.key.set, false);
+    assert.match(s.execution.key.held, /Enter the key again/);
+    assert.ok(!JSON.stringify(s).includes(KEY), "the key must not leave the server");
+  });
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://app.daytona.io/other" }, () => {
+    store = { execution: { backend: "local", apiKey: KEY, keyHost: "app.daytona.io" } };
+    assert.equal(execConfig().apiKey, KEY, "the same host keeps the key");
+  });
 });

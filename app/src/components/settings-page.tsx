@@ -27,7 +27,8 @@ interface ExecutionSetting {
   backend: "local" | "daytona"
   saved: "local" | "daytona"
   envOverride: string | null
-  key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null }
+  // held: why a saved key is not used (it was saved for another host).
+  key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null; held?: string | null }
   apiUrl: string
   target: string
   envNames: { apiUrl: string | null; target: string | null }
@@ -247,13 +248,22 @@ function UrlField({ value, onChange, placeholder, disabled }: { value: string; o
   )
 }
 
+// The host and port of a URL, lower case, as the server compares them.
+function hostOf(url: string) {
+  try {
+    return new URL(url).host.toLowerCase()
+  } catch {
+    return ""
+  }
+}
+
 function plural(n: number, word: string) {
   return `${n} ${word}${n === 1 ? "" : "s"}`
 }
 
 // Where a key comes from. The key itself never reaches the browser.
-function keyNote(key: { set: boolean; source: "settings" | "env" | null; envName?: string | null; last4: string | null }): string {
-  if (!key.set) return "No API key"
+function keyNote(key: { set: boolean; source: "settings" | "env" | null; envName?: string | null; last4: string | null; held?: string | null }): string {
+  if (!key.set) return key.held ?? "No API key"
   if (key.source === "env") return `Key from ${key.envName ?? "the server environment"}`
   return key.last4 ? `Key saved in Settings, ends ${key.last4}` : "Key saved in Settings"
 }
@@ -810,6 +820,9 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
   const [busy, setBusy] = useState<"save" | "clear" | null>(null)
   const [error, setError] = useState<string | null>(null)
   const needKey = use && !ex.key.set && !apiKey.trim()
+  // The server drops a saved key when the server host changes (settings.mjs).
+  const typedHost = hostOf(apiUrl.trim() || ex.defaults.apiUrl)
+  const dropsKey = ex.key.source === "settings" && !ex.envNames.apiUrl && !apiKey.trim() && typedHost !== "" && typedHost !== hostOf(ex.apiUrl)
 
   const send = async (kind: "save" | "clear", body: Parameters<typeof setExecution>[0]) => {
     setBusy(kind)
@@ -862,6 +875,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
           <Label>Server URL</Label>
           <UrlField value={ex.envNames.apiUrl ? ex.apiUrl : apiUrl} onChange={setApiUrl} placeholder={ex.defaults.apiUrl} disabled={Boolean(ex.envNames.apiUrl)} />
           {ex.envNames.apiUrl ? <span className="text-xs text-muted-foreground">Set by {ex.envNames.apiUrl} on the server.</span> : null}
+          {dropsKey ? <span className="text-xs text-muted-foreground">Changing the server removes the saved key.</span> : null}
         </label>
         <label className="flex flex-col gap-2">
           <Label>Region</Label>

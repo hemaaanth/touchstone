@@ -19,7 +19,7 @@ import {
 } from "../../spike/lib/providers.mjs"
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
 import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
@@ -197,7 +197,7 @@ function executionState(cfg) {
     envOverride: process.env.TOUCHSTONE_EXEC || null,
     key: c.apiKey
       ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
-      : { set: false, source: null, envName: null, last4: null },
+      : { set: false, source: null, envName: null, last4: null, held: c.keyHeld },
     apiUrl: c.apiUrl,
     target: c.target,
     snapshot: c.snapshot,
@@ -218,9 +218,6 @@ export function setExecution(body = {}) {
   const backend = body.backend ?? prev.backend ?? "local"
   if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
   const next = { backend }
-  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-  if (key) next.apiKey = key
-  else if (prev.apiKey && !body.clearKey) next.apiKey = prev.apiKey
   for (const f of ["target", "snapshot"]) {
     const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
     if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
@@ -229,6 +226,17 @@ export function setExecution(body = {}) {
   // The key is sent to this server, so it must be https.
   const url = body.apiUrl === undefined ? prev.apiUrl : String(body.apiUrl ?? "").trim()
   if (url) next.apiUrl = daytonaUrl(url)
+  // A saved key goes only to the host it was saved for. A new server host
+  // drops it, unless this request brings a key. A new path keeps it.
+  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const sameHost = hostOf(prev.apiUrl || DEFAULT_API_URL) === hostOf(next.apiUrl || DEFAULT_API_URL)
+  if (key) {
+    next.apiKey = key
+    next.keyHost = hostOf(process.env.DAYTONA_API_URL || next.apiUrl || DEFAULT_API_URL)
+  } else if (prev.apiKey && !body.clearKey && sameHost) {
+    next.apiKey = prev.apiKey
+    if (prev.keyHost) next.keyHost = prev.keyHost
+  }
   if (backend === "daytona" && !execConfig(process.env, { execution: next }).apiKey) {
     throw new Error("Daytona needs an API key (here, or DAYTONA_API_KEY)")
   }

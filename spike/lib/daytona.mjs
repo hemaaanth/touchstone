@@ -69,17 +69,34 @@ let downUntil = 0;
 //   backend   "local" | "daytona"
 //   apiKey    the Daytona key, or "" when none is set
 //   apiUrl    the Daytona server, with no trailing slash
+//   keyHeld   why a saved key is not used, or null
+// A saved key is sent only to the host it was saved for (saved.keyHost; an
+// older key without one was saved for the saved or default URL).
 export function execConfig(env = process.env, cfg = safeConfig()) {
   const saved = cfg.execution ?? {};
   const pick = String(env.TOUCHSTONE_EXEC || saved.backend || "local").toLowerCase();
+  const apiUrl = String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, "");
+  const keyHost = saved.keyHost || hostOf(saved.apiUrl || DEFAULT_API_URL);
+  const held = Boolean(saved.apiKey) && keyHost !== hostOf(apiUrl);
+  const savedKey = held ? "" : saved.apiKey;
   return {
     backend: pick === "daytona" ? "daytona" : "local",
-    apiKey: String(saved.apiKey || env.DAYTONA_API_KEY || ""),
-    keySource: saved.apiKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
-    apiUrl: String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, ""),
+    apiKey: String(savedKey || env.DAYTONA_API_KEY || ""),
+    keySource: savedKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
+    keyHeld: held ? `The saved key is for ${keyHost}, not ${hostOf(apiUrl) || "this server"}. Enter the key again.` : null,
+    apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
   };
+}
+
+// The host and port of a URL, lower case. "" when it is not a URL.
+export function hostOf(url) {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 function safeConfig() {
