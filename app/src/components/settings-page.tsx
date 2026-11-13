@@ -669,7 +669,7 @@ function RemoveProviderDialog({
     >
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>{reset ? `Reset ${provider?.label}?` : `Remove ${provider?.label}?`}</DialogTitle>
+          <DialogTitle className="pr-6 wrap-anywhere">{reset ? `Reset ${provider?.label}?` : `Remove ${provider?.label}?`}</DialogTitle>
           <DialogDescription>{reset ? "This removes its saved key and models. The built-in entry stays." : "It leaves the list with its saved key and models."}</DialogDescription>
         </DialogHeader>
         {error ? (
