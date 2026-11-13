@@ -26,6 +26,15 @@ describe("redact: big inputs finish in linear time", () => {
 })
 
 describe("redact: a long header value finishes in linear time", () => {
+  test("1 MB of PEM BEGIN lines with no END (review Minor 2)", () => {
+    expect(timeMs("-----BEGIN PRIVATE KEY-----\n".repeat(MB / 28))).toBeLessThan(2000)
+  })
+
+  test("a PEM private key is still masked", () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIFAKE" + "A".repeat(1600) + "\n-----END RSA PRIVATE KEY-----"
+    expect(text(`key:\n${pem}\nend`)).toBe("key:\n[REDACTED]\nend")
+  })
+
   test("1 MB of open quoted parameters after a header name", () => {
     expect(timeMs("Authorization: Digest " + 'a="b, '.repeat(MB / 6))).toBeLessThan(2000)
     expect(timeMs('"Authorization: Digest ' + 'a=\\"b, '.repeat(MB / 7))).toBeLessThan(2000)

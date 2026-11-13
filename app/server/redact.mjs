@@ -67,7 +67,8 @@ const ENV_ASSIGN = /\b([A-Z][A-Z0-9_]{1,63})=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
 // snapshot hashes and commits are 40/64 hex and the proof needs them.
 const SHAPES = [
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  // The body is bounded: an unended BEGIN must not rescan the rest of the text.
+  /-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY-----[\s\S]{0,10000}?-----END [A-Z0-9 ]{0,32}PRIVATE KEY-----/g,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
