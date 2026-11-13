@@ -531,3 +531,51 @@ test("mutating spawnFleet().agents tier does not defeat the tier-spoof check", a
   assert.equal(res.rejected.length, 1)
   assert.equal(res.rejected[0].reason, "tier-spoof")
 })
+
+// --- restart (F9 in coordinator.ts) ---
+// A Coordinator keeps its registry, leads, pending and cursors in memory. No
+// running code holds one: the live fleet is spike/lib/fleet.mjs, and
+// app/server/runs.mjs restores a fleet run from the run's own files. This test
+// records what a NEW Coordinator over the SAME durable board has lost, and the
+// rule that holds across the restart: the board alone proves nothing.
+test("a coordinator that starts again over the same board has lost its state, and proves nothing without the oracle", async () => {
+  const board = new InMemoryBulletin()
+  let asked = 0
+  const oracle: Oracle = {
+    async verify(): Promise<OracleVerdict> {
+      asked++
+      return { proven: true, evidenceRef: "replay:0xabc", at: 1000, reason: null }
+    },
+  }
+  const start = () =>
+    new Coordinator({ runId: RUN, coordinatorId: COORD, bulletin: (a) => board.session(a), spawner: echoSpawner, oracle, now: () => 500 })
+  const spec: HunterSpec = { id: "h7", name: "Hunter 7", model: "near-abliterated-70b", tier: 2, shard: { kind: "module", module: "web", toolkit: ["x"] } }
+
+  const first = start()
+  const fleet = await first.spawnFleet([spec])
+  await postAs(board, "h7", lead())
+  assert.equal((await first.tick()).proven.length, 1)
+  assert.equal(asked, 1)
+
+  // The restart. The board still holds the hunter's post and the coordinator's
+  // own promoted copy of it, which says `proven`.
+  const second = start()
+  // Lost: the registry (the fleet's agents and tiers), every lead and verdict.
+  assert.deepEqual(second.adjudicatedLeads(), [])
+  assert.deepEqual(second.report(fleet).proven, [])
+  // Lost: the read cursors, so it reads the whole board again. With no registry
+  // it trusts no post. The proven copy on the board does not make a proven lead.
+  const again = await second.tick()
+  assert.equal(again.proven.length, 0)
+  assert.deepEqual(again.rejected.map((r) => r.reason), ["unknown-author"])
+  assert.deepEqual(second.adjudicatedLeads(), [])
+  assert.equal(asked, 1)
+
+  // With the registry back, the lead is proven again only by a new replay.
+  const third = start()
+  await third.spawnFleet([spec])
+  const replayed = await third.tick()
+  assert.equal(replayed.proven.length, 1)
+  assert.equal(replayed.proven[0].evidenceRef, "replay:0xabc")
+  assert.equal(asked, 2)
+})
