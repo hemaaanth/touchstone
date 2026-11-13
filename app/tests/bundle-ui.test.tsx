@@ -78,6 +78,19 @@ describe("bundle-check says what the bundle is, in its README's own first words 
   })
 })
 
+describe("a Foundry bundle's date is the run's date, not its duration", () => {
+  test("`ms` is how long the run took; the README date comes from the run's start", async () => {
+    const start = Date.UTC(2026, 10, 11, 6, 19)
+    const proof = { kind: "forge", pass: true, status: "pass", contract: "DateTest", test: "testDrain", transfers: [], harm: { ok: true, kind: "funds" } }
+    write("zz-bundle-date", { result: { ms: 73_704, findingSubmitted: true, recorded: true, pack: "contracts", findings: [{ title: "dated drain", severity: "high", poc: "DateTest", pocProved: true, proof }] } })
+    writeFileSync(path.join(results, "run-zz-bundle-date.events"), JSON.stringify({ t: start, ev: "status" }) + "\n")
+    const about = JSON.parse((await call("/api/findings/zz-bundle-date.1/report?format=bundle-check")).body).about
+    expect(about).toContain("on 2026-11-11")
+    expect(about).not.toContain("1970")
+    expect((await getFinding("zz-bundle-date.1", { events: false })).at).toBe(start)
+  })
+})
+
 describe("the bundle control shows the server's answer calmly (H3c)", () => {
   const html = (check: Parameters<typeof BundleResult>[0]["check"]) => renderToStaticMarkup(<BundleResult check={check} href="/api/findings/x/report?format=bundle" />)
   const RED = /text-bad|text-destructive|bg-destructive|text-red|bg-red/

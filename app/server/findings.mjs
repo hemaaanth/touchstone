@@ -445,7 +445,11 @@ export async function getFinding(id, { events: withEvents = true } = {}) {
   const all = await readRuns()
   const found = all.find((f) => f.id === id) || null
   if (!found) return null
-  const { _index, ...finding } = found
+  const { _index, ...rest } = found
+  // When the run started (ms), as the list sends it. `ms` is the run's
+  // duration, so a reader that wants a date uses this (replay-bundle.mjs
+  // provenDate takes `at` first).
+  const finding = { ...rest, at: await runStartedAt(rest.runId) }
   if (!withEvents) return { ...finding, events: [] }
   // The transcript belongs to the run, which may hold several findings.
   const events = await readEvents(finding.runId)
