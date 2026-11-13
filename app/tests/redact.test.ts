@@ -493,3 +493,29 @@ describe("redact: a HAR or app header cell held as text (delta review 4)", () =>
     ]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })
+
+describe("redact: a letters-only key under a header that is always secret (delta review 4)", () => {
+  const key = "abcdefghijklmnop"
+  test("12 or more letters are masked", () => {
+    expect(text(`X-Api-Key: ${key}`)).toBe("X-Api-Key: [REDACTED]")
+    expect(text(`Authorization: Bearer ${key}`)).toBe("Authorization: Bearer [REDACTED]")
+    expect(text(`Authorization: Basic ${key}\n`)).toBe("Authorization: Basic [REDACTED]\n")
+    expect(text(`curl -H "Authorization: Bearer ${key}" https://x`)).toBe(`curl -H "Authorization: Bearer [REDACTED]" https://x`)
+    expect(text(`send Bearer ${key}`)).toBe("send Bearer [REDACTED]")
+    expect(text(`Bearer tk_live9fakeZ.`)).toBe("Bearer [REDACTED].")
+  })
+  test("prose, short placeholders and other headers stay", () => {
+    for (const s of [
+      "The API uses Bearer authentication.",
+      "uses Bearer authentication for all calls",
+      "Authorization: Bearer junk",
+      "Authorization: Bearer placeholder",
+      "X-Api-Key: missing",
+      `X-Request-Id: ${key}`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("1 MB of Bearer text finishes in linear time", () => {
+    const MB = 1 << 20
+    for (const s of ["Bearer " + ".".repeat(MB) + "a", ("Bearer " + "a".repeat(11) + " ").repeat(MB / 19), "X-Api-Key: " + "a".repeat(MB)]) expect(timeMs(s)).toBeLessThan(2000)
+  })
+})

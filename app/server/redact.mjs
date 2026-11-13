@@ -143,16 +143,32 @@ function credential(value) {
   return value.split(/[\s,]+/).some((w) => secretish(w.replace(/^["'(]+|["'),;]+$/g, "")))
 }
 
+// Under a header that always holds a credential, one word of 12 or more
+// letters is a credential too: "X-Api-Key: abcdefghijklmnop". So is such a
+// word after "Bearer" when it ends the header (a quote or the line end).
+const ALWAYS_SECRET = /^(?:(?:proxy-)?authorization|(?:x-)?api[-_]?key|(?:x-)?auth[-_]token)$/i
+const LETTER_KEY = /^[A-Za-z]{12,}$/
+const HEADER_END = /^(?:$|["'`\r\n]|\\[rn"])/
+
+function maskBearer(m, tok, offset, str) {
+  // A sentence stop is not part of the token: "uses Bearer authentication."
+  let end = tok.length
+  while (end > 0 && tok[end - 1] === ".") end--
+  const t = tok.slice(0, end)
+  const after = tok.slice(t.length) + str.slice(offset + m.length, offset + m.length + 2)
+  return secretish(t) || (LETTER_KEY.test(t) && HEADER_END.test(after)) ? `Bearer ${MARK}${tok.slice(t.length)}` : m
+}
+
 // The masked header value, or null to keep the value as it is. An
 // Authorization value keeps its scheme word: "Bearer [REDACTED]".
 function maskHeaderValue(name, value) {
   if (!secretName(name) || value.startsWith("[REDACTED")) return null
   if (/authorization$/i.test(name)) {
     const m = /^([A-Za-z][\w-]*)([ \t]+)([\s\S]+)$/.exec(value)
-    if (m) return credential(m[3]) ? `${m[1]}${m[2]}${MARK}` : null
+    if (m) return credential(m[3]) || LETTER_KEY.test(m[3]) ? `${m[1]}${m[2]}${MARK}` : null
   }
   if (/cookie$/i.test(name)) return maskCookie(value)
-  return credential(value) ? MARK : null
+  return credential(value) || (ALWAYS_SECRET.test(name) && LETTER_KEY.test(value)) ? MARK : null
 }
 
 // Each name=value in a Cookie or Set-Cookie value. Every cookie value is
@@ -257,7 +273,7 @@ function redactText(text) {
   out = out.replace(LINE_HEADER, maskHeader)
   out = out.replace(TABLE_HEADER, maskHeader)
   out = out.replace(QUOTE_HEADER, maskHeader)
-  out = out.replace(BEARER, (m, tok) => (secretish(tok) ? `Bearer ${MARK}` : m))
+  out = out.replace(BEARER, maskBearer)
   out = out.replace(QUERY, maskQuery)
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
