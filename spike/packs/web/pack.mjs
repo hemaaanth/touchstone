@@ -37,7 +37,8 @@ import {
 import { scanWeb, docQueryUrls } from "./scan.mjs";
 import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
-import { fp, scrubProof } from "./redact.mjs";
+import { fp, scrubBody, scrubProof, scrubText } from "./redact.mjs";
+import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, recordScript, scriptLookup } from "../../lib/candidate.mjs";
 
 const IMAGE = "touchstone/web-lab:dev";
 const LEADS_FILE = ".web-leads.json";
@@ -533,6 +534,7 @@ function tools(ws, state) {
       }
       const match = matchOracle(run.transcript, run);
       if (match) state.passed.set(String(args.label), { script: String(args.script), oracleName: match.oracle.name });
+      recordScript(state, args.label, args.script, run.transcript, match);
       event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null });
       const lines = run.transcript.map((e, i) => {
         const body = typeof e.resBody === "string" ? e.resBody : JSON.stringify(e.resBody);
@@ -540,7 +542,7 @@ function tools(ws, state) {
       });
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
-        : "\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.";
+        : "\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence. " + CANDIDATE_HINT;
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
       return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
@@ -600,7 +602,8 @@ function tools(ws, state) {
     },
   });
 
-  return [webLeads, runScript, submitFinding];
+  const submitCandidate = candidateTool({ pack: "web", state, lookup: scriptLookup(state), poc: SCRIPT_POC, scrub: (v) => scrubBody(v), scrubLine: (t) => scrubText(t) });
+  return [webLeads, runScript, submitFinding, submitCandidate];
 }
 
 // The prepass does two things.

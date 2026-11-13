@@ -438,7 +438,7 @@ test("the ai-mcp pack is registered and has a stable tool set", () => {
   assert.equal(typeof aiMcp.prove, "function");
   assert.equal(typeof aiMcp.teardown, "function");
   const state = { poc: 0, passed: new Map(), found: [] };
-  assert.deepEqual(aiMcp.tools("/nonexistent", state).map((t) => t.name), ["mcp_leads", "run_request_script", "submit_finding"]);
+  assert.deepEqual(aiMcp.tools("/nonexistent", state).map((t) => t.name), ["mcp_leads", "run_request_script", "submit_finding", "submit_candidate"]);
   assert.equal(aiMcp.nudge(state), null);
   // The prompt must not name the planted bugs or the oracle list.
   const sys = aiMcp.system();

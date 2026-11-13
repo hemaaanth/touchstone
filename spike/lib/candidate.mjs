@@ -144,12 +144,14 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   const missing = cites.find((c) => squash(c).length < 8 || !haystack.includes(squash(c)));
   if (missing) return refuse("bad-cite", `Cannot record this candidate: the cited line "${missing.slice(0, 120)}" is not in the evidence of "${poc}" (or is shorter than 8 characters). Quote the exact lines that show the harm.`);
   const n = state.candidates.length + 1;
+  // The pack's own scrub first (it knows its secret shapes), then the shared one.
+  const line = (t) => scrubText(scrubLine(String(t ?? "")));
   const candidate = makeCandidate({
     n, pack, poc, severity, rootCause, evidenceHash,
-    title: scrubLine(args.title),
-    explanation: scrubLine(explanation),
-    cites: cites.map((c) => scrubLine(c)),
-    evidence: scrub(attempt.evidence),
+    title: line(args.title),
+    explanation: line(explanation),
+    cites: cites.map(line),
+    evidence: scrubValue(scrub(attempt.evidence)),
   });
   state.candidates.push(candidate);
   event("candidate-submitted", { candidate });
@@ -178,3 +180,30 @@ export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine }) {
     },
   });
 }
+
+// ---------------------------------------------------------------- oracle packs
+// web and ai-mcp. Every run_request_script attempt is kept, matched or not.
+// A matched attempt is a finding; an unmatched one may become a candidate.
+
+export function recordScript(state, label, script, transcript, matched) {
+  state.attempts ??= new Map();
+  state.attempts.set(String(label), { script: String(script), transcript: transcript ?? [], matched: Boolean(matched) });
+}
+
+const bodyText = (b) => (typeof b === "string" ? b : JSON.stringify(b ?? ""));
+
+export function scriptLookup(state) {
+  return (label) => {
+    const a = state.attempts?.get(label);
+    if (!a) return null;
+    if (a.matched || state.passed.has(label)) return { proved: true };
+    const transcript = a.transcript.map(({ method, path, status, reqHeaders, reqBody, resHeaders, resBody }) => ({ method, path, status, reqHeaders, reqBody, resHeaders, resBody }));
+    return {
+      evidence: { kind: "transcript", script: a.script, transcript },
+      text: a.transcript.map((e, i) => `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${bodyText(e.resBody)}`).join("\n"),
+      rootCause: `script:${sha256(a.script).slice(0, 16)}`,
+    };
+  };
+}
+
+export const SCRIPT_POC = "the label of a run_request_script attempt that matched no harm pattern";

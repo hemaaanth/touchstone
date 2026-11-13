@@ -30,7 +30,8 @@ import {
 import { GARAK_BUDGET, scanMcp } from "./scan.mjs";
 import { SCAN_NETWORK, bindLive, isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
-import { fp, scrubProof, scrubText } from "../web/redact.mjs";
+import { fp, scrubBody, scrubProof, scrubText } from "../web/redact.mjs";
+import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, recordScript, scriptLookup } from "../../lib/candidate.mjs";
 
 const IMAGE = "touchstone/ai-mcp-lab:dev";
 const LEADS_FILE = ".ai-mcp-leads.json";
@@ -620,11 +621,12 @@ function tools(ws, state) {
       run.toolScope = liveCfg.toolScope;
       const match = matchOracle(bindOracleTable(run.transcript, run), run);
       if (match) state.passed.set(String(args.label), { script: String(args.script), oracleName: match.oracle.name });
+      recordScript(state, args.label, args.script, run.transcript, match);
       event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null });
       const lines = run.transcript.map((e, i) => `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${asText(e.resBody).slice(0, 500)}`);
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
-        : `\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.${oracleLeads(run.transcript, run).map((l) => `\n${l}`).join("")}`;
+        : `\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence. ${CANDIDATE_HINT}${oracleLeads(run.transcript, run).map((l) => `\n${l}`).join("")}`;
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
       return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
@@ -673,7 +675,8 @@ function tools(ws, state) {
     execute: async () => ({ output: [{ type: "text", text: readWorkspaceText(ws, LEADS_FILE) ?? "No scan leads were recorded for this run." }] }),
   });
 
-  return [mcpLeads, runScript, submitFinding];
+  const submitCandidate = candidateTool({ pack: "ai-mcp", state, lookup: scriptLookup(state), poc: SCRIPT_POC, scrub: (v) => scrubBody(v, "", secretPatterns()), scrubLine: (t) => scrubText(t, secretPatterns()) });
+  return [mcpLeads, runScript, submitFinding, submitCandidate];
 }
 
 // The prepass does two things.
