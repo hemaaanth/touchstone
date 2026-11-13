@@ -88,6 +88,17 @@ const bId = recordOnly("seq-b", [b7Row]);
 const cId = recordOnly("seq-c", [b7Row], true);
 const mixId = oldStream("seq-mix");
 const afterLoadId = recordOnly("after-load", [b7Row]);
+// A run the server stopped in its proof phase after it wrote its record: the
+// boot finishes it from the record (resumeRun). The record holds a measured
+// row (.1) and a proven one (.2), as an older run's record can.
+const proofId = idOf("seq-proof");
+{
+  const proven = { n: 2, title: "IDOR, proven", severity: "high", poc: "idor-9", pocProved: true, proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } };
+  writeFileSync(join(dir, `run-${proofId}.stream.jsonl`), [...head, { t: 30, ev: "status", status: "deciding" }].map((e) => JSON.stringify(e) + "\n").join(""));
+  writeFileSync(join(dir, `run-${proofId}.state.json`), JSON.stringify({ target, mode: "fleet", budget: 5, provider: "boundless", model: "fake-model", modules: [], ws: workspace(), phase: "proof", settled: { status: "done", findings: [], summary: { calls: [] } } }));
+  writeFileSync(join(dir, `run-${proofId}.sqlite`), "s");
+  writeFileSync(join(dir, `run-${proofId}.json`), JSON.stringify({ result: { outcome: "recorded", target, findings: [cspRow(1, "a.test"), proven] } }));
+}
 
 const { handleApi } = await import("../../app/server/api.mjs");
 const { dismissFinding } = await import("../../app/server/findings.mjs");
@@ -206,6 +217,16 @@ test("mixed: measure, reuse a label twice, prove, dismiss, archive, reload", asy
   const got = await agree(mixId, "after a reload");
   assert.deepEqual(got.findings, proved.findings);
   assert.deepEqual(got.candidates, reused.candidates);
+});
+
+test("a restart in the proof phase of a record with a measured row: only the proven row is announced, with its id", async () => {
+  const run = await closed(proofId);
+  assert.deepEqual(run.events.filter((e) => e.ev === "finding").map((e) => [e.id, e.proven]), [[`${proofId}.2`, true]]);
+  const got = await agree(proofId, "after the proof-phase restart");
+  assert.deepEqual(got.candidates, [["measured", "lead-1"]]);
+  await reload();
+  await closed(proofId);
+  await agree(proofId, "after a reload");
 });
 
 // The stream of a record-only run is written from the record's events plus
