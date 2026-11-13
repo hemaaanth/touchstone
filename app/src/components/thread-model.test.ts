@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { buildMessages, runHeadStatus, runModules, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -227,4 +227,57 @@ test("Run Info's module line on an old record is the scope's one pack", () => {
   // A scope saved before modules is a Contracts scope.
   assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope }])), ["contracts"])
   assert.deepEqual(runModules(reduceEvents([])), [])
+})
+
+// B10: how a restart's cut-off reads, from the data the server writes.
+const CUT = "The server restarted while this agent was working. It was not started again."
+const fleetEvents = (end: RunEvent[]): RunEvent[] => [
+  { ev: "mode", mode: "fleet" },
+  { ev: "subagent-spawned", id: "a-1", name: "siwe-auth", conv: "a-1" },
+  { ev: "subagent-spawned", id: "a-2", name: "xss-reflect", conv: "a-2" },
+  { ev: "subagent-done", id: "a-1", status: "failed", interrupted: true, error: CUT },
+  { ev: "subagent-done", id: "a-2", status: "failed", error: "The model call failed." },
+  ...end,
+  { ev: "closed" },
+]
+const cutoffInfo = { kind: "cutoff", reason: "interrupted", title: "This fleet run stopped at the server restart", hint: "h", detail: "", message: "this fleet run stopped at the server restart; its agents were not started again", retryable: true, spentUsd: 0 }
+
+test("an agent a restart cut off reads Interrupted in neutral ink; a failed one stays Failed in red", () => {
+  const state = reduceEvents(fleetEvents([{ ev: "status", status: "no-finding" }]))
+  const look = (id: string) => agentLook(state, state.agents.find((a) => a.id === id))
+  assert.deepEqual(look("a-1"), { word: "Interrupted", dot: "border border-muted-foreground", bad: false, reason: CUT })
+  assert.equal(look("a-2").word, "Failed")
+  assert.equal(look("a-2").bad, true)
+})
+
+test("a run the restart cut off: the top bar says Interrupted, not Failed; another error stays Failed", () => {
+  const cut = reduceEvents(fleetEvents([{ ev: "status", status: "error", errorInfo: cutoffInfo }]))
+  assert.deepEqual(runHeadStatus(cut, "error"), { word: "Interrupted", tone: "neutral" })
+  const run = runInterruption(cut, "error")
+  assert.equal(run?.ended, true)
+  assert.equal(run?.note, null, "the run's own card says what to do")
+  const crash = reduceEvents(fleetEvents([{ ev: "status", status: "error", errorInfo: { ...cutoffInfo, kind: "crash" } }]))
+  assert.deepEqual(runHeadStatus(crash, "error"), { word: "Failed", tone: "failed" })
+  assert.equal(runInterruption(crash, "error"), null)
+})
+
+test("a cut-off fleet that ended as recorded gets one calm run-level note", () => {
+  const state = reduceEvents(fleetEvents([{ ev: "status", status: "recorded" }]))
+  assert.deepEqual(runHeadStatus(state, "recorded"), { word: "Proven", tone: "proven" })
+  const run = runInterruption(state, "recorded")
+  assert.equal(run?.ended, false)
+  assert.deepEqual(run?.agents, ["siwe-auth"])
+  assert.equal(run?.note, "The server restarted while siwe-auth was working. It was not started again, so its part of the scope is not finished. Send a message to continue.")
+  // A run with no cut-off agent, or one still running, has no note.
+  assert.equal(runInterruption(reduceEvents([{ ev: "status", status: "recorded" }, { ev: "closed" }]), "recorded"), null)
+  assert.equal(runInterruption(reduceEvents(fleetEvents([]).slice(0, -1)), "running"), null)
+})
+
+test("the run list row: a restart's cut-off reads Interrupted with a neutral dot; a real failure stays red", () => {
+  assert.deepEqual(runRowStatus({ status: "error", errorKind: "cutoff" }), { word: "Interrupted", tone: "neutral" })
+  assert.deepEqual(runRowStatus({ status: "error", errorKind: "model" }), { word: "Error", tone: "red" })
+  assert.deepEqual(runRowStatus({ status: "error" }), { word: "Error", tone: "red" })
+  assert.deepEqual(runRowStatus({ status: "recorded", errorKind: null }), { word: "Proven", tone: "green" })
+  // The kind only matters for an error: a finished run keeps its own word.
+  assert.deepEqual(runRowStatus({ status: "no-finding", errorKind: "cutoff" }), { word: "No finding", tone: "neutral" })
 })

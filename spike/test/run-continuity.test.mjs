@@ -378,7 +378,8 @@ test("safety: after a restart the run keeps its workspace and its own scope, eve
   assert.equal(r.events.filter((e) => e.ev === "workspace").length, 1);
   assert.ok(!r.events.some((e) => e.ev === "reply-error"));
   assert.equal(kept(id).target.id, own.id);
-  assert.ok(existsSync(path.join(spawns.at(-1).args[4], "BRIEF.md")), "the new workspace is the same scope's brief");
+  assert.ok(!existsSync(path.join(spawns.at(-1).args[4], "BRIEF.md")), "the scope text is not a workspace file");
+  assert.match(spawns.at(-1).env.SCOPE_NOTES, /Acme lib, soon deleted/, "the new worker gets the same scope");
 });
 
 test("safety: kept workspaces are capped; a run that lost its workspace this way still takes a follow-up", async () => {
@@ -539,10 +540,15 @@ const TOKEN = "synthetic-reader-token-0001";
 const ADMIN = "synthetic-admin-token-0002";
 const GONE = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.";
 const liveScope = () => addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
-// What the agent can read when a worker starts.
+// What the agent can read when a worker starts. The scope text is in the
+// instructions of every agent (SCOPE_NOTES), never a workspace file, and never
+// holds a token. The token reaches the root agent only, in the pack's first
+// message, which reads it from the config (as BRIEF.md did before).
 const read = (call) => {
   const ws = call.args[4];
-  call.brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
+  assert.ok(!existsSync(path.join(ws, "BRIEF.md")));
+  assert.ok(![TOKEN, ADMIN].some((t) => Object.values(call.env).some((v) => String(v).includes(t))), "no worker env value holds a token");
+  call.brief = PACKS["ai-mcp"].kickoff(ws, {});
   call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
   call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
 };
@@ -643,10 +649,12 @@ test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets
 // A joined scope: the site module and the MCP module in ONE run. The credential
 // lives in the ai-mcp module and nowhere else.
 const livePair = (packs) => addLiveScope({ title: "Site and MCP", hosts: ["127.0.0.1"], pack: packs, permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
-// What a worker can read: the ai-mcp module's own brief and config.
+// What a worker can read: the ai-mcp module's own config. The token reaches the
+// root agent only, in that module's first message, which reads the config.
 const readJoined = (call) => {
   const ws = call.args[4];
-  call.brief = readFileSync(path.join(ws, "modules", "ai-mcp", "BRIEF.md"), "utf8");
+  assert.ok(!existsSync(path.join(ws, "modules", "ai-mcp", "BRIEF.md")), "no old scope file");
+  call.brief = PACKS["ai-mcp"].kickoff(path.join(ws, "modules", "ai-mcp"), {});
   call.mcp = JSON.parse(readFileSync(path.join(ws, "modules", "ai-mcp", ".touchstone.json"), "utf8")).mcp;
 };
 
@@ -672,10 +680,11 @@ for (const packs of [["web", "ai-mcp"], ["ai-mcp", "web"]]) {
       assert.deepEqual(root.packs, packs);
       assert.deepEqual(kept(id).packs, packs, "the record keeps the modules");
       assert.deepEqual(runs.getRun(id).packs, packs, "and so does the view");
+      assert.ok(first.env.SCOPE_NOTES.includes("127.0.0.1"), "the scope notes reach the agent");
       // The run itself had the token in the ai-mcp module only.
       assert.ok(first.brief.includes(TOKEN), "the module that needs it had it");
       assert.deepEqual(Object.keys(first.mcp.tokens), [TOKEN, ADMIN]);
-      assert.ok(!readFileSync(path.join(ws, "modules", "web", "BRIEF.md"), "utf8").includes(TOKEN));
+      assert.ok(!existsSync(path.join(ws, "modules", "web", "BRIEF.md")));
       // After the end: no file under the kept workspace holds a credential, and
       // no config holds it either.
       assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "no file in the kept workspace");
@@ -840,7 +849,7 @@ async function stoppedMidTurn(server) {
   const run = await liveEnded(server);
   scripts.push({ hang: true });
   server.steerRun(run.id, "Go on.");
-  assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]).sort(), [".touchstone.json", "BRIEF.md", "notes.md"], "the turn has the credential");
+  assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]).sort(), [".touchstone.json", "notes.md"], "the turn has the credential");
   assert.equal(kept(run.id).restored, true, "and the record says so");
   return { ...run, lock: lockOf(run.id) };
 }
@@ -886,7 +895,7 @@ test("safety: a follow-up that finds a restored credential does not hand it on: 
     const b = await stoppedMidTurn(server);
     // The old server still runs at the boot, so the boot leaves both runs alone.
     server = await restart();
-    assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+    assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2); // .touchstone.json and notes.md; no BRIEF.md any more
     removeScope(a.live.id);
     assert.throws(() => server.steerRun(a.id, "Go on."), /Another server is already answering this run/);
     assert.ok(existsSync(a.ws), "a run that another server answers keeps its workspace");
@@ -960,7 +969,7 @@ test("safety: a scope store that cannot be read is not a scope that is gone: the
     writeFileSync(store, "{ this is not a list");
     try {
       server = await restart();
-      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3, "the boot leaves the workspace alone");
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2, "the boot leaves the workspace alone"); // .touchstone.json and notes.md
       assert.equal(kept(a.id).restored, true, "and the mark stays for the next boot");
       const before = spawns.length;
       const refused = (run) => {
@@ -972,7 +981,7 @@ test("safety: a scope store that cannot be read is not a scope that is gone: the
       };
       refused(a);
       refused(c);
-      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2);
       assert.ok(existsSync(path.join(c.ws, "notes.md")), "no workspace is deleted");
       rmSync(c.ws, { recursive: true, force: true });
       refused(c); // also when the record names a path that fails the check

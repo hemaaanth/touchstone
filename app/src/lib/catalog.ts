@@ -148,10 +148,18 @@ export const SCOPE_KIND: Record<TargetScope["kind"], string> = {
   live: "Live site",
 }
 
+// A website of a live scope as the operator wrote it. A "*.example.com" entry
+// is stored as the origin "https://*.example.com"; it is a grant pattern for
+// every subdomain, not one website, so it shows without the scheme.
+export function siteEntry(origin: string): { text: string; wildcard: boolean } {
+  const wild = origin.replace(/^https?:\/\//, "")
+  return wild.startsWith("*.") ? { text: wild, wildcard: true } : { text: origin, wildcard: false }
+}
+
 // What a scope row shows on the right: its file, its file count, or its repo.
 // A scope with several members counts its repos and files.
 export function scopeMeta(t: TargetScope): string {
-  if (t.origins?.length) return t.origins.join(", ")
+  if (t.origins?.length) return t.origins.map(siteEntry).map((e) => (e.wildcard ? `${e.text} · all subdomains` : e.text)).join(", ")
   if (t.hosts?.length) return t.hosts.join(", ")
   if ((t.members?.length ?? 0) > 1) {
     const repos = t.links?.length ?? 0

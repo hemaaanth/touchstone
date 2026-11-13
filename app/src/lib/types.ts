@@ -303,6 +303,10 @@ export interface TargetScope {
   files?: string[]
   links?: string[]
   members?: TargetScopeMember[]
+  // The operator's scope brief: text every run of the scope gets in the agent's
+  // instructions. Only the scope list carries it; a run's scope event does not
+  // (a run has its own `brief` event).
+  brief?: string
   signal: string
   proofSurface: ProofSurface
 }
@@ -367,6 +371,8 @@ export interface RunEvent {
 //   prepass          PrepassView                                  tool scan summary
 //   list_sources     {}                                           listed sources
 //   read_source      { file }                                     read a file
+//   brief            { text }                                     the scope brief the
+//                                                                  agent got ("" = removed)
 //   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
 //   assistant-delta  { conv, attempt?, text }                     prose SNAPSHOT
 //   say              { conv, attempt?, text }                      finalized prose
@@ -599,6 +605,9 @@ export interface RunSummary {
   scopeTitle?: string | null
   // Every module the run covers, so a list row can name them all.
   packs?: string[]
+  // How an error run ended (the server's errorInfo.kind). "cutoff" is a server
+  // restart that cut the run off: it reads Interrupted, not failed.
+  errorKind?: string | null
 }
 
 export type Verdict = "approve" | "deny"

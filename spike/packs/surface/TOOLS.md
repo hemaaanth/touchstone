@@ -40,17 +40,25 @@ httpx confirmed. Domains live runs do not crawl. Lab runs use the pinned
 snapshot, so katana does not run and the lab inventory does not change.
 
 Mode: standard crawl with JavaScript parsing (`-jc`). Headless mode is off.
-The image has Chromium, but live runs use the `bridge` network. That network
-reaches the internet. Chromium makes its own background calls to hosts outside
-the grant, so headless is not offline-safe. Headless was not tested.
+A live crawl runs on the run's confined network. Its only way out is the run's
+scope proxy, and katana sends every request through it (`-proxy`). katana looks
+each name up again by itself; the proxy checks the address and connects to that
+same address, so a name that changes its address after the capture's check is
+still stopped. A live run with no scope proxy does not crawl: katana's coverage
+row is unavailable with the reason. The image has Chromium. Chromium makes its own
+background calls to hosts outside the grant, so headless is not offline-safe.
+Headless was not tested.
 
 Limits match httpx: 5 requests a second, 2 at a time, 10 s timeout, 1 retry.
 Depth 3. Crawl stops after 120 s. The container stops after 180 s. Bodies over
 2 MiB are not read. Images, fonts, styles and video are not fetched.
 
-Scope: the `-cs` regex allows only granted hosts, their subdomains, and the
-granted scheme and port pairs. katana's default host scope also applies. The
-parser drops any row whose host or port is outside the grant.
+Scope: in a live crawl the `-cs` regex allows only the exact hosts the capture
+checked, and the granted scheme and port pairs. A subdomain is in scope only
+through a `*.` grant entry, and only when the capture checked it. katana follows
+no redirect (`-dr`); a redirect to a checked host and port becomes a new seed.
+katana's default host scope also applies. The parser drops any row whose host or
+port is outside the grant.
 Query strings and fragments are removed. At most 100 endpoints enter the
 inventory. The coverage line keeps the true count.
 

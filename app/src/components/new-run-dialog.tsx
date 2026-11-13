@@ -343,6 +343,23 @@ function localPath(raw: string): { name: string; path: string } | null {
 }
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
 
+// A wildcard entry the operator typed, "*.example.com": a grant pattern that
+// covers every subdomain of example.com (never example.com itself). Returns the
+// base name, or null. Only this one spelling: a star, a dot, then a plain name
+// of at least two labels. No scheme, port, path, second star or IP address.
+// The server applies the same rule (spike/lib/live-hosts.mjs), and the grant
+// store refuses "*.com" and the common public suffixes after it.
+function wildcardBase(raw: string): string | null {
+  const text = raw.trim().toLowerCase()
+  if (!text.startsWith("*.")) return null
+  const base = text.slice(2).replace(/\.$/, "")
+  const labels = base.split(".")
+  if (labels.length < 2 || !labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return null
+  if (labels.every((l) => /^[0-9]+$/.test(l))) return null
+  return base
+}
+const isWildSite = (s: Source) => s.kind === "site" && s.host.startsWith("*.")
+
 // A website address the operator typed, as the exact origin a run will call.
 // "example.com" means https; "https://app.example.com:8443/login" keeps its
 // scheme, host and port and drops the path. The server checks the host again
@@ -386,7 +403,10 @@ function labHost(hostname: string): boolean {
 // they may test the websites. The server records it as a grant.
 function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
-  const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
+  // Plain websites first: a run sends its requests to the first one, and a
+  // wildcard entry is a grant pattern, not a website.
+  const ordered = [...sources.filter((s) => !isWildSite(s)), ...sources.filter(isWildSite)]
+  const sites = ordered.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   const bearer = token.trim()
   // garak runs only with a chat path and a budget. The server checks both.
   const chatPath = chat.path.trim()
@@ -413,16 +433,22 @@ const tickable = (p: PackChoice) => p.live === true && p.proof === "http" && !p.
 // nothing moves. A scope holds GitHub repos and local folders, or websites.
 // Each one added shows in a list under the row, and the scope is saved as one
 // unit. Under the list: its name, then the modules it allows.
+// `defaultOpen` starts with the form open (the Scopes page dialog). `onClose`
+// runs whenever the form closes itself: Esc, Cancel, or a saved scope.
 export function AddScope({
   packs,
   onAttached,
   onError,
+  defaultOpen = false,
+  onClose,
 }: {
   packs: PackChoice[]
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
+  defaultOpen?: boolean
+  onClose?: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [url, setUrl] = useState("")
   const [name, setName] = useState("")
   const [sources, setSources] = useState<Source[]>([])
@@ -438,6 +464,8 @@ export function AddScope({
   const inputRef = useRef<HTMLInputElement>(null)
 
   const live = sources.some((s) => s.kind === "site")
+  // The wildcard entries widen the permission: the tick must name them.
+  const wildBases = sources.flatMap((s) => (s.kind === "site" && isWildSite(s) ? [s.host.slice(2)] : []))
   // A local lab: the opt-in shows only when a listed website is loopback or private.
   const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
   const choices = packs.filter(tickable)
@@ -462,6 +490,7 @@ export function AddScope({
     setChatPath("")
     setChatBudget("")
     onError(null)
+    onClose?.()
   }
   const add = (s: Source) => {
     // One scope is either code (repos, folders) or live websites, not both.
@@ -484,6 +513,27 @@ export function AddScope({
       setUrl("")
       return
     }
+    // A star is never parsed as a URL: the parser would encode it, and the
+    // server would drop the entry from the grant. Keep the one accepted
+    // spelling as it is, and refuse every other one with a sentence.
+    if (/\*|%2a/i.test(text)) {
+      // A name with letters outside plain ASCII: say the punycode form, as the server does.
+      if ([...text].some((c) => c.charCodeAt(0) > 127)) {
+        let ascii = ""
+        try {
+          ascii = text.trim().startsWith("*.") ? new URL(`http://${text.trim().slice(2)}`).hostname : ""
+        } catch {
+          // no ASCII form: the general hint below
+        }
+        return onError(`"${text}" has letters outside plain ASCII. Write the punycode form${ascii ? `: *.${ascii}` : ", for example *.xn--bcher-kva.de for *.bücher.de"}.`)
+      }
+      if (/^\*\.[a-z0-9-]+\.?$/i.test(text)) return onError(`"${text}" is too broad: a wildcard needs a domain name of at least two labels after "*.", so *.example.com, never *.com.`)
+      const base = wildcardBase(text)
+      if (!base) return onError(`"${text}" is not a wildcard entry Touchstone accepts. Write it as *.example.com: a star, a dot and a domain name, with no scheme, port or path.`)
+      add({ kind: "site", host: `*.${base}`, origin: `*.${base}` })
+      setUrl("")
+      return
+    }
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
     const origin = href ? null : siteOrigin(text)
     const host = origin ? new URL(origin).hostname : null
@@ -499,6 +549,10 @@ export function AddScope({
   // The Add button stays clickable. A click with something missing says what.
   const save = async () => {
     if (!sources.length || busy) return
+    const wild = sources.find(isWildSite)
+    if (wild?.kind === "site" && !sources.some((s) => s.kind === "site" && !isWildSite(s))) {
+      return onError(`A wildcard entry needs a plain website too. Add ${wild.host.slice(2)} as well.`)
+    }
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
     setBusy(true)
@@ -620,6 +674,7 @@ export function AddScope({
                         ? s.path
                         : `${s.name}/`}
                 </span>
+                {isWildSite(s) ? <span className="shrink-0 text-[11px] text-muted-foreground">all subdomains</span> : null}
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
                     {"path" in s ? "read in place" : `${s.files.length} ${s.files.length === 1 ? "file" : "files"} uploaded`}
@@ -644,6 +699,14 @@ export function AddScope({
               </li>
             ))}
           </ul>
+          {/* The grant covers exactly the names listed. Subdomain discovery
+              needs a wildcard entry, after the plain name. Text only. */}
+          {live ? (
+            <p className="border-t border-border/60 py-1.5 pr-2 pl-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              Subdomain discovery needs a <span className="font-mono">*.</span> entry: add{" "}
+              <span className="font-mono">*.example.com</span> after <span className="font-mono">example.com</span>.
+            </p>
+          ) : null}
           {/* Name, then modules. A ticked module shows the fields it needs under
               it. The confirmations sit last, next to the Add button. */}
           <label className={formRow}>
@@ -745,7 +808,9 @@ export function AddScope({
                 className="mt-0.5 size-3.5 shrink-0 accent-foreground"
               />
               <span>
-                I have permission to test these websites. A run sends real requests to them.
+                {wildBases.length
+                  ? `I have permission to test these websites and every subdomain of ${wildBases.join(", ")}. A run sends real requests to them.`
+                  : "I have permission to test these websites. A run sends real requests to them."}
               </span>
             </label>
           ) : null}
@@ -769,7 +834,8 @@ export function AddScope({
           ) : null}
           <div className="flex items-center justify-end gap-3 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
             <span className="text-[11px] text-muted-foreground">
-              {plural(sources.length, live ? "website" : "source")}, tested as one unit
+              {plural(sources.length - wildBases.length, live ? "website" : "source")}
+              {wildBases.length ? ` and ${plural(wildBases.length, "subdomain entry", "subdomain entries")}` : ""}, tested as one unit
             </span>
             <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
               Add scope

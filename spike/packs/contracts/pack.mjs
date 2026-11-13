@@ -113,26 +113,26 @@ line that starts with "Fix:" describing the one-line change.
 Keep going without asking the operator questions. Work from the actual source.`;
 
 // A brief scope has no local source at the start. The code to audit lives behind
-// the links in BRIEF.md; the agent fetches it into vendor/ with fetch_source,
+// the links the scope section of the instructions lists; the agent fetches it into vendor/ with fetch_source,
 // then audits and proves it the same way. The proof is still an offline Foundry
 // test that deploys the contracts in a local EVM — there is no forking and no
 // live chain, so a proof can never touch real funds.
 const SYSTEM_BRIEF = `You are an authorized offensive-security agent in an isolated sandbox.
-The operator has given you a brief — a markdown write-up of a target they own and
-have asked you to audit. Your job: find EVERY real, exploitable vulnerability in
-the code the brief points at and PROVE each one with a runnable Foundry test.
+The operator has asked you to audit a target they own. Your job: find EVERY real,
+exploitable vulnerability in the code the scope points at and PROVE each one with
+a runnable Foundry test.
 
 How this scope works:
-- Read the brief first: read_source BRIEF.md. It describes the target and links
-  its source code.
+- Read the scope section at the end of these instructions first. It lists the
+  scope's GitHub links, and the operator's brief when there is one.
 - The sandbox has no network, so you cannot open those links yourself. Instead
-  call fetch_source with a GitHub link exactly as the brief lists it; the host
+  call fetch_source with a GitHub link exactly as the scope lists it; the host
   fetches it for you into vendor/. A repo or tree link is cloned into
   vendor/<owner>__<repo>/ (with "@<ref>" for a tree link); a single-file (blob)
   link is saved under vendor/files/<owner>__<repo>@<ref>/<its path>. Only the
-  brief's own GitHub links can be fetched; other URLs are refused. Fetch the
-  sources the brief names before you audit.
-- Only Solidity from the brief's sources can be proven. Until a fetch brings
+  scope's own GitHub links can be fetched; other URLs are refused. Fetch the
+  sources the scope names before you audit.
+- Only Solidity from the scope's sources can be proven. Until a fetch brings
   Solidity into vendor/, run_poc and submit_finding are closed.
 - After fetching, use list_sources to see every file now under src/ and vendor/,
   and read_source <path> to read any of them (pass the path list_sources shows).
@@ -196,11 +196,11 @@ function listSol(ws) {
 export function proofOpen(ws) {
   return listSol(ws).length > 0;
 }
-const PROOF_CLOSED = "No Solidity from this scope is in the workspace yet (nothing under src/ or vendor/), so nothing can be proven. Fetch the GitHub links BRIEF.md lists with fetch_source first. If they hold no Solidity, this scope has no Foundry proof: report what you found as leads only.";
+const PROOF_CLOSED = "No Solidity from this scope is in the workspace yet (nothing under src/ or vendor/), so nothing can be proven. Fetch the GitHub links the scope lists with fetch_source first. If they hold no Solidity, this scope has no Foundry proof: report what you found as leads only.";
 
 // Resolve a path the agent asked to read to an absolute path inside an allowed
 // root, or null. Path-traversal guard: the resolved path must stay within ws and
-// under src/ or vendor/ (or be BRIEF.md at the workspace root). A bare name
+// under src/ or vendor/. A bare name
 // ("Vault.sol") is also tried under src/, so a lab's flat reads keep working.
 function resolveReadable(ws, raw) {
   const name = String(raw).trim();
@@ -208,7 +208,7 @@ function resolveReadable(ws, raw) {
     const rel = relative(ws, abs);
     if (!rel || rel.startsWith("..") || rel.startsWith(sep)) continue; // escaped ws
     const top = rel.split(sep)[0];
-    if (top === "src" || top === "vendor" || rel === "BRIEF.md") {
+    if (top === "src" || top === "vendor") {
       try { if (statSync(abs).isFile()) return abs; } catch {}
     }
   }
@@ -225,20 +225,20 @@ function tools(ws, state) {
     execute: async () => {
       event("list_sources");
       const files = listSol(ws);
-      const text = files.length ? files.join("\n") : "(no Solidity files yet — for a brief, call fetch_source on the links in BRIEF.md first)";
+      const text = files.length ? files.join("\n") : "(no Solidity files yet — for a brief, call fetch_source on the links the scope lists first)";
       return { output: [{ type: "text", text }] };
     },
   });
   const readSource = defineTool({
     name: "read_source",
-    description: "Read one source file. Pass a path list_sources printed (e.g. Vault.sol or vendor/acme__vault/src/Vault.sol), or BRIEF.md to read the brief.",
-    parameters: obj({ file: str({ description: "a path from list_sources, under src/ or vendor/, or BRIEF.md" }) }),
+    description: "Read one source file. Pass a path list_sources printed (e.g. Vault.sol or vendor/acme__vault/src/Vault.sol). The scope and its brief are in your instructions, not in a file.",
+    parameters: obj({ file: str({ description: "a path from list_sources, under src/ or vendor/" }) }),
     replay: "safe",
     execute: async (args) => {
       const raw = String(args.file).trim();
       event("read_source", { file: raw });
       const abs = resolveReadable(ws, raw);
-      if (!abs) return { output: [{ type: "text", text: `No such readable file: ${raw}. Pass a path list_sources shows (under src/ or vendor/), or BRIEF.md.` }], isError: true };
+      if (!abs) return { output: [{ type: "text", text: `No such readable file: ${raw}. Pass a path list_sources shows (under src/ or vendor/).` }], isError: true };
       let text;
       try {
         text = readFileSync(abs, "utf8");
@@ -249,8 +249,8 @@ function tools(ws, state) {
   });
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the brief's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as BRIEF.md lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host; the proof still runs offline.",
-    parameters: obj({ url: str({ description: "one GitHub link exactly as BRIEF.md lists it" }) }),
+    description: "Fetch one of the scope's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as the scope section of your instructions lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host; the proof still runs offline.",
+    parameters: obj({ url: str({ description: "one GitHub link exactly as the scope lists it" }) }),
     replay: "unsafe",
     execute: async (args) => {
       const url = String(args.url).trim();
@@ -430,12 +430,12 @@ function tools(ws, state) {
 }
 
 // The first message of a run. A brief starts with no local source and no
-// pre-pass leads — its first move is to read BRIEF.md and fetch the linked code;
+// pre-pass leads — its first move is to fetch the code the scope links;
 // the proof deploys that code in a local EVM with no fork and no live chain. A
 // lab's code is already under src/. `env` carries the pre-pass leads.
 function kickoff(ws, env) {
   const base = readTouchstone(ws).kind === "brief"
-    ? "Read BRIEF.md first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC that deploys the code locally — no forking, no live chain. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary."
+    ? "Read the scope section of your instructions first. Fetch the sources it links with fetch_source, then audit the fetched code under vendor/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC that deploys the code locally — no forking, no live chain. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary."
     : "Audit the contract(s) under src/. Do a complete audit: list every suspect worst first, then prove each one you can with its own passing Foundry PoC. Submit each proven finding as soon as its test passes, and keep going until every suspect is proven or ruled out. End with the coverage summary.";
   const leadBlocks = [];
   if (env.STATIC_BRIEF) leadBlocks.push(`${env.STATIC_BRIEF}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);

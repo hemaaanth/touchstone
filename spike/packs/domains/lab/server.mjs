@@ -1,9 +1,12 @@
 import { createServer } from 'node:http';
+import { createServer as createSecureServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 const files = new Map(['index.html', 'bundle.js', 'ethers.js', 'sdk.js'].map(f => ['/' + f, readFileSync('/lab/' + f)]));
 // GitHub Pages answers like this for a custom domain nobody has claimed.
 const unclaimed = "<html><body><h1>404</h1><p>There isn't a GitHub Pages site here.</p></body></html>";
-createServer((req, res) => {
+// Plain HTTP on 8080, and the same host over TLS on 8443 with the lab's self-signed cert.
+// The TLS listener is what testssl.sh inspects.
+function handle(req, res) {
   const host = String(req.headers.host ?? '').split(':')[0];
   const path = req.url === '/' ? '/index.html' : req.url;
   if (host === 'docs.touchstone.test' || host === 'touchstone-lab.github.io') { res.statusCode = 404; res.setHeader('Content-Type', 'text/html'); res.end(unclaimed); return; }
@@ -13,4 +16,6 @@ createServer((req, res) => {
   res.statusCode = body ? 200 : 404;
   res.setHeader('Content-Type', path.endsWith('.js') ? 'application/javascript' : 'text/html');
   res.end(body ?? 'Not found');
-}).listen(8080, '0.0.0.0');
+}
+createServer(handle).listen(8080, '0.0.0.0');
+createSecureServer({ key: readFileSync('/lab/tls-key.pem'), cert: readFileSync('/lab/tls-cert.pem') }, handle).listen(8443, '0.0.0.0');

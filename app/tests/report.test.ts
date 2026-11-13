@@ -149,3 +149,73 @@ describe("report: brand comes from the app's own files", () => {
     expect(html.match(/<footer/g)?.length).toBe(1)
   })
 })
+
+describe("report: secrets stay out of every format", () => {
+  // A live AI/MCP run's bearer token, quoted in the write-up and in the
+  // exchanges (Authorization, Cookie, X-API-Key, a query param, a JSON body).
+  const token = "tok_operator_9f3a2c1b8e7d"
+  const fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  const leak = {
+    id: "run-m.1",
+    runId: "run-m",
+    title: "Tool call used the operator credential",
+    severity: "high",
+    module: "AI / MCP",
+    proofKind: "http",
+    target: "mcp.example.com",
+    stages: { hypothesis: true, reproduced: true, proven: true, accepted: "auto" },
+    explanation:
+      `The agent read the brief and called the tool with Bearer ${token}.\n\n` +
+      "Fix: rotate that credential and stop copying it into the prompt.",
+    proof: {
+      kind: "http",
+      pass: true,
+      oracle: { name: "forbidden tool call", detail: "the tool ran with the operator credential", passed: true },
+      exchanges: [
+        {
+          label: "MCP tools/call",
+          request: {
+            method: "POST",
+            url: `/mcp/tools/call?token=${token}`,
+            headers: [
+              { name: "Authorization", redacted: false, value: `Bearer ${token}` },
+              { name: "X-API-Key", redacted: false, value: token },
+              { name: "Cookie", redacted: false, value: `session=${token}` },
+              { name: "Content-Type", redacted: false, value: "application/json" },
+              { name: "Authorization", redacted: true, sha256: fingerprint },
+            ],
+            body: `{"jsonrpc":"2.0","authorization":"Bearer ${token}","email":"victim@example.com"}`,
+          },
+          response: {
+            status: 200,
+            headers: [{ name: "Set-Cookie", redacted: false, value: `sid=${token}` }],
+            body: "ok",
+          },
+        },
+      ],
+      detail: "",
+    },
+    usage: { usd: null },
+  }
+
+  test("html, markdown and json omit the bearer token and keep the proof", () => {
+    const report = buildReport(leak)
+    const html = renderReportHtml(report)
+    const md = renderReportMarkdown(report)
+    const json = JSON.stringify(report)
+    for (const rendered of [html, md, json]) {
+      expect(rendered).not.toContain(token)
+      expect(rendered).toContain("victim@example.com")
+      expect(rendered).toContain("application/json")
+      expect(rendered).toContain("/mcp/tools/call")
+      expect(rendered).toContain("forbidden tool call")
+      expect(rendered).toContain("rotate that credential")
+    }
+    expect(html).toContain("answered 200")
+    expect(json).toContain(fingerprint)
+    expect(report.fixStated).toBe(true)
+    // The finding handed in is the recorded one. Redaction copies; it does not edit it.
+    expect(leak.explanation).toContain(token)
+    expect(leak.proof.exchanges[0].request.headers[0].value).toContain(token)
+  })
+})

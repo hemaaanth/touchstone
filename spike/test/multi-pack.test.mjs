@@ -16,7 +16,7 @@
 // write files. A throwaway grant store stands in for the operator's.
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -30,7 +30,7 @@ const { addGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, openReach } = await import("../lib/reach.mjs");
 const { PACKS, packFor } = await import("../packs/index.mjs");
 const { multiPack, multiPacks, memberDir, prepassViewOf } = await import("../packs/multi.mjs");
-const { prepareMultiWorkspace, prepareRunWorkspace, getTarget } = await import("../lib/targets.mjs");
+const { dropOldBriefFile, prepareMultiWorkspace, prepareRunWorkspace, getTarget, scopeEnv } = await import("../lib/targets.mjs");
 
 const roots = [];
 after(() => { for (const ws of roots) rmSync(ws, { recursive: true, force: true }); });
@@ -77,7 +77,7 @@ test("the build makes one sub-workspace per module, each with its own config", a
     assert.equal(sub, path.join(ws, "modules", id));
     assert.equal(cfgOf(sub).pack, id, `${id} keeps its own pack`);
     assert.equal(cfgOf(sub).baseUrl, `https://${host}`, `${id} keeps its own origin`);
-    assert.ok(existsSync(path.join(sub, "BRIEF.md")), `${id} keeps its own brief`);
+    assert.equal(existsSync(path.join(sub, "BRIEF.md")), false, `${id} has no brief file any more`);
   }
   assert.equal(packFor(cfg).id, "multi");
   assert.deepEqual(packFor(cfg).packs, ["web", "surface"]);
@@ -411,6 +411,26 @@ test("a one-module plan is main's, for every kind, with and without `chosen`", (
   // A requested toggle still decides on the one-module path.
   const off = planModules(contractLab, [], undefined).filter((m) => m.on).map((m) => m.id);
   assert.deepEqual(off, ["agent", "replay"]);
+});
+
+test("an old scope file is dropped from the root and every module", async () => {
+  const ws = await build(["web", "surface"]);
+  const files = [path.join(ws, "BRIEF.md"), path.join(ws, "modules", "web", "BRIEF.md"), path.join(ws, "modules", "surface", "BRIEF.md")];
+  for (const f of files) writeFileSync(f, "old");
+  // A folder the agent made stays.
+  mkdirSync(path.join(ws, "modules", "surface", "BRIEF.md.d"), { recursive: true });
+  assert.equal(dropOldBriefFile(ws, live(["web", "surface"])), true);
+  for (const f of files) assert.equal(existsSync(f), false, path.relative(ws, f));
+  assert.equal(dropOldBriefFile(ws, live(["web", "surface"])), false, "nothing left to drop");
+});
+
+test("the scope notes name every module's facts, not the first module's", () => {
+  const target = { ...live(["web"]), github: ["acme/lib"] };
+  // The first module is web: alone, no GitHub line (supply chain is not in the run).
+  assert.equal(scopeEnv(target).SCOPE_NOTES.includes("acme/lib"), false);
+  // The list holds supply chain: the line is there, and the websites stay too.
+  const joined = scopeEnv(target, ["web", "supply-chain"]).SCOPE_NOTES;
+  assert.ok(joined.includes("acme/lib") && joined.includes(`https://${host}`));
 });
 
 test("a joined plan keeps replay only while some module can prove", () => {

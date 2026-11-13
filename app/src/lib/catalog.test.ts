@@ -3,8 +3,8 @@
 // Runs with `bun test`.
 import { describe, test } from "node:test"
 import assert from "node:assert/strict"
-import { moduleAside, moduleNote, moduleTests, planStepState, proofKind, REACH_SENTENCE as S } from "./catalog"
-import type { PackChoice } from "./types"
+import { moduleAside, moduleNote, moduleTests, planStepState, proofKind, REACH_SENTENCE as S, scopeMeta, siteEntry } from "./catalog"
+import type { PackChoice, TargetScope } from "./types"
 
 const pack = (over: Partial<PackChoice> & Pick<PackChoice, "id" | "proof">): PackChoice => ({
   title: over.id,
@@ -126,4 +126,11 @@ describe("what a module tests", () => {
     assert.equal(moduleTests("constructor"), null)
     assert.equal(moduleTests("__proto__"), null)
   })
+})
+
+test("a *.example.com entry shows as written, with all subdomains, never as an https URL", () => {
+  assert.deepEqual(siteEntry("https://*.example.com"), { text: "*.example.com", wildcard: true })
+  assert.deepEqual(siteEntry("https://example.com:8443"), { text: "https://example.com:8443", wildcard: false })
+  const t = { id: "live-x", title: "x", kind: "live", blurb: "", entry: "example.com", signal: "agent", proofSurface: { kind: "live", note: "" }, origins: ["https://example.com", "https://*.example.com"] } as TargetScope
+  assert.equal(scopeMeta(t), "https://example.com, *.example.com · all subdomains")
 })

@@ -1,8 +1,9 @@
 import { useMemo } from "react"
-import { Boxes, FolderGit2, Settings2, ShieldCheck } from "lucide-react"
+import { Boxes, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import type { RunSummary } from "@/lib/types"
-import { ago, DOT, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
+import { ago, DOT, isTerminal, runTitle } from "@/lib/format"
+import { runRowStatus } from "@/components/thread-model"
 import {
   Sidebar,
   SidebarContent,
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/sidebar"
 import { ResizeHandle } from "@/components/resize-handle"
 import { ThreadList, type RunThreadCustom } from "@/components/assistant-ui/elements/thread-list"
+import markRaw from "@/assets/touchstone-mark.svg?raw"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
@@ -88,9 +90,7 @@ export function AppSidebar({
     <Sidebar>
       <SidebarHeader className="p-3">
         <div className="flex items-center gap-2 px-1">
-          <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <ShieldCheck className="size-3.5" />
-          </div>
+          <TouchstoneMark />
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
         </div>
       </SidebarHeader>
@@ -139,12 +139,40 @@ export function AppSidebar({
 
 const NO_MESSAGES: ThreadMessageLike[] = []
 
+// The brand mark from src/assets/touchstone-mark.svg. One filled shape in
+// currentColor, so it takes the sidebar foreground in light and in dark.
+const MARK_VIEWBOX = /viewBox="([^"]+)"/.exec(markRaw)?.[1] ?? "0 0 32 32"
+const MARK_PATHS = [...markRaw.replace(/<!--[\s\S]*?-->/g, "").matchAll(/<path\b([^>]*)\/?>/g)].map((m) => {
+  const attrs = m[1]
+  return {
+    d: /d="([^"]*)"/.exec(attrs)?.[1] ?? "",
+    evenodd: /fill-rule="evenodd"/.test(attrs),
+  }
+})
+
+function TouchstoneMark() {
+  return (
+    <svg
+      viewBox={MARK_VIEWBOX}
+      fill="currentColor"
+      aria-hidden="true"
+      className="block size-6 shrink-0 text-sidebar-foreground"
+    >
+      {MARK_PATHS.map((p) => (
+        <path key={p.d} d={p.d} fillRule={p.evenodd ? "evenodd" : undefined} />
+      ))}
+    </svg>
+  )
+}
+
 // One run as a thread list item. `custom` carries what the row shows.
 function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
   const done = isTerminal(r.status)
+  // A restart's cut-off reads Interrupted with a neutral dot, not as a failure.
+  const row = runRowStatus(r)
   const custom: RunThreadCustom = {
-    dot: DOT[statusTone(r.status)],
-    label: `${statusLabel(r.status)} · ${ago(r.startedAt)}`,
+    dot: DOT[row.tone],
+    label: `${row.word} · ${ago(r.startedAt)}`,
     at: r.startedAt,
     running: !done,
     canArchive: done,

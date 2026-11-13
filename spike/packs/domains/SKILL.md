@@ -24,8 +24,21 @@ pack uses lib/proof-evidence.mjs and passes its allowlisted detector map.
 
 A dangling CNAME is stale DNS. It is not proof of a claimable provider account.
 SRI and CSP are separate controls with separate fixes. Identical captured HTML
-is checked once. Missing registry-lock, DNSSEC and content-pin evidence is an
-informational evidence gap. Do not say these controls are disabled.
+is checked once. Missing email-auth, TLS, registry-lock, DNSSEC and content-pin
+evidence is an informational evidence gap. Do not say these controls are disabled.
+
+An email-auth lead cites the published SPF or DMARC record. It proves the record
+state, never that a spoofed message reaches an inbox. No DKIM selector and no
+receiver filter are tested. Say so when you explain it.
+
+A `tls-*` lead is one handshake testssl.sh measured. Its severity is the tool's
+grade, not proof of exploit. The where cell is the endpoint. Say that a person
+must confirm exposure. No exploit is run and only one handshake is measured.
+
+A `dnssec-*` lead is the chain state DNSViz measured through the granted
+resolver. `dnssec-unsigned` means no DNSKEY and no usable DS. That alone does
+not let anyone spoof the name, because a resolver must be reached first. A
+broken chain only affects clients that validate. Say which case it is.
 
 The drainer check is behavior. The analyzer ran the captured scripts in a fake
 wallet and clicked each connect, claim, airdrop, mint or verify control. A lead
@@ -59,8 +72,13 @@ From the repository root:
 
     docker build -t touchstone-domains-tools:wave2 spike/packs/domains
     docker build -f spike/packs/domains/Dockerfile.observatory -t touchstone-observatory:1.7.2 spike/packs/domains
-    node --test spike/test/domains.test.mjs spike/test/surface.test.mjs
+    node --test spike/test/domains.test.mjs spike/test/domains-live-tools.test.mjs spike/test/surface.test.mjs
     node spike/packs/domains/smoke.mjs --lab
+
+The default tests use recordings and the owned lab only. The three tests that
+scan `example.com` are skipped unless `TOUCHSTONE_LIVE=1` is set. `npm test`
+runs the lab test too. Tools are never pulled: pull each pinned image before a
+run, or the tool reports a coverage gap.
 
 The smoke checks fresh lab responses against lab/snapshot.json. It checks the
 live capture path on the lab. It also checks submission, final replay,
@@ -72,8 +90,8 @@ itself on first use when it is missing.
 A scope names a domain. `.touchstone.json` holds `domain` and `reach`. The
 platform grant fills `reach`: `network`, `granted`, `scope`, and optionally
 `resolver`, `ports` and `env`. The prepass then captures the domain through
-`runTool()` (subfinder, dnsx, httpx, nuclei), pins the snapshot, and the
-checks run on the pin. Live capture refuses a domain that is not covered by
+`runTool()` (subfinder, checkdmarc, dnsviz, dnsx, httpx, testssl.sh, nuclei), pins the snapshot, and
+the checks run on the pin. Live capture refuses a domain that is not covered by
 `reach.scope`. With no grant it stops before any tool runs. A network name is
 never a grant. A lab network must also be `--internal` in Docker, and the tools
 check that with `docker network inspect`.
