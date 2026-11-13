@@ -36,10 +36,13 @@ function fetches(target) {
 // `chosen` is every module the run covers (one id, or the whole list of a joined
 // run). A joined run is only as provable as its best module: replay stays on
 // when ANY module can prove, and only a run made of proof-less modules gets it
-// off. The legacy path with no `chosen` reads `target.pack` alone.
+// off. With no `chosen`, the two tests below are the original ones, so a
+// one-module run plans exactly as before (a missing pack is Contracts).
 export function planModules(target, requested, pack, chosen) {
-  const packs = Array.isArray(chosen) && chosen.length ? [...new Set(chosen)] : [target.pack];
-  const only = (id) => packs.every((p) => p === id);
+  const all = Array.isArray(chosen) && chosen.length ? [...new Set(chosen)] : null;
+  const reviewOnly = all ? all.every((p) => p === "review") : target.pack === "review";
+  // The original test, kept word for word for the one-module path.
+  const otherModule = all ? all.some((p) => p && p !== "contracts") : Boolean(target.pack && target.pack !== "contracts");
   const want = (id, def) => (Array.isArray(requested) ? requested.includes(id) : def);
   const local = hasLocalSource(target);
   const mods = [];
@@ -52,13 +55,13 @@ export function planModules(target, requested, pack, chosen) {
   // their own events.
   // The review pack has no replay oracle that fits its code. Say so: replay is
   // off and cannot be turned on, so no finding from this run is ever proven.
-  if (only("review")) {
+  if (reviewOnly) {
     if (fetches(target)) mods.push({ id: "fetch", on: true, fixed: true, available: true, reason: "fetches the scope's repos into the workspace" });
     mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "No replay oracle fits this code, so no finding can be proven. The run reports leads only." });
     return mods;
   }
 
-  if (!only("contracts")) {
+  if (otherModule) {
     if (pack?.proof === "none") {
       mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "This module has no replay oracle, so no finding can be proven. The run reports leads only." });
       return mods;

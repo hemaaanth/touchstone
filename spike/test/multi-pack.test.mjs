@@ -369,3 +369,35 @@ test("the pre-pass view names each module's rows and leaves one-module records a
   assert.deepEqual(prepassViewOf(single).leads.map((l) => l.check), ["x"]);
   assert.equal("pack" in prepassViewOf(single).leads[0], false);
 });
+
+// A one-module plan must stay exactly main's. Every target kind, with no
+// `chosen` and with its own pack as `chosen`, gives the same steps.
+const { planModules } = await import("../lib/modules.mjs");
+const steps = (target, chosen, pack) => planModules(target, undefined, pack, chosen).map((m) => `${m.id}:${m.on}`);
+const contractLab = { kind: "lab", id: "vault-reentrancy" }; // no `pack`: Contracts
+const packLab = { kind: "lab", id: "web/dapp", pack: "web" };
+const liveTarget = { kind: "live", id: "live-x", pack: "web", hosts: [host] };
+const folder = { path: "a.sol", content: "contract A {}" };
+const solScope = { kind: "scope", id: "s", pack: "contracts", members: [{ kind: "folder", name: "f", files: [folder] }] };
+const brief = { kind: "brief", id: "b", brief: "# x", links: ["https://github.com/a/b"] };
+
+test("a one-module plan is main's, for every kind, with and without `chosen`", () => {
+  assert.deepEqual(steps(contractLab), ["agent:true", "static:true", "fuzz:true", "replay:true"]);
+  assert.deepEqual(steps(packLab), ["agent:true", "replay:true"]);
+  assert.deepEqual(steps(liveTarget), ["agent:true", "replay:true"]);
+  assert.deepEqual(steps(solScope), ["agent:true", "static:true", "fuzz:true", "replay:true"]);
+  assert.deepEqual(steps(brief), ["agent:true", "static:false", "fuzz:false", "fetch:true", "replay:true"]);
+  // The same on the joined call path with one id: no step is lost or added.
+  for (const [target, id] of [[contractLab, "contracts"], [packLab, "web"], [liveTarget, "web"], [solScope, "contracts"], [brief, "contracts"]]) {
+    assert.deepEqual(steps(target, [id]), steps(target));
+  }
+  // A requested toggle still decides on the one-module path.
+  const off = planModules(contractLab, [], undefined).filter((m) => m.on).map((m) => m.id);
+  assert.deepEqual(off, ["agent", "replay"]);
+});
+
+test("a joined plan keeps replay only while some module can prove", () => {
+  const many = (chosen, proof) => planModules(contractLab, undefined, { proof }, chosen).map((m) => `${m.id}:${m.on}`);
+  assert.deepEqual(many(["contracts", "review"], "multi"), ["agent:true", "replay:true"]);
+  assert.deepEqual(many(["review", "surface"], "none"), ["agent:true", "replay:false"]);
+});
