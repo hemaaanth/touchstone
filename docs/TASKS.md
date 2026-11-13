@@ -279,7 +279,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| J1 | blocked | Step 0: one real snapshot test on the owner's Daytona account. |
+| J1 | todo | Step 0: one real snapshot test on the owner's Daytona account. **Owner, 2026-11-13: yes, make the first real Daytona call.** No longer blocked. Order from the same answer: N3, N5 and N6 are finished first; J1 is then the first Wave 4 step. Report the cost of the call. |
 | J2 | todo | Steps 1 to 7 after J1. |
 
 ## K. Cleanup and housekeeping
