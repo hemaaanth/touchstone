@@ -12,6 +12,30 @@ export const DEFAULT_PACK = "contracts"
 
 export const packOf = (t: Pick<TargetScope, "pack"> | null | undefined): string => t?.pack ?? DEFAULT_PACK
 
+// What each module tests, in one plain sentence. The loader does not send it
+// (spike/packs/index.mjs packList), so it lives here. Each sentence restates
+// the pack's own SKILL.md and says nothing about proof: the proof words come
+// from PROOF_KIND. tests/module-tests.test.ts fails when a pack the loader
+// lists has no sentence here, or when a sentence names a pack it does not list.
+export const MODULE_TESTS: Readonly<Record<string, string>> = {
+  "contracts": "Solidity contracts you own, from a lab, a local folder or a GitHub repo.",
+  "review": "Code with no Solidity in it, such as Rust, Go, TypeScript or Python.",
+  "supply-chain": "A Git repository, without running its code: leaked keys, risky workflows and vulnerable dependencies.",
+  "web": "A dApp backend from the outside: its sign-in with Ethereum flow and its REST API.",
+  "domains": "A pinned snapshot of your DNS and front end, for gaps in their controls.",
+  "ai-mcp": "An AI agent and the MCP server it uses, from the outside, with one low-privilege token.",
+  "surface": "The hosts and services in a pinned zone, handed on to Domains and Web.",
+  "phishing": "Domains that copy your domain, and whether they are known scams.",
+  "chain-watch": "Admin changes on a chain between two blocks: a proxy upgrade, an owner change, a role grant.",
+  "infra-cloud": "An infrastructure-as-code snapshot: paths to signer keys, RPC admin methods and front-end publishing.",
+  "keys": "Safe multisig wallets you own, for setups that let funds move without enough owners signing.",
+}
+
+// The sentence for one module. A pack the console does not know yet has none.
+export function moduleTests(id: string): string | null {
+  return Object.hasOwn(MODULE_TESTS, id) ? MODULE_TESTS[id] : null
+}
+
 // How a pack's replay proves a finding, keyed by the pack's `proof` field.
 // Evidence re-checks a pinned snapshot, and Foundry stays in the offline
 // sandbox. An HTTP pack that sets `live` can also replay against a granted host.

@@ -82,11 +82,13 @@ test('recorded jsluice secrets keep no secret value', () => {
   assert.deepEqual(parseJsluiceSecrets('noise\n{"kind":"x","filename":"/work/.live/js/0000.js"}\n', scripts), []);
 });
 
-test('jsluice errors on stderr are found, and a failed image build has a reason', () => {
+test('jsluice errors on stderr are found, and a missing image is a reason, never a build', () => {
   assert.deepEqual(jsluiceErrors('error: open /work/.live/js/0001.js: no such file or directory\nother\n'), ['error: open /work/.live/js/0001.js: no such file or directory']);
   assert.deepEqual(jsluiceErrors(''), []);
-  const fail = (cmd, args) => { throw new Error(args[0] === 'build' ? 'go: module lookup failed' : 'No such image'); };
-  assert.match(ensureJsluice(fail), /^Could not build the image touchstone-jsluice:0ddfab1 from .*jsluice\/\. .*module lookup failed/);
+  const calls = [];
+  const missing = (cmd, args) => { calls.push([cmd, ...args].join(' ')); throw new Error('No such image'); };
+  assert.equal(ensureJsluice(missing), 'The image touchstone-jsluice:0ddfab1 is missing. Run node spike/scripts/setup.mjs to build it. A run never builds an image.');
+  assert.deepEqual(calls, ['docker image inspect touchstone-jsluice:0ddfab1'], 'one inspect, no build');
 });
 
 test('real jsluice reads the lab JavaScript with no network', { timeout: 700000 }, async () => {
