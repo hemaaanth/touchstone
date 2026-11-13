@@ -6,10 +6,10 @@ import { TEST_STORE_DIR } from "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const { addGrant, readGrants } = await import("../lib/grant-store.mjs");
+const { addGrant, readGrants, withStoreLock, saveStore, loadGrants } = await import("../lib/grant-store.mjs");
 const { addScope, readScopes } = await import("../lib/scopes-store.mjs");
 const GRANTS = process.env.TOUCHSTONE_GRANTS_FILE;
 const LOCK = `${GRANTS}.lock`;
@@ -115,4 +115,84 @@ test("the scope store takes its own lock the same way", async () => {
   delete process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS;
   assert.equal(addScope({ title: "x", members: [{ kind: "repo", url: "https://github.com/acme/x" }] }).title, "x");
   assert.ok(path.dirname(lock).startsWith(TEST_STORE_DIR), "the test never touches spike/data");
+});
+
+test("a lock path that is a dangling link or a folder is refused with a sentence, and never followed", () => {
+  reset();
+  const nowhere = path.join(TEST_STORE_DIR, "nowhere", "target");
+  symlinkSync(nowhere, LOCK);
+  assert.throws(() => addGrant({ hosts: ["linked.example.com"], kind: "authorized", approvedBy: "test" }), new RegExp(`^Error: Refused: the grant store lock ${LOCK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is a link or a folder, not a lock file\\. Touchstone does not follow it\\. Nothing was changed\\. Remove it, then try again\\.$`));
+  assert.ok(!existsSync(nowhere), "the link's target was never created");
+  assert.ok(!existsSync(GRANTS));
+  rmSync(LOCK);
+  mkdirSync(LOCK);
+  assert.throws(() => addGrant({ hosts: ["folder.example.com"], kind: "authorized", approvedBy: "test" }), /is a link or a folder, not a lock file/);
+  rmSync(LOCK, { recursive: true });
+  reset();
+});
+
+test("a live lock older than 30 s is cleared, and the write goes on", () => {
+  reset();
+  const owner = aliveProcess();
+  writeFileSync(LOCK, JSON.stringify({ pid: owner.pid, at: Date.now() - 40_000 }));
+  const old = new Date(Date.now() - 40_000);
+  utimesSync(LOCK, old, old);
+  process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS = "200";
+  addGrant({ hosts: ["after-old.example.com"], kind: "authorized", approvedBy: "test" });
+  assert.deepEqual(readGrants().map((g) => g.hosts[0]), ["after-old.example.com"]);
+  owner.kill();
+  reset();
+});
+
+test("a slow writer whose lock was taken over refuses its write, and leaves the new lock alone", () => {
+  reset();
+  addGrant({ hosts: ["kept.example.com"], kind: "authorized", approvedBy: "test" });
+  const before = readFileSync(GRANTS, "utf8");
+  assert.throws(
+    () =>
+      withStoreLock(GRANTS, "grant store", () => {
+        const all = loadGrants();
+        // While this writer was stopped, another process judged its lock stale
+        // and took it over.
+        rmSync(LOCK);
+        writeFileSync(LOCK, JSON.stringify({ pid: 1, at: Date.now() }));
+        saveStore(GRANTS, [...all, { id: "lost" }]);
+      }),
+    /^Error: Refused: this write held the store lock .+ so long that another process took it over\. Nothing was changed\. Try again\.$/,
+  );
+  assert.equal(readFileSync(GRANTS, "utf8"), before, "nothing written");
+  assert.equal(JSON.parse(readFileSync(LOCK, "utf8")).pid, 1, "the other process's lock is not removed");
+  reset();
+});
+
+// Two processes judge the same stale lock at once (a test hook pauses each one
+// between judging and taking over), then each runs a slow read-modify-write.
+// Only one may take the lock over; the other waits, so neither update is lost.
+function racer(tag) {
+  const code = `
+    const g = await import(${JSON.stringify(STORE)});
+    const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    g.lockTestHooks.afterStaleJudged = () => pause(300);
+    g.withStoreLock(process.env.TOUCHSTONE_GRANTS_FILE, "grant store", () => {
+      const all = g.loadGrants();
+      pause(300); // a slow mutation: the other process must not be inside now
+      g.saveStore(process.env.TOUCHSTONE_GRANTS_FILE, [...all, { id: "${tag}" }]);
+    });`;
+  const c = spawn(process.execPath, ["--input-type=module", "-e", code], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  children.push(c);
+  let err = "";
+  c.stderr.on("data", (d) => (err += d));
+  return new Promise((res) => c.on("exit", (code) => res({ code, err })));
+}
+
+test("two processes that find the same stale lock: only one takes it over, and no update is lost", async () => {
+  reset();
+  writeFileSync(GRANTS, "[]");
+  writeFileSync(LOCK, JSON.stringify({ pid: await deadPid(), at: Date.now() }));
+  process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS = "10000";
+  const results = await Promise.all([racer("one"), racer("two")]);
+  for (const r of results) assert.equal(r.code, 0, r.err);
+  assert.deepEqual(JSON.parse(readFileSync(GRANTS, "utf8")).map((g) => g.id).sort(), ["one", "two"]);
+  assert.ok(!existsSync(LOCK));
+  reset();
 });
