@@ -58,6 +58,16 @@ export function fetchFinding(id: string): Promise<Finding> {
   return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}`)
 }
 
+// A finding's report as text, built and redacted by the server (report.mjs):
+// "md" is the Markdown report, "agent" the short brief for a coding agent.
+// Never build these in the browser: the stored record is not redacted.
+export async function fetchFindingText(id: string, format: "md" | "agent"): Promise<string> {
+  const url = `/api/findings/${encodeURIComponent(id)}/report?format=${format}`
+  const res = await fetch(url)
+  if (!res.ok) throw new HttpError(url, res.status)
+  return res.text()
+}
+
 // ---- Live runs.
 
 export async function fetchModels(): Promise<{

@@ -2,7 +2,7 @@
 // UI renders. No invented values: every field here is lifted from a run the
 // engine actually produced (spike/results/agent/run-*.json). A finding is only
 // "proven" because a Foundry replay in a sandbox reproduced it.
-import { readdir, readFile, writeFile } from "node:fs/promises"
+import { open, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
@@ -243,7 +243,9 @@ function normalize(raw, { id, runId, finding }) {
   // field; a forge proof identifies them as the contracts pack. A non-forge
   // proof with no saved pack is a module run whose provenance we no longer have
   // — we say Unknown rather than invent "contracts"/"Vault.sol" it never ran.
-  const pack = r.pack || (kind === "forge" ? "contracts" : null)
+  // A finding's own `pack` wins: one run can hold several modules, and each
+  // finding names the one that made it. Else the run's pack.
+  const pack = finding.pack || r.pack || (kind === "forge" ? "contracts" : null)
 
   return {
     id,
@@ -355,8 +357,35 @@ async function readRuns() {
   return out
 }
 
+// When a run started: the time of its first engine event, the same time the
+// report shows (report.mjs runAt). Only the head of the events file is read: the
+// file can be tens of MB. Null when the run kept no events; the file's own date
+// is not used, because a copy or a checkout changes it.
+async function runStartedAt(runId) {
+  let file
+  try {
+    file = await open(path.join(RESULTS_DIR, `run-${runId}.events`))
+    const { buffer, bytesRead } = await file.read(Buffer.alloc(64 * 1024), 0, 64 * 1024, 0)
+    for (const line of buffer.toString("utf8", 0, bytesRead).split("\n")) {
+      try {
+        const t = JSON.parse(line)?.t
+        if (Number.isFinite(t)) return t
+      } catch {
+        // A line cut by the 64 KB read, or a torn line.
+      }
+    }
+  } catch {
+    // No events file.
+  } finally {
+    await file?.close()
+  }
+  return null
+}
+
 export async function listFindings() {
   const all = await readRuns()
+  const started = new Map()
+  for (const f of all) if (!started.has(f.runId)) started.set(f.runId, await runStartedAt(f.runId))
   // The list shows only the few fields a row needs.
   return all.map((f) => ({
     id: f.id,
@@ -364,7 +393,11 @@ export async function listFindings() {
     title: f.title,
     severity: f.severity,
     module: f.module,
+    pack: f.pack ?? null,
     target: f.target,
+    // The scope the run used (newer runs), and when the run started.
+    scope: f.scope?.title ?? null,
+    at: started.get(f.runId),
     stages: f.stages,
     proven: f.stages.proven,
     dismissed: f.dismissed,
