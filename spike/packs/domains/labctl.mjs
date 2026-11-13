@@ -8,14 +8,15 @@
 //
 // Cleanup: stop() removes the containers, the network and the copy. createLabNetwork
 // tracks the network, so a SIGINT/SIGTERM (a test runner's kill on timeout) also removes
-// the network and every container on it; this file's own handler removes the copy.
+// the network and every container on it; lib/temp-dirs.mjs removes the copy.
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLabNetwork, removeLabNetwork } from '../../lib/lab-net.mjs';
+import { removeTempDir, trackTempDir } from '../../lib/temp-dirs.mjs';
 export const LAB = fileURLToPath(new URL('./lab', import.meta.url));
 const docker = args => execFileSync('docker', args, { encoding: 'utf8', timeout: 60000 });
 // Async docker, the shape lib/lab-net.mjs expects. The Phishing lab uses it too.
@@ -65,41 +66,15 @@ export function assertInternal(network) {
   if (internal !== 'true') throw new Error('Lab network ' + network + ' is not --internal');
 }
 export const LAB_SCOPE = ['touchstone.test'];
-// The per-run copies of lab/ this process made. On SIGINT/SIGTERM they are removed too
-// (lab-net's handler removes the network and containers, not the copy). The process
-// still dies by the signal: whichever of the two handlers runs last, with no other
-// listener left, raises it again. A crash (the 'exit' event) removes them as well.
-const copies = new Set();
-const SIGNALS = ['SIGINT', 'SIGTERM'];
-const removeCopies = () => { for (const c of copies) { try { rmSync(c, { recursive: true, force: true }); } catch {} } copies.clear(); };
-function onSignal(sig) {
-  removeCopies();
-  for (const s of SIGNALS) process.removeListener(s, onSignal);
-  process.removeListener('exit', removeCopies);
-  if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
-}
-function trackCopy(dir) {
-  if (copies.size === 0) { for (const s of SIGNALS) process.on(s, onSignal); process.on('exit', removeCopies); }
-  copies.add(dir);
-}
-function untrackCopy(dir) {
-  if (!copies.delete(dir) || copies.size) return;
-  for (const s of SIGNALS) process.removeListener(s, onSignal);
-  process.removeListener('exit', removeCopies);
-}
 // A per-run copy of a lab folder with its canonical addresses rewritten to this
-// run's. It is removed by removeLabCopy, or on SIGINT/SIGTERM/exit.
+// run's. It is removed by removeLabCopy, or on SIGINT/SIGTERM/exit (lib/temp-dirs.mjs).
 export function makeLabCopy(lab, ips, canon = CANON, prefix = 'touchstone-domains-lab-') {
-  const copy = mkdtempSync(join(tmpdir(), prefix));
-  trackCopy(copy);
+  const copy = trackTempDir(mkdtempSync(join(tmpdir(), prefix)));
   cpSync(lab, copy, { recursive: true });
   rewriteLabDir(copy, ips, canon);
   return copy;
 }
-export function removeLabCopy(copy) {
-  rmSync(copy, { recursive: true, force: true });
-  untrackCopy(copy);
-}
+export const removeLabCopy = removeTempDir;
 // Start the lab on its own --internal network with a free subnet. Resolves to
 // { network, subnet, resolver, web, dir (the lab copy), granted, scope, stop }; stop() is async
 // and safe to call twice.
