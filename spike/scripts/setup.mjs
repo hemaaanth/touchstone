@@ -9,7 +9,7 @@
 //   node spike/scripts/setup.mjs --list       # show the manifest, build nothing
 //   node spike/scripts/setup.mjs --dry-run    # show what WOULD run
 //   node spike/scripts/setup.mjs --only web,contracts
-//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory
+//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory, scorecard, legitify
 //   node spike/scripts/setup.mjs --force      # rebuild/repull even if present
 //   node spike/scripts/setup.mjs --daytona    # only the images that reach Daytona
 //
@@ -149,6 +149,13 @@ export const MANIFEST = [
     ref: "ghcr.io/mongodb/kingfisher:2.18.1" },
   { tag: "touchstone-cosign:v3.1.4", group: "supply-chain", kind: "build",
     context: "spike/packs/supply-chain/cosign" },
+  // Opt-in networked tools (networked.mjs). Each runs only in capture mode.
+  { tag: "touchstone/scorecard:5.6.0", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/scorecard",
+    note: "OSSF Scorecard. Opt-in: --network-tools scorecard." },
+  { tag: "touchstone/legitify:1.0.11", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/legitify",
+    note: "Legitify. Opt-in; always fails closed (no lead parser)." },
 
   // ---- infra-cloud ----
   { tag: "touchstone/checkov-cli:3.4.3", group: "infra-cloud", kind: "build",
@@ -210,7 +217,7 @@ Flags:
   --dry-run           Print each action that would run, do nothing
   --force             Rebuild/repull even if the image is already present
   --only a,b          Only these groups (${[...new Set(MANIFEST.map((m) => m.group))].join(", ")})
-  --include-optional  Include optional images (garak, observatory, strix)
+  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify)
   --daytona           Only images that reach Daytona on main
   --pull-only         Skip builds
   --build-only        Skip pulls
