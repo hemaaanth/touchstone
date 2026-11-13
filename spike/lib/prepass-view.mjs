@@ -45,8 +45,10 @@ function statusOf(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
   if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };
-  // A run that left some checks unchecked says so: "ran" alone looks clean.
-  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: Number(t.gaps) > 0 ? str(t.reason) || "Some checks did not run." : null };
+  // A run that finished can still carry a caveat ("7 of 8 operations errored",
+  // or a run that left some checks unchecked): keep it, so "ran" never reads
+  // as a clean pass when it is not one.
+  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: str(t.reason) || (Number(t.gaps) > 0 ? "Some checks did not run." : null) };
   const reason = str(t.reason)
     || (t.timedOut ? "Timed out." : t.code != null && t.code !== 0 ? `Exited with code ${str(t.code, 10)}.` : "")
     || (s === "unavailable" ? "Not available." : "The tool failed.");

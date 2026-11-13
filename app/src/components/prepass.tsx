@@ -85,8 +85,10 @@ export function PrepassDetail({ prepass }: { prepass: PrepassView }) {
                 <Icon aria-hidden className="size-3 text-muted-foreground" />
               </span>
               <span className={cn(mono, "shrink-0 text-foreground/80")}>{t.name}</span>
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                {t.status === "ran" ? plural(t.leads, "lead") : `Unavailable${t.reason ? ` · ${t.reason}` : ""}`}
+              {/* A ran row's caveat ("7 of 8 operations errored") follows the
+                  lead count and wraps, so a partial run never reads as clean. */}
+              <span className={cn("min-w-0 flex-1 text-xs text-muted-foreground", t.status === "ran" && t.reason ? "break-words" : "truncate")}>
+                {t.status === "ran" ? `${plural(t.leads, "lead")}${t.reason ? ` · ${t.reason}` : ""}` : `Unavailable${t.reason ? ` · ${t.reason}` : ""}`}
               </span>
             </li>
           )

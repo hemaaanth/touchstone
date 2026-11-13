@@ -7,6 +7,7 @@ import { appendFileSync, existsSync, linkSync, readFileSync, renameSync, statSyn
 import { fileURLToPath } from "node:url";
 import { FALLBACK_PRICE, activeProvider, readConfig, runBudgetUsd, providerKey } from "./providers.mjs";
 import { createRunBudget } from "./run-budget.mjs";
+import { scrubError, scrubUrl } from "./redact-url.mjs";
 
 const budget = createRunBudget(process.env.RUN_BUDGET_USD ?? runBudgetUsd(), process.env.RUN_SPENT_USD ?? 0);
 export const runSpend = () => ({ usd: budget.usd, budgetUsd: budget.limit });
@@ -244,15 +245,19 @@ function record(modelId, usd, inTok, outTok) {
 export async function chat(modelId, body, { stream = false, estimateUsd = 0.01, timeoutMs = 180_000 } = {}) {
   guard(estimateUsd);
   const payload = { model: modelId, ...body, ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}) };
+  // BASE_URL may hold a user name, password or query: no error or echoed
+  // body keeps it (redact-url.mjs).
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${key()}` },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
+  }).catch((err) => {
+    throw scrubError(err, BASE_URL);
   });
   if (!res.ok) {
     const text = await res.text();
-    return { httpError: res.status, error: text.slice(0, 600) };
+    return { httpError: res.status, error: scrubUrl(text.slice(0, 600), BASE_URL) };
   }
   if (!stream) {
     const json = await res.json();

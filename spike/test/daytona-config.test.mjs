@@ -19,7 +19,7 @@ const writeConfig = (cfg) => {
 };
 mock.module(providersUrl, { exports: { ...realProviders, readConfig, writeConfig } });
 const { DEFAULT_API_URL, DEFAULT_TARGET, closeRun, daytonaOn, execConfig } = await import("../lib/daytona.mjs");
-const { getSettings, setExecution } = await import("../../app/server/settings.mjs");
+const { getSettings, saveProvider, setExecution } = await import("../../app/server/settings.mjs");
 
 test("execConfig: server URL and region come from env, then Settings, then the default", () => {
   const saved = { execution: { apiUrl: "https://saved.example/api/", target: "eu-1" } };
@@ -250,5 +250,82 @@ test("a held saved key is marked saved, so it can be removed", () => {
     const res = setExecution({ backend: "local", clearKey: true });
     assert.equal(store.execution.apiKey, undefined);
     assert.equal(res.execution.key.saved, false);
+  });
+});
+
+// L22: GET /api/settings needs no console token, so no URL in it may carry a
+// user name, password, query or #part.
+const gw = (baseUrl) => ({ providers: { gw: { id: "gw", label: "GW", baseUrl, models: { m: { id: "m", input: 1, output: 1 } } } } });
+const gwOf = (s) => s.providers.find((p) => p.id === "gw");
+
+test("settings never return a user name, password, query or #part of a URL", () => {
+  const cases = [
+    ["https://user:pass@x.example/api?x=1#y", "https://x.example/api"],
+    ["https://user:pass@x.example/api", "https://x.example/api"],
+    ["https://x.example/api?x=1", "https://x.example/api"],
+    ["https://x.example/api#y", "https://x.example/api"],
+    ["https://user@x.example:8443/api/", "https://x.example:8443/api"],
+  ];
+  for (const [raw, shown] of cases) {
+    withEnv({ ...NO_ENV, DAYTONA_API_URL: raw }, () => {
+      store = gw(raw);
+      const s = getSettings();
+      assert.equal(s.execution.apiUrl, shown, raw);
+      assert.equal(s.execution.apiUrlHidden, true, raw);
+      assert.equal(gwOf(s).baseUrl, shown, raw);
+      assert.equal(gwOf(s).baseUrlHidden, true, raw);
+      const body = JSON.stringify(s);
+      for (const bit of ["user", "pass", "x=1", "#y"]) assert.ok(!body.includes(bit), `${bit} leaked for ${raw}`);
+    });
+  }
+});
+
+test("a plain URL comes back unchanged", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://env.example/api" }, () => {
+    store = gw("https://gw.example/v1");
+    const s = getSettings();
+    assert.equal(s.execution.apiUrl, "https://env.example/api");
+    assert.equal(s.execution.apiUrlHidden, false);
+    assert.equal(gwOf(s).baseUrl, "https://gw.example/v1");
+    assert.equal(gwOf(s).baseUrlHidden, false);
+  });
+});
+
+test("saving a provider with its shown URL keeps the hidden parts; a new URL replaces them", () => {
+  withEnv(NO_ENV, () => {
+    store = gw("https://user:pass@gw.example/v1?x=1");
+    const res = saveProvider({ id: "gw", label: "GW", baseUrl: "https://gw.example/v1" });
+    assert.equal(store.providers.gw.baseUrl, "https://user:pass@gw.example/v1?x=1");
+    assert.ok(!JSON.stringify(res).includes("pass"), "the response is cut too");
+    saveProvider({ id: "gw", label: "GW", baseUrl: "https://gw.example/v2" });
+    assert.equal(store.providers.gw.baseUrl, "https://gw.example/v2");
+  });
+});
+
+test("the saved flag while a key is in use", () => {
+  withEnv(NO_ENV, () => {
+    store = { execution: { backend: "local", apiKey: KEY } };
+    const k = getSettings().execution.key;
+    assert.deepEqual([k.set, k.source, k.saved], [true, "settings", true]);
+  });
+  withEnv({ ...NO_ENV, DAYTONA_API_KEY: NEW_KEY }, () => {
+    store = {};
+    const k = getSettings().execution.key;
+    assert.deepEqual([k.set, k.source, k.saved], [true, "env", false]);
+  });
+});
+
+test("a saved key on another host, an env key, and the URL back to the default: savable", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_KEY: NEW_KEY }, () => {
+    store = { execution: { backend: "daytona", apiUrl: "https://a.example/api", apiKey: KEY, keyHost: "a.example" } };
+    const before = getSettings().execution;
+    assert.equal(before.envKeyHost, "app.daytona.io", "the page learns where the env key goes");
+    assert.equal(before.key.source, "settings");
+    const res = setExecution({ backend: "daytona", apiUrl: "" });
+    assert.equal(store.execution.apiKey, undefined, "the saved key for a.example is dropped");
+    assert.equal(store.execution.apiUrl, undefined);
+    const c = execConfig();
+    assert.deepEqual([c.apiKey, c.keySource, c.backend], [NEW_KEY, "env", "daytona"]);
+    assert.ok(!JSON.stringify(res).includes(NEW_KEY) && !JSON.stringify(res).includes(KEY), "no key in the response");
   });
 });

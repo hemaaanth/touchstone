@@ -25,7 +25,7 @@
 // ../BRIEF.md and ../openapi.yaml, which are its documented inputs.
 import express from "express";
 import { SiweMessage } from "siwe";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8080);
 // EIP-4361 domain/uri this lab expects callers to sign for. The lab is single
@@ -69,6 +69,60 @@ const LEAKED_SIGNER = {
   signerAddress: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
   signerPrivateKey: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
 };
+
+// BUG 7 fixture: a fixed-size in-memory "chain". Heights 0..CHAIN_HEAD-1 are
+// real blocks; anything else is out of range. The block-lookup route below
+// reads this array without a range check, which is the planted fault.
+const CHAIN_HEAD = 128;
+const BLOCKS = Array.from({ length: CHAIN_HEAD }, (_, h) => ({
+  height: h,
+  hash: "0x" + h.toString(16).padStart(64, "0"),
+  txCount: (h * 7) % 13,
+}));
+
+// BUG 8 fixture: a "v2" session API that signs its own JWTs instead of the
+// opaque random tokens below. The JWTs are HS256-signed with a weak,
+// dictionary-crackable secret ("secret123" is a word in jwt_tool's bundled
+// jwt-common.txt). That is the planted fault: the HMAC key is guessable
+// OFFLINE, so anyone who captures one issued token can recover the key with a
+// dictionary and then forge a token with any claims -- e.g. role:"admin" -- to
+// reach the admin-only route. An offline JWT analyser (jwt_tool) cracks the
+// secret from a single captured token with no further requests to the lab;
+// none of the HTTP scanners in the prepass crack a signing key. The opaque
+// SIWE sessions below are unchanged, so this is purely additive.
+const JWT_SECRET = "secret123"; // weak on purpose; in jwt_tool's default wordlist
+const b64url = (buf) => Buffer.from(buf).toString("base64url");
+
+function jwtSign(payload) {
+  const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = b64url(JSON.stringify(payload));
+  const data = `${header}.${body}`;
+  const sig = createHmac("sha256", JWT_SECRET).update(data).digest("base64url");
+  return `${data}.${sig}`;
+}
+
+// Verify an HS256 JWT against JWT_SECRET. Fully defensive: any malformed input
+// returns null (served as a 401), never throws -- so fuzzing the Authorization
+// header can never turn into a 500 here. The hole is the weak key, not a crash.
+function jwtVerify(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) return null;
+  const [header, body, sig] = parts;
+  let expected;
+  try {
+    expected = createHmac("sha256", JWT_SECRET).update(`${header}.${body}`).digest("base64url");
+  } catch {
+    return null;
+  }
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    return JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
 
 // --- Nonce store. Bug 1: a nonce is never invalidated after a successful
 // verify, so the same signed message replays indefinitely.
@@ -187,6 +241,49 @@ app.get("/api/users/:id/wallet", requireSession, (req, res) => {
   const u = BY_ID.get(Number(req.params.id));
   if (!u) return res.status(404).json({ error: "not_found" });
   res.json({ id: u.id, wallet: u.wallet, apiKey: u.apiKey });
+});
+
+// BUG 7: a documented, public block-lookup endpoint (in openapi.yaml, no
+// security). It assumes the requested height is in range and reads the chain
+// array directly. An out-of-range or negative height -- the kind a schema
+// fuzzer generates from the integer path parameter -- indexes past the array,
+// so the handler dereferences `undefined` and Express turns the thrown
+// TypeError into an unhandled HTTP 500, instead of the 404 a missing block
+// should get. A 500 on a well-typed but out-of-range input is a server-error /
+// schema-conformance bug. None of the other prepass tools fuzz a typed path
+// parameter against the schema, so only Schemathesis trips it. Valid heights
+// (0..CHAIN_HEAD-1) return 200 with the block, so the route is genuinely
+// functional. This is additive: no existing route changes.
+app.get("/api/block/:height", (req, res) => {
+  const height = Number(req.params.height);
+  const block = BLOCKS[height]; // undefined when out of range or negative
+  // Bug: no `if (!block) return res.status(404)...`. Reading .hash of
+  // undefined throws synchronously, which Express serves as a 500.
+  res.json({ height: block.height, hash: block.hash, txCount: block.txCount });
+});
+
+// BUG 8: a documented v2 session API backed by JWTs. GET /api/v2/token hands
+// any caller a signed guest token; GET /api/v2/admin/summary verifies the JWT
+// and serves data only to role:"admin". The signature IS checked, so a random
+// forged token is rejected -- but the HS256 secret is weak and dictionary-
+// crackable, so the check is worthless: crack the key offline from one captured
+// token, forge an admin token, read the summary. jwt_tool produces the lead
+// ("this token's signing key is crackable"); proving impact means forging an
+// admin token and getting a 200 from the admin route. Additive: no existing
+// route changes.
+app.get("/api/v2/token", (_req, res) => {
+  const now = Math.floor(Date.now() / 1000);
+  const token = jwtSign({ sub: "guest", role: "guest", iat: now, exp: now + 3600 });
+  res.json({ token, tokenType: "Bearer" });
+});
+
+app.get("/api/v2/admin/summary", (req, res) => {
+  const hdr = req.headers.authorization || "";
+  const token = hdr.startsWith("Bearer ") ? hdr.slice(7) : null;
+  const claims = token ? jwtVerify(token) : null;
+  if (!claims) return res.status(401).json({ error: "no_token" });
+  if (claims.role !== "admin") return res.status(403).json({ error: "forbidden" });
+  res.json({ ok: true, adminOf: String(claims.sub ?? ""), users: USERS.length, sessionsOpen: sessions.size });
 });
 
 // BUG 3: undocumented, unauthenticated, leaks the chain signer's key. Not
