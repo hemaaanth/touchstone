@@ -323,6 +323,35 @@ export function findingTarget(
   return { key: step?.key ?? null, agent: step?.agent ?? null, proofId }
 }
 
+// What one "open this finding" request still has to do, given where the finding
+// sits now and what the request already did. The jump to the card and the
+// drawer are separate: the card can land before its proof does (the server
+// announces a finding before its proof document), and the proof then opens
+// once, with no second jump. On a phone the drawer never opens by itself.
+export type FocusDone = { jumped: boolean; opened: boolean }
+export function focusActions(
+  target: { key: string | null; agent: string | null; proofId: string | null } | null,
+  done: FocusDone,
+  narrow: boolean,
+): { jump: string | null; proof: string | null; peek: { agent: string; key: string } | null; done: FocusDone } {
+  const none = { jump: null, proof: null, peek: null, done }
+  if (!target) return none
+  const jump = !done.jumped && target.key && !target.agent ? target.key : null
+  let proof: string | null = null
+  let peek: { agent: string; key: string } | null = null
+  if (!done.opened && !narrow) {
+    if (target.proofId) proof = target.proofId
+    // A child's unproven finding: its card in that agent's thread, once.
+    else if (target.agent && target.key) peek = { agent: target.agent, key: target.key }
+  }
+  return {
+    jump,
+    proof,
+    peek,
+    done: { jumped: done.jumped || !!jump || !!target.agent, opened: done.opened || !!proof || !!peek },
+  }
+}
+
 // One sentence as a card or the composer shows it: a capital first letter and
 // an end mark. The server's plain reasons ("no such run", "the server restarted
 // during this run, so it stopped") are lower case with no period.

@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { agentLook, buildMessages, findingTarget, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, findingTarget, focusActions, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -324,4 +324,25 @@ test("open a finding: an old one-card record whose finding has no PoC still find
   const t = findingTarget(state, "recorded", "old-run-1")
   assert.ok(t?.key)
   assert.equal(t?.proofId, "proof-old-run-1")
+})
+
+test("open a finding: a proof that lands after its card still opens, once, with no second jump", () => {
+  // The server announces the finding before its proof document.
+  const first = reduceEvents([submittedEv(3, "PocC"), findingEv(3, "PocC"), { ev: "status", status: "recorded" }])
+  const later = reduceEvents([submittedEv(3, "PocC"), findingEv(3, "PocC"), proofEv(3), { ev: "status", status: "recorded" }])
+  const id = `${R}.3`
+  const a = focusActions(findingTarget(first, "recorded", id), { jumped: false, opened: false }, false)
+  assert.ok(a.jump)
+  assert.equal(a.proof, null)
+  const b = focusActions(findingTarget(later, "recorded", id), a.done, false)
+  assert.equal(b.jump, null, "no second jump")
+  assert.equal(b.proof, `proof-${R}.3`)
+  const c = focusActions(findingTarget(later, "recorded", id), b.done, false)
+  assert.deepEqual([c.jump, c.proof, c.peek], [null, null, null], "nothing more after that")
+  // On a phone the drawer never opens by itself, early or late.
+  const phone = focusActions(findingTarget(later, "recorded", id), { jumped: false, opened: false }, true)
+  assert.ok(phone.jump)
+  assert.equal(phone.proof, null)
+  // An unknown id does nothing.
+  assert.deepEqual(focusActions(findingTarget(later, "recorded", `${R}.9`), { jumped: false, opened: false }, false).jump, null)
 })

@@ -19,7 +19,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { agentLook, buildMessages, findingTarget, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
+import { agentLook, buildMessages, findingTarget, focusActions, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
@@ -346,22 +346,22 @@ export function RunChat({
   useEffect(() => {
     focusRef.current = { target, openFile, openPeek }
   })
-  const focused = useRef<FocusFinding | null>(null)
+  // What this request already did: the jump to the card and the drawer are
+  // done separately, so a proof that lands after its card still opens once.
+  const focused = useRef<{ focus: FocusFinding; done: FocusDone } | null>(null)
   useEffect(() => {
-    const t0 = focusRef.current.target
-    if (!focus || !t0 || focused.current === focus || !targetSig) return
-    if (!t0.key && !t0.proofId) return
+    if (!focus || !targetSig) return
     const t = setTimeout(() => {
       const { target: t1, openFile: file, openPeek: peek } = focusRef.current
-      if (!t1) return
-      focused.current = focus
-      if (t1.key && !t1.agent) {
-        setHighlight(t1.key)
-        setJump({ where: "main", key: t1.key, n: Date.now() })
+      const prev = focused.current?.focus === focus ? focused.current.done : { jumped: false, opened: false }
+      const act = focusActions(t1, prev, isNarrow())
+      focused.current = { focus, done: act.done }
+      if (act.jump) {
+        setHighlight(act.jump)
+        setJump({ where: "main", key: act.jump, n: Date.now() })
       }
-      if (isNarrow()) return
-      if (t1.proofId) file(false)(t1.proofId)
-      else if (t1.agent && t1.key) peek(t1.agent, t1.key)
+      if (act.proof) file(false)(act.proof)
+      else if (act.peek) peek(act.peek.agent, act.peek.key)
     }, 0)
     return () => clearTimeout(t)
   }, [focus, targetSig])
