@@ -33,6 +33,7 @@ import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage.mjs"
+import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 
@@ -446,7 +447,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
     // the scope cannot support (static/fuzz on a brief with no local source yet) is
     // off with a reason, never silently dropped. The plan rides into the workspace
     // config, so the run worker builds exactly the tools this plan enables.
-    plan = planModules(target, modules)
+    plan = planModules(target, modules, target.pack ? PACKS[target.pack] : undefined)
     // Each run has its own budget. The worker stops the run when it is spent.
     budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 
@@ -1155,6 +1156,10 @@ function persistRun(run, findings) {
     // What the agent submitted. With no recorded finding these are claims
     // that were never proven, so the findings ledger does not read them.
     submitted: (run.submitted ?? []).map(({ title, severity, poc }) => ({ title, severity, poc })),
+    // Every lead an agent recorded, worst first, with its evidence (file, line,
+    // reason) and the agent that found it. Saved as events the moment each lead
+    // was made, so a run that failed later still keeps them. Never proven.
+    leads: leadsFrom(evs),
     decision: recorded ? "approved" : null,
     recorded,
     calls: (summary.calls ?? []).map((c) => c.name),

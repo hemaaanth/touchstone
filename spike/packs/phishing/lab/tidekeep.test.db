@@ -1,0 +1,7 @@
+$ORIGIN tidekeep.test.
+$TTL 300
+@ IN SOA ns.test. hostmaster.test. 2026111201 3600 600 86400 300
+@ IN NS ns.test.
+@ IN A 192.0.2.1
+@ IN MX 10 mail.tidekeep.test.
+mail IN A 192.0.2.2

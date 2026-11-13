@@ -48,7 +48,8 @@ export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
 export default {
   id:'domains',title:'Domains and front end',tier:'P',proof:'evidence',
   // It captures a real domain into a pinned snapshot, so it can take a live one.
-  live:true,
+  // The capture runs on the open bridge network (lib/targets.mjs prepareWorkspace).
+  live:true,scanNet:'open',
   system:()=> 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.',
   tools:(ws,state)=>evidenceTools(ws,state,'domains'),
   kickoff:(ws,env)=>'Review every lead, worst first. Submit supported evidence with its exact lead id, then continue. Summarize coverage. Leads: '+(env.LEADS ?? 'Call snapshot_leads.'),

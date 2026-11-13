@@ -34,6 +34,8 @@ import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
+import { leadsFrom } from "./lib/leads.mjs";
+import { afterNudge } from "./lib/nudge.mjs";
 
 // Tools tell the model how much of the run budget is left.
 readSpendWith(runSpend);
@@ -224,11 +226,14 @@ async function child([, , , mode, db, ws]) {
   // One nudge, owned by the pack: ask a model that stopped early to work the
   // suspects it has not tried. Only after a clean end of turn.
   const more = settled.status === "done" ? pack.nudge(state) : null;
+  const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
+  const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
   if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
   settled = await fleet?.drain(ctx) ?? settled;
 
   const s = await summarize(root);
   flushFinal(s);
+  if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
   const usage = await chargeUsage(harness);
   event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
   await fleet?.close();
@@ -347,6 +352,7 @@ async function main() {
     proof: worst?.proof ?? null,
     decision: findings.length ? "approved" : null,
     recorded: findings.length > 0,
+    leads: leadsFrom(all),
     calls: settled?.summary?.calls?.map((c) => c.name),
     final: settled?.summary?.final?.text?.slice(0, 1200),
     usage: settled?.usage, reports: settled?.reports,
