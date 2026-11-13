@@ -27,7 +27,7 @@ import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
@@ -37,6 +37,7 @@ import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage
 import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
+import { MULTI_DIR, prepassViewOf } from "../../spike/packs/multi.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -293,7 +294,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, packs: run.packs ?? null, grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -358,6 +359,9 @@ function view(run) {
     scope: scopeOf(run),
     // The module (pack) this run uses. A run saved before modules existed is Contracts.
     pack: scopeOf(run)?.pack ?? "contracts",
+    // Every module this ONE run covers. One entry for a one-module run, so a
+    // reader never has to branch; absent on a record saved before modules.
+    packs: run.packs?.length ? run.packs : [scopeOf(run)?.pack ?? "contracts"],
     // The module plan for this run — which parts of the pipeline are on and why,
     // so a reconnecting client can render it without replaying the event stream.
     modules: run.modules ?? null,
@@ -459,7 +463,7 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export async function createRun({ alias, targetId, modules, budgetUsd, pack, mode = "fleet" } = {}) {
+export async function createRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet" } = {}) {
   const cfg = readConfig()
   // The total spend cap comes first: at or above it, or with a ledger that
   // cannot be read, nothing is prepared and nothing is spent.
@@ -468,15 +472,25 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
+  // The modules the run covers. `packs` is the operator's ticked list from the
+  // New run dialog; two or more distinct ids make ONE run over all of them. A
+  // list that dedupes to one, or no list, is today's one-module run: `pack`.
+  const picked = [...new Set((Array.isArray(packs) ? packs : []).map(String).filter(Boolean))]
+  const multi = picked.length > 1
+  const one = multi ? null : picked[0] ?? pack
   // Pick the scope from the target library: an explicit choice, or random across
   // the labs so repeated Runs stop re-breaking one prepared bug. Throws on an
   // unknown id before anything is spent.
   // The module (pack) comes from the request. With no pack, a chosen scope
   // decides it, and nothing chosen means Contracts. An unknown pack, or a scope
   // that belongs to another pack, is refused before anything is spent.
-  if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
+  if (one != null && one !== "" && !PACKS[one]) throw new Error(`unknown module: ${one}`)
+  const unknown = picked.filter((id) => !PACKS[id])
+  if (unknown.length) throw new Error(`unknown module: ${unknown.join(", ")}`)
   if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
-  const target = withFreshFolders(pickTarget({ id: targetId, pack: pack || undefined }))
+  // The run's own target: under the first module, so every old reader that only
+  // knows `target.pack` still names a module the run really has.
+  const target = withFreshFolders(pickTarget({ id: targetId, pack: multi ? picked[0] : one || undefined }))
   // The reach gate (default-deny by kind). Before anything is spent or any
   // workspace is prepared: an offline kind (lab/local-source/brief/scope) with no
   // host passes inert; EVERY other kind — and any kind that names a host — must
@@ -489,8 +503,11 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // workspace preparation can retry with the same target and module plan.
   // Resolve modules and budget before the setup checkpoint; nothing is spent.
   // The pack shapes the plan (a non-contracts pack with no replay oracle drops
-  // the proof step), so pass it through like the rest of main's callers.
-  const plan = planModules(target, modules, target.pack ? PACKS[target.pack] : undefined)
+  // the proof step), so pass it through like the rest of main's callers. A
+  // joined run passes the whole list and a manifest that says so: replay is off
+  // only when no module of the run can prove.
+  const manifest = multi ? { proof: picked.every((id) => PACKS[id].proof === "none") ? "none" : "multi" } : target.pack ? PACKS[target.pack] : undefined
+  const plan = planModules(target, modules, manifest, multi ? picked : undefined)
   const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
   const grantIds = enforceReach(target).grants.map((g) => g.id)
   mkdirSync(RESULTS_DIR, { recursive: true })
@@ -506,9 +523,11 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
     alias,
     provider: provider.id,
     target,
+    // Every module the run covers. One entry for a one-module run, and absent on
+    // a record saved before modules existed.
+    ...(multi ? { packs: picked } : {}),
     grantIds,
     modules: plan,
-    mode,
     budget,
     model: provider.models[alias].id,
     status: "starting",
@@ -545,6 +564,9 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   broadcast(run, { t: Date.now(), ev: "budget", usd: budget })
   // Fleet or Solo. A follow-up reads it back from this event.
   broadcast(run, { t: Date.now(), ev: "mode", mode })
+  // The modules this ONE run covers. A follow-up, a restart and the view read
+  // them back from this event, so a joined workspace is rebuilt joined.
+  if (multi) broadcast(run, { t: Date.now(), ev: "packs", packs: picked })
   // The module plan for this run — which parts of the pipeline are on, and the
   // honest reason for any that are off. Also replayed to late subscribers.
   broadcast(run, modulesEvent(plan))
@@ -554,7 +576,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   setRunStatus(run, "starting")
   try {
     run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
-    run.ws = await prepareRunWorkspace(target, { modules: plan })
+    run.ws = multi ? await prepareMultiWorkspace(target, { packs: picked, modules: plan }) : await prepareRunWorkspace(target, { modules: plan })
     savePhase(run, "prepass")
   } catch (err) {
     run.error = String(err?.message ?? err)
@@ -608,7 +630,7 @@ async function startEngine(run) {
     leads = prep?.env ?? {}
     // One neutral summary of what the tools found, for every pack. The raw
     // static-scan and fuzz-scan events above stay for the finding panels.
-    const view = prepassView(run.prepass)
+    const view = prepassViewOf(run.prepass)
     if (view) broadcast(run, { t: Date.now(), ev: "prepass", ...view })
   } catch (err) {
     // A pre-pass failure must not sink the run: the agent can still audit from
@@ -1019,6 +1041,8 @@ const WS_NAME = /^(redteam-run|touchstone-supply)-[A-Za-z0-9]{6}$/
 // The server writes the run id into this file when it keeps a workspace. A
 // record alone does not bind a directory to a run: the directory names the run too.
 const WS_MARK = ".touchstone-run"
+// Where a joined run keeps one sub-workspace per module (spike/packs/multi.mjs).
+const MODULES_DIR = MULTI_DIR
 
 // The one check before the server keeps, reuses or deletes a workspace. The path
 // can come from a record file, so it proves nothing by itself. The directory
@@ -1101,14 +1125,37 @@ function swapInFiles(dir, pairs) {
   }
 }
 
-// Change the `mcp` part of the workspace config, which the AI/MCP tools read.
+// Every workspace config a credential can sit in: the run's own, and the one of
+// each module of a joined run (`modules/<id>/.touchstone.json`). A one-module
+// workspace has only the first. A link is not followed; a config that is not a
+// regular file is skipped.
+function workspaceConfigs(ws) {
+  const root = path.join(ws, ".touchstone.json")
+  const files = lstatSync(root, { throwIfNoEntry: false })?.isFile() ? [root] : []
+  let entries
+  try {
+    entries = readdirSync(path.join(ws, MODULES_DIR), { withFileTypes: true })
+  } catch {
+    entries = []
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue
+    const file = path.join(ws, MODULES_DIR, e.name, ".touchstone.json")
+    if (lstatSync(file, { throwIfNoEntry: false })?.isFile()) files.push(file)
+  }
+  return files
+}
+
+// Change the `mcp` part of every workspace config, which the AI/MCP tools read.
+// A credential in a kept workspace is scrubbed and restored in all of them: the
+// root of a joined run carries no `mcp`, only its ai-mcp module does.
 function editMcp(ws, change) {
-  const file = path.join(ws, ".touchstone.json")
-  if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return
-  const cfg = JSON.parse(readFileSync(file, "utf8"))
-  if (!cfg.mcp || typeof cfg.mcp !== "object") return
-  change(cfg.mcp)
-  writeFileSync(file, JSON.stringify(cfg, null, 2))
+  for (const file of workspaceConfigs(ws)) {
+    const cfg = JSON.parse(readFileSync(file, "utf8"))
+    if (!cfg.mcp || typeof cfg.mcp !== "object") continue
+    change(cfg.mcp)
+    writeFileSync(file, JSON.stringify(cfg, null, 2))
+  }
 }
 
 function scrubSecrets(ws, secrets) {
@@ -1187,7 +1234,7 @@ function keepWorkspace(run, ws) {
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
     writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
-    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), packs: run.packs ?? null, modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1306,6 +1353,15 @@ function ensureFiles(run) {
     run.streamFile = path.join(RESULTS_DIR, `run-${run.id}.stream.jsonl`)
     if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, run.events.map((e) => JSON.stringify(e) + "\n").join(""))
   }
+}
+
+// Build a fresh workspace for the run's own scope: joined when the run covers
+// several modules, plain otherwise. One function so the follow-up rebuild, the
+// boot recovery and the run start never drift apart on a joined run.
+function buildWorkspace(run, target, kept) {
+  const packs = run.packs ?? kept?.packs ?? null
+  const modules = run.modules ?? kept?.modules ?? []
+  return packs?.length > 1 ? prepareMultiWorkspace(target, { packs, modules }) : prepareRunWorkspace({ ...target }, { modules })
 }
 
 // Start a follow-up: one operator message to an idle run. The worker reopens
@@ -1454,7 +1510,7 @@ export function followUp(run, text, clientId) {
   // The workspace is gone: deleted, or left on another machine, or lost with
   // the temp folder at a reboot. Build a new one from the run's scope and say so.
   run.ws = null
-  prepareRunWorkspace(target, { modules: run.modules ?? kept?.modules ?? [] }).then(
+  buildWorkspace(run, target, kept).then(
     (made) => {
       run.ws = made
       const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
@@ -1583,6 +1639,8 @@ function persistRun(run, findings) {
     // the findings ledger can show which resource was under evaluation.
     target: scopeOf(run),
     pack: scopeOf(run)?.pack ?? "contracts",
+    // Every module of a joined run, so history says what the one run covered.
+    packs: run.packs ?? null,
     // The module plan this run used — which parts of the pipeline were on, and the
     // reason for any that were off — so history shows the honest configuration.
     modules: run.modules ?? null,
@@ -1683,7 +1741,7 @@ function rebuildEvents(id, record, engineEvents) {
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
-  const view = prepassView(record.prepass ?? prepassFromResult(r))
+  const view = prepassViewOf(record.prepass ?? prepassFromResult(r))
   if (view) evs.push({ t: t0, ev: "prepass", ...view })
   // Older engines did not stream each PoC as a file. The settled summary still
   // holds every run_poc call in order, so give each attempt its file back.
@@ -1740,8 +1798,9 @@ function savedRun(id, events, mtime) {
   let decision = null
   let error = null
   let findingIds = []
-  let scope = null
   let modules = null
+  // A joined run's modules, from its own event. Null on a one-module record.
+  let packs = null
   let provider = null
   let model = null
   let archived = false
@@ -1752,7 +1811,7 @@ function savedRun(id, events, mtime) {
     if (e.ev === "renamed") name = typeof e.name === "string" && e.name ? e.name : null
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
-    if (e.ev === "provider") ({ provider = null, model = null } = e)
+    if (e.ev === "packs" && Array.isArray(e.packs) && e.packs.length > 1) packs = e.packs
     if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
       submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc })
     }
@@ -1800,6 +1859,7 @@ function savedRun(id, events, mtime) {
     target: null,
     scope,
     modules,
+    packs,
     provider,
     model: model ?? Object.values(allProviders()).find((p) => p.models?.[alias])?.models[alias].id ?? alias,
     status,
@@ -1832,6 +1892,7 @@ async function resumeRun(run) {
   if (!state.target || (state.phase !== "setup" && !state.ws)) throw new Error("the saved workspace or target is missing; start a new run")
   run.ws = state.ws
   run.target = state.target // Never replace this snapshot with a newer, wider scope.
+  run.packs = state.packs ?? run.packs ?? null // The modules a joined run covers.
   run.grantIds = state.grantIds ?? [] // Missing live grant snapshots fail closed.
   run.leads = state.leads ?? {}
   run.prepass = state.prepass ?? null
@@ -1847,6 +1908,7 @@ async function resumeRun(run) {
       { ev: "scope", scope: targetSummary(run.target) },
       { ev: "budget", usd: state.budget },
       { ev: "mode", mode: state.mode },
+      ...(run.packs?.length ? [{ ev: "packs", packs: run.packs }] : []),
       modulesEvent(run.modules ?? []),
       { ev: "provider", provider: run.provider, model: run.model },
       { ev: "status", status: "starting" },
@@ -1854,7 +1916,7 @@ async function resumeRun(run) {
     for (const event of initial) if (!run.events.some((e) => e.ev === event.ev)) broadcast(run, { t: Date.now(), ...event })
     run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
     broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: "setup" })
-    run.ws = await prepareRunWorkspace(run.target, { modules: run.modules ?? [] })
+    run.ws = await buildWorkspace(run, run.target, null)
     savePhase(run, "prepass")
     if (run.stopping) {
       await endWorkspace(run)
