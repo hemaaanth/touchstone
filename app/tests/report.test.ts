@@ -2,7 +2,7 @@ import "./helpers/isolated-env"
 import { describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { linkSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 // The report module is plain .mjs (server side). We test its pure builders with
@@ -474,48 +474,104 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("the bundle ships every workspace file except build output, including data artifacts, and still refuses a secret file", () => {
-    const ws = mkdtempSync(path.join(tmpdir(), "replay-all-"))
+  test("the bundle ships an allow-list of sources and config, not a data file or a secret file", () => {
+    // No forge run here, so snapshot falls back to every .sol under the workspace
+    // (still sources only) plus foundry.toml / remappings.txt. A data file and
+    // every secret-shaped file the reviewer tried are left out, by name or body.
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-allow-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "src", "keys"))
+      mkdirSync(path.join(ws, "src", "keystore"))
+      mkdirSync(path.join(ws, "test"))
+      mkdirSync(path.join(ws, "out"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      // Not shipped: a data artifact (not a source) and the reviewer's secret files.
+      writeFileSync(path.join(ws, "src", "Thing.json"), JSON.stringify({ bytecode: "0x60" }))
+      writeFileSync(path.join(ws, "src", "BytecodeVault.runtime.hex"), "0x6080\n")
+      writeFileSync(path.join(ws, "src", "keys", "deployer.key"), "0x" + "ab".repeat(32) + "\n")
+      writeFileSync(path.join(ws, "src", "keystore", "UTC--2024-01-01--addr.json"), JSON.stringify({ crypto: { ciphertext: "deadbeef", kdfparams: {} }, mac: "x" }))
+      writeFileSync(path.join(ws, "src", "password.txt"), "Tr0ub4dor-x9-FAKE\n")
+      writeFileSync(path.join(ws, "src", "bare.txt"), "0x" + "cd".repeat(32) + "\n")
+      writeFileSync(path.join(ws, "out", "ignore.json"), "{}\n")
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const shipped = snap.files.map((f: { path: string }) => f.path).sort()
+      expect(shipped).toEqual(["foundry.toml", "src/Vault.sol", "test/AgentPoc.t.sol"])
+      // The data files and secret files are simply not sources (not candidates),
+      // so no secret-shaped value is in the record at all.
+      const record = JSON.stringify(snap)
+      for (const v of ["deployer.key", "ciphertext", "Tr0ub4dor", "cd".repeat(32), "6080", "ignore.json"]) expect([v, record.includes(v)]).toEqual([v, false])
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("an 83 KB JSON holding eight token shapes never ships (it is not a source) and none of its values reach the zip", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-m1-"))
     try {
       mkdirSync(path.join(ws, "src"))
       mkdirSync(path.join(ws, "test"))
-      mkdirSync(path.join(ws, "abi"))
-      mkdirSync(path.join(ws, "out"))
-      mkdirSync(path.join(ws, "cache"))
-      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n`)
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
       writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
-      writeFileSync(path.join(ws, "src", "BytecodeVault.runtime.hex"), "0x60a0" + "ab".repeat(40) + "\n")
-      writeFileSync(path.join(ws, "abi", "Thing.json"), JSON.stringify({ bytecode: { object: "0x" + "60".repeat(2000) } }))
-      // A JSON artifact over the redactor's 64 KB single-pass cap ships raw,
-      // but a host path in it is still masked (the cheap line passes run).
-      writeFileSync(path.join(ws, "abi", "Big.json"), JSON.stringify({ metadata: { path: "/home/alice/proj/src/X.sol" }, bytecode: { object: "0x" + "ab".repeat(70000) } }))
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
-      // Build output and a secret file never ship.
-      writeFileSync(path.join(ws, "out", "ignore.json"), "{}\n")
-      writeFileSync(path.join(ws, "cache", "ignore.dat"), "x\n")
-      writeFileSync(path.join(ws, "deploy.pem"), "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n")
+      const secrets = [
+        "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "sk_live_" + "A".repeat(24),
+        "xoxb-" + "1".repeat(20),
+        "glpat-" + "B".repeat(20),
+        "npm_" + "c".repeat(36),
+        "sk-" + "D".repeat(32),
+        "tk_alice_9f1c4a2e",
+        "Bearer " + "E".repeat(40),
+      ]
+      // One minified JSON over 64 KB with the eight values inside padding.
+      const big = JSON.stringify({ pad: "q".repeat(83 * 1024), meta: { notes: secrets } })
+      writeFileSync(path.join(ws, "src", "Thing.json"), big)
       const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      const shipped = snap.files.map((f: { path: string }) => f.path).sort()
-      expect(shipped).toEqual(["abi/Big.json", "abi/Thing.json", "foundry.toml", "src/BytecodeVault.runtime.hex", "src/Vault.sol", "test/AgentPoc.t.sol"])
-      expect(snap.files.find((f: { path: string }) => f.path === "abi/Big.json").data).toBe(true)
-      expect(snap.omitted).toEqual([{ path: "deploy.pem", reason: "secret file" }])
-      // The bundle ships all of them and the big artifact is not window-counted.
-      const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
-      const plan = planReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } })
-      const dir = mkdtempSync(path.join(tmpdir(), "replay-all-zip-"))
-      try {
-        unzip(plan.zip, dir)
-        const files = readTree(dir)
-        for (const rel of ["abi/Big.json", "abi/Thing.json", "src/BytecodeVault.runtime.hex"]) expect(files.has(rel)).toBe(true)
-        expect(files.get("abi/Big.json")).toContain("0x" + "ab".repeat(70000))
-        expect(files.get("abi/Big.json")).not.toContain("/home/alice")
-        expect(files.get("abi/Big.json")).toContain("~/proj/src/X.sol")
-        expect(files.has("out/ignore.json")).toBe(false)
-        // The big artifact's hex windows do not flood the unjudged count.
-        expect(plan.unjudged.find((u: { shape: string }) => u.shape === "hex64")).toBeUndefined()
-      } finally {
-        rmSync(dir, { recursive: true, force: true })
-      }
+      expect(snap.files.map((f: { path: string }) => f.path)).not.toContain("src/Thing.json")
+      const proof = { kind: "forge", pass: true, test: "testDrain()" }
+      const zip = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } })
+      for (const v of secrets) expect([v.slice(0, 10), zip.includes(v)]).toEqual([v.slice(0, 10), false])
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("a .sol candidate that is a hard link, outside the workspace, or over the per-file size cap is left out", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-guard-"))
+    const outside = mkdtempSync(path.join(tmpdir(), "replay-guard-out-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      // A hard link to a file outside the workspace: left out (nlink > 1).
+      writeFileSync(path.join(outside, "secret.sol"), "// " + "0x" + "ef".repeat(32) + "\n")
+      linkSync(path.join(outside, "secret.sol"), path.join(ws, "src", "Linked.sol"))
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(snap.files.map((f: { path: string }) => f.path)).not.toContain("src/Linked.sol")
+      expect(snap.omitted).toContainEqual({ path: "src/Linked.sol", reason: "a hard link" })
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("past the file-count cap the bundle is incomplete and makes no re-run claim", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-count-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      // 5001 tiny .sol files, over the 5000 cap. (No real read happens past the cap.)
+      for (let i = 0; i < 5001; i++) writeFileSync(path.join(ws, "src", `C${i}.sol`), "// x\n")
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(snap.files.length).toBe(0)
+      expect(snap.omitted.some((o: { reason: string }) => /over the 5000 cap/.test(o.reason))).toBe(true)
     } finally {
       rmSync(ws, { recursive: true, force: true })
     }
@@ -552,8 +608,8 @@ describe("report: replay bundle", () => {
       rmSync(path.join(ws, "src", "Big.sol"))
       writeFileSync(path.join(ws, "src", "Key.sol"), `// ${PEM}\ncontract Key {}\n`)
       const withKey = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
-      expect(withKey.omitted).toEqual([{ path: "src/Key.sol", reason: "secret file" }])
-      expect(readmeOf(withKey)).toContain("- `src/Key.sol` — secret file")
+      expect(withKey.omitted).toEqual([{ path: "src/Key.sol", reason: "a secret body" }])
+      expect(readmeOf(withKey)).toContain("- `src/Key.sol` — a secret body")
     } finally {
       rmSync(ws, { recursive: true, force: true })
     }

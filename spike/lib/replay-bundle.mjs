@@ -17,16 +17,17 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { Mnemonic, wordlists } from "ethers";
 import { pinnedSolc, forgeTest, forgeReplayCommand, forgePrepareCommand, FOUNDRY_IMAGE } from "./sandbox.mjs";
 
-const MAX_FILE = 1_500_000;
-const MAX_TOTAL = 8_000_000;
+const MAX_FILE = 1_500_000;   // per file, checked by stat before any read
+const MAX_TOTAL = 8_000_000;  // bytes across the bundle
+const MAX_FILES = 5_000;      // file-count cap; past it the bundle makes no re-run claim
 const SKIP_DIRS = new Set(["node_modules", "out", "cache", "broadcast", "artifacts", "oracle", "coverage", "dist", "target"]);
 // A file that is a key, not a source file that mentions one. Dropped whole.
 const SECRET_CONTENT = [
@@ -35,6 +36,25 @@ const SECRET_CONTENT = [
   /\bgh[pousr]_[A-Za-z0-9]{36,}\b/,
   /\bgithub_pat_[A-Za-z0-9_]{60,}\b/,
 ];
+// A file whose name says it is a secret, re-added after PR 6 removed it as dead
+// code: now that an allow-list of sources ships, a `.key`/keystore/`.env` that
+// sneaks in by name is left out. (Hidden names are already dropped.)
+const SECRET_NAME = /(?:\.(?:key|pem|p12|pfx|keystore|jks|asc|gpg|ovpn|env)$|^UTC--|wallet|password|passwd|secret|credential|mnemonic|\bid_(?:rsa|dsa|ecdsa|ed25519)\b)/i;
+// A JSON web3 keystore (an encrypted key that can be cracked offline).
+const KEYSTORE = /"crypto"\s*:\s*\{[\s\S]*?"ciphertext"/;
+// A file whose whole body is one bare 64-hex value (a raw private key).
+const BARE_HEX = /^\s*(?:0x)?[0-9a-fA-F]{64}\s*$/;
+// The reason a file is left out by name or body, or null.
+function secretFile(rel, raw) {
+  const base = rel.split("/").pop() || "";
+  if (SECRET_NAME.test(base)) return "a secret-shaped name";
+  if (typeof raw === "string") {
+    if (BARE_HEX.test(raw)) return "a bare 64-hex value";
+    if (KEYSTORE.test(raw)) return "a keystore";
+    if (SECRET_CONTENT.some((re) => re.test(raw))) return "a secret body";
+  }
+  return null;
+}
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const RPC_PLACEHOLDER = "${RPC_URL}";
@@ -269,9 +289,6 @@ export class BundleRefused extends Error {
   }
 }
 
-function secretBody(text) {
-  return SECRET_CONTENT.some((re) => re.test(text));
-}
 
 // foundry.toml may name an RPC and an explorer key. Keep the block number;
 // replace every endpoint value so a provider key in the URL cannot leave with
@@ -300,26 +317,17 @@ function scrubFoundryToml(text) {
 // came back as the mark is not code any more, so it is left out.
 const CAP_MARK = /\[REDACTED: text of \d+ characters too long to check\]/;
 export const OVER_CAP = "over 64 KB, so the redactor cannot check it";
-// Prose and config must be fully masked; a data artifact (an ABI/bytecode JSON
-// or a .hex) a re-run reads is not prose, so a mask would corrupt it.
-const PROSE_FILE = /(?:\.sol|foundry\.toml|remappings\.txt)$/i;
+// A shipped file is a source or config text: redact it, and leave it out on a
+// secret name/body or when it is over the redactor's 64 KB single-pass cap (it
+// cannot be masked in one pass). This runs at snapshot time on the allow-list
+// and again at bundle time on an old record's inline files, so both are filtered.
 function forgeFileText(path, raw) {
+  const secret = secretFile(path, raw);
+  if (secret) return { reason: secret };
   const text = path === "foundry.toml" ? scrubFoundryToml(raw) : bundleText(raw, { forge: true });
-  if (!CAP_MARK.test(text)) {
-    const shapes = leakShapes(text);
-    return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
-  }
-  // Over the redactor's 64 KB single-pass cap. A prose/config file is left out:
-  // it must be masked and cannot be. A data artifact is shipped raw only when
-  // the line-wise shape detector (no cap) finds no secret, so no key leaves; it
-  // is marked `data` so its many hex windows do not flood the unjudged count.
-  if (PROSE_FILE.test(path)) return { reason: OVER_CAP };
-  // The full masker is capped, but host-path and RPC-URL masks are cheap line
-  // passes with no cap, so run them (an artifact's solc metadata can hold a
-  // build path). The shape detector is the fail-closed check on the result.
-  const scrubbed = homeToTilde(urlKeys(String(raw)));
-  const shapes = leakShapes(scrubbed);
-  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text: scrubbed, data: true };
+  if (CAP_MARK.test(text)) return { reason: OVER_CAP };
+  const shapes = leakShapes(text);
+  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
 }
 
 // A path the redactor would mask, in whole or in one part, is not shipped:
@@ -425,24 +433,34 @@ function rank(path) {
   return 4;
 }
 
-function keepPath(rel) {
-  const base = rel.split("/").pop();
-  // Every regular file the walk reaches except a hidden one; build output
-  // (SKIP_DIRS) and library test suites are already skipped in the walk.
-  return Boolean(base) && !base.startsWith(".");
+// The files a Foundry bundle ships are an ALLOW-list, not a walk of the
+// agent-writable folder: the sources the compiler actually read for this proof
+// (forge writes them to out/build-info/<hash>.json as source_id_to_path), plus
+// foundry.toml and remappings.txt. Data files a test reads through cheatcodes
+// (a .hex, a Safe artifact JSON) are NOT shipped: that would be a deny-list over
+// untrusted content, and a proof that needs one makes no re-run claim instead.
+// If build-info is missing, fall back to every .sol under the workspace (still
+// sources only). Each candidate then passes fileGuard and the redactor.
+function compiledSources(ws) {
+  const dir = join(ws, "out", "build-info");
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { return null; }
+  if (!files.length) return null;
+  // The newest build-info is this proof's compile.
+  const newest = files
+    .map((f) => { try { return { f, at: statSync(join(dir, f)).mtimeMs }; } catch { return null; } })
+    .filter(Boolean)
+    .sort((x, y) => y.at - x.at)[0];
+  if (!newest) return null;
+  try {
+    const j = JSON.parse(readFileSync(join(dir, newest.f), "utf8"));
+    const paths = Object.values(j.source_id_to_path || {}).filter((p) => typeof p === "string");
+    return paths.length ? [...new Set(paths)] : null;
+  } catch {
+    return null;
+  }
 }
-
-// Walk the workspace for every file a re-run can need, so the bundle holds the
-// whole project except build output. A static list of needed files could not
-// close the "claims a re-run it cannot do" class (three review rounds found a
-// new file shape each time: a .hex, a Safe artifact JSON, a cheatcode read); so
-// the bundle ships everything and the re-run check (verifyForgeReplay) is the
-// authority. Skipped by the walk: build output (SKIP_DIRS: out, cache, oracle,
-// …), a symbolic link (it may leave the folder), a hidden name, and a library's
-// own test/ (forge-std's tests ship sample provider keys). A read error, a
-// secret file, the size caps and a masked path are left out by
-// snapshotForgeReplay and listed under "Left out".
-function collectFiles(root) {
+function allSol(root) {
   const found = [];
   const walk = (dir, parts) => {
     let entries = [];
@@ -455,44 +473,68 @@ function collectFiles(root) {
         walk(join(dir, e.name), [...parts, e.name]);
         continue;
       }
-      if (!e.isFile()) continue;
-      const rel = [...parts, e.name].join("/");
-      if (keepPath(rel)) found.push(rel);
+      if (e.isFile() && e.name.endsWith(".sol")) found.push([...parts, e.name].join("/"));
     }
   };
   walk(root, []);
-  found.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
   return found;
+}
+function collectForgeFiles(ws) {
+  const sources = compiledSources(ws) ?? allSol(ws);
+  const config = ["foundry.toml", "remappings.txt"].filter((f) => existsSync(join(ws, f)));
+  const all = [...new Set([...config, ...sources])];
+  all.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+  return all;
+}
+
+// The filesystem checks a candidate must pass before it is read, so an
+// untrusted workspace cannot leak a file the allow-list named by mistake:
+// a regular file, not a hard link (nlink 1), inside the workspace after
+// realpath, not hidden, under the per-file size cap. Returns { size } or
+// { reason }. The read never happens for a file that fails.
+function fileGuard(ws, rel) {
+  const base = rel.split("/").pop() || "";
+  if (!base || base.startsWith(".")) return { reason: "a hidden file" };
+  const abs = join(ws, rel);
+  let st;
+  try { st = lstatSync(abs); } catch { return { reason: "a file that could not be read" }; }
+  if (st.isSymbolicLink() || !st.isFile()) return { reason: "not a regular file" };
+  if (st.nlink > 1) return { reason: "a hard link" };
+  let real;
+  try { real = realpathSync(abs); } catch { return { reason: "a file that could not be read" }; }
+  let wsReal;
+  try { wsReal = realpathSync(ws); } catch { wsReal = ws; }
+  if (real !== wsReal && !real.startsWith(wsReal + sep)) return { reason: "outside the workspace" };
+  if (st.size > MAX_FILE) return { reason: "larger than 1.5 MB" };
+  return { size: st.size };
 }
 
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const paths = collectFiles(ws);
+  const paths = collectForgeFiles(ws);
   const files = [];
   const omitted = [];
   let total = 0;
   let capped = 0;
-  for (const rel of paths) {
+  // Past the file-count cap the bundle cannot be complete, so it makes no claim.
+  const tooMany = paths.length > MAX_FILES;
+  for (const rel of (tooMany ? [] : paths)) {
     if (pathMasked(rel)) {
       omitted.push({ path: MASKED_PATH, reason: "its path holds a value the redactor masks" });
       continue;
     }
-    let buf;
-    try {
-      buf = readFileSync(join(ws, rel));
-    } catch {
-      omitted.push({ path: rel, reason: "a file that could not be read" });
+    const g = fileGuard(ws, rel);
+    if (g.reason) {
+      omitted.push({ path: rel, reason: g.reason });
       continue;
     }
+    let buf;
+    try { buf = readFileSync(join(ws, rel)); } catch { omitted.push({ path: rel, reason: "a file that could not be read" }); continue; }
     const lib = vendoredFile(rel, buf);
     if (lib) {
       total += buf.length;
       files.push({ path: rel, vendored: lib });
-      continue;
-    }
-    if (buf.length > MAX_FILE) {
-      omitted.push({ path: rel, reason: "larger than 1.5 MB" });
       continue;
     }
     if (buf.includes(0)) {
@@ -500,10 +542,6 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
       continue;
     }
     const raw = buf.toString("utf8");
-    if (secretBody(raw)) {
-      omitted.push({ path: rel, reason: "secret file" });
-      continue;
-    }
     if (total + raw.length > MAX_TOTAL) {
       capped++;
       continue;
@@ -511,8 +549,9 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     total += raw.length;
     const out = forgeFileText(rel, raw);
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
-    else files.push({ path: rel, text: out.text, ...(out.data ? { data: true } : {}) });
+    else files.push({ path: rel, text: out.text });
   }
+  if (tooMany) omitted.push({ path: "", reason: `the workspace has ${paths.length} files, over the ${MAX_FILES} cap, so the bundle is not complete` });
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
   let toml = "";
   try {
