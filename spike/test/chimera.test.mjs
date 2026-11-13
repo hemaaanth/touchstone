@@ -337,6 +337,26 @@ test("a property the engine did not report is a gap, and the run view says some 
   });
 });
 
+test("a commented-out, internal or private property_ function is not a gap", async () => {
+  const file = "test/recon/Properties.sol";
+  const prep = (ws) => {
+    const src = readFileSync(join(ws, file), "utf8");
+    const extra = [
+      "    // function property_old() public { t(false, \"old\"); }",
+      "    /* function property_older() public { t(false, \"older\"); } */",
+      "    function property_helper() internal view returns (bool) { return true; }",
+      "    function property_secret() private {}",
+    ].join("\n");
+    writeFileSync(join(ws, file), src.slice(0, src.lastIndexOf("}")) + extra + "\n}\n");
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.gaps, []);
+    assert.equal(scan.leads.length, 1);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: null, leads: 1 });
+  });
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";

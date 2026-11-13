@@ -105,7 +105,11 @@ export function chimeraSuites(ws) {
   return out.sort();
 }
 
-// Function names declared in the .sol files under dir (recursive).
+// Function names declared in the .sol files under dir (recursive): only those
+// in the code, not in a comment, and not internal or private, because the
+// engines call only ABI functions. So a commented-out property_ is not a gap.
+const FNS = /\bfunction\s+(\w+)\s*\([^)]*\)([^{;]*)/g;
+const uncommented = (src) => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 function declared(dir) {
   const names = new Set();
   const walk = (d) => {
@@ -113,7 +117,9 @@ function declared(dir) {
     for (const n of readdirSync(d)) {
       const p = join(d, n);
       if (statSync(p).isDirectory()) walk(p);
-      else if (n.endsWith(".sol")) for (const m of readFileSync(p, "utf8").matchAll(/\bfunction\s+(\w+)\s*\(/g)) names.add(m[1]);
+      else if (n.endsWith(".sol")) {
+        for (const m of uncommented(readFileSync(p, "utf8")).matchAll(FNS)) if (!/\b(internal|private)\b/.test(m[2])) names.add(m[1]);
+      }
     }
   };
   walk(dir);

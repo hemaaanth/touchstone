@@ -116,6 +116,8 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     or a function not declared in a `.sol` file under the suite's folder, is
     dropped (`dropped`) and is a gap, never a lead. Each `property_*` function
     declared there that an engine did not report is a gap for that engine.
+    One in a comment, or `internal` or `private`, is not counted, because
+    the engines call only ABI functions.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
   - **Run view.** Any gap puts a reason on the "Chimera" row, for example
