@@ -87,7 +87,9 @@ export function AppSidebar({
 
   return (
     <Sidebar>
-      <SidebarHeader className="p-3">
+      {/* The same height as the run's top bar (h-12) with the same bottom
+          rule, so the two read as one bar. */}
+      <SidebarHeader className="h-12 shrink-0 justify-center border-b px-3 py-0">
         <div className="flex items-center gap-2 px-1">
           <TouchstoneMark />
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
