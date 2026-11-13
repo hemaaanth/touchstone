@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { candidateRow, candidateState, DEFAULT_VIEW, filterFindings, sortFindings } from "../src/lib/findings-view"
+import { candidateRow, candidateState, countLine, DEFAULT_VIEW, filterFindings, sortFindings } from "../src/lib/findings-view"
 import { CandidateListRow } from "../src/components/candidate-row"
 import { FINDING_ROW_COLS } from "../src/components/findings-page"
 import type { CandidateSummary, FindingSummary } from "../src/lib/types"
@@ -13,7 +13,7 @@ const finding = (id: string, proven: boolean): FindingSummary => ({
 })
 const cand = (id: string, extra: Partial<CandidateSummary> = {}): CandidateSummary => ({
   id, runId: "r2", kind: "candidate", title: "The Content-Security-Policy allows unsafe sources", severity: "low", module: "Domains", pack: "domains",
-  target: "My site", scope: "My site", at: 2, origin: "measured", proven: false,
+  target: "My site", scope: "My site", at: 2, poc: `poc-${id}`, origin: "measured", proven: false,
   measured: { reason: "repeated", words: "Measurement repeated: the replay found the same fact again. It shows no harm.", count: 3, check: "weak-csp" }, ...extra,
 })
 const rows = [finding("a", true), finding("b", false), candidateRow(cand("r2.c1")), candidateRow(cand("r2.c2", { origin: "agent", measured: null }))]
@@ -58,5 +58,50 @@ describe("the candidate row's module slot (N2 follow-up)", () => {
     expect(out).toContain('data-slot="module-dots"')
     expect(out).toContain("[--module-dots-ring:var(--card)]")
     expect(out).not.toContain('data-slot="module-pill"')
+  })
+})
+
+// Repair 1 (UI review m3, m4, m7, M2).
+describe("the candidate row, repair 1", () => {
+  const render = (c: CandidateSummary, extra: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(<CandidateListRow finding={candidateRow(c)} cols={FINDING_ROW_COLS} moduleTitle="Domains" run={{ id: "r2" } as never} onOpenRun={() => {}} {...extra} />)
+
+  test("m7: its severity bars are never drawn in the proven tone, even for a critical one", () => {
+    const out = render(cand("x", { severity: "critical" }))
+    for (const tone of ["text-ok", "text-warn", "text-bad"]) expect([tone, out.includes(tone)]).toEqual([tone, false])
+  })
+
+  test("m3: its title opens the run, so it says nothing about a dialog", () => {
+    const out = render(cand("x"))
+    expect(out).toContain("data-row-main")
+    expect(out).not.toContain(`aria-haspopup="dialog"`)
+  })
+
+  test("m4: it shows the run's date, as a finding row does", () => {
+    expect(render(cand("x", { at: 5 }), { when: () => "13 Nov, 12:00" })).toContain("13 Nov, 12:00")
+    expect(render(cand("x", { at: null }))).toContain("Date not recorded")
+  })
+
+  test("M2: opening it opens its run with the candidate's focus", () => {
+    const calls: unknown[][] = []
+    const row = CandidateListRow as unknown as { type: (p: Record<string, unknown>) => { props: { onClick: () => void } } }
+    const el = row.type({ finding: candidateRow(cand("x", { poc: "lead-7" })), cols: FINDING_ROW_COLS, moduleTitle: "Domains", run: { id: "r2" }, onOpenRun: (...a: unknown[]) => calls.push(a) })
+    el.props.onClick()
+    expect(calls).toEqual([["r2", "candidate:lead-7"]])
+  })
+})
+
+// m7: the count line counts findings and candidates apart.
+describe("the count line", () => {
+  test("N findings never includes a candidate; the Candidate filter counts candidates", () => {
+    const line = (state: typeof DEFAULT_VIEW.state) => {
+      const v = { ...DEFAULT_VIEW, state }
+      return countLine(rows, filterFindings(rows, v), v)
+    }
+    expect(line("all")).toEqual({ lead: "2 findings", candidates: "2 candidates" })
+    expect(line("candidate")).toEqual({ lead: "2 of 2 candidates", candidates: null })
+    expect(line("proven")).toEqual({ lead: "1 of 2 findings", candidates: null })
+    const one = [finding("a", true)]
+    expect(countLine(one, one, DEFAULT_VIEW)).toEqual({ lead: "1 finding", candidates: null })
   })
 })

@@ -33,8 +33,10 @@ export interface CandidateSummary {
   target: string
   scope: string | null
   at: number | null
+  // The candidate's poc: the run view finds it by this (CANDIDATE_FOCUS).
+  poc: string
   origin: "agent" | "measured"
-  measured: { reason: "repeated" | "no-effect" | "harm-not-judged" | "unknown"; words: string; count: number; check: string | null } | null
+  measured: { reason: "repeated" | "no-effect" | "harm-not-judged" | "unknown"; words: string; count: number; check: string | null; rule?: string | null } | null
   proven: false
 }
 

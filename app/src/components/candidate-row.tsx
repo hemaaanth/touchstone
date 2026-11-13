@@ -7,6 +7,7 @@ import { SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { ModuleDots } from "@/components/module-dots"
 import { RowMenu, RowMenuItem, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
 import { rowClass } from "@/components/page-parts-style"
+import { CANDIDATE_FOCUS } from "@/components/run-chat"
 
 // A candidate on the Findings page (N3). It sits in the findings' row grid, so
 // its columns line up with theirs, but it is neutral (docs/restraint.md): a
@@ -20,6 +21,7 @@ export const CandidateListRow = memo(function CandidateListRow({
   moduleTitle,
   run,
   onOpenRun,
+  when,
 }: {
   finding: FindingSummary
   // The findings' grid columns and the dots' ring colour (findings-page.tsx
@@ -27,10 +29,13 @@ export const CandidateListRow = memo(function CandidateListRow({
   cols: string
   moduleTitle: string
   run: RunSummary | undefined
-  onOpenRun: (id: string) => void
+  // The run, and the candidate to land on in it (CANDIDATE_FOCUS + its poc).
+  onOpenRun: (id: string, focus?: string) => void
+  // The run's start, as the finding rows show it (findings-page.tsx).
+  when?: (ms: number) => string
 }) {
   const c = f.candidate!
-  const open = () => run && onOpenRun(run.id)
+  const open = () => run && onOpenRun(run.id, `${CANDIDATE_FOCUS}${c.poc}`)
   const pack = f.pack ?? ""
   return (
     <li data-slot="finding-row" data-candidate onClick={open} className={cn(cols, rowClass(Boolean(run)))}>
@@ -38,12 +43,13 @@ export const CandidateListRow = memo(function CandidateListRow({
         <ShieldQuestionMark className="size-4" />
       </span>
       <div className="flex min-w-0 flex-col gap-0.5">
-        <RowTitle title={f.title || "Candidate"} opens={Boolean(run)} />
+        <RowTitle title={f.title || "Candidate"} opens={Boolean(run)} popup={false} />
         <RowMeta
           items={[
             <span key="state" className="min-w-0 truncate" title={candidateState(c)}>{candidateState(c)}</span>,
             c.measured && c.measured.count > 1 ? <span key="count" className="shrink-0 whitespace-nowrap tabular-nums">{c.measured.count} places</span> : null,
             <TruncatedText key="scope" text={scopeOf(f)} />,
+            f.at != null && when ? <span key="at" className="shrink-0 whitespace-nowrap tabular-nums" title="When the run started">{when(f.at)}</span> : "Date not recorded",
           ]}
         />
       </div>

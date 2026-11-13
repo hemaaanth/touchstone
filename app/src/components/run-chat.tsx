@@ -9,7 +9,7 @@ import {
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
 import type { Finding, PackChoice, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
-import { steerRun, stopRun, fetchFinding } from "@/lib/api"
+import { steerRun, stopRun, fetchFinding, fetchNowCandidate } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
@@ -427,7 +427,40 @@ export function RunChat({
   // that agent's thread: unproven, the drawer shows that thread at the card. On
   // a phone the drawer never opens by itself. An id this run does not have does
   // nothing. A cold load waits: the effect runs again as the stream lands.
-  const target = focus && state ? findingTarget(state, status, focus.finding) : null
+  // A candidate focus ("candidate:<poc>", from the Findings page) opens the
+  // panel at its Candidates section and opens that row (N3). It is not a
+  // finding, so the finding jump below skips it.
+  // An old link names a finding that is now a measured candidate: the server
+  // says which candidate, and the run lands on it.
+  const [nowCandidate, setNowCandidate] = useState<{ focus: FocusFinding; poc: string } | null>(null)
+  const loaded = state != null && status !== "starting" && status !== "running"
+  const missing = Boolean(focus && loaded && !focus.finding.startsWith(CANDIDATE_FOCUS) && !findingTarget(state!, status, focus.finding))
+  useEffect(() => {
+    if (!focus || !missing) return
+    let live = true
+    fetchNowCandidate(focus.finding).then((r) => live && r && setNowCandidate({ focus, poc: r.poc }))
+    return () => {
+      live = false
+    }
+  }, [focus, missing])
+  const focusCandidate = focus?.finding.startsWith(CANDIDATE_FOCUS)
+    ? focus.finding.slice(CANDIDATE_FOCUS.length)
+    : nowCandidate && nowCandidate.focus === focus ? nowCandidate.poc : null
+  const [candidateOpen, setCandidateOpen] = useState<{ poc: string; at: number } | null>(null)
+  const hasCandidate = Boolean(focusCandidate && state?.candidates.some((c) => c.poc === focusCandidate))
+  // Once per focus, after the render, as the finding focus below does.
+  const candidateDone = useRef<FocusFinding | null>(null)
+  useEffect(() => {
+    if (!focus || !focusCandidate || !hasCandidate || candidateDone.current === focus) return
+    const t = setTimeout(() => {
+      candidateDone.current = focus
+      setPanelOpen(true)
+      setSection("candidates")
+      setCandidateOpen({ poc: focusCandidate, at: focus.at })
+    }, 0)
+    return () => clearTimeout(t)
+  }, [focus, focusCandidate, hasCandidate, setPanelOpen, setSection])
+  const target = focus && state && !focusCandidate ? findingTarget(state, status, focus.finding) : null
   const targetSig = target ? `${target.key}|${target.agent}|${target.proofId}` : null
   const focusRef = useRef({ target, openFile, openPeek, setPanelOpen })
   useEffect(() => {
@@ -536,6 +569,7 @@ export function RunChat({
           open={panelOpen}
           onOpenChange={setPanelOpen}
           section={section}
+          candidateOpen={candidateOpen}
           onSection={setSection}
           selectedAgent={peek?.id ?? null}
           onAgent={(id) => {
@@ -696,6 +730,8 @@ function messageText(message: AppendMessage): string {
 // "Open this finding" from another page: the finding's id, and when it was
 // asked (Date.now()), so a second ask for the same finding jumps again.
 export type FocusFinding = { finding: string; at: number }
+// The focus form for a candidate: the Findings page opens a run at it.
+export const CANDIDATE_FOCUS = "candidate:"
 
 // The run's top bar: status dot, title, the status word, and the ⋯ menu.
 // Mode, runtime and spend live in the run panel's Info section. Before the run

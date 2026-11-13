@@ -131,6 +131,24 @@ test("(b) the list API, the copy texts, the report and the bundle hold no measur
   assert.ok(!md.body.includes("weak-csp"));
 });
 
+// Repair 1 (UI review m5): an old link to a finding that is now a candidate
+// says so, with its run and its candidate, instead of a bare not found.
+test("(m5) an old finding link answers: this item is now a candidate", async () => {
+  const api = await handleApi(`/api/findings/${ids[2]}`);
+  assert.equal(api.status, 404);
+  assert.equal(api.json.candidate, true);
+  assert.match(api.json.error, /^This item is now a candidate/);
+  assert.equal(api.json.runId, OWNER);
+  assert.equal(api.json.poc, "lead-2");
+  const listed = (await listCandidates()).find((c) => c.poc === "lead-2");
+  assert.equal(api.json.candidateId, listed.id);
+  const md = await call(`/api/findings/${ids[2]}/report?format=md`);
+  assert.equal(md.status, 404);
+  assert.match(JSON.parse(md.body).error, /^This item is now a candidate/);
+  // Any other unknown id keeps the plain answer.
+  assert.deepEqual((await handleApi("/api/findings/zz-none-1.1")).json, { error: "not found" });
+});
+
 test("the run view at load: the six are measured candidates, the run is No finding, and nothing on disk changed", async () => {
   const run = getRun(OWNER);
   assert.equal(run.status, "no-finding");

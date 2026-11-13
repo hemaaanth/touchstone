@@ -16,6 +16,7 @@ import { useAppear } from "@/lib/motion"
 import { ResizeHandle } from "@/components/resize-handle"
 import { Hint, ProofIcon, ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { CandidateList } from "@/components/candidates"
+import { candidatesStatus } from "@/lib/candidate"
 import {
   agentName,
   fleetSpend,
@@ -61,6 +62,7 @@ export function RunPanel({
   compact = false,
   control,
   packs,
+  candidateOpen = null,
 }: {
   state: RunState
   live: boolean
@@ -87,6 +89,8 @@ export function RunPanel({
   control?: React.RefObject<HTMLButtonElement | null>
   // The server's module list, for the pills' titles and order.
   packs?: PackChoice[]
+  // A candidate to open and show (the Findings page opened the run at it).
+  candidateOpen?: { poc: string; at: number } | null
 }) {
   const toggleRef = useRef<HTMLButtonElement>(null)
   const agents = state.agents
@@ -241,11 +245,11 @@ export function RunPanel({
               icon={ShieldQuestionMark}
               label="Candidates"
               count={state.candidates.length}
-              status="Needs review"
+              status={candidatesStatus(state.candidates)}
               expanded={section === "candidates"}
               onToggle={() => toggle("candidates")}
             >
-              <CandidateList items={state.candidates} />
+              <CandidateList items={state.candidates} focus={candidateOpen ?? null} />
             </Section>
           ) : null}
           <Section

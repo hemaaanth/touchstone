@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { reduceEvents } from "../src/lib/runModel"
-import { candidateFrom, candidateGroupLabel } from "../src/lib/candidate"
+import { candidateFrom, candidateGroupLabel, candidatesStatus } from "../src/lib/candidate"
 import { runHeadStatus } from "../src/components/thread-model"
 import { statusLabel, statusTone } from "../src/lib/format"
 import { CandidateDetail, CandidateList } from "../src/components/candidates"
@@ -225,7 +225,7 @@ describe("a measured candidate in the run view (N3)", () => {
       "Recorded as a candidate (measurement repeated): weak-csp",
       "Recorded as a candidate (measurement repeated): weak-csp",
     ])
-    expect(candidateGroupLabel(s.steps.filter((x) => x.kind === "note").map((x) => x.label))).toBe("Recorded 2 candidates (unproven, needs review)")
+    expect(candidateGroupLabel(s.steps.filter((x) => x.kind === "note").map((x) => x.label))).toBe("Recorded 2 candidates (unproven)")
     // With no submitted card to replace (an older run), one note says it.
     const alone = reduceEvents([ev(measured())])
     expect(alone.steps.map((x) => x.label)).toEqual(["Recorded as a candidate (measurement repeated): The Content-Security-Policy allows unsafe sources"])
@@ -254,5 +254,38 @@ describe("a measured candidate in the run view (N3)", () => {
     const html = panel([submittedEv("l1", 1), submittedEv("l2", 2), ev(measured()), { t: 2, ev: "status", status: "no-finding" }])
     expect(html).toContain("0</span> findings")
     expect(html).toContain("1</span> candidate")
+  })
+})
+
+// Repair 1 (UI review M2, m1, m2).
+describe("candidates in the run view, repair 1", () => {
+  const agent = candidateFrom(ev(cand("a")))!
+  const meas = candidateFrom(ev(measured()))!
+
+  test("M2: a focused candidate's row renders open, with its fold", () => {
+    // The open state is set in an effect; a static render shows the closed
+    // row, so the focus prop is checked on the list and the open fold by hand.
+    const html = renderToStaticMarkup(<CandidateList items={[agent, meas]} focus={{ poc: meas.poc, at: 1 }} />)
+    expect(html).toContain("Measurement repeated")
+    expect(renderToStaticMarkup(<CandidateDetail candidate={meas} />)).toContain("Fired at 2 places")
+  })
+
+  test("m1: the row's meta line wraps, and its chevron sits on the title line", () => {
+    const html = renderToStaticMarkup(<CandidateList items={[meas]} />)
+    expect(html).toContain("flex-wrap")
+    const title = html.indexOf(meas.title.replace(/'/g, "&#x27;"))
+    const chevron = html.indexOf("lucide-chevron-right")
+    const badge = html.indexOf("unproven / measured")
+    expect(title).toBeGreaterThan(0)
+    expect(chevron).toBeGreaterThan(title)
+    expect(chevron).toBeLessThan(badge)
+  })
+
+  test("m2: the section and the chat label say one true word per kind", () => {
+    expect(candidatesStatus([agent])).toBe("Needs review")
+    expect(candidatesStatus([meas])).toBe("Unproven")
+    expect(candidatesStatus([agent, meas])).toBe("Unproven · some need review")
+    const notes = reduceEvents([ev(cand("a")), ev(measured())]).steps.filter((x) => x.kind === "note").map((x) => x.label)
+    expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (unproven, some need review)")
   })
 })

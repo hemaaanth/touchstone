@@ -1,7 +1,7 @@
 // Framework-agnostic API router. Given a request URL it returns a plain
 // { status, json } result, so the same logic works behind Vite's dev
 // middleware now and a standalone http server later (when runs go live).
-import { listCandidates, listFindings, getFinding } from "./findings.mjs"
+import { listCandidates, listFindings, getFinding, nowCandidate } from "./findings.mjs"
 import { scopeStoreError } from "../../spike/lib/scopes-store.mjs"
 import { grantStoreError } from "../../spike/lib/grant-store.mjs"
 
@@ -23,7 +23,7 @@ export async function handleApi(url) {
     const finding = await getFinding(decodeURIComponent(match[1]), { events: searchParams.get("events") !== "0" })
     return finding
       ? { status: 200, json: finding }
-      : { status: 404, json: { error: "not found" } }
+      : { status: 404, json: (await nowCandidate(decodeURIComponent(match[1]))) ?? { error: "not found" } }
   }
   return { status: 404, json: { error: "unknown route" } }
 }

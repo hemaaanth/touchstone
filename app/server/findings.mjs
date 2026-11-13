@@ -10,7 +10,7 @@ import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
 import { isCandidate, isMeasured, makeCandidate, measuredRule } from "../../spike/lib/candidate.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
-import { measuredOfRecord } from "./candidates.mjs"
+import { measuredOfRecord, recordRowOf } from "./candidates.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -575,4 +575,28 @@ export async function dismissFinding(id, dismissed) {
   }
   await writeFile(file, JSON.stringify(raw, null, 2))
   return { id, dismissed: Boolean(dismissed) }
+}
+
+// For an id that is not a finding (getFinding gave null): if it names an
+// older record's row that is now a measured candidate, say so, with its run
+// and the candidate's id. Null for any other id. Used by the 404 answers, so
+// an old link reads "This item is now a candidate" instead of a bare not found.
+export const NOW_CANDIDATE = "This item is now a candidate: its replay only repeated a measurement, so it is not proven. It has no report."
+export async function nowCandidate(id) {
+  const m = /^([\w.-]+?)(?:\.(\d+))?$/.exec(String(id ?? ""))
+  if (!m) return null
+  for (const runId of m[2] ? [m[1]] : [m[1], String(id)]) {
+    let raw
+    try {
+      raw = JSON.parse(await readFile(path.join(resultsDir(), `run-${runId}.json`), "utf8"))
+    } catch {
+      continue
+    }
+    const rows = measuredOfRecord(runId, raw.result || {})
+    if (!rows.ids.has(String(id))) continue
+    const row = recordRowOf(runId, raw.result || {}, String(id))
+    const c = rows.candidates.find((x) => (x.evidence?.items ?? []).some((i) => i.poc === row?.poc)) ?? null
+    return { error: NOW_CANDIDATE, candidate: true, runId, candidateId: c ? candidateId(runId, c) : null, poc: c?.poc ?? null }
+  }
+  return null
 }

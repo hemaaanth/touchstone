@@ -3,7 +3,7 @@ import { Bot, Bug, CalendarDays, Check, ChevronRight, FileArchive, FileText, Pan
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindingsAndCandidates } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, candidateRow, filterFindings, fromDayRange, isFiltered, moduleOf, normaliseDays, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, candidateRow, countLine, filterFindings, fromDayRange, isFiltered, moduleOf, normaliseDays, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -177,10 +177,9 @@ export function FindingsPage({
 
   const proven = shown.filter((f) => f.proven).length
   // Candidates are counted apart: "N findings" never includes one.
-  const candidates = shown.filter((f) => f.candidate).length
-  const allCandidates = all.filter((f) => f.candidate).length
   // Dismissed findings are hidden by default; the count line says how many.
   const hiddenDismissed = view.dismissed === "hide" ? all.filter((f) => f.dismissed).length : 0
+  const counts = countLine(all, shown, view, hiddenDismissed)
   // Clear filters keeps the sort and the dismissed choice.
   const clear = () => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort, dismissed: v.dismissed }))
 
@@ -219,13 +218,9 @@ export function FindingsPage({
 
           <div className="-mt-3 flex min-h-5 items-center gap-3 text-xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">
-              {view.state === "candidate"
-                ? `${candidates} of ${allCandidates} ${allCandidates === 1 ? "candidate" : "candidates"}`
-                : isFiltered(view)
-                  ? `${shown.length - candidates} of ${all.length - hiddenDismissed - allCandidates} findings`
-                  : `${shown.length - candidates} ${shown.length - candidates === 1 ? "finding" : "findings"}`}
+              {counts.lead}
               {proven ? <span className="text-ok"> · {proven} proven</span> : null}
-              {candidates && view.state !== "candidate" ? ` · ${candidates} ${candidates === 1 ? "candidate" : "candidates"}` : null}
+              {counts.candidates ? ` · ${counts.candidates}` : null}
               {hiddenDismissed ? ` · ${hiddenDismissed} dismissed, hidden` : null}
             </span>
             {/* Here, not in the filter rows, so showing it moves nothing. */}
@@ -270,6 +265,7 @@ export function FindingsPage({
                     moduleTitle={packTitle(moduleOf(f)) ?? f.module}
                     run={runOf(f)}
                     onOpenRun={onOpenRun}
+                    when={when}
                   />
                 ) : (
                 <FindingListRow

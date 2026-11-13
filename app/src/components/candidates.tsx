@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ChevronRight, ShieldQuestionMark } from "lucide-react"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
@@ -15,16 +15,19 @@ import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, type Candidate } from "@/lib/c
 // its severity bars stay grey, and its shield carries a question mark, never
 // the check of a proven finding. Each row folds open to the write-up, the PoC,
 // the cited lines, and (one fold deeper) the raw evidence.
-export function CandidateList({ items }: { items: Candidate[] }) {
+// `focus`: a candidate the Findings page opened the run at. Its row opens,
+// scrolls into view and is marked for a moment (a quiet surface step).
+export function CandidateList({ items, focus = null }: { items: Candidate[]; focus?: { poc: string; at: number } | null }) {
   if (!items.length) return <p className="px-3 py-2.5 text-xs text-muted-foreground">No candidates.</p>
   return (
     <div className="flex flex-col py-1">
       {items.map((c) => (
-        <CandidateRow key={c.poc} candidate={c} />
+        <CandidateRow key={c.poc} candidate={c} focusAt={focus?.poc === c.poc ? focus.at : null} />
       ))}
     </div>
   )
 }
+
 
 // The badge every candidate carries, wherever it shows: unproven, and who said it.
 export function UnprovenBadge({ measured = false, className }: { measured?: boolean; className?: string }) {
@@ -41,10 +44,30 @@ const stateOf = (c: Candidate) => (c.measured ? MEASURED_SHORT[c.measured.reason
 
 const ROW = "flex w-full gap-2.5 px-3 py-[7px] text-left outline-none transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 
-function CandidateRow({ candidate: c }: { candidate: Candidate }) {
+function CandidateRow({ candidate: c, focusAt = null }: { candidate: Candidate; focusAt?: number | null }) {
   const [open, setOpen] = useState(false)
+  const [marked, setMarked] = useState(false)
+  // A new focus opens and marks the row, set while rendering (React's way to
+  // follow a prop), so the row never shows closed first.
+  const [seen, setSeen] = useState<number | null>(null)
+  if (focusAt != null && focusAt !== seen) {
+    setSeen(focusAt)
+    setOpen(true)
+    setMarked(true)
+  }
+  const row = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (focusAt == null) return
+    const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    const t0 = setTimeout(() => row.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" }), 0)
+    const t1 = setTimeout(() => setMarked(false), 2400)
+    return () => {
+      clearTimeout(t0)
+      clearTimeout(t1)
+    }
+  }, [focusAt])
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className={cn(open && "bg-foreground/[0.03]")}>
+    <Collapsible ref={row} open={open} onOpenChange={setOpen} data-focused={marked || undefined} className={cn("transition-colors duration-700 motion-reduce:transition-none", open && "bg-foreground/[0.03]", marked && "bg-foreground/[0.07]")}>
       <CollapsibleTrigger className={ROW}>
         <Hint label="Candidate, not proven" tip={`Candidate · not proven · ${stateOf(c).toLowerCase()}`} className="mt-px">
           <ShieldQuestionMark aria-hidden className="size-3.5 text-muted-foreground" />
@@ -53,12 +76,12 @@ function CandidateRow({ candidate: c }: { candidate: Candidate }) {
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{c.title}</span>
             <SeverityMark severity={c.severity} className="ml-auto" />
+            <ChevronRight aria-hidden className={cn("size-3 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", open && "rotate-90")} />
           </span>
-          <span className="flex min-w-0 items-center gap-2 text-[11px] leading-4 text-muted-foreground">
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-4 text-muted-foreground">
             <span className="shrink-0">{stateOf(c)}</span>
             {c.measured && c.measured.count > 1 ? <span className="shrink-0 tabular-nums">{c.measured.count} places</span> : null}
             <UnprovenBadge measured={Boolean(c.measured)} />
-            <ChevronRight aria-hidden className={cn("ml-auto size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
           </span>
         </span>
       </CollapsibleTrigger>

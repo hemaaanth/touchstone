@@ -151,6 +151,9 @@ export function recordRows(id, result) {
   return []
 }
 
+// One record row by its ledger id, or null.
+export const recordRowOf = (id, result, rowId) => recordRows(id, result).find((x) => x.id === rowId)?.finding ?? null
+
 // The measured candidates an older record's findings read as (N3). The
 // record keeps them as findings; nothing rewrites it. Numbered after `from`.
 export function measuredOfRecord(id, result, from = 0) {

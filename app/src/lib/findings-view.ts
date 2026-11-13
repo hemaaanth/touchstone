@@ -194,3 +194,16 @@ export const CANDIDATE_STATE: Record<string, string> = {
   unknown: "Candidate · not proof of harm",
 }
 export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · needs review")
+
+// The count line's words, before "· N proven" (N3). Candidates are counted
+// apart: "N findings" never includes one. Under the Candidate filter the line
+// counts candidates.
+export function countLine(all: FindingSummary[], shown: FindingSummary[], v: FindingsView, hiddenDismissed = 0): { lead: string; candidates: string | null } {
+  const candidates = shown.filter((f) => f.candidate).length
+  const allCandidates = all.filter((f) => f.candidate).length
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  if (v.state === "candidate") return { lead: `${candidates} of ${plural(allCandidates, "candidate", "candidates")}`, candidates: null }
+  const findings = shown.length - candidates
+  const lead = isFiltered(v) ? `${findings} of ${all.length - hiddenDismissed - allCandidates} findings` : plural(findings, "finding", "findings")
+  return { lead, candidates: candidates ? plural(candidates, "candidate", "candidates") : null }
+}

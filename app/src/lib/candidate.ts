@@ -56,9 +56,13 @@ export const MEASURED_SHORT: Record<MeasuredReason, string> = {
 }
 export const measuredNote = (m: Measured) => `Recorded as a candidate (${MEASURED_SHORT[m.reason].toLowerCase()})`
 const NOTE_PREFIXES = [`${CANDIDATE_NOTE}: `, "Recorded as a candidate ("]
+// One true label per kind: the agent's candidates wait for review; measured
+// ones are unproven facts; a mixed run of notes says both.
 export function candidateGroupLabel(labels: string[]): string | null {
   if (labels.length < 2 || !labels.every((l) => NOTE_PREFIXES.some((p) => l.startsWith(p)))) return null
-  return `Recorded ${labels.length} candidates (unproven, needs review)`
+  const agent = labels.filter((l) => l.startsWith(NOTE_PREFIXES[0])).length
+  const tail = agent === labels.length ? "unproven, needs review" : agent === 0 ? "unproven" : "unproven, some need review"
+  return `Recorded ${labels.length} candidates (${tail})`
 }
 
 const SEVERITIES = ["critical", "high", "medium", "low", "informational"]
@@ -119,4 +123,14 @@ export function candidateFrom(e: RunEvent): Candidate | null {
     candidate: true,
     provedBy: null,
   }
+}
+
+// The Candidates section's short state: one true word for the list. The
+// agent's candidates wait for review; measured ones are unproven facts.
+export function candidatesStatus(items: Candidate[]): string {
+  if (!items.length) return ""
+  const measured = items.filter((c) => c.measured).length
+  if (measured === 0) return "Needs review"
+  if (measured === items.length) return "Unproven"
+  return "Unproven · some need review"
 }
