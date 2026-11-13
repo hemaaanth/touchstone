@@ -141,11 +141,18 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     reason: "reported a CryticTester test the source scan did not find", or
     "the source scan found no CryticTester function" when the scan bound
     nothing. Our parser may have lost it, so the run view says so.
+    When the binding is short (a header part the parser does not know, or a
+    base it cannot find), a broken test on `CryticTester` is kept as a lead
+    marked `bound: false`, with the note "the source scan could not bind this
+    test to a function in the suite; check it by hand". It is never a proof
+    (`supportsProof` is unchanged). With a complete binding, an unbound test
+    is still dropped. A passing or unknown unbound test is always a gap.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
     Limits: a base name declared in more than one file gives the union of
     their functions (at worst an extra gap); an aliased import
-    (`import {A as B}`) is not followed, so its tests are dropped as gaps.
+    (`import {A as B}`) is not followed: a short binding, so its passes are
+    gaps and a broken test is an unbound lead.
   - **Run view.** Any gap puts a reason on the "Chimera" row, for example
     "1 of 12 engine checks unchecked (...)". A dropped test counts as
     unchecked. When nothing was checked, the

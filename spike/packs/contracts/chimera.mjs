@@ -116,6 +116,9 @@ export function chimeraSuites(ws) {
 // comment or a string) and not internal or private. A base name declared in
 // more than one file gives the union of their functions; a base we cannot find
 // adds none (a test from it is then dropped and is a gap, never silent).
+// The result says whether the binding is complete: every header in the graph
+// was read in full and every base was found. When it is not, a broken test on
+// CryticTester that we cannot bind is still a lead (see scanChimera).
 const FNS = /\bfunction\s+(\w+)\s*\([^)]*\)([^{;]*)/g;
 const HEAD = /\b(?:abstract\s+)?(?:contract|interface)\s+(\w+)\b/g;
 const SKIP_DIRS = new Set([".git", "node_modules", "out", "cache", "crytic-export"]);
@@ -215,7 +218,7 @@ function headerParts(h) {
   return { bases, complete };
 }
 
-// Each contract or interface in code-only text: { name, bases, fns }.
+// Each contract or interface in code-only text: { name, bases, fns, complete }.
 // The header runs from the name to the first "{" outside parentheses, because
 // a base argument such as Properties(Options({marker: 1})) holds braces. The
 // text is code only, so a brace or a parenthesis inside a string is gone.
@@ -235,9 +238,9 @@ function contractsIn(code) {
     const from = i + 1;
     let j = from;
     for (let depth = 1; j < code.length && depth; j++) depth += code[j] === "{" ? 1 : code[j] === "}" ? -1 : 0;
-    const { bases } = headerParts(header);
+    const { bases, complete } = headerParts(header);
     const fns = [...code.slice(from, j - 1).matchAll(FNS)].filter((f) => !/\b(internal|private)\b/.test(f[2])).map((f) => f[1]);
-    out.push({ name: m[1], bases, fns });
+    out.push({ name: m[1], bases, fns, complete });
     // A contract body holds no other contract, so go on after it.
     head.lastIndex = j;
   }
@@ -257,15 +260,23 @@ function entryFunctions(ws, suite) {
   }
   const names = new Set();
   const seen = new Set();
+  let complete = entry.length > 0;
   const visit = (c) => {
     if (seen.has(c)) return;
     seen.add(c);
+    if (!c.complete) complete = false;
     for (const f of c.fns) names.add(f);
-    for (const b of c.bases) for (const x of byName.get(b) ?? []) visit(x);
+    for (const b of c.bases) {
+      if (!byName.has(b)) complete = false;
+      for (const x of byName.get(b) ?? []) visit(x);
+    }
   };
   entry.forEach(visit);
-  return names;
+  return { names, complete };
 }
+
+// The note on a lead the engines broke but our source scan could not bind.
+const UNBOUND = "The source scan could not bind this test to a function in the suite; check it by hand";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SIG = /^(\w+\([^)]*\))$/;
@@ -394,7 +405,7 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
   // Bind to the entry contract before any engine runs (see entryFunctions).
   // Each property_ function it has that an engine did not report is a gap for
   // that engine.
-  const known = entryFunctions(ws, suite);
+  const { names: known, complete } = entryFunctions(ws, suite);
   const props = [...known].filter((n) => n.startsWith("property_"));
 
   const engines = await Promise.all(["Echidna", "Medusa"].map((e) => runEngine(e, ws, { fuzzSecs, testLimit, timeoutMs })));
@@ -404,7 +415,11 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
 
   const gaps = engines.filter((e) => !e.ok).map((e) => ({ suite, engine: e.engine, reason: e.reason }));
   // Bind the report to the entry contract. A test on another contract, or one
-  // whose function CryticTester does not have, is a gap, never a lead.
+  // whose function CryticTester does not have, is a gap, never a lead. One
+  // exception: when our binding is short (a header part we could not read, or a
+  // base we could not find), a broken test on CryticTester may be one our
+  // parser lost. It stays a lead, marked unbound, so a new header form cannot
+  // throw away a real counterexample. With a complete binding it is dropped.
   const dropped = [];
   const droppedNames = new Set();
   for (const e of ran) {
@@ -412,6 +427,11 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
       const fn = t.name.replace(/\(.*$/, "");
       const onEntry = (t.contract ?? ENTRY) === ENTRY;
       if (onEntry && known.has(fn)) return true;
+      if (onEntry && !complete && t.status === "broken") {
+        t.unbound = true;
+        gaps.push({ suite, engine: e.engine, name: t.name, reason: `${e.engine} broke a CryticTester test the source scan could not bind; it is kept as a lead` });
+        return true;
+      }
       dropped.push(`${e.engine}: ${t.contract ? `${t.contract}.` : ""}${t.name}`);
       droppedNames.add(fn);
       // The engine saw a CryticTester function that our source scan did not.
@@ -432,6 +452,7 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
   for (const e of ran) {
     for (const t of e.tests) {
       const cur = byName.get(t.name) ?? { suite, contract: ENTRY, name: t.name, brokenBy: [], passedBy: [], erroredBy: [], sequences: {} };
+      if (t.unbound) cur.unbound = true;
       if (t.status === "broken") { cur.brokenBy.push(e.engine); cur.sequences[e.engine] = t.sequence; }
       else if (t.status === "pass") cur.passedBy.push(e.engine);
       else { cur.erroredBy.push(e.engine); gaps.push({ suite, engine: e.engine, name: t.name, reason: t.note || `${e.engine} could not run this test` }); }
@@ -462,9 +483,10 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
       lines: [],
       property: x.name,
       sequence,
+      ...(x.unbound ? { bound: false } : {}),
       // A tool result alone never supports a proof while the suite is untrusted.
       supportsProof: trusted,
-      description: `${x.brokenBy.join(" and ")} broke ${x.name} in the Chimera suite ${suite} after: ${sequence.join(" -> ") || "(no sequence reported)"}.`,
+      description: `${x.brokenBy.join(" and ")} broke ${x.name} in the Chimera suite ${suite} after: ${sequence.join(" -> ") || "(no sequence reported)"}.${x.unbound ? ` ${UNBOUND}.` : ""}`,
     };
   });
   return { tool, available: true, applicable: true, reason: gapSummary(engines, results, props, gaps, droppedNames), suites, engines: engineView, trust, results, gaps, leads, dropped };
@@ -490,7 +512,7 @@ export function chimeraBrief(scan) {
   if (!scan.available) return `PROPERTY SUITE (Chimera) did not run: ${scan.reason}. The project's Chimera properties are unchecked; treat them as a gap, not as passing.`;
   const ran = scan.engines.filter((e) => e.status === "ran").map((e) => e.engine).join(" + ");
   const lines = [`PROPERTY SUITE (Chimera, run with ${ran}) over the project's own ${scan.suites[0]}:`];
-  for (const l of scan.leads) lines.push(`- BROKEN ${l.where} (${l.engines.join(", ")}): ${l.sequence.join(" -> ") || "no sequence reported"}`);
+  for (const l of scan.leads) lines.push(`- BROKEN ${l.where} (${l.engines.join(", ")}): ${l.sequence.join(" -> ") || "no sequence reported"}${l.bound === false ? `. ${UNBOUND}.` : ""}`);
   const passes = scan.results.filter((x) => x.status === "pass");
   if (passes.length) lines.push(`- ${passes.length} test${passes.length === 1 ? "" : "s"} did not break in the fuzzing budget. ${passes.every((x) => x.verdict === "unverified") ? "The suite is not vouched for (vacuity gate not merged), so this does NOT show the code is safe" : "See each verdict"}: ${passes.map((x) => x.name).join(", ")}`);
   for (const g of scan.gaps) lines.push(`- GAP ${[g.engine, g.name].filter(Boolean).join(" ") || g.suite}: ${g.reason}`);
@@ -512,6 +534,6 @@ export function chimeraRecord(scan) {
     suspects: scan.leads.length,
     gaps: scan.gaps.length,
     trusted: Object.values(scan.trust ?? {}).some((t) => t?.trusted === true),
-    top: scan.leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, property: l.property, engines: [scan.tool] })),
+    top: scan.leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, property: l.bound === false ? `${l.property}: ${UNBOUND}` : l.property, engines: [scan.tool] })),
   };
 }

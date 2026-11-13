@@ -503,10 +503,11 @@ test("a many-line header with nested, string and struct base arguments keeps eve
   });
 });
 
-// The guard. When our source scan finds no CryticTester function at all (here
-// an aliased base we do not follow), every result the engines report is a gap
-// with a reason that says the scan found nothing. Never "ran" with no rows.
-test("when the source scan binds no function, every engine result is a gap that says so", async () => {
+// The guard. When our source scan binds no CryticTester function (here an
+// aliased base we do not follow), the binding is short. A broken test on
+// CryticTester is then still a lead, marked unbound, with a note to check it
+// by hand. Passes it cannot bind stay gaps. The run view says so.
+test("when the source scan binds no function, a broken CryticTester test stays a lead marked unbound; passes stay gaps", async () => {
   const prep = (ws) => {
     const ct = join(ws, SUITE);
     writeFileSync(ct, readFileSync(ct, "utf8")
@@ -515,12 +516,39 @@ test("when the source scan binds no function, every engine result is a gap that 
   };
   await withShim({ prep }, (scan) => {
     assert.equal(scan.applicable, true);
-    assert.deepEqual(scan.leads, []);
-    assert.equal(scan.dropped.length, 12);
-    assert.equal(scan.gaps.length, 12);
-    assert.equal(scan.reason, "12 of 12 engine checks unchecked (Echidna reported tests, but the source scan found no CryticTester function; Medusa reported tests, but the source scan found no CryticTester function)");
-    assert.equal(chimeraRecord(scan).gaps, 12);
-    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "unavailable", reason: scan.reason, leads: 0 });
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join(), l.bound]), [["CryticTester.property_solvent", "Echidna,Medusa", false]]);
+    const lead = scan.leads[0];
+    assert.equal(lead.supportsProof, false);
+    assert.match(lead.description, /The source scan could not bind this test to a function in the suite; check it by hand\.$/);
+    // The 5 passing tests per engine cannot be bound: gaps, as before.
+    assert.equal(scan.dropped.length, 10);
+    assert.ok(!scan.dropped.some((d) => d.includes("property_solvent")));
+    assert.deepEqual(scan.gaps.filter((g) => g.name === "property_solvent()").map((g) => g.reason), [
+      "Echidna broke a CryticTester test the source scan could not bind; it is kept as a lead",
+      "Medusa broke a CryticTester test the source scan could not bind; it is kept as a lead",
+    ]);
+    assert.match(scan.reason, /^10 of 12 engine checks unchecked \(/);
+    const rec = chimeraRecord(scan);
+    assert.equal(rec.status, "ran");
+    assert.equal(rec.top[0].property, "property_solvent(): The source scan could not bind this test to a function in the suite; check it by hand");
+    const view = prepassView({ static: STATIC, chimera: rec });
+    assert.equal(view.tools.find((t) => t.name === "Chimera").status, "ran");
+    assert.match(view.leads.find((l) => l.where === "CryticTester.property_solvent").detail, /check it by hand/);
+    assert.match(chimeraBrief(scan), /- BROKEN CryticTester\.property_solvent \(Echidna, Medusa\): .*check it by hand\./);
+  });
+});
+
+// A fourth header form we do not know (made up here) hides a base. The
+// parser cannot read that part, so it marks the binding short, and the broken
+// property is kept as an unbound lead instead of being thrown away.
+test("a header part the parser does not know marks the binding short, so a broken test is kept", async () => {
+  const prep = (ws) => {
+    const ct = join(ws, SUITE);
+    writeFileSync(ct, readFileSync(ct, "utf8").replace("contract CryticTester is TargetFunctions, CryticAsserts {", "contract CryticTester future(TargetFunctions) is CryticAsserts {"));
+  };
+  await withShim({ prep }, (scan) => {
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join(), l.bound]), [["CryticTester.property_solvent", "Echidna,Medusa", false]]);
+    assert.equal(scan.dropped.length, 10);
   });
 });
 
