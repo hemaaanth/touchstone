@@ -9,6 +9,7 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
 import { event, withAgent } from "./event.mjs";
+import { scrubUrl } from "./redact-url.mjs";
 
 // Charge each response before the harness can start another call, including
 // retries and subagents. Forward the final event only after accounting.
@@ -41,13 +42,15 @@ export function budgetedApi(api, agentForSession = () => undefined) {
               event("spend", { ...runSpend(), ...contextUse(model, usage) });
             }
           }
-          output.push(e.type === "error" ? markTransient(e) : e);
+          // Classify on the raw text (billedUsage above, markTransient here),
+          // then scrub what goes out.
+          output.push(e.type === "error" ? scrubbed(markTransient(e), model.baseUrl) : e);
         }
       } catch (err) {
         output.push({ type: "error", reason: "error", error: {
           role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "error", errorMessage: transientMessage(err?.message ?? err), timestamp: Date.now(),
+          stopReason: "error", errorMessage: scrubUrl(transientMessage(err?.message ?? err), model.baseUrl), timestamp: Date.now(),
         } });
       } finally { output.end(); }
     });
@@ -82,6 +85,15 @@ function transientMessage(text) {
   if (!TRANSPORT_DROP.test(t) || CLIENT_STATUS.test(t) || isRetryableAssistantError({ stopReason: "error", errorMessage: t })) return t;
   return `${t} (transient network error)`;
 }
+// The base URL may hold a user name, password or query, and the adapter's
+// error text (Node fetch) can name it in full. It goes into run events and
+// records, so take it out (redact-url.mjs).
+function scrubbed(e, baseUrl) {
+  const m = e.error?.errorMessage;
+  if (typeof m !== "string") return e;
+  const clean = scrubUrl(m, baseUrl);
+  return clean === m ? e : { ...e, error: { ...e.error, errorMessage: clean } };
+}
 function markTransient(e) {
   if (e.error?.stopReason !== "error") return e;
   const errorMessage = transientMessage(e.error.errorMessage);
@@ -98,6 +110,13 @@ function markTransient(e) {
 // came back, so the call is charged nothing. That includes a socket that was
 // reset after the request was sent: the SDK gives it the same text as a refused
 // host, so the two cannot be told apart.
+// Accepted gap: "Connection error." is retryable, so with maxRetries 5
+// (agent-run.mjs) one call can make up to 6 such attempts, all charged $0. If a
+// provider bills a request that it read but answered with no headers, those
+// attempts are not on the ledger, and the run can pass the cap by more than one
+// call. Streaming providers usually send headers before they start work, so
+// this is rare. Charging the estimate here instead would overcharge every
+// refused host.
 const SERVER_STATUS = statusAt("5\\d\\d");
 const TIMED_OUT = /timed out|timeout|ETIMEDOUT/i;
 function billedUsage(context, message, started) {

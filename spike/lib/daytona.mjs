@@ -52,8 +52,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
+import { scrubError, scrubUrl } from "./redact-url.mjs";
 
-const API = "https://app.daytona.io/api";
+export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
 export const DEFAULT_TARGET = "us-west-3";
 const SNAPSHOT_IMAGE = "docker:28.5.1-dind";
@@ -68,16 +69,61 @@ let downUntil = 0;
 // The execution settings, env first, then Settings, then the defaults.
 //   backend   "local" | "daytona"
 //   apiKey    the Daytona key, or "" when none is set
+//   apiUrl    the Daytona server, with no trailing slash
+//   keyHeld   why a key is set but not sent, or null
+// A key is sent only to the host it is bound to, and only over https with no
+// user name, query or #part. A saved key is bound to saved.keyHost (an older
+// key without one: the saved or default URL). DAYTONA_API_KEY is bound to
+// DAYTONA_API_URL, else to the default server.
 export function execConfig(env = process.env, cfg = safeConfig()) {
   const saved = cfg.execution ?? {};
   const pick = String(env.TOUCHSTONE_EXEC || saved.backend || "local").toLowerCase();
+  const apiUrl = String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, "");
+  const host = hostOf(apiUrl);
+  const safe = safeUrl(apiUrl);
+  const keyHost = saved.keyHost || hostOf(saved.apiUrl || DEFAULT_API_URL);
+  const envKeyHost = hostOf(env.DAYTONA_API_URL || DEFAULT_API_URL);
+  const savedKey = safe && saved.apiKey && keyHost === host ? saved.apiKey : "";
+  const envKey = safe && env.DAYTONA_API_KEY && envKeyHost === host ? env.DAYTONA_API_KEY : "";
+  const apiKey = String(savedKey || envKey || "");
+  let keyHeld = null;
+  if (!apiKey && (saved.apiKey || env.DAYTONA_API_KEY)) {
+    if (!safe) keyHeld = `No key is sent to ${host || "the Daytona server"}: its URL must be https, with no user name, query or #part.`;
+    else if (saved.apiKey) keyHeld = `The saved key is for ${keyHost}, not ${host}. Enter the key again.`;
+    else keyHeld = `The key from DAYTONA_API_KEY is only sent to ${envKeyHost}, not ${host}.`;
+  }
   return {
     backend: pick === "daytona" ? "daytona" : "local",
-    apiKey: String(saved.apiKey || env.DAYTONA_API_KEY || ""),
-    keySource: saved.apiKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
+    apiKey,
+    keySource: savedKey ? "settings" : envKey ? "env" : null,
+    keyHeld,
+    // The host DAYTONA_API_KEY is bound to, or null with no env key. A host
+    // name only, so the form can tell if the env key fits a new server.
+    envKeyHost: env.DAYTONA_API_KEY ? envKeyHost : null,
+    apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
   };
+}
+
+// The host and port of a URL, lower case. "" when it is not a URL.
+export function hostOf(url) {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// True when a key may be sent to this URL: https, and no user name, password,
+// query or #part. The same rule as a saved URL (settings.mjs daytonaUrl).
+function safeUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash;
+  } catch {
+    return false;
+  }
 }
 
 function safeConfig() {
@@ -176,15 +222,23 @@ export function shq(s) {
 // ---- REST client
 
 function client(c) {
+  const API = c.apiUrl;
   const auth = { Authorization: `Bearer ${c.apiKey}` };
   async function call(method, url, body, { raw = false, timeoutMs = 60_000 } = {}) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
-    const r = await fetch(url, init);
+    // The server URL may hold a user name, password or query: no error,
+    // cause or echoed body keeps it (redact-url.mjs).
+    let r;
+    try {
+      r = await fetch(url, init);
+    } catch (err) {
+      throw scrubError(err, API);
+    }
     if (!r.ok) {
       const text = (await r.text()).slice(0, 300);
-      const e = new Error(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`);
+      const e = new Error(scrubUrl(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`, API));
       e.status = r.status;
       throw e;
     }

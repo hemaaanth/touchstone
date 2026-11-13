@@ -54,7 +54,7 @@ import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
-import { reachHosts } from "./reach.mjs"
+import { reachHosts, allowsPrivate } from "./reach.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..") // repo root
@@ -102,6 +102,16 @@ export const TARGETS = [
     entry: "src/FeeVault.sol",
     signal: "static",
     dir: "lab/vault-multi",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
+  {
+    id: "vault-shares",
+    title: "ShareVault · share math",
+    kind: "lab",
+    blurb: "A share vault that ships its own property suite. withdraw rounds the shares it burns down, so small withdrawals are free; redeem books shares as assets, so the vault turns insolvent after yield.",
+    entry: "src/ShareVault.sol",
+    signal: "symbolic",
+    dir: "lab/vault-shares",
     proofSurface: SANDBOX_FOUNDRY,
   },
   {
@@ -430,7 +440,9 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
         return { scheme: u.protocol.slice(0, -1), port: Number(u.port || (u.protocol === "https:" ? 443 : 80)) }
       })
       live.domain = hosts[0]
-      live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+      // The capture checks every tool input against `scope`, and refuses a name
+      // that resolves to a private address unless the scope's own grant allows it.
+      live.reach = { network: "bridge", granted: true, scope: hosts, ports, ...(allowsPrivate(target) ? { allowPrivate: true } : {}) }
     }
     // The phishing pack captures the lookalikes of one root domain the same way.
     // `owned` lists the client's own defensive registrations; they raise no lead.

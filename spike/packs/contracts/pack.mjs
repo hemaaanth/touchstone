@@ -19,6 +19,8 @@ import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { runPrepass } from "../../lib/prepass.mjs";
 import { gate, proveFindings } from "../../lib/record.mjs";
 import { proofDelta } from "../../lib/proof.mjs";
+import { halmosBrief, halmosRecord, halmosScan } from "./halmos.mjs";
+import { chimeraBrief, chimeraRecord, chimeraScan } from "./chimera.mjs";
 import { bytecodeFindingsTool, bytecodeKickoff, bytecodePrepass, bytecodeUnits } from "./bytecode/index.mjs";
 
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
@@ -438,6 +440,8 @@ function kickoff(ws, env) {
   const leadBlocks = [];
   if (env.STATIC_BRIEF) leadBlocks.push(`${env.STATIC_BRIEF}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
   if (env.FUZZ_BRIEF) leadBlocks.push(`${env.FUZZ_BRIEF}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
+  if (env.SYMBOLIC_BRIEF) leadBlocks.push(env.SYMBOLIC_BRIEF);
+  if (env.PROPERTY_BRIEF) leadBlocks.push(env.PROPERTY_BRIEF);
   const bytecode = bytecodeKickoff(env);
   if (bytecode) leadBlocks.push(bytecode);
   return leadBlocks.length ? `${base}\n\n${leadBlocks.join("\n\n")}` : base;
@@ -468,6 +472,22 @@ async function prepass(ws, { emit }) {
       emit(ev);
     },
   });
+  // Halmos runs the project's own check_ properties; Chimera runs its own
+  // CryticTester suite. Both are property checking, so they ride on the fuzz
+  // module. Their leads go into the kickoff only.
+  if (modules == null || moduleOn(modules, "fuzz")) {
+    const [sym, prop] = await Promise.all([halmosScan(ws), chimeraScan(ws)]);
+    if (prop.applicable) {
+      record.chimera = chimeraRecord(prop);
+      emit({ t: Date.now(), ev: "chimera-scan", ...record.chimera });
+      prep.runEnv.PROPERTY_BRIEF = chimeraBrief(prop);
+    }
+    if (sym.applicable) {
+      record.symbolic = halmosRecord(sym);
+      emit({ t: Date.now(), ev: "symbolic-scan", ...record.symbolic });
+      prep.runEnv.SYMBOLIC_BRIEF = halmosBrief(sym);
+    }
+  }
   // Bytecode-only units run under the static module (bytecode/index.mjs).
   const bytecode = modules == null || moduleOn(modules, "static") ? await bytecodePrepass(ws, { emit }) : { env: {}, record: {} };
   return { env: { ...prep.runEnv, ...bytecode.env }, record: { ...record, ...bytecode.record } };

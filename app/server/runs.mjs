@@ -18,17 +18,18 @@
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
 import { DatabaseSync } from "node:sqlite"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
-import { homedir } from "node:os"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, lstatSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
+import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -643,7 +644,10 @@ function engineEvents(run) {
     if (e.ev === "settled") {
       // Internal: carries the summary and every finding with its passing
       // source. Persistence reads it on exit; it is not a UI step.
+      // The exit path may have read this same event from the engine's file.
+      if (run.settled && run.settled.t === e.t) return
       run.settled = {
+        t: e.t ?? null,
         final: e.summary?.final?.text ?? null,
         status: e.status ?? null,
         reason: e.reason ?? null,
@@ -671,6 +675,23 @@ function engineEvents(run) {
       broadcast(run, { ev: "status", status: run.status, pending: run.pending })
     }
   }
+}
+
+// The engine writes each event to its own file before it writes it to stdout.
+// A `settled` that did not arrive on stdout (the pipe was cut at the worker's
+// exit) is still in that file. Read it, so a finished turn is never shown as a
+// crash. `since` is when this worker started: an older turn's settle is not its.
+function recoverSettled(run, since) {
+  if (run.settled || !run.eventsFile || !existsSync(run.eventsFile)) return
+  const e = readJsonl(run.eventsFile).findLast((x) => x.ev === "settled" && !x.agent && x.t >= since)
+  if (e) engineEvents(run)(e)
+}
+
+// How a worker process ended, in plain words, for the card or the reply error.
+function exitWords(code, signal) {
+  if (signal) return `it was killed by the signal ${signal}`
+  if (code) return `it exited with the code ${code}`
+  return "it exited without an error code"
 }
 
 // Fleet runs split the scope across children; solo runs have one agent. A run
@@ -755,7 +776,7 @@ export function failureInfo(run) {
     return {
       kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
       title: "Run stopped: the spend ledger stayed locked",
-      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock file next to the ledger, then start a new run.",
+      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock and spend.json.lock.break files next to the ledger, then start a new run.",
       message: `the run stopped because its spend could not be recorded in the ledger — ${spentNote}`,
     }
   }
@@ -841,6 +862,7 @@ function spawnAgent(run, leads) {
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
+  const since = Date.now()
   const child = spawn(process.execPath, [ENGINE, "child", "run", run.db, run.ws], {
     cwd: SPIKE,
     env,
@@ -855,8 +877,9 @@ function spawnAgent(run, leads) {
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
-  child.on("exit", async () => {
+  child.on("exit", async (code, signal) => {
     if (run.status !== "running" && run.status !== "starting") return
+    if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
     if (run.stopping) {
       await endWorkspace(run)
@@ -895,16 +918,17 @@ function spawnAgent(run, leads) {
       run.error = info.message
       setRunStatus(run, "error")
     } else {
-      // The worker died before it settled anything. The tail of its stderr is
-      // the best evidence; present it as an unexpected-crash card.
+      // The worker died before it settled anything, on stdout or in its own
+      // file. Say how the process ended; the tail of its stderr is the evidence.
+      const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
       const tail = run.stderr.slice(-800).trim()
       run.errorInfo = {
         kind: "crash", retryable: true, reason: "no-settle",
         spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
-        detail: tail,
+        detail: tail ? `${how}\n\n${tail}` : how,
         title: "The run stopped unexpectedly",
-        hint: "The engine exited before it could report a result. Start the run again; if it keeps happening, the error output below is the place to look.",
-        message: tail || "the agent exited before proving a finding",
+        hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
+        message: tail || how,
       }
       run.error = run.errorInfo.message
       setRunStatus(run, "error")
@@ -971,8 +995,232 @@ async function recordRun(run, found) {
   }
 }
 
-// Delete a run's workspace. First let the pack stop what its pre-pass left
-// running there (the web lab's container), or that would outlive the run.
+// ---- Kept workspaces. A run's workspace outlives the run, so a follow-up
+// finds the files the agent wrote and the sources it fetched. One small record
+// names the workspace and holds the run's own scope snapshot. It survives a
+// restart, and it moves to the trash with the run's other files.
+const workspaceFile = (id) => path.join(RESULTS_DIR, `run-${id}.workspace.json`)
+function readWorkspace(id) {
+  try {
+    return JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+function writeWorkspace(id, rec) {
+  const file = workspaceFile(id)
+  writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o600 })
+  renameSync(`${file}.tmp`, file)
+}
+
+// The names a run workspace can have (spike/lib/sandbox.mjs, the generated lab).
+const WS_NAME = /^(redteam-run|touchstone-supply)-[A-Za-z0-9]{6}$/
+// The server writes the run id into this file when it keeps a workspace. A
+// record alone does not bind a directory to a run: the directory names the run too.
+const WS_MARK = ".touchstone-run"
+
+// The one check before the server keeps, reuses or deletes a workspace. The path
+// can come from a record file, so it proves nothing by itself. The directory
+// must be a real directory of this user, directly inside the temp folder, with a
+// workspace name. With an id it must also carry that run's mark. Returns the
+// canonical path, or null.
+function checkedWorkspace(ws, id) {
+  try {
+    if (typeof ws !== "string" || !ws) return null
+    const st = lstatSync(ws) // lstat: a symlink is refused, not followed
+    if (!st.isDirectory() || st.uid !== (process.getuid?.() ?? st.uid)) return null
+    const real = realpathSync(ws)
+    if (path.dirname(real) !== realpathSync(tmpdir()) || !WS_NAME.test(path.basename(real))) return null
+    if (id === undefined) return real
+    const mark = path.join(real, WS_MARK)
+    return lstatSync(mark).isFile() && readFileSync(mark, "utf8") === id ? real : null
+  } catch {
+    return null
+  }
+}
+
+// Delete the kept workspace of a run. A path that fails the check is left alone.
+function removeKept(id) {
+  const ws = checkedWorkspace(readWorkspace(id)?.ws, id)
+  if (!ws) return
+  try {
+    rmSync(ws, { recursive: true, force: true })
+  } catch (err) {
+    // A part stayed. Put the mark back, so a later delete still passes the check.
+    try {
+      writeFileSync(path.join(ws, WS_MARK), id, { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
+    } catch {
+      // the mark is still there, or the folder itself is gone or closed
+    }
+    throw err
+  }
+}
+
+// Take the path out of a run's record. The scope snapshot stays, so a follow-up
+// still builds a new workspace from the run's own scope.
+function unbindWorkspace(id) {
+  const rec = readWorkspace(id)
+  if (!rec?.ws) return
+  delete rec.ws
+  delete rec.restored
+  try {
+    writeWorkspace(id, rec)
+  } catch {
+    rmSync(workspaceFile(id), { force: true })
+  }
+}
+
+// ---- The credential of a live AI/MCP scope. The scope library holds it
+// (spike/data/scopes.json, fields mcp.token and mcp.tokens). A run's workspace
+// gets a copy in BRIEF.md and .touchstone.json. A kept workspace must not hold
+// one, so the copies leave when the run ends and come back for a follow-up.
+const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {})])].filter((s) => typeof s === "string" && s)
+function withoutSecrets(target) {
+  if (!target?.mcp) return target
+  const mcp = { ...target.mcp }
+  delete mcp.token
+  delete mcp.tokens
+  return { ...target, mcp }
+}
+const placeholder = (i) => `[touchstone: credential ${i + 1} removed when the run ended]`
+const bytes = (s) => Buffer.from(s, "utf8").toString("latin1") // files are read as bytes
+
+// Swap exact texts in every file of a workspace. Links are not followed.
+// shortcut: only an exact copy is found, not an encoded or split one, and a file
+// is read whole. Scan the encoded forms too if agents start to store them.
+function swapInFiles(dir, pairs) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, e.name)
+    if (e.isDirectory()) swapInFiles(file, pairs)
+    else if (e.isFile()) {
+      const before = readFileSync(file, "latin1")
+      const text = pairs.reduce((t, [from, to]) => t.split(from).join(to), before)
+      if (text !== before) writeFileSync(file, text, "latin1")
+    }
+  }
+}
+
+// Change the `mcp` part of the workspace config, which the AI/MCP tools read.
+function editMcp(ws, change) {
+  const file = path.join(ws, ".touchstone.json")
+  if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return
+  const cfg = JSON.parse(readFileSync(file, "utf8"))
+  if (!cfg.mcp || typeof cfg.mcp !== "object") return
+  change(cfg.mcp)
+  writeFileSync(file, JSON.stringify(cfg, null, 2))
+}
+
+function scrubSecrets(ws, secrets) {
+  editMcp(ws, (mcp) => {
+    delete mcp.token
+    delete mcp.tokens
+  })
+  swapInFiles(ws, secrets.map((s, i) => [bytes(s), placeholder(i)]).sort((a, b) => b[0].length - a[0].length))
+}
+
+function restoreSecrets(ws, target) {
+  swapInFiles(ws, secretsOf(target).map((s, i) => [placeholder(i), bytes(s)]))
+  editMcp(ws, (mcp) => Object.assign(mcp, credentialOf(target)))
+}
+const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
+// The run's scope as the library has it now, or null when the scope is gone.
+// A scope store that cannot be read is not "gone": nobody knows then, so this throws.
+function libraryTarget(run) {
+  if (!run.scope?.id) return null
+  const library = getTarget(run.scope.id)
+  if (library) return withPack(library, run.scope.pack ?? library.pack)
+  try {
+    loadScopes() // the lookup above reads a damaged store as empty; this read throws
+  } catch {
+    throw new Error("The scope library cannot be read, so this follow-up did not start. Repair the scope store file, then send the message again.")
+  }
+  return null
+}
+
+// A follow-up puts the credential back into the kept workspace, and the record
+// says so first (`restored`). A server that stopped before that follow-up ended
+// left the credential there. At boot, take it out: scrub with the library
+// credential, or delete the workspace when the library has none. The mark
+// leaves the record only after that.
+function cleanRestored(run) {
+  if (!run || !idle(run) || run.owner) return
+  let mine = false
+  try {
+    const rec = readWorkspace(run.id)
+    if (!rec?.restored || !(mine = own(run))) return // a live owner still answers: its own ending scrubs
+    const ws = checkedWorkspace(rec.ws, run.id)
+    const secrets = secretsOf(libraryTarget(run))
+    try {
+      if (!ws || !secrets.length) throw new Error("nothing to scrub with")
+      scrubSecrets(ws, secrets)
+    } catch {
+      removeKept(run.id)
+      delete rec.ws
+    }
+    delete rec.restored
+    writeWorkspace(run.id, rec)
+  } catch {
+    // The mark stays, so the next boot tries again and a follow-up does not trust
+    // the files. This is also the path when the scope store cannot be read. The
+    // workspace is then left alone. That is safe: with the mark set, a follow-up
+    // must look the credential up first, and that lookup is refused too, so no
+    // worker gets the files and the token is not used.
+  } finally {
+    if (mine) release(run)
+  }
+}
+
+// Keep the workspace of a run that has an agent session: only that run can take
+// a follow-up. Returns false when there is nothing to keep, or when the
+// credential could not be taken out: the workspace is then deleted as before.
+function keepWorkspace(run, ws) {
+  const real = run?.id && existsSync(path.join(RESULTS_DIR, `run-${run.id}.sqlite`)) ? checkedWorkspace(ws) : null
+  if (!real) return false
+  try {
+    const old = readWorkspace(run.id)
+    const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
+    const secrets = secretsOf(target)
+    // A restored credential that is not known here cannot be scrubbed: do not keep.
+    if (old?.restored && !secrets.length) return false
+    if (secrets.length) scrubSecrets(real, secrets)
+    const mark = path.join(real, WS_MARK)
+    rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
+    writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
+    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+  } catch {
+    return false // no record, no way back to the files: remove them as before
+  }
+  pruneWorkspaces()
+  return true
+}
+
+// shortcut: only the number of kept workspaces is capped, and they stay in the
+// temp folder (RAM on some hosts, emptied at a reboot). Cap bytes or move them
+// to a disk folder when runs get large. A run that lost its workspace this way
+// still takes a follow-up: it gets a new workspace and is told so.
+function pruneWorkspaces() {
+  const keep = Number(process.env.TOUCHSTONE_KEEP_WORKSPACES) || 8
+  try {
+    const kept = readdirSync(RESULTS_DIR)
+      .map((f) => /^run-(.+)\.workspace\.json$/.exec(f))
+      .filter((m) => m && readWorkspace(m[1])?.ws)
+      .map((m) => ({ id: m[1], at: statSync(path.join(RESULTS_DIR, m[0])).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+    for (const { id } of kept.slice(keep)) {
+      const run = runs.get(id)
+      if (run && !idle(run)) continue
+      removeKept(id)
+      unbindWorkspace(id)
+    }
+  } catch {
+    // Best effort: a failed prune must not fail the run that just ended.
+  }
+}
+
+// End a run's use of its workspace. First let the pack stop what its pre-pass
+// left running there (the web lab's container), or that would outlive the run.
+// The files stay when the run can take a follow-up; otherwise they are deleted.
 async function endWorkspace(run) {
   const ws = run?.ws ?? run
   try {
@@ -988,6 +1236,11 @@ async function endWorkspace(run) {
   } catch {
     // already closed
   }
+  if (keepWorkspace(run, ws)) {
+    // The files stay. The run's Daytona machines do not: they open again on demand.
+    if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {})
+    return
+  }
   await cleanupWorkspace(ws)
 }
 
@@ -998,14 +1251,14 @@ async function endWorkspace(run) {
 // worker that reopens the saved session. Only an archived run refuses.
 export function steerRun(id, text, clientId) {
   const run = runs.get(id)
-  if (!run) throw new Error("no such run")
-  if (run.archived) throw new Error("this run is archived")
+  if (!run) throw new Error("This run was not found. It may have been deleted. Open another run or start a new one.")
+  if (run.archived) throw new Error("This run is archived. Unarchive it to send it a message.")
   const msg = typeof text === "string" ? text.trim() : ""
-  if (!msg) throw new Error("empty message")
+  if (!msg) throw new Error("The message is empty. Type a message and send it again.")
   // The UI's id for the message. The echo carries it back unchanged.
   const tag = typeof clientId === "string" && /^[\w-]{1,64}$/.test(clientId) ? clientId : undefined
   if (idle(run)) return followUp(run, msg, tag)
-  if (!run.child?.stdin?.writable) throw new Error(`the run is ${run.status}; try again in a moment`)
+  if (!run.child?.stdin?.writable) throw new Error(`The run cannot take a message at this moment (its status is "${run.status}"). Wait a moment and send the message again.`)
   run.child.stdin.write(JSON.stringify({ text: msg, id: tag }) + "\n")
   return { ok: true }
 }
@@ -1056,30 +1309,54 @@ function ensureFiles(run) {
 }
 
 // Start a follow-up: one operator message to an idle run. The worker reopens
-// the run's saved agent session in a fresh workspace, answers, and exits. Any
-// finding it proves is replayed and added to the run record.
+// the run's saved agent session in the run's own kept workspace, answers, and
+// exits. Any finding it proves is replayed and added to the run record. When
+// the workspace is gone, a new one is built from the run's scope, and one
+// `workspace` event tells the operator and the agent the same true thing.
 export function followUp(run, text, clientId) {
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
-  if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
+  if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error(`This run has spent its budget of $${money.RUN_BUDGET_USD}. Start a new run with a higher budget to continue the work.`)
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
-  // An older run saved no target. Its scope may allow several modules now, so
-  // it comes back under the module this run used.
-  const saved = run.target ? null : run.scope?.id ? getTarget(run.scope.id) : null
-  const target = run.target ?? (saved ? withPack(saved, run.scope.pack ?? saved.pack) : null)
-  if (!target) throw new Error("this run's scope is no longer in the library")
-  run.target = target
-  // A generated lab is new on every run, with its own throwaway keys, so a reopened
-  // session would meet a different repository than the one it audited.
-  if (target.generated) throw new Error("this run's lab was generated for that run only, so it cannot be reopened for a follow-up")
-  if (!own(run)) throw new Error("another server is already answering this run; try again when it finishes")
-  try {
-    run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
-  } catch (err) {
-    release(run)
-    throw err
+  // The run's own snapshot comes first. Never replace it with a newer, wider
+  // scope from the library. Only a run from before workspaces were kept has no
+  // snapshot; its scope may allow several modules now, so it comes back under
+  // the module this run used.
+  const kept = readWorkspace(run.id)
+  // The record's path is used only when the directory passes the check and
+  // carries this run's mark. Otherwise the path leaves the record.
+  let ws = checkedWorkspace(kept?.ws, run.id)
+  let target = run.target ?? kept?.target ?? libraryTarget(run)
+  // The credential is not kept with the workspace. It comes back from the scope
+  // library, where it already is. Only the credential: the rest stays the run's
+  // own snapshot. A scope that is gone from the library gives none.
+  let noCredential = ""
+  if (target && kept?.credential && !secretsOf(target).length) {
+    const found = credentialOf(libraryTarget(run))
+    if (secretsOf({ mcp: found }).length) target = { ...target, mcp: { ...target.mcp, ...found } }
+    else noCredential = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
+  }
+  if (kept?.ws && !ws) unbindWorkspace(run.id) // after the lookups: a refusal above changes nothing
+  if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
+  if (target) run.target = target
+  if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")
+  // The server stopped during an earlier follow-up, so the workspace still holds
+  // the credential. This follow-up has none, so it must not get those files: the
+  // workspace goes, and a new one is built below.
+  if (ws && kept.restored && noCredential) {
+    try {
+      removeKept(run.id)
+    } catch {
+      // checked just below
+    }
+    if (existsSync(ws)) {
+      release(run)
+      throw new Error(`The earlier workspace of this run still holds the access token, and it could not be removed. Delete the folder ${ws}, then send the message again.`)
+    }
+    unbindWorkspace(run.id)
+    ws = null
   }
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
@@ -1089,57 +1366,113 @@ export function followUp(run, text, clientId) {
   run.replying = true
   broadcast(run, { t: Date.now(), ev: "reply-start" })
 
-  const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
-    cwd: SPIKE,
-    env: {
-      ...process.env,
-      TOUCHSTONE_PARENT_PIPE: "1",
-      PROVIDER: runProvider(run),
-      ALIAS: run.alias,
-      EVENTS_FILE: run.eventsFile,
-      RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
-      ...money,
-      ...fleetEnv(run),
-      FOLLOWUP: text,
-      ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
-      PRIOR_FOUND: JSON.stringify(prior),
-      ATTEMPT_BASE: attemptBase(run),
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  })
-  child.stdin.on("error", () => {})
-  run.child = child
-  pipeEvents(child, engineEvents(run), (line) => {
-    run.stderr += line + "\n"
-  })
-  child.stderr.on("data", (d) => {
-    run.stderr += d
-  })
-  child.on("exit", async () => {
-    const s = run.settled
+  const end = async () => {
+    if (run.ws) await endWorkspace(run).catch(() => {})
+    run.child = null
+    run.stopping = false
+    run.replying = false
+    broadcast(run, { t: Date.now(), ev: "closed" })
+  }
+  const start = (note) => {
+    const since = Date.now()
+    const errFrom = run.stderr.length // the card must not quote an earlier worker's output
+    const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
+      cwd: SPIKE,
+      // No reach env: a follow-up gets no route to a live target, as before.
+      env: {
+        ...process.env,
+        TOUCHSTONE_PARENT_PIPE: "1",
+        PROVIDER: runProvider(run),
+        ALIAS: run.alias,
+        EVENTS_FILE: run.eventsFile,
+        RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
+        ...money,
+        ...fleetEnv(run),
+        FOLLOWUP: text,
+        ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
+        ...(note ? { WORKSPACE_NOTE: note } : {}),
+        PRIOR_FOUND: JSON.stringify(prior),
+        ATTEMPT_BASE: attemptBase(run),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    child.stdin.on("error", () => {})
+    run.child = child
+    pipeEvents(child, engineEvents(run), (line) => {
+      run.stderr += line + "\n"
+    })
+    child.stderr.on("data", (d) => {
+      run.stderr += d
+    })
+    child.on("exit", async (code, signal) => {
+      if (!run.stopping) recoverSettled(run, since)
+      const s = run.settled
+      try {
+        if (s?.findings?.length) await recordMore(run, s.findings)
+        else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
+        else if (!s) {
+          const tail = run.stderr.slice(errFrom).slice(-800).trim()
+          broadcast(run, { t: Date.now(), ev: "reply-error", error: `The agent process ended before it gave an answer: ${exitWords(code, signal)}. Send the message again to retry.${tail ? `\n\n${tail}` : ""}` })
+        }
+        // A failed run that a follow-up retried: if the reply finished, or the
+        // operator stopped it, the old failure no longer describes the run —
+        // unless part of the scope is still unread.
+        if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
+          run.error = null
+          run.errorInfo = null
+          setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+          finalize(run)
+        }
+      } catch (err) {
+        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved: ${String(err?.message ?? err)} Send the message again to retry.` })
+      } finally {
+        await end()
+      }
+    })
+  }
+
+  if (ws) {
+    run.ws = ws
+    if (noCredential) {
+      broadcast(run, { t: Date.now(), ev: "workspace", state: "kept", message: noCredential })
+      start(`Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there. ${noCredential} A placeholder text stands where a file held it.`)
+      return { ok: true, followUp: true }
+    }
     try {
-      if (s?.findings?.length) await recordMore(run, s.findings)
-      else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
-      else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
-      // A failed run that a follow-up retried: if the reply finished, or the
-      // operator stopped it, the old failure no longer describes the run —
-      // unless part of the scope is still unread.
-      if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
-        run.error = null
-        run.errorInfo = null
-        setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
-        finalize(run)
+      if (kept?.credential) {
+        writeWorkspace(run.id, { ...kept, restored: true }) // before the first file gets the credential
+        restoreSecrets(ws, target)
       }
     } catch (err) {
-      broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
-    } finally {
-      await endWorkspace(run)
-      run.child = null
-      run.stopping = false
-      run.replying = false
-      broadcast(run, { t: Date.now(), ev: "closed" })
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: `The access token could not be put back into the workspace: ${String(err?.message ?? err)} Send the message again to retry.` })
+      end()
+      return { ok: true, followUp: true }
     }
-  })
+    start(null)
+    return { ok: true, followUp: true }
+  }
+  // The workspace is gone: deleted, or left on another machine, or lost with
+  // the temp folder at a reboot. Build a new one from the run's scope and say so.
+  run.ws = null
+  prepareRunWorkspace(target, { modules: run.modules ?? kept?.modules ?? [] }).then(
+    (made) => {
+      run.ws = made
+      const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
+      const message = [
+        "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
+        "Files the agent wrote before are not in it.",
+        lost.length ? `These fetched sources are not in it: ${[...new Set(lost)].join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
+        target.generated ? "The lab was generated again with new throwaway keys, so it is not the same repository as before." : "",
+        noCredential,
+      ].filter(Boolean).join(" ")
+      broadcast(run, { t: Date.now(), ev: "workspace", state: "rebuilt", message })
+      start(`Operator follow-up. ${message} Write or fetch again what you need.`)
+    },
+    async (err) => {
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: `The workspace of this run is gone, and a new one could not be built: ${String(err?.message ?? err)} Fix the cause, then send the message again.` })
+      await end()
+    },
+  )
   return { ok: true, followUp: true }
 }
 
@@ -1217,6 +1550,8 @@ export function deleteRun(id) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
   if (!idle(run)) throw new Error("the agent is still working; delete it once it stops")
+  // The kept workspace goes with the run. Its record moves to the trash below.
+  removeKept(id)
   const trash = path.join(RESULTS_DIR, "trash")
   mkdirSync(trash, { recursive: true })
   const prefix = `run-${id}.`
@@ -1397,6 +1732,87 @@ function rebuildEvents(id, record, engineEvents) {
   return evs
 }
 
+// ---- A fleet and a restart. A restart kills the workers, so a child that was
+// mid-turn would read as working for ever. Its end is written into the stream,
+// with the reason. The server starts no agent again: an agent costs money, so
+// the operator decides. A message continues the run (followUp).
+const CUT_OFF = "The server restarted while this agent was working. It was not started again."
+
+// A run's children by their last lifecycle event. `working` still read as
+// working. `cut` were ended by a restart and have not worked since.
+function fleetChildren(events) {
+  const last = new Map()
+  for (const e of events) {
+    if ((e.ev === "subagent-spawned" || e.ev === "agent-status" || e.ev === "subagent-done") && typeof e.id === "string") last.set(e.id, e)
+  }
+  const ids = (test) => [...last].filter(([, e]) => test(e)).map(([id]) => id)
+  return {
+    working: ids((e) => e.ev === "subagent-spawned" || (e.ev === "agent-status" && e.state !== "idle")),
+    cut: ids((e) => e.ev === "subagent-done" && e.interrupted === true),
+  }
+}
+
+// The end of each child that still reads as working. The view has no
+// "interrupted" state yet, so the status is "failed"; `interrupted` says why.
+// The time is the run's last event: the last moment the child is known to
+// have worked, not the moment the server came back.
+function cutOffEvents(events) {
+  const t = events.findLast((e) => typeof e.t === "number")?.t ?? Date.now()
+  return fleetChildren(events).working.map((id) => ({ t, ev: "subagent-done", agent: id, id, status: "failed", interrupted: true, error: CUT_OFF }))
+}
+
+// The error card of a fleet run that a restart cut off: who was mid-turn, that
+// nothing was started again, and the one next step.
+function fleetCutOff(id, events) {
+  const names = fleetChildren(events).cut.map((c) => events.find((e) => e.ev === "subagent-spawned" && e.id === c)?.name || c)
+  const who = names.length > 1 ? `, and ${names.slice(0, -1).join(", ")} and ${names.at(-1)} were cut off mid-turn` : names.length ? `, and ${names[0]} was cut off mid-turn` : ""
+  // Without a saved agent session there is nothing a message could continue.
+  const session = existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+  return {
+    kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
+    spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+    title: "This fleet run stopped at the server restart",
+    hint: session
+      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history, its agents and its files.`
+      : "The server restarted before the agents of this fleet started. Start a new run on the same scope.",
+    message: "this fleet run stopped at the server restart; its agents were not started again",
+  }
+}
+
+// What the agents submitted so far, each with the test source that passed. The
+// engine keeps this list beside the session (spike/lib/audit-state.mjs).
+function submittedFindings(id) {
+  try {
+    const found = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.sqlite.audit.json`), "utf8")).found
+    return Array.isArray(found) ? found : []
+  } catch {
+    return []
+  }
+}
+
+// A `finding` event in the stream says "proven" only as a copy. The run record
+// holds the replay proof. A copy that the record does not back reads as not
+// proven: no record, an unreadable record, or a replay that did not pass. This
+// only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
+// (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
+// with one finding.
+function provenByRecord(id, events) {
+  const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
+  if (!claims.length) return
+  let r = {}
+  try {
+    r = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8")).result ?? {}
+  } catch {
+    // no readable record: nothing is proven
+  }
+  const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
+  for (const e of claims) {
+    const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
+    const stored = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id && r.finding ? { pocProved: r.pocProved, proof: r.proof } : null
+    if (!isProven(stored)) e.proven = false
+  }
+}
+
 // Turn a saved event list into a settled registry entry. Status, headline and
 // finding ids are read back from the events themselves.
 function savedRun(id, events, mtime) {
@@ -1443,19 +1859,32 @@ function savedRun(id, events, mtime) {
       saved = false
     }
   }
-  if (interrupted && (!saved || ((events.findLast((e) => e.ev === "mode")?.mode ?? saved.mode) !== "solo" && !stopPending))) {
+  const mode = events.findLast((e) => e.ev === "mode")?.mode ?? (saved || {}).mode
+  // A fleet cut off while its agents worked: the agents stay stopped, but the
+  // proof check of what they had submitted is free, so it runs (resumeRun).
+  if (interrupted && saved && mode !== "solo" && saved.phase === "agent" && !stopPending && existsSync(path.join(String(saved.ws), ".touchstone.json"))) {
+    const found = submittedFindings(id)
+    if (found.length) saved = { ...saved, phase: "proof", settled: { status: "interrupted", reason: "interrupted", findings: found } }
+  }
+  // A follow-up the restart cut off started after the last close.
+  const lastClose = events.findLastIndex((e) => e.ev === "closed")
+  const replyCut = events.findLastIndex((e) => e.ev === "reply-start") > lastClose
+  // The children that were mid-turn end here. loadSavedRun writes these to the file.
+  const cut = interrupted || replyCut ? cutOffEvents(events) : []
+  events.push(...cut)
+  let errorInfo = null
+  // Only a solo run starts its agent again. A fleet goes on by itself only from
+  // its proof phase, where every agent has already ended.
+  if (interrupted && (!saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
     status = "error"
+    if (saved !== false && mode === "fleet") errorInfo = fleetCutOff(id, events)
     error = saved === false
       ? "saved recovery state is unreadable; start a new run"
-      : events.findLast((e) => e.ev === "mode")?.mode === "fleet"
-        ? "this fleet run stopped at the server restart; its coordinator cannot safely resume yet"
-        : "the server restarted during this run, so it stopped"
-    events.push({ t: Date.now(), ev: "status", status, error })
+      : errorInfo?.message ?? "the server restarted during this run, so it stopped"
+    events.push({ t: Date.now(), ev: "status", status, error, ...(errorInfo ? { errorInfo } : {}) })
   }
-  // Same for a follow-up the restart cut off: it started after the last close.
-  const lastClose = events.findLastIndex((e) => e.ev === "closed")
-  if (events.findLastIndex((e) => e.ev === "reply-start") > lastClose) {
-    events.push({ t: Date.now(), ev: "reply-error", error: "the server restarted during this reply, so it stopped" })
+  if (replyCut) {
+    events.push({ t: Date.now(), ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
     events.push({ t: Date.now(), ev: "closed" })
   }
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: Date.now(), ev: "closed" })
@@ -1478,10 +1907,31 @@ function savedRun(id, events, mtime) {
     findingIds,
     decision,
     error,
+    errorInfo,
     interrupted,
     saved,
+    cut,
     child: null,
     stderr: "",
+  }
+}
+
+// Write the ends of the cut-off children into the stream file, so they stay in
+// the run's history. Only the owner of the run calls this. The file is read
+// again first, so two servers that boot together cannot write an end twice. A
+// failed write leaves the ends in memory; the next boot makes them again.
+function saveCut(run) {
+  if (!run.cut.length) return
+  try {
+    ensureFiles(run)
+    const working = new Set(fleetChildren(readJsonl(run.streamFile)).working)
+    const lines = run.cut.filter((e) => working.has(e.id)).map((e) => JSON.stringify(e) + "\n").join("")
+    // A crash can leave a torn last line. Start on a new line, or the first end joins it and is lost.
+    const torn = lines && !readFileSync(run.streamFile, "utf8").endsWith("\n")
+    appendFileSync(run.streamFile, (torn ? "\n" : "") + lines)
+    run.cut = []
+  } catch {
+    // a full disk must not hide the run
   }
 }
 
@@ -1587,6 +2037,7 @@ function loadSavedRuns() {
     if (m && !runs.has(m[1])) ids.add(m[1])
   }
   for (const id of ids) loadSavedRun(id)
+  for (const id of ids) cleanRestored(runs.get(id))
 }
 
 // Another process owned these runs at load. Follow their saved streams, and
@@ -1616,6 +2067,7 @@ function loadSavedRun(id) {
     let mtime
     if (existsSync(streamFile)) {
       events = readJsonl(streamFile)
+      provenByRecord(id, events)
       mtime = statSync(streamFile).mtimeMs
     } else if (existsSync(recordFile)) {
       const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
@@ -1634,6 +2086,11 @@ function loadSavedRun(id) {
     // owner still holds gets listed but left for that owner.
     const ownedError = run.interrupted && run.status === "error" && own(run)
     runs.set(id, run)
+    // A restart during a follow-up leaves the run idle: no branch below owns it.
+    if (!run.interrupted && run.cut.length && own(run)) {
+      saveCut(run)
+      release(run)
+    }
     if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
       ensureFiles(run)
       if (own(run)) {
@@ -1650,6 +2107,7 @@ function loadSavedRun(id) {
     // one now from the stream: the run is an error, with its reason.
     if (run.interrupted && run.status === "error") {
       if (!ownedError) return // a live owner still holds it; leave the cleanup to that owner
+      saveCut(run)
       if (!existsSync(recordFile)) finalize(run)
       if (run.saved === false) {
         ensureFiles(run)
@@ -1657,8 +2115,8 @@ function loadSavedRun(id) {
       } else if (run.saved) {
         // A valid checkpoint we will not resume (a fleet, or unknown-mode, run).
         // Drop the stale state file so a later boot does not keep seeing it
-        // interrupted; it shows as ended at the restart. Fleet resume itself is
-        // unsupported — the coordinator's state lives in memory.
+        // interrupted; it shows as ended at the restart. Its agents are not
+        // started again here: the operator continues the run with a message.
         ensureFiles(run)
         run.ws = run.saved.ws ?? null
         endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
@@ -1667,6 +2125,7 @@ function loadSavedRun(id) {
     if (run.interrupted && run.status !== "error") {
       ensureFiles(run)
       if (own(run)) {
+        saveCut(run)
         const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
         if (stopped) {
           run.ws = run.saved.ws

@@ -27,7 +27,7 @@ import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
-import { event } from "./lib/event.mjs";
+import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
@@ -95,6 +95,13 @@ async function openHarness(db, ws, state) {
   return { harness, root, reports, pack, fleet };
 }
 
+// The record keeps each assistant text, cut at TEXT_CAP so a long run's record
+// stays small. The last one is the run's final answer, which the run view
+// shows: it is kept whole up to FINAL_CAP. A cut text ends with " …cut", the
+// mark app/src/lib/final-text.ts knows.
+const TEXT_CAP = 4000, FINAL_CAP = 50_000;
+const cutText = (text, cap) => (text.length > cap ? `${text.slice(0, cap)} …cut` : text);
+
 async function summarize(root) {
   const view = await root.context(ctx);
   const calls = [], results = [], assistants = [];
@@ -103,13 +110,14 @@ async function summarize(root) {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       const tc = m.content.filter((b) => b.type === "toolCall");
       tc.forEach((b) => calls.push({ name: b.name, args: b.arguments }));
-      assistants.push({ stop: m.stopReason, text: text.slice(0, 4000), toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
+      assistants.push({ stop: m.stopReason, text, toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
     }
     if (m.role === "toolResult") {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       results.push({ name: m.toolName, isError: !!m.isError, text: text.slice(0, 300) });
     }
   }
+  assistants.forEach((a, i) => { a.text = cutText(a.text, i === assistants.length - 1 ? FINAL_CAP : TEXT_CAP); });
   return { calls, results, assistants, final: assistants.at(-1) };
 }
 
@@ -174,8 +182,10 @@ function readSteers(root) {
 
 // ---- Follow-up worker: one operator message to a finished run. It reopens the
 // run's saved session, so the agent keeps the whole earlier conversation. The
-// workspace is new, so files the agent wrote or fetched before are gone; the
-// message says so. Findings it proves now continue the run's numbering.
+// server keeps the run's workspace too, and the message says so. When the
+// workspace had to be built again, the server sends the true state in
+// WORKSPACE_NOTE instead. Findings it proves now continue the run's numbering.
+const KEPT_NOTE = "Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there.";
 async function chat({ harness, root, reports, state, fleet }) {
   const text = String(process.env.FOLLOWUP ?? "").trim();
   if (!text) throw new Error("FOLLOWUP is empty");
@@ -186,7 +196,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   readSteers(root);
   const sub = await root.submit({
     type: "input", requestId: `followup-${Date.now()}`,
-    content: `${text}\n\n(Operator follow-up. The sandbox was rebuilt since your last turn, so files you wrote or fetched before are gone. Rewrite or refetch any you need.)`,
+    content: `${text}\n\n(${process.env.WORKSPACE_NOTE || KEPT_NOTE})`,
   }, ctx);
   event("operator-message", { text, ...(process.env.FOLLOWUP_ID ? { id: process.env.FOLLOWUP_ID } : {}) });
   let settled = await sub.wait(ctx);
@@ -212,7 +222,7 @@ async function child([, , , mode, db, ws]) {
     await chat({ harness, root, reports, state, fleet });
     await fleet?.close();
     await harness.close(ctx);
-    process.exit(0);
+    return exitAfterEvents(0);
   }
   const sub = await root.submit({ type: "input", requestId: "run1", content: pack.kickoff(ws, process.env) }, ctx);
 
@@ -241,7 +251,7 @@ async function child([, , , mode, db, ws]) {
   event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
   await fleet?.close();
   await harness.close(ctx);
-  process.exit(0);
+  exitAfterEvents(0);
 }
 
 // Spawn a worker; resolve on exit.

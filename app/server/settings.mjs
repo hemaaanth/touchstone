@@ -14,55 +14,85 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  envKeyHome,
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
+import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
+import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
-// May this request change Settings? A Settings write can repoint a key or a
-// provider baseUrl, so only the operator's own console may send one. The rules
-// match T7's grantMutationAllowed guard. Each rule fails closed.
+// The console guard. Every state-changing request under /api/ passes it before
+// its handler runs: a run create, steer, stop, archive, rename or delete, a
+// finding dismiss, a scope create or delete, a grant change, a Settings write.
+// Only the operator's own console page may send one. Each rule fails closed.
 //   - Origin is required, and its host must equal the Host header. A browser
 //     always sends Origin on a POST or DELETE. A write with no Origin is not
 //     the console, so it is refused. X-Forwarded-Host is not trusted: any
 //     client can set it.
-//   - A POST must say content-type application/json.
+//   - A request with a body (not DELETE) must say content-type
+//     application/json. A cross-site form cannot send that content type.
 //   - The request must carry the console token in x-touchstone-grant-token.
-// Note: the Vite dev server answers CORS preflights for localhost origins. So
-// a page on another localhost port can send a JSON POST. The Origin == Host
-// rule and the token are what refuse it.
-// The token is grant-store.GRANT_TOKEN, the same single token T7's grant routes
-// use. The operator never types it. The dev server writes it into the page it
-// serves (vite.config.ts), and the page sends it back on each write.
+// The token is grant-store.GRANT_TOKEN, one token for every console write. The
+// operator never types it. The dev server writes it into the page it serves
+// (vite.config.ts), and the page sends it back on each write. The token is
+// never written to a log or to a response.
 export const SETTINGS_TOKEN = GRANT_TOKEN
 
-// Why this write is refused, as { status, error }, or null when it may go on.
-export function settingsWriteRefusal(req) {
-  const h = req.headers ?? {}
-  let originHost = null
+// GET and HEAD only read. Every other method is a write and is guarded.
+const READ_METHODS = new Set(["GET", "HEAD"])
+
+// The host of the Origin header, or null when it is absent or not a URL.
+function originHost(headers) {
   try {
-    originHost = h.origin ? new URL(h.origin).host : null
+    return headers.origin ? new URL(headers.origin).host : null
   } catch {
-    originHost = null
+    return null
   }
-  if (!originHost || !h.host || originHost !== h.host) {
-    return { status: 403, error: "Settings can only be changed from the console's own origin" }
+}
+
+// True when the request names an Origin that is not this console. The dev
+// server refuses such a request on every path, reads included.
+export function foreignOrigin(req) {
+  const h = req.headers ?? {}
+  return h.origin !== undefined && (!h.host || originHost(h) !== h.host)
+}
+
+// Does the request carry the console token? A wrong type or a wrong length is
+// refused first. The compare itself takes the same time for every wrong token.
+function tokenMatches(given) {
+  if (typeof given !== "string") return false
+  const a = Buffer.from(given)
+  const b = Buffer.from(SETTINGS_TOKEN)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
+
+// Why this write is refused, as { status, error }, or null when it may go on.
+// A read (GET, HEAD) is never refused here.
+export function consoleWriteRefusal(req) {
+  if (READ_METHODS.has(req.method)) return null
+  const h = req.headers ?? {}
+  const from = originHost(h)
+  if (!from || !h.host || from !== h.host) {
+    return { status: 403, error: "This request did not come from the console's own page. Reload the page and try again." }
   }
-  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
-    return { status: 415, error: "a Settings write must be application/json" }
+  if (req.method !== "DELETE" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
+    return { status: 415, error: "The console sends each change as JSON. Reload the page and try again." }
   }
-  const token = h["x-touchstone-grant-token"]
-  if (!token || token !== SETTINGS_TOKEN) {
-    return { status: 403, error: "this page is out of date. Reload it" }
+  if (!tokenMatches(h["x-touchstone-grant-token"])) {
+    return { status: 403, error: "This page is out of date. Reload the page and try again." }
   }
   return null
 }
 
+// The older names of the guard. Settings code and tests still use them.
+export const settingsWriteRefusal = consoleWriteRefusal
+
 export function settingsWriteAllowed(req) {
-  return settingsWriteRefusal(req) === null
+  return consoleWriteRefusal(req) === null
 }
 
 // The console's default per-run budget when Settings has none saved. The
@@ -115,10 +145,17 @@ export function totalSpendState(cfg = readConfig()) {
   return { usd: ledger.usd, capUsd, ledgerError: ledger.error ?? capError }
 }
 
+// envHome: where the provider's env key may go (its built-in base URL), so
+// the form can warn before a save. held: why an env key is set but not used.
 function keyState(p) {
   const k = providerKey(p)
-  if (!k) return { set: false, source: null, last4: null }
-  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, last4: k.length > 8 ? k.slice(-4) : null }
+  const envHome = p.keyEnv ? envKeyHome(p) || null : null
+  if (!k) {
+    const envName = p.keyEnv && process.env[p.keyEnv] ? p.keyEnv : null
+    const held = envName ? `The key from ${envName} is only sent to ${envHome || "its built-in server"}, not ${originOf(p.baseUrl) || "this URL"}.` : null
+    return { set: false, source: null, envName, envHome, last4: null, held }
+  }
+  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, envHome, last4: k.length > 8 ? k.slice(-4) : null }
 }
 
 function modelRows(p) {
@@ -139,7 +176,10 @@ export function getSettings() {
   const providers = Object.values(all).map((p) => ({
     id: p.id,
     label: p.label,
-    baseUrl: p.baseUrl ?? "",
+    // GET /api/settings needs no console token: no user name, password,
+    // query or #part of a URL goes out.
+    baseUrl: publicUrl(p.baseUrl).url,
+    baseUrlHidden: publicUrl(p.baseUrl).cut,
     builtIn: Boolean(p.builtIn),
     saved: Boolean(cfg.providers?.[p.id]),
     key: keyState(p),
@@ -167,12 +207,22 @@ function executionState(cfg) {
     backend: c.backend,
     saved: saved.backend === "daytona" ? "daytona" : "local",
     envOverride: process.env.TOUCHSTONE_EXEC || null,
+    // saved: a key is stored in Settings, even one that is held, so the form
+    // can remove it. Only the last 4 characters of a key in use leave here.
     key: c.apiKey
-      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
-      : { set: false, source: null, envName: null, last4: null },
+      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null, saved: Boolean(saved.apiKey) }
+      : { set: false, source: null, envName: null, last4: null, held: c.keyHeld, saved: Boolean(saved.apiKey) },
+    apiUrl: publicUrl(c.apiUrl).url,
+    apiUrlHidden: publicUrl(c.apiUrl).cut,
+    envKeyHost: c.envKeyHost,
     target: c.target,
     snapshot: c.snapshot,
-    defaults: { target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
+    // A server env var wins over the saved value. Name it, so the form can say so.
+    envNames: {
+      apiUrl: process.env.DAYTONA_API_URL ? "DAYTONA_API_URL" : null,
+      target: process.env.DAYTONA_TARGET ? "DAYTONA_TARGET" : null,
+    },
+    defaults: { apiUrl: DEFAULT_API_URL, target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
   }
 }
 
@@ -184,13 +234,24 @@ export function setExecution(body = {}) {
   const backend = body.backend ?? prev.backend ?? "local"
   if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
   const next = { backend }
-  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
-  if (key) next.apiKey = key
-  else if (prev.apiKey && !body.clearKey) next.apiKey = prev.apiKey
   for (const f of ["target", "snapshot"]) {
     const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
     if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
     if (v) next[f] = v
+  }
+  // The key is sent to this server, so it must be https.
+  const url = body.apiUrl === undefined ? prev.apiUrl : String(body.apiUrl ?? "").trim()
+  if (url) next.apiUrl = daytonaUrl(url)
+  // A saved key goes only to the host it was saved for. A new server host
+  // drops it, unless this request brings a key. A new path keeps it.
+  const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const sameHost = hostOf(prev.apiUrl || DEFAULT_API_URL) === hostOf(next.apiUrl || DEFAULT_API_URL)
+  if (key) {
+    next.apiKey = key
+    next.keyHost = hostOf(process.env.DAYTONA_API_URL || next.apiUrl || DEFAULT_API_URL)
+  } else if (prev.apiKey && !body.clearKey && sameHost) {
+    next.apiKey = prev.apiKey
+    if (prev.keyHost) next.keyHost = prev.keyHost
   }
   if (backend === "daytona" && !execConfig(process.env, { execution: next }).apiKey) {
     throw new Error("Daytona needs an API key (here, or DAYTONA_API_KEY)")
@@ -200,8 +261,31 @@ export function setExecution(body = {}) {
   return getSettings()
 }
 
+function daytonaUrl(raw) {
+  let u
+  try {
+    u = new URL(raw)
+  } catch {
+    throw new Error("Daytona server URL is not a valid URL")
+  }
+  if (u.protocol !== "https:") throw new Error("Daytona server URL must start with https://")
+  if (u.username || u.password || u.search || u.hash) throw new Error("Daytona server URL must have no user name, password, query or #part")
+  return u.href.replace(/\/+$/, "")
+}
+
 function slug(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32)
+}
+
+// publicUrl (redact-url.mjs) is what the page may see of a URL. Re-exported
+// for the tests and for callers that import it from here.
+export { publicUrl }
+
+// The form sends back the URL it was shown. When that is the cut form of the
+// stored URL, keep the stored one, so the hidden parts are not lost.
+function keepHidden(posted, stored) {
+  const shown = publicUrl(stored)
+  return shown.cut && String(posted ?? "").trim() === shown.url ? stored : posted
 }
 
 function cleanBaseUrl(raw) {
@@ -255,11 +339,14 @@ export function saveProvider(body = {}) {
   const entry = {
     id,
     label: label || prev.label || preset?.label || id,
-    baseUrl: cleanBaseUrl(body.baseUrl || prev.baseUrl || preset?.baseUrl),
+    baseUrl: cleanBaseUrl(keepHidden(body.baseUrl, prev.baseUrl || preset?.baseUrl) || prev.baseUrl || preset?.baseUrl),
   }
+  // A saved key goes only to the server it was saved for: a new scheme, host
+  // or port drops it, unless this request brings a key. A new path keeps it.
   const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const sameServer = originOf(entry.baseUrl) === originOf(prev.baseUrl || preset?.baseUrl)
   if (key) entry.apiKey = key
-  else if (prev.apiKey && !body.clearKey) entry.apiKey = prev.apiKey
+  else if (prev.apiKey && !body.clearKey && sameServer) entry.apiKey = prev.apiKey
   if (body.models !== undefined) {
     const models = modelTable(body.models)
     if (Object.keys(models).length) entry.models = models
@@ -309,25 +396,35 @@ function perMillion(v) {
 }
 
 // List the models a gateway serves for this key: GET {baseUrl}/models. Free.
-// Uses the key from the body, else the saved or env key of provider `id`.
+// Uses the key from the body, else the saved or env key of provider `id`. A
+// provider's key (saved or env) goes only to its saved base URL (same scheme, host
+// and port), like the Daytona key. No text from this call holds a hidden part
+// of the URL: every error goes through scrubUrl with the raw URL.
 export async function discoverModels(body = {}) {
   const saved = body.id ? allProviders()[body.id] : null
-  const baseUrl = cleanBaseUrl(body.baseUrl || saved?.baseUrl)
-  const key = (typeof body.apiKey === "string" && body.apiKey.trim()) || providerKey(saved)
+  const baseUrl = cleanBaseUrl(keepHidden(body.baseUrl, saved?.baseUrl) || saved?.baseUrl)
+  const shown = publicUrl(baseUrl).url
+  const typed = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const savedKey = providerKey(saved)
+  const bound = Boolean(saved?.baseUrl) && originOf(baseUrl) !== "" && originOf(baseUrl) === originOf(saved.baseUrl)
+  const key = typed || (bound ? savedKey : null)
+  const keyNote =
+    !typed && savedKey && !bound ? `The provider's key was not sent: it goes only to ${originOf(saved.baseUrl) || "its saved base URL"}.` : null
+  const fail = (msg) => new Error(scrubUrl(keyNote ? `${msg} ${keyNote}` : msg, baseUrl, saved?.baseUrl))
   const res = await fetch(`${baseUrl}/models`, {
     headers: { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
     signal: AbortSignal.timeout(15_000),
   }).catch((err) => {
-    throw new Error(`could not reach ${baseUrl}/models: ${String(err?.message ?? err)}`)
+    throw fail(`could not reach ${shown}/models: ${errorText(err)}`)
   })
   const text = await res.text()
   const scrub = (s) => (key ? s.split(key).join("***") : s).slice(0, 300)
-  if (!res.ok) throw new Error(`${baseUrl}/models returned ${res.status}: ${scrub(text)}`)
+  if (!res.ok) throw fail(`${shown}/models returned ${res.status}: ${scrub(text)}`)
   let json
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error(`${baseUrl}/models did not return JSON`)
+    throw fail(`${shown}/models did not return JSON`)
   }
   const list = Array.isArray(json) ? json : json.data ?? json.models ?? []
   const models = list
@@ -343,5 +440,5 @@ export async function discoverModels(body = {}) {
       }
     })
     .filter(Boolean)
-  return { models, keyUsed: Boolean(key) }
+  return { models, keyUsed: Boolean(key), keyNote }
 }

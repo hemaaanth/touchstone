@@ -213,7 +213,7 @@ export async function scanMcp({ net, baseUrl, token, garak, only, run = runTool,
         const notes = [`${p.requests} of ${p.budget} requests used, ${p.replies} replies`];
         if (p.upstreamErrors) notes.push(`${p.upstreamErrors} requests failed`);
         if (p.probeErrors.length) notes.push(`probes that did not finish: ${p.probeErrors.join("; ")}`);
-        return { r, leads: p.leads, reason: `garak ran: ${notes.join(". ")}.` };
+        return { r, leads: p.leads, reason: `${notes.join(". ")}.` };
       }
       return { r: { ...r, code: r.code || 1 }, leads: [], reason: r.timedOut ? "garak timed out." : `garak failed: ${p.error}` };
     });

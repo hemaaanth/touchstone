@@ -1,10 +1,13 @@
 import { createContext } from "react"
 import type { ThreadMessageLike } from "@assistant-ui/react"
-import type { ArtifactDoc, ArtifactVersion, PendingApproval, ProofKind, RunStatus } from "@/lib/types"
-import type { RunState, Step } from "@/lib/runModel"
+import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
+import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
+import { packOf } from "@/lib/catalog"
+import { startProgress } from "@/lib/startup"
+import type { Mark } from "@/components/assistant-ui/elements/surfaces"
 import { isTerminal } from "@/lib/format"
 import { agentName } from "@/components/fleet-view"
-import { turnId } from "@/lib/sent"
+import { awaitingReply, turnId, type Sent } from "@/lib/sent"
 
 // The data side of the run thread: steps in, assistant-ui messages out. The
 // renderers in run-thread.tsx read the parts this builds.
@@ -238,14 +241,6 @@ export function buildMessages(
   flushSpawn()
   flushGroup()
 
-  // Closing prose (the agent's words when nothing could be proven). A run that
-  // did not read its whole scope ends as a coverage error, but its words stay.
-  const closing = status === "no-finding" || (status === "error" && state.errorInfo?.kind === "coverage")
-  if (owner == null && closing && state.finalText) {
-    if (!buf) buf = open("final")
-    ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
-  }
-
   flush()
   return msgs
 }
@@ -297,4 +292,169 @@ export function cardFor(
   if (status === "deciding") return { card: "replaying", proofKind, proofArtifactId: null }
   if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofKind, proofArtifactId: null }
   return { card: "waiting", proofKind, proofArtifactId: null }
+}
+
+// One sentence as a card or the composer shows it: a capital first letter and
+// an end mark. The server's plain reasons ("no such run", "the server restarted
+// during this run, so it stopped") are lower case with no period.
+export function sentence(text: string): string {
+  const t = text.trim()
+  if (!t) return t
+  const s = t[0].toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(s) ? s : `${s}.`
+}
+
+// The run's state as the top bar's dot shows it. The dot carries the state;
+// the word is its tooltip and its accessible name. The tones match the
+// sidebar's dots: amber while it works, green once a replay proved it, red when
+// it failed or the finding was denied, grey otherwise. A stop is the newest
+// fact about a run, so it wins over an older failure.
+export type HeadTone = "working" | "proven" | "failed" | "neutral"
+
+export function runHeadStatus(state: RunState | null, status: RunStatus): { word: string; tone: HeadTone } {
+  if (isRunningNow(state, status)) return { word: "Running", tone: "working" }
+  if (state?.stopped) return { word: "Stopped", tone: "neutral" }
+  if (status === "error") return { word: "Failed", tone: "failed" }
+  if (status === "denied") return { word: "Denied", tone: "failed" }
+  if (status === "recorded") return { word: "Proven", tone: "proven" }
+  if (status === "no-finding") return { word: "No finding", tone: "neutral" }
+  return { word: "Done", tone: "neutral" }
+}
+
+// The run's start as one card at the top of the thread, from the first event
+// to the agent's first step. The card is the same card live and replayed: its
+// header is one line that only changes its counts and its mark, and its rows
+// only grow. Once the agent session opens, a last row says so, so the card
+// never goes away. `live` is false once the run stopped or failed.
+export interface StartRow {
+  key: string
+  label: string
+  detail?: string
+  mark: Mark
+  // A word beside an off or stopped row. Done and running rows need none.
+  word?: string
+}
+
+export interface RunStartView {
+  rows: StartRow[]
+  // "2 tools (1 ran) · 7 leads", or null before any tool reports.
+  meta: string | null
+  mark: Mark
+  word?: string
+  // The header shimmers while the run is still getting ready.
+  active: boolean
+  // A run that stopped before the agent started opens its card, since the
+  // card is all there is to read.
+  openFirst: boolean
+}
+
+const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+// A running stage's words describe work in progress ("Running the tool scan").
+// Once the run stopped, the row names the stage instead, beside "Stopped".
+const SETTLED: Record<string, string> = {
+  scan: "Tool scan",
+  strix: "Strix",
+  capture: "Domain capture",
+  session: "Agent session",
+}
+
+export function runStartView(events: RunEvent[], prepass: PrepassView | null, live: boolean): RunStartView | null {
+  const p = startProgress(events)
+  const opened = events.some((e) => e.ev === "opened")
+  // A run that opened with no setup to report (an older record, or a pack with
+  // no tool scan) has nothing to show here.
+  if (opened && !prepass && p.stages.length === 0) return null
+  const rows: StartRow[] = p.stages.map((s) => ({
+    key: s.key,
+    label: s.state === "running" && !live ? (SETTLED[s.key] ?? s.label) : s.label,
+    detail: s.detail,
+    // A stage cannot keep running once the run stopped.
+    ...(s.state === "running"
+      ? live
+        ? { mark: "running" as Mark }
+        : { mark: "off" as Mark, word: "Stopped" }
+      : s.state === "done"
+        ? { mark: "done" as Mark }
+        : s.state === "failed"
+          ? { mark: "fail" as Mark }
+          : { mark: "off" as Mark, word: "Unavailable" }),
+  }))
+  if (opened) rows.push({ key: "session", label: "Agent session started", mark: "done" })
+
+  const meta =
+    [
+      p.tools ? `${count(p.tools, "tool")}${p.ran < p.tools ? ` (${p.ran} ran)` : ""}` : null,
+      p.leads != null ? count(p.leads, "lead") : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || null
+
+  const running = rows.some((r) => r.mark === "running")
+  const stopped = !opened && !live
+  const failed = !!prepass?.failed || rows.some((r) => r.mark === "fail")
+  const mark: Pick<RunStartView, "mark" | "word"> = running
+    ? { mark: "running" }
+    : stopped
+      ? { mark: "off", word: "Stopped" }
+      : failed
+        ? { mark: "fail", word: "Incomplete" }
+        : { mark: "done" }
+  return { rows, meta, ...mark, active: running, openFirst: stopped }
+}
+
+// The main thread with the operator's local copies. A copy shows only once the
+// server accepted its message, so a refused send never touches the
+// transcript: while the send is pending, the composer shows it instead. A copy
+// steps aside when its echo lands or it is lost. While the agent owes an
+// answer, a waiting row stands where the answer will go.
+export function withCopies(
+  ms: ThreadMessageLike[],
+  state: RunState | null,
+  steps: Step[],
+  live: boolean,
+  fleet: boolean,
+  sent: Sent[],
+  outcomes: Map<string, string>,
+): ThreadMessageLike[] {
+  if (!state) return ms
+  const out = [...ms]
+  const copies = sent.filter((x) => x.mode !== "sending" && !outcomes.has(x.id))
+  const wait = awaitingReply(steps, live, null, copies)
+  if (wait?.after === "steps") out.push(waitingMessage(state, wait.id, fleet, null))
+  for (const x of copies) {
+    out.push({
+      role: "user",
+      id: `sent:${x.id}`,
+      content: [{ type: "text", text: x.text }],
+      metadata: { custom: { queued: x.mode === "steer" } },
+    })
+  }
+  if (wait?.after === "copies") out.push(waitingMessage(state, wait.id, fleet, null))
+  return out
+}
+
+// One send, as state changes. The copy enters `sent` as "sending", then takes
+// the server's answer: a steer or a follow-up, or it goes on a refusal.
+export async function sendCopy(
+  copy: Sent,
+  steer: () => Promise<{ followUp?: boolean }>,
+  update: (f: (xs: Sent[]) => Sent[]) => void,
+): Promise<{ ok: true; followUp: boolean } | { ok: false; error: string }> {
+  update((xs) => [...xs, copy])
+  try {
+    const res = await steer()
+    const mode = res.followUp ? "follow-up" : "steer"
+    update((xs) => xs.map((x) => (x.id === copy.id ? { ...x, mode } : x)))
+    return { ok: true, followUp: !!res.followUp }
+  } catch (err) {
+    update((xs) => xs.filter((x) => x.id !== copy.id))
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// The run's modules (packs), for Run Info. Today a run has one: its scope's
+// pack. The line takes a list, so a run that holds several shows them all.
+export function runModules(state: RunState): string[] {
+  return state.scope ? [packOf(state.scope)] : []
 }

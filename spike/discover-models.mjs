@@ -7,13 +7,14 @@
 // (e.g. whether an abliterated model is served or gated). Read-only: GET /models
 // costs nothing, so this does not touch the spend ledger.
 import { BASE_URL, PROVIDER_ID, PROVIDER_LABEL, key } from "./lib/inference.mjs";
+import { publicUrl, scrubUrl } from "./lib/redact-url.mjs";
 
 const res = await fetch(`${BASE_URL}/models`, {
   headers: { authorization: `Bearer ${key()}`, accept: "application/json" },
 });
-console.log(`${PROVIDER_LABEL} (${PROVIDER_ID})  GET ${BASE_URL}/models → ${res.status}`);
+console.log(`${PROVIDER_LABEL} (${PROVIDER_ID})  GET ${publicUrl(BASE_URL).url}/models → ${res.status}`);
 if (!res.ok) {
-  console.log((await res.text()).slice(0, 800));
+  console.log(scrubUrl((await res.text()).slice(0, 800), BASE_URL));
   process.exit(1);
 }
 const json = await res.json();

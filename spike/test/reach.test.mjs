@@ -176,7 +176,7 @@ test("a resumed reach gate uses only its original active grant", async () => {
   await assert.rejects(() => openReach(scope, { grantIds }), /saved grant.*missing or expired/);
 });
 
-test("the allow-list is the covering grant's hosts, not every grant in the store", async () => {
+test("the allow-list is the target's own hosts, not every grant in the store", async () => {
   addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, allowPrivate: true });
   addGrant({ hosts: ["unrelated.example.com"], kind: "operator-owned", ownership: true });
   const handle = await openReach({ kind: "live", hosts: ["127.0.0.1"] });

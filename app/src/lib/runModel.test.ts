@@ -2,7 +2,7 @@
 // Runs with `bun test src/lib`.
 import { mock, test } from "node:test"
 import assert from "node:assert/strict"
-import { getRunState, isRunningNow, loadRun, reduceEvents } from "./runModel"
+import { getRunState, isRunningNow, loadRun, reduceEvents, threadSteps } from "./runModel"
 import type { RunEvent } from "./types"
 
 const ev = (ev: string, extra: Record<string, unknown> = {}): RunEvent => ({ ev, ...extra })
@@ -59,6 +59,25 @@ test("a server restart shows which step started again, and its new steps stay se
 
 test("a stop request shows before the run stops", () => {
   assert.deepEqual(rows([ev("stop-requested"), ev("stopped")]), ["note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+})
+
+test("a rebuilt workspace shows its message once, as a quiet system line", () => {
+  const message = "The earlier workspace of this run is gone. Files the agent wrote before are not in it."
+  const events = [ev("reply-start"), ev("workspace", { state: "rebuilt", message }), say(0, "Looking again")]
+  assert.deepEqual(rows(events), [`system:${message}`, "say:Looking again"])
+  // Not grouped with tool rows, not an error, and nothing for another state.
+  assert.equal(reduceEvents(events).error, null)
+  assert.deepEqual(rows([ev("workspace", { state: "kept", message })]), [])
+})
+
+test("a follow-up error keeps its sentence apart from the raw output", () => {
+  const error = "The agent process ended before it gave an answer: it exited with the code 1. Send the message again to retry.\n\nError: spawn ENOENT\n    at run (agent.mjs:4)"
+  const [step] = reduceEvents([ev("reply-error", { error })]).steps
+  assert.equal(step.kind, "reply-error")
+  assert.equal(step.label, "The agent process ended before it gave an answer: it exited with the code 1. Send the message again to retry.")
+  assert.equal(step.detail, "Error: spawn ENOENT\n    at run (agent.mjs:4)")
+  // A plain sentence has no raw part.
+  assert.equal(reduceEvents([ev("reply-error", { error: "The server restarted during this reply." })]).steps[0].detail, undefined)
 })
 
 class FakeEventSource {
@@ -335,4 +354,113 @@ test("lead events fill state.leads with evidence, one per id, worst first, never
   assert.equal(state.leads[0].proof, "hit 169.254.169.254")
   assert.ok(state.leads.every((l) => !("proven" in l)))
   assert.deepEqual(state.findings, [])
+})
+
+// B8: the closing words of a run that proved nothing. The engine used to cut
+// `final` at 4000 characters; the stream held the whole text.
+const whole = `## Summary\n\n${"The vault rounds in its own favour. ".repeat(190)}**medium — src/utils/about.ts** ends it.`
+const cut = whole.slice(0, 4000)
+
+test("a stream with the whole closing text and a cut final keeps one copy", () => {
+  for (const final of [cut, `${cut} …cut`, whole]) {
+    const steps = reduceEvents([say(1, whole), ev("no-finding", { final }), ev("status", { status: "no-finding" }), ev("closed")]).steps
+    assert.deepEqual(steps.map((s) => `${s.kind}:${s.label.length}`), [`say:${whole.length}`])
+  }
+})
+
+test("an old record with only the final text shows it once, at the run's end", () => {
+  const events = [
+    think(1, "Read the vault"),
+    ev("no-finding", { final: "Nothing to prove." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { id: "m1", text: "and the router?" }),
+    say(1, "The router is fine."),
+    ev("status", { status: "no-finding" }),
+  ]
+  assert.deepEqual(rows(events), ["reasoning:Read the vault", "say:Nothing to prove.", "operator:and the router?", "say:The router is fine."])
+  assert.equal(reduceEvents(events).steps.filter((s) => s.closing).length, 1)
+})
+
+test("the closing step goes when the run ends as another error, not as a coverage gap", () => {
+  const end = (errorInfo: Record<string, unknown>) =>
+    rows([ev("no-finding", { final: "Nothing." }), ev("status", { status: "error", errorInfo })])
+  assert.deepEqual(end({ kind: "coverage" }), ["say:Nothing."])
+  assert.deepEqual(end({ kind: "crash" }), [])
+})
+
+test("the provider event gives the run its provider and model id; an old run has none", () => {
+  const state = reduceEvents([ev("provider", { provider: "lyber", model: "deepseek-v4.1-flash" }), ev("status", { status: "running" })])
+  assert.deepEqual(state.provider, { id: "lyber", model: "deepseek-v4.1-flash" })
+  assert.deepEqual(state.steps, [])
+  assert.equal(reduceEvents([ev("status", { status: "running" })]).provider, null)
+})
+
+// The closing check looks only at the turn that ended and at the main agent.
+// The first two are the reviewer's boundary tests, as written.
+test("each old-record turn gets its own equal closing answer", () => {
+  const es = [
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { text: "Please check again." }),
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ]
+  assert.deepEqual(
+    reduceEvents(es).steps.map((s) => [s.kind, s.label]),
+    [
+      ["say", "Nothing to report."],
+      ["operator", "Please check again."],
+      ["say", "Nothing to report."],
+    ],
+  )
+})
+
+test("a child answer cannot stand in for the coordinator closing", () => {
+  const state = reduceEvents([
+    ev("subagent-spawned", { id: "a-1", name: "Worker", conv: "child" }),
+    ev("assistant-delta", { agent: "a-1", conv: "child", attempt: 1, text: "Nothing to report." }),
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ])
+  assert.deepEqual(threadSteps(state.steps, null).filter((s) => s.kind === "say").map((s) => s.label), ["Nothing to report."])
+})
+
+test("a fleet child's last text equal to the coordinator's final: both show, each in its thread", () => {
+  const state = reduceEvents([
+    ev("subagent-spawned", { id: "a-1", name: "Worker", conv: "child" }),
+    ev("assistant-delta", { agent: "a-1", conv: "child", attempt: 1, text: "The vault is safe." }),
+    ev("assistant-delta", { conv: "root", attempt: 2, text: "The vault is safe." }),
+    ev("settled", { summary: { final: { text: "The vault is safe." } } }),
+    ev("no-finding", { final: "The vault is safe." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ])
+  const says = (id: string | null) => threadSteps(state.steps, id).filter((s) => s.kind === "say").map((s) => s.label)
+  assert.deepEqual(says(null), ["The vault is safe."])
+  assert.deepEqual(says("a-1"), ["The vault is safe."])
+  assert.equal(state.steps.filter((s) => s.closing).length, 0, "the coordinator's own stream holds its final")
+})
+
+test("a follow-up whose answer equals the run's first final: both show, in order", () => {
+  const es = [
+    say(1, "No path drains the vault."),
+    ev("no-finding", { final: "No path drains the vault." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { id: "m1", text: "Sure?" }),
+    say(1, "No path drains the vault."),
+    ev("settled", { summary: { final: { text: "No path drains the vault. Checked twice." } } }),
+    ev("no-finding", { final: "No path drains the vault. Checked twice." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ]
+  // The second final extends this turn's own stream, never the first answer.
+  assert.deepEqual(rows(es), ["say:No path drains the vault.", "operator:Sure?", "say:No path drains the vault. Checked twice."])
 })
