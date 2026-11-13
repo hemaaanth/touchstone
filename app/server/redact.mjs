@@ -398,6 +398,10 @@ function walk(value, key) {
   return copy
 }
 
+// One pass of every rule over a whole text, with no pieces. For the timing
+// tests, which must prove each rule linear on its own.
+export { redactText as redactOnePass }
+
 // A deep copy of a report or finding with secret values masked.
 export function redactSecrets(value) {
   return walk(value, "")
