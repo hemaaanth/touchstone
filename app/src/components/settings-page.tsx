@@ -8,6 +8,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { ProviderLogo } from "@/components/provider-logo"
 import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 export function SettingsPage({ onChanged }: { onChanged: () => void }) {
@@ -35,7 +36,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
             <section aria-labelledby="providers-title">
               <div className="mb-2 flex items-center justify-between gap-3 px-2">
                 <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
-                <Button variant="ghost" size="sm" className="-mr-2 text-muted-foreground hover:text-foreground" disabled={editing === "new"} onClick={() => setEditing("new")}>
+                <Button variant="ghost" size="sm" className="-mr-2 text-muted-foreground hover:text-foreground" onClick={() => setEditing("new")}>
                   <Plus /> Add
                 </Button>
               </div>
@@ -72,7 +73,12 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
                   )
                 })}
               </ul>
-              {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
+              <Dialog open={editing === "new"} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+                <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
+                  <DialogTitle className="text-sm font-semibold">Add provider</DialogTitle>
+                  {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
+                </DialogContent>
+              </Dialog>
             </section>
             <BudgetSection settings={settings} onSave={(n) => attempt(() => setRunBudget(n))} />
             <ExecutionSection settings={settings} onSave={(body) => attempt(() => setExecution(body))} />
@@ -287,7 +293,7 @@ function ProviderEditor({
     : "Paste the API key"
 
   return (
-    <div className="mt-1 mb-3 flex flex-col gap-4 rounded-lg bg-muted/30 px-3 py-4 sm:pl-12">
+    <div className={cn("mt-1 mb-3 flex flex-col gap-4 rounded-lg bg-muted/30 px-3 py-4", provider && "sm:pl-12")}>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Name</span>
