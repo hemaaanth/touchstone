@@ -219,7 +219,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
-| G7 | doing | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). Thread `thr_xjgfmpmrg3`. |
+| G7 | review | Part A merged `d1caa23` (Heimdall comment and licence note; comment and docs only). Part B: spend cap Minors B and C on `fix/wave-spend-cap` `b31b23c`; author `thr_xjgfmpmrg3` done; reviewer `thr_yzqyhqy2tj` (codex). |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
 | G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
