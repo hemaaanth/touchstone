@@ -160,6 +160,16 @@ test("parseOzMonitor fails closed on a match that is not bound to the lab target
   assert.match(parseOzMonitor(canary(ATTACKER), only, CTX).reason, /from 0x7099.*, expected the canary 0x3c44/);
 });
 
+test("parseOzMonitor fails closed on a non-owner match whose sender is the owner", () => {
+  const out = goodOutput().replace(/^MATCH non_owner 5 .*$/m, line("non_owner", 5, match("non_owner", 5, { functions: [UPGRADE], from: OWNER })));
+  const r = parseOzMonitor(out, EXPECT, CTX);
+  assert.equal(r.available, false);
+  assert.match(r.reason, /bad match for non_owner at block 5: match is from the owner 0xf39f/);
+  assert.deepEqual(r.leads, []);
+  const noOwner = parseOzMonitor(goodOutput(), EXPECT, { ...CTX, owner: undefined });
+  assert.equal(noOwner.available, false, "no owner to compare with is a failure");
+});
+
 test("monitorConfig points only at the lab alias and keys the non-owner check to the baseline owner", () => {
   const obs = { address: PROXY, chainId: 31337, fromBlock: 5, toBlock: 10, snapshots: [{ block: 4, owner: OWNER }],
     canary: { address: CANARY, transactions: [{ block: 11 }] } };

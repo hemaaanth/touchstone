@@ -118,7 +118,8 @@ const argText = (args) => (args ?? []).map((a) => `${a.name}=${a.value}`).join("
 // One match as leads. `ctx` is { address, owner, baseline, canary }.
 // A match must be bound to this lab: network slug "lab", the monitor's own address,
 // and a transaction to the proxy (a log from the proxy for an event), or from the
-// canary for the canary monitor. A match that is not is a failure, not a lead.
+// canary for the canary monitor, and not from the owner for the non-owner monitor.
+// A match that is not is a failure, not a lead.
 // The texts for the admin and canary monitors stay short on purpose. mergeChain keeps the
 // longest text, and the pack's own text for the same change says more (the slots, the
 // missing event). The monitor's own lead, admin-call-by-non-owner, carries the detail.
@@ -135,6 +136,7 @@ function matchLeads(monitor, block, match, ctx) {
   const addresses = (m.monitor.addresses ?? []).map((a) => lc(a.address));
   if (!watched || addresses.length !== 1 || addresses[0] !== watched) throw new Error(`match watches ${addresses.join(",") || "no address"}, expected ${watched}`);
   if (monitor === "canary" && from !== watched) throw new Error(`match is from ${from}, expected the canary ${watched}`);
+  if (monitor === "non_owner" && (!ctx.owner || from === lc(ctx.owner))) throw new Error(`match is from the owner ${lc(ctx.owner)}, expected a non-owner`);
   if (monitor !== "canary" && (m.matched_on.functions ?? []).length && lc(tx.to) !== where) throw new Error(`match calls ${lc(tx.to)}, expected ${where}`);
   if (monitor === "admin" && (m.matched_on.events ?? []).length && !(m.logs ?? []).some((l) => lc(l.address) === where)) {
     throw new Error(`match has an event but no log from ${where}`);
