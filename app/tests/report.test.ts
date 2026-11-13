@@ -333,6 +333,31 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("the README's first line says PROVEN only for a proven finding", () => {
+    const firstLine = (zip: Buffer) => {
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-verdict-"))
+      try {
+        unzip(zip, dir)
+        return (readTree(dir).get("README.md") || "").split("\n")[0]
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    const lead = { ...forgeFinding, stages: { ...forgeFinding.stages, proven: false } }
+    expect(firstLine(buildReplayBundle({ finding: forgeFinding }))).toMatch(/^PROVEN: /)
+    expect(firstLine(buildReplayBundle({ finding: lead }))).toMatch(/^NOT PROVEN: /)
+    // The app's verdict wins over a raw record that claims a pass.
+    expect(firstLine(buildReplayBundle({ finding: lead, recorded: { pocProved: true, proof: forgeFinding.proof } }))).toMatch(/^NOT PROVEN: /)
+    // A raw candidate with no app verdict: only pocProved === true is proven.
+    const { stages: _stages, ...candidate } = forgeFinding
+    expect(firstLine(buildReplayBundle({ finding: candidate }))).toMatch(/^NOT PROVEN: /)
+    expect(firstLine(buildReplayBundle({ finding: candidate, recorded: { pocProved: false, proof: forgeFinding.proof } }))).toMatch(/^NOT PROVEN: /)
+    expect(firstLine(buildReplayBundle({ finding: candidate, recorded: { pocProved: true, proof: forgeFinding.proof } }))).toMatch(/^PROVEN: /)
+    const http = { title: "IDOR", proofKind: "http", proof: { kind: "http", status: "pass" } }
+    expect(firstLine(buildReplayBundle({ finding: { ...http, stages: { proven: false } } }))).toMatch(/^NOT PROVEN: /)
+    expect(firstLine(buildReplayBundle({ finding: { ...http, stages: { proven: true } } }))).toMatch(/^PROVEN: /)
+  })
+
   test("an http bundle keeps the script and says the lab cannot be bundled", () => {
     const script = `const r = await request("GET", "/api/users/2", { headers: { authorization: "Bearer ${BEARER}" } });\n`
     const proof = {
@@ -370,7 +395,7 @@ describe("report: replay bundle", () => {
     try {
       const replay = { version: 1, kind: "forge", files: [{ path: "foundry.toml", text: "[profile.default]\n" }], command: "docker run example", fork: { rpc: "${RPC_URL}", block: 5, forked: true } }
       writeFileSync(path.join(dir, "run-demo-1.json"), JSON.stringify({
-        result: { findings: [{ title: "one", script: "await request()", proof: { kind: "http", replay } }, { title: "two", proof: { kind: "forge" } }] },
+        result: { findings: [{ title: "one", script: "await request()", pocProved: true, proof: { kind: "http", replay } }, { title: "two", pocProved: "yes", proof: { kind: "forge" } }] },
       }))
       const first = loadRecordedReplay("demo-1.1")
       expect(first.replay.command).toBe("docker run example")
@@ -378,6 +403,8 @@ describe("report: replay bundle", () => {
       const second = loadRecordedReplay("demo-1.2")
       expect(second.proof.kind).toBe("forge")
       expect(second.replay).toBeNull()
+      expect(first.pocProved).toBe(true)
+      expect(second.pocProved).toBe(false)
       expect(loadRecordedReplay("../demo-1")).toBeNull()
     } finally {
       if (prev === undefined) delete process.env.TOUCHSTONE_RESULTS_DIR

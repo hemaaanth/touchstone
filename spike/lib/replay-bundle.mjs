@@ -493,7 +493,16 @@ function pushFile(entries, name, text) {
   entries.push({ name: path, data: Buffer.from(String(text), "utf8") });
 }
 
-function forgeBundle({ finding, replay, proof }) {
+// Line 1 of every README. The normalized finding's stages.proven is the app's
+// verdict; a raw record falls back to pocProved. Anything else is not proven.
+function verdictLine({ finding, recorded }) {
+  const proven = typeof finding?.stages?.proven === "boolean" ? finding.stages.proven : recorded?.pocProved === true;
+  return proven
+    ? "PROVEN: the engine's proof gate passed this finding when it was recorded.\n\n"
+    : "NOT PROVEN: the engine did not prove this finding. These files are a lead, not a proof, and a passing replay here does not make it one.\n\n";
+}
+
+function forgeBundle({ finding, recorded, replay, proof }) {
   const title = finding?.title || "Finding";
   const files = Array.isArray(replay?.files) ? replay.files : [];
   const testSource = proof?.testSource || finding?.proof?.testSource || null;
@@ -514,7 +523,7 @@ This run was recorded before the workspace was snapshotted, and the workspace is
 \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as null. No provider key is included.
 `;
   const entries = [];
-  pushFile(entries, "README.md", readme);
+  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + readme);
   pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   for (const f of files) pushFile(entries, f.path, f.text);
@@ -533,7 +542,7 @@ function httpBundle({ finding, recorded, proof }) {
   const text = script ? scrubReplayText(script) : null;
   const transcript = scrubValue(Array.isArray(proof?.log) ? proof.log : Array.isArray(proof?.exchanges) ? proof.exchanges : []);
   const entries = [];
-  pushFile(entries, "README.md", httpReadme({ title: finding?.title, hasScript: Boolean(text) }));
+  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + httpReadme({ title: finding?.title, hasScript: Boolean(text) }));
   pushFile(entries, "proof.json", proofJson(proof, null));
   pushFile(entries, "transcript.json", JSON.stringify(transcript, null, 2) + "\n");
   if (text) pushFile(entries, "script.mjs", text.endsWith("\n") ? text : text + "\n");
@@ -550,5 +559,5 @@ export function buildReplayBundle({ finding, recorded } = {}) {
   const replay = recorded?.replay || proof?.replay || null;
   const kind = replay?.kind || proof?.kind || finding?.proofKind || "forge";
   if (kind === "http") return httpBundle({ finding, recorded, proof });
-  return forgeBundle({ finding, replay, proof });
+  return forgeBundle({ finding, recorded, replay, proof });
 }
