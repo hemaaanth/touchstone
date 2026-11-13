@@ -1909,6 +1909,7 @@ function savedRun(id, events, mtime) {
     if (e.ev === "scope") scope = e.scope ?? null
     if (e.ev === "modules") modules = e.modules ?? null
     if (e.ev === "packs" && Array.isArray(e.packs) && e.packs.length > 1) packs = e.packs
+    if (e.ev === "provider") ({ provider = null, model = null } = e)
     if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
       submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc })
     }
