@@ -116,6 +116,7 @@ describe("the Candidates group", () => {
     expect(html).toContain("GET /admin/export/1 -&gt; 200")
     expect(html).toContain("/admin/export/1")
     expect(html).toContain("Evidence")
+    expect(html).toContain("long hex values (a tx hash too) and any value after a secret-like label are shown as [REDACTED]")
     expect(html).not.toContain("&quot;kind&quot;: &quot;transcript&quot;")
     expect(html).not.toMatch(/text-(ok|bad|warn)/)
   })

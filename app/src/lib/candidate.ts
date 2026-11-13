@@ -22,6 +22,9 @@ export interface Candidate {
 }
 
 export const WHY_UNPROVEN = "Why this isn't proven: no check covers this class yet."
+// A candidate keeps agent prose and raw traces, so its scrub is stricter than
+// a report's (spike/lib/candidate.mjs). This line says why a hash is gone.
+export const MASK_NOTE = "In a candidate, long hex values (a tx hash too) and any value after a secret-like label are shown as [REDACTED]."
 
 // The chat note for each candidate, and the label of a run of such notes. The
 // chat folds a run of notes into one row; without its own label that row

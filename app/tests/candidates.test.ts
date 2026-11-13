@@ -48,6 +48,29 @@ describe("normalizeCandidate", () => {
   })
 })
 
+// Review round 1: a forged event with clear text is stored masked. The values
+// are fake, built from pieces.
+describe("the server's own scrub of a candidate's free text", () => {
+  const tok = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "c2lnbmF0dXJlLXZhbHVl"].join(".")
+  const gh = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0", "k1L2m3N4o5P6q7R8"].join("")
+  const pw = ["hunter2", "-correct-", "horse"].join("")
+  test("title, write-up and cited lines are masked; the rest is kept", () => {
+    const forged = candidate("f", {
+      title: `Leak of DB_PASSWORD=${pw}`,
+      explanation: `curl -H "Authorization: Bearer ${tok}" /admin\nFix: rotate.`,
+      cites: [`token ${gh} in the log`, "GET /admin/export/1 -> 200"],
+    })
+    for (const c of [normalizeCandidate(forged), candidatesOf([ev(forged)])[0]]) {
+      const json = JSON.stringify(c)
+      for (const secret of [tok, gh, pw]) expect(json.includes(secret)).toBe(false)
+      expect(c.title).toBe("Leak of DB_PASSWORD=[REDACTED]")
+      expect(c.cites[1]).toBe("GET /admin/export/1 -> 200")
+      expect(c.proven).toBe(false)
+      expect(normalizeCandidate(c)).toEqual(c)
+    }
+  })
+})
+
 describe("candidatesOf and trackCandidate", () => {
   test("read only candidate events, one per poc, in submit order", () => {
     const list = candidatesOf([

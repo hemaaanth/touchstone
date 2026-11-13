@@ -9,11 +9,19 @@
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { makeCandidate, priorCandidate, supersededBy } from "../../spike/lib/candidate.mjs"
+import { redactSecrets } from "./redact.mjs"
 
 // The one shape the server stores and sends. makeCandidate sets the fixed
 // fields, so no input can make a candidate proven, and cuts the evidence to
 // size. Evidence the engine already cut comes through unchanged.
-export const normalizeCandidate = (c) => makeCandidate(c ?? {})
+// The engine scrubs a candidate before it sends it, and no agent can write
+// the event line. The free text still passes the server's own redactor, so
+// the store stays masked if that ever changes. Masked text stays the same.
+const masked = (v) => (typeof v === "string" ? redactSecrets(v) : v)
+export const normalizeCandidate = (c) => {
+  const x = c ?? {}
+  return makeCandidate({ ...x, title: masked(x.title), explanation: masked(x.explanation), cites: Array.isArray(x.cites) ? x.cites.map(masked) : x.cites })
+}
 
 // The candidates in an event list, in submit order, one per poc, without
 // the ones a later event ended.

@@ -5,7 +5,7 @@ import { Markdown } from "@/components/markdown"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Hint, SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import { WHY_UNPROVEN, type Candidate } from "@/lib/candidate"
+import { MASK_NOTE, WHY_UNPROVEN, type Candidate } from "@/lib/candidate"
 
 // The run's candidates. A candidate is unproven and agent-asserted: the agent
 // saw harm the pack's checks do not cover. It waits for human review.
@@ -82,6 +82,7 @@ export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
         </Field>
       ) : null}
       {c.evidence != null ? <Evidence value={c.evidence} /> : null}
+      <p className="text-[11px] text-muted-foreground">{MASK_NOTE}</p>
     </div>
   )
 }
