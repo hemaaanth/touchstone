@@ -270,7 +270,7 @@ export function forgeTestCmd({ matchContract, solc } = {}) {
 // forge invocation inside the pinned image, with $PWD mounted. It is the exact
 // command the replay verifier runs, so the README never claims a different one.
 export function forgeReplayCommand({ matchContract, solc } = {}) {
-  return `docker run --rm --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
+  return `docker run --rm --pull never --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
 }
 
 // Run once, online, before a replay on a fresh machine: pull nothing (the image
@@ -290,7 +290,7 @@ export function forgePrepareCommand({ solc } = {}) {
 export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {}) {
   const cmd = forgeTestCmd({ matchContract, solc: pinnedSolc(ws) });
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull", "never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,
@@ -299,7 +299,7 @@ export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {})
   const raw = (r.stdout + r.stderr).trim();
   const passed = /\b([1-9]\d*) passed; 0 failed/.test(raw);
   const failed = /[1-9]\d* failed/.test(raw) || /compilation failed|Compilation failed|Error \(\d+\)|Error:/i.test(raw);
-  return { output: distill(raw), passed, failed, timedOut: r.timedOut };
+  return { output: distill(raw), passed, failed, timedOut: r.timedOut, code: r.code };
 }
 
 // Run the SAME test again in JSON mode at full trace verbosity. This is the

@@ -873,17 +873,17 @@ function vendoredNote(libs) {
 // claim: closing the "claims a re-run it cannot do" class needs every
 // workspace file, which is a later task. The README says what the folder is
 // and what it is not.
-function forgeReadme({ title, replay, fork, libs = [], rerun, haveProject }) {
+function forgeReadme({ title, replay, fork, libs = [], rerun, haveCommand, bound }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   const forkNote = fork?.forked
     ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder, and the offline re-run cannot fork, so it is not re-run-checked.`
     : `The proof did not fork a chain; \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.`;
-  const section = haveProject ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract, rerun }) : "";
+  const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract, rerun, bound }) : "";
   return `# Proof source for this finding
 
 **${title || "Finding"}** · Foundry
 
-This folder holds the whole proof workspace except build output: the proof test, the scope sources, the Foundry config, and any data artifact the proof reads. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
+This folder holds the proof's source files: the compiled sources the proof read, the proof test, and the Foundry config. A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
 
 A library's own test suite under \`lib/\` is not included: the proof does not import it, and some ship sample provider keys.${vendoredNote(libs)} No provider key and no bearer token from the run is in this folder.
 ${section}${omittedList(replay?.omitted)}`;
@@ -1026,25 +1026,47 @@ export function provenDate({ finding, recorded } = {}) {
 // Line 1 of a Foundry bundle README. bundleRefusal lets only a proven finding
 // reach here, so it states the proof plainly, with the date and harm kind from
 // the record, and says the folder is source to read, not a folder to re-run.
-function forgeLine1({ finding, recorded, harm, rerun, haveCommand }) {
+function forgeLine1({ finding, recorded, harm, rerun, haveCommand, bound }) {
   const date = provenDate({ finding, recorded });
   const noun = harmNoun(harm);
   const head = `Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}`;
-  if (rerun?.pass === true) return `RE-RUN CHECKED: ${head}, and these files re-run the proof test to a pass on offline forge. The command is in this README.\n\n`;
-  if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked${rerun?.reason ? ` (${rerun.reason})` : ""}; the re-run command is in this README for you to run.\n\n`;
+  if (bound) return `RE-RUN CHECKED: ${head}, and these files re-run the proof test to a pass on offline forge. The command is in this README.\n\n`;
+  // A re-run was recorded but did not pass, or the files changed since it did.
+  const why = rerun && rerun.pass === true ? "the files changed since the check" : rerun?.reason;
+  if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked${why ? ` (${why})` : ""}; the re-run command is in this README for you to run.\n\n`;
   return `PROVEN: ${head}. This folder holds the proof's source files for reading; it has no re-run command.\n\n`;
 }
 
 // The README's re-run section: the exact offline command, a prepare step for a
 // fresh machine, and whether Touchstone's own re-run of these files passed.
-function forgeReplaySection({ solc, matchContract, rerun }) {
+function forgeReplaySection({ solc, matchContract, rerun, bound }) {
   const command = forgeReplayCommand({ matchContract, solc });
   const prepare = forgePrepareCommand({ solc });
-  const checked = rerun?.pass === true
+  const why = rerun && rerun.pass === true && !bound ? "the files changed since the check" : rerun?.reason;
+  const checked = bound
     ? "Touchstone re-ran these exact files on offline forge when the bundle was made, and the proof test passed."
-    : `Touchstone did not confirm a re-run of these files${rerun?.reason ? ` (${rerun.reason})` : ""}. Run the proof yourself:`;
+    : `Touchstone did not confirm a re-run of these files${why ? ` (${why})` : ""}. Run the proof yourself:`;
   const prep = prepare ? `\n## Prepare (once, online)\n\nOn a fresh machine, create and warm the pinned image's solc cache:\n\n\`\`\`sh\n${prepare}\n\`\`\`\n` : "";
   return `\n## Re-run (offline)\n\n${checked} Run this from this folder:\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). A pass means the named test compiled and passed from these files alone.\n${prep}`;
+}
+
+// The final text files a bundle ships (vendored resolved, redacted), including
+// the proof test source written as test/AgentPoc.t.sol. Both the verifier and
+// the zip compute the claim hash over exactly this set.
+function shippedFiles(tree) {
+  const out = tree.files.filter((f) => typeof f.text === "string").map((f) => ({ path: f.path, text: f.text }));
+  if (tree.testSource && !tree.files.some((f) => f.path.startsWith("test/"))) out.push({ path: "test/AgentPoc.t.sol", text: tree.testSource });
+  return out;
+}
+// A hash over the checked file set: each path and the hash of its bytes, sorted
+// by path. The re-run claim is bound to this, so a pass stored for one set of
+// files is not shown for a different set (a lost store file, a changed file).
+function treeHash(files) {
+  const h = createHash("sha256");
+  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    h.update(f.path).update("\0").update(createHash("sha256").update(String(f.text)).digest("hex")).update("\n");
+  }
+  return h.digest("hex");
 }
 
 // The redacted file tree a Foundry bundle ships: the shipped files (vendored
@@ -1102,8 +1124,15 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   const harm = proof?.harm ?? null;
   // The re-run verdict was recorded once (record.mjs), never in this request.
   const rerun = recorded?.replay?.rerun ?? replay?.rerun ?? null;
+  // M4: the stored pass counts only for the files it was checked on. A bundle
+  // built from changed or lost files (a different tree hash) shows no claim.
+  const current = treeHash(shippedFiles(tree));
+  const bound = Boolean(rerun && rerun.pass === true && typeof rerun.tree === "string" && rerun.tree === current);
+  // Minor 3: only a record that carries a re-run check (new records) offers the
+  // command. An old record (no rerun) reads like main: no command.
+  const haveCommand = Boolean(rerun) && haveProject;
   const readme = files.length
-    ? forgeReadme({ title, replay, fork, libs, rerun, haveProject })
+    ? forgeReadme({ title, replay, fork, libs, rerun, haveCommand, bound })
     : `# Proof source for this finding
 
 **${title}** · Foundry
@@ -1121,7 +1150,7 @@ ${omittedList(omitted)}`;
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   // The hashes of every file the bundle ships, so a reader can check the folder.
   if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
-  return finish(entries, forgeLine1({ finding, recorded, harm, rerun, haveCommand: haveProject }) + readme);
+  return finish(entries, forgeLine1({ finding, recorded, harm, rerun, haveCommand, bound }) + readme);
 }
 
 // Re-run the Foundry proof from the bundle's own files, offline, and say
@@ -1150,16 +1179,14 @@ export async function verifyForgeReplay({ replay, proof, finding, recorded } = {
     return { ...base, pass: false, reason: `the bundle could not be built (${String(err?.message || err).slice(0, 80)})` };
   }
   if (!tree.haveProject) return { ...base, pass: false, reason: "the bundle has no foundry.toml and proof test" };
+  const sf = shippedFiles(tree);
+  const tree_ = treeHash(sf);
   const dir = mkdtempSync(join(tmpdir(), "replay-verify-"));
   try {
-    for (const f of tree.files) {
+    for (const f of sf) {
       const abs = join(dir, f.path);
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, f.text);
-    }
-    if (tree.testSource && !tree.files.some((f) => f.path.startsWith("test/"))) {
-      mkdirSync(join(dir, "test"), { recursive: true });
-      writeFileSync(join(dir, "test", "AgentPoc.t.sol"), tree.testSource);
     }
     const runner = run ?? forgeTest;
     const t0 = Date.now();
@@ -1168,7 +1195,15 @@ export async function verifyForgeReplay({ replay, proof, finding, recorded } = {
     const rerunPass = r?.passed === true && r?.failed !== true;
     const recordedPass = proof?.pass !== false;
     const pass = rerunPass && recordedPass;
-    return { ...base, pass, ms, ...(pass ? {} : { reason: r?.timedOut ? "the re-run timed out" : rerunPass ? "the recorded proof is not a pass" : "the proof test did not pass from the bundle folder" }) };
+    // Docker (or forge) could not run at all: that is "could not check", not a
+    // failing proof. The claim still needs a pass, so there is none either way.
+    const couldNotRun = !r?.passed && !r?.failed && (r?.code === "ENOENT" || /docker: .*not found|Cannot connect to the Docker daemon|command not found|executable file not found/i.test(String(r?.output ?? "")));
+    const reason = pass ? undefined
+      : couldNotRun ? "the check could not run (Docker is not available)"
+      : r?.timedOut ? "the re-run timed out"
+      : rerunPass ? "the recorded proof is not a pass"
+      : "the proof test did not pass from the bundle folder";
+    return { ...base, pass, ms, tree: tree_, ...(reason ? { reason } : {}) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

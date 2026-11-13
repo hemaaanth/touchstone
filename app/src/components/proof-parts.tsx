@@ -209,7 +209,7 @@ export function RerunNote({ rerun }: { rerun?: { checked: boolean; pass: boolean
   }
   return (
     <p className="text-xs text-muted-foreground">
-      Not re-run-checked{rerun.reason ? `: ${rerun.reason}` : ""}. The bundle still downloads with the files and the command.
+      Not re-run-checked{rerun.reason ? `: ${rerun.reason}` : ""}. The bundle still downloads with its files.
     </p>
   )
 }

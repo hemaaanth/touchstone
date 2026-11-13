@@ -238,14 +238,13 @@ describe("report: replay bundle", () => {
         expect(files.get("src/Vault.sol")).toContain("// Authorization: Bearer [REDACTED]\n")
         const fork = JSON.parse(files.get("fork.json") || "")
         expect(fork).toEqual({ rpc: "${RPC_URL}", block: 18000000, forked: true })
-        // It carries the re-run command, but with no stored verdict it claims
-        // no re-run; no check-harm.mjs / harm.json (those stay cut).
+        // No stored re-run verdict (an old-shaped record): no command at all.
         const readme = files.get("README.md") || ""
-        expect(commands(readme).length).toBeGreaterThanOrEqual(1)
-        expect(readme).toContain("forge test --offline")
+        expect(commands(readme)).toEqual([])
+        expect(readme).not.toContain("forge test")
         expect(files.has("check-harm.mjs")).toBe(false)
         expect(files.has("harm.json")).toBe(false)
-        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on 2026-01-15 (harm: an ETH drain). These files were not re-run-checked; the re-run command is in this README for you to run.")
+        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on 2026-01-15 (harm: an ETH drain). This folder holds the proof's source files for reading; it has no re-run command.")
         // The hashes of every shipped file, and nothing about a command in proof.json.
         const sums = files.get("SHA256SUMS") || ""
         expect(sums).toContain("  test/AgentPoc.t.sol\n")
@@ -397,8 +396,8 @@ describe("report: replay bundle", () => {
       const readme = files.get("README.md") || ""
       expect(readme).toContain("Vendored library files (`lib/forge-std`) are included unchanged")
       expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay")).toBe(true)
-      // It carries the re-run command now (the verdict is stored at record time).
-      expect(commands(readme).length).toBeGreaterThanOrEqual(1)
+      // No stored verdict in this synthetic replay, so no command.
+      expect(commands(readme)).toEqual([])
       expect(files.get("SHA256SUMS")).toContain("  lib/forge-std/src/safeconsole.sol\n")
       execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
       // The store's copy is the source; with it gone the engine's copy serves.
@@ -629,12 +628,12 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("a forge bundle carries the exact re-run command and claims a re-run only when the stored verdict passed", async () => {
+  test("the re-run claim is bound to the files: a passing verdict claims, a changed tree or no verdict does not", async () => {
     // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     // @ts-expect-error — plain .mjs module, no types
-    const { forgeReplayCommand } = await import("../../spike/lib/sandbox.mjs")
-    const labs = ["lab/vault-accounting", "lab/vault-reentrancy", "lab/vault-shares", "spike/packs/keys/lab", "spike/packs/chain-watch/lab"]
+    const { verifyForgeReplay } = await import("../../spike/lib/replay-bundle.mjs")
+    const labs = ["lab/vault-reentrancy", "lab/vault-accounting"]
     for (const rel of labs) {
       const lab = new URL(`../../${rel}/`, import.meta.url).pathname
       const oracleDir = path.join(lab, "oracle")
@@ -645,29 +644,67 @@ describe("report: replay bundle", () => {
         writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(oracleDir, String(chosen)), "utf8"))
         const snap = snapshotForgeReplay(ws, { contract: "X", test: "t()" })
         const proof = { kind: "forge", pass: true, test: "t()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
-        const bundleReadme = (replay: unknown) => {
+        const line1 = (replay: unknown) => {
           const dir = mkdtempSync(path.join(tmpdir(), "replay-cmd-"))
           try {
             unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
-            return readTree(dir).get("README.md") || ""
+            return (readTree(dir).get("README.md") || "").split("\n")[0]
           } finally {
             rmSync(dir, { recursive: true, force: true })
           }
         }
-        // No stored verdict: the command is present, but no "re-run checked" claim.
-        const r0 = bundleReadme(snap)
-        const cmd = forgeReplayCommand({ matchContract: "X", solc: snap.solc })
-        expect([rel, r0.includes(cmd)]).toEqual([rel, true])
-        expect([rel, r0.split("\n")[0].startsWith("PROVEN:")]).toEqual([rel, true])
-        expect([rel, r0.split("\n")[0].includes("RE-RUN CHECKED")]).toEqual([rel, false])
-        // A stored passing verdict: line 1 claims the re-run, with the command.
-        const checked = { ...snap, rerun: { checked: true, pass: true, command: cmd, image: "img", matchContract: "X", ms: 1200 } }
-        const r1 = bundleReadme(checked)
-        expect([rel, r1.split("\n")[0].startsWith("RE-RUN CHECKED:")]).toEqual([rel, true])
-        expect([rel, r1.includes(cmd)]).toEqual([rel, true])
+        // A passing verdict from the verifier binds the tree: the bundle claims.
+        const rerun = await verifyForgeReplay({ replay: snap, proof }, { run: async () => ({ passed: true, failed: false }) })
+        expect([rel, typeof rerun.tree]).toEqual([rel, "string"])
+        expect([rel, line1({ ...snap, rerun }).startsWith("RE-RUN CHECKED:")]).toEqual([rel, true])
+        // A passing verdict with a tree that does not match the shipped files:
+        // no claim, "the files changed since the check".
+        const wrong = line1({ ...snap, rerun: { ...rerun, tree: "0".repeat(64) } })
+        expect([rel, wrong.startsWith("RE-RUN CHECKED")]).toEqual([rel, false])
+        expect([rel, wrong.includes("the files changed since the check")]).toEqual([rel, true])
+        // No verdict at all: no command, no claim.
+        expect([rel, line1(snap).includes("re-run command")]).toEqual([rel, true])
+        expect([rel, line1(snap).startsWith("RE-RUN CHECKED")]).toEqual([rel, false])
       } finally {
         rmSync(ws, { recursive: true, force: true })
       }
+    }
+  })
+
+  test("no claim when the verifier fails or the stored verdict is a fail (non-Docker)", async () => {
+    // @ts-expect-error — plain .mjs module, no types
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    // @ts-expect-error — plain .mjs module, no types
+    const { verifyForgeReplay } = await import("../../spike/lib/replay-bundle.mjs")
+    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    try {
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
+      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "t()" })
+      const proof = { kind: "forge", pass: true, test: "t()" }
+      const line1 = (replay: unknown) => {
+        const dir = mkdtempSync(path.join(tmpdir(), "replay-noclaim-"))
+        try {
+          unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
+          return (readTree(dir).get("README.md") || "").split("\n")[0]
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+      // The verifier's forge did not pass: pass is false, reason set, no claim.
+      const failed = await verifyForgeReplay({ replay: snap, proof }, { run: async () => ({ passed: false, failed: true }) })
+      expect(failed.pass).toBe(false)
+      expect(failed.reason).toBe("the proof test did not pass from the bundle folder")
+      expect(line1({ ...snap, rerun: failed }).startsWith("RE-RUN CHECKED")).toBe(false)
+      // Docker missing reads as "could not run", not "did not pass".
+      const noDocker = await verifyForgeReplay({ replay: snap, proof }, { run: async () => ({ passed: false, failed: false, code: "ENOENT" }) })
+      expect(noDocker.pass).toBe(false)
+      expect(noDocker.reason).toBe("the check could not run (Docker is not available)")
+      // A hand-set stored fail (pass:false) with a matching tree still makes no claim.
+      const stored = { ...snap, rerun: { checked: true, pass: false, tree: failed.tree, reason: "x" } }
+      expect(line1(stored).startsWith("RE-RUN CHECKED")).toBe(false)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
     }
   })
 
@@ -1052,8 +1089,8 @@ describe("report: replay bundle", () => {
         unzip(buildReplayBundle({ finding, recorded }), out)
         const files = readTree(out)
         expect(files.get("src/Vault.sol")).toContain("function withdraw")
-        expect(commands(files.get("README.md") || "").length).toBeGreaterThanOrEqual(1)
-        expect(files.get("README.md")).toContain("This folder holds the whole proof workspace except build output")
+        expect(commands(files.get("README.md") || "")).toEqual([])
+        expect(files.get("README.md")).toContain("This folder holds the proof's source files")
       } finally {
         rmSync(out, { recursive: true, force: true })
       }
