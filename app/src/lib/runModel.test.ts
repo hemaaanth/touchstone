@@ -389,3 +389,10 @@ test("the closing step goes when the run ends as another error, not as a coverag
   assert.deepEqual(end({ kind: "coverage" }), ["say:Nothing."])
   assert.deepEqual(end({ kind: "crash" }), [])
 })
+
+test("the provider event gives the run its provider and model id; an old run has none", () => {
+  const state = reduceEvents([ev("provider", { provider: "lyber", model: "deepseek-v4.1-flash" }), ev("status", { status: "running" })])
+  assert.deepEqual(state.provider, { id: "lyber", model: "deepseek-v4.1-flash" })
+  assert.deepEqual(state.steps, [])
+  assert.equal(reduceEvents([ev("status", { status: "running" })]).provider, null)
+})

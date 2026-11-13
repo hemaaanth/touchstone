@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react"
 import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck } from "lucide-react"
-import type { AgentNode, ArtifactDoc, BulletinNote, RunLead, RunMode, Severity } from "@/lib/types"
+import type { AgentNode, ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
-import { PLAN_STEP } from "@/lib/catalog"
+import { PLAN_STEP, packOf } from "@/lib/catalog"
+import { ModulePills } from "@/components/module-pill"
+import { ProviderLogo } from "@/components/provider-logo"
+import { TruncatedText } from "@/components/page-parts"
 import { cardFor, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
@@ -57,6 +60,7 @@ export function RunPanel({
   initialWidth,
   compact = false,
   control,
+  packs,
 }: {
   state: RunState
   live: boolean
@@ -81,6 +85,8 @@ export function RunPanel({
   // edge. Escape gives focus back to that control.
   compact?: boolean
   control?: React.RefObject<HTMLButtonElement | null>
+  // The server's module list, for the pills' titles and order.
+  packs?: PackChoice[]
 }) {
   const toggleRef = useRef<HTMLButtonElement>(null)
   const agents = state.agents
@@ -172,7 +178,7 @@ export function RunPanel({
             expanded={section === "info"}
             onToggle={() => toggle("info")}
           >
-            <RunInfo state={state} live={live} mode={mode} model={model} />
+            <RunInfo state={state} live={live} mode={mode} model={model} packs={packs} />
           </Section>
           {showAgents ? (
             <Section
@@ -459,28 +465,44 @@ const empty = "px-3 py-2.5 text-xs text-muted-foreground"
 
 // What the run is: its mode, how long it has run, what it has spent against
 // its budget, the model, the scope, and the pipeline steps it turned on.
-function RunInfo({ state, live, mode, model }: { state: RunState; live: boolean; mode: RunMode; model: string }) {
+// The run's modules (packs). Today a run has one: its scope's pack. The line
+// takes a list, so a run that holds several shows them all.
+export function runModules(state: RunState): string[] {
+  return state.scope ? [packOf(state.scope)] : []
+}
+
+function RunInfo({
+  state,
+  live,
+  mode,
+  model,
+  packs,
+}: {
+  state: RunState
+  live: boolean
+  mode: RunMode
+  model: string
+  packs?: PackChoice[]
+}) {
   const now = useNow(live)
   const t0 = runStart(state)
   const t1 = live ? now : runEnd(state)
   const budget = runBudget(state)
+  const modules = runModules(state)
   const steps = (state.modules ?? []).filter((m) => m.on).map((m) => PLAN_STEP[m.id] ?? m.id)
   const rows: [string, React.ReactNode][] = [
     ["Mode", mode === "fleet" ? "Fleet" : "Solo"],
     ["Runtime", t0 != null && t1 != null ? span(t1 - t0) : null],
     ["Spend", <Spend key="spend" usd={fleetSpend(state)} budget={budget} />],
-    ["Model", model || null],
-    ["Scope", state.scope?.title ?? null],
     [
-      "Modules",
-      steps.length ? (
-        <span key="modules" className="flex flex-col gap-0.5">
-          {steps.map((s) => (
-            <span key={s}>{s}</span>
-          ))}
-        </span>
+      "Model",
+      state.provider || model ? (
+        <ModelLine key="model" provider={state.provider?.id ?? null} id={state.provider?.model ?? model} agents={mode === "fleet" ? state.agents.length : null} />
       ) : null,
     ],
+    ["Scope", state.scope?.title ?? null],
+    [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={packs} compact /> : null],
+    ["Steps", steps.length ? steps.join(" · ") : null],
   ]
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 px-3 pt-1 pb-2.5 text-xs">
@@ -493,6 +515,30 @@ function RunInfo({ state, live, mode, model }: { state: RunState; live: boolean;
           </div>
         ))}
     </dl>
+  )
+}
+
+// The model as one line: the provider's mark, then the model id, cut in the
+// middle with the whole id in a tooltip. A fleet's children run on the
+// coordinator's model, so the line says who uses it.
+function ModelLine({ provider, id, agents }: { provider: string | null; id: string; agents: number | null }) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {provider ? (
+          <>
+            <ProviderLogo id={provider} label={provider} className="size-4 rounded-[4px] [&>span]:size-2.5" />
+            <span className="sr-only">{provider}: </span>
+          </>
+        ) : null}
+        <TruncatedText text={id} middle tail={12} mono />
+      </span>
+      {agents != null ? (
+        <span className="text-muted-foreground">
+          {agents ? `Coordinator and ${agents === 1 ? "its agent" : `all ${agents} agents`}` : "Coordinator"}
+        </span>
+      ) : null}
+    </span>
   )
 }
 

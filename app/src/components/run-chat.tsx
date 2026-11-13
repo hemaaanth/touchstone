@@ -7,7 +7,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
-import type { Finding, RunSummary } from "@/lib/types"
+import type { Finding, PackChoice, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
@@ -77,11 +77,14 @@ export function RunChat({
   onArchive,
   onRename,
   onDelete,
+  packs,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => Promise<void>
+  // The server's module list, for the Run Info pills.
+  packs?: PackChoice[]
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
@@ -500,6 +503,7 @@ export function RunChat({
           initialWidth={panelDefault}
           compact={narrow}
           control={controlRef}
+          packs={packs}
         />
       </div>
     ) : null

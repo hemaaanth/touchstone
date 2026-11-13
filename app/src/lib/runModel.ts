@@ -186,6 +186,9 @@ export interface RunState {
   // The run's pipeline plan, from the `modules` event at run start. Null on a
   // run that predates the event.
   modules: ModulePlanEntry[] | null
+  // The provider and model id the run started with, from the `provider` event.
+  // Null on a run that predates the event.
+  provider: { id: string; model: string } | null
   // The operator stopped the run's last piece of work. A follow-up clears it.
   stopped: boolean
 }
@@ -221,6 +224,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let findingId: string | null = null
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
+  let provider: { id: string; model: string } | null = null
   let stopped = false
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -275,6 +279,10 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "provider":
+        // The provider and model the run started with. No step.
+        if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
+        break
       case "modules": {
         // The pipeline plan. It shows on the Modules page, not in the
         // transcript, so it adds no step.
@@ -857,6 +865,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     findingId,
     prepass,
     modules,
+    provider,
     stopped,
   }
 }

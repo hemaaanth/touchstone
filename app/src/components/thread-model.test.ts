@@ -215,3 +215,12 @@ test("an old record with only the final text shows it once, before a later turn"
   ])
   assert.deepEqual(out, ["Nothing to prove.", "and the router?", "The router is fine."])
 })
+
+test("Run Info's module line is a list: today one entry, the scope's pack", async () => {
+  const { runModules } = await import("./run-panel")
+  const scope = { id: "s", title: "S", kind: "lab", blurb: "", entry: "" }
+  assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope: { ...scope, pack: "web" } }])), ["web"])
+  // A scope saved before modules is a Contracts scope.
+  assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope }])), ["contracts"])
+  assert.deepEqual(runModules(reduceEvents([])), [])
+})
