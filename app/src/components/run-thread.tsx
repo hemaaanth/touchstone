@@ -27,6 +27,7 @@ import {
   FolderX,
   Square,
   Info,
+  Loader2,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
@@ -180,6 +181,7 @@ export function Thread({
   retrying,
   archived,
   sendError,
+  sending = false,
   context = null,
   to = "the agent",
   readOnly = false,
@@ -196,6 +198,8 @@ export function Thread({
   retrying: boolean
   archived: boolean
   sendError: string | null
+  // A message is on its way to the server. It shows in the composer only.
+  sending?: boolean
   // How full the main thread's context is, when the engine reported it.
   context?: ContextUse | null
   // Who a message goes to: "coordinator" in a fleet run, "the agent" in a solo run.
@@ -244,7 +248,7 @@ export function Thread({
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} context={context} />}
+      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} sending={sending} context={context} />}
     </ThreadPrimitive.Root>
   )
 }
@@ -255,16 +259,20 @@ export function Thread({
 // Send steers it and Stop ends the work. A failed send (spend cap, no saved
 // session) shows as one quiet line in the action row's free left side, a place
 // that is always there, so the box never moves. The text stays in the input.
+// While a send waits for the server, the text stays too, the input is read
+// only and Send turns into a spinner. Nothing else moves.
 // An archived run reads as quiet rather than broken.
 function Composer({
   to,
   archived,
   error,
+  sending,
   context,
 }: {
   to: string
   archived: boolean
   error: string | null
+  sending: boolean
   context: ContextUse | null
 }) {
   return (
@@ -280,6 +288,7 @@ function Composer({
           <ComposerPrimitive.Input
             autoFocus={FINE_POINTER}
             disabled={archived}
+            readOnly={sending}
             rows={1}
             submitOnEnter
             enterKeyHint="send"
@@ -299,11 +308,17 @@ function Composer({
                   </Button>
                 </ComposerPrimitive.Cancel>
               </AuiIf>
-              <ComposerPrimitive.Send asChild>
-                <Button size="icon" className="size-7 rounded-full" aria-label="Send">
-                  <ArrowUp className="size-4" />
+              {sending ? (
+                <Button size="icon" className="size-7 rounded-full" aria-label="Sending" aria-busy disabled>
+                  <Loader2 className="size-4 motion-safe:animate-spin" />
                 </Button>
-              </ComposerPrimitive.Send>
+              ) : (
+                <ComposerPrimitive.Send asChild>
+                  <Button size="icon" className="size-7 rounded-full" aria-label="Send">
+                    <ArrowUp className="size-4" />
+                  </Button>
+                </ComposerPrimitive.Send>
+              )}
             </div>
           </div>
         </ComposerPrimitive.Root>

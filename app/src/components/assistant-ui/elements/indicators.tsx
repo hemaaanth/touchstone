@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactElement, ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   ClockIcon,
   Loader2Icon,
@@ -19,7 +19,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 // Colour follows docs/restraint.md: everything is neutral until a replay
 // proved the finding. Only then does severity take its colour.
 
-/** A tooltip on a non-interactive mark. The name is read by screen readers. */
+/**
+ * A tooltip on a non-interactive mark. The name is read by screen readers.
+ * Keyboard users reach the tip too. A mark that stands alone is a tab stop.
+ * A mark inside a row that is a button or a link is not, since a control may
+ * not hold another one: its tip opens while the row has keyboard focus.
+ */
 export function Hint({
   label,
   tip,
@@ -33,12 +38,39 @@ export function Hint({
   children: ReactNode;
   className?: string;
 }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [open, setOpen] = useState(false);
+  const [rowFocus, setRowFocus] = useState(false);
+  // A row can turn from disabled to enabled, so this checks on every render.
+  useEffect(() => {
+    const el = ref.current;
+    const row = el?.parentElement?.closest<HTMLElement>("button:enabled, a[href], [role=button]");
+    if (el) el.tabIndex = row ? -1 : 0;
+    if (!row) return;
+    const on = () => setRowFocus(row.matches(":focus-visible"));
+    const off = () => setRowFocus(false);
+    row.addEventListener("focus", on);
+    row.addEventListener("blur", off);
+    return () => {
+      row.removeEventListener("focus", on);
+      row.removeEventListener("blur", off);
+    };
+  });
   const trigger: ReactElement = (
-    <span role="img" aria-label={label} className={cn("inline-flex shrink-0 items-center", className)} />
+    <span
+      ref={ref}
+      role="img"
+      tabIndex={0}
+      aria-label={label}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        className,
+      )}
+    />
   );
   return (
     <TooltipProvider delay={300}>
-      <Tooltip>
+      <Tooltip open={open || rowFocus} onOpenChange={setOpen}>
         <TooltipTrigger render={trigger}>{children}</TooltipTrigger>
         <TooltipContent>{tip ?? label}</TooltipContent>
       </Tooltip>

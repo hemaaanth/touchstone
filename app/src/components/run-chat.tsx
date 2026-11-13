@@ -19,7 +19,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { buildMessages, OpenArtifact, runHeadStatus, runStartView, waitingMessage, type HeadTone } from "@/components/thread-model"
+import { buildMessages, OpenArtifact, runHeadStatus, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
@@ -71,10 +71,6 @@ import {
 // One page in the drawer. A file's version is null until the operator picks
 // one, which means "the latest".
 type DrawerItem = { kind: "agent"; id: string; key?: string } | { kind: "file"; id: string; version: string | null }
-
-// How long a sent copy waits before it shows. Long enough to hide a refused
-// send, short enough to feel instant.
-const HOLD_MS = 180
 
 export function RunChat({
   run,
@@ -169,11 +165,11 @@ export function RunChat({
   // Send one operator message. Live, it steers the worker. Idle, the server
   // starts a follow-up, so fetch the run again to follow the reply.
   //
-  // The message shows at once, as a local copy (`sent`). The real message is
-  // the agent's `operator-message` echo, which comes when the agent reads it.
-  // The echo carries the copy's id, so the copy steps aside the moment it
-  // lands, in the same place. The server stays the only record: the copy is
-  // never saved, and a reload shows only what the agent really got.
+  // Once the server accepts it, the message shows as a local copy (`sent`).
+  // The real message is the agent's `operator-message` echo, which comes when
+  // the agent reads it. The echo carries the copy's id, so the copy steps aside
+  // the moment it lands, in the same place. The server stays the only record:
+  // the copy is never saved, and a reload shows only what the agent really got.
   // If the message does not reach the agent, the copy goes, the error shows,
   // and the text goes back in the composer, unless the operator already
   // started a new one.
@@ -192,39 +188,39 @@ export function RunChat({
   useEffect(() => {
     settled.current = outcomes
   })
+  const composerOf = () => runtimeRef.current?.thread.composer
   const giveBack = (text: string) => {
-    const composer = runtimeRef.current?.thread.composer
+    const composer = composerOf()
     if (composer && !composer.getState().text) composer.setText(text)
   }
-  // A send that fails fast (spend cap, no saved session) must not flash a
-  // copy and a "Thinking" row that vanish a moment later. So a copy waits a
-  // short moment before it shows, unless the server answered first. The last
-  // error stays until a send succeeds, so it never blinks off and on.
-  const [held, setHeld] = useState<ReadonlySet<string>>(() => new Set())
-  const release = (id: string) =>
-    setHeld((h) => {
-      if (!h.has(id)) return h
-      const next = new Set(h)
-      next.delete(id)
-      return next
-    })
+  // Nothing enters the thread before the server accepts the message. Until
+  // then the text stays in the composer and Send shows a spinner. A refusal
+  // (spend cap, no saved session) changes only the composer line. An accepted
+  // message appears once, as its copy. The last error stays until a send
+  // succeeds, so it never blinks off and on.
+  const [pending, setPending] = useState(false)
+  const pendingRef = useRef(false)
   const send = async (text: string, restore = true) => {
-    if (!text || !state || archived) return
-    const id = messageId()
-    const base = state.events.length
-    setHeld((h) => new Set(h).add(id))
-    window.setTimeout(() => release(id), HOLD_MS)
-    setSent((xs) => [...xs.filter((x) => !settled.current.has(x.id)), { id, text, base, mode: "sending", restore }])
-    try {
-      const res = await steerRun(run.id, text, id)
+    // assistant-ui empties the composer before it hands the message over. Put
+    // the text back in the same tick, so the box never blinks empty.
+    const composer = restore ? composerOf() : undefined
+    if (composer && text && !composer.getState().text) composer.setText(text)
+    if (!text || !state || archived || pendingRef.current) return
+    pendingRef.current = true
+    setPending(true)
+    setSent((xs) => xs.filter((x) => !settled.current.has(x.id)))
+    const copy: Sent = { id: messageId(), text, base: state.events.length, mode: "sending", restore }
+    const res = await sendCopy(copy, () => steerRun(run.id, text, copy.id), setSent)
+    pendingRef.current = false
+    setPending(false)
+    if (res.ok) {
       setSendError(null)
-      release(id)
-      setSent((xs) => xs.map((x) => (x.id === id ? { ...x, mode: res.followUp ? "follow-up" : "steer" } : x)))
+      // The copy now carries the text. Empty the box, unless the operator
+      // changed it meanwhile.
+      if (composer && composer.getState().text === text) composer.setText("")
       if (res.followUp) reloadRun(run.id)
-    } catch (err) {
-      setSent((xs) => xs.filter((x) => x.id !== id))
-      setSendError(err instanceof Error ? err.message : String(err))
-      if (restore) giveBack(text)
+    } else {
+      setSendError(res.error)
     }
   }
 
@@ -261,24 +257,10 @@ export function RunChat({
     () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
     [state, fleet],
   )
-  const messages = useMemo(() => {
-    const ms = buildMessages(state, mainSteps, status, live, fleet, null)
-    // The local copies trail the thread until their echoes land. While the
-    // agent owes an answer, a waiting row stands where the answer will go.
-    const copies = sent.filter((x) => !outcomes.has(x.id) && !held.has(x.id))
-    const wait = state ? awaitingReply(mainSteps, live, null, copies) : null
-    if (state && wait?.after === "steps") ms.push(waitingMessage(state, wait.id, fleet, null))
-    for (const x of copies) {
-      ms.push({
-        role: "user",
-        id: `sent:${x.id}`,
-        content: [{ type: "text", text: x.text }],
-        metadata: { custom: { queued: x.mode === "steer" } },
-      })
-    }
-    if (state && wait?.after === "copies") ms.push(waitingMessage(state, wait.id, fleet, null))
-    return ms
-  }, [state, mainSteps, status, live, fleet, sent, outcomes, held])
+  const messages = useMemo(
+    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null), state, mainSteps, live, fleet, sent, outcomes),
+    [state, mainSteps, status, live, fleet, sent, outcomes],
+  )
 
   // assistant-ui blocks Send while a run is live unless the runtime has a
   // queue. The server is the queue here: a message to a live run steers it, and
@@ -413,6 +395,13 @@ export function RunChat({
   const rootRef = useRef<HTMLDivElement>(null)
   const viewWidth = useWidth(rootRef)
   const beside = drawerOpen && viewWidth - drawerWidth >= 340
+  // The panel's width, the same open or folded. Folded, it is one line in the
+  // top bar's right side, so it covers no chat; the title truncates earlier.
+  // Open, it drops down from there over the chat. On a narrow view it shrinks
+  // so the title keeps some room.
+  const [storedPanel, setPanelWidth, panelDefault] = useStoredWidth("ts.panelWidth", 320, 280, 560)
+  const panelWidth = viewWidth ? Math.min(storedPanel, Math.max(200, viewWidth - 240)) : storedPanel
+  const showPanel = !!state && !!mode
 
   const back = below ? (
     <BackButton
@@ -460,6 +449,7 @@ export function RunChat({
               state={state}
               status={status}
               title={titleNode}
+              panelWidth={showPanel ? panelWidth : null}
               actions={
                 <RunActions
                   archived={archived}
@@ -485,47 +475,52 @@ export function RunChat({
                   retrying={retrying}
                   archived={archived}
                   sendError={composerError}
+                  sending={pending}
                   context={state ? mainContext(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                 />
               </AssistantRuntimeProvider>
             </div>
-
-            {/* The panel floats over the chat's top-right corner and stops
-                above the composer. Only the panel itself takes clicks. */}
-            {state && mode ? (
-              <div
-                inert={drawerOpen && !beside}
-                className={cn(
-                  "pointer-events-none absolute top-3 right-3 bottom-28 flex items-start justify-end",
-                  beside ? "z-30" : "z-10",
-                )}
-                style={beside ? { right: drawerWidth + 12 } : undefined}
-              >
-                <RunPanel
-                  state={state}
-                  live={live}
-                  mode={mode}
-                  model={run.alias}
-                  open={panelOpen}
-                  onOpenChange={setPanelOpen}
-                  section={section}
-                  onSection={setSection}
-                  selectedAgent={peek?.id ?? null}
-                  onAgent={(id) => {
-                    openPeek(id)
-                    picked()
-                  }}
-                  openDoc={openDoc?.id ?? null}
-                  openVersion={topFile?.version ?? null}
-                  onFile={(id, v) => {
-                    openFile(false)(id, v)
-                    picked()
-                  }}
-                />
-              </div>
-            ) : null}
           </div>
+
+          {/* The panel sits in the top bar's right side, over the room the
+              bar keeps for it, and opens down over the chat. It stops above
+              the composer. Only the panel itself takes clicks. */}
+          {showPanel ? (
+            <div
+              inert={drawerOpen && !beside}
+              className={cn(
+                "pointer-events-none absolute top-[7px] right-[46px] bottom-28 flex items-start justify-end max-md:right-[50px]",
+                beside ? "z-30" : "z-10",
+              )}
+              style={beside ? { right: drawerWidth + 12 } : undefined}
+            >
+              <RunPanel
+                state={state}
+                live={live}
+                mode={mode}
+                model={run.alias}
+                open={panelOpen}
+                onOpenChange={setPanelOpen}
+                section={section}
+                onSection={setSection}
+                selectedAgent={peek?.id ?? null}
+                onAgent={(id) => {
+                  openPeek(id)
+                  picked()
+                }}
+                openDoc={openDoc?.id ?? null}
+                openVersion={topFile?.version ?? null}
+                onFile={(id, v) => {
+                  openFile(false)(id, v)
+                  picked()
+                }}
+                width={panelWidth}
+                onWidth={setPanelWidth}
+                initialWidth={panelDefault}
+              />
+            </div>
+          ) : null}
 
           {/* The drawer covers the run from the right, over the top bar.
               Nothing under it moves; the chat dims and blurs a little, and a
@@ -613,11 +608,14 @@ function RunHeader({
   state,
   status,
   title,
+  panelWidth,
   actions,
 }: {
   state: RunState | null
   status: RunSummary["status"]
   title: React.ReactNode
+  // The room the folded run panel takes at the bar's right, if it shows.
+  panelWidth: number | null
   actions: React.ReactNode
 }) {
   // The dot is the status. The word lives in its tooltip and its accessible
@@ -632,8 +630,9 @@ function RunHeader({
             render={
               <span
                 role="img"
+                tabIndex={0}
                 aria-label={`Status: ${head.word}`}
-                className="-m-1.5 flex size-[19px] shrink-0 items-center justify-center"
+                className="-m-1.5 flex size-[19px] shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             }
           >
@@ -644,6 +643,7 @@ function RunHeader({
       </TooltipProvider>
       <div className="flex min-w-0 items-baseline">{title}</div>
       <span className="ml-auto" />
+      {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
       {actions}
     </header>
   )

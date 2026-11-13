@@ -6,7 +6,7 @@ import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
 import { isTerminal } from "@/lib/format"
 import { agentName } from "@/components/fleet-view"
-import { turnId } from "@/lib/sent"
+import { awaitingReply, turnId, type Sent } from "@/lib/sent"
 
 // The data side of the run thread: steps in, assistant-ui messages out. The
 // renderers in run-thread.tsx read the parts this builds.
@@ -408,4 +408,54 @@ export function runStartView(events: RunEvent[], prepass: PrepassView | null, li
         ? { mark: "fail", word: "Incomplete" }
         : { mark: "done" }
   return { rows, meta, ...mark, active: running, openFirst: stopped }
+}
+
+// The main thread with the operator's local copies. A copy shows only once the
+// server accepted its message, so a refused send never touches the
+// transcript: while the send is pending, the composer shows it instead. A copy
+// steps aside when its echo lands or it is lost. While the agent owes an
+// answer, a waiting row stands where the answer will go.
+export function withCopies(
+  ms: ThreadMessageLike[],
+  state: RunState | null,
+  steps: Step[],
+  live: boolean,
+  fleet: boolean,
+  sent: Sent[],
+  outcomes: Map<string, string>,
+): ThreadMessageLike[] {
+  if (!state) return ms
+  const out = [...ms]
+  const copies = sent.filter((x) => x.mode !== "sending" && !outcomes.has(x.id))
+  const wait = awaitingReply(steps, live, null, copies)
+  if (wait?.after === "steps") out.push(waitingMessage(state, wait.id, fleet, null))
+  for (const x of copies) {
+    out.push({
+      role: "user",
+      id: `sent:${x.id}`,
+      content: [{ type: "text", text: x.text }],
+      metadata: { custom: { queued: x.mode === "steer" } },
+    })
+  }
+  if (wait?.after === "copies") out.push(waitingMessage(state, wait.id, fleet, null))
+  return out
+}
+
+// One send, as state changes. The copy enters `sent` as "sending", then takes
+// the server's answer: a steer or a follow-up, or it goes on a refusal.
+export async function sendCopy(
+  copy: Sent,
+  steer: () => Promise<{ followUp?: boolean }>,
+  update: (f: (xs: Sent[]) => Sent[]) => void,
+): Promise<{ ok: true; followUp: boolean } | { ok: false; error: string }> {
+  update((xs) => [...xs, copy])
+  try {
+    const res = await steer()
+    const mode = res.followUp ? "follow-up" : "steer"
+    update((xs) => xs.map((x) => (x.id === copy.id ? { ...x, mode } : x)))
+    return { ok: true, followUp: !!res.followUp }
+  } catch (err) {
+    update((xs) => xs.filter((x) => x.id !== copy.id))
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }

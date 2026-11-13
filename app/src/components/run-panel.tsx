@@ -9,7 +9,7 @@ import { PLAN_STEP } from "@/lib/catalog"
 import { cardFor, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
-import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
+import { ResizeHandle } from "@/components/resize-handle"
 import { Hint, ProofIcon, ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import {
   AGENT_WORD,
@@ -52,6 +52,9 @@ export function RunPanel({
   openDoc,
   openVersion,
   onFile,
+  width,
+  onWidth,
+  initialWidth,
 }: {
   state: RunState
   live: boolean
@@ -67,6 +70,10 @@ export function RunPanel({
   openDoc: string | null
   openVersion: string | null
   onFile: (fileId: string, versionId?: string) => void
+  // The panel's width, open or folded, and the width a reset goes back to.
+  width: number
+  onWidth: (w: number) => void
+  initialWidth: number
 }) {
   const agents = state.agents
   const notes = state.bulletin
@@ -103,15 +110,17 @@ export function RunPanel({
   ].filter((p) => p != null)
 
   // One width, open or folded, so the corner never jumps when it folds. The
-  // operator can drag the left edge; the width is kept across reloads.
-  const [width, setWidth, initialWidth] = useStoredWidth("ts.panelWidth", 320, 280, 560)
-
+  // run chat owns the width: the top bar keeps the same room for the folded
+  // line. The operator can drag the left edge; the width is kept across reloads.
   return (
     <div
       style={{ width }}
-      className="pointer-events-auto relative flex max-h-full max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/95 shadow-lg backdrop-blur-md"
+      className={cn(
+        "pointer-events-auto relative flex max-h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/95 backdrop-blur-md",
+        open && "shadow-lg",
+      )}
     >
-      <ResizeHandle edge="left" width={width} onWidth={setWidth} initial={initialWidth} label="Resize panel" />
+      <ResizeHandle edge="left" width={width} onWidth={onWidth} initial={initialWidth} label="Resize panel" />
       <button
         type="button"
         onClick={() => onOpenChange(!open)}

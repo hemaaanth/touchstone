@@ -4,7 +4,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
-import { buildMessages, runHeadStatus, runStartView as startView, sentence } from "./thread-model"
+import type { Sent } from "../lib/sent"
+import { settleSent } from "../lib/sent"
+import { buildMessages, runHeadStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -99,4 +101,71 @@ test("a run that stopped before the agent started shows where it stopped", () =>
 
 test("a run that opened with no setup to report shows no start card", () => {
   assert.equal(startView([{ ev: "opened" }], null, false), null)
+})
+
+// A send as the run chat does it, against a fake server that answers after
+// 1000 ms. The transcript is sampled after every state change and every 50 ms
+// while the send waits, so "at any time" is checked, not only at the end.
+async function delayedSend(events: RunEvent[], live: boolean, answer: "accept" | "refuse") {
+  const state = reduceEvents(events)
+  let sent: Sent[] = []
+  const rows = () => withCopies(buildMessages(state, state.steps, state.status, live), state, state.steps, live, false, sent, settleSent(sent, state.events)).length
+  const before = rows()
+  const seen: number[] = []
+  // The rows seen before the server answered.
+  const waiting: number[] = []
+  let answered = false
+  const look = () => {
+    seen.push(rows())
+    if (!answered) waiting.push(rows())
+  }
+  const update = (f: (xs: Sent[]) => Sent[]) => {
+    sent = f(sent)
+    look()
+  }
+  const steer = () =>
+    new Promise<{ followUp?: boolean }>((ok, no) =>
+      setTimeout(() => {
+        answered = true
+        if (answer === "accept") ok({ followUp: !live })
+        else no(new Error("spend cap reached"))
+      }, 1000),
+    )
+  const tick = setInterval(look, 50)
+  const copy: Sent = { id: "m1", text: "look at withdraw()", base: state.events.length, mode: "sending", restore: true }
+  const res = await sendCopy(copy, steer, update)
+  clearInterval(tick)
+  return { before, seen, waiting, after: rows(), res, sent }
+}
+
+const idleRun: RunEvent[] = [{ ev: "no-finding", final: "Nothing found." }, { ev: "status", status: "no-finding" }, { ev: "closed" }]
+
+test("a refused send never adds a row to the transcript, even when the refusal is slow", async () => {
+  for (const live of [false, true]) {
+    const events = live ? [{ ev: "status", status: "running" } as RunEvent] : idleRun
+    const { before, seen, after, res, sent } = await delayedSend(events, live, "refuse")
+    assert.equal(res.ok, false)
+    assert.ok(seen.length > 10, "the transcript was sampled while the send waited")
+    assert.deepEqual([...new Set(seen)], [before], `live=${live}: no row came and went`)
+    assert.equal(after, before)
+    assert.deepEqual(sent, [])
+  }
+})
+
+test("an accepted send adds its message once, with no second jump", async () => {
+  // An idle run: the copy and the waiting row for the follow-up's reply.
+  const idle = await delayedSend(idleRun, false, "accept")
+  assert.deepEqual(idle.res, { ok: true, followUp: true })
+  // Before the server answers, nothing changes; then the copy comes, once.
+  assert.ok(idle.waiting.length > 10)
+  assert.deepEqual([...new Set(idle.waiting)], [idle.before])
+  const idleChanges = idle.seen.filter((n, i) => n !== (i === 0 ? idle.before : idle.seen[i - 1]))
+  assert.equal(idleChanges.length, 1)
+  assert.equal(idle.after, idle.before + 2)
+  // A live run: the copy only. The agent's waiting row was already there.
+  const live = await delayedSend([{ ev: "status", status: "running" }], true, "accept")
+  assert.deepEqual([...new Set(live.waiting)], [live.before])
+  const liveChanges = live.seen.filter((n, i) => n !== (i === 0 ? live.before : live.seen[i - 1]))
+  assert.equal(liveChanges.length, 1)
+  assert.equal(live.after, live.before + 1)
 })
