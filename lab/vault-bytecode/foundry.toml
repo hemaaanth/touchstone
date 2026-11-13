@@ -3,5 +3,7 @@ src = "src"
 test = "test"
 out = "out"
 libs = ["lib"]
-# Tests include the oracle exploit so we can prove the lab is really vulnerable.
-# The agent run uses a config that excludes the oracle/ directory.
+# `test = "test"` runs only test/; it does not include oracle/. The oracle
+# exploit under oracle/ is kept out of the agent's workspace (makeWorkspace skips
+# oracle/) and out of `forge test`; it is replayed only through the harm gate
+# (proveFindings) to prove the lab is really vulnerable.

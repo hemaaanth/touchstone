@@ -12,6 +12,9 @@
 // code: the error is only in meta.logs. So a report counts only when every
 // entry loaded raw bytecode and logged no error. A missing image, a timeout,
 // unparsable output or a logged error gives available: false, never "clean".
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { keccak256 } from "ethers";
 import { runTool } from "../../../lib/wrap.mjs";
 
 export const MYTHRIL_IMAGE = process.env.MYTHRIL_IMAGE || "touchstone/mythril:0.24.8";
@@ -32,9 +35,24 @@ function stepName(step) {
   return sel ? `0x${sel[1].toLowerCase()}` : name === "fallback" ? "fallback" : "unknown";
 }
 
+// The function a step calls, from a lead's `where` ("Unit.fn(args)" -> "fn(args)").
+function funcOf(where) {
+  const i = String(where ?? "").lastIndexOf(".");
+  return i >= 0 ? where.slice(i + 1) : String(where ?? "");
+}
+
+// keccak256 of the unit's deployed runtime code, lowercased with the 0x prefix.
+// Mythril writes this as the report's sourceList[0], so it binds a report to the
+// exact bytecode we asked it to analyze.
+export function codeHashOf(ws, unit) {
+  const hex = readFileSync(join(ws, unit.file), "utf8").trim().replace(/\s+/g, "").replace(/^0x/i, "");
+  return keccak256(`0x${hex}`).toLowerCase();
+}
+
 // Turn one Mythril jsonv2 report into a list of leads for one unit, or a
-// reason why the report does not count.
-export function parseMythril(stdout, unit) {
+// reason why the report does not count. When codeHash is given, a report whose
+// sourceList[0] is not that hash is for other code and is rejected.
+export function parseMythril(stdout, unit, { codeHash = null } = {}) {
   let report;
   try { report = JSON.parse(String(stdout)); } catch { return { ok: false, reason: "unparsable output" }; }
   if (!Array.isArray(report) || report.length === 0) return { ok: false, reason: "no report" };
@@ -45,6 +63,9 @@ export function parseMythril(stdout, unit) {
     const logs = Array.isArray(entry.meta?.logs) ? entry.meta.logs : [];
     if (logs.some((l) => l?.level === "error")) return { ok: false, reason: "Mythril logged an error" };
     if (entry.sourceType !== "raw-bytecode") return { ok: false, reason: "Mythril did not load the bytecode" };
+    if (codeHash && String(entry.sourceList?.[0] ?? "").toLowerCase() !== codeHash) {
+      return { ok: false, reason: "report is for other code" };
+    }
     const ns = Number(entry.meta?.mythril_execution_info?.analysis_duration);
     if (Number.isFinite(ns) && ns / 1e9 >= EXEC_TIMEOUT_S - 1) complete = false;
     for (const issue of entry.issues.slice(0, MAX_LEADS_PER_UNIT)) {
@@ -69,7 +90,17 @@ export function parseMythril(stdout, unit) {
       });
     }
   }
-  return { ok: true, complete, leads };
+  // Mythril re-reports the same drain at each later CALL in the sequence: a
+  // second SWC-105 at a downstream function whose call sequence already passes
+  // through an earlier lead's function. Keep the first, drop the re-reports, so
+  // `where` does not blame a function that is not itself vulnerable.
+  const kept = [];
+  for (const l of leads) {
+    const upstream = (l.sequence ?? []).slice(0, -1).map(funcOf);
+    const isReReport = kept.some((k) => k.check === l.check && upstream.includes(funcOf(k.where)));
+    if (!isReReport) kept.push(l);
+  }
+  return { ok: true, complete, leads: kept };
 }
 
 // Run Mythril on every bytecode unit. Returns
@@ -90,8 +121,16 @@ export async function mythrilScan(ws, units, { timeoutMs = (EXEC_TIMEOUT_S + 90)
       out.push({ name: unit.name, file: unit.file, status: "unavailable", reason: `image ${MYTHRIL_IMAGE} not built (see spike/packs/contracts/Dockerfile.mythril)`, leads: [] });
       continue;
     }
-    const parsed = parseMythril(r.stdout, unit);
+    let codeHash = null;
+    try { codeHash = codeHashOf(ws, unit); } catch { /* unit file unreadable; parseMythril still fails closed on its own checks */ }
+    const parsed = parseMythril(r.stdout, unit, { codeHash });
     if (!parsed.ok) { out.push({ name: unit.name, file: unit.file, status: "unavailable", reason: `${parsed.reason} (exit ${r.code})`, leads: [] }); continue; }
+    // Mythril's documented exit codes: 0 when the bytecode is clean, 1 when it
+    // found at least one issue. Anything else (2 = file missing, 137 = killed,
+    // …), or a 0/1 that does not match the issue count, is not a result we trust.
+    const n = parsed.leads.length;
+    const trusted = (r.code === 0 && n === 0) || (r.code === 1 && n > 0);
+    if (!trusted) { out.push({ name: unit.name, file: unit.file, status: "unavailable", reason: `unexpected exit ${r.code} with ${n} issue(s)`, leads: [] }); continue; }
     out.push({ name: unit.name, file: unit.file, status: "ran", reason: parsed.complete ? null : `stopped at the ${EXEC_TIMEOUT_S} s exploration cap`, complete: parsed.complete, leads: parsed.leads });
   }
   const failed = out.filter((u) => u.status !== "ran");

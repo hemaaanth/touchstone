@@ -138,11 +138,86 @@ test("mythrilScan reports unavailable (never clean) on timeout, missing image, e
 });
 
 test("mythrilScan reports available with leads when every unit loads", async () => {
-  const scan = await mythrilScan("/tmp", [UNIT], { run: fakeRun({ stdout: goodReport() }) });
+  // A report with an issue must come with exit 1 (Mythril's "issues found").
+  const scan = await mythrilScan("/tmp", [UNIT], { run: fakeRun({ code: 1, stdout: goodReport() }) });
   assert.equal(scan.available, true);
   assert.equal(scan.reason, null);
   assert.equal(scan.leads.length, 1);
   assert.equal(scan.units[0].status, "ran");
+});
+
+// ---- Major 2: a report is bound to this exact bytecode ----------------------
+
+const LAB_HASH = "0x4da44e5d60d8053c9c3a768197624de1489e8cac05e03431d441451f7c5cfd72";
+
+test("parseMythril rejects a report whose sourceList[0] is not this unit's code hash", () => {
+  const mine = goodReport({ sourceList: [LAB_HASH] });
+  assert.equal(parseMythril(mine, UNIT, { codeHash: LAB_HASH }).ok, true);
+  // A clean report for a different contract, handed in as this unit, is rejected.
+  const other = JSON.stringify([{ sourceType: "raw-bytecode", sourceList: ["0x" + "11".repeat(32)], issues: [], meta: {} }]);
+  const r = parseMythril(other, UNIT, { codeHash: LAB_HASH });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /other code/);
+});
+
+test("mythrilScan drops a report for other code (hash mismatch) as unavailable", async () => {
+  const ws = mkdir();
+  writeFileSync(join(ws, "src/BytecodeVault.runtime.hex"), readFileSync(join(LAB, "src/BytecodeVault.runtime.hex")));
+  const foreign = JSON.stringify([{ sourceType: "raw-bytecode", sourceList: ["0x" + "22".repeat(32)], issues: [], meta: {} }]);
+  const scan = await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 0, stdout: foreign }) });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /other code/);
+  assert.deepEqual(scan.leads, []);
+});
+
+// ---- Major 3: only documented (exit code, issue count) pairs are trusted -----
+
+test("mythrilScan trusts only exit 0 with no issue and exit 1 with an issue", async () => {
+  const ws = mkdir();
+  writeFileSync(join(ws, "src/BytecodeVault.runtime.hex"), readFileSync(join(LAB, "src/BytecodeVault.runtime.hex")));
+  const clean = JSON.stringify([{ sourceType: "raw-bytecode", sourceList: [LAB_HASH], issues: [], meta: {} }]);
+  const dirty = goodReport({ sourceList: [LAB_HASH] });
+
+  assert.equal((await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 0, stdout: clean }) })).available, true);
+  assert.equal((await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 1, stdout: dirty }) })).available, true);
+
+  // A killed run (137) that still printed a clean-looking report is not trusted.
+  const killed = await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 137, stdout: clean }) });
+  assert.equal(killed.available, false);
+  assert.match(killed.reason, /unexpected exit 137/);
+  // Exit 0 but the report carries issues, or exit 1 but none: both are rejected.
+  assert.equal((await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 0, stdout: dirty }) })).available, false);
+  assert.equal((await mythrilScan(ws, [UNIT], { run: fakeRun({ code: 1, stdout: clean }) })).available, false);
+});
+
+// ---- Minor 1: the Mythril argv is pinned, and never bridges the network ------
+
+test("mythrilScan runs the pinned image offline and passes no network flag", async () => {
+  let seen = null;
+  const run = async (opts) => { seen = opts; return { code: 1, stdout: goodReport({ sourceList: [LAB_HASH] }), stderr: "", timedOut: false }; };
+  const ws = mkdir();
+  writeFileSync(join(ws, "src/BytecodeVault.runtime.hex"), readFileSync(join(LAB, "src/BytecodeVault.runtime.hex")));
+  await mythrilScan(ws, [UNIT], { run });
+  assert.equal(seen.image, MYTHRIL_IMAGE);
+  assert.ok(!("network" in seen), "runTool defaults to --network none; the call must not override it (no bridge)");
+  assert.deepEqual(seen.cmd.slice(0, 2), ["analyze", "-f"]);
+  assert.ok(seen.cmd.includes("--bin-runtime") && seen.cmd.includes("jsonv2"));
+});
+
+// ---- Minor 2: a downstream re-report of the same drain is folded away --------
+
+test("parseMythril keeps the first SWC-105 and drops its downstream re-report", () => {
+  const rep = JSON.parse(goodReport());
+  // First lead: sweep at pc 369, sequence [sweep]. Re-report: withdraw at pc 658,
+  // sequence [sweep, withdraw] — the same drain seen at a later CALL.
+  rep[0].issues = [
+    { swcID: "SWC-105", severity: "High", description: { head: "a", tail: "" }, locations: [{ sourceMap: "369:1:0" }], extra: { testCases: [{ steps: [{ name: "sweep(address)", input: "0x01681a62" }] }] } },
+    { swcID: "SWC-105", severity: "High", description: { head: "b", tail: "" }, locations: [{ sourceMap: "658:1:0" }], extra: { testCases: [{ steps: [{ name: "sweep(address)", input: "0x01681a62" }, { name: "withdraw(uint256)", input: "0x2e1a7d4d" }] }] } },
+  ];
+  const r = parseMythril(JSON.stringify(rep), UNIT);
+  assert.equal(r.leads.length, 1);
+  assert.equal(r.leads[0].where, "BytecodeVault.sweep(address)");
+  assert.equal(r.leads[0].pc, 369);
 });
 
 // ---- the prepass and the agent tool -----------------------------------------
@@ -207,8 +282,27 @@ test("Mythril finds the unprotected withdrawal on the bytecode lab and leaves th
     assert.equal(sweep.check, "SWC-105");
     assert.equal(sweep.impact, "High");
     assert.ok(Number.isInteger(sweep.pc));
+    // The downstream withdraw re-report of the same drain is folded away.
+    assert.ok(!scan.leads.some((l) => l.where === "BytecodeVault.withdraw(uint256)"), "the withdraw re-report should be dropped");
     assert.deepEqual(readdirSync(ws).sort(), before);
   } finally { await cleanupWorkspace(ws); }
+});
+
+test("a runTool timeout gives unavailable with a reason, never a clean scan", async () => {
+  // A timeout must fail closed: timedOut:true -> available:false, reason "timed
+  // out", no leads. This is the part the tool code owns.
+  //
+  // Whether the timeout actually STOPS the container (SIGTERM reaches PID 1, no
+  // container is left, the call returns near timeoutMs) is a shared runDocker()
+  // fault in spike/lib/wrap.mjs, fixed by shared commit 6526bbe (named container
+  // + `docker rm -f` on timeout). It is not fixed on this branch and must not be
+  // wrapped per-tool, so the "container is gone / returns on time" check belongs
+  // with that commit, not here. See the report.
+  const scan = await mythrilScan("/tmp", [UNIT], { run: fakeRun({ timedOut: true, code: 137 }) });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /timed out/);
+  assert.deepEqual(scan.leads, []);
+  assert.equal(scan.units[0].status, "unavailable");
 });
 
 test("Mythril reports unavailable, not clean, when the image is missing", async () => {
