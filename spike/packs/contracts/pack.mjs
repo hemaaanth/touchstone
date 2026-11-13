@@ -19,6 +19,7 @@ import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { runPrepass } from "../../lib/prepass.mjs";
 import { gate, proveFindings } from "../../lib/record.mjs";
 import { proofDelta } from "../../lib/proof.mjs";
+import { bytecodeFindingsTool, bytecodeKickoff, bytecodePrepass, bytecodeUnits } from "./bytecode/index.mjs";
 
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
 // set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
@@ -419,6 +420,8 @@ function tools(ws, state) {
   const out = [listSources, readSource];
   if (moduleOn(modules, "static")) out.push(staticFindings);
   if (moduleOn(modules, "fuzz")) out.push(fuzzFindings);
+  // bytecode_findings: only for a target that ships src/<Name>.runtime.hex (see bytecode/).
+  if (moduleOn(modules, "static") && bytecodeUnits(ws).units.length) out.push(bytecodeFindingsTool());
   if (moduleOn(modules, "fetch")) out.push(fetchSourceTool);
   out.push(runPoc, submitFinding);
   return out;
@@ -435,6 +438,8 @@ function kickoff(ws, env) {
   const leadBlocks = [];
   if (env.STATIC_BRIEF) leadBlocks.push(`${env.STATIC_BRIEF}\n\nThese are leads from two static analyzers (Slither + Aderyn), scariest first; a spot both flag is a stronger lead. A lead is only real once your PoC proves it. Call static_findings for the full detail on any lead.`);
   if (env.FUZZ_BRIEF) leadBlocks.push(`${env.FUZZ_BRIEF}\n\nThese are leads from two property fuzzers (Echidna + Medusa): each is an invariant they broke from ordinary calls, and an invariant both broke is a stronger lead. A broken invariant is only a lead until your PoC reproduces it. Call fuzz_findings for the breaking call sequence.`);
+  const bytecode = bytecodeKickoff(env);
+  if (bytecode) leadBlocks.push(bytecode);
   return leadBlocks.length ? `${base}\n\n${leadBlocks.join("\n\n")}` : base;
 }
 
@@ -463,7 +468,9 @@ async function prepass(ws, { emit }) {
       emit(ev);
     },
   });
-  return { env: prep.runEnv, record };
+  // Bytecode-only units run under the static module (bytecode/index.mjs).
+  const bytecode = modules == null || moduleOn(modules, "static") ? await bytecodePrepass(ws, { emit }) : { env: {}, record: {} };
+  return { env: { ...prep.runEnv, ...bytecode.env }, record: { ...record, ...bytecode.record } };
 }
 
 // The pack manifest. Every pack exports this shape; see packs/README.md.

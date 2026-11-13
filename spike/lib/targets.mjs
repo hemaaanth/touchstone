@@ -104,6 +104,16 @@ export const TARGETS = [
     dir: "lab/vault-multi",
     proofSurface: SANDBOX_FOUNDRY,
   },
+  {
+    id: "vault-bytecode",
+    title: "Vault · bytecode only",
+    kind: "lab",
+    blurb: "A vault that ships only as deployed bytecode (src/<Name>.runtime.hex) with a stub that installs it; no vault source. The source tools see nothing, but Mythril reads the bytecode and flags an unprotected sweep(address) that drains the vault.",
+    entry: "src/BytecodeVault.sol",
+    signal: "static",
+    dir: "lab/vault-bytecode",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
 ]
 
 // Labs of the other packs. A pack's lab is a directory with a .touchstone.json
