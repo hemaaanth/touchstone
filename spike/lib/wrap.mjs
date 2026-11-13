@@ -10,6 +10,8 @@ import { runCapture } from "./capture.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
+//            Never pulled: an image that is not local makes the call fail, and
+//            the caller reports a coverage gap instead of reaching a registry.
 //   cmd      the command, as an argv array
 //   network  "none" unless the pack's TOOLS.md says the tool needs more
 //   user     runs as the host user by default, so it can read the workspace
@@ -28,7 +30,7 @@ import { runCapture } from "./capture.mjs";
 export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, capture = null }) {
   if (capture) return runCapture({ ...capture, image, cmd, ws, user, env, timeoutMs, maxBuffer });
   const args = [
-    "run", "--rm", "--network", network,
+    "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),

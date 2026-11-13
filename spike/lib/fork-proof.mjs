@@ -31,6 +31,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, cpSync, copyFileSync, ex
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 import { fileURLToPath } from "node:url";
 import { netFlows } from "./proof.mjs";
 
@@ -89,7 +90,7 @@ export async function startForkLab({ image = KEYS_IMAGE, mode = "keys", readyTim
   cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
   cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
   // Container runs as the host uid so it can write the observation into the mount.
-  const netRun = await docker(["network", "create", "--internal", net]);
+  const netRun = await createLabNetwork(net, ["--internal"], { docker });
   if (netRun.code !== 0) throw new Error(`startForkLab: network create failed: ${netRun.stderr.trim().slice(0, 300)}`);
   const handle = { net, labName, labWs, image, mode, obs: null, block: null, targets: [] };
   try {
@@ -136,7 +137,7 @@ export async function startForkLab({ image = KEYS_IMAGE, mode = "keys", readyTim
 export async function stopForkLab(handle) {
   if (!handle) return;
   if (handle.labName) await docker(["rm", "-f", handle.labName], { timeoutMs: 20_000 });
-  if (handle.net) await docker(["network", "rm", handle.net], { timeoutMs: 20_000 });
+  if (handle.net) await removeLabNetwork(handle.net, { docker, timeoutMs: 20_000 });
   if (handle.labWs) rmSync(handle.labWs, { recursive: true, force: true });
 }
 

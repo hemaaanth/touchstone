@@ -292,3 +292,15 @@ test("after a drop an open snapshot follows from its own length and appends live
     assert.equal(FakeEventSource.sources.length, 2)
   })
 })
+
+// A recorded run that did not read its whole scope keeps a coverage warning.
+// A later cleared note (a follow-up that read the rest) removes it.
+test("a coverage note on a recorded run is kept as a warning, and a cleared note removes it", () => {
+  const info = { kind: "coverage", title: "Part of the scope was not read", hint: "h", detail: "d", message: "m", retryable: false, spentUsd: 0 }
+  const recorded = [ev("coverage", { info }), ev("status", { status: "recorded", decision: "approve" })]
+  const s = reduceEvents(recorded)
+  assert.equal(s.status, "recorded")
+  assert.equal(s.coverage?.title, "Part of the scope was not read")
+  assert.equal(s.errorInfo, null)
+  assert.equal(reduceEvents([...recorded, ev("coverage", { info: null })]).coverage, null)
+})
