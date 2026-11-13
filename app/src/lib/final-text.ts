@@ -15,3 +15,15 @@ export function repairFinalSay<T extends { kind: string; label: string }>(steps:
   }
   return false
 }
+
+// The engine marks a closing text it had to cut with this at its end.
+export const CUT_MARK = " …cut"
+
+// True when a prose step already holds the closing text: its label starts
+// with that text. A cut copy is a prefix of the whole text, so it matches the
+// step that streamed the whole text.
+export function closingHeld(steps: { kind: string; label: string }[], finalText: string): boolean {
+  const text = finalText.endsWith(CUT_MARK) ? finalText.slice(0, -CUT_MARK.length) : finalText
+  if (!text.trim()) return true
+  return steps.some((s) => s.kind === "say" && s.label.startsWith(text))
+}

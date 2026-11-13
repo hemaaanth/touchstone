@@ -355,3 +355,37 @@ test("lead events fill state.leads with evidence, one per id, worst first, never
   assert.ok(state.leads.every((l) => !("proven" in l)))
   assert.deepEqual(state.findings, [])
 })
+
+// B8: the closing words of a run that proved nothing. The engine used to cut
+// `final` at 4000 characters; the stream held the whole text.
+const whole = `## Summary\n\n${"The vault rounds in its own favour. ".repeat(190)}**medium — src/utils/about.ts** ends it.`
+const cut = whole.slice(0, 4000)
+
+test("a stream with the whole closing text and a cut final keeps one copy", () => {
+  for (const final of [cut, `${cut} …cut`, whole]) {
+    const steps = reduceEvents([say(1, whole), ev("no-finding", { final }), ev("status", { status: "no-finding" }), ev("closed")]).steps
+    assert.deepEqual(steps.map((s) => `${s.kind}:${s.label.length}`), [`say:${whole.length}`])
+  }
+})
+
+test("an old record with only the final text shows it once, at the run's end", () => {
+  const events = [
+    think(1, "Read the vault"),
+    ev("no-finding", { final: "Nothing to prove." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { id: "m1", text: "and the router?" }),
+    say(1, "The router is fine."),
+    ev("status", { status: "no-finding" }),
+  ]
+  assert.deepEqual(rows(events), ["reasoning:Read the vault", "say:Nothing to prove.", "operator:and the router?", "say:The router is fine."])
+  assert.equal(reduceEvents(events).steps.filter((s) => s.closing).length, 1)
+})
+
+test("the closing step goes when the run ends as another error, not as a coverage gap", () => {
+  const end = (errorInfo: Record<string, unknown>) =>
+    rows([ev("no-finding", { final: "Nothing." }), ev("status", { status: "error", errorInfo })])
+  assert.deepEqual(end({ kind: "coverage" }), ["say:Nothing."])
+  assert.deepEqual(end({ kind: "crash" }), [])
+})

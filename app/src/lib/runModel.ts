@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react"
 import { fetchRun, HttpError, streamRun } from "./api"
 import { isTerminal } from "./format"
-import { repairFinalSay } from "./final-text"
+import { closingHeld, repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
@@ -94,6 +94,9 @@ export interface Step {
   // The text is in `label`. The same step shows in both agents' threads.
   from?: string
   to?: string
+  // A "say" step made from the run's closing words, when the stream did not
+  // already hold them (an old record).
+  closing?: boolean
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -197,6 +200,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let errorInfo: RunFailure | null = null
   let coverage: RunFailure | null = null
   let finalText: string | null = null
+  // The closing step added at the run's end, until the run's status settles.
+  // If the run then ends as an error other than a coverage gap, the words go.
+  let closing: Step | null = null
   let closed = false
   let replying = false
   let replyStartedAt: number | null = null
@@ -236,6 +242,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let turnKeys = new Set<string>()
   const newTurn = () => {
     turnKeys = new Set()
+    closing = null
   }
   const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string, i: number) => {
     const k = `${kind}:${conv}:${attempt ?? 0}`
@@ -689,9 +696,18 @@ export function reduceEvents(events: RunEvent[]): RunState {
         newTurn()
         break
       }
-      case "no-finding":
+      case "no-finding": {
+        // The agent's closing words. The stream usually holds them already,
+        // whole: then they show there, once. Otherwise (an old record) they
+        // become a prose step here, at the run's end, so a later turn shows
+        // below them.
         finalText = str(e.final) || null
+        if (finalText && !closingHeld(steps, finalText) && !repairFinalSay(steps, finalText)) {
+          closing = { key, kind: "say", phase, conv: "root", label: finalText, closing: true }
+          steps.push(closing)
+        }
         break
+      }
       case "coverage":
         coverage = e.info && typeof e.info === "object" ? (e.info as RunFailure) : null
         break
@@ -723,6 +739,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (typeof e.error === "string") error = e.error
         // The classified failure the server attached to a terminal error status.
         if (e.errorInfo && typeof e.errorInfo === "object") errorInfo = e.errorInfo as RunFailure
+        // The run's end status decides if the closing step stays: it does for
+        // "no-finding" and for a coverage gap, not for another end.
+        if (closing && ["recorded", "denied", "error", "no-finding"].includes(status)) {
+          const keep = status === "no-finding" || (status === "error" && errorInfo?.kind === "coverage")
+          if (!keep) steps.splice(steps.indexOf(closing), 1)
+          closing = null
+        }
         break
       case "closed":
         closed = true
