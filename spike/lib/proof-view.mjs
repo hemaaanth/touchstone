@@ -20,6 +20,7 @@ export function proofKind(finding) {
 // A record made before the harm gate has no proof.harm and reads as recorded.
 export function isProven(finding) {
   if (!finding) return false;
+  if (finding.candidate === true || finding.kind === "candidate") return false; // never proven
   if (proofKind(finding) === "forge") {
     const p = finding.proof;
     if (p && (p.pass === false || p.status === "fail" || (p.harm && p.harm.ok !== true))) return false;

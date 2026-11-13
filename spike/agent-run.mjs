@@ -54,8 +54,10 @@ mkdirSync(DIR, { recursive: true });
 //   poc     run_poc attempts so far
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
+//   candidates  unproven, agent-asserted results (lib/candidate.mjs)
+//   attempts    attempt id -> what it captured, for submit_candidate
 function auditState() {
-  return { poc: 0, passed: new Map(), found: [] };
+  return { poc: 0, passed: new Map(), found: [], candidates: [], attempts: new Map() };
 }
 
 async function openHarness(db, ws, state) {
@@ -179,6 +181,8 @@ async function chat({ harness, root, reports, state, fleet }) {
   if (!text) throw new Error("FOLLOWUP is empty");
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
   const prior = state.found.length;
+  for (const c of JSON.parse(process.env.PRIOR_CANDIDATES || "[]")) state.candidates.push(c);
+  const priorCandidates = state.candidates.length;
   const before = (await harness.usage(ctx)).models ?? {};
   await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
   readSteers(root);
@@ -192,7 +196,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.slice(priorCandidates), usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.
@@ -227,7 +231,7 @@ async function child([, , , mode, db, ws]) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
   await fleet?.close();
   await harness.close(ctx);
   process.exit(0);
@@ -332,6 +336,8 @@ async function main() {
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.
     findings,
+    // Unproven, agent-asserted results. Never findings, never counted as one.
+    candidates: settled?.candidates ?? [],
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,
