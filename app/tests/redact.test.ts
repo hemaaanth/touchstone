@@ -656,3 +656,25 @@ describe("redact: a 0x address stays in code, flags, queries and header lines (f
     expect(text(`Token: ${KEY}`)).toBe("Token: [REDACTED]")
   })
 })
+
+describe("redact: a passphrase of lowercase words under a secret name (final review B3)", () => {
+  const pairs: [string, string][] = [
+    ["jwt_secret", "my-super-secret-signing-key"],
+    ["db_password", "correct-horse-battery-staple"],
+    ["adminPassword", "letmein-please"],
+    ["signing_key", "development-only-key"],
+  ]
+  test("each pair is masked at JSON level 0 and level 1, in code and in an object", () => {
+    for (const [k, v] of pairs) {
+      expect(text(`{"${k}":"${v}"}`)).toBe(`{"${k}":"[REDACTED]"}`)
+      expect(text(`{\\"${k}\\":\\"${v}\\"}`)).toBe(`{\\"${k}\\":\\"[REDACTED]\\"}`)
+      expect(text(`const cfg = { ${k}: '${v}' }`)).toBe(`const cfg = { ${k}: '[REDACTED]' }`)
+      expect(redactSecrets({ [k]: v })).toEqual({ [k]: "[REDACTED]" })
+    }
+  })
+  test("a short setting stays", () => {
+    for (const s of [`{"sort_key":"created_at"}`, `{"cache_key":"user_profile"}`, `{"grant_type":"client_credentials"}`, `{\\"sort_key\\":\\"created_at\\"}`]) expect(text(s)).toBe(s)
+    const plain = { sort_key: "created_at", cache_key: "user_profile", grant_type: "client_credentials" }
+    expect(redactSecrets(plain)).toEqual(plain)
+  })
+})

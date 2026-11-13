@@ -42,11 +42,15 @@ function secretName(name) {
 
 // A name that is secret only by its ending, or a WEAK_KEY, is often a plain setting:
 // baseToken: "USDC", primaryKey: "id". Under such a name a value is masked
-// only when it looks like a secret; lowercase words joined by "-" or "_"
-// (same-origin, created_at) are a setting. Under a SECRET_KEY name every
-// value is masked.
+// only when it looks like a secret; a short value of lowercase words joined
+// by "-" or "_" (same-origin, created_at) is a setting. That does not hold
+// under a name ending in secret or password, nor for 20 or more characters:
+// jwt_secret: "my-super-secret-signing-key" is a passphrase. Under a
+// SECRET_KEY name every value is masked.
 const SETTING = /^[a-z]+(?:[-_][a-z]+)*$/
-const maskUnder = (name, value) => SECRET_KEY.test(name) || (secretish(value) && !SETTING.test(value))
+const WORD_NAME = /(?:secret|password|passwd)$/i
+const setting = (name, value) => !SECRET_KEY.test(name) && !WORD_NAME.test(name) && value.length < 20 && SETTING.test(value)
+const maskUnder = (name, value) => SECRET_KEY.test(name) || (secretish(value) && !setting(name, value))
 
 // A "key":"value" pair inside a JSON string, such as a recorded HTTP body
 // or tool output. The second form is the same pair escaped one level deeper,
