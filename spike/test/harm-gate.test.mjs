@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { rmSync, writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { keccak256 } from "ethers";
+import { keccak256, id } from "ethers";
 import { judgeHarm } from "../lib/proof.mjs";
 import { extractControlTrace, word } from "../lib/control-trace.mjs";
 import { gate, proveFindings } from "../lib/record.mjs";
@@ -396,9 +396,9 @@ test("harm gate: a Transfer log from a scope token the test cloned over is not a
 // the drain-victim set. A real PoC pranks the attacker or an EOA, never the
 // victim, so a genuine drain while pranking the attacker is still proven.
 
-const prankNode = (who) => node(0, {
+const prankNode = (who, selector = "0xca669fa7") => node(0, {
   kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST,
-  data: "0xca669fa7" + word(who).slice(2),
+  data: selector + word(who).slice(2),
 });
 
 test("harm gate: an ETH loss where the test pranks AS the victim is not proven (M4)", () => {
@@ -440,6 +440,39 @@ test("harm gate: a token drain while pranking AS the attacker is still proven (M
   assert.equal(h.kind, "funds");
   assert.equal(h.victim, VAULT);
 });
+
+// ---- the whole impersonation family (M4, delta review) ---------------------
+//
+// vm.prank / vm.startPrank each have four overloads: plain, with a tx.origin,
+// with a delegateCall bool, and with both. vm.broadcast / vm.startBroadcast also
+// set msg.sender. Every overload takes the impersonated sender as its FIRST
+// address argument, so recording it is uniform. Recognising only the plain
+// prank/startPrank selectors let a test impersonate the victim through any of the
+// other overloads (e.g. prank(address,bool), selector 0xa7f8bf5c) and forge a
+// drain the gate accepted. The gate must refuse the whole family. One test per
+// signature; each must fail if its selector is dropped from the allowed set.
+
+const IMPERSONATION_SIGS = [
+  "prank(address)", "prank(address,address)", "prank(address,bool)", "prank(address,address,bool)",
+  "startPrank(address)", "startPrank(address,address)", "startPrank(address,bool)", "startPrank(address,address,bool)",
+  "broadcast(address)", "startBroadcast(address)",
+];
+
+for (const sig of IMPERSONATION_SIGS) {
+  const selector = id(sig).slice(0, 10);
+  test(`harm gate: a token drain where the test impersonates the victim via ${sig} is not proven (M4 family)`, () => {
+    const log = transferLog(VAULT, ATTACKER, ONE);
+    const traces = [setup(createToken()), ["Execution", { arena: [
+      node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+      prankNode(VAULT, selector),
+      callVault(),
+      logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+    ] }]];
+    const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+    assert.equal(h.ok, false, `${sig} impersonation must not be a proof`);
+    assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+  });
+}
 
 // ---- real forge, in Docker --------------------------------------------------
 
@@ -699,6 +732,30 @@ contract PrankVictimTest is Test {
   function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
   function test_prankDrain() public {
     vm.prank(address(vault));
+    tok.transfer(address(0xBEEF), 100);
+  }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// M4 (delta review): the same prank-as-victim forgery, but through the
+// prank(address,bool) overload (selector 0xa7f8bf5c) instead of plain prank. Its
+// delegateCall bool is not in the plain-prank selector set, so the impersonation
+// was not recorded and the forged drain was accepted. Recording the whole family
+// drops the pranked victim here too. The low-level vm.call form matches the
+// reviewer's PoC and needs no cheatcode-interface import.
+test("forge: a drain where the test pranks AS the victim via prank(address,bool) is NOT proven (M4 family)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "Prank2Test",
+    `import "../src/Tokens.sol";
+contract Prank2Test is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function test_prank2() public {
+    (bool ok,) = address(vm).call(abi.encodeWithSignature("prank(address,bool)", address(vault), true));
+    require(ok, "prank2");
     tok.transfer(address(0xBEEF), 100);
   }
 }

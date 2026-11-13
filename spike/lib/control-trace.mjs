@@ -15,9 +15,12 @@
 //   `setup` call carries `setup: true`. A setUp write is fixture, not an exploit step.
 //   The storage owner is the address that ran the code: the caller for DELEGATECALL,
 //   the callee for CALL.
-// - pranks: the impersonated msg.sender (first address argument) of every vm.prank /
-//   vm.startPrank in the trace. A target the test pranked AS cannot be a drain victim:
-//   the move is the test acting as that target, not an exploit (see lib/proof.mjs).
+// - pranks: the impersonated msg.sender (first address argument) of every cheatcode in
+//   the trace that sets msg.sender or tx.origin — the whole vm.prank / vm.startPrank
+//   family (including the two-arg origin and the delegateCall `bool` overloads) and
+//   vm.broadcast / vm.startBroadcast with an explicit address. A target the test
+//   impersonated cannot be a drain victim: the move is the test acting as that target,
+//   not an exploit (see lib/proof.mjs).
 // - calls (from the "Execution" trace only): successful CALL nodes, in order, to see
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
@@ -36,12 +39,30 @@ const ETCH = "0xb4d6c782";
 // the SECOND argument: target is no longer the scope's compiled code, so it
 // must stop being a scope target, exactly as a plain etch does.
 const CLONE_ACCOUNT = "0x533d61c9";
-// vm.prank / vm.startPrank set msg.sender for the following call(s). The sender
-// to impersonate is always the FIRST address argument. If a test pranks AS a
-// scope target and then moves that target's funds, the "drain" is the test
-// acting as the victim, not an exploit — the harm gate drops such a victim.
-// Single- and two-arg (sender, origin) forms; the first word is the sender.
-const PRANK = new Set(["0xca669fa7", "0x06447d56", "0x47e50cce", "0x45b56078"]);
+// Cheatcodes that set msg.sender (and sometimes tx.origin) for the following
+// call(s). If a test impersonates a scope target and then moves that target's
+// funds, the "drain" is the test acting as the victim, not an exploit — the harm
+// gate drops such a victim. We derive the 4-byte selectors from the known list of
+// impersonation signatures below rather than hard-coding hex: a new overload is
+// one line, and no enumerated-by-hand selector can be silently missed. The whole
+// prank/startPrank family is covered — the two-arg (sender, origin) and the
+// delegateCall `bool` overloads included — plus vm.broadcast / vm.startBroadcast
+// with an explicit address. The impersonated sender is the FIRST address argument
+// in every one of these, so a single extraction (data.slice(24, 64)) reads them all.
+const selector4 = (sig) => keccak256(toUtf8Bytes(sig)).slice(0, 10);
+const IMPERSONATION_SIGS = [
+  "prank(address)",
+  "prank(address,address)",
+  "prank(address,bool)",
+  "prank(address,address,bool)",
+  "startPrank(address)",
+  "startPrank(address,address)",
+  "startPrank(address,bool)",
+  "startPrank(address,address,bool)",
+  "broadcast(address)",
+  "startBroadcast(address)",
+];
+const IMPERSONATE = new Set(IMPERSONATION_SIGS.map(selector4));
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -135,7 +156,7 @@ export function extractControlTrace(traces) {
         const data = String(t.data).slice(10);
         const target = "0x" + data.slice(88, 128);
         out.etches.push({ index: out.calls.length, target, code: "0x" });
-      } else if (address === VM && PRANK.has(selector)) {
+      } else if (address === VM && IMPERSONATE.has(selector)) {
         // The impersonated msg.sender is the first address argument.
         const data = String(t.data).slice(10);
         out.pranks.push("0x" + data.slice(24, 64));
