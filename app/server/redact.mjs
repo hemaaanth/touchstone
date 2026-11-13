@@ -358,158 +358,13 @@ function redactText(text) {
   return out
 }
 
-// LONG TEXT. Bun's regex engine (JSC) gives up on one match that spans a few
-// hundred KB. It then returns "no match" with no error, and the rest of that
-// rule's pass is lost too, so a secret would stay. The smallest span measured
-// was 336 KB (a HAR cell value; a header line gave up at 432 KB). So a text
-// longer than PIECE is redacted in pieces of at most PIECE characters, cut
-// just after a line end. 64 KB is a fifth of 336 KB. A text of PIECE or less
-// is redacted in one pass, as before.
-const PIECE = 64 * 1024
-
-// A line that no piece can hold is replaced whole: it is never returned
-// unchecked.
-const tooLong = (n) => `[REDACTED: line of ${n} characters too long to check]`
-const notChecked = (n) => `[REDACTED: ${n} characters could not be checked]`
-
-// One line for each rule that can give up, each masked by that rule only.
-// It goes after each piece. A rule that gave up inside the piece also misses
-// its canary line, so the piece output no longer ends with CANARY_OUT, and
-// the piece is replaced whole. So does a piece whose last line holds an
-// unclosed pair that runs into the canary.
-const CANARY = [
-  '{"token"\n:"c4n4ry-v4lue-01"}',
-  '{\\"token\\"\n:\\"c4n4ry-v4lue-02\\"}',
-  '{"name"\n:"x-api-key","value":"c4n4ry-v4lue-03"}',
-  '{\\"name\\"\n:\\"x-api-key\\",\\"value\\":\\"c4n4ry-v4lue-04\\"}',
-  '[["x-api-key","c4n4ry-v4lue-05"]]',
-  "x(token: 'c4n4ry-v4lue-06')",
-  'x(token: \\"c4n4ry-v4lue-07\\")',
-  "X-Api-Key: c4n4ry-v4lue-08",
-  "| token | c4n4ry-v4lue-09 |",
-  'x("X-Api-Key: c4n4ry-v4lue-10")',
-  "use Bearer c4n4ry-v4lue-11 ok",
-  "/p?token=c4n4ry-v4lue-12 ok",
-  "curl -b sid=c4n4ry-v4lue-13 x",
-  "run --token c4n4ry-v4lue-14 x",
-  "DB_PASSWORD=c4n4ry-v4lue-15 x",
-  "Cookie: sid=c4n4ry-v4lue-16",
-].join("\n")
-const CANARY_OUT = redactText(CANARY)
-if (CANARY_OUT.includes("c4n4ry")) throw new Error("redact: a canary line is not masked")
-
-// Where a piece may end. A cut is just after a line end: LF, CRLF or a lone
-// CR. A cut is used only when it is proven safe (seamSafe); the rank below
-// only sets the order in which candidates are tried, best rank first, then
-// the latest:
-//   0  outside a PEM block, the next line starts at column 0 with a
-//      character that cannot continue the line before (not a space, quote,
-//      backslash, ":", ",", "}" or "]"), and the line before does not end
-//      in ",", ":", "{", "[" or a backslash;
-//   1  outside a PEM block, after a line that closes an object ("}", "},",
-//      "]" or "],");
-//   2  outside a PEM block;
-//   3  any line end.
-// An empty list when the line at `start` is longer than PIECE.
-const PEM_EDGE = /-----(BEGIN|END) [A-Z0-9 ]{0,32}PRIVATE KEY-----/g
-const LINE_BREAK = /\r\n?|\n/g
-function cutsAt(text, start) {
-  const limit = start + PIECE
-  const window = text.slice(start, limit)
-  const pem = []
-  PEM_EDGE.lastIndex = 0
-  for (let m; (m = PEM_EDGE.exec(window)); ) pem.push([start + m.index, m[1] === "BEGIN"])
-  const cuts = []
-  let p = 0
-  let inPem = false
-  LINE_BREAK.lastIndex = 0
-  for (let m; (m = LINE_BREAK.exec(window)); ) {
-    const at = start + m.index
-    const c = at + m[0].length
-    // A CR at the window edge whose LF is outside it: never split a CRLF.
-    if (c >= text.length || (text[c - 1] === "\r" && text[c] === "\n")) continue
-    while (p < pem.length && pem[p][0] < at) inPem = pem[p++][1]
-    let j = at - 1
-    while (j > start && (text[j] === " " || text[j] === "\t")) j--
-    const last = text[j]
-    const next = text[c]
-    let rank = 3
-    if (!inPem) {
-      rank = 2
-      if ((last === "}" || last === "]") || (last === "," && (text[j - 1] === "}" || text[j - 1] === "]"))) rank = 1
-      if (!/[\s"'`\\:,}\]]/.test(next) && !/[,:{[\\]/.test(last)) rank = 0
-    }
-    cuts.push([rank, c])
-  }
-  return cuts.sort((x, y) => x[0] - y[0] || y[1] - x[1]).map((x) => x[1])
-}
-
-// A cut is safe when the SEAM characters on each side of it redact to the
-// same text joined as apart. Then no rule reads across it: not BEARER's \s+
-// (Bearer\n<token>), not a quoted value that holds a raw line end, not a
-// PEM block, and not any rule added later. This is a test of the result,
-// not a list of rules. Its limit: a match that reaches more than SEAM
-// characters from the cut on one side is not seen. Only the first TRIES
-// candidates are tried, which bounds the extra work.
-const SEAM = 4 * 1024
-const TRIES = 8
-function seamSafe(text, c) {
-  const a = text.slice(Math.max(0, c - SEAM), c)
-  const b = text.slice(c, c + SEAM)
-  return redactText(a + b) === redactText(a) + redactText(b)
-}
-
-const lineEnd = (text, from) => {
-  LINE_BREAK.lastIndex = from
-  const m = LINE_BREAK.exec(text)
-  return m ? m.index : text.length
-}
-
-// The text is redacted piece by piece. When no cut can be proven safe, or
-// the right edge of a line that is too long is not safe, the text is held:
-// everything from there to the next cut that is proven safe becomes one
-// "could not be checked" mark. The left edge of a held run is a safe cut
-// (or the start), so a match that crosses it was redacted whole; its right
-// edge is a proven cut. So nothing is returned unchecked.
-function redactLong(text) {
-  if (text.length <= PIECE) return redactText(text)
-  let out = ""
-  let hold = -1
-  for (let start = 0; start < text.length; ) {
-    let end = text.length
-    let safe = true
-    if (text.length - start > PIECE) {
-      const cuts = cutsAt(text, start)
-      if (cuts.length === 0) {
-        // The line at start is longer than PIECE. Its line end must be a safe cut too.
-        const stop = lineEnd(text, start)
-        if (hold < 0 && !seamSafe(text, stop)) hold = start
-        if (hold < 0) out += tooLong(stop - start)
-        start = stop
-        continue
-      }
-      end = cuts.slice(0, TRIES).find((c) => seamSafe(text, c)) ?? -1
-      if (end === -1) {
-        end = cuts[0]
-        safe = false
-      }
-    }
-    if (hold < 0 && !safe) hold = start
-    if (hold >= 0) {
-      if (safe) {
-        out += notChecked(end - hold)
-        hold = -1
-      }
-      start = end
-      continue
-    }
-    const piece = text.slice(start, end)
-    const done = redactText(piece + "\n" + CANARY)
-    out += done.endsWith("\n" + CANARY_OUT) ? done.slice(0, done.length - CANARY_OUT.length - 1) : notChecked(piece.length)
-    start = end
-  }
-  return out
-}
+// LONG TEXT. Bun's regex engine gives up on one match that spans a few
+// hundred KB (336 KB at the least, measured): it returns "no match" with no
+// error, so a secret would stay. So a text over MAX_TEXT is masked whole.
+// Cutting it into pieces was tried and dropped: a cut can split a match (task
+// H2b). The in-app finding view still shows the stored text.
+const MAX_TEXT = 64 * 1024
+const tooLong = (n) => `[REDACTED: text of ${n} characters too long to check]`
 
 function copyRedactedCell(value) {
   const copy = {}
@@ -531,7 +386,7 @@ function walk(value, key) {
       if (PLAIN_VALUE.test(value)) return value
       if (maskUnder(key, value)) return MARK
     }
-    return redactLong(value)
+    return value.length > MAX_TEXT ? tooLong(value.length) : redactText(value)
   }
   if (Array.isArray(value)) {
     // A list of [name, value] header tuples: [["x-api-key", "tk_…"]].
@@ -551,8 +406,8 @@ function walk(value, key) {
   return copy
 }
 
-// One pass of every rule over a whole text, with no pieces. For the timing
-// tests, which must prove each rule linear on its own.
+// One pass of every rule over a whole text, with no length check. Only the
+// timing tests use it: they must prove each rule linear on its own.
 export { redactText as redactOnePass }
 
 // A deep copy of a report or finding with secret values masked.
