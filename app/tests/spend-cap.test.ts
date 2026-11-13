@@ -115,6 +115,8 @@ describe("total spend cap", () => {
     expect(info.retryable).toBe(false)
     expect(info.title).toMatch(/spend ledger stayed locked/)
     expect(info.title).not.toMatch(/spend cap/i)
+    expect(info.hint).toContain("spend.json.lock.break")
+    expect(detail).toContain(`${LEDGER}.lock.break`)
   })
 
   test("a follow-up is refused when the ledger is at the cap", () => {
