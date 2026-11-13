@@ -37,8 +37,8 @@ It reads committed files through the GitHub API and pins them. It does not read
 repo or org settings, and no tool gets the network or the token. Workflow
 security is carried by the zizmor + poutine ensemble; Gato-X is the read-only
 reference for the remote-enumeration class. A tool that must call the GitHub API
-itself runs only in capture mode (`runTool({ capture })`, see "Networked tools
-(capture mode)" below). Each reason names what it needs and the gap it would close.
+itself runs only in capture mode (`runCapture()` in `lib/capture.mjs`, see
+"Networked tools (capture mode)" below). Each reason names what it needs and the gap it would close.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
@@ -118,10 +118,17 @@ Four tools call the GitHub API themselves: Scorecard, Legitify, chain-bench and 
 
 How a capture runs:
 
-- Opt-in per run: `.touchstone.json` `networkTools`, or `scan.mjs --network-tools <tool>`. With no opt-in nothing here runs, and every `runTool()` call keeps `--network none`.
-- `runTool({ capture })` refuses before any container or network exists when there is no grant, the grant does not name the target, a host is not a GitHub capture host, or the token is missing.
-- The tool runs on a Docker `--internal` network. Its only way out is the scope proxy, which allows `api.github.com` and `codeload.github.com` and nothing else. A raw socket has no route (tested with a real container). `--pull=never` is always set.
-- Capture reads only the repos in `CAPTURE_TARGETS` (`lib/capture.mjs`), today only `hemaaanth/touchstone`. A grant for any other repo or a whole owner is refused before any network or container exists, and `scan.mjs` refuses such a `--network-target` with exit 2.
+- Opt-in per run: `.touchstone.json` `networkTools` plus `scopeId`, or `scan.mjs --network-tools <tool> --scope <scope id>`. With no opt-in nothing here runs. `runTool()` (`lib/wrap.mjs`) has no capture path: every `runTool()` call keeps `--network none`. A run started from the console never captures: `targets.mjs` writes neither `networkTools` nor `scopeId`.
+- The gate is `captureGrant()` in `lib/capture.mjs`. `runCapture()` calls it before any container or network exists. It reads the scope from the scopes store by `scopeId`, and its grant from the grant store. It refuses when:
+  - there is no `scopeId`, or it is not a saved scope, or the scope is not a live supply-chain scope;
+  - the scope has no active grant of its own (`scope.permission.grantId`), or that grant names another scope. A grant of another scope does not count, even when it covers `api.github.com` (the binding of `lib/reach.mjs`);
+  - the scope's own grant does not cover every host the scope names (`enforceReach`);
+  - a target is not plain `owner/repo` strings, is not a repo the scope lists in `github` (case-folded, exact), or is not in `CAPTURE_TARGETS` (today only `hemaaanth/touchstone`). An owner-wide scope does not cover a repo. Another owner, a fork, a URL or path trick never matches;
+  - a host is not a capture host, or the scope's own grant does not cover it;
+  - a secret is missing or shorter than 24 characters.
+- A refused capture is coverage `unavailable` with reason `not covered: capture refused: <why>` and a `not-covered-capture-refused` gap. No container starts.
+- A reach written into `.touchstone.json` (`reach: { granted: true, … }`) is not a grant for a capture. Only the stores are.
+- The tool runs on a Docker `--internal` network. Its only way out is the scope proxy, which allows `api.github.com` and nothing else. A raw socket has no route. `--pull=never` is always set.
 - The token goes in as `-e <NAME>` (`GITHUB_TOKEN` for Scorecard, `SCM_TOKEN` for Legitify): the name is in argv, the value is only in the docker CLI's environment. Any copy of the value in stdout, stderr or an error is replaced with `[REDACTED]` before it is saved. After that, if the output still holds part of the token (any 12-character piece, a base64 or base64url form, or the URL-encoded form), stdout and stderr are both dropped and the capture is `unavailable: output contained part of the token`.
 - The raw stdout is saved in the snapshot with its SHA-256, before the snapshot is pinned. Leads come from the saved bytes. Replay re-parses those bytes and checks each claim against the pinned files. It never reruns the tool and never uses the network.
 - A claim only the tool can see (a repo setting) never passes replay. It stays a lead with an unproven replay.
@@ -130,8 +137,9 @@ How a capture runs:
 Honest limits of the boundary:
 
 - The proxy limits hosts, not paths. The token can read anything it can read on `api.github.com` while the capture runs. The tools are read-only; the token is the real limit.
-- `codeload.github.com` is allowed for capture only. The host-process GitHub path (`githubGet()`) still allows only `api.github.com` and `raw.githubusercontent.com`.
-- The token is visible to anyone who can run `docker inspect` on the short-lived capture container (it is in Config.Env). It is not in argv or the host `ps`.
+- `codeload.github.com` is not allowed. A supply-chain scope's own grant names only `api.github.com` and `raw.githubusercontent.com` (`GITHUB_HOSTS` in `lib/scopes-store.mjs`). Scorecard fetches the repo tarball through `codeload.github.com`, so its checks that read repo files in API mode fail inside the tool. They become gaps. This was not observed in a real run.
+- A repo rename or transfer on GitHub answers inside `api.github.com`, in the HTTPS tunnel. The proxy cannot see it. The saved Scorecard report must name `github.com/<target>` and the pinned commit, or it is `unavailable`. Legitify output gives no lead at all.
+- The token is visible to anyone who can run `docker inspect` on the short-lived capture container: `docker inspect` shows it in `Config.Env` as `GITHUB_TOKEN=<value>` (or `SCM_TOKEN=<value>`) while the container lives. The container is removed by name at the end and at the timeout. It is not in argv or the host `ps`. An operator who shares the Docker daemon with other users must know this.
 - The proxy log counts TLS tunnels, not API requests. Request counts below come from GitHub's `/rate_limit` (it does not count against the limit).
 - Capture runs on local Docker only, never on a Daytona machine.
 
@@ -175,7 +183,7 @@ Target and token, observed 2026-11-12: the target is `hemaaanth/touchstone` (pri
 - Not wired. The pack never runs it, and no image is built.
 - Checked: raven-cycode 1.0.9 from PyPI (Apache-2.0, wheel sha256 `a68275fe…aec75a`). Read, not run.
 - Blocker 1: `raven download` takes the token only as `--token`, and the option is required. The token rule forbids a token in argv.
-- Blocker 2: it fetches each workflow file from its `download_url` on `raw.githubusercontent.com`. That host is outside the capture allow-list (`api.github.com`, `codeload.github.com`). Adding it widens what the token can reach during a capture.
+- Blocker 2: it fetches each workflow file from its `download_url` on `raw.githubusercontent.com`. That host is outside the capture allow-list (`api.github.com`). Adding it widens what the token can reach during a capture.
 - Blocker 3: it needs a Redis server and a Neo4j server. Neo4j is not a local image here, and Neo4j Community is GPL-3.0. Two more stateful servers per capture is not a reasonable size for one opt-in tool.
 - It also has a Slack reporting option (`slack_token`). The pack would never use it.
 - At run time: `--network-tools raven` gives coverage `unavailable` and a `not-covered-token-in-argv` gap that names the three blockers. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
