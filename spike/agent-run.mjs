@@ -15,6 +15,7 @@
 // every submitted test once more and records each finding with its own proof.
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -48,7 +49,8 @@ if (!MODELS[ALIAS]) {
 const TARGET = process.env.TARGET
   ? new URL(process.env.TARGET, import.meta.url).pathname
   : new URL("../lab/vault-reentrancy/", import.meta.url).pathname;
-const DIR = new URL("./results/agent/", import.meta.url).pathname;
+// AGENT_RESULTS_DIR moves the run records (a test sends them to a temp folder).
+const DIR = process.env.AGENT_RESULTS_DIR ? path.join(process.env.AGENT_RESULTS_DIR, "/") : new URL("./results/agent/", import.meta.url).pathname;
 mkdirSync(DIR, { recursive: true });
 
 // Per-process audit state. One run is one process, so plain memory is enough.
