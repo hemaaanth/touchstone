@@ -604,6 +604,10 @@ export interface KeyState {
   source: "settings" | "env" | null
   envName?: string | null
   last4: string | null
+  // Where the provider's env key may go (its built-in base URL), or null.
+  envHome?: string | null
+  // Why an env key is set but not used (the base URL is on another server).
+  held?: string | null
 }
 
 export interface ProviderModel {

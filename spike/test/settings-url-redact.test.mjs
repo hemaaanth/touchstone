@@ -32,7 +32,8 @@ const writeConfig = (cfg) => {
 const allProviders = (cfg = readConfig()) => realProviders.allProviders(cfg);
 mock.module(providersUrl, { exports: { ...realProviders, readConfig, writeConfig, allProviders } });
 const { publicUrl, scrubError, scrubUrl } = await import("../lib/redact-url.mjs");
-const { discoverModels, saveProvider } = await import("../../app/server/settings.mjs");
+const { discoverModels, getSettings, saveProvider } = await import("../../app/server/settings.mjs");
+const { providerKey } = await import("../lib/providers.mjs");
 const { handleSettings } = await import("../../app/server/runs-http.mjs");
 const { budgetedApi } = await import("../lib/provider.mjs");
 
@@ -207,4 +208,79 @@ test("scrubError cleans message, stack and cause, and keeps the error's fields",
   noSecret(out.stack, "stack");
   noSecret(out.cause.message, "cause");
   assert.equal(scrubUrl("plain text, no URL", SECRET_URL), "plain text, no URL");
+});
+
+// ---- Repair 2: a provider key goes only to its own server.
+
+const gkSaved = () => {
+  store = {};
+  saveProvider({ label: "GK", baseUrl: "https://gw.example/v1", apiKey: SAVED_KEY, models: [{ id: "m1", input: "", output: "", context: null }] });
+};
+
+test("a save to another server with no key drops the saved key; Fetch models by id then sends none", async () => {
+  for (const other of ["https://other.example/v1", "https://gw.example:8443/v1", "http://gw.example/v1"]) {
+    gkSaved();
+    const res = saveProvider({ id: "gk", label: "GK", baseUrl: other });
+    assert.equal(store.providers.gk.apiKey, undefined, other);
+    assert.equal(res.providers.find((p) => p.id === "gk").key.set, false, other);
+    await withFetch(modelsOk, async (calls) => {
+      await discoverModels({ id: "gk" });
+      assert.equal(calls[0].auth, undefined, `${other}: no Authorization`);
+    });
+  }
+});
+
+test("a path-only change keeps the saved key", async () => {
+  gkSaved();
+  saveProvider({ id: "gk", label: "GK", baseUrl: "https://GW.example/v2/" });
+  assert.equal(store.providers.gk.apiKey, SAVED_KEY);
+  await withFetch(modelsOk, async (calls) => {
+    await discoverModels({ id: "gk" });
+    assert.equal(calls[0].auth, `Bearer ${SAVED_KEY}`);
+  });
+});
+
+test("a new key in the same request as a server change is kept", () => {
+  gkSaved();
+  saveProvider({ id: "gk", label: "GK", baseUrl: "https://other.example/v1", apiKey: TYPED_KEY });
+  assert.equal(store.providers.gk.apiKey, TYPED_KEY);
+});
+
+test("a provider env key goes only to its built-in base URL, in a run and in Fetch models", async () => {
+  const keep = process.env.NEARAI_API_KEY;
+  process.env.NEARAI_API_KEY = "sk-fake-env-key-0003";
+  try {
+    store = {};
+    const home = getSettings().providers.find((p) => p.id === "near");
+    assert.equal(home.key.source, "env");
+    assert.equal(home.key.envHome, "https://cloud-api.near.ai");
+    // A run gets its key from providerKey(P), next to P.baseUrl (provider.mjs, inference.mjs).
+    assert.equal(providerKey({ id: "near", keyEnv: "NEARAI_API_KEY", baseUrl: "https://cloud-api.near.ai/v1" }), "sk-fake-env-key-0003");
+    assert.equal(providerKey({ id: "near", keyEnv: "NEARAI_API_KEY", baseUrl: "https://evil.example/v1" }), null);
+    // Point near at another server in Settings: the env key is held, with a reason.
+    store = { providers: { near: { id: "near", baseUrl: "https://evil.example/v1" } } };
+    const moved = getSettings().providers.find((p) => p.id === "near");
+    assert.equal(moved.key.set, false);
+    assert.equal(moved.key.held, "The key from NEARAI_API_KEY is only sent to https://cloud-api.near.ai, not https://evil.example.");
+    assert.ok(!JSON.stringify(getSettings()).includes("sk-fake-env-key-0003"), "no key in a response");
+    await withFetch(modelsOk, async (calls) => {
+      await discoverModels({ id: "near" });
+      assert.equal(calls[0].url, "https://evil.example/v1/models");
+      assert.equal(calls[0].auth, undefined, "the env key does not follow a Settings URL");
+    });
+  } finally {
+    if (keep === undefined) delete process.env.NEARAI_API_KEY;
+    else process.env.NEARAI_API_KEY = keep;
+  }
+});
+
+test("the scrub keeps ordinary text: a short hidden part goes only inside a URL", () => {
+  const raw = "https://h.example/v1?shard=500";
+  const text = "HTTP 500 from https://h.example/v1?shard=500/models, then GET /v1?shard=500 -> 500";
+  const out = scrubUrl(text, raw);
+  assert.equal(out, "HTTP 500 from https://h.example/v1/models, then GET /v1 -> 500");
+  const user = "https://usr:pw1@h.example/v1";
+  assert.equal(scrubUrl("usr said: https://usr:pw1@h.example/v1/x and usr:pw1@ again; pw1 is short", user), "usr said: https://h.example/v1/x and  again; pw1 is short");
+  const long = "https://usr:long-secret-pw@h.example/v1";
+  assert.equal(scrubUrl("echo long-secret-pw", long), "echo [hidden]", "a bare part of 8 or more goes everywhere");
 });

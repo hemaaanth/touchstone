@@ -14,6 +14,7 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  envKeyHome,
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
@@ -144,10 +145,17 @@ export function totalSpendState(cfg = readConfig()) {
   return { usd: ledger.usd, capUsd, ledgerError: ledger.error ?? capError }
 }
 
+// envHome: where the provider's env key may go (its built-in base URL), so
+// the form can warn before a save. held: why an env key is set but not used.
 function keyState(p) {
   const k = providerKey(p)
-  if (!k) return { set: false, source: null, last4: null }
-  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, last4: k.length > 8 ? k.slice(-4) : null }
+  const envHome = p.keyEnv ? envKeyHome(p) || null : null
+  if (!k) {
+    const envName = p.keyEnv && process.env[p.keyEnv] ? p.keyEnv : null
+    const held = envName ? `The key from ${envName} is only sent to ${envHome || "its built-in server"}, not ${originOf(p.baseUrl) || "this URL"}.` : null
+    return { set: false, source: null, envName, envHome, last4: null, held }
+  }
+  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, envHome, last4: k.length > 8 ? k.slice(-4) : null }
 }
 
 function modelRows(p) {
@@ -333,9 +341,12 @@ export function saveProvider(body = {}) {
     label: label || prev.label || preset?.label || id,
     baseUrl: cleanBaseUrl(keepHidden(body.baseUrl, prev.baseUrl || preset?.baseUrl) || prev.baseUrl || preset?.baseUrl),
   }
+  // A saved key goes only to the server it was saved for: a new scheme, host
+  // or port drops it, unless this request brings a key. A new path keeps it.
   const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const sameServer = originOf(entry.baseUrl) === originOf(prev.baseUrl || preset?.baseUrl)
   if (key) entry.apiKey = key
-  else if (prev.apiKey && !body.clearKey) entry.apiKey = prev.apiKey
+  else if (prev.apiKey && !body.clearKey && sameServer) entry.apiKey = prev.apiKey
   if (body.models !== undefined) {
     const models = modelTable(body.models)
     if (Object.keys(models).length) entry.models = models

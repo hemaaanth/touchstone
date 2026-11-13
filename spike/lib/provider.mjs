@@ -42,13 +42,15 @@ export function budgetedApi(api, agentForSession = () => undefined) {
               event("spend", { ...runSpend(), ...contextUse(model, usage) });
             }
           }
-          output.push(e.type === "error" ? markTransient(scrubbed(e, model.baseUrl)) : e);
+          // Classify on the raw text (billedUsage above, markTransient here),
+          // then scrub what goes out.
+          output.push(e.type === "error" ? scrubbed(markTransient(e), model.baseUrl) : e);
         }
       } catch (err) {
         output.push({ type: "error", reason: "error", error: {
           role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "error", errorMessage: transientMessage(scrubUrl(err?.message ?? err, model.baseUrl)), timestamp: Date.now(),
+          stopReason: "error", errorMessage: scrubUrl(transientMessage(err?.message ?? err), model.baseUrl), timestamp: Date.now(),
         } });
       } finally { output.end(); }
     });

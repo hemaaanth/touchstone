@@ -253,6 +253,17 @@ function UrlField({ value, onChange, placeholder, disabled }: { value: string; o
   )
 }
 
+// The scheme, host and port of an http(s) URL, as the server compares them
+// (redact-url.mjs originOf). "" when it is not one.
+function originOf(url: string) {
+  try {
+    const u = new URL(url)
+    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : ""
+  } catch {
+    return ""
+  }
+}
+
 // The host and port of a URL, lower case, as the server compares them.
 function hostOf(url: string) {
   try {
@@ -438,7 +449,7 @@ function ProviderEditor({
   const [busy, setBusy] = useState<"fetch" | "save" | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Why the provider's key was not sent with Fetch models (another host).
-  const [keyNote, setKeyNote] = useState<string | null>(null)
+  const [fetchNote, setFetchNote] = useState<string | null>(null)
 
   const rows = useMemo(() => {
     const ids = new Set(chosen.map((m) => m.id))
@@ -461,11 +472,11 @@ function ProviderEditor({
   const fetchList = async () => {
     setBusy("fetch")
     setError(null)
-    setKeyNote(null)
+    setFetchNote(null)
     try {
       const r = await discoverModels({ id: provider?.id, baseUrl, apiKey: apiKey || undefined })
       setFound(r.models)
-      setKeyNote(r.keyNote ?? null)
+      setFetchNote(r.keyNote ?? null)
       // Refresh prices the gateway publishes for models already chosen.
       setChosen((cur) =>
         cur.map((m) => {
@@ -499,6 +510,20 @@ function ProviderEditor({
       : `Leave blank to keep …${provider.key.last4 ?? "····"}`
     : "Paste the API key"
   const canSave = Boolean(label.trim() && baseUrl.trim() && chosen.length > 0 && busy === null)
+  // A key goes only to its own server (scheme, host and port): a save to
+  // another server drops a saved key (settings.mjs saveProvider), and an env
+  // key goes only to the built-in base URL (providers.mjs providerKey).
+  const typedOrigin = originOf(baseUrl.trim())
+  const savedOrigin = originOf(provider?.baseUrl ?? "")
+  const k = provider?.key
+  const serverLine =
+    !k || apiKey.trim() || typedOrigin === ""
+      ? null
+      : k.source === "settings" && typedOrigin !== savedOrigin
+        ? "Changing the server removes the saved key."
+        : (k.source === "env" || k.held) && k.envName && k.envHome && typedOrigin !== k.envHome
+          ? `The key from ${k.envName} is only sent to ${k.envHome}.`
+          : null
 
   const fields = (
     <>
@@ -512,6 +537,7 @@ function ProviderEditor({
         <Label>Base URL</Label>
         <UrlField value={baseUrl} onChange={setBaseUrl} placeholder="https://api.example.com/v1" />
         {provider?.baseUrlHidden ? <span className="text-xs text-muted-foreground">This URL holds parts that are not shown. They stay unless you edit it.</span> : null}
+        {serverLine ? <span className="text-xs text-muted-foreground">{serverLine}</span> : null}
       </label>
       <label className="flex flex-col gap-2">
         <Label>API key</Label>
@@ -525,7 +551,7 @@ function ProviderEditor({
             {busy === "fetch" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Fetch models
           </Button>
         </div>
-        {keyNote ? <span className="text-xs text-muted-foreground">{keyNote}</span> : null}
+        {fetchNote ? <span className="text-xs text-muted-foreground">{fetchNote}</span> : null}
         {(found?.length ?? 0) > 8 ? <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter, e.g. abliterated" aria-label="Filter models" /> : null}
         {rows.length > 0 ? (
           <ul className="max-h-80 divide-y overflow-y-auto rounded-lg border">

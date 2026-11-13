@@ -32,13 +32,23 @@ export function originOf(raw) {
 }
 
 const HIDDEN = "[hidden]";
-// A part this short would match ordinary words; the whole-URL and user-info
-// passes below still take it out where it sits in a URL.
-const MIN_PART = 3;
+// A bare hidden part (a password, a query value) is replaced outside a URL
+// only when it is this long: a short one would match ordinary text, such as
+// "500" in "HTTP 500" for "?shard=500". Inside a URL it always goes.
+const MIN_BARE = 8;
 
 // Text with each raw URL replaced by its public form, and each hidden part
-// (user name, password, query, #part, as typed and decoded) replaced by
-// "[hidden]". Any user name or password in any URL in the text goes too.
+// taken out:
+// 1. The whole raw URL, as typed and as the parser writes it, becomes its
+//    public form. This covers "<raw>/models" and the like.
+// 2. URL syntax: the query ("?a=b"), each "?a=b" or "&a=b" pair, the #part
+//    and the user info ("u:p@", "u@") are removed wherever they appear. They
+//    carry their delimiter, so they never match plain words.
+// 3. A bare part (user name, password, query value, as typed and decoded) is
+//    replaced with "[hidden]" only when it is MIN_BARE characters or longer.
+// 4. Any user name or password in any URL in the text goes.
+// Error status codes are read from error fields (err.status, res.status),
+// never from this text.
 export function scrubUrl(text, ...raws) {
   let t = String(text ?? "");
   for (const raw of raws) {
@@ -51,16 +61,29 @@ export function scrubUrl(text, ...raws) {
     const wholes = [String(raw), u?.href, u?.href.replace(/\/+$/, "")].filter(Boolean).sort((a, b) => b.length - a.length);
     for (const w of wholes) t = t.split(w).join(shown);
     if (!u) continue;
-    const parts = [u.username, u.password, u.search, u.search.slice(1), u.hash, u.hash.slice(1), ...[...u.searchParams.values()]];
-    const all = new Set();
-    for (const p of parts) {
-      if (!p) continue;
-      all.add(p);
+    const both = (p) => {
+      const out = [p];
       try {
-        all.add(decodeURIComponent(p));
+        out.push(decodeURIComponent(p));
       } catch {}
+      return out;
+    };
+    const syntax = new Set();
+    if (u.search) both(u.search).forEach((x) => syntax.add(x));
+    if (u.hash) both(u.hash).forEach((x) => syntax.add(x));
+    for (const pair of u.search.slice(1).split("&").filter(Boolean)) {
+      for (const x of both(pair)) {
+        syntax.add(`?${x}`);
+        syntax.add(`&${x}`);
+      }
     }
-    for (const p of [...all].sort((a, b) => b.length - a.length)) if (p.length >= MIN_PART) t = t.split(p).join(HIDDEN);
+    if (u.username || u.password) {
+      for (const x of both(u.password ? `${u.username}:${u.password}@` : `${u.username}@`)) syntax.add(x);
+    }
+    for (const p of [...syntax].sort((a, b) => b.length - a.length)) t = t.split(p).join("");
+    const bare = new Set();
+    for (const p of [u.username, u.password, ...u.searchParams.values(), u.hash.slice(1)]) if (p) both(p).forEach((x) => bare.add(x));
+    for (const p of [...bare].sort((a, b) => b.length - a.length)) if (p.length >= MIN_BARE) t = t.split(p).join(HIDDEN);
   }
   return t.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi, "$1");
 }
