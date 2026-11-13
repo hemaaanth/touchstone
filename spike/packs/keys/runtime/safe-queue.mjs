@@ -15,6 +15,9 @@
 // Chain ID 11155111 is the Sepolia ID. It is used so safe-tx-hashes-util can name this chain
 // (its network list has no 31337). This is a local Anvil with no network. Nothing is sent anywhere.
 // The hardfork is pinned: with the Sepolia ID and no hardfork, Anvil 1.9.0 fails to deploy the Safe.
+//
+// Accounts: Anvil account 5 deploys, accounts 6, 7 and 8 are the owners. The main Keys lab
+// (observe.mjs) uses accounts 0 to 2, so no address here is also a contract or owner there.
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -46,14 +49,15 @@ const approvedSignatures = owners => [...owners].sort((a, b) => (BigInt(a) < Big
   .map(owner => `${zeroPadValue(owner, 32).slice(2)}${'00'.repeat(32)}01`).join('');
 
 async function world() {
-  const signers = await Promise.all([0, 1, 2].map(i => provider.getSigner(i)));
+  const deployer = await provider.getSigner(5);
+  const signers = await Promise.all([6, 7, 8].map(i => provider.getSigner(i)));
   const owners = await Promise.all(signers.map(s => s.getAddress()));
-  const singleton = await deploy(safeArtifact, signers[0]);
-  const proxy = await deploy(proxyArtifact, signers[0], [await singleton.getAddress()]);
+  const singleton = await deploy(safeArtifact, deployer);
+  const proxy = await deploy(proxyArtifact, deployer, [await singleton.getAddress()]);
   const address = await proxy.getAddress();
   const safe = new Contract(address, safeArtifact.abi, signers[0]);
-  await (await safe.setup(owners, 2, ZeroAddress, '0x', ZeroAddress, ZeroAddress, 0, ZeroAddress)).wait();
-  await (await signers[0].sendTransaction({ to: address, value: parseEther('5') })).wait();
+  await (await safe.connect(deployer).setup(owners, 2, ZeroAddress, '0x', ZeroAddress, ZeroAddress, 0, ZeroAddress)).wait();
+  await (await deployer.sendTransaction({ to: address, value: parseEther('5') })).wait();
 
   // The wallet asks the Safe for the hash to sign. That is the wallet's job in this story, not the check's.
   const hashOf = (t, nonce) => safe.getTransactionHash(...args(t, nonce));
