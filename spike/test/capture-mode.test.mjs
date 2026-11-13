@@ -118,6 +118,19 @@ test("runNamed: at timeoutMs the container is removed by name and the call repor
   assert.deepEqual(calls.filter((a) => a[0] === "rm")[0], ["rm", "-f", "n1"]);
 });
 
+// On a busy host the container can appear after the first rm. The rm repeats
+// until the docker CLI returns.
+test("runNamed: a container created after the first rm is still removed", async () => {
+  let rms = 0, release;
+  const exec = async (args) => {
+    if (args[0] === "rm") { rms++; if (rms >= 3) release?.(); return { code: 1, stdout: "", stderr: "No such container" }; }
+    return new Promise((r) => { release = () => r({ code: 137, stdout: "", stderr: "" }); });
+  };
+  const r = await runNamed(["run", "--name", "n2", "x:1"], "n2", { timeoutMs: 100, exec });
+  assert.equal(r.timedOut, true);
+  assert.ok(rms >= 3);
+});
+
 test("captureArgs refuses an open network and a secret passed as a plain env value", () => {
   const base = { name: "n", image: "i", cmd: [], network: "touchstone-reach-client-x", gate: "http://scope-gate:8080", user: "1:1" };
   for (const network of ["none", "host", "bridge", "default", "container:abc", ""]) assert.throws(() => captureArgs({ ...base, network }));

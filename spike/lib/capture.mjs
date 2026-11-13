@@ -99,13 +99,17 @@ function execDocker(args, { env, timeoutMs, maxBuffer }) {
 // The finally also covers a CLI that died early (maxBuffer, a crash).
 export async function runNamed(args, name, { env = process.env, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, exec = execDocker } = {}) {
   const rm = () => exec(["rm", "-f", name], { env: process.env, timeoutMs: 30_000, maxBuffer: 1024 * 1024 }).catch(() => {});
-  let late = false;
-  const timer = setTimeout(() => { late = true; rm(); }, timeoutMs);
+  let late = false, done = false;
+  // On a busy host the container may not exist yet when the time is up, and a
+  // single rm would miss it. So keep removing it until the docker CLI returns.
+  const stop = async () => { late = true; while (!done) { await rm(); if (!done) await new Promise((r) => setTimeout(r, 1_000)); } };
+  const timer = setTimeout(stop, timeoutMs);
   try {
     // A backstop only: the timer above stops the tool first.
     const r = await exec(args, { env, timeoutMs: timeoutMs + 60_000, maxBuffer });
     return { ...r, timedOut: Boolean(r.timedOut) || late };
   } finally {
+    done = true;
     clearTimeout(timer);
     await rm();
   }
