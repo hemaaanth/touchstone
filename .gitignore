@@ -51,3 +51,6 @@ spike/bun.lock
 # runtime output, not source. Records already tracked stay tracked.
 spike/results/agent/run-*
 spike/.review/
+
+# Throwaway Foundry experiments (build output and vendored libs), not the product
+spike-scratch/
