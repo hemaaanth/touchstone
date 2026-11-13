@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { closeRun, delta, execConfig, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
+import { closeRun, delta, execConfig, imageGuard, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
 
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
@@ -50,6 +50,19 @@ test("planRemote keeps --pull=never on the remote path", () => {
   const p = planRemote(["run", "--rm", "--pull=never", "--network", "none", "img:1"], null, null);
   assert.equal(p.local, null);
   assert.deepEqual(p.args, ["--rm", "--pull=never", "--network", "none", "img:1"]);
+});
+
+test("planRemote accepts only --pull=never and stays local for --pull=always", () => {
+  assert.match(planRemote(["run", "--pull=always", "img:1"], null, null).local, /flag --pull/);
+  assert.equal(planRemote(["run", "--pull=never", "img:1"], null, null).local, "network default stays on this host");
+});
+
+test("imageGuard does not pull with --pull=never, and pushes instead", () => {
+  const guarded = imageGuard(["--rm", "--pull=never"], "img:1", "/d");
+  assert.match(guarded, /docker image inspect 'img:1'/);
+  assert.doesNotMatch(guarded, /docker pull/);
+  const pulled = imageGuard(["--rm"], "img:1", "/d");
+  assert.match(pulled, /docker pull -q 'img:1'/);
 });
 
 test("planRemote keeps host networks and foreign mounts local", () => {
