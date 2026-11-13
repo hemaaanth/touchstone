@@ -29,8 +29,8 @@ test("proveFindings stores the replay files under replay/ and the proof keeps th
   writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault { function withdraw() external {} }\n");
   writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest { function testDrain() public {} }\n");
   const events = [{ ev: "run_poc-done", passed: true, contract: "PocTest" }];
-  // proveFindings stores the files and the pointer; it does NOT run the re-run
-  // check (that is deferred to recordReplayReruns, after the record is written).
+  // proveFindings stores the files and the pointer only; no re-run verdict is
+  // written on a record (the automatic re-run check does not ship yet).
   const [f] = await proveFindings(ws, [{ n: 1, title: "drain", severity: "high", poc: "PocTest", source: "contract PocTest {}" }], events);
   assert.equal(f.pocProved, true);
   const replay = f.proof.replay;
@@ -89,31 +89,3 @@ test("pruneReplayStore removes the replay files and blobs no record names, and n
   }
 });
 
-test("recordReplayReruns patches the re-run verdict onto a written record, after recording", async () => {
-  const { storeReplayFiles, snapshotForgeReplay, recordReplayReruns } = await import("../lib/replay-bundle.mjs");
-  const dir = mkdtempSync(path.join(tmpdir(), "replay-defer-"));
-  try {
-    const w = mkdtempSync(path.join(tmpdir(), "replay-defer-ws-"));
-    mkdirSync(path.join(w, "src")); mkdirSync(path.join(w, "test"));
-    writeFileSync(path.join(w, "foundry.toml"), `[profile.default]\nsrc = "src"\n`);
-    writeFileSync(path.join(w, "src", "Vault.sol"), "contract Vault {}\n");
-    writeFileSync(path.join(w, "test", "AgentPoc.t.sol"), "contract PocTest {}\n");
-    const kept = storeReplayFiles(snapshotForgeReplay(w, { contract: "PocTest", test: "t()" }), path.join(dir, "replay"));
-    const proof = { kind: "forge", pass: true, test: "t()", replay: kept };
-    const record = { result: { recorded: true, findings: [{ title: "x", pocProved: true, proof }] } };
-    writeFileSync(path.join(dir, "run-defer-1.json"), JSON.stringify(record, null, 2));
-    // Before the check: no rerun on the record.
-    assert.equal(JSON.parse(readFileSync(path.join(dir, "run-defer-1.json"), "utf8")).result.findings[0].proof.replay.rerun, undefined);
-    // A passing stub runner; the record gains a bound verdict.
-    const { checked } = await recordReplayReruns(dir, "defer-1", { run: async () => ({ passed: true, failed: false }) });
-    assert.equal(checked, 1);
-    const after = JSON.parse(readFileSync(path.join(dir, "run-defer-1.json"), "utf8")).result.findings[0].proof.replay.rerun;
-    assert.equal(after.pass, true);
-    assert.match(after.tree, /^[a-f0-9]{64}$/);
-    // The files never land in the record; only the pointer and the verdict.
-    assert.equal(after && Array.isArray(JSON.parse(readFileSync(path.join(dir, "run-defer-1.json"), "utf8")).result.findings[0].proof.replay.files), false);
-    rmSync(w, { recursive: true, force: true });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});

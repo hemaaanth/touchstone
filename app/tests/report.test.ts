@@ -396,8 +396,10 @@ describe("report: replay bundle", () => {
       const readme = files.get("README.md") || ""
       expect(readme).toContain("Vendored library files (`lib/forge-std`) are included unchanged")
       expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay")).toBe(true)
-      // No stored verdict in this synthetic replay, so no command.
-      expect(commands(readme)).toEqual([])
+      // The bundle carries the re-run command, marked not re-run-checked; no claim ever.
+      expect(commands(readme).length).toBeGreaterThanOrEqual(1)
+      expect(readme).not.toContain("RE-RUN CHECKED")
+      expect(readme).toContain("not re-run-checked")
       expect(files.get("SHA256SUMS")).toContain("  lib/forge-std/src/safeconsole.sol\n")
       execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
       // The store's copy is the source; with it gone the engine's copy serves.
@@ -628,46 +630,45 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("the re-run claim is bound to the files: a passing verdict claims, a changed tree or no verdict does not", async () => {
-    // @ts-expect-error — plain .mjs module, no types
-    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
-    // @ts-expect-error — plain .mjs module, no types
-    const { verifyForgeReplay } = await import("../../spike/lib/replay-bundle.mjs")
-    const labs = ["lab/vault-reentrancy", "lab/vault-accounting"]
-    for (const rel of labs) {
-      const lab = new URL(`../../${rel}/`, import.meta.url).pathname
-      const oracleDir = path.join(lab, "oracle")
-      const chosen = readdirSync(oracleDir).find((f) => f.endsWith(".sol"))
-      const ws = makeWorkspace(lab)
+  test("a Foundry bundle never claims RE-RUN CHECKED; it carries the command marked not-checked, and a forked proof gets none", () => {
+    const readmeOf = (ws: string, contract: string) => {
+      const snap = snapshotForgeReplay(ws, { contract, test: "t()" })
+      const proof = { kind: "forge", pass: true, test: "t()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-cut-"))
       try {
-        mkdirSync(path.join(ws, "test"), { recursive: true })
-        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(oracleDir, String(chosen)), "utf8"))
-        const snap = snapshotForgeReplay(ws, { contract: "X", test: "t()" })
-        const proof = { kind: "forge", pass: true, test: "t()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
-        const line1 = (replay: unknown) => {
-          const dir = mkdtempSync(path.join(tmpdir(), "replay-cmd-"))
-          try {
-            unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
-            return (readTree(dir).get("README.md") || "").split("\n")[0]
-          } finally {
-            rmSync(dir, { recursive: true, force: true })
-          }
-        }
-        // A passing verdict from the verifier binds the tree: the bundle claims.
-        const rerun = await verifyForgeReplay({ replay: snap, proof }, { run: async () => ({ passed: true, failed: false }) })
-        expect([rel, typeof rerun.tree]).toEqual([rel, "string"])
-        expect([rel, line1({ ...snap, rerun }).startsWith("RE-RUN CHECKED:")]).toEqual([rel, true])
-        // A passing verdict with a tree that does not match the shipped files:
-        // no claim, "the files changed since the check".
-        const wrong = line1({ ...snap, rerun: { ...rerun, tree: "0".repeat(64) } })
-        expect([rel, wrong.startsWith("RE-RUN CHECKED")]).toEqual([rel, false])
-        expect([rel, wrong.includes("the files changed since the check")]).toEqual([rel, true])
-        // No verdict at all: no command, no claim.
-        expect([rel, line1(snap).includes("re-run command")]).toEqual([rel, true])
-        expect([rel, line1(snap).startsWith("RE-RUN CHECKED")]).toEqual([rel, false])
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+        return readTree(dir).get("README.md") || ""
       } finally {
-        rmSync(ws, { recursive: true, force: true })
+        rmSync(dir, { recursive: true, force: true })
       }
+    }
+    // A non-forked proof: the command ships, marked "not re-run-checked", never a claim.
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-cut-ws-"))
+    try {
+      mkdirSync(path.join(ws, "src")); mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      const r = readmeOf(ws, "PocTest")
+      expect(r).not.toContain("RE-RUN CHECKED")
+      expect(r).toContain("not re-run-checked")
+      expect(r).toContain("an automatic re-run check does not ship yet")
+      expect(commands(r).length).toBeGreaterThanOrEqual(1)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+    // A forked proof: an offline re-run cannot fork, so no command at all.
+    const fw = mkdtempSync(path.join(tmpdir(), "replay-cut-fork-"))
+    try {
+      mkdirSync(path.join(fw, "src")); mkdirSync(path.join(fw, "test"))
+      writeFileSync(path.join(fw, "foundry.toml"), `[profile.default]\nsrc = "src"\neth_rpc_url = "https://eth-mainnet.g.alchemy.com/v2/Kd83nWq2Lx9Pz4Rt7Ys1Mv6Bc0Hj5Fg"\n`)
+      writeFileSync(path.join(fw, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(fw, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      const r = readmeOf(fw, "PocTest")
+      expect(commands(r)).toEqual([])
+      expect(r).not.toContain("RE-RUN CHECKED")
+    } finally {
+      rmSync(fw, { recursive: true, force: true })
     }
   })
 
@@ -1089,8 +1090,8 @@ describe("report: replay bundle", () => {
         unzip(buildReplayBundle({ finding, recorded }), out)
         const files = readTree(out)
         expect(files.get("src/Vault.sol")).toContain("function withdraw")
-        expect(commands(files.get("README.md") || "")).toEqual([])
-        expect(files.get("README.md")).toContain("This folder holds the proof's source files")
+        expect(commands(files.get("README.md") || "").length).toBeGreaterThanOrEqual(1)
+        expect(files.get("README.md")).not.toContain("RE-RUN CHECKED")
       } finally {
         rmSync(out, { recursive: true, force: true })
       }
@@ -1210,9 +1211,10 @@ describe("report: replay bundle", () => {
       return { ws, snap }
     }
     try {
-      // (1) vault-reentrancy: a pure-source proof. The real offline re-run passes
-      // and binds the tree, the bundle claims RE-RUN CHECKED, and the README
-      // command the test runs reproduces the pass from the bundle folder alone.
+      // (1) vault-reentrancy: a pure-source proof. verifyForgeReplay (the tested
+      // function) confirms the offline re-run passes from the bundle files; the
+      // shipped bundle makes NO automatic claim, and the README command the test
+      // runs by hand reproduces the pass from the bundle folder alone.
       const { ws, snap } = await snapLab("lab/vault-reentrancy", "VaultExploit.t.sol", "VaultExploitTest")
       const proof = { kind: "forge", pass: true, test: "t()" }
       const rerun = await verifyForgeReplay({ replay: snap, proof })
@@ -1221,9 +1223,10 @@ describe("report: replay bundle", () => {
       const wantCmd = forgeReplayCommand({ matchContract: "VaultExploitTest", solc: snap.solc })
       const dir = mkdtempSync(path.join(tmpdir(), "replay-e2e-"))
       try {
-        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: { ...snap, rerun }, proof } }), dir)
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
         const readme = readFileSync(path.join(dir, "README.md"), "utf8")
-        expect(readme.split("\n")[0].startsWith("RE-RUN CHECKED:")).toBe(true)
+        expect(readme).not.toContain("RE-RUN CHECKED")
+        expect(readme).toContain("not re-run-checked")
         expect(readme).toContain(wantCmd)
         execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
         const run = wantCmd.replace("foundry-svm:", `${volume}:`)

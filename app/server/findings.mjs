@@ -331,16 +331,6 @@ function normalize(raw, { id, runId, finding }) {
       rerunCommand: proving?.test || (forgeProven && engineProof?.test)
         ? `forge test --match-test ${proving?.test || engineProof.test}`
         : null,
-      // Whether the bundle's own files re-ran the proof offline, recorded once
-      // by the engine (replay-bundle verifyForgeReplay). Read-only; a pass is
-      // neutral, never green (docs/restraint.md). No secret: a bool and a reason.
-      rerun: finding.proof?.replay?.rerun
-        ? {
-            checked: Boolean(finding.proof.replay.rerun.checked),
-            pass: finding.proof.replay.rerun.pass === true,
-            ...(typeof finding.proof.replay.rerun.reason === "string" ? { reason: finding.proof.replay.rerun.reason } : {}),
-          }
-        : null,
       testSource,
     },
     staticScan: other ? null : staticScan,
