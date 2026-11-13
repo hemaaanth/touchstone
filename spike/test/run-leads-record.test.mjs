@@ -3,7 +3,7 @@
 // leads, then the server stops before the run settles. Loading it must write a
 // record whose result.leads holds both leads with their evidence, and no lead
 // may read as proven.
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 const ID = "faux-review-2611120000-1";
 const dir = mkdtempSync(join(tmpdir(), "run-leads-"));
+after(() => rmSync(dir, { recursive: true, force: true }));
 const t0 = 1794525839389;
 const stream = [
   { t: t0, ev: "scope", scope: { id: "s-ens", title: "ens-metadata-service", kind: "repo", pack: "review", entry: "ensdomains/ens-metadata-service", proofSurface: { kind: "none" } } },
@@ -38,11 +39,19 @@ test("an interrupted Review run's record keeps its leads with file, line and rea
   ]);
   assert.equal(result.leads[0].reason, "the URL from the text record goes to fetch with no host check");
   assert.ok(result.leads.every((l) => !("proven" in l)), "no lead reads as proven");
-});
-
-test("the loaded run reads as an error with no finding; its stream still holds the leads", () => {
+  // The loaded run reads as an error with no finding; its stream keeps both leads.
   const run = getRun(ID);
   assert.equal(run.status, "error");
   assert.equal(run.events.filter((e) => e.ev === "lead").length, 2);
-  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the CLI record (agent-run.mjs) lists the leads from the worker's events", () => {
+  // agent-run.mjs runs on import and needs a real provider, so its record is
+  // pinned by its source: the worker's events feed `all`, and the result object
+  // builds `leads` from them.
+  const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
+  const main = src.slice(src.indexOf("async function main("), src.indexOf("const cmd = process.argv[2]"));
+  assert.match(main, /all = first\.events;/);
+  const result = main.slice(main.indexOf("const result = {"), main.indexOf("writeFileSync(`${DIR}run-${ALIAS}.json`"));
+  assert.match(result, /\n\s+leads: leadsFrom\(all\),\n/);
 });
