@@ -3,7 +3,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { formatWei, harmText } from "./eth"
-import { formatAmount } from "./amount.mjs"
+import { formatAmount, validDecimals } from "./amount.mjs"
 
 // The shown number, read back: "≈1,234.567 ETH" -> 1234.567.
 const shownEth = (text: string) => Number(text.replace(/^≈/, "").replace(/[+,]/g, "").replace(/ ETH$/, ""))
@@ -82,4 +82,18 @@ test("the harm reads as what was lost: an ETH drain, a token drain, a control ta
   assert.equal(`${known?.lead}${known?.amount?.text}${known?.rest}`, "FeeVault lost 1.5 USDC.")
   assert.equal(harmText({ ok: false, kind: "funds" }), null)
   assert.equal(harmText(null), null)
+})
+
+test("decimals a token cannot have are not known: the exact base units, never a throw", () => {
+  for (const decimals of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, 256, "6" as unknown as number]) {
+    const a = formatAmount("1500000", { decimals, unit: "USDC", baseUnit: "base units" })
+    assert.deepEqual(a, { text: "1,500,000 base units", exact: "1,500,000 base units", approx: false }, String(decimals))
+  }
+  assert.equal(validDecimals(0), true)
+  assert.equal(validDecimals(255), true)
+  assert.equal(validDecimals(18), true)
+  // A token harm with bad decimals reads like one with none: raw units and the token.
+  const harm = { ok: true, kind: "funds" as const, asset: "token" as const, victim: "0xabc", token: "0x1111111111111111111111111111111111111111", lostUnits: "1500000", symbol: "USDC", decimals: -1 }
+  const t = harmText(harm)
+  assert.equal(`${t?.lead}${t?.amount?.text}${t?.rest}`, "0xabc lost 1,500,000 raw units of token 0x1111…1111.")
 })

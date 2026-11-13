@@ -15,6 +15,12 @@
 
 const SIG = 6
 
+// A token's decimals as a token can return them: a whole number from 0 to 255
+// (uint8). Anything else (-1, 2.5, NaN, Infinity, a string) is not known.
+export function validDecimals(d) {
+  return Number.isInteger(d) && d >= 0 && d <= 255
+}
+
 /**
  * @param {string} raw  the amount in base units, a decimal integer string, maybe signed
  * @param {{ decimals?: number, unit?: string, baseUnit?: string, signed?: boolean }} [opts]
@@ -31,6 +37,9 @@ export function formatAmount(raw, { decimals = 18, unit = "ETH", baseUnit = "wei
   const abs = neg ? -n : n
   const sign = neg ? "-" : signed && abs > 0n ? "+" : ""
   const exact = `${sign}${abs.toLocaleString("en-US")} ${baseUnit}`
+  // Decimals that are not a token's (validDecimals): the exact base-unit
+  // amount, not scaled, as when the record has none. Never throw.
+  if (!validDecimals(decimals)) return { text: exact, exact, approx: false }
   if (abs === 0n) return { text: `0 ${unit}`, exact, approx: false }
   const scale = 10n ** BigInt(decimals)
   // Below a millionth of the unit: the base unit, exact.
