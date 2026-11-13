@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 // The report module is plain .mjs (server side). We test its pure builders with
@@ -469,6 +469,147 @@ describe("report: replay bundle", () => {
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(store, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The vault lab with its PoC: each case below breaks one thing the build needs.
+  const skipCase = async (name: string, change: (ws: string) => void) => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    const dir = mkdtempSync(path.join(tmpdir(), `replay-skip-${name}-`))
+    try {
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
+      change(ws)
+      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "test_reentrancy_drains_vault()" })
+      const proof = { kind: "forge", pass: true, test: "test_reentrancy_drains_vault()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+      const files = readTree(dir)
+      const readme = files.get("README.md") || ""
+      return { snap, files, readme, line1: readme.split("\n")[0], cmds: commands(readme) }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const NO_RERUN = "PROVEN: the engine's proof gate passed this finding when it was recorded. This bundle cannot be re-run from this folder: "
+
+  test("skip case: the plain lab keeps its command (the baseline for the cases below)", async () => {
+    const r = await skipCase("base", () => {})
+    expect(r.snap.omitted).toEqual([])
+    expect(r.cmds).toHaveLength(2)
+  })
+
+  test("skip case: an imported file that is a symbolic link is left out, and the bundle has no command", async () => {
+    const r = await skipCase("link", (ws) => {
+      const f = path.join(ws, "lib/forge-std/src/StdMath.sol")
+      const copy = path.join(ws, "StdMath.copy")
+      renameSync(f, copy)
+      symlinkSync(copy, f)
+    })
+    expect(r.snap.omitted.find((o: { path: string }) => o.path === "lib/forge-std/src/StdMath.sol")?.reason).toMatch(/^imported by lib\/forge-std\/src\/\w+\.sol, but a symbolic link; not followed$/)
+    expect(r.files.has("lib/forge-std/src/StdMath.sol")).toBe(false)
+    expect(r.cmds).toEqual([])
+    expect(r.line1.startsWith(NO_RERUN)).toBe(true)
+  })
+
+  test("skip case: an import through remappings into node_modules is left out, and the bundle has no command", async () => {
+    const r = await skipCase("node-modules", (ws) => {
+      mkdirSync(path.join(ws, "node_modules/@acme/lib"), { recursive: true })
+      writeFileSync(path.join(ws, "node_modules/@acme/lib/Acme.sol"), "library Acme {}\n")
+      writeFileSync(path.join(ws, "remappings.txt"), "@acme/=node_modules/@acme/\n")
+      const poc = path.join(ws, "test", "AgentPoc.t.sol")
+      writeFileSync(poc, `import "@acme/lib/Acme.sol";\n${readFileSync(poc, "utf8")}`)
+    })
+    expect(r.snap.omitted).toContainEqual({ path: "node_modules/@acme/lib/Acme.sol", reason: "imported by test/AgentPoc.t.sol, but node_modules/ is not included" })
+    expect(r.files.has("node_modules/@acme/lib/Acme.sol")).toBe(false)
+    expect(r.cmds).toEqual([])
+  })
+
+  test("skip case: an import into a hidden folder is left out, and the bundle has no command", async () => {
+    const r = await skipCase("hidden", (ws) => {
+      mkdirSync(path.join(ws, "src/.deps"), { recursive: true })
+      writeFileSync(path.join(ws, "src/.deps/Dep.sol"), "library Dep {}\n")
+      const v = path.join(ws, "src", "Vault.sol")
+      writeFileSync(v, readFileSync(v, "utf8").replace(/(pragma solidity[^;]*;)/, '$1\nimport "./.deps/Dep.sol";'))
+    })
+    expect(r.snap.omitted).toContainEqual({ path: "src/.deps/Dep.sol", reason: "imported by src/Vault.sol, but a hidden folder; not included" })
+    expect(r.cmds).toEqual([])
+  })
+
+  test("skip case: an import into a library's test folder is left out, and the bundle has no command", async () => {
+    const r = await skipCase("libtest", (ws) => {
+      mkdirSync(path.join(ws, "lib/forge-std/test/utils"), { recursive: true })
+      writeFileSync(path.join(ws, "lib/forge-std/test/utils/Helper.sol"), "library Helper {}\n")
+      const poc = path.join(ws, "test", "AgentPoc.t.sol")
+      writeFileSync(poc, `import "forge-std/../test/utils/Helper.sol";\n${readFileSync(poc, "utf8")}`)
+    })
+    expect(r.snap.omitted).toContainEqual({ path: "lib/forge-std/test/utils/Helper.sol", reason: "imported by test/AgentPoc.t.sol, but a library's test folder is not included" })
+    expect(r.cmds).toEqual([])
+  })
+
+  test("skip case: an imported file that cannot be read is left out, and the bundle has no command", async () => {
+    let locked = ""
+    try {
+      const r = await skipCase("unreadable", (ws) => {
+        locked = path.join(ws, "lib/forge-std/src/StdMath.sol")
+        chmodSync(locked, 0o000)
+      })
+      expect(r.snap.omitted).toContainEqual({ path: "lib/forge-std/src/StdMath.sol", reason: "a file that could not be read" })
+      expect(r.cmds).toEqual([])
+    } finally {
+      if (locked) try { chmodSync(locked, 0o644) } catch {}
+    }
+  })
+
+  test("skip case: an imported path that is not a regular file is left out, and the bundle has no command", async () => {
+    const r = await skipCase("fifo", (ws) => {
+      const f = path.join(ws, "lib/forge-std/src/StdMath.sol")
+      rmSync(f)
+      execFileSync("mkfifo", [f])
+    })
+    expect(r.snap.omitted.find((o: { path: string }) => o.path === "lib/forge-std/src/StdMath.sol")?.reason).toMatch(/^imported by lib\/forge-std\/src\/\w+\.sol, but not a regular file$/)
+    expect(r.cmds).toEqual([])
+  })
+
+  test("skip case: a proof that reads a file at run time has no command", async () => {
+    const r = await skipCase("readfile", (ws) => {
+      const poc = path.join(ws, "test", "AgentPoc.t.sol")
+      writeFileSync(poc, readFileSync(poc, "utf8").replace(/(function test_reentrancy_drains_vault\(\)[^{]*\{)/, '$1 vm.readFile("fixtures/x.json");'))
+    })
+    expect(r.snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls vm.readFile, and this folder holds only the .sol and config files"])
+    expect(r.cmds).toEqual([])
+    expect(r.line1).toBe(`${NO_RERUN}test/AgentPoc.t.sol calls vm.readFile, and this folder holds only the .sol and config files.`)
+  })
+
+  test("skip case: a skip that no source imports cannot matter, and the command stays", async () => {
+    const r = await skipCase("unused", (ws) => {
+      mkdirSync(path.join(ws, "node_modules/x"), { recursive: true })
+      writeFileSync(path.join(ws, "node_modules/x/Unused.sol"), "library Unused {}\n")
+      symlinkSync(path.join(ws, "src", "Vault.sol"), path.join(ws, "src", "VaultLink.sol"))
+      writeFileSync(path.join(ws, "src", ".Hidden.sol"), "library Hidden {}\n")
+    })
+    expect(r.snap.omitted).toEqual([])
+    expect(r.cmds).toHaveLength(2)
+  })
+
+  test("skip case: at bundle time an old record that lost an imported file gets no command", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-skip-old-"))
+    try {
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
+      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "test_reentrancy_drains_vault()" })
+      const old = { ...snap, files: snap.files.filter((f: { path: string }) => f.path !== "src/Vault.sol") }
+      const proof = { kind: "forge", pass: true, test: "test_reentrancy_drains_vault()" }
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: old, proof } }), dir)
+      const readme = readTree(dir).get("README.md") || ""
+      expect(readme).toContain("- `src/Vault.sol` — imported by test/AgentPoc.t.sol, but it is not in this folder")
+      expect(commands(readme)).toEqual([])
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
     }
   })

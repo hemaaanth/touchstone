@@ -477,27 +477,161 @@ function keepPath(rel) {
 // Walk the workspace for the files a forge test needs. Dependency tests under
 // lib/ are skipped: they are not imported by the proof, and forge-std's own
 // tests ship sample provider keys.
+// Every file or folder the walk does not take, with the reason. A skip can
+// matter only when a kept source imports into it; importGaps finds those and
+// lists them under "Left out", so the bundle then has no command:
+// - a symbolic link (file or folder): not followed;
+// - a hidden file or folder (a name that starts with "."), a skipped folder
+//   (SKIP_DIRS: node_modules, out, cache, …), a library's own test folder;
+// - a path that is not a regular file (a socket, a device).
+// A file that keepPath does not take (not .sol, not the top foundry.toml or
+// remappings.txt) is not source; a proof that reads such a file at run time is
+// caught by runtimeReads. Read errors, binary content, the size limits, a
+// masked path, a secret and the cap mark are left out by snapshotForgeReplay.
 function collectFiles(root) {
   const found = [];
+  const skipped = new Map();
+  const skippedDirs = [];
   const walk = (dir, parts) => {
     let entries = [];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch {
+      if (parts.length) skippedDirs.push({ dir: parts.join("/"), reason: "a folder that could not be read" });
+      return;
+    }
     for (const e of entries) {
-      if (e.name.startsWith(".") || e.isSymbolicLink()) continue;
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name)) continue;
-        if ((e.name === "test" || e.name === "tests") && parts.includes("lib")) continue;
-        walk(join(dir, e.name), [...parts, e.name]);
+      const rel = [...parts, e.name].join("/");
+      if (e.isSymbolicLink()) {
+        skipped.set(rel, "a symbolic link; not followed");
+        skippedDirs.push({ dir: rel, reason: "a symbolic link; not followed" });
         continue;
       }
-      if (!e.isFile()) continue;
-      const rel = [...parts, e.name].join("/");
+      if (e.isDirectory()) {
+        if (e.name.startsWith(".")) skippedDirs.push({ dir: rel, reason: "a hidden folder; not included" });
+        else if (SKIP_DIRS.has(e.name)) skippedDirs.push({ dir: rel, reason: `${e.name}/ is not included` });
+        else if ((e.name === "test" || e.name === "tests") && parts.includes("lib")) skippedDirs.push({ dir: rel, reason: "a library's test folder is not included" });
+        else walk(join(dir, e.name), [...parts, e.name]);
+        continue;
+      }
+      if (!e.isFile()) {
+        skipped.set(rel, "not a regular file");
+        continue;
+      }
+      if (e.name.startsWith(".")) {
+        skipped.set(rel, "a hidden file; not included");
+        continue;
+      }
       if (keepPath(rel)) found.push(rel);
     }
   };
   walk(root, []);
   found.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
-  return found;
+  return { paths: found, skipped, skippedDirs };
+}
+
+// The Solidity imports of one text. Comments are removed first, so a
+// commented-out import is not read.
+const IMPORT = /\bimport\s+(?:[^;"']*?\bfrom\s+)?["']([^"']+)["']/g;
+function importsOf(text) {
+  const code = String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+  return [...code.matchAll(IMPORT)].map((m) => m[1]);
+}
+function normPath(p) {
+  const out = [];
+  for (const part of String(p).split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!out.length) return null;
+      out.pop();
+    } else out.push(part);
+  }
+  return out.join("/");
+}
+// Forge's resolution, as far as the folder needs it: a relative path from the
+// importing file; else the explicit remappings (remappings.txt, foundry.toml),
+// longest prefix first; else the automatic ones (lib/<name>/src/ or
+// lib/<name>/ for each library); else the path from the project root or from
+// each libs folder.
+function remappingsOf(texts, known) {
+  const toml = texts.get("foundry.toml") || "";
+  const quoted = (body) => [...String(body).matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
+  const libs = (() => {
+    const m = /^\s*libs\s*=\s*\[([^\]]*)\]/m.exec(toml);
+    const list = m ? quoted(m[1]) : [];
+    return list.length ? list.map((l) => normPath(l)).filter(Boolean) : ["lib"];
+  })();
+  const lines = [...String(texts.get("remappings.txt") || "").split("\n"), ...((/^\s*remappings\s*=\s*\[([\s\S]*?)\]/m.exec(toml) || [])[1] ? quoted(/^\s*remappings\s*=\s*\[([\s\S]*?)\]/m.exec(toml)[1]) : [])];
+  const explicit = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    const eq = line.indexOf("=");
+    if (!line || line.startsWith("#") || eq < 1) continue;
+    let prefix = line.slice(0, eq);
+    const colon = prefix.indexOf(":");
+    if (colon >= 0) prefix = prefix.slice(colon + 1);
+    explicit.push({ prefix, target: line.slice(eq + 1) });
+  }
+  const auto = [];
+  for (const lib of libs) {
+    const names = new Set([...known].filter((p) => p.startsWith(`${lib}/`)).map((p) => p.slice(lib.length + 1).split("/")[0]));
+    for (const name of names) {
+      const src = [...known].some((p) => p.startsWith(`${lib}/${name}/src/`));
+      auto.push({ prefix: `${name}/`, target: src ? `${lib}/${name}/src/` : `${lib}/${name}/` });
+    }
+  }
+  const byLength = (a, b) => b.prefix.length - a.prefix.length;
+  return { explicit: explicit.sort(byLength), auto: auto.sort(byLength), libs };
+}
+function importCandidates(from, spec, maps) {
+  if (spec.startsWith("./") || spec.startsWith("../")) return [normPath(`${from.split("/").slice(0, -1).join("/")}/${spec}`)].filter(Boolean);
+  const out = [];
+  const hit = maps.explicit.find((r) => spec.startsWith(r.prefix)) || maps.auto.find((r) => spec.startsWith(r.prefix));
+  if (hit) out.push(normPath(hit.target + spec.slice(hit.prefix.length)));
+  out.push(normPath(spec));
+  for (const lib of maps.libs) out.push(normPath(`${lib}/${spec}`));
+  return out.filter(Boolean);
+}
+
+// The imports of the kept sources that do not resolve to a kept file, as
+// "Left out" entries. `skipped` and `skippedDirs` (from collectFiles) give the
+// reason when the walk skipped the target; else it is not in the folder.
+export function importGaps(texts, { skipped = new Map(), skippedDirs = [], omitted = [] } = {}) {
+  const known = new Set(texts.keys());
+  for (const p of skipped.keys()) known.add(p);
+  const maps = remappingsOf(texts, known);
+  const listed = new Set(omitted.map((o) => o?.path).filter(Boolean));
+  const gaps = [];
+  for (const [from, text] of texts) {
+    if (!from.endsWith(".sol")) continue;
+    for (const spec of importsOf(text)) {
+      const cands = importCandidates(from, spec, maps);
+      if (cands.some((c) => texts.has(c))) continue;
+      const why = (c) => skipped.get(c) ?? skippedDirs.find((d) => c === d.dir || c.startsWith(`${d.dir}/`))?.reason ?? null;
+      const target = cands.find((c) => why(c)) ?? cands[0] ?? spec;
+      const shown = pathMasked(target) ? MASKED_PATH : target;
+      if (listed.has(target) || listed.has(shown)) continue;
+      listed.add(target);
+      gaps.push({ path: shown, reason: `imported by ${from}, but ${why(target) ?? "it is not in this folder"}` });
+    }
+  }
+  return gaps;
+}
+
+// A proof that reads a file or runs a program at run time needs more than the
+// .sol and config files this folder holds. Engine library files are not
+// checked: they define these helpers, and a proof that only imports them
+// reads nothing.
+const RUNTIME_READ = /\bvm\s*\.\s*(readFile|readFileBinary|readLine|readDir|ffi)\s*\(/;
+export function runtimeReads(texts, vendoredPaths = new Set()) {
+  const out = [];
+  for (const [path, text] of texts) {
+    if (!path.endsWith(".sol") || vendoredPaths.has(path)) continue;
+    const m = RUNTIME_READ.exec(importsFree(text));
+    if (m) out.push(`${path} calls vm.${m[1]}, and this folder holds only the .sol and config files`);
+  }
+  return out;
+}
+function importsFree(text) {
+  return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 }
 
 // The solc the proof ran with, read the way forgeTest reads it: the workspace
@@ -511,7 +645,9 @@ function readSolc(ws) {
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const paths = collectFiles(ws);
+  const { paths, skipped, skippedDirs } = collectFiles(ws);
+  // The raw text of each kept source, for the import check only. It is not stored.
+  const texts = new Map();
   const files = [];
   const omitted = [];
   let total = 0;
@@ -522,11 +658,17 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
       continue;
     }
     let buf;
-    try { buf = readFileSync(join(ws, rel)); } catch { continue; }
+    try {
+      buf = readFileSync(join(ws, rel));
+    } catch {
+      omitted.push({ path: rel, reason: "a file that could not be read" });
+      continue;
+    }
     const lib = vendoredFile(rel, buf);
     if (lib) {
       total += buf.length;
       files.push({ path: rel, vendored: lib });
+      texts.set(rel, buf.toString("utf8"));
       continue;
     }
     if (buf.length > MAX_FILE) {
@@ -549,9 +691,15 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     total += raw.length;
     const out = forgeFileText(rel, raw);
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
-    else files.push({ path: rel, text: out.text });
+    else {
+      files.push({ path: rel, text: out.text });
+      texts.set(rel, raw);
+    }
   }
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
+  // A skip that a kept source imports into is a file the build needs.
+  omitted.push(...importGaps(texts, { skipped, skippedDirs, omitted }));
+  const reads = runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)));
   let toml = "";
   try {
     if (paths.includes("foundry.toml")) toml = readFileSync(join(ws, "foundry.toml"), "utf8");
@@ -572,10 +720,11 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     fork,
     files,
     omitted,
+    ...(reads.length ? { runtimeReads: reads } : {}),
   };
   replay.prepare = prepareCommand(replay);
   // A file left out may be one the proof needs, so the record has no command.
-  replay.command = !omitted.length && files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
+  replay.command = !omitted.length && !reads.length && files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
     ? forgeCommand(replay)
     : null;
   return replay;
@@ -1077,6 +1226,12 @@ function forgeBundle({ finding, recorded, replay, proof }) {
     if (out.reason) omitted.push({ path: "test/AgentPoc.t.sol", reason: out.reason });
     testSource = out.text ?? null;
   }
+  // The build must find every import in this folder. A record written before
+  // this check, or one that lost a file, is checked here again.
+  const texts = new Map(files.map((f) => [f.path, f.text]));
+  if (testSource && !texts.has("test/AgentPoc.t.sol") && !files.some((f) => f.path.startsWith("test/"))) texts.set("test/AgentPoc.t.sol", testSource);
+  omitted.push(...importGaps(texts, { omitted }));
+  const reads = [...new Set([...(Array.isArray(replay?.runtimeReads) ? replay.runtimeReads.map((r) => bundleText(String(r))) : []), ...runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)))])];
   replay = replay && { ...replay, omitted };
   const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
   // A file the proof may need is not here: the replay would not compile, so
@@ -1087,7 +1242,9 @@ function forgeBundle({ finding, recorded, replay, proof }) {
       : "it does not hold both foundry.toml and a proof test"
     : omitted.length
       ? `${omitted.length} ${omitted.length === 1 ? "file was" : "files were"} left out (see "Left out")`
-      : null;
+      : reads.length
+        ? reads.join("; ")
+        : null;
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
   // Rebuild the command from the recorded fields, so a record written before
   // the offline command still gets one.
