@@ -92,10 +92,23 @@ test('targets are https origins only, once each, capped', () => {
 });
 
 test('testssl.sh always gets the checked address, and does not run without one', async () => {
-  const seen = [];
-  const run = async (engine, opts) => { seen.push(opts.cmd); return { code: 1, stdout: '', stderr: 'stub', timedOut: false }; };
+  const seen = [], opts = [];
+  const run = async (engine, o) => { seen.push(o.cmd); opts.push(o); return { code: 1, stdout: '', stderr: 'stub', timedOut: false }; };
   await captureTls(run, null, [endpoint], () => '93.184.216.34');
-  assert.deepEqual(seen[0].slice(-3), ['--ip', '93.184.216.34', endpoint.host + ':' + endpoint.port]);
+  assert.deepEqual(seen[0].slice(-5), ['--nodns', 'none', '--ip', '93.184.216.34', endpoint.host + ':' + endpoint.port]);
+  // The name is pinned to the same address inside the container, so a check that
+  // uses the name (Winshock's curl) reaches that address too. The env is fixed.
+  assert.deepEqual(opts[0].addHosts, [[endpoint.host, '93.184.216.34']]);
+  assert.deepEqual(opts[0].env, { PHONE_OUT: 'false' });
+  // IPv6: the same pin, to the one checked IPv6 address.
+  seen.length = 0; opts.length = 0;
+  await captureTls(run, null, [endpoint], () => '2606:2800:220:1::');
+  assert.deepEqual(seen[0].slice(-3), ['--ip', '2606:2800:220:1::', endpoint.host + ':' + endpoint.port]);
+  assert.deepEqual(opts[0].addHosts, [[endpoint.host, '2606:2800:220:1::']]);
+  // An IP literal host has no name to pin.
+  opts.length = 0;
+  await captureTls(run, null, [{ origin: 'https://203.0.113.7', host: '203.0.113.7', port: '443' }], () => '203.0.113.7');
+  assert.deepEqual(opts[0].addHosts, []);
   // No checked address: testssl.sh would look the name up itself, so it is not run.
   seen.length = 0;
   const none = await captureTls(run, null, [endpoint], () => null);

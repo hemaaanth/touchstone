@@ -14,7 +14,9 @@
 //   - katana looks each name up again by itself. So a live crawl runs on the run's
 //     confined network and goes through its scope proxy (`confine`), which checks the
 //     address and connects to that same address. With no proxy, katana does not run.
-//   - testssl.sh gets the checked address (--ip), so it does not look the name up again.
+//   - testssl.sh gets the checked address (--ip) for the handshake. Some of its
+//     checks still use the name (the Winshock check fetches http://<name>/), so
+//     the container also pins the name to that address and gets no working resolver.
 //   - checkdmarc and DNSViz get the granted domain. They send DNS questions to the
 //     resolver only. checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
 // The lab keeps its own rule (a listed name or a subdomain of one): its network has no route out.
@@ -254,7 +256,14 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     // Email authentication is DNS only. It keeps its own evidence key, so a
     // failed run is a coverage gap, never a clean result.
     let email, dnssec;
-    if (deep) {
+    // checkdmarc and DNSViz send DNS questions. On a live run the resolver must be
+    // a checked address the grant names; with none, the tools would fall back to
+    // the container's own resolver, which nobody checked. So they do not run: the
+    // rows are gaps with the reason. A lab keeps its own internal resolver.
+    if (deep && !lab && reach.resolver == null) {
+      const why = 'Not run: a live run needs a resolver the grant names, so every DNS question goes to a checked address. This run has none, and the tool is not given the container\'s own resolver. Set reach.resolver for the scope.';
+      for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok']) coverage.push({ engine, status: 'unavailable', reason: why, leads: 0 });
+    } else if (deep) {
       const emailCheck = await checkEmail(run, domain, reach.resolver);
       // The snapshot stores the tool output and its hash; leads re-parse it.
       email = emailCheck.record;

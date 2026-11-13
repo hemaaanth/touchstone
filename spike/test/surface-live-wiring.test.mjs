@@ -69,7 +69,9 @@ const { prepassView } = await import('../lib/prepass-view.mjs');
 // The fixture was recorded against the 127.0.0.1 lab, so the grant names that host and the lab port.
 const labPort = Number(new URL(JSON.parse(recorded.split('\n')[0]).request.endpoint).port);
 // allowPrivate: the lab host is a loopback address. The capture refuses one without the grant's opt-in.
-const reach = { network: 'bridge', granted: true, allowPrivate: true, scope: ['touchstone.test', '127.0.0.1'], ports: [{ scheme: 'http', port: 80 }, { scheme: 'http', port: labPort }] };
+// A resolver the grant names: a live run needs one for checkdmarc and DNSViz (G1 repair item 6).
+// allowPrivate lets this loopback resolver pass the reach check, as the lab host is loopback.
+const reach = { network: 'bridge', granted: true, allowPrivate: true, resolver: '127.0.0.1', scope: ['touchstone.test', '127.0.0.1'], ports: [{ scheme: 'http', port: 80 }, { scheme: 'http', port: labPort }] };
 // The scripts the jsluice fixtures were recorded from, in the recorded file order.
 const labScripts = scriptBodies(recorded, [], ['127.0.0.1'], [{ scheme: 'http', port: labPort }]);
 // The run's reach as app/server/runs.mjs hands it to the prepass: openReach's confine boundary.

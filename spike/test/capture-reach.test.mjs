@@ -52,7 +52,7 @@ const answers = {
 const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...realWrap, runTool: async opts => {
   const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
-  if (deep) { calls.push({ name: deep, cmd: opts.cmd, network: opts.network, env: opts.env, input: [] }); return { code: 1, stdout: '', stderr: 'not run in this test', timedOut: false }; }
+  if (deep) { calls.push({ name: deep, cmd: opts.cmd, network: opts.network, env: opts.env, addHosts: opts.addHosts, input: [] }); return { code: 1, stdout: '', stderr: 'not run in this test', timedOut: false }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   // No real tool may run in this file.
   if (!name) throw new Error('unexpected tool image ' + opts.image);
@@ -384,6 +384,45 @@ test('testssl.sh does not run for an endpoint with no checked address', async ()
   assert.equal(row.status, 'unavailable');
   assert.match(row.reason, /^Not run: no checked address for example\.com\./);
   assert.match(snapshot.tls[0].error, /no checked address/);
+});
+
+test('a host with several checked addresses gets one testssl.sh run, pinned to one of them', async () => {
+  zone = { 'example.com': { a: [PUBLIC, '93.184.216.36'], aaaa: ['2606:2800:220:1::'] }, 'v6.example.com': { aaaa: ['2606:2800:220:1::9'] } };
+  await capture('example.com', live(['example.com', 'v6.example.com']));
+  const runs = calls.filter(c => c.name === 'testssl');
+  assert.deepEqual(runs.map(c => c.cmd.at(-1)), ['example.com:443', 'v6.example.com:443']);
+  // The first checked IPv4 address, for --ip and for the name inside the container.
+  assert.equal(runs[0].cmd[runs[0].cmd.indexOf('--ip') + 1], PUBLIC);
+  assert.deepEqual(runs[0].addHosts, [['example.com', PUBLIC]]);
+  // An IPv6-only host is pinned to its checked IPv6 address.
+  assert.equal(runs[1].cmd[runs[1].cmd.indexOf('--ip') + 1], '2606:2800:220:1::9');
+  assert.deepEqual(runs[1].addHosts, [['v6.example.com', '2606:2800:220:1::9']]);
+  for (const r of runs) { assert.deepEqual(r.env, { PHONE_OUT: 'false' }); assert(r.cmd.includes('--nodns')); }
+});
+
+test('a live run with no resolver does not run checkdmarc or DNSViz, and says why', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  const snapshot = await capture('example.com', live(['example.com']));
+  // The two DNS tools did not run.
+  assert.equal(call('checkdmarc'), undefined);
+  assert.equal(call('dnsviz'), undefined);
+  // Each shows a gap row with the reason, so the run view names the missing resolver.
+  for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok']) {
+    const row = snapshot.discovery.coverage.find(c => c.engine === engine);
+    assert.equal(row.status, 'unavailable', engine);
+    assert.match(row.reason, /^Not run: a live run needs a resolver the grant names/);
+  }
+  // With a resolver, both run (the stub answers them as failed, so each is a gap with its own reason).
+  calls = [];
+  const withR = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(call('checkdmarc').cmd.slice(0, 3), ['example.com', '-n', '1.1.1.1']);
+  assert.deepEqual(call('dnsviz').cmd.slice(0, 3), ['probe', '-s', '1.1.1.1']);
+  assert.doesNotMatch(withR.discovery.coverage.find(c => c.engine === 'checkdmarc').reason ?? '', /needs a resolver the grant names/);
+  // A lab with no resolver still runs them: its network has its own internal resolver.
+  calls = [];
+  await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] });
+  assert(call('checkdmarc'), 'the lab runs checkdmarc');
+  assert(call('dnsviz'), 'the lab runs DNSViz');
 });
 
 // F2. An exact-host grant skips subdomain discovery. The run view says so.

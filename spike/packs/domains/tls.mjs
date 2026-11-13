@@ -2,6 +2,7 @@
 // (GPL-2.0, no code copied). The snapshot stores its JSON file and the sha256
 // of the file bytes. Leads re-parse that file, so replay reads the pin, not a
 // new handshake.
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 import { sha256 } from '../../lib/proof-evidence.mjs';
 import { readOutputFile, readStored, storedRecord } from './stored.mjs';
@@ -56,8 +57,15 @@ export function parseTestssl(text, endpoint) {
 
 // `run` is the caller's coverage-wrapped runTool. Each endpoint gets one file.
 // A failed endpoint and an unparsable answer both come back as an error.
-// ipOf(host) is the address the caller checked. testssl.sh always gets it (--ip),
-// so it never looks the name up itself. With no address the endpoint is not run.
+// ipOf(host) is the one address the caller checked. testssl.sh gets it with --ip,
+// which binds its TLS connections. Some checks still use the host name: the
+// Winshock check fetches http://<name>/ with curl. So the container also gets the
+// name pinned to that address (--add-host) and a resolver where nothing listens,
+// and testssl.sh makes no DNS lookup of its own (--nodns none). An unknown path
+// that needs any other name fails. With no address the endpoint is not run.
+// The env is fixed (PHONE_OUT=false: no CRL, OCSP or pwnedkeys fetch); no other
+// env reaches the container. One address per endpoint: the others are not scanned.
+export const TESTSSL_ENV = { PHONE_OUT: 'false' };
 // `entries` is what the snapshot stores: the endpoint plus the file text and
 // its sha256, or the endpoint plus the error. `evidence` holds the parsed reports.
 export async function captureTls(run, ws, targets, ipOf) {
@@ -68,7 +76,8 @@ export async function captureTls(run, ws, targets, ipOf) {
     const engine = 'testssl:' + endpoint.host + ':' + endpoint.port;
     const gap = error => { runs.push({ engine, error }); entries.push({ url: endpoint.origin, host: endpoint.host, port: Number(endpoint.port), error }); errors.push(error); };
     if (!ip) { gap('Not run: no checked address for ' + endpoint.host + '. testssl.sh would look the name up again by itself.'); continue; }
-    const result = await run(engine, { image: TESTSSL, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
+    const pin = isIP(endpoint.host) ? [] : [[endpoint.host, ip]];
+    const result = await run(engine, { image: TESTSSL, env: TESTSSL_ENV, addHosts: pin, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--nodns', 'none', '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
     if (result.code || result.timedOut) { gap(result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code)); continue; }
     let text;
     try { text = readOutputFile(join(ws, '.live', 'tls-' + i + '.json')); }
