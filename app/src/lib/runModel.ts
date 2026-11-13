@@ -695,6 +695,15 @@ export function reduceEvents(events: RunEvent[]): RunState {
         activity = "idle"
         steps.push({ key, kind: "note", phase, label: "You stopped the run. Send a message to continue." })
         break
+      case "stop-requested":
+        steps.push({ key, kind: "note", phase, label: "Stopping the run" })
+        break
+      case "phase-restarted": {
+        const step = ({ setup: "setup", prepass: "tool scan", agent: "agent turn", proof: "proof check" } as Record<string, string>)[str(e.phase)] ?? "step"
+        newTurn()
+        steps.push({ key, kind: "note", phase, label: `The server restarted, so the ${step} started again` })
+        break
+      }
       case "reply-error":
         steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
         break
