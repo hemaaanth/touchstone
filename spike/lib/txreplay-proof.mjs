@@ -50,6 +50,7 @@ import { mkdtempSync, rmSync, cpSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { JsonRpcProvider, Contract, id, keccak256 } from "ethers";
@@ -199,7 +200,7 @@ export async function startTxLab({ image = KEYS_IMAGE, mode = "keys", readyTimeo
     handle.imageId = idOut.code === 0 ? idOut.stdout.trim() : null;
     // Dedicated bridge with ICC off: the lab is the only member, and nothing else on the
     // host's default bridge can talk to it. Published port stays host-only loopback.
-    const net = await docker(["network", "create", "--opt", "com.docker.network.bridge.enable_icc=false", netName], { timeoutMs: 20_000 });
+    const net = await createLabNetwork(netName, ["--opt", "com.docker.network.bridge.enable_icc=false"], { docker });
     if (net.code !== 0 && !/already exists/i.test(net.stderr)) {
       throw new Error(`startTxLab: network create failed: ${net.stderr.trim().slice(0, 200)}`);
     }
@@ -263,7 +264,7 @@ export async function startTxLab({ image = KEYS_IMAGE, mode = "keys", readyTimeo
 export async function stopTxLab(handle) {
   if (!handle) return;
   if (handle.labName) await docker(["rm", "-f", handle.labName], { timeoutMs: 20_000 });
-  if (handle.netName) await docker(["network", "rm", handle.netName], { timeoutMs: 20_000 });
+  if (handle.netName) await removeLabNetwork(handle.netName, { docker, timeoutMs: 20_000 });
   if (handle.labWs) rmSync(handle.labWs, { recursive: true, force: true });
 }
 
