@@ -16,14 +16,21 @@ const LEADS_FILE = ".web-leads.json";
 // The most one Strix scan can spend. Strix checks its budget only after each
 // model response, so the last turn can start just under the budget and add one
 // full turn: the model's whole context window read, its largest answer written.
-// Prices are per 1M tokens. A model with no published window, answer size or
-// price counts as 1M tokens in, 65536 out, at FALLBACK_PRICE, so an unknown
-// model is not cheap.
+// Prices are per 1M tokens. A model with no published window or answer size
+// counts as 1M tokens in and 65536 out, so an unknown model is not cheap.
 export function strixWorstUsd(model, budgetUsd = STRIX_BUDGET_USD) {
   const inTok = model.context ?? 1_000_000;
   const outTok = model.maxOut ?? 65_536;
-  const usd = inTok * (model.input ?? FALLBACK_PRICE.input) + outTok * (model.output ?? FALLBACK_PRICE.output);
-  return budgetUsd + usd / 1e6;
+  const { input, output } = strixPrices(model);
+  return budgetUsd + (inTok * input + outTok * output) / 1e6;
+}
+
+// The prices Strix's spend is checked and charged at, per 1M tokens. A missing
+// price is FALLBACK_PRICE, one price at a time; a price of 0 stays 0. The
+// estimate and the charge must use the same prices: without a price, runStrix
+// would charge the ledger $0 and every next scan would pass the cap check.
+export function strixPrices(model) {
+  return { input: model.input ?? FALLBACK_PRICE.input, output: model.output ?? FALLBACK_PRICE.output };
 }
 
 // The live prepass: bind the boundary the platform opened, then scan the site
@@ -61,6 +68,7 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
       // spend cap applies: check before, charge the ledger after. Not the run
       // budget: in the app this runs in the server process.
       const m = Object.values(p.models)[0];
+      const price = strixPrices(m);
       capGuard(strixWorstUsd(m));
       strix = await runStrix({
         baseUrl,
@@ -68,8 +76,8 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
           baseUrl: p.baseUrl,
           key,
           model: m.id,
-          inputCost: m.input,
-          outputCost: m.output,
+          inputCost: price.input,
+          outputCost: price.output,
         },
         emit,
       });
