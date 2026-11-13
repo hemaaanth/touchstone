@@ -22,9 +22,8 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
-import { spent } from "../../spike/lib/inference.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
-import { appRunBudgetUsd } from "./settings.mjs"
+import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { openReach } from "../../spike/lib/reach.mjs"
@@ -83,7 +82,7 @@ export function availableModels() {
 }
 
 export function spendState() {
-  return { usd: spent(), budgetUsd: appRunBudgetUsd() }
+  return { ...totalSpendState(), budgetUsd: appRunBudgetUsd() }
 }
 
 // The active inference provider, so the UI can show which gateway a run drives.
@@ -415,6 +414,10 @@ function pipeEvents(child, onEvent, onNoise) {
 
 export async function createRun({ alias, targetId, modules, budgetUsd, pack, mode = "fleet" } = {}) {
   const cfg = readConfig()
+  // The total spend cap comes first: at or above it, or with a ledger that
+  // cannot be read, nothing is prepared and nothing is spent.
+  const capRefusal = spendCapRefusal(cfg)
+  if (capRefusal) throw new Error(capRefusal)
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
@@ -615,10 +618,11 @@ function fleetEnv(run) {
 
 // The run's budget and what it has spent so far, from its own events. A
 // follow-up carries the spent amount forward, so the budget covers the whole run.
-function budgetEnv(run) {
+// Every worker also gets the total spend cap, so its guard stops at the cap.
+export function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   const spend = run.events.findLast((e) => e.ev === "spend")
-  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0), SPEND_CAP_USD: String(appSpendCapUsd()) }
 }
 
 // A transient provider fault: the gateway was busy, slow, or briefly down. The
@@ -634,13 +638,25 @@ const ACCOUNT_ERR = /quota|billing|insufficient|payment|credit|usage[_ ]?limit|i
 // report the spend that ACTUALLY happened (never "nothing was spent" when it
 // did), and give one concrete next step. The structured shape drives the UI's
 // error card; `message` stays a plain string for older clients and logs.
-function failureInfo(run) {
+export function failureInfo(run) {
   const s = run.settled
   const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
   const detail = String(s?.detail ?? "").trim()
   const reason = s?.reason ?? s?.status ?? "unknown"
   const spentNote =
     spentUsd > 0 ? `About $${spentUsd.toFixed(4)} was spent on the work it did complete.` : "Nothing was spent."
+
+  // The total spend cap (the shared ledger) stopped the run, or the ledger or
+  // cap could not be read. A ceiling, not a model fault: another run would stop
+  // the same way, so it is not retryable.
+  if (/total spend cap|SPEND_CAP_USD|spend ledger/i.test(`${detail} ${run.error ?? ""}`)) {
+    return {
+      kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
+      title: "Run stopped at the total spend cap",
+      hint: "All runs together reached the total spend cap, or the spend ledger could not be read. Settings shows the ledger and the cap. Raise the cap or fix the ledger before starting a new run.",
+      message: `the run stopped at the total spend cap before proving a finding — ${spentNote}`,
+    }
+  }
 
   // The budget guard fired: not an error, a ceiling. run.error is set from the
   // budget-reached event; keep that text but classify it so the UI is calm.
@@ -907,6 +923,8 @@ function ensureFiles(run) {
 // the run's saved agent session in a fresh workspace, answers, and exits. Any
 // finding it proves is replayed and added to the run record.
 function followUp(run, text, clientId) {
+  const capRefusal = spendCapRefusal()
+  if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)

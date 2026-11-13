@@ -255,9 +255,14 @@ export interface ModelChoice {
   abliterated: boolean
 }
 
-// Total spent across all runs, and the default budget for one run.
+// Total spent across all runs (the spend ledger), the total spend cap every
+// run stops at, and the default budget for one run. usd and capUsd are null
+// when the ledger or the cap cannot be read; ledgerError then says why, and
+// no new run can start.
 export interface SpendState {
-  usd: number
+  usd: number | null
+  capUsd: number | null
+  ledgerError: string | null
   budgetUsd: number
 }
 

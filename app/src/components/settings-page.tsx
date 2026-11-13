@@ -193,7 +193,31 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
         </div>
       </form>
       {!valid ? <p role="alert" className="mt-1 px-2 text-xs">Enter $0.01 to $1,000.</p> : null}
+      <TotalCapRow spend={settings.spend} />
     </section>
+  )
+}
+
+// The total spend cap across all runs, read-only. The server sets it
+// (default $50.85; spendCapUsd in the provider config, lowered by SPEND_CAP_USD).
+function TotalCapRow({ spend }: { spend: SettingsState["spend"] }) {
+  const money = (n: number) => `$${n.toFixed(2)}`
+  return (
+    <>
+      <div className="flex items-center justify-between gap-4 py-1.5 pr-1 pl-2">
+        <span className="text-sm">Total spend cap</span>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {spend.usd != null && spend.capUsd != null ? `${money(spend.usd)} spent of ${money(spend.capUsd)}` : spend.capUsd != null ? money(spend.capUsd) : "Unknown"}
+        </span>
+      </div>
+      {spend.ledgerError ? (
+        <p role="alert" className="mt-1 px-2 text-xs">{spend.ledgerError} New runs are refused until this is fixed.</p>
+      ) : spend.usd != null && spend.capUsd != null && spend.usd >= spend.capUsd ? (
+        <p role="alert" className="mt-1 px-2 text-xs">The total spend cap is reached. New runs are refused.</p>
+      ) : (
+        <p className="mt-1 px-2 text-xs text-muted-foreground">All runs together stop at this cap. Set by the server.</p>
+      )}
+    </>
   )
 }
 

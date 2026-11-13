@@ -18,9 +18,9 @@ export const BASE_URL = PROVIDER.baseUrl;
 export const MODELS = PROVIDER.models;
 
 // SPEND_LEDGER points every worktree at one shared ledger. SPEND_CAP_USD stops a
-// call once the shared lifetime total would pass it (a wave budget).
-const LEDGER = process.env.SPEND_LEDGER || new URL("../spend.json", import.meta.url);
-const SPEND_CAP = process.env.SPEND_CAP_USD ? Number(process.env.SPEND_CAP_USD) : null;
+// call once the shared lifetime total reaches it (the total spend cap). Both are
+// read on every call, so a test or a server can change them without a reload.
+const ledgerPath = () => process.env.SPEND_LEDGER || new URL("../spend.json", import.meta.url);
 
 export function key() {
   const k = providerKey(PROVIDER);
@@ -31,18 +31,57 @@ export function key() {
 }
 
 // ---- Spend ledger. One global ledger across providers; every paid call goes
-// through charge(). The lifetime ledger is a summary, never a launch gate.
+// through charge(). With SPEND_CAP_USD set, guard() stops a call once the ledger
+// total reaches the cap.
+//
+// Fail closed: a ledger that cannot be read, is not JSON, or has no numeric
+// totalUsd throws. It never reads as $0 spent. A missing file is a fresh ledger.
+// The messages below avoid words the engine's retry check treats as transient
+// ("error", "timeout", "unavailable"), so a cap stop is never retried.
 function readLedger() {
-  return existsSync(LEDGER) ? JSON.parse(readFileSync(LEDGER, "utf8")) : { totalUsd: 0, calls: 0, byModel: {} };
+  const file = ledgerPath();
+  if (!existsSync(file)) return { totalUsd: 0, calls: 0, byModel: {} };
+  let l;
+  try {
+    l = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    l = null;
+  }
+  if (!l || typeof l !== "object" || typeof l.totalUsd !== "number" || !Number.isFinite(l.totalUsd) || l.totalUsd < 0) {
+    throw new Error(`The spend ledger (${file}) is unreadable or corrupt, so the total spend cap cannot be checked. Fix or restore it before spending more.`);
+  }
+  return l;
 }
 export function spent() {
   return readLedger().totalUsd;
 }
+// The ledger total, or why it cannot be read. For screens that must not throw.
+export function ledgerState() {
+  try {
+    return { usd: spent(), error: null };
+  } catch (err) {
+    return { usd: null, error: err.message };
+  }
+}
+// The total spend cap from SPEND_CAP_USD, or null when it is not set. A value
+// that is set but is not a positive finite number throws: it is never "no limit".
+export function spendCapUsd(raw = process.env.SPEND_CAP_USD) {
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`SPEND_CAP_USD is set to "${raw}", which is not a positive dollar amount, so the total spend cap cannot be checked.`);
+  }
+  return n;
+}
+export function spendCapMessage(usd, cap) {
+  return `Total spend cap reached: the ledger shows $${usd.toFixed(4)} of the $${cap.toFixed(2)} total cap (SPEND_CAP_USD). Raise the total cap to spend more.`;
+}
 export function guard(estimateUsd = 0) {
   budget.guard(estimateUsd);
-  if (SPEND_CAP != null && spent() + estimateUsd > SPEND_CAP) {
-    throw new Error(`Spend cap reached: $${spent().toFixed(4)} of $${SPEND_CAP.toFixed(2)} (SPEND_CAP_USD).`);
-  }
+  const cap = spendCapUsd();
+  if (cap == null) return;
+  const usd = spent();
+  if (usd >= cap || usd + estimateUsd > cap) throw new Error(spendCapMessage(usd, cap));
 }
 export function costOf(modelId, inTok, outTok) {
   const m = Object.values(MODELS).find((x) => x.id === modelId);
@@ -61,11 +100,11 @@ export function charge(modelId, usage) {
   budget.charge(usd);
   const l = readLedger();
   l.totalUsd += usd;
-  l.calls += 1;
+  l.calls = (l.calls ?? 0) + 1;
   const key = `${PROVIDER.id}/${modelId}`;
-  const b = (l.byModel[key] ??= { usd: 0, input: 0, output: 0, calls: 0 });
+  const b = ((l.byModel ??= {})[key] ??= { usd: 0, input: 0, output: 0, calls: 0 });
   b.usd += usd; b.input += inTok; b.output += outTok; b.calls += 1;
-  writeFileSync(LEDGER, JSON.stringify(l, null, 2));
+  writeFileSync(ledgerPath(), JSON.stringify(l, null, 2));
   return usd;
 }
 

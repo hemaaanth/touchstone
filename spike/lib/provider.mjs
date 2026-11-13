@@ -4,6 +4,7 @@
 // Chat Completions format.
 import { createAssistantMessageEventStream, createModels, createProvider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
 import { event, withAgent } from "./event.mjs";
@@ -35,19 +36,45 @@ export function budgetedApi(api, agentForSession = () => undefined) {
               event("spend", { ...runSpend(), ...contextUse(model, message.usage) });
             }
           }
-          output.push(e);
+          output.push(e.type === "error" ? markTransient(e) : e);
         }
       } catch (err) {
         output.push({ type: "error", reason: "error", error: {
           role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "error", errorMessage: String(err?.message ?? err), timestamp: Date.now(),
+          stopReason: "error", errorMessage: transientMessage(err?.message ?? err), timestamp: Date.now(),
         } });
       } finally { output.end(); }
     });
     return output;
   };
   return { stream: wrap("stream"), streamSimple: wrap("streamSimple") };
+}
+
+// The engine retries a failed model call (bounded, with backoff: settings.retry
+// in agent-run.mjs) only when pi-ai's isRetryableAssistantError matches the
+// error text. Some transport failures slip past that check. The Lyber gateway
+// ends a stream with an SSE error chunk that reads just "Stream interrupted";
+// pi-ai knows only "stream was interrupted", so one dropped stream ended a whole
+// run with model_error and no retry. Tag those errors with words the check
+// knows. A 4xx status (other than 429) is never tagged: a bad key, a bad request
+// or a missing model must fail fast. Budget and cap stops never match these
+// patterns. Spend is charged above, once per attempt, before this runs; a retry
+// is a new call and goes through check() again, so both budgets still apply.
+const TRANSPORT_DROP = /stream (?:was )?interrupted|\binterrupted\b|ECONNRESET|ETIMEDOUT|ECONNABORTED|EPIPE|premature close/i;
+// A 4xx where providers put the status: first ("401 Unauthorized", "400: {...}"),
+// in brackets ("Lyber (403): ..."), or after "status"/"HTTP"/"code". Not a port
+// such as ":443".
+const CLIENT_STATUS = /^\s*4(?!29)\d\d\b|\(4(?!29)\d\d\)|\b(?:status|http|code)\W{0,3}4(?!29)\d\d\b/i;
+function transientMessage(text) {
+  const t = String(text ?? "");
+  if (!TRANSPORT_DROP.test(t) || CLIENT_STATUS.test(t) || isRetryableAssistantError({ stopReason: "error", errorMessage: t })) return t;
+  return `${t} (transient network error)`;
+}
+function markTransient(e) {
+  if (e.error?.stopReason !== "error") return e;
+  const errorMessage = transientMessage(e.error.errorMessage);
+  return errorMessage === e.error.errorMessage ? e : { ...e, error: { ...e.error, errorMessage } };
 }
 
 // How full the model's context was on this call: every token it read plus the
