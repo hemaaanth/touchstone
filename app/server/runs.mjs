@@ -1526,7 +1526,7 @@ async function resumeRun(run) {
 // coverageGap check on clean-end paths) is a one-line change here.
 async function endRestartedRun(run) {
   if (run.settled.status === "done" && run.settled.final) broadcast(run, { ev: "no-finding", final: run.settled.final })
-  setRunStatus(run, run.settled.status === "done" ? "no-finding" : "error")
+  setRunStatus(run, run.settled.status !== "done" || coverageGap(run) ? "error" : "no-finding")
   finalize(run)
   await endWorkspace(run)
   broadcast(run, { ev: "closed" })
