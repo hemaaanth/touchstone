@@ -97,6 +97,13 @@ async function openHarness(db, ws, state) {
   return { harness, root, reports, pack, fleet };
 }
 
+// The record keeps each assistant text, cut at TEXT_CAP so a long run's record
+// stays small. The last one is the run's final answer, which the run view
+// shows: it is kept whole up to FINAL_CAP. A cut text ends with " …cut", the
+// mark app/src/lib/final-text.ts knows.
+const TEXT_CAP = 4000, FINAL_CAP = 50_000;
+const cutText = (text, cap) => (text.length > cap ? `${text.slice(0, cap)} …cut` : text);
+
 async function summarize(root) {
   const view = await root.context(ctx);
   const calls = [], results = [], assistants = [];
@@ -105,13 +112,14 @@ async function summarize(root) {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       const tc = m.content.filter((b) => b.type === "toolCall");
       tc.forEach((b) => calls.push({ name: b.name, args: b.arguments }));
-      assistants.push({ stop: m.stopReason, text: text.slice(0, 4000), toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
+      assistants.push({ stop: m.stopReason, text, toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
     }
     if (m.role === "toolResult") {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       results.push({ name: m.toolName, isError: !!m.isError, text: text.slice(0, 300) });
     }
   }
+  assistants.forEach((a, i) => { a.text = cutText(a.text, i === assistants.length - 1 ? FINAL_CAP : TEXT_CAP); });
   return { calls, results, assistants, final: assistants.at(-1) };
 }
 

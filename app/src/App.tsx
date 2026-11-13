@@ -186,7 +186,7 @@ export function App() {
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} />
+          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} packs={packs} />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
         ) : page === "modules" ? (
