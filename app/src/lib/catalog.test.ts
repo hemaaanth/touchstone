@@ -58,7 +58,7 @@ describe("module copy follows the pack", () => {
 
   test("a live pack whose grant is a GitHub repo says it reads that repo, not a host", () => {
     const supply = pack({ id: "supply-chain", proof: "evidence", live: true, grants: "github" })
-    assert.equal(moduleNote(supply), "A live run reads a GitHub repo or org you've granted, through the read-only GitHub API.")
+    assert.equal(moduleNote(supply), "A live run reads a GitHub repo or org you've granted, through read-only GitHub reads.")
     assert.equal(moduleAside(supply), "Can read a granted GitHub repo")
   })
 

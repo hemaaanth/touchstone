@@ -176,6 +176,9 @@ export const MANIFEST = [
   { tag: "touchstone/legitify:1.0.11", group: "supply-chain", kind: "build", optional: true,
     context: "spike/packs/supply-chain/images/legitify",
     note: "Legitify. Opt-in; always fails closed (no lead parser)." },
+  { tag: "touchstone/chain-bench:0.1.10-env", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/chain-bench",
+    note: "chain-bench v0.1.10 built from source with a main that reads SCM_TOKEN (never argv). Opt-in." },
 
   // ---- infra-cloud ----
   { tag: "touchstone/checkov-cli:3.4.3", group: "infra-cloud", kind: "build",
@@ -243,7 +246,7 @@ Flags:
   --dry-run           Print each action that would run, do nothing
   --force             Rebuild/repull even if the image is already present
   --only a,b          Only these groups (${[...new Set(MANIFEST.map((m) => m.group))].join(", ")})
-  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify, alpine:3.20)
+  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify, chain-bench, alpine:3.20)
   --daytona           Only images that reach Daytona on main
   --pull-only         Skip builds
   --build-only        Skip pulls

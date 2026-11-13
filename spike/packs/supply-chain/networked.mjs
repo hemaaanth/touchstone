@@ -24,6 +24,7 @@ import { githubTarget } from "../../lib/scopes-store.mjs";
 import { captureSnapshot } from "./snapshot.mjs";
 import { captureGithub } from "./github.mjs";
 import { captureBlocked, blockedFrom } from "./networked-blocked.mjs";
+import { captureChainBench, chainBenchDetectors, chainBenchFrom } from "./chain-bench.mjs";
 
 // Scorecard v5.6.0, built locally from the release tarball checked by SHA-256
 // (images/scorecard/Dockerfile). The CLI has no write flags: it only reads.
@@ -54,9 +55,11 @@ const NOT_USED = { Vulnerabilities: "it needs api.osv.dev, which no run may reac
 // The pack never asks for more: a missing one is a "not covered" gap.
 const ADMIN_SCOPES = { "Branch-Protection": "Administration: read", Webhooks: "Webhooks: read" };
 
-// legitify runs but always fails closed (networked-blocked.mjs): it saves its
-// output, and no lead comes from it until a parser is checked on a real run.
-// chain-bench and raven are never run: an opt-in gives a gap (token only in argv).
+// chain-bench runs in capture mode (chain-bench.mjs; its image reads the token
+// from SCM_TOKEN, never argv). legitify runs but always fails closed
+// (networked-blocked.mjs): it saves its output, and no lead comes from it until
+// a parser is checked on a real run. raven is never run: an opt-in gives a gap
+// that names why (networked-blocked.mjs).
 export const NETWORKED_TOOLS = ["scorecard", "legitify", "chain-bench", "raven"];
 
 const now = () => new Date().toISOString();
@@ -160,7 +163,8 @@ export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree 
   const captures = {};
   const scopeId = typeof cfg.scopeId === "string" ? cfg.scopeId : null;
   if (tools.includes("scorecard")) captures.scorecard = await captureScorecard(snapshot, { target, scopeId, token, run, capture });
-  for (const t of tools) if (t !== "scorecard") captures[t] = await captureBlocked(t, { target, scopeId, token, capture });
+  if (tools.includes("chain-bench")) captures["chain-bench"] = await captureChainBench({ target, scopeId, token, capture });
+  for (const t of tools) if (t !== "scorecard" && t !== "chain-bench") captures[t] = await captureBlocked(t, { target, scopeId, token, capture });
   if (named.length > 1) captures.notes = [`networked tools read only ${target ? `${target.owner}/${target.repo}` : "no repo"}; ${named.length - 1} other targets were not captured`];
   const out = { ...snapshot, ...(signingPolicy ? { signingPolicy } : {}), captures };
   return { snapshot: out, snapshotHash: pinSnapshot(ws, out) };
@@ -269,7 +273,7 @@ export function scorecardFrom(snapshot) {
 
 export function networkedResults(snapshot) {
   const out = { leads: [], coverage: [], gaps: [] };
-  for (const r of [scorecardFrom(snapshot), blockedFrom(snapshot)]) for (const k of Object.keys(out)) out[k].push(...r[k]);
+  for (const r of [scorecardFrom(snapshot), chainBenchFrom(snapshot), blockedFrom(snapshot)]) for (const k of Object.keys(out)) out[k].push(...r[k]);
   for (const note of snapshot.captures?.notes ?? []) out.gaps.push({ kind: "networked-target-not-captured", detail: note });
   return out;
 }
@@ -315,6 +319,7 @@ const sameWhere = (a, b) => ["capture", "sha256", "check", "kind", "file", "line
 
 export function networkedDetectors() {
   return {
+    ...chainBenchDetectors(),
     "tool:scorecard": (snapshot, where) => {
       const cap = snapshot.captures?.scorecard?.[where?.capture];
       if (!cap || cap.status !== "ran" || sha256(cap.text) !== cap.sha256 || cap.sha256 !== where.sha256) return { ok: false };
