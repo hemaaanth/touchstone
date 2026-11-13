@@ -42,7 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
-import { candidateEvents, candidatesOf, dropMeasuredSubmitted, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { candidateEvents, candidatesOf, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -1053,8 +1053,9 @@ async function recordRun(run, found) {
     // A replay that only repeated a measurement is a candidate, not a finding.
     const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
-    if (!findings.length) {
+    if (!findings.length && proven.length) {
       // Only measured candidates: the agent audited and nothing was proven.
+      // (A pack that proves nothing returns no findings; that path is as before.)
       const final = run.settled?.final
       if (final && run.settled?.status === "done") broadcast(run, { ev: "no-finding", final })
       setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
@@ -2601,6 +2602,15 @@ function loadSavedRun(id) {
       mtime = statSync(path.join(RESULTS_DIR, `run-${id}.state.json`)).mtimeMs
     } else return
     if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) return
+    // N3: an older record's finding that only repeated a measurement loads as
+    // a measured candidate (in memory; no file changes).
+    if (events?.length && existsSync(recordFile)) {
+      try {
+        measuredAtLoad(id, events, JSON.parse(readFileSync(recordFile, "utf8")).result)
+      } catch {
+        // an unreadable record: provenByRecord already reads it as not proven
+      }
+    }
     const run = savedRun(id, events, mtime)
     // Never hide an interrupted-error run: list it so a later boot can finish
     // it. Acquire its lock here (as the non-error paths below already rely on)

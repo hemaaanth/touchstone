@@ -37,11 +37,15 @@ describe("the finding answer and the proof gate's harm (K5)", () => {
     expect(f.proof.transfers).toEqual(transfers)
   })
 
-  test("an older record reads as before: no netWei, harm is null", async () => {
+  // N3 (B7): a record from before the harm check has no harm verdict. Harm was
+  // not judged, so it is a candidate, not a finding. The record is unchanged.
+  test("an older record from before the harm check reads as a candidate: harm not judged", async () => {
     // @ts-expect-error — plain .mjs module, no types
-    const { getFinding } = await import("../server/findings.mjs")
-    const f = await getFinding("harm-old-2611110619-1.1", { events: false })
-    expect(f.proof.harm).toBeNull()
-    for (const t of f.proof.transfers) expect(Object.keys(t).sort()).toEqual(["address", "gained", "label", "net"])
+    const { getFinding, listCandidates } = await import("../server/findings.mjs")
+    expect(await getFinding("harm-old-2611110619-1.1", { events: false })).toBeNull()
+    const c = (await listCandidates()).find((x: { runId: string }) => x.runId === "harm-old-2611110619-1")
+    expect(c.origin).toBe("measured")
+    expect(c.proven).toBe(false)
+    expect(c.measured.words).toBe("Harm not judged: recorded before the harm check.")
   })
 })

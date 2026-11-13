@@ -9,7 +9,7 @@ import { writeFileSync, rmSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { proveFindings } from "../lib/record.mjs"
-import { getFinding, listFindings } from "../../app/server/findings.mjs"
+import { getFinding, listCandidates, listFindings } from "../../app/server/findings.mjs"
 import { buildReport, renderReportHtml } from "../../app/server/report.mjs"
 
 const RESULTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../results/agent")
@@ -112,7 +112,11 @@ test("a harm-gated forge proof with no root run_poc reads as proven and shows it
   try {
     const list = await listFindings()
     const rows = list.filter((f) => f.runId === stamp)
-    assert.deepEqual(rows.map((f) => f.proven), [true, false, false, false, true, false, false])
+    // N3 (B7): row 6 passed with no harm verdict, so harm was not judged: it is
+    // a candidate, not a finding. The other rows keep their ids.
+    assert.deepEqual(rows.map((f) => [f.id.split(".").pop(), f.proven]), [["1", true], ["2", false], ["3", false], ["4", false], ["5", true], ["7", false]])
+    const judged = (await listCandidates()).filter((c) => c.runId === stamp)
+    assert.deepEqual(judged.map((c) => [c.title, c.measured.words]), [["Pass but no harm verdict", "Harm not judged: recorded before the harm check."]])
 
     const proved = await getFinding(`${stamp}.1`)
     assert.equal(proved.stages.proven, true)
@@ -147,11 +151,11 @@ test("a harm-gated forge proof with no root run_poc reads as proven and shows it
     assert.equal(absent.proof.testSource, null)
     assert.match(renderReportHtml(buildReport(absent)), /Not proven/)
 
-    for (const k of [6, 7]) {
-      const half = await getFinding(`${stamp}.${k}`)
-      assert.equal(half.stages.proven, false)
-      assert.equal(half.proof.pass, false)
-    }
+    // Row 6 (pass, no harm verdict) is a candidate now: no finding view.
+    assert.equal(await getFinding(`${stamp}.6`), null)
+    const half = await getFinding(`${stamp}.7`)
+    assert.equal(half.stages.proven, false)
+    assert.equal(half.proof.pass, false)
 
     const label = await getFinding(`${stamp}.5`)
     assert.equal(label.stages.proven, true)
@@ -228,10 +232,10 @@ test("an older forge record with a passing root run_poc and no harm field is not
     results: [{ name: "run_poc", text: "Solc 0.8.20\n[PASS] test_pwn() (gas: 50)\nSuite result: ok. 1 passed; 0 failed" }],
   })
   try {
-    const found = await getFinding(`${stamp}.1`)
-    assert.equal(found.stages.proven, false)
-    assert.equal(found.proof.pass, true)
-    assert.equal(found.proof.testSource, legacy)
+    // It is a candidate, not a finding: no finding view, and no report.
+    assert.equal(await getFinding(`${stamp}.1`), null)
+    const c = (await listCandidates()).find((x) => x.runId === stamp)
+    assert.deepEqual([c.origin, c.proven, c.measured.reason], ["measured", false, "harm-not-judged"])
   } finally {
     rmSync(file, { force: true })
   }

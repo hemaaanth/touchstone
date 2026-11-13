@@ -7,7 +7,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
-import { isCandidate } from "../../spike/lib/candidate.mjs"
+import { isCandidate, isMeasured, makeCandidate } from "../../spike/lib/candidate.mjs"
+import { readableTitle } from "../../spike/lib/check-titles.mjs"
+import { measuredOfRecord } from "./candidates.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -113,13 +115,15 @@ function parseAssertions(testSource) {
 // A candidate (spike/lib/candidate.mjs) is never a finding. It lives in
 // `result.candidates`; a record that holds one under `findings` (forged, or
 // written by a bug) still does not list it, count it, open it or export it.
+// N3: neither does an older record's finding whose replay only repeated a
+// measurement (isMeasured): it reads as a measured candidate (listCandidates).
 // The others keep their ids and indexes.
 function splitRun(raw, runId) {
   const r = raw.result || {}
   if (Array.isArray(r.findings) && r.findings.length) {
-    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f })).filter((x) => !isCandidate(x.finding))
+    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f })).filter((x) => !isCandidate(x.finding) && !isMeasured(x.finding))
   }
-  if (r.finding && !isCandidate(r.finding)) {
+  if (r.finding && !isCandidate(r.finding) && !isMeasured({ ...r.finding, pocProved: r.pocProved, proof: r.proof })) {
     return [{
       id: runId,
       runId,
@@ -265,7 +269,8 @@ function normalize(raw, { id, runId, finding }) {
     id,
     // The run this finding came from. One run can record several findings.
     runId,
-    title: finding.title || null,
+    // A title that is only a check id reads as the check's title (N3).
+    title: readableTitle(finding.title, finding.proof?.check ?? finding.evidence?.check ?? finding.proof?.oracle?.name ?? finding.oracleName) || null,
     severity: finding.severity || null,
     ...(pack ? { pack } : {}),
     proofKind: kind,
@@ -400,6 +405,60 @@ async function runStartedAt(runId) {
     await file?.close()
   }
   return null
+}
+
+// The candidates of one stored run: its own `result.candidates` (the agent's,
+// and the measured ones a newer run recorded), then the measured candidates
+// its older finding rows read as. Ids are `<run>.c<k>` in that order, so they
+// stay the same from read to read: records are never rewritten.
+function runCandidates(raw, runId) {
+  const r = raw.result || {}
+  const own = (Array.isArray(r.candidates) ? r.candidates : []).map((c) => makeCandidate(c ?? {}))
+  const derived = measuredOfRecord(runId, r, Math.max(0, ...own.map((c) => Number(c.n) || 0))).candidates
+  return [...own, ...derived].map((c, k) => ({ ...c, id: `${runId}.c${k + 1}`, runId }))
+}
+
+const moduleOf = (pack) => (pack === "contracts" ? "Contracts" : pack ? (PACKS[pack]?.title ?? pack) : "Unknown")
+
+// Every candidate of every stored run, with the fields a list row needs. A
+// candidate is never proven and has no report or bundle in this pass.
+export async function listCandidates() {
+  let entries = []
+  try {
+    entries = await readdir(resultsDir())
+  } catch {
+    return []
+  }
+  const out = []
+  for (const file of entries.filter((f) => f.startsWith("run-") && f.endsWith(".json")).sort()) {
+    try {
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
+      const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
+      const r = raw.result || {}
+      const at = await runStartedAt(runId)
+      for (const c of runCandidates(raw, runId)) {
+        const pack = c.pack || r.pack || null
+        out.push({
+          id: c.id,
+          runId,
+          kind: "candidate",
+          title: readableTitle(c.title, c.measured?.check) || null,
+          severity: c.severity,
+          module: moduleOf(pack),
+          pack,
+          target: r.target?.title || "Unknown",
+          scope: r.target && typeof r.target === "object" ? (r.target.title ?? null) : null,
+          at,
+          origin: c.origin,
+          measured: c.measured ? { reason: c.measured.reason, words: c.measured.words, count: c.measured.count, check: c.measured.check } : null,
+          proven: false,
+        })
+      }
+    } catch {
+      // A malformed or partial file is skipped, never shown as a fake candidate.
+    }
+  }
+  return out
 }
 
 export async function listFindings() {

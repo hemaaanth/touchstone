@@ -280,7 +280,19 @@ function measuredBlock(m) {
 }
 
 const RANK = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
-const replayPassed = (f) => f?.proof?.status === "pass" || f?.proof?.pass === true || (f?.pocProved === true && f?.proof?.status !== "fail" && f?.proof?.pass !== false);
+// The replay passed. A forge proof whose harm gate failed did not, as gate()
+// reads it (lib/record.mjs): such a finding stays an unproven finding.
+const replayPassed = (f) => {
+  const p = f?.proof;
+  if (!p || typeof p !== "object") return false; // no replay record: nothing was measured again
+  if (p.harm && p.harm.ok !== true) return false;
+  return p?.status === "pass" || p?.pass === true || (f?.pocProved === true && p?.status !== "fail" && p?.pass !== false);
+};
+
+// A finding whose replay passed but only repeated a measurement: it is read
+// and recorded as a measured candidate, never as a finding. An old record's
+// row reads the same way at load (nothing rewrites the record).
+export const isMeasured = (f) => Boolean(f) && typeof f === "object" && !isCandidate(f) && !isProven(f) && replayPassed(f) && proofClass(f) !== "harm";
 
 // After the final proof: a finding whose replay passed but only repeated a
 // measurement (lib/proof-class.mjs) is not a finding. It becomes a measured
@@ -294,7 +306,7 @@ export function splitMeasured(list, { from = 0 } = {}) {
   const groups = new Map();
   for (const f of list ?? []) {
     if (!f || typeof f !== "object") continue;
-    if (isProven(f) || !replayPassed(f) || proofClass(f) === "harm") {
+    if (!isMeasured(f)) {
       findings.push(f);
       continue;
     }

@@ -147,7 +147,7 @@ describe("a joined run: each finding's write-up is its own module's call (D3b a)
         packs: ["contracts", "web", "domains"],
         findings: [
           { title: "Web leak", severity: "high", pack: "web", poc: "replay-1", pocProved: true, proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor", passed: true }, log: [] } },
-          { title: "Vault drain", severity: "critical", pack: "contracts", poc: "VaultTest", pocProved: true, proof: { kind: "forge", pass: true, contract: "VaultTest", transfers: [] } },
+          { title: "Vault drain", severity: "critical", pack: "contracts", poc: "VaultTest", pocProved: true, proof: { kind: "forge", pass: true, contract: "VaultTest", transfers: [], harm: { ok: true, kind: "funds" } } },
         ],
       },
       transcript: {
@@ -166,7 +166,7 @@ describe("a joined run: each finding's write-up is its own module's call (D3b a)
 
   test("a one-module record keeps the plain submit_finding call", async () => {
     write("zz-plain-2611130001-1", {
-      result: { finding: { title: "Old drain", severity: "high", poc: "OldTest" }, pocProved: true },
+      result: { finding: { title: "Old drain", severity: "high", poc: "OldTest" }, pocProved: true, proof: { pass: true, harm: { ok: true, kind: "funds" } } },
       transcript: { calls: [{ name: "submit_finding", args: { poc_contract: "OldTest", explanation: "old write-up" } }], results: [] },
     })
     expect((await getFinding("zz-plain-2611130001-1", { events: false })).explanation).toBe("old write-up")

@@ -8,7 +8,7 @@
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
+import { isMeasured, makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
 import { redactSecrets } from "./redact.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 
@@ -139,4 +139,49 @@ export function candidateEvents(result, have, t) {
     .map(normalizeCandidate)
     .filter((c) => !seen.some((x) => x.poc === c.poc))
     .map((candidate) => ({ t, ev: "candidate-submitted", candidate }))
+}
+
+// The rows of a run record, each with its ledger id: `<run>.<k>`, or the run
+// id for an older record with one finding (splitRun in findings.mjs).
+export function recordRows(id, result) {
+  const r = result ?? {}
+  if (Array.isArray(r.findings) && r.findings.length) return r.findings.map((f, k) => ({ id: `${id}.${k + 1}`, finding: f }))
+  if (r.finding) return [{ id, finding: { ...r.finding, pocProved: r.pocProved, proof: r.proof } }]
+  return []
+}
+
+// The measured candidates an older record's findings read as (N3). The
+// record keeps them as findings; nothing rewrites it. Numbered after `from`.
+export function measuredOfRecord(id, result, from = 0) {
+  const rows = recordRows(id, result).filter((x) => isMeasured(x.finding))
+  return { ids: new Set(rows.map((x) => x.id)), candidates: splitMeasured(rows.map((x) => x.finding), { from }).candidates }
+}
+
+// At load, in memory only: an older record's finding that only repeated a
+// measurement is shown as a measured candidate. Its `finding` event and its
+// proof file leave the loaded events, its id leaves the status lines, and a
+// candidate-submitted event takes its place. A run left with no finding reads
+// "no-finding". The stream file and the record stay as they are.
+export function measuredAtLoad(id, events, result) {
+  const have = candidatesOf(events)
+  const { ids, candidates } = measuredOfRecord(id, result, Math.max(0, ...have.map((c) => Number(c.n) || 0)))
+  if (!ids.size) return
+  const known = new Set(have.map((c) => c.poc))
+  const at = events.findIndex((e) => e.ev === "finding" && ids.has(String(e.id)))
+  const t = events[at]?.t ?? events.at(-1)?.t ?? Date.now()
+  const proofs = new Set([...ids].map((x) => `proof-${x}`))
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if ((e.ev === "finding" && ids.has(String(e.id))) || (String(e.ev).startsWith("artifact-") && proofs.has(String(e.id)))) events.splice(i, 1)
+    else if (e.ev === "status" && Array.isArray(e.findingIds)) {
+      const left = e.findingIds.filter((x) => !ids.has(String(x)))
+      events[i] = { ...e, findingIds: left, ...(e.findingId != null && ids.has(String(e.findingId)) ? { findingId: left[0] ?? null } : {}) }
+    }
+  }
+  const added = candidates.filter((c) => !known.has(c.poc)).map((candidate) => ({ t, ev: "candidate-submitted", candidate }))
+  events.splice(at >= 0 ? Math.min(at, events.length) : events.length, 0, ...added)
+  const last = events.findLastIndex((e) => e.ev === "status")
+  if (last >= 0 && events[last].status === "recorded" && !events.some((e) => e.ev === "finding")) {
+    events[last] = { ...events[last], status: "no-finding", decision: null, findingId: null, findingIds: [] }
+  }
 }

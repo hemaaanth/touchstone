@@ -84,14 +84,14 @@ const records: Record<string, string> = {
           severity: "high",
           pocProved: true,
           explanation: `${PEM_BODY} -----END PRIVATE KEY----- came back from the debug route`,
-          proof: { kind: "evidence", status: "pass", check: "key-dump" },
+          proof: { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak" } },
         },
       ],
     },
   }),
   [`run-${LONG}.json`]: JSON.stringify({
     result: {
-      findings: [{ title: "Huge write-up", severity: "low", pocProved: true, explanation: `Key ${TOKEN}. ` + "The vault pays twice. ".repeat(4000), proof: { kind: "evidence", status: "pass", check: "big" } }],
+      findings: [{ title: "Huge write-up", severity: "low", pocProved: true, explanation: `Key ${TOKEN}. ` + "The vault pays twice. ".repeat(4000), proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } }],
     },
   }),
 }
@@ -152,13 +152,19 @@ describe("findings list (server): the fields a row needs", () => {
     const by = (t: string) => rows.find((f) => f.title === t)!
     expect(by("Debug route leaks the session token").pack).toBe("web")
     expect(by("Lookalike domain").pack).toBe("domains")
-    expect(by("Script without SRI").pack).toBe("web")
+    // N3: an evidence replay repeats a measurement, so this row is a candidate
+    // now (listCandidates), with the run's pack, and not in the findings list.
+    expect(rows.some((f) => f.title === "Script without SRI")).toBe(false)
+    // @ts-expect-error — plain .mjs module, no types
+    const { listCandidates } = await import("../server/findings.mjs")
+    const c = (await listCandidates()).find((x: { runId: string }) => x.runId === MULTI)
+    expect([c.title, c.pack, c.origin, c.proven]).toEqual(["Script without SRI", "web", "measured", false])
   })
 
   test("the scope and the run start come from the run", async () => {
     const rows = await listed()
     const multi = rows.filter((f) => f.runId === MULTI)
-    expect(multi).toHaveLength(3)
+    expect(multi).toHaveLength(2)
     for (const f of multi) {
       expect(f.scope).toBe("Synthetic lab")
       expect(f.at).toBe(STARTED)

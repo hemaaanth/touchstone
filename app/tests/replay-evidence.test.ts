@@ -76,20 +76,21 @@ describe("evidence replay keeps no snapshot text", () => {
       const stored = readFileSync(path.join(results, "run-ev-1.json"), "utf8")
       for (const s of SECRETS) expect(stored.includes(s)).toBe(false)
 
-      // The bundle route refuses, with a reason, and sends no snapshot text.
+      // N3: an evidence replay repeats a measurement, so this finding reads as
+      // a measured candidate. A candidate has no report and no bundle (404),
+      // and no answer sends snapshot text.
       const bundle = await call("/api/findings/ev-1.1/report?format=bundle")
-      expect(bundle.status).toBe(409)
-      expect(JSON.parse(bundle.body).error).toContain("no replay bundle")
+      expect(bundle.status).toBe(404)
       expect(bundle.headers["content-type"]).toBe("application/json")
       for (const s of SECRETS) expect(bundle.body.includes(s)).toBe(false)
 
       // The builder refuses too, so no other caller can zip the snapshot.
       expect(() => buildReplayBundle({ finding: { proofKind: "evidence", proof: found[0].proof }, recorded: { proof: found[0].proof } })).toThrow("no replay bundle")
 
-      // The other report formats still work and carry no snapshot text.
-      for (const format of ["json", "md", "html"]) {
+      // No other format answers for it either, and none carries snapshot text.
+      for (const format of ["json", "md", "html", "agent"]) {
         const r = await call(`/api/findings/ev-1.1/report?format=${format}`)
-        expect(r.status).toBe(200)
+        expect(r.status).toBe(404)
         for (const s of SECRETS) expect(r.body.includes(s)).toBe(false)
       }
     } finally {
@@ -104,15 +105,10 @@ describe("evidence replay keeps no snapshot text", () => {
     const replay = { version: 1, kind: "evidence", snapshotHash: "c".repeat(64), scrubbed: false, files: [{ path: "snapshot.json", text: JSON.stringify(snapshot) }], omitted: [] }
     const row = { title: "committed key", severity: "critical", proven: true, proof: { kind: "evidence", check: "key", status: "pass", replay } }
     writeFileSync(path.join(results, "run-ev-old.json"), JSON.stringify({ result: { findingSubmitted: true, recorded: true, decision: "approved", findings: [row] } }))
-    for (const format of ["bundle", "zip", "bundle-check"]) {
+    // N3: a measured candidate now, so no format answers (404), and none sends that text.
+    for (const format of ["bundle", "zip", "bundle-check", "json", "md", "html", "agent"]) {
       const r = await call(`/api/findings/ev-old.1/report?format=${format}`)
-      expect([format, r.status]).toEqual([format, 409])
-      expect(JSON.parse(r.body).error).toContain("no replay bundle")
-      for (const s of SECRETS) expect(r.body.includes(s)).toBe(false)
-    }
-    for (const format of ["json", "md", "html"]) {
-      const r = await call(`/api/findings/ev-old.1/report?format=${format}`)
-      expect([format, r.status]).toEqual([format, 200])
+      expect([format, r.status]).toEqual([format, 404])
       for (const s of SECRETS) expect([format, r.body.includes(s)]).toEqual([format, false])
     }
   })
@@ -178,9 +174,9 @@ describe("evidence replay keeps no snapshot text", () => {
   })
 
   test("an unknown report format is refused, not answered with json", async () => {
-    const r = await call("/api/findings/ev-1.1/report?format=bogus")
+    const r = await call("/api/findings/http-leak.1/report?format=bogus")
     expect(r.status).toBe(400)
     expect(JSON.parse(r.body).error).toContain("unknown format")
-    expect((await call("/api/findings/ev-1.1/report?format=JSON")).status).toBe(200)
+    expect((await call("/api/findings/http-leak.1/report?format=JSON")).status).toBe(200)
   })
 })

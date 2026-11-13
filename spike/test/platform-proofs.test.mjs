@@ -8,7 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PACKS } from "../packs/index.mjs"
 import { proofKind, isProven, proofView, cell, withProven } from "../lib/proof-view.mjs"
-import { getFinding, listFindings } from "../../app/server/findings.mjs"
+import { getFinding, listCandidates, listFindings } from "../../app/server/findings.mjs"
 
 const RESULTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../results/agent")
 
@@ -75,7 +75,10 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
   writeFileSync(file, JSON.stringify({ result: { pack: "fakeweb", target: { title: "Fake lab", pack: "fakeweb" }, prepass, findings: [http, evidence, forgeOld], recorded: true, decision: "approved", approveMode: "auto", calls: [] }, transcript: {} }))
   try {
     const list = await listFindings()
-    assert.equal(list.filter((f) => f.runId === stamp).length, 3)
+    // N3: the evidence row and the old forge row (no harm verdict) are
+    // candidates now; only the http finding is a finding.
+    assert.equal(list.filter((f) => f.runId === stamp).length, 1)
+    assert.deepEqual((await listCandidates()).filter((c) => c.runId === stamp).map((c) => c.measured.reason), ["repeated", "harm-not-judged"])
     const h = await getFinding(`${stamp}.1`)
     assert.equal(h.proofKind, "http")
     assert.equal(h.pack, "fakeweb")
@@ -84,14 +87,11 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
     assert.deepEqual(h.prepass, prepass)
     assert.equal(h.proof.exchanges.length, 1)
     assert.equal(h.staticScan, null)
-    const e = await getFinding(`${stamp}.2`)
-    assert.equal(e.proofKind, "evidence")
-    // N3: an evidence replay repeats a measurement; it is not proof of harm.
-    assert.equal(e.stages.proven, false)
-    assert.ok(!JSON.stringify(e).includes("sk-live-123"))
-    const f = await getFinding(`${stamp}.3`)
-    assert.equal(f.proofKind, "forge")
-    assert.equal(f.proof.tool, "Foundry")
+    // N3: an evidence replay repeats a measurement; it is not proof of harm,
+    // so it is no finding (and has no finding view). Nor is the old forge row.
+    assert.equal(await getFinding(`${stamp}.2`), null)
+    assert.equal(await getFinding(`${stamp}.3`), null)
+    assert.ok(!JSON.stringify(await listCandidates()).includes("sk-live-123"))
   } finally {
     delete PACKS.fakeweb
     rmSync(file, { force: true })
