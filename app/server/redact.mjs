@@ -187,8 +187,13 @@ function maskQuoteHeader(m, lead, name, sep, raw) {
 
 // The masked header value, or null to keep the value as it is. An
 // Authorization value keeps its scheme word: "Bearer [REDACTED]".
+// The supply-chain pack names a leaked secret by its file and sha256:
+// "secret:<file>:<sha256>". That is a fingerprint, not the secret.
+const FINGERPRINT = /^[^\s:]{1,512}:[0-9a-f]{64}$/
+
 function maskHeaderValue(name, value) {
-  if (!secretName(name) || value.startsWith("[REDACTED")) return null
+  if (!secretName(name) || value.startsWith("[REDACTED") || keepUnder(value)) return null
+  if (/^secret$/i.test(name) && FINGERPRINT.test(value)) return null
   if (/authorization$/i.test(name)) {
     const m = /^([A-Za-z][\w-]*)([ \t]+)([\s\S]+)$/.exec(value)
     if (m) return credential(m[3]) || LETTER_KEY.test(m[3]) ? `${m[1]}${m[2]}${MARK}` : null

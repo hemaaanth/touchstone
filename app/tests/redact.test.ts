@@ -590,3 +590,21 @@ describe("redact: the keys auth, credentials and pwd (delta review 4)", () => {
     expect(redactSecrets(plain)).toEqual(plain)
   })
 })
+
+describe("redact: evidence under a secret header name stays (delta review 4)", () => {
+  const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  test("a 0x address and a secret fingerprint stay", () => {
+    for (const s of [
+      "Token: 0x1111111111111111111111111111111111111111",
+      "- token: 0x1111111111111111111111111111111111111111",
+      `secret:contracts/deploy.env:${sha}`,
+      `rootCause secret:src/keys.ts:${sha}\nsecret:a.env:${sha}`,
+    ]) expect(text(s)).toBe(s)
+    expect(redactSecrets({ rootCause: `secret:contracts/deploy.env:${sha}` })).toEqual({ rootCause: `secret:contracts/deploy.env:${sha}` })
+  })
+  test("a secret value next to them is still masked", () => {
+    expect(text(`Secret: ${sha}`)).toBe("Secret: [REDACTED]")
+    expect(text(`secret: prod key ${sha}`)).toBe("secret: [REDACTED]")
+    expect(text("Token: 0x" + "ab".repeat(32))).toBe("Token: [REDACTED]")
+  })
+})
