@@ -1,149 +1,84 @@
-# Vacuity gate
+# FeeVault invariant vacuity gate
 
-A green invariant suite is not evidence until it can fail. This spike gates a
-Foundry suite on three things: the handler reaches the target, the suite kills
-small mutants, and the suite fails on a known bug. The target story is
-`FeeVault`; an agent wrote seven invariants, all passed, and the contract was
-fully drainable. The handler did `vm.deal(address(this), x)`, then `vm.prank(actor)`,
-then `deposit{value: x}()`. The prank made the actor the payer, the actor had no
-ETH, every deposit reverted, and the handler's `try/catch` hid it. The vault
-stayed empty, so all seven invariants held over the initial state. The gate
-exists to reject that suite.
+A passing invariant suite can be dead. For example, a handler can catch every
+failed deposit and leave the vault empty. This fixture-specific gate rejects that
+case. It compares an invariant on a healthy reference, fixed mutants, and (with
+`--known-bug`) the planted `rescue` access-control bug.
 
-## What it checks
+## Run
 
-1. **Liveness.** From Forge's execution traces it counts calls to the target,
-   failed calls, successful value-bearing calls, storage writes, and per-selector
-   success. The suite fails if the handler never calls the target, if the target
-   state never moves, or if any selector that was called never succeeded. A
-   silently caught revert is still visible in the trace.
-2. **Mutation kill.** It applies six fixed text mutants to the target source on
-   a throwaway copy: remove the deposit guard, remove the withdraw guard, ignore
-   a failed `rescue` transfer, divide fees by 1,000 instead of 10,000, overwrite
-   `feesAccrued` instead of adding, and move the `withdraw` state write after the
-   external call. It runs the suite on each mutant. Zero kills fail the gate.
-3. **Known-bug control.** With `--known-bug`, it runs the suite on the untouched
-   buggy source and reports every failing invariant. Not detecting the planted
-   bug fails the gate.
-
-The gate never edits the input project. Every run happens in a temp copy under
-the system temp dir.
-
-## How to run
-
-```
-cd spike/packs/contracts/vacuity-gate
-node gate.mjs --project fixtures/property-spike \
-  --test test/FeeVaultInvariants.t.sol --known-bug
+```sh
+node spike/packs/contracts/vacuity-gate/gate.mjs \
+  --project spike/packs/contracts/vacuity-gate/fixtures/property-spike \
+  --test test/ReviewProof.t.sol --known-bug
+node --experimental-test-module-mocks --test \
+  spike/packs/contracts/vacuity-gate/gate.test.mjs
 ```
 
-The command prints one JSON verdict to stdout. Exit code is 0 only when every
-check passes. `--keep` keeps the temp copy for inspection.
+The input project is never edited. The gate rejects symlinks, copies the project
+to a temp directory, and writes only inside that copy. `--keep` retains the
+copies for inspection. It emits one JSON verdict; exit 0 means `pass: true`.
 
-Docker is `ghcr.io/foundry-rs/foundry:latest`, `--network none`, host uid, the
-solc cache volume mounted at `/home/foundry/.svm`. The volume is `foundry-svm`
-(the brief names `touchstone_svm_cache`; that volume exists but is empty today,
-so the runner tries both). `runDocker()` from `spike/lib/wrap.mjs` is used, but
-not `runTool()`, because `runTool()` has no extra-volume parameter for the solc
-cache.
+The Forge image is pinned to
+`ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39`.
+Install that exact digest and populate a `foundry-svm` or
+`touchstone_svm_cache` volume **before** running. Every Forge invocation,
+including `forge inspect`, uses `runDocker()` with `--pull=never`,
+`--network none`, memory/PID/timeout limits, capability drop, and
+`no-new-privileges`. A missing image or cache is an offline prerequisite error.
 
-## Result A: the vacuous agent suite
+## What counts
 
-Command:
+- **Healthy control:** the selected invariant must run and succeed on the
+  unmutated healthy source. `--known-bug` repairs `FeeVault.rescue` with
+  `onlyOwner` in the healthy copy; the input source is the planted-bug copy.
+  The repair must match exactly once. An already-failing control cannot score.
+- **Known bug:** the same named invariant must newly fail on the buggy copy.
+  A unit test, `setUp()` failure, skipped test, compiler error, or timeout is
+  not a detected invariant bug.
+- **Mutation kill:** the same named invariant must newly fail on a compiled
+  mutant compared with the successful healthy control. The six fixed edits
+  include deposit/withdraw guards, rescue transfer failure, fee divisor, fee
+  accumulation, and withdraw write order. A kill is credited only for an
+  explicit invariant `Failure`, not another test or `Skipped` result.
+- **Liveness:** Forge runs **one entire invariant campaign** using
+  `FOUNDRY_INVARIANT_RUNS=1`, rather than treating a debugger replay of one
+  run as evidence about the default 256 runs. Its handler-call metrics must
+  match the execution traces per handler method. Forge may append one replay
+  action, which is excluded from state scoring. Calls under reverted actions
+  cannot count as successes. A successful action must leave a net target
+  balance or storage-value difference from its pre-action state. Intermediate
+  writes, same-value `SSTORE`, and deposit-then-withdraw round trips do not
+  count. An incomplete trace or absent storage dump fails closed. Every target
+  selector observed in the scored campaign needs a successful committed call.
+- **Code fingerprints:** the selected test and its reachable relative,
+  non-relative, and remapped project imports are checked for bytecode/codehash
+  reads. Such comparisons cannot count as behavioral assertions. Vendored
+  `forge-std` imports are treated as trusted library code.
 
-```
-node gate.mjs --project fixtures/property-spike \
-  --test test/FeeVaultInvariants.t.sol --known-bug
-```
+The normal positive fixture is `ReviewProof.t.sol`: it changes target state,
+checks fee accounting, detects the unauthorized rescue on the buggy source,
+and kills the fee mutants. The old `FeeVaultInvariantsFixed.t.sol` example
+is **not accepted**: the repaired rescue cannot succeed under its handler,
+and its previous six “kills” were inherited from the buggy baseline. The
+withdraw-write-after-call reentrancy mutant is **not** shown killed by that
+example; the earlier score provided no evidence about it.
 
-Real verdict, exit code 1:
+## Scope and limits
 
-```json
-{
-  "pass": false,
-  "liveness": {
-    "pass": false,
-    "targetCalls": 39,
-    "successfulTargetCalls": 26,
-    "failedTargetCalls": 13,
-    "successfulValueCalls": 0,
-    "storageWrites": 9,
-    "targetCallSuccessRate": 0.6667,
-    "deadSelectors": ["deposit()"],
-    "reasons": ["liveness: 1 selector(s) never succeeded"]
-  },
-  "killRate": 0,
-  "knownBug": { "planted": true, "detected": false, "failingInvariants": [] },
-  "reasons": [
-    "liveness: 1 selector(s) never succeeded",
-    "known-bug: the suite passed on the original buggy source",
-    "mutants: killed 0 of 6 applied mutants"
-  ]
-}
-```
+This is evidence of non-vacuity **for the selected invariant, the one scored
+campaign, the repaired reference, and the fixed mutants**. It is not a claim
+that every invariant or fuzz seed is covered, that every bug is detectable, or
+that arbitrary Solidity assertions are semantically behavioral. The
+fingerprint scan rejects direct code identity checks in reachable project
+sources, but does not audit the vendored `forge-std` library or opaque external
+calls. Target discovery expects `src/` and a handler in the test directory.
+The literal repair and mutants are specific to the supplied `FeeVault` source;
+for another contract they must be designed afresh. A suite that only passes
+under the one selected random campaign may still fail under other seeds.
 
-The gate rejects it on liveness. `deposit()` was called and never succeeded,
-and no successful call ever carried ETH. All six mutants survived because owner
-paths (`setFeeBps`, `collectFees`) still execute, but no user state moves.
-
-## Result B: the fixed suite
-
-The fixed copy changes one line: `vm.deal(actor, actor.balance + amount)` funds
-the payer instead of the handler. Everything else is unchanged.
-
-Command:
-
-```
-node gate.mjs --project fixtures/property-spike \
-  --test test/FeeVaultInvariantsFixed.t.sol --known-bug
-```
-
-Real verdict, exit code 0:
-
-```json
-{
-  "pass": true,
-  "liveness": {
-    "pass": true,
-    "targetCalls": 7,
-    "successfulTargetCalls": 7,
-    "failedTargetCalls": 0,
-    "successfulValueCalls": 1,
-    "storageWrites": 1,
-    "targetCallSuccessRate": 1,
-    "deadSelectors": [],
-    "reasons": []
-  },
-  "killRate": 1,
-  "knownBug": {
-    "planted": true,
-    "detected": true,
-    "failingInvariants": ["invariant_solvency()"]
-  },
-  "reasons": []
-}
-```
-
-Liveness passes and the known-bug control names `invariant_solvency` on the
-unguarded `rescue`. All six mutants were killed.
-
-## Limits
-
-- The mutation set is six fixed literal edits for `FeeVault`. A target with
-  different source needs its own list; patterns that do not match once are
-  reported as not applied and left out of the kill rate.
-- Reentrancy mutants do not kill unless the suite's actor can receive ETH and
-  re-enter. `withdraw-write-after-call` survives here for that reason.
-- Liveness reads traces from one invariant campaign. A suite whose first
-  invariant has unusual setup can under-sample; the dead-selector rule still
-  catches a selector that is called and never succeeds.
-- The known-bug control needs `--known-bug`. Without it the gate only proves
-  liveness and mutation kill.
-- Because the fixed suite already fails on the buggy source, every mutant run
-  fails too and the kill rate is trivially 1. On a target whose baseline passes,
-  the kill rate is the real signal.
-- Target discovery assumes the target is deployed from `src/` and the handler
-  lives in the test directory. One suite contract per test file is required by
-  `forge test --debug`.
-- The gate proves the suite is not vacuous for the exercised paths. It does not
-  prove the invariants are complete.
+Negative fixtures `ReviewFail`, `ReviewGreen`, `ReviewSkip`, `ReviewRollback`,
+`ReviewSample`, `ReviewRoundTrip`, `ReviewSetup`, and `ReviewHiddenHash` each
+exercise a former false pass. The test also rejects an external symlinked
+input before any test-file read. If Docker is unavailable, the integration
+checks skip; that is not evidence of a passing gate.

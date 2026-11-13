@@ -18,7 +18,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runDocker } from "../../../lib/wrap.mjs";
 
-const IMAGE = "ghcr.io/foundry-rs/foundry:latest";
+const IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
+const REPAIR = {
+  find: "    function rescue(address payable to, uint256 amount) external {",
+  replace: "    function rescue(address payable to, uint256 amount) external onlyOwner {",
+};
 const USER = `${process.getuid()}:${process.getgid()}`;
 
 const SKIP = new Set(["out", "cache", ".git", "broadcast", ".vacuity-gate"]);
@@ -93,8 +97,18 @@ function parseArgs(argv) {
   }
   if (!out.project || !out.test) throw new Error("--project and --test are required");
   out.project = path.resolve(out.project);
-  if (!fs.statSync(out.project).isDirectory()) throw new Error(`not a directory: ${out.project}`);
-  if (!fs.statSync(path.join(out.project, out.test)).isFile()) throw new Error(`no such test file: ${out.test}`);
+  if (fs.lstatSync(out.project).isSymbolicLink() || !fs.statSync(out.project).isDirectory()) throw new Error(`not a real directory: ${out.project}`);
+  const relative = path.relative(out.project, path.resolve(out.project, out.test));
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new Error(`test must be inside the project: ${out.test}`);
+  }
+  let current = out.project;
+  for (const part of relative.split(path.sep)) {
+    current = path.join(current, part);
+    if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`test symlink forbidden: ${out.test}`);
+  }
+  if (!fs.statSync(current).isFile()) throw new Error(`no such test file: ${out.test}`);
+  out.test = relative;
   return out;
 }
 
@@ -104,9 +118,41 @@ function copyProject(src, dest) {
     filter: (p) => {
       const rel = path.relative(src, p);
       if (!rel) return true;
-      return !SKIP.has(rel.split(path.sep)[0]);
+      if (SKIP.has(rel.split(path.sep)[0])) return false;
+      if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`project symlink forbidden: ${rel}`);
+      return true;
     },
   });
+}
+
+// Follow both relative and Foundry remapped imports. Do not mistake an unused
+// helper for evidence; only files reachable from the selected test matter.
+function fingerprintReads(root, test) {
+  const found = [], seen = new Set();
+  const config = fs.readFileSync(path.join(root, "foundry.toml"), "utf8");
+  const remaps = [...config.matchAll(/"([^"\s=]+)=([^"\s]+)"/g)].map((m) => [m[1], m[2]]);
+  function walk(file) {
+    if (seen.has(file) || file.startsWith(path.join(root, "lib", "forge-std") + path.sep)) return;
+    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) throw new Error(`unresolved project import: ${file}`);
+    seen.add(file);
+    const text = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+    if (/\.code(?:hash|\b)|\bextcode(?:hash|size|copy)\b|\b(?:creationCode|runtimeCode)\b|\bgetCode\s*\(/i.test(text)) {
+      found.push(path.relative(root, file));
+    }
+    for (const match of text.matchAll(/\bimport\s+(?:[^;]*?\bfrom\s*)?["']([^"']+)["']\s*;/g)) {
+      const name = match[1];
+      if (name.startsWith("forge-std/")) continue;
+      const mapped = remaps.find(([prefix]) => name.startsWith(prefix));
+      const candidates = name.startsWith(".") ? [path.resolve(path.dirname(file), name)] : [
+        path.resolve(root, name),
+        ...(mapped ? [path.resolve(root, mapped[1], name.slice(mapped[0].length))] : []),
+        path.resolve(root, "lib", name.split("/")[0], "src", ...name.split("/").slice(1)),
+      ];
+      walk(candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]);
+    }
+  }
+  walk(path.resolve(root, test));
+  return found;
 }
 
 function svmVolume() {
@@ -122,7 +168,8 @@ function svmVolume() {
 async function forge(ws, argv, timeoutMs = 300_000) {
   const volume = svmVolume();
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
+    "-e", "FOUNDRY_INVARIANT_RUNS=1",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", USER,
     "-v", `${ws}:/work`, "-w", "/work",
@@ -142,11 +189,8 @@ async function runSuite(ws, test, { debug = false, matchTest = null } = {}) {
   try {
     fs.rmSync(resultsFile(ws));
   } catch {}
-  const argv = ["test", "--match-path", test, "--json-file", ".vacuity-gate/results.json"];
-  if (debug) {
-    if (matchTest) argv.push("--match-test", matchTest);
-    argv.push("--debug", "--dump", ".vacuity-gate/dump");
-  }
+  const argv = ["test", "--match-path", test, "--match-test", matchTest ?? "^invariant_", "--json-file", ".vacuity-gate/results.json"];
+  if (debug) argv.push("--debug", "--dump", ".vacuity-gate/dump");
   const run = await forge(ws, argv);
   let results = null;
   try {
@@ -163,15 +207,23 @@ function allTestResults(results) {
   return list;
 }
 
-function failingNames(results) {
-  const names = new Set();
-  for (const { name, tr } of allTestResults(results)) {
-    if (tr.status !== "Success") names.add(name);
+function invariantStatuses(run) {
+  const tests = allTestResults(run.results);
+  if (run.timedOut || !tests.length || tests.some(({ name, tr }) =>
+    !name.startsWith("invariant_") || !tr.kind?.Invariant || !["Success", "Failure"].includes(tr.status))) return null;
+  const statuses = new Map();
+  for (const { name, tr } of tests) {
+    statuses.set(name, tr.status);
     for (const p of tr.invariant_predicate_results ?? []) {
-      if (p.status !== "Success") names.add(p.name);
+      if (!["Success", "Failure"].includes(p.status)) return null;
+      statuses.set(p.name, p.status);
     }
   }
-  return [...names].sort();
+  return statuses;
+}
+
+function failures(statuses) {
+  return [...(statuses ?? [])].filter(([, status]) => status === "Failure").map(([name]) => name).sort();
 }
 
 function metricsOf(results) {
@@ -197,32 +249,44 @@ function tracedTargetCalls(results, target) {
   return calls;
 }
 
-function storageWrites(dumpDir, target) {
+// The debugger dump contains the replayed campaign's storage deltas. A write
+// counts only when its handler action commits and its final value differs.
+function committedStorageChanges(dumpDir, target, handlers, handlerMethods, metrics) {
   let trace;
   try {
     trace = JSON.parse(fs.readFileSync(path.join(dumpDir, "trace.json"), "utf8"));
   } catch {
-    return 0;
+    return null;
   }
-  const calls = (trace.artifacts?.calls ?? []).filter(
-    (c) => c.success && c.to?.toLowerCase() === target.toLowerCase(),
-  );
-  let writes = 0;
-  for (const c of calls) {
-    for (const step of trace.steps ?? []) {
-      if (
-        step.op === "SSTORE" &&
-        step.depth === c.depth &&
-        Number.isInteger(c.entry_step) && Number.isInteger(c.exit_step) &&
-        step.pc >= 0 &&
-        trace.steps.indexOf(step) >= c.entry_step &&
-        trace.steps.indexOf(step) <= c.exit_step
-      ) {
-        writes++;
+  if (!Array.isArray(trace.steps) || !Array.isArray(trace.artifacts?.calls)) return null;
+  const calls = trace.artifacts.calls;
+  const byId = new Map(calls.map((c) => [c.id, c]));
+  const roots = calls.filter((c) => c.parent_id == null && handlers.has(c.to?.toLowerCase()) && c.success);
+  const seen = new Map();
+  let changes = 0;
+  for (const root of roots) {
+    const method = handlerMethods.get(root.to.toLowerCase())?.get(root.input?.slice(0, 10).toLowerCase());
+    if (!method) continue;
+    seen.set(method, (seen.get(method) ?? 0) + 1);
+    if (seen.get(method) > (metrics[method]?.calls ?? 0)) continue;
+    const slots = new Map();
+    for (const c of calls) {
+      if (c.to?.toLowerCase() !== target.toLowerCase() || !c.success || !Number.isInteger(c.entry_step)) continue;
+      let parent = c;
+      while (parent.parent_id != null && parent.success) parent = byId.get(parent.parent_id);
+      if (parent !== root || !root.success) continue;
+      for (let i = c.entry_step; i <= c.exit_step; i++) {
+        const step = trace.steps[i];
+        if (step?.op !== "SSTORE" || step.depth !== c.depth) continue;
+        for (const [slot, delta] of Object.entries(step.snapshot?.storage_diff ?? {})) {
+          const existing = slots.get(slot);
+          slots.set(slot, { before: existing ? existing.before : delta.before, after: delta.after });
+        }
       }
     }
+    changes += [...slots.values()].filter((v) => v.before != null && v.after != null && BigInt(v.before) !== BigInt(v.after)).length;
   }
-  return writes;
+  return changes;
 }
 
 function contracts(dumpDir) {
@@ -262,63 +326,91 @@ function resolveTarget(dumpDir, testPath, results) {
   return { target: null, name: null, handlers };
 }
 
-function inspectSelectors(ws, name) {
-  const r = execFileSync("docker", [
-    "run", "--rm", "--network", "none", "--user", USER,
-    "-v", `${ws}:/work`, "-w", "/work",
-    ...(svmVolume() ? ["-v", `${svmVolume()}:/home/foundry/.svm`] : []),
-    "--entrypoint", "forge", IMAGE, "inspect", name, "methods",
-  ], { encoding: "utf8" });
+async function inspectSelectors(ws, name) {
+  const r = await forge(ws, ["inspect", name, "methods"]);
+  if (r.code !== 0 || r.timedOut) throw new Error(`forge inspect failed: ${(r.stderr || r.stdout).trim().slice(-300)}`);
   const map = new Map();
-  for (const line of r.split("\n")) {
+  for (const line of r.stdout.split("\n")) {
     const m = line.match(/^\|\s*(\S+\([^)]*\))\s*\|\s*([0-9a-fA-F]{8})\s*\|/);
     if (m) map.set(`0x${m[2].toLowerCase()}`, m[1]);
   }
   return map;
 }
 
-function livenessCheck({ dumpDir, test, results, target }) {
-  const calls = tracedTargetCalls(results, target);
-  const successful = calls.filter((c) => c.success);
-  const value = successful.filter((c) => BigInt(c.value ?? "0x0") > 0n);
-  const bySelector = new Map();
-  for (const c of calls) {
-    const sel = (c.data ?? "0x").slice(0, 10).toLowerCase();
-    const row = bySelector.get(sel) ?? { selector: sel, calls: 0, successes: 0 };
-    row.calls++;
-    if (c.success) row.successes++;
-    bySelector.set(sel, row);
-  }
-  const dead = [...bySelector.values()].filter((r) => r.successes === 0);
-  const failed = calls.length - successful.length;
-  const writes = storageWrites(dumpDir, target);
+function livenessCheck({ dumpDir, results, target, handlers, handlerMethods }) {
   const metrics = metricsOf(results) ?? {};
   const handlerCalls = Object.values(metrics).reduce((n, m) => n + (m.calls ?? 0), 0);
   const handlerReverts = Object.values(metrics).reduce((n, m) => n + (m.reverts ?? 0), 0);
-
+  const bySelector = new Map();
+  let tracedActions = 0, successfulTargetCalls = 0, successfulValueCalls = 0, targetCalls = 0, balanceChanges = 0;
+  const tracedMethods = new Map();
+  for (const { tr } of allTestResults(results)) {
+    for (const [label, trace] of tr.traces ?? []) {
+      if (label !== "Execution") continue;
+      const arena = trace.arena ?? [];
+      const root = arena.find((n) => n.parent == null);
+      if (!root || !handlers.has(root.trace?.address?.toLowerCase()) || root.trace.kind === "STATICCALL") continue;
+      tracedActions++;
+      const method = handlerMethods.get(root.trace.address.toLowerCase())?.get(root.trace.data?.slice(0, 10).toLowerCase());
+      if (method) tracedMethods.set(method, (tracedMethods.get(method) ?? 0) + 1);
+      if (!method || tracedMethods.get(method) > (metrics[method]?.calls ?? 0)) continue;
+      let balanceDelta = 0n;
+      for (const node of arena) {
+        const c = node.trace;
+        if (c.address?.toLowerCase() !== target.toLowerCase() || c.kind === "CREATE") continue;
+        targetCalls++;
+        let parent = node;
+        let committed = true;
+        while (parent) {
+          if (!parent.trace.success) committed = false;
+          parent = parent.parent == null ? null : arena[parent.parent];
+        }
+        const sel = (c.data ?? "0x").slice(0, 10).toLowerCase();
+        const row = bySelector.get(sel) ?? { selector: sel, calls: 0, successes: 0 };
+        row.calls++;
+        if (committed) {
+          row.successes++;
+          successfulTargetCalls++;
+          const value = BigInt(c.value ?? "0x0");
+          if (value > 0n) successfulValueCalls++;
+          balanceDelta += value;
+        }
+        bySelector.set(sel, row);
+      }
+      // Include ETH paid out by the target, not only ETH received by it.
+      if (root.trace.success) for (const node of arena) {
+        const c = node.trace;
+        if (c.caller?.toLowerCase() !== target.toLowerCase() || !c.success) continue;
+        let parent = node;
+        let committed = true;
+        while (parent) {
+          if (!parent.trace.success) committed = false;
+          parent = parent.parent == null ? null : arena[parent.parent];
+        }
+        if (committed) balanceDelta -= BigInt(c.value ?? "0x0");
+      }
+      if (root.trace.success && balanceDelta !== 0n) balanceChanges++;
+    }
+  }
+  const storageChanges = committedStorageChanges(dumpDir, target, handlers, handlerMethods, metrics);
+  const dead = [...bySelector.values()].filter((r) => r.successes === 0);
   const reasons = [];
-  if (calls.length === 0) reasons.push("liveness: handler never reached the target");
-  if (calls.length > 0 && successful.length === 0) reasons.push("liveness: every target call failed");
+  // Forge may append one debugger replay action beyond the recorded metrics.
+  if (!handlerCalls || tracedActions < handlerCalls || tracedActions > handlerCalls + 1 ||
+      Object.entries(metrics).some(([method, m]) => (tracedMethods.get(method) ?? 0) < m.calls)) {
+    reasons.push(`liveness: incomplete campaign trace (${tracedActions}/${handlerCalls} actions)`);
+  }
+  if (targetCalls === 0) reasons.push("liveness: handler never reached the target");
+  if (targetCalls && !successfulTargetCalls) reasons.push("liveness: every target call failed or was rolled back");
   if (dead.length) reasons.push(`liveness: ${dead.length} selector(s) never succeeded`);
-  if (value.length === 0 && writes === 0) reasons.push("liveness: target state never moved");
-
+  if (storageChanges == null) reasons.push("liveness: debugger storage evidence unavailable");
+  if (!balanceChanges && !storageChanges) reasons.push("liveness: no committed target balance or storage-value change");
   return {
-    pass: reasons.length === 0,
-    targetCalls: calls.length,
-    successfulTargetCalls: successful.length,
-    failedTargetCalls: failed,
-    successfulValueCalls: value.length,
-    storageWrites: writes,
-    targetCallSuccessRate: calls.length ? Number((successful.length / calls.length).toFixed(4)) : 0,
-    handlerCalls,
-    handlerReverts,
-    selectors: [...bySelector.values()].map((r) => ({
-      selector: r.selector,
-      calls: r.calls,
-      successes: r.successes,
-    })),
-    deadSelectors: dead.map((r) => r.selector),
-    reasons,
+    pass: reasons.length === 0, targetCalls, successfulTargetCalls,
+    failedTargetCalls: targetCalls - successfulTargetCalls, successfulValueCalls,
+    storageChanges, balanceChanges, handlerCalls, handlerReverts, tracedActions,
+    targetCallSuccessRate: targetCalls ? Number((successfulTargetCalls / targetCalls).toFixed(4)) : 0,
+    selectors: [...bySelector.values()], deadSelectors: dead.map((r) => r.selector), reasons,
   };
 }
 
@@ -326,6 +418,11 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const volume = svmVolume();
   if (!volume) throw new Error("no solc cache volume (foundry-svm or touchstone_svm_cache); refusing to use the network");
+  try {
+    execFileSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" });
+  } catch {
+    throw new Error(`preinstalled pinned Forge image missing: ${IMAGE}; refusing to pull`);
+  }
 
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-gate-"));
   const ws = path.join(base, "project");
@@ -341,8 +438,30 @@ async function main() {
   try {
     log(`copying ${opts.project}`);
     copyProject(opts.project, ws);
+    const fingerprints = fingerprintReads(ws, opts.test);
+    if (fingerprints.length) {
+      verdict.reasons.push(`control: code fingerprint reads are not behavioral evidence (${fingerprints.join(", ")})`);
+      return verdict;
+    }
+    const invariant = fs.readFileSync(path.join(ws, opts.test), "utf8").match(/\bfunction\s+(invariant_\w+)/)?.[1];
+    if (!invariant) {
+      verdict.reasons.push("control: no invariant function found");
+      return verdict;
+    }
+    const matchTest = `^${invariant}\\(`;
+    const targetSourcePath = path.join(ws, "src", "FeeVault.sol");
+    if (opts.knownBug) {
+      const text = fs.readFileSync(targetSourcePath, "utf8");
+      if (text.split(REPAIR.find).length !== 2) {
+        verdict.reasons.push("known-bug: reference repair pattern must occur exactly once");
+        return verdict;
+      }
+      const buggy = path.join(base, "buggy");
+      copyProject(ws, buggy);
+      fs.writeFileSync(targetSourcePath, text.replace(REPAIR.find, REPAIR.replace));
+    }
 
-    log("baseline: compiling and running the suite");
+    log("healthy control: compiling and running the same invariant selection");
     const build = await forge(ws, ["build", "--quiet"]);
     if (build.code !== 0) {
       verdict.reasons.push(`compile: ${(build.stderr || build.stdout).trim().split("\n").slice(-3).join(" ")}`);
@@ -350,38 +469,46 @@ async function main() {
     }
 
 
-    // `--debug` needs exactly one test. Any invariant runs the whole handler
-    // campaign, and its result lists every predicate, so one is enough.
-    const invariant = fs.readFileSync(path.join(ws, opts.test), "utf8").match(/\bfunction\s+(invariant_\w+)/)?.[1];
-    const baseRun = await runSuite(ws, opts.test, { debug: true, matchTest: invariant });
-    if (!baseRun.results) {
-      verdict.reasons.push(`run: forge produced no results (${(baseRun.stderr || baseRun.stdout).trim().split("\n").slice(-3).join(" ")})`);
+    // One configured invariant run makes the debugger replay the entire
+    // scored campaign. The other predicates still appear in its result.
+    const baseRun = await runSuite(ws, opts.test, { debug: true, matchTest });
+    const healthy = invariantStatuses(baseRun);
+    if (!healthy || baseRun.code !== 0 || failures(healthy).length) {
+      verdict.reasons.push("control: healthy reference must pass every selected invariant (no skips or execution errors)");
       return verdict;
     }
-
     const dumpDir = path.join(ws, ".vacuity-gate", "dump");
     const { target, name, handlers } = resolveTarget(dumpDir, opts.test, baseRun.results);
-    const baseFails = failingNames(baseRun.results);
-
     if (opts.knownBug) {
-      verdict.knownBug.detected = baseFails.length > 0;
-      verdict.knownBug.failingInvariants = baseFails;
+      const buggyRun = await runSuite(path.join(base, "buggy"), opts.test, { matchTest });
+      const buggy = invariantStatuses(buggyRun);
+      verdict.knownBug.failingInvariants = failures(buggy).filter((name) => healthy.get(name) === "Success");
+      verdict.knownBug.detected = Boolean(buggy && buggyRun.code === 1 && !buggyRun.timedOut && verdict.knownBug.failingInvariants.length);
+      if (!verdict.knownBug.detected) verdict.reasons.push("known-bug: no new invariant Failure against the repaired reference");
     }
 
     if (!target) {
       verdict.liveness = { pass: false, reasons: ["liveness: could not identify a target contract outside the test directory"] };
       verdict.reasons.push(...verdict.liveness.reasons);
-      if (opts.knownBug && !verdict.knownBug.detected) verdict.reasons.push("known-bug: the suite passed on the original buggy source");
       return verdict;
     }
     log(`target: ${name} (${target})`);
 
-    verdict.liveness = livenessCheck({ dumpDir, test: opts.test, results: baseRun.results, target });
-    const names = inspectSelectors(ws, name);
+    const handlerMethods = new Map();
+    for (const c of contracts(dumpDir).filter((c) => handlers.has(c.address))) {
+      const methods = await inspectSelectors(ws, `${opts.test}:${c.name}`);
+      handlerMethods.set(c.address.toLowerCase(), new Map([...methods].map(([selector, signature]) =>
+        [selector, `${opts.test}:${c.name}.${signature.split("(")[0]}`])));
+    }
+    verdict.liveness = livenessCheck({ dumpDir, results: baseRun.results, target,
+      handlers: new Set([...handlers].map((h) => h.toLowerCase())), handlerMethods });
+    const names = await inspectSelectors(ws, name);
     for (const row of verdict.liveness.selectors) row.name = names.get(row.selector) ?? null;
     verdict.liveness.deadSelectors = verdict.liveness.deadSelectors.map((s) => names.get(s) ?? s);
-    if (!verdict.liveness.pass) verdict.reasons.push(...verdict.liveness.reasons);
-    if (opts.knownBug && !verdict.knownBug.detected) verdict.reasons.push("known-bug: the suite passed on the original buggy source");
+    if (!verdict.liveness.pass) {
+      verdict.reasons.push(...verdict.liveness.reasons);
+      return verdict;
+    }
 
     const src = contracts(dumpDir)
       .find((c) => c.address === target);
@@ -409,8 +536,10 @@ async function main() {
           continue;
         }
         entry.compiled = true;
-        const mr = await runSuite(mws, opts.test);
-        entry.killed = Boolean(mr.results) && failingNames(mr.results).length > 0;
+        const mr = await runSuite(mws, opts.test, { matchTest });
+        const mutantStatuses = invariantStatuses(mr);
+        entry.failingInvariants = failures(mutantStatuses).filter((name) => healthy.get(name) === "Success");
+        entry.killed = Boolean(mutantStatuses && mr.code === 1 && !mr.timedOut && entry.failingInvariants.length);
         log(`${mutant.id}: ${entry.killed ? "killed" : "survived"}`);
       }
       const applied = verdict.mutants.filter((m) => m.applied && m.compiled);
