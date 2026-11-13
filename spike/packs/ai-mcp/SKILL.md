@@ -41,17 +41,27 @@ transcript.
 
 `prepass` starts the lab on a fresh `--internal` Docker network and saves its
 handle in the workspace. Then it scans a second, throwaway copy of the lab with
-two open-source tools, each run through `runTool()` (see `scan.mjs`):
+four open-source tools, each run through `runTool()` (see `scan.mjs`):
 
 - MCP Inspector (`@modelcontextprotocol/inspector` CLI): lists the tools. We
   read the list with plain rules. Which tool can send data out? Which one
   changes or deletes? Which one takes an address or a path?
 - Nuclei: one original template. Does `tools/list` answer with no sign-in?
+- mcp-shield: text patterns in each tool description (hidden instructions,
+  shadowing another tool, a sensitive file path) and side-channel parameter
+  names. It runs with no model key, so it makes no model call.
+- garak (live runs only): sends known prompt-injection prompts to the
+  operator's assistant chat endpoint and checks each reply with string rules.
+  It runs only when the live scope sets the chat path and a request budget (8
+  to 200). A relay in the container stops at the budget. No detector model
+  runs, so no reply text leaves the machine. A match is a lead: garak cannot
+  see what a tool call did.
 
 The result is a prepass record (`coverage` and `leads`). It shows in the run
 view as a fold. The agent gets the leads in its first message and can read them
-again with `mcp_leads`. A lead is a hint. The scan reads only the tool list. It
-cannot see what a tool does, or what the assistant does with a stranger's text.
+again with `mcp_leads`. A lead is a hint. The first three tools read only the
+tool list. garak reads only reply text. None of them sees what a tool does, or
+what the assistant does with a stranger's text.
 
 ## Steps
 
@@ -142,7 +152,8 @@ A clean scan misses all of them. The tool list shows only that risky tools exist
   oracles. A live target must bring its own token table.
 - The assistant is rule-based, not a model. It tests the harness and the
   oracles. It does not measure how easily a real model is fooled. Use a model
-  based probe tool (garak, promptfoo) for that, as a lead source. See TOOLS.md.
+  based probe tool for that, as a lead source: garak runs in a live run with a
+  budget. See TOOLS.md.
 - A live target IS wired (`live: true`): prepass scans the real base URL, the
   script runs in a container confined to the grant, and `prove()` replays at the
   real server. The operator's bearer token rides in the scope and the brief; a

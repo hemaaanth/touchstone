@@ -1,0 +1,8 @@
+{
+  "name": "touchstone-mcp-shield",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mcp-shield": "1.0.4"
+  }
+}

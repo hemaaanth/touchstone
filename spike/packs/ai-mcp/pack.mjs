@@ -27,7 +27,7 @@ import {
   writeLabHandle,
   requireImage,
 } from "../../lib/proof-http.mjs";
-import { scanMcp } from "./scan.mjs";
+import { GARAK_BUDGET, scanMcp } from "./scan.mjs";
 import { SCAN_NETWORK, bindLive, isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { fp, scrubProof, scrubText } from "../web/redact.mjs";
@@ -65,7 +65,25 @@ function mcpConfig(ws) {
     token: typeof cfg.token === "string" && cfg.token ? cfg.token : null,
     tokens: cfg.tokens && typeof cfg.tokens === "object" ? cfg.tokens : null,
     toolScope: cfg.toolScope && typeof cfg.toolScope === "object" ? cfg.toolScope : null,
+    assistant: cfg.assistant && typeof cfg.assistant === "object" ? cfg.assistant : null,
   };
+}
+
+// What garak gets in a live run. It runs only when the operator set the
+// assistant's chat path and a request budget: each request can cost them a
+// model call. Anything else is a "did not run" line with the reason.
+const JSON_KEY = /^[A-Za-z_][\w-]{0,39}$/;
+export function garakPlan(assistant) {
+  const a = assistant ?? {};
+  if (typeof a.path !== "string" || !a.path) return { skip: "garak did not run: the live scope sets no assistant chat path and budget." };
+  if (!/^\/[\w\-./~%]*$/.test(a.path) || a.path.includes("..")) return { skip: "garak did not run: the assistant path must start with / and hold no query or host." };
+  if (!Number.isInteger(a.budget) || a.budget < GARAK_BUDGET.min || a.budget > GARAK_BUDGET.max) {
+    return { skip: `garak did not run: the request budget must be a whole number from ${GARAK_BUDGET.min} to ${GARAK_BUDGET.max}.` };
+  }
+  for (const k of ["reqKey", "replyKey"]) {
+    if (a[k] != null && !(typeof a[k] === "string" && JSON_KEY.test(a[k]))) return { skip: `garak did not run: ${k} is not a plain JSON key.` };
+  }
+  return { path: a.path, budget: a.budget, reqKey: a.reqKey ?? undefined, replyKey: a.replyKey ?? undefined };
 }
 // What a secret looks like. The lab's own two shapes are built in. A run against
 // another target adds its own: TOUCHSTONE_MCP_SECRET_PATTERNS is a list of
@@ -437,7 +455,7 @@ Rules of the environment:
   - POST /mcp/approve: the operator's approval step for a tool. Body { tool }. A tool the
     operator has approved is trusted from then on. Always re-list tools after you use it.
 - Read BRIEF.md in your workspace for what the assistant is meant to do.
-- The prepass already ran two scanners (mcp-inspector and nuclei). Their leads are in
+- The prepass already ran three scanners (mcp-inspector, nuclei, mcp-shield). Their leads are in
   your first message and in mcp_leads. They are hints. They read only the tool list.
   They cannot see what a tool does, or what the assistant does with untrusted text.
 - A lead is only a lead. After a script runs, the tool tells you whether the transcript
@@ -552,7 +570,7 @@ function kickoff(ws, env = {}) {
   if (live && cfg.tokens) parts.push(`Token scopes the operator supplied:\n${JSON.stringify(cfg.tokens)}\nTool-to-scope map:\n${JSON.stringify(cfg.toolScope ?? {})}`);
   if (live && !cfg.tokens) parts.push("The operator supplied no token table, so the scope-bypass check cannot fire. The other checks still can.");
   if (env.LEADS && env.LEADS !== "[]") {
-    parts.push(`Prepass leads from mcp-inspector and nuclei (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
+    parts.push(`Prepass leads from mcp-inspector, nuclei, mcp-shield and (in a live run with a budget) garak (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
   } else {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
@@ -649,7 +667,7 @@ function tools(ws, state) {
 
   const mcpLeads = defineTool({
     name: "mcp_leads",
-    description: "Read the prepass scan leads again (mcp-inspector, nuclei). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. The scan reads only the tool list. It cannot see what a tool does or what the assistant does with untrusted text.",
+    description: "Read the prepass scan leads again (mcp-inspector, nuclei, mcp-shield, and garak in a live run with a budget). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. mcp-inspector, nuclei and mcp-shield read only the tool list. garak only checks reply text with string rules. None of them sees what a tool call does.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => ({ output: [{ type: "text", text: readWorkspaceText(ws, LEADS_FILE) ?? "No scan leads were recorded for this run." }] }),
@@ -660,11 +678,14 @@ function tools(ws, state) {
 
 // The prepass does two things.
 //  1. Start the lab the agent will test (its handle is saved in the workspace).
-//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector and nuclei.
+//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector, nuclei and
+//     mcp-shield. garak never runs on the lab: the lab assistant is rule-based,
+//     not a model, and garak is for the operator's own assistant.
 //     Scanner traffic never touches the agent's lab or its transcripts.
 // A LIVE run has no lab: the target is the operator's own server. We bind the
 // platform's reach boundary and scan the real base URL, with the operator's
-// token when they supplied one. Nothing later may fall back to the lab.
+// token when they supplied one. garak also runs, but only with the assistant
+// path and request budget the operator set. Nothing later may fall back to the lab.
 async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   secretPatterns(); // throws on a bad TOUCHSTONE_MCP_SECRET_PATTERNS, before any lab starts
   await requireImage(image, "ai-mcp");
@@ -687,9 +708,9 @@ async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   let scanLab = null;
   try {
     const where = live
-      ? { net: SCAN_NETWORK, baseUrl: readTouchstone(ws).baseUrl, token: mcpConfig(ws).token ?? undefined }
+      ? { net: SCAN_NETWORK, baseUrl: readTouchstone(ws).baseUrl, token: mcpConfig(ws).token ?? undefined, garak: garakPlan(mcpConfig(ws).assistant) }
       : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl, token: READER });
-    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei"] });
+    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei", "mcp-shield", ...(where.garak?.path ? ["garak"] : [])] });
     scan = await scanMcp(where);
   } catch (err) {
     emit({ ev: "ai-mcp-scan-failed", error: String(err?.message ?? err).slice(0, 200) });

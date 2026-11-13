@@ -1,0 +1,26 @@
+# garak 0.17.1 (NVIDIA, Apache-2.0), the LLM probe kit, for the ai-mcp pack.
+#
+# Base: python:3.12-slim pinned by digest. Every Python dependency is pinned by
+# hash in garak/requirements.lock (made with `uv pip compile --generate-hashes
+# --torch-backend cpu`, so torch is the CPU build). The build needs network; the
+# scan does not reach anything but the target.
+#
+# Our garak/run.py drives it: garak's `rest` generator talks only to a relay on
+# 127.0.0.1 inside the container, and the relay forwards to the operator's
+# assistant endpoint until the request budget is used up. Only probes whose
+# detectors are plain string or regex checks run, and the Hugging Face libraries
+# are forced offline, so no detector model is downloaded and no target text goes
+# to a third party.
+#
+# Build: npm run build:labs -- garak   (tag touchstone/garak:0.17.1)
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY garak/requirements.lock /opt/garak/requirements.lock
+RUN pip install --require-hashes --no-deps -r /opt/garak/requirements.lock \
+      --extra-index-url https://download.pytorch.org/whl/cpu
+COPY garak/run.py /opt/garak/run.py
+ENV HOME=/tmp XDG_DATA_HOME=/tmp/xdg XDG_CONFIG_HOME=/tmp/xdg XDG_CACHE_HOME=/tmp/xdg \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTHONDONTWRITEBYTECODE=1
+WORKDIR /tmp
+ENTRYPOINT ["python", "-I", "/opt/garak/run.py"]
