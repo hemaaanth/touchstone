@@ -108,6 +108,10 @@ test("cited lines must appear in the attempt's evidence", async () => {
   assert.equal(noFix.reason, "bad-input");
   const sev = await checkCandidate({ pack: "web", state, lookup, args: args("a1", { severity: "huge" }) });
   assert.equal(sev.reason, "bad-input");
+  // Review Minor 6: a cite must sit inside one line of the output; joining
+  // the end of one line to the start of the next is not a quote.
+  const span = await checkCandidate({ pack: "web", state, lookup, args: args("a1", { evidence_lines: ['[{"email":"a@x.io"}] 2. DELETE /admin'] }) });
+  assert.equal(span.reason, "bad-cite");
   // Whitespace differences do not matter.
   const loose = await checkCandidate({ pack: "web", state, lookup, args: args("a1", { evidence_lines: ["  DELETE  /admin/users/7\n-> 204 "] }) });
   assert.ok(loose.candidate);

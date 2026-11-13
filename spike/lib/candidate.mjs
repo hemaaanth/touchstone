@@ -265,8 +265,9 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   if (!own && !/\bFix:/.test(explanation)) return refuse("bad-input", "The write-up must end with a line starting \"Fix:\".");
   const cites = (Array.isArray(args.evidence_lines) ? args.evidence_lines : []).map((l) => String(l).trim()).filter(Boolean);
   if (cites.length === 0 || cites.length > 6) return refuse("bad-input", "Cite 1 to 6 exact lines from the attempt's output in evidence_lines.");
-  const haystack = squash(attempt.text);
-  const missing = cites.find((c) => squash(c).length < 8 || !haystack.includes(squash(c)));
+  // Each cite must sit inside one line of the output, whitespace aside.
+  const lines = String(attempt.text ?? "").split("\n").map(squash);
+  const missing = cites.find((c) => squash(c).length < 8 || !lines.some((l) => l.includes(squash(c))));
   if (missing) return refuse("bad-cite", `Cannot record this candidate: the cited line "${missing.slice(0, 120)}" is not in the evidence of "${poc}" (or is shorter than 8 characters). Quote the exact lines that show the harm.`);
   // Max + 1, so a number is never reused after a candidate is superseded.
   const n = Math.max(0, ...state.candidates.map((c) => c.n)) + 1;
