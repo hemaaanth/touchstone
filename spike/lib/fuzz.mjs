@@ -80,7 +80,7 @@ async function echidnaScan(scratch, target, { timeoutMs = 240_000, testLimit = 5
     `testMode: property\ntestLimit: ${testLimit}\nbalanceContract: ${HARNESS_WEI.toString()}\n`,
   );
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${scratch}:/work`, "-w", "/work", "--entrypoint", "sh",
     IMG,
     "-c",

@@ -53,6 +53,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
 import { scrubError, scrubUrl } from "./redact-url.mjs";
+import { MANIFEST } from "../scripts/setup.mjs";
 
 export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
@@ -161,14 +162,26 @@ export function daytonaOn(env = process.env) {
 const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
 
+// The images a machine may pull itself under --pull=never (L35): a pull the
+// setup manifest pins by digest and marks `daytona: true`. The bytes are fixed by
+// the digest, and the fetch is on the remote machine, never on this host.
+export const MACHINE_PULL = new Set(
+  MANIFEST.filter((m) => m.kind === "pull" && m.daytona && /@sha256:[0-9a-f]{64}$/.test(m.ref)).map((m) => m.ref),
+);
+
 // The shell guard that runs the container only when the image is there.
-// With --pull=never nothing is fetched; code 199 sends the image up from this
-// host instead, once. Without the flag the machine may pull as before.
+// - --pull=never, an image in MACHINE_PULL: the machine pulls that pinned ref
+//   itself when it lacks it, and marks `pulled` for the event log. A failed pull
+//   gives code 199, which runOn treats as a failed call (no upload).
+// - --pull=never, any other image: nothing is fetched; code 199 sends the image
+//   up from this host instead, once.
+// - Without the flag the machine may pull as before.
+// The tool run itself keeps its own argv (--pull=never and its network).
 export function imageGuard(args, image, dir) {
   const inspect = `docker image inspect ${shq(image)} >/dev/null 2>&1`;
-  return args.includes("--pull=never")
-    ? `if ${inspect}; then`
-    : `if ${inspect} || docker pull -q ${shq(image)} >${dir}/pull 2>&1; then`;
+  if (!args.includes("--pull=never")) return `if ${inspect} || docker pull -q ${shq(image)} >${dir}/pull 2>&1; then`;
+  if (MACHINE_PULL.has(image)) return `if ${inspect} || { docker pull -q ${shq(image)} >${dir}/pull 2>&1 && touch ${dir}/pulled; }; then`;
+  return `if ${inspect}; then`;
 }
 
 export function planRemote(args, ws, remoteWs) {
@@ -689,7 +702,7 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     `touch ${dir}/done; docker rm -f ${name} >/dev/null 2>&1`,
     `else echo 199 >${dir}/code; fi`,
     `mkdir -p ${dir}/pack/meta ${dir}/pack/ws`,
-    `for f in out err code timedout; do [ -e ${dir}/$f ] && cp ${dir}/$f ${dir}/pack/meta/; done`,
+    `for f in out err code timedout pulled; do [ -e ${dir}/$f ] && cp ${dir}/$f ${dir}/pack/meta/; done`,
     // Copy the changed files with find -exec. Names go as arguments, so a
     // name that starts with "-" or holds a newline is safe. BusyBox tar has
     // no --null, so a tar -T file list would not be.
@@ -707,7 +720,11 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   m.api.exec(m, `rm -rf ${dir} /tmp/ts-${cid}.sh`, 30).catch(() => {});
   const files = await unpack(res);
   const code = Number(String(files.get("meta/code") ?? "1").trim());
+  if (files.has("meta/pulled")) event("exec-pull", { backend: "daytona", sandbox: m.id, image: plan.image });
   if (code === 199) {
+    // A pinned, marked image the machine could not pull: a failed call (retry on
+    // a fresh machine, then local), never an upload from this host.
+    if (MACHINE_PULL.has(plan.image)) throw new Error(`the machine could not pull ${plan.image}`);
     // The image is not on any registry the machine can reach: a locally built
     // image. Copy it up from this host once, then run again.
     if (m.ready.has(`img:${plan.image}`)) throw new Error(`image ${plan.image} not available on Daytona`);

@@ -51,7 +51,7 @@ export async function startAnvilLab({ image = LAB_IMAGE, readyTimeoutMs = 60_000
   const tag = randomBytes(4).toString("hex");
   const name = `touchstone-r1lab-${tag}`;
   // -p 127.0.0.1:0:8545 asks docker for a random free HOST loopback port -> the R1 publish.
-  const run = await docker(["run", "-d", "--rm", "--name", name, "-p", "127.0.0.1:0:8545",
+  const run = await docker(["run", "-d", "--rm", "--pull=never", "--name", name, "-p", "127.0.0.1:0:8545",
     "--entrypoint", "anvil", image, "--host", "0.0.0.0", "--accounts", "3", "--block-time", "100"]);
   if (run.code !== 0) throw new Error(`anvil start failed: ${run.stderr.trim()}`);
   const handle = { name, image, rpcUrl: null, victim: DEV_ACCOUNT, stop: async () => { await docker(["rm", "-f", name], { timeoutMs: 15_000 }); } };

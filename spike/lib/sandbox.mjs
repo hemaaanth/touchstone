@@ -153,7 +153,7 @@ export async function warmSolc(version) {
     writeFileSync(join(dir, "foundry.toml"), `[profile.default]\nsrc = "src"\nout = "out"\n`);
     writeFileSync(join(dir, "src", "W.sol"), `// SPDX-License-Identifier: MIT\npragma solidity ${v};\ncontract W {}\n`);
     const args = [
-      "run", "--rm",
+      "run", "--rm", "--pull=never", // the solc download needs the network; the image is never fetched
       "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
       "-v", `${dir}:/work`, "-w", "/work",
       IMG, `forge build --use ${v}`,
@@ -273,8 +273,10 @@ export function forgeReplayCommand({ matchContract, solc } = {}) {
   return `docker run --rm --pull never --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
 }
 
-// Run once, online, before a replay on a fresh machine: pull nothing (the image
-// is pinned by digest), create the solc cache volume and warm the pinned solc.
+// Run once, online, before a replay on a fresh machine. Its `docker run`s pull
+// the pinned image by digest when it is missing: that is the one online fetch, so
+// they carry no --pull flag. They create the solc cache volume and warm the pinned
+// solc. The replay itself (forgeReplayCommand) then runs with --pull never.
 export function forgePrepareCommand({ solc } = {}) {
   const v = solc && solc !== "auto" ? solc : null;
   if (!v) return null;
@@ -315,8 +317,9 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
   // position/value guess. It only enlarges the artifact JSON; the replay is unchanged.
   let cmd = `forge test --offline ${solcUse(ws)} --extra-output storageLayout ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
   if (matchContract) cmd += ` --match-contract ${matchContract}`;
+  // --pull=never, one word: the only form planRemote (lib/daytona.mjs) accepts, as forgeTest.
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,

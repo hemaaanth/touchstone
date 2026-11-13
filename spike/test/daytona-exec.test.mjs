@@ -10,7 +10,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { closeRun, delta, execConfig, imageGuard, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
+import { closeRun, delta, execConfig, imageGuard, MACHINE_PULL, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
+import { FOUNDRY_IMAGE } from "../lib/sandbox.mjs";
+import { IMG as TOOLBOX_IMAGE } from "../lib/harness.mjs";
 import { runTool } from "../lib/wrap.mjs";
 
 const hasDocker = (() => {
@@ -257,14 +259,16 @@ test("closeRun keeps machines Daytona will not delete yet, and retries them late
 
 // A fake Daytona API. Each machine runs the call script by its mode:
 // "ok" answers, "fail" returns HTTP 500. warmCode is the solc warm exit code.
-function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
+function fakeDaytona({ modes = [], warmCode = 0, code = 0, pulled = false } = {}) {
   const log = [];
   const scripts = [];
   const state = new Map();
   let n = 0;
   const tarDir = mkdtempSync(join(tmpdir(), "dtn-fake-"));
   mkdirSync(join(tarDir, "meta"));
-  writeFileSync(join(tarDir, "meta", "code"), "0\n");
+  writeFileSync(join(tarDir, "meta", "code"), `${code}\n`);
+  if (pulled) writeFileSync(join(tarDir, "meta", "pulled"), "");
+  const uploads = []; // each upload's URL: a workspace tar, or an image tar from pushImage
   writeFileSync(join(tarDir, "meta", "out"), "hi");
   const resTar = execFileSync("tar", ["-cf", "-", "-C", tarDir, "."]);
   rmSync(tarDir, { recursive: true, force: true });
@@ -282,7 +286,7 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
     }
     if (method === "DELETE") { log.push(`delete ${id}`); state.delete(id); return new Response("", { status: 200 }); }
     if (method === "GET" && /\/api\/sandbox\/m-/.test(u)) return state.has(id) ? json({ state: state.get(id) }) : new Response("gone", { status: 404 });
-    if (u.includes("/files/upload")) return new Response("", { status: 200 });
+    if (u.includes("/files/upload")) { uploads.push(u); return new Response("", { status: 200 }); }
     if (u.includes("/files/download")) return new Response(resTar, { status: 200 });
     if (u.includes("/process/execute")) {
       const cmd = JSON.parse(init.body).command;
@@ -299,7 +303,7 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
     }
     return new Response("unexpected", { status: 500 });
   };
-  return { fetch, log, scripts, state };
+  return { fetch, log, scripts, state, uploads };
 }
 
 // Run fn against a fresh copy of daytona.mjs and the fake API.
@@ -399,6 +403,77 @@ test("remoteDocker marks output above maxBuffer as overflow, like local execFile
     const whole = await mod.remoteDocker(ARGS(ws), { ws });
     assert.equal(whole?.stdout, "hi");
     assert.equal(whole?.overflow, false);
+  });
+});
+
+// ---- L35: a pinned, `daytona: true` image is pulled by the machine, never uploaded
+const PULL_NEVER = (ws, image) => ["run", "--rm", "--pull=never", "--network", "none", "-v", `${ws}:/work`, "-w", "/work", image, "true"];
+
+// A stub `docker` first on PATH for the host side: it records each call and fails,
+// so a `docker save` (pushImage) is seen and can never move real bytes.
+function withHostDockerStub(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "l35-host-docker-"));
+  const log = join(dir, "calls");
+  writeFileSync(join(dir, "docker"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shq(log)}\nexit 1\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = dir + ":" + path;
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+  return Promise.resolve(fn({ calls })).finally(() => { process.env.PATH = path; rmSync(dir, { recursive: true, force: true }); });
+}
+
+test("L35: the manifest's pinned daytona images are the ones the machine may pull", () => {
+  assert.ok(MACHINE_PULL.has(FOUNDRY_IMAGE), "the Foundry ref the forge runs use");
+  assert.ok(MACHINE_PULL.has(TOOLBOX_IMAGE), "the eth-security-toolbox ref static, fuzz and medusa use");
+  for (const ref of MACHINE_PULL) assert.match(ref, /@sha256:[0-9a-f]{64}$/, `${ref} is pinned by digest`);
+  assert.ok(!MACHINE_PULL.has("img:1"));
+});
+
+test("L35: imageGuard pulls a pinned, marked image on the machine under --pull=never; any other image keeps today's guard", () => {
+  const marked = imageGuard(PULL_NEVER("/w", FOUNDRY_IMAGE), FOUNDRY_IMAGE, "/d");
+  assert.match(marked, new RegExp(`docker pull -q ${shq(FOUNDRY_IMAGE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} >/d/pull 2>&1 && touch /d/pulled`));
+  // An unmarked image under --pull=never: inspect only, nothing fetched (code 199 uploads it).
+  assert.equal(imageGuard(PULL_NEVER("/w", "img:1"), "img:1", "/d"), `if docker image inspect 'img:1' >/dev/null 2>&1; then`);
+  // No flag: the machine may pull, exactly as before.
+  assert.equal(imageGuard(ARGS("/w"), "img:1", "/d"), `if docker image inspect 'img:1' >/dev/null 2>&1 || docker pull -q 'img:1' >/d/pull 2>&1; then`);
+});
+
+test("L35: a forge run on a machine without Foundry pulls the pinned ref there and uploads no image", async () => {
+  await withFake({ pulled: true }, async ({ mod, ws, fake, events }) => {
+    await withHostDockerStub(async ({ calls }) => {
+      const r = await mod.remoteDocker(PULL_NEVER(ws, FOUNDRY_IMAGE), { ws });
+      assert.equal(r?.stdout, "hi");
+      const script = fake.scripts.at(-1);
+      assert.ok(script.includes(`docker pull -q ${shq(FOUNDRY_IMAGE)}`), "the machine pulls the pinned ref");
+      assert.ok(script.includes(`'--pull=never'`), "the tool run itself keeps --pull=never");
+      assert.ok(script.includes(`'--network' 'none'`), "and its network");
+      assert.ok(!fake.uploads.some((u) => u.includes("ts-img-")), "no image tar is uploaded");
+      assert.deepEqual(calls(), [], "this host runs no docker command (no docker save)");
+      assert.deepEqual(events.filter((e) => e.ev === "exec-pull").map((e) => e.image), [FOUNDRY_IMAGE], "the pull is in the event log");
+    });
+  });
+});
+
+test("L35: a failed pull of a pinned, marked image is a failed call: retry, then local; never an upload", async () => {
+  await withFake({ code: 199 }, async ({ mod, ws, fake, events }) => {
+    await withHostDockerStub(async ({ calls }) => {
+      const r = await mod.remoteDocker(PULL_NEVER(ws, TOOLBOX_IMAGE), { ws });
+      assert.equal(r, null, "no silent success: the call goes to local Docker");
+      assert.ok(events.some((e) => e.ev === "exec-retry" && /could not pull/.test(e.reason)), "first failure retries on a fresh machine");
+      assert.ok(events.some((e) => e.ev === "exec-fallback" && /could not pull/.test(e.reason)), "second failure falls back to local");
+      assert.ok(!fake.uploads.some((u) => u.includes("ts-img-")), "no image tar is uploaded");
+      assert.deepEqual(calls(), [], "this host runs no docker save");
+    });
+  });
+});
+
+test("L35: an unmarked image under --pull=never keeps today's path: the host sends it up (docker save)", async () => {
+  await withFake({ code: 199 }, async ({ mod, ws, fake }) => {
+    await withHostDockerStub(async ({ calls }) => {
+      const r = await mod.remoteDocker(PULL_NEVER(ws, "img:1"), { ws });
+      assert.ok(!fake.scripts.at(-1).includes("docker pull"), "the machine fetches nothing");
+      assert.ok(calls().includes("save img:1"), "today's path: this host saves the image to send it up");
+      assert.equal(r, null, "the stub save fails, so the call falls back as today");
+    });
   });
 });
 
