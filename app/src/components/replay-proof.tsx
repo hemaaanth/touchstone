@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { ArrowRight, Check } from "lucide-react"
 import type { Balance, Finding, FindingBase, Proof, Transfer } from "@/lib/types"
 import { formatNum } from "@/lib/format"
+import { formatWei, harmText, type Harm } from "@/lib/eth"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
 import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
@@ -50,18 +51,22 @@ function BalanceDelta({ label, before, after }: Balance) {
 // the proving replay. The +/- in `net` carries the direction, so the figure
 // stays monochrome; the party that ended richer gets weight so the eye lands on
 // where the money went. The address rides along quietly as the ground truth.
-function TransferDelta({ label, address, net, gained }: Transfer) {
+function TransferDelta({ label, address, net, gained, netWei }: Transfer) {
   const shortAddr = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address
+  // From the exact wei when the record has it, so a dust move does not read
+  // as "+0 ETH"; the wei itself is in the tooltip.
+  const shown = netWei ? formatWei(netWei, true) : net
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] text-muted-foreground">{label}</span>
       <span
+        title={netWei ? `${netWei} wei` : undefined}
         className={cn(
           "font-mono text-sm tabular-nums",
           gained ? "font-medium text-foreground" : "text-muted-foreground",
         )}
       >
-        {net}
+        {shown}
       </span>
       <span className="font-mono text-[11px] text-muted-foreground">{shortAddr}</span>
     </div>
@@ -150,6 +155,9 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
           </ul>
         </Block>
       ) : null}
+
+      {/* What was lost, from the proof gate's own harm record. */}
+      <HarmLine harm={proof.harm} />
 
       {/* What the exploit moved. Preferred source is the engine's structured proof
           delta: the real signed net ETH per address, read straight from the
@@ -277,4 +285,20 @@ export function ReplayProof({ finding, children }: { finding: Finding; children?
   if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{footer}</HttpProofCard>
   if (finding.proofKind === "evidence") return <EvidenceProofCard finding={finding}>{footer}</EvidenceProofCard>
   return <ForgeProofCard finding={finding}>{footer}</ForgeProofCard>
+}
+
+// What the proof gate says was lost, and how much: an ETH drain (the exact wei
+// on hover), a token drain in the record's raw units, or a control takeover.
+// From the proof record, never from the agent's text. Nothing when the record
+// has no harm.
+export function HarmLine({ harm }: { harm: Harm | null | undefined }) {
+  const line = harmText(harm)
+  if (!line) return null
+  return (
+    <Block title="What was lost">
+      <p className="text-sm leading-relaxed text-foreground" title={line.exact ?? undefined}>
+        {line.text}
+      </p>
+    </Block>
+  )
 }

@@ -1,3 +1,5 @@
+import type { Harm } from "./eth"
+
 // The shapes the API serves. Every field is derived from a real recorded
 // engine run; see server/findings.mjs.
 
@@ -71,6 +73,8 @@ export interface Transfer {
   address: string
   net: string
   gained: boolean
+  // The exact signed wei, when the server passes it (the record has it).
+  netWei?: string
 }
 
 export interface Proof {
@@ -90,6 +94,9 @@ export interface Proof {
   assertions: string[]
   rerunCommand: string | null
   testSource: string | null
+  // What the proof gate says was lost (spike/lib/proof.mjs), when the server
+  // passes it: an ETH or token drain, or a control takeover.
+  harm?: Harm | null
 }
 
 export interface Usage {
