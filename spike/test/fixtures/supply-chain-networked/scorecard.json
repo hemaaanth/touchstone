@@ -1,0 +1,2253 @@
+{
+ "note": "Real Scorecard v5.6.0 output on hemaaanth/touchstone. local: --local on the committed files at `commit`, --network none. api: the real capture-mode run against the GitHub API (token is public-repos-only, so the repo was unreachable).",
+ "commit": "7e01a7cb473b4ca8a12f53ef9a335e19806fa8d4",
+ "scope": "committed-files-only",
+ "captures": {
+  "scorecard": {
+   "local": {
+    "tool": "scorecard",
+    "mode": "local",
+    "image": "touchstone/scorecard:5.6.0",
+    "imageId": "sha256:ea2c7a5609d04083375f2ea0b9bd0788137f408b6348f063128d53146d501745",
+    "cmd": [
+     "--local=.",
+     "--format=json",
+     "--show-details"
+    ],
+    "status": "ran",
+    "code": 1,
+    "timedOut": false,
+    "sha256": "3c51a80afb273429f921f337e2a1864d336bc8d1494544ca2ecc49bd02d0b4e2",
+    "text": "{\"date\":\"2026-11-13T01:55:13Z\",\"repo\":{\"name\":\"file://.\",\"commit\":\"unknown\"},\"scorecard\":{\"version\":\"v5.6.0\",\"commit\":\"61e84743356275f6ffca23b1b2f2cb945e19eb96\"},\"score\":4.5,\"checks\":[{\"details\":null,\"score\":10,\"reason\":\"no binaries found in the repo\",\"name\":\"Binary-Artifacts\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#binary-artifacts\",\"short\":\"Determines if the project has generated executable (binary) artifacts in the source repository.\"}},{\"details\":null,\"score\":-1,\"reason\":\"no workflows found\",\"name\":\"Dangerous-Workflow\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#dangerous-workflow\",\"short\":\"Determines if the project's GitHub Action workflows avoid dangerous patterns.\"}},{\"details\":[\"Warn: no dependency update tool configurations found\"],\"score\":0,\"reason\":\"no update tool detected\",\"name\":\"Dependency-Update-Tool\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#dependency-update-tool\",\"short\":\"Determines if the project uses a dependency update tool.\"}},{\"details\":null,\"score\":-1,\"reason\":\"internal error: internal error: Client.Search.Code: http.Get: Get \\\"https://oss-fuzz-build-logs.storage.googleapis.com/status.json\\\": dial tcp: lookup oss-fuzz-build-logs.storage.googleapis.com on 172.17.0.1:53: dial udp 172.17.0.1:53: connect: network is unreachable\",\"name\":\"Fuzzing\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#fuzzing\",\"short\":\"Determines if the project uses fuzzing.\"}},{\"details\":[\"Warn: project does not have a license file\"],\"score\":0,\"reason\":\"license file not detected\",\"name\":\"License\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#license\",\"short\":\"Determines if the project has defined a license.\"}},{\"details\":[\"Warn: no GitHub/GitLab publishing workflow detected.\"],\"score\":-1,\"reason\":\"packaging workflow not detected\",\"name\":\"Packaging\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#packaging\",\"short\":\"Determines if the project is published as a package that others can easily download, install, easily update, and uninstall.\"}},{\"details\":[\"Warn: containerImage not pinned by hash: spike/packs/ai-mcp/Dockerfile.inspector:4\",\"Warn: containerImage not pinned by hash: spike/packs/ai-mcp/lab/mcp/oracle/Dockerfile:3\",\"Warn: npmCommand not pinned by hash: spike/packs/ai-mcp/Dockerfile.inspector:5\",\"Info:   2 out of   4 containerImage dependencies pinned\",\"Info:   1 out of   1 pipCommand dependencies pinned\",\"Info:   2 out of   3 npmCommand dependencies pinned\"],\"score\":6,\"reason\":\"dependency not pinned by hash detected -- score normalized to 6\",\"name\":\"Pinned-Dependencies\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#pinned-dependencies\",\"short\":\"Determines if the project has declared and pinned the dependencies of its build process.\"}},{\"details\":[\"Warn: no pull requests merged into dev branch\"],\"score\":0,\"reason\":\"no SAST tool detected\",\"name\":\"SAST\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#sast\",\"short\":\"Determines if the project uses static code analysis.\"}},{\"details\":[\"Warn: no security policy file detected\",\"Warn: no security file to analyze\",\"Warn: no security file to analyze\",\"Warn: no security file to analyze\"],\"score\":0,\"reason\":\"security policy file not detected\",\"name\":\"Security-Policy\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#security-policy\",\"short\":\"Determines if the project has published a security policy.\"}},{\"details\":null,\"score\":-1,\"reason\":\"No tokens found\",\"name\":\"Token-Permissions\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#token-permissions\",\"short\":\"Determines if the project's workflows follow the principle of least privilege.\"}},{\"details\":null,\"score\":10,\"reason\":\"0 existing vulnerabilities detected\",\"name\":\"Vulnerabilities\",\"documentation\":{\"url\":\"https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md#vulnerabilities\",\"short\":\"Determines if the project has open, known unfixed vulnerabilities.\"}}],\"metadata\":null}\n",
+    "stderr": "Check Fuzzing failed for .: internal error: internal error: Client.Search.Code: http.Get: Get \"https://oss-fuzz-build-logs.storage.googleapis.com/status.json\": dial tcp: lookup oss-fuzz-build-logs.storage.googleapis.com on 172.17.0.1:53: dial udp 172.17.0.1:53: connect: network is unreachable\nError: one or more checks failed during execution\n2026/11/13 01:55:33 error during command execution: one or more checks failed during execution\n",
+    "capturedAt": "2026-11-13T01:55:40.454Z"
+   },
+   "api": {
+    "tool": "scorecard",
+    "mode": "api",
+    "image": "touchstone/scorecard:5.6.0",
+    "imageId": "sha256:ea2c7a5609d04083375f2ea0b9bd0788137f408b6348f063128d53146d501745",
+    "cmd": [
+     "--repo=github.com/hemaaanth/touchstone",
+     "--format=json",
+     "--show-details"
+    ],
+    "status": "unavailable",
+    "code": 0,
+    "timedOut": false,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "text": "",
+    "stderr": "Skipping github.com/hemaaanth/touchstone: run: repo unreachable: GET https://api.github.com/repos/hemaaanth/touchstone: 404 Not Found []\n",
+    "reason": "repo unreachable (404): the token cannot read this repo, or it does not exist",
+    "egress": {
+     "tunnels": {
+      "api.github.com": 1
+     },
+     "blocked": {}
+    },
+    "capturedAt": "2026-11-13T01:55:40.499Z",
+    "target": "hemaaanth/touchstone"
+   }
+  }
+ },
+ "paths": [
+  ".gitignore",
+  "IDEA.md",
+  "THIRD_PARTY.md",
+  "app/.agents/skills/graphical-audit/SKILL.md",
+  "app/.agents/skills/graphical-audit/references/drift-rules.md",
+  "app/.agents/skills/graphical-audit/references/report-format.md",
+  "app/.agents/skills/graphical-convert/SKILL.md",
+  "app/.agents/skills/graphical-convert/references/mapping-examples.md",
+  "app/.agents/skills/graphical-ui/SKILL.md",
+  "app/.gitignore",
+  "app/.legacy/src/App.tsx",
+  "app/.legacy/src/components/app/approval.tsx",
+  "app/.legacy/src/components/app/blocks.tsx",
+  "app/.legacy/src/components/app/cards/consent.tsx",
+  "app/.legacy/src/components/app/cards/core.tsx",
+  "app/.legacy/src/components/app/cards/frame.tsx",
+  "app/.legacy/src/components/app/cards/index.tsx",
+  "app/.legacy/src/components/app/chat.tsx",
+  "app/.legacy/src/components/app/drafts.tsx",
+  "app/.legacy/src/components/app/panel/coverage.tsx",
+  "app/.legacy/src/components/app/panel/finding.tsx",
+  "app/.legacy/src/components/app/panel/index.tsx",
+  "app/.legacy/src/components/app/panel/run.tsx",
+  "app/.legacy/src/components/ui/button.tsx",
+  "app/.legacy/src/data/fixtures.ts",
+  "app/.legacy/src/fonts.css",
+  "app/.legacy/src/index.css",
+  "app/.legacy/src/lib/actions.ts",
+  "app/.legacy/src/lib/answer.ts",
+  "app/.legacy/src/lib/app-theme.tsx",
+  "app/.legacy/src/lib/color-mode.ts",
+  "app/.legacy/src/lib/finding-text.ts",
+  "app/.legacy/src/lib/icons.tsx",
+  "app/.legacy/src/lib/route.ts",
+  "app/.legacy/src/lib/tones.ts",
+  "app/.legacy/src/lib/utils.ts",
+  "app/.legacy/src/lib/words.ts",
+  "app/.legacy/src/main.tsx",
+  "app/.legacy/src/screens/AutomationsScreen.tsx",
+  "app/.legacy/src/screens/Findings.tsx",
+  "app/.legacy/src/screens/FirstRun.tsx",
+  "app/.legacy/src/screens/Home.tsx",
+  "app/.legacy/src/screens/Kit.tsx",
+  "app/.legacy/src/screens/Scope.tsx",
+  "app/.legacy/src/screens/Settings.tsx",
+  "app/.legacy/src/shell/PanelHost.tsx",
+  "app/.legacy/src/shell/Rail.tsx",
+  "app/.legacy/src/shell/TopBar.tsx",
+  "app/.oxlintrc.json",
+  "app/AGENTS.md",
+  "app/GUI.md",
+  "app/README.md",
+  "app/bun.lock",
+  "app/components.json",
+  "app/docs/plan/build-sequence.md",
+  "app/docs/plan/elements.md",
+  "app/docs/plan/engine.md",
+  "app/docs/plan/integration.md",
+  "app/docs/restraint.md",
+  "app/docs/ui-direction.md",
+  "app/fixtures/check-fleet.ts",
+  "app/fixtures/make-fleet-fixtures.mjs",
+  "app/fixtures/run-fleet-done-2611110900-1.stream.jsonl",
+  "app/fixtures/run-fleet-live-2611110900-1.stream.jsonl",
+  "app/gui/assets.md",
+  "app/gui/base-ui.md",
+  "app/gui/components.md",
+  "app/gui/components/untitled/accordion.md",
+  "app/gui/components/untitled/alert-dialog.md",
+  "app/gui/components/untitled/autocomplete.md",
+  "app/gui/components/untitled/avatar.md",
+  "app/gui/components/untitled/button.md",
+  "app/gui/components/untitled/checkbox-group.md",
+  "app/gui/components/untitled/checkbox.md",
+  "app/gui/components/untitled/collapsible.md",
+  "app/gui/components/untitled/combobox.md",
+  "app/gui/components/untitled/context-menu.md",
+  "app/gui/components/untitled/dialog.md",
+  "app/gui/components/untitled/drawer.md",
+  "app/gui/components/untitled/field.md",
+  "app/gui/components/untitled/fieldset.md",
+  "app/gui/components/untitled/form.md",
+  "app/gui/components/untitled/input.md",
+  "app/gui/components/untitled/menu.md",
+  "app/gui/components/untitled/menubar.md",
+  "app/gui/components/untitled/meter.md",
+  "app/gui/components/untitled/navigation-menu.md",
+  "app/gui/components/untitled/number-field.md",
+  "app/gui/components/untitled/otp-field.md",
+  "app/gui/components/untitled/popover.md",
+  "app/gui/components/untitled/preview-card.md",
+  "app/gui/components/untitled/progress.md",
+  "app/gui/components/untitled/radio-group.md",
+  "app/gui/components/untitled/radio.md",
+  "app/gui/components/untitled/scroll-area.md",
+  "app/gui/components/untitled/select.md",
+  "app/gui/components/untitled/separator.md",
+  "app/gui/components/untitled/slider.md",
+  "app/gui/components/untitled/switch.md",
+  "app/gui/components/untitled/tabs.md",
+  "app/gui/components/untitled/toast.md",
+  "app/gui/components/untitled/toggle-group.md",
+  "app/gui/components/untitled/toggle.md",
+  "app/gui/components/untitled/toolbar.md",
+  "app/gui/components/untitled/tooltip.md",
+  "app/gui/custom-components.md",
+  "app/gui/foundations.md",
+  "app/gui/interface-judgment.md",
+  "app/gui/theme-contract.md",
+  "app/gui/themes.md",
+  "app/gui/themes/untitled-components.md",
+  "app/gui/themes/untitled.md",
+  "app/gui/verification.md",
+  "app/index.html",
+  "app/package.json",
+  "app/public/favicon.svg",
+  "app/public/fonts/timeless/README.md",
+  "app/public/touchstone-mark.svg",
+  "app/server/api.mjs",
+  "app/server/brand.mjs",
+  "app/server/findings.mjs",
+  "app/server/report.mjs",
+  "app/server/runs-http.mjs",
+  "app/server/runs.mjs",
+  "app/server/settings.mjs",
+  "app/src/App.tsx",
+  "app/src/components/app-sidebar.tsx",
+  "app/src/components/assistant-ui/elements/agent-handoff.tsx",
+  "app/src/components/assistant-ui/elements/artifact-card.tsx",
+  "app/src/components/assistant-ui/elements/artifact-pane.tsx",
+  "app/src/components/assistant-ui/elements/data-table.tsx",
+  "app/src/components/assistant-ui/elements/file-tree.tsx",
+  "app/src/components/assistant-ui/elements/start-progress.tsx",
+  "app/src/components/assistant-ui/elements/streaming-text.tsx",
+  "app/src/components/assistant-ui/elements/surfaces.tsx",
+  "app/src/components/assistant-ui/elements/thread-list.tsx",
+  "app/src/components/assistant-ui/elements/tool-group.tsx",
+  "app/src/components/assistant-ui/utils/range.ts",
+  "app/src/components/assistant-ui/utils/useIsomorphicLayoutEffect.ts",
+  "app/src/components/bump.tsx",
+  "app/src/components/evidence-proof.tsx",
+  "app/src/components/fleet-view.ts",
+  "app/src/components/http-proof.tsx",
+  "app/src/components/markdown.tsx",
+  "app/src/components/modules-page.tsx",
+  "app/src/components/new-run-dialog.tsx",
+  "app/src/components/page-parts.tsx",
+  "app/src/components/prepass.tsx",
+  "app/src/components/proof-parts.tsx",
+  "app/src/components/provider-logo.tsx",
+  "app/src/components/replay-proof.tsx",
+  "app/src/components/resize-handle.tsx",
+  "app/src/components/run-chat.tsx",
+  "app/src/components/run-panel.tsx",
+  "app/src/components/run-thread.tsx",
+  "app/src/components/scopes-page.tsx",
+  "app/src/components/settings-page.tsx",
+  "app/src/components/thread-model.ts",
+  "app/src/components/title-input.tsx",
+  "app/src/components/ui/avatar.tsx",
+  "app/src/components/ui/badge.tsx",
+  "app/src/components/ui/button.tsx",
+  "app/src/components/ui/card.tsx",
+  "app/src/components/ui/collapsible.tsx",
+  "app/src/components/ui/context-menu.tsx",
+  "app/src/components/ui/dialog.tsx",
+  "app/src/components/ui/dropdown-menu.tsx",
+  "app/src/components/ui/input.tsx",
+  "app/src/components/ui/scroll-area.tsx",
+  "app/src/components/ui/select.tsx",
+  "app/src/components/ui/separator.tsx",
+  "app/src/components/ui/sheet.tsx",
+  "app/src/components/ui/sidebar.tsx",
+  "app/src/components/ui/skeleton.tsx",
+  "app/src/components/ui/tabs.tsx",
+  "app/src/components/ui/textarea.tsx",
+  "app/src/components/ui/tooltip.tsx",
+  "app/src/fonts.css",
+  "app/src/hooks/use-mobile.ts",
+  "app/src/index.css",
+  "app/src/lib/api.test.ts",
+  "app/src/lib/api.ts",
+  "app/src/lib/catalog.ts",
+  "app/src/lib/console-token.ts",
+  "app/src/lib/coordinator.test.ts",
+  "app/src/lib/coordinator.ts",
+  "app/src/lib/explanation.ts",
+  "app/src/lib/final-text.ts",
+  "app/src/lib/fleet-policy.test.ts",
+  "app/src/lib/fleet-policy.ts",
+  "app/src/lib/fleet.ts",
+  "app/src/lib/format.ts",
+  "app/src/lib/highlight.ts",
+  "app/src/lib/motion.ts",
+  "app/src/lib/runModel.test.ts",
+  "app/src/lib/runModel.ts",
+  "app/src/lib/sent.test.ts",
+  "app/src/lib/sent.ts",
+  "app/src/lib/startup.test.ts",
+  "app/src/lib/startup.ts",
+  "app/src/lib/types.ts",
+  "app/src/lib/utils.ts",
+  "app/src/main.tsx",
+  "app/src/tokens.css",
+  "app/tests/grants-http.test.ts",
+  "app/tests/live-scope-http.test.ts",
+  "app/tests/local-folder.test.ts",
+  "app/tests/presentation.test.ts",
+  "app/tests/render.test.tsx",
+  "app/tests/report.test.ts",
+  "app/tsconfig.app.json",
+  "app/tsconfig.json",
+  "app/tsconfig.node.json",
+  "app/tsconfig.test.json",
+  "app/vite.config.ts",
+  "design-study-0sec.md",
+  "docs/candidate-tier.md",
+  "docs/ext-research.md",
+  "docs/fleet-orchestration.md",
+  "lab/vault-accounting/foundry.toml",
+  "lab/vault-accounting/lib/forge-std/.gitattributes",
+  "lab/vault-accounting/lib/forge-std/.github/workflows/ci.yml",
+  "lab/vault-accounting/lib/forge-std/.github/workflows/sync.yml",
+  "lab/vault-accounting/lib/forge-std/.gitignore",
+  "lab/vault-accounting/lib/forge-std/CONTRIBUTING.md",
+  "lab/vault-accounting/lib/forge-std/LICENSE-APACHE",
+  "lab/vault-accounting/lib/forge-std/LICENSE-MIT",
+  "lab/vault-accounting/lib/forge-std/README.md",
+  "lab/vault-accounting/lib/forge-std/foundry.toml",
+  "lab/vault-accounting/lib/forge-std/package.json",
+  "lab/vault-accounting/lib/forge-std/scripts/vm.py",
+  "lab/vault-accounting/lib/forge-std/src/Base.sol",
+  "lab/vault-accounting/lib/forge-std/src/Script.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdAssertions.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdChains.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdCheats.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdError.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdInvariant.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdJson.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdMath.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdStorage.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdStyle.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdToml.sol",
+  "lab/vault-accounting/lib/forge-std/src/StdUtils.sol",
+  "lab/vault-accounting/lib/forge-std/src/Test.sol",
+  "lab/vault-accounting/lib/forge-std/src/Vm.sol",
+  "lab/vault-accounting/lib/forge-std/src/console.sol",
+  "lab/vault-accounting/lib/forge-std/src/console2.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IERC1155.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IERC165.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IERC20.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IERC4626.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IERC721.sol",
+  "lab/vault-accounting/lib/forge-std/src/interfaces/IMulticall3.sol",
+  "lab/vault-accounting/lib/forge-std/src/mocks/MockERC20.sol",
+  "lab/vault-accounting/lib/forge-std/src/mocks/MockERC721.sol",
+  "lab/vault-accounting/lib/forge-std/src/safeconsole.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdAssertions.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdChains.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdCheats.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdError.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdJson.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdMath.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdStorage.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdStyle.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdToml.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/StdUtils.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/Vm.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/compilation/CompilationScript.sol",
+  "lab/vault-accounting/lib/forge-std/test/compilation/CompilationScriptBase.sol",
+  "lab/vault-accounting/lib/forge-std/test/compilation/CompilationTest.sol",
+  "lab/vault-accounting/lib/forge-std/test/compilation/CompilationTestBase.sol",
+  "lab/vault-accounting/lib/forge-std/test/fixtures/broadcast.log.json",
+  "lab/vault-accounting/lib/forge-std/test/fixtures/test.json",
+  "lab/vault-accounting/lib/forge-std/test/fixtures/test.toml",
+  "lab/vault-accounting/lib/forge-std/test/mocks/MockERC20.t.sol",
+  "lab/vault-accounting/lib/forge-std/test/mocks/MockERC721.t.sol",
+  "lab/vault-accounting/oracle/YieldExploit.t.sol",
+  "lab/vault-accounting/src/YieldVault.sol",
+  "lab/vault-multi/foundry.toml",
+  "lab/vault-multi/lib/forge-std/.gitattributes",
+  "lab/vault-multi/lib/forge-std/.github/workflows/ci.yml",
+  "lab/vault-multi/lib/forge-std/.github/workflows/sync.yml",
+  "lab/vault-multi/lib/forge-std/.gitignore",
+  "lab/vault-multi/lib/forge-std/CONTRIBUTING.md",
+  "lab/vault-multi/lib/forge-std/LICENSE-APACHE",
+  "lab/vault-multi/lib/forge-std/LICENSE-MIT",
+  "lab/vault-multi/lib/forge-std/README.md",
+  "lab/vault-multi/lib/forge-std/foundry.toml",
+  "lab/vault-multi/lib/forge-std/package.json",
+  "lab/vault-multi/lib/forge-std/scripts/vm.py",
+  "lab/vault-multi/lib/forge-std/src/Base.sol",
+  "lab/vault-multi/lib/forge-std/src/Script.sol",
+  "lab/vault-multi/lib/forge-std/src/StdAssertions.sol",
+  "lab/vault-multi/lib/forge-std/src/StdChains.sol",
+  "lab/vault-multi/lib/forge-std/src/StdCheats.sol",
+  "lab/vault-multi/lib/forge-std/src/StdError.sol",
+  "lab/vault-multi/lib/forge-std/src/StdInvariant.sol",
+  "lab/vault-multi/lib/forge-std/src/StdJson.sol",
+  "lab/vault-multi/lib/forge-std/src/StdMath.sol",
+  "lab/vault-multi/lib/forge-std/src/StdStorage.sol",
+  "lab/vault-multi/lib/forge-std/src/StdStyle.sol",
+  "lab/vault-multi/lib/forge-std/src/StdToml.sol",
+  "lab/vault-multi/lib/forge-std/src/StdUtils.sol",
+  "lab/vault-multi/lib/forge-std/src/Test.sol",
+  "lab/vault-multi/lib/forge-std/src/Vm.sol",
+  "lab/vault-multi/lib/forge-std/src/console.sol",
+  "lab/vault-multi/lib/forge-std/src/console2.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IERC1155.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IERC165.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IERC20.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IERC4626.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IERC721.sol",
+  "lab/vault-multi/lib/forge-std/src/interfaces/IMulticall3.sol",
+  "lab/vault-multi/lib/forge-std/src/mocks/MockERC20.sol",
+  "lab/vault-multi/lib/forge-std/src/mocks/MockERC721.sol",
+  "lab/vault-multi/lib/forge-std/src/safeconsole.sol",
+  "lab/vault-multi/lib/forge-std/test/StdAssertions.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdChains.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdCheats.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdError.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdJson.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdMath.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdStorage.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdStyle.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdToml.t.sol",
+  "lab/vault-multi/lib/forge-std/test/StdUtils.t.sol",
+  "lab/vault-multi/lib/forge-std/test/Vm.t.sol",
+  "lab/vault-multi/lib/forge-std/test/compilation/CompilationScript.sol",
+  "lab/vault-multi/lib/forge-std/test/compilation/CompilationScriptBase.sol",
+  "lab/vault-multi/lib/forge-std/test/compilation/CompilationTest.sol",
+  "lab/vault-multi/lib/forge-std/test/compilation/CompilationTestBase.sol",
+  "lab/vault-multi/lib/forge-std/test/fixtures/broadcast.log.json",
+  "lab/vault-multi/lib/forge-std/test/fixtures/test.json",
+  "lab/vault-multi/lib/forge-std/test/fixtures/test.toml",
+  "lab/vault-multi/lib/forge-std/test/mocks/MockERC20.t.sol",
+  "lab/vault-multi/lib/forge-std/test/mocks/MockERC721.t.sol",
+  "lab/vault-multi/oracle/FeeVaultExploits.t.sol",
+  "lab/vault-multi/src/FeeVault.sol",
+  "lab/vault-multi/test/.gitkeep",
+  "lab/vault-reentrancy/foundry.toml",
+  "lab/vault-reentrancy/lib/forge-std/.gitattributes",
+  "lab/vault-reentrancy/lib/forge-std/.github/workflows/ci.yml",
+  "lab/vault-reentrancy/lib/forge-std/.github/workflows/sync.yml",
+  "lab/vault-reentrancy/lib/forge-std/.gitignore",
+  "lab/vault-reentrancy/lib/forge-std/CONTRIBUTING.md",
+  "lab/vault-reentrancy/lib/forge-std/LICENSE-APACHE",
+  "lab/vault-reentrancy/lib/forge-std/LICENSE-MIT",
+  "lab/vault-reentrancy/lib/forge-std/README.md",
+  "lab/vault-reentrancy/lib/forge-std/foundry.toml",
+  "lab/vault-reentrancy/lib/forge-std/package.json",
+  "lab/vault-reentrancy/lib/forge-std/scripts/vm.py",
+  "lab/vault-reentrancy/lib/forge-std/src/Base.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/Script.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdAssertions.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdChains.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdCheats.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdError.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdInvariant.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdJson.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdMath.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdStorage.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdStyle.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdToml.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/StdUtils.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/Test.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/Vm.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/console.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/console2.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IERC1155.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IERC165.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IERC20.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IERC4626.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IERC721.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/interfaces/IMulticall3.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/mocks/MockERC20.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/mocks/MockERC721.sol",
+  "lab/vault-reentrancy/lib/forge-std/src/safeconsole.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdAssertions.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdChains.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdCheats.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdError.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdJson.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdMath.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdStorage.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdStyle.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdToml.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/StdUtils.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/Vm.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/compilation/CompilationScript.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/compilation/CompilationScriptBase.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/compilation/CompilationTest.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/compilation/CompilationTestBase.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/fixtures/broadcast.log.json",
+  "lab/vault-reentrancy/lib/forge-std/test/fixtures/test.json",
+  "lab/vault-reentrancy/lib/forge-std/test/fixtures/test.toml",
+  "lab/vault-reentrancy/lib/forge-std/test/mocks/MockERC20.t.sol",
+  "lab/vault-reentrancy/lib/forge-std/test/mocks/MockERC721.t.sol",
+  "lab/vault-reentrancy/oracle/VaultExploit.t.sol",
+  "lab/vault-reentrancy/src/Vault.sol",
+  "research/packs/README.md",
+  "research/packs/chain-watch.md",
+  "research/packs/domains.md",
+  "research/packs/infra-cloud.md",
+  "research/packs/people-brand.md",
+  "research/packs/supply-chain.md",
+  "research/packs/surface.md",
+  "research/ui-benchmarks/out/0sec.md",
+  "research/ui-benchmarks/out/artex.md",
+  "research/ui-benchmarks/out/paseo.md",
+  "research/ui-benchmarks/out/superset.md",
+  "research/ui-benchmarks/prompts/00-shared-context.md",
+  "research/ui-benchmarks/prompts/0sec.md",
+  "research/ui-benchmarks/prompts/artex.md",
+  "research/ui-benchmarks/prompts/bb.md",
+  "research/ui-benchmarks/prompts/codex.md",
+  "research/ui-benchmarks/prompts/paseo.md",
+  "research/ui-benchmarks/prompts/superset.md",
+  "research/ui-benchmarks/prompts/t3code.md",
+  "spike/.gitignore",
+  "spike/agent-run.mjs",
+  "spike/discover-models.mjs",
+  "spike/lib/aderyn.mjs",
+  "spike/lib/attempt-cap.mjs",
+  "spike/lib/browser.mjs",
+  "spike/lib/capture.mjs",
+  "spike/lib/cbm.mjs",
+  "spike/lib/cognition.mjs",
+  "spike/lib/control-trace.mjs",
+  "spike/lib/daytona.mjs",
+  "spike/lib/ensemble.mjs",
+  "spike/lib/event.mjs",
+  "spike/lib/fetch.mjs",
+  "spike/lib/final-text.mjs",
+  "spike/lib/fleet.mjs",
+  "spike/lib/fork-proof.mjs",
+  "spike/lib/fuzz.mjs",
+  "spike/lib/grant-store.mjs",
+  "spike/lib/harness.mjs",
+  "spike/lib/inference.mjs",
+  "spike/lib/live.mjs",
+  "spike/lib/llm-shim.mjs",
+  "spike/lib/medusa.mjs",
+  "spike/lib/modules.mjs",
+  "spike/lib/near.mjs",
+  "spike/lib/openrouter.mjs",
+  "spike/lib/prepass-view.mjs",
+  "spike/lib/prepass.mjs",
+  "spike/lib/proof-evidence.mjs",
+  "spike/lib/proof-http.mjs",
+  "spike/lib/proof-view.mjs",
+  "spike/lib/proof.mjs",
+  "spike/lib/provider.mjs",
+  "spike/lib/providers.mjs",
+  "spike/lib/reach-confine.mjs",
+  "spike/lib/reach.mjs",
+  "spike/lib/record.mjs",
+  "spike/lib/run-budget.mjs",
+  "spike/lib/sandbox.mjs",
+  "spike/lib/sandbox/PROOF.txt",
+  "spike/lib/sandbox/README.md",
+  "spike/lib/sandbox/attacker.mjs",
+  "spike/lib/sandbox/broker.mjs",
+  "spike/lib/sandbox/jail.mjs",
+  "spike/lib/sandbox/lab.mjs",
+  "spike/lib/sandbox/probe.mjs",
+  "spike/lib/sandbox/proof.mjs",
+  "spike/lib/scope-proxy.mjs",
+  "spike/lib/scopes-store.mjs",
+  "spike/lib/static.mjs",
+  "spike/lib/strix.mjs",
+  "spike/lib/targets.mjs",
+  "spike/lib/txreplay-proof.mjs",
+  "spike/lib/wrap.mjs",
+  "spike/package-lock.json",
+  "spike/package.json",
+  "spike/packs/README.md",
+  "spike/packs/WAVE1.md",
+  "spike/packs/WAVE2.md",
+  "spike/packs/ai-mcp/Dockerfile.garak",
+  "spike/packs/ai-mcp/Dockerfile.inspector",
+  "spike/packs/ai-mcp/Dockerfile.shield",
+  "spike/packs/ai-mcp/SKILL.md",
+  "spike/packs/ai-mcp/TOOLS.md",
+  "spike/packs/ai-mcp/garak/requirements.in",
+  "spike/packs/ai-mcp/garak/requirements.lock",
+  "spike/packs/ai-mcp/garak/run.py",
+  "spike/packs/ai-mcp/lab/mcp/.touchstone.json",
+  "spike/packs/ai-mcp/lab/mcp/BRIEF.md",
+  "spike/packs/ai-mcp/lab/mcp/oracle/Dockerfile",
+  "spike/packs/ai-mcp/lab/mcp/oracle/package-lock.json",
+  "spike/packs/ai-mcp/lab/mcp/oracle/package.json",
+  "spike/packs/ai-mcp/lab/mcp/oracle/server.mjs",
+  "spike/packs/ai-mcp/pack.mjs",
+  "spike/packs/ai-mcp/scan.mjs",
+  "spike/packs/ai-mcp/scan/templates/mcp-unauth-tools-list.yaml",
+  "spike/packs/ai-mcp/shield/bridge.mjs",
+  "spike/packs/ai-mcp/shield/package-lock.json",
+  "spike/packs/ai-mcp/shield/package.json",
+  "spike/packs/ai-mcp/shield/run.mjs",
+  "spike/packs/chain-watch/SKILL.md",
+  "spike/packs/chain-watch/TOOLS.md",
+  "spike/packs/chain-watch/lab/.touchstone.json",
+  "spike/packs/chain-watch/lab/foundry.toml",
+  "spike/packs/chain-watch/lab/lib/forge-std/.gitattributes",
+  "spike/packs/chain-watch/lab/lib/forge-std/.github/workflows/ci.yml",
+  "spike/packs/chain-watch/lab/lib/forge-std/.github/workflows/sync.yml",
+  "spike/packs/chain-watch/lab/lib/forge-std/.gitignore",
+  "spike/packs/chain-watch/lab/lib/forge-std/CONTRIBUTING.md",
+  "spike/packs/chain-watch/lab/lib/forge-std/LICENSE-APACHE",
+  "spike/packs/chain-watch/lab/lib/forge-std/LICENSE-MIT",
+  "spike/packs/chain-watch/lab/lib/forge-std/README.md",
+  "spike/packs/chain-watch/lab/lib/forge-std/foundry.toml",
+  "spike/packs/chain-watch/lab/lib/forge-std/package.json",
+  "spike/packs/chain-watch/lab/lib/forge-std/scripts/vm.py",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/Base.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/Script.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdAssertions.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdChains.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdCheats.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdError.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdInvariant.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdJson.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdMath.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdStorage.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/StdStyle.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/Test.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/console2.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IERC165.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IERC20.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IMulticall3.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/test/Vm.t.sol",
+  "spike/packs/chain-watch/lab/lib/forge-std/test/compilation/CompilationScript.sol",
+  "spike/packs/chain-watch/lab/test/.gitkeep",
+  "spike/packs/domains/lab/resolvers.txt",
+  "spike/packs/keys/lab/test/.gitkeep",
+  "spike/results/durable/t6-safe-ds-abl.marker",
+  "spike/results/durable/t6-safe-qwen-abl.marker",
+  "spike/results/durable/t6-unsafe-ds-abl.marker",
+  "spike/results/durable/t6-unsafe-qwen-abl.marker"
+ ],
+ "skipped": [
+  {
+   "file": "app/public/fonts/timeless/TimelessSansVF.woff2",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "app/public/fonts/timeless/timeless-free-font-license-1.2.pdf",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "docs/fleet-ui-shots/wide-empty.png",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "docs/fleet-ui-shots/wide-populated.png",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "docs/fleet-ui-shots/wide-proven.png",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "docs/fleet-ui-shots/wide-spoof.png",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "docs/fleet-ui-shots/wide-tierevidence.png",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/StdToml.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/StdUtils.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/Vm.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/console.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IERC1155.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IERC4626.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/interfaces/IERC721.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/mocks/MockERC20.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/mocks/MockERC721.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/src/safeconsole.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdAssertions.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdChains.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdCheats.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdError.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdJson.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdMath.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdStorage.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdStyle.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdToml.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/StdUtils.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/compilation/CompilationScriptBase.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/compilation/CompilationTest.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/compilation/CompilationTestBase.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/fixtures/broadcast.log.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/fixtures/test.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/fixtures/test.toml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/mocks/MockERC20.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/lib/forge-std/test/mocks/MockERC721.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/oracle/SilentUpgradeTest.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/lab/src/ChainWatchLab.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/chain-watch/runtime/monitor.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/contracts/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/contracts/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/contracts/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/Dockerfile.observatory",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/NOTICE",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/analyze.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/checks.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/.touchstone.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/Corefile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/bundle.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/capture.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/ethers.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/github.io.db",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/hosts.txt",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/index.html",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/sdk.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/server.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/snapshot.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/urls.txt",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/lab/zone.db",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/labctl.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/live.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/package-lock.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/smoke.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/templates/github-takeover.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/tools.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/validation/checks.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/validation/qwen-abl.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/validation/qwen.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/domains/validation/tool-comparison.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/index.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/Dockerfile.checkov",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/Dockerfile.kubescape",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/Dockerfile.prowler-python",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/LICENSE.upstream",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/NOTICE",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/bun.lock",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/checks.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/cloud-seed.py",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/cloud-smoke.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/cloud.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/compare.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/.touchstone.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/baseline.tf",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/chart/Chart.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/chart/templates/validator.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/chart/values.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/cloud/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/cloud/lab.py",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/cloud/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/cloudformation.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/kubernetes.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/lab/main.tf.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/live-cloud.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/live.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/real-input.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/rule-catalog.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/scanners.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/smoke.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/snapshot.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/cloud-posture.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/live-record.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/live.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/real-input.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/smoke.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/infra-cloud/validation/tool-comparison.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/common.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/control.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/.touchstone.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/foundry.toml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/.gitattributes",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/.github/workflows/ci.yml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/.github/workflows/sync.yml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/.gitignore",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/CONTRIBUTING.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/LICENSE-APACHE",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/LICENSE-MIT",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/README.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/foundry.toml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/scripts/vm.py",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/Base.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/Script.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdAssertions.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdChains.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdCheats.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdError.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdInvariant.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdJson.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdMath.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdStorage.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdStyle.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdToml.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/StdUtils.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/Test.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/Vm.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/console.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/console2.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IERC1155.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IERC165.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IERC20.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IERC4626.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IERC721.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/interfaces/IMulticall3.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/mocks/MockERC20.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/mocks/MockERC721.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/src/safeconsole.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdAssertions.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdChains.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdCheats.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdError.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdJson.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdMath.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdStorage.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdStyle.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdToml.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/StdUtils.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/Vm.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/compilation/CompilationScript.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/compilation/CompilationScriptBase.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/compilation/CompilationTest.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/compilation/CompilationTestBase.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/fixtures/broadcast.log.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/fixtures/test.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/fixtures/test.toml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/mocks/MockERC20.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/lib/forge-std/test/mocks/MockERC721.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/oracle/DelegatedSetupTest.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/oracle/KeysOracle.t.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/lab/src/KeysLab.sol",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/runtime/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/runtime/bun.lock",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/runtime/observe.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/runtime/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/keys/source-checks.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/review/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/review/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/source-nav/LICENSE.codebase-memory-mcp",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/source-nav/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/source-nav/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/source-nav/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/LICENSE.gitleaks",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/advisories/GHSA-35jh-r3h4-6jhm.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/advisories/osv-scalibr/npm/all.zip",
+   "reason": "binary-or-not-utf8"
+  },
+  {
+   "file": "spike/packs/supply-chain/compare.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/crypto.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/github.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/gitleaks.toml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/.github/workflows/deploy.yml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/package-lock.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/plant/ethres/index.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/plant/ethres/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/lab/scripts/deploy.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/refresh-db.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/rules/crypto-supply-chain.yml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/scan.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/scanners.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/smoke.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/supply-chain/snapshot.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/jsluice/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/lab/.touchstone.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/lab/snapshot.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/spa-lab/assets/admin.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/spa-lab/assets/app.js",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/spa-lab/index.html",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/spa-lab/robots.txt",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/spa-lab/server.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/surface/validation/qwen-abl.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/SKILL.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/TOOLS.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/.touchstone.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/BRIEF.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/openapi.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/oracle/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/oracle/package-lock.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/oracle/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/lab/dapp/oracle/server.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/live.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/pack.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/redact.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/scan.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/packs/web/scan/templates/debug-config-exposed.yaml",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/probe.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/refusal-test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/archive/README.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/archive/run-qwen-abl.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611092352-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611092352-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100033-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100033-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100111-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100111-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100128-2.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100128-2.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100201-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100201-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100313-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100313-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100315-2.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100315-2.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100321-3.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100321-3.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100359-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100359-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100407-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100407-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100528-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl-2611100528-1.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-ds-abl.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-qwen-abl-2611092323-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-qwen-abl-2611092324-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-qwen-abl-2611092326-1.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/run-qwen-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/agent/slice-findings.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t5.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-answer-ds-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-answer-qwen-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-safe-ds-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-safe-qwen-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-unsafe-ds-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6-unsafe-qwen-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t6.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t7-ds-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t7-qwen-abl.events",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/durable/t7.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/extra.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/raw.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/refusal-findings.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/results/refusal.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/scripts/build-labs.sh",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/smoke-durable.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/smoke-extra.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/smoke-raw.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/aderyn.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/ai-mcp-garak.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/ai-mcp-live-prepass.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/ai-mcp.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/attempt-cap.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/browser-seam.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/capture-mode.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/cbm-smoke.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/chain-watch.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/control.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/daytona-exec.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/daytona-sandbox.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/daytona-settings.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/domains-behavior.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/domains-live.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/domains.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/final-text.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/garak/echo-server.py",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/garak/echo.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/garak/unauthorized.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/github-octokit-request-error.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/github-pages-404.html",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/jsluice-secrets.jsonl",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/jsluice-urls.jsonl",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/katana-spa.jsonl",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/mcp-shield/lab.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/mcp-shield/poisoned-server.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/mcp-shield/poisoned.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/mcp-shield/unauthorized.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/run-strix-crash-interrupted.stream.jsonl",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fixtures/strix-crashed-example-com.sarif",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fleet.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/fork-proof.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/garak-docker.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/generated-lab.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/grant-store.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/guards.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/harm-gate.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/infra-cloud.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/keys-source.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/keys.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/live-lane.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/live-scope.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/live-targets.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/mcp-shield-docker.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/platform-hooks.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/platform-modules.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/platform-proofs.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/prepass-view.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/proof-http-proxy.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/proof-redaction.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/reach-confine-exec.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/reach-confine.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/reach.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/run-finalize.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/sandbox-isolation.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/scope-fetch.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/scope-proxy.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/scope-runtime.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/scopes-store.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/source-nav.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/strix-leads.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/strix-run.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/supply-chain-github.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/supply-chain.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/surface-jsluice.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/surface-katana.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/surface-live-wiring.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/surface-live.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/surface.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/txreplay-proof.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/web.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/workspace.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/test/wrap.test.mjs",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/tools/build-strix-image.sh",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/tools/strix/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/tools/strix/entrypoint.sh",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/LICENSE",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/README.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/VENDOR.md",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/package.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/binary.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/client.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/envelope.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/errors.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/normalize.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/result.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/timeouts.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/cbm/version.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/auto-index-paths.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/index-coordinator.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/indexing.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/output.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/project-catalog.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/project-resolver.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/query.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/symbols.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/trace.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/domain/worktree-changes.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/extension/commands.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/extension/lifecycle.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/extension/prompt.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/extension/runtime-settings.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/extension/settings.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/index.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/pi-tools/definitions.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/pi-tools/registry.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/pi-tools/render.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/pi-tools/schemas.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/concurrency.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/env.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/numbers.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/object.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/paths.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/src/shared/strings.ts",
+   "reason": "over-budget"
+  },
+  {
+   "file": "spike/vendor/pi-cbm/tsconfig.json",
+   "reason": "over-budget"
+  },
+  {
+   "file": "tools/aderyn/Dockerfile",
+   "reason": "over-budget"
+  },
+  {
+   "file": "tools/build-aderyn-image.sh",
+   "reason": "over-budget"
+  },
+  {
+   "file": "tools/fetch-cbm-bin.sh",
+   "reason": "over-budget"
+  }
+ ],
+ "files": {
+  "spike/packs/ai-mcp/Dockerfile.inspector": "# MCP Inspector CLI, pinned. MIT license.\n# Built with network access (npm install). Run with a private lab network only.\n# Build: docker build -f spike/packs/ai-mcp/Dockerfile.inspector -t touchstone/mcp-inspector:0.17.2 spike/packs/ai-mcp\nFROM node:20-slim\nRUN npm install -g @modelcontextprotocol/inspector@0.17.2 && npm cache clean --force\nENV HOME=/tmp\nWORKDIR /work\nENTRYPOINT [\"mcp-inspector\"]\n",
+  "spike/packs/ai-mcp/lab/mcp/oracle/Dockerfile": "# Built with network access (npm install), run with none.\n# The image is the fixed lab artifact. It is never copied into a run workspace.\nFROM node:20-slim\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev\nCOPY server.mjs .\nEXPOSE 8080\nUSER node\nCMD [\"node\", \"server.mjs\"]\n"
+ }
+}
