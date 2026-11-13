@@ -43,6 +43,9 @@ export interface FindingSummary {
   pack?: string | null
   scope?: string | null
   at?: number | null
+  // Which replay proves it, from the finding's own module (the run's `finding`
+  // event). Absent on an older record.
+  proofKind?: ProofKind
 }
 
 export interface PocRun {
@@ -573,6 +576,8 @@ export interface PendingApproval {
   severity: Severity
   poc: string
   n?: number
+  // The module the finding came through (the `finding-submitted` event).
+  pack?: string
 }
 
 export interface RunView {

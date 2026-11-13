@@ -59,6 +59,9 @@ export function buildMessages(
   live: boolean,
   fleet = false,
   owner: string | null = null,
+  // Each module's proof kind (PackChoice.proof), for a card whose recorded
+  // finding has not arrived yet.
+  packProof: Record<string, string> = {},
 ): ThreadMessageLike[] {
   if (!state) return []
   const msgs: ThreadMessageLike[] = []
@@ -164,7 +167,7 @@ export function buildMessages(
     // A submitted finding renders its card right where the agent submitted it,
     // so a run with several findings reads in the order they landed.
     if (step.kind === "submitted" && step.finding) {
-      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status)
+      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status, packProof)
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
         toolCallId: step.key,
@@ -282,10 +285,16 @@ export function cardFor(
   state: RunState,
   sub: PendingApproval,
   status: RunStatus,
+  packProof: Record<string, string> = {},
 ): { card: CardState; proofKind: ProofKind; proofArtifactId: string | null } {
   const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
   const rec = recordFor(state, sub, status)
-  const proofKind = proofKindOf(state)
+  // The finding's own proof kind: from its record, else from the module it came
+  // through; the run's scope only when neither is known. In a joined run a web
+  // finding is an HTTP replay even when the scope is a Contracts one.
+  const ownPack = sub.pack ? packProof[sub.pack] : undefined
+  const proofKind: ProofKind =
+    rec?.proofKind ?? (ownPack === "forge" || ownPack === "http" || ownPack === "evidence" ? ownPack : proofKindOf(state))
   if (rec) {
     if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
     const proofs = state.artifacts.filter((a) => a.kind === "proof")
