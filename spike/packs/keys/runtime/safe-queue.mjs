@@ -7,6 +7,9 @@
 //   nonce 1  shown: pay the vendor 0.2 ETH.  Owner 2 approves that hash on chain (honest wallet).
 //            Owner 0's wallet is compromised: it approves the hash of a different transaction
 //            (send 4.9 ETH to an attacker). Owner 0 never saw those fields. This is blind signing.
+//   nonce 2  shown: "run the payroll migration". It is a delegatecall (operation 1) to a contract
+//            no one trusts. A delegatecall runs that code with the Safe's own storage. Nobody has
+//            signed it yet. The signers can see it, but the wallet shows only a hash and a method.
 //
 // The script writes `safe-queue.json`: the queue the signers saw, plus the evidence on chain
 // (ApproveHash events, ExecutionSuccess hashes and the decoded execTransaction calls).
@@ -41,7 +44,7 @@ async function deploy(artifact, signer, args = []) {
   await contract.waitForDeployment();
   return contract;
 }
-const tx = (to, value, data = '0x') => ({ to, value: value.toString(), data, operation: 0, safeTxGas: '0', baseGas: '0',
+const tx = (to, value, data = '0x', operation = 0) => ({ to, value: value.toString(), data, operation, safeTxGas: '0', baseGas: '0',
   gasPrice: '0', gasToken: ZeroAddress, refundReceiver: ZeroAddress });
 const args = (t, nonce) => [t.to, t.value, t.data, t.operation, t.safeTxGas, t.baseGas, t.gasPrice, t.gasToken, t.refundReceiver, nonce];
 // A pre-approved owner signature: the owner address, 32 zero bytes, v = 1. Sorted by owner.
@@ -61,7 +64,9 @@ async function world() {
 
   // The wallet asks the Safe for the hash to sign. That is the wallet's job in this story, not the check's.
   const hashOf = (t, nonce) => safe.getTransactionHash(...args(t, nonce));
-  const queue = [{ nonce: 0, shown: tx(VENDOR, parseEther('0.1')) }, { nonce: 1, shown: tx(VENDOR, parseEther('0.2')) }];
+  const migrate = new Interface(['function migrate()']).encodeFunctionData('migrate');
+  const queue = [{ nonce: 0, shown: tx(VENDOR, parseEther('0.1')) }, { nonce: 1, shown: tx(VENDOR, parseEther('0.2')) },
+    { nonce: 2, shown: tx(ATTACKER, 0n, migrate, 1) }];
 
   // nonce 0: owners 0 and 1 approve what they saw, owner 1 executes.
   await (await safe.approveHash(await hashOf(queue[0].shown, 0))).wait();

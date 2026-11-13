@@ -169,25 +169,45 @@ export function compareQueue(queue, hashes, engine = ENGINE) {
   return { available: true, leads, checked, gaps };
 }
 
-// The note for the agent's brief. Silent only when the check ran and found nothing.
-export function safeHashNote(result) {
-  if (!result.available) return `\n\nNOTE: ${ENGINE} did NOT check the Safe queue (${String(result.reason).slice(0, 200)}). Having no safe-hash-mismatch lead does NOT mean the signers saw what they approved.`;
+// The note for the agent's brief, per engine. It says when the check did not run.
+export function safeHashNote(result, engine = ENGINE) {
+  if (!result.available) return `\n\nNOTE: ${engine} did NOT check the Safe queue (${String(result.reason).slice(0, 200)}). Having no lead from ${engine} does NOT mean the signers saw what they approved.`;
   const gaps = result.gaps.length ? ` Not checked: ${result.gaps.join("; ")}.` : "";
-  return `\n\n${ENGINE} hashed the Safe queue offline for ${result.checked.length} Safe(s); its hash of every executed transaction matched the hash the Safe emitted.${gaps}`;
+  return `\n\n${engine} hashed the Safe queue offline for ${result.checked.length} Safe(s); its hash of every executed transaction matched the hash the Safe emitted.${gaps}`;
 }
 
+// An engine hashes the queue: { name, flag, hash(queue) -> { ok, hashes, extraLeads? } | { ok: false, reason } }.
+export const SAFE_HASH_ENGINE = { name: ENGINE, flag: "safeHash", hash: (queue, opts) => hashWithSafeHash(queueJobs(queue), opts) };
+
 // The prepass hook. Lab mode only: a real folder has no Safe queue and no chain.
-// Never throws. opts.image and opts.worldImage replace the two images (tests use this).
-export async function safeHashLeads(ws, { world }, { image, worldImage } = {}) {
-  const done = (result) => ({ tool: ENGINE, key: "safeHash", ...result, note: safeHashNote(result) });
-  if (!world) return done({ available: false, reason: "source mode: there is no Safe queue to check", leads: [], checked: [], gaps: [] });
-  try {
-    const lab = await runQueueWorld(ws, { image: worldImage });
-    if (!lab.ok) return done({ available: false, reason: lab.reason, leads: [], checked: [], gaps: [] });
-    const hashed = await hashWithSafeHash(queueJobs(lab.queue), { image });
-    if (!hashed.ok) return done({ available: false, reason: hashed.reason, leads: [], checked: [], gaps: [] });
-    return done(compareQueue(lab.queue, hashed.hashes));
-  } catch (error) {
-    return done({ available: false, reason: String(error?.message ?? error).slice(0, 200), leads: [], checked: [], gaps: [] });
+// It runs the queue world once, then each engine. Each engine is calibrated and reported
+// on its own; its extra leads count only when it passed calibration. Never throws.
+// opts.worldImage and opts.images[engine name] replace the images (tests use this).
+export async function safeHashLeads(ws, { world }, { engines = [SAFE_HASH_ENGINE], worldImage, images = {} } = {}) {
+  const off = (reason) => ({ available: false, reason, leads: [], checked: [], gaps: [] });
+  const one = async (engine, queue) => {
+    try {
+      const hashed = await engine.hash(queue, images[engine.name] ? { image: images[engine.name] } : {});
+      if (!hashed.ok) return off(hashed.reason);
+      const result = compareQueue(queue, hashed.hashes, engine.name);
+      return result.available ? { ...result, leads: [...result.leads, ...(hashed.extraLeads ?? [])] } : result;
+    } catch (error) { return off(String(error?.message ?? error).slice(0, 200)); }
+  };
+  let results;
+  if (!world) results = engines.map(() => off("source mode: there is no Safe queue to check"));
+  else {
+    let lab;
+    try { lab = await runQueueWorld(ws, worldImage ? { image: worldImage } : {}); }
+    catch (error) { lab = { ok: false, reason: String(error?.message ?? error).slice(0, 200) }; }
+    results = lab.ok ? await Promise.all(engines.map((e) => one(e, lab.queue))) : engines.map(() => off(lab.reason));
   }
+  return {
+    tool: engines.map((e) => e.name).join(" + "),
+    flags: Object.fromEntries(engines.map((e, i) => [e.flag, results[i].available])),
+    available: results.some((r) => r.available),
+    reason: results.map((r, i) => (r.available ? "" : `${engines[i].name}: ${r.reason}`)).filter(Boolean).join("; ") || undefined,
+    leads: results.flatMap((r) => r.leads),
+    results: Object.fromEntries(engines.map((e, i) => [e.name, results[i]])),
+    note: results.map((r, i) => safeHashNote(r, engines[i].name)).join(""),
+  };
 }

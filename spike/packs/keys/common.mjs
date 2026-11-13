@@ -537,14 +537,14 @@ export function sourceKickoff(mode, brief) {
 export const aderynNote = (aderyn) => aderyn.available ? "" : `\n\nNOTE: Aderyn did NOT run (${String(aderyn.reason ?? "its image is missing").slice(0, 160)}). Having no Aderyn leads here does NOT mean the code is clean. Read the code yourself.`;
 
 // `extra(ws, { world })` is an optional pack check that never throws. It returns
-// { key, available, leads, note } (Keys: the safe-hash blind-signing check).
+// { flags, leads, note } (Keys: the safe-hash blind-signing check). flags go in the record.
 export async function chainPrepass(ws, { emit }, { mode, analyze, extra }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
   const obs = world ? await observe(ws, mode) : null;
   const aderyn = await aderynLeads(ws);
   const more = extra ? await extra(ws, { world }) : null;
-  const flags = { aderyn: aderyn.available, ...(more ? { [more.key]: more.available } : {}) };
+  const flags = { aderyn: aderyn.available, ...(more?.flags ?? {}) };
   const base = leadsFor(ws, analyze);
   // Aderyn leads come last in each impact class. They are a second engine on the source.
   const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads, ...(more?.leads ?? [])]);

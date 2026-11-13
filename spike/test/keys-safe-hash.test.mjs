@@ -140,7 +140,7 @@ test("the hook is unavailable, with no lead, when the safe-hash image is missing
   const ws = makeWorkspace(LAB);
   try {
     const before = readdirSync(ws).sort();
-    assertUnavailable(await safeHashLeads(ws, { world: true }, { image: "touchstone/safe-hash:does-not-exist" }), /not built/);
+    assertUnavailable(await safeHashLeads(ws, { world: true }, { images: { "safe-hash-rs": "touchstone/safe-hash:does-not-exist" } }), /not built/);
     assert.deepEqual(readdirSync(ws).sort(), before, "the queue file is gone");
   } finally { cleanupWorkspace(ws); }
 });
@@ -310,7 +310,8 @@ test("the Keys prepass now raises the blind-signing lead its own checks never fo
     const queueSafe = lead.where.split(" ").pop();
     assert.match(lead.where, /^chain 11155111 0x[0-9a-f]{40}$/);
     for (const addr of [queueSafe, OWNER0, OWNER2]) assert.ok(!obs.includes(addr.slice(2)), `${addr} is in the main observation`);
-    assert.match(prep.env.CHAIN_BRIEF, /safe-hash-mismatch .* seen only by safe-hash-rs/);
+    // The pack runs both engines. They agree on the blind approval.
+    assert.match(prep.env.CHAIN_BRIEF, /safe-hash-mismatch .* safe-hash-rs \+ safe-tx-hashes-util AGREE/);
     assert.match(prep.env.CHAIN_BRIEF, /blind signing/);
     assert.match(prep.env.CHAIN_BRIEF, /matched the hash the Safe emitted/);
     assert.ok(events[0].top.some((l) => l.check === "safe-hash-mismatch" && l.engines.includes("safe-hash-rs")));
