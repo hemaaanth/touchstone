@@ -96,3 +96,74 @@ describe("redact: a quoted header line", () => {
     expect(text(`curl -H "X-Api-Key: AIzaSyFAKEfake1234" https://x`)).not.toContain("AIzaSyFAKEfake1234")
   })
 })
+
+describe("redact: proof text keeps its meaning and its syntax", () => {
+  // These lines have the shape of real explanation, prose and PoC text.
+  const keep = [
+    "A second call with a fake token (`authorization: Bearer junk`) also got 200 and the same body.",
+    "3. Documented API authorization: /api/users/{id}, /api/users/{id}/wallet IDOR/api keys;",
+    "GET /api/users/1      authorization: Bearer <bob token>  -> 200",
+    "Set the header `Authorization: Bearer <token>` to reproduce.",
+    "Missing authorization: the endpoint never checks the caller.",
+    "The cookie: it is set without HttpOnly or Secure flags.",
+    "api-key: missing on /admin, so the route is open",
+    "Key: `withdraw()`'s require is `balanceOf[msg.sender] >= amount`.",
+    "Then call it with `?token=`, and again with no token.",
+    'and again with "authorization: Bearer junk" — a bare 200',
+    'const J={"authorization":"Bearer junk"};',
+    'const AH = {"authorization": "Bearer " + at};',
+    "- GET /api/me?token=t1 (no header)",
+    "token in query ?token=.",
+    "works for auth: as bearer, X-API-Key, ?apiKey=.",
+  ]
+  test("prose, placeholders and lab values stay as written", () => {
+    for (const s of keep) expect(text(s)).toBe(s)
+  })
+
+  // An async PoC script in the same style as the real run_poc scripts.
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor
+  const live = "Zq7Xv9KpR2mN4tW8yB3cL6"
+  const script = [
+    'const v = await request("POST", "/siwe/verify", { body: JSON.stringify({ message: msg, signature: sig }) });',
+    "const t1 = JSON.parse(v.resBody).token;",
+    'const me = await request("GET","/api/me",{headers:{authorization:"Bearer "+t1}});',
+    "let dec=\"[]\";",
+    'const junk = await request("GET", "/api/me", { headers: { authorization: "Bearer junk" } });',
+    `const fixed = await request("GET", "/api/me", { headers: { authorization: "Bearer ${live}", "x-api-key": "${live}" } });`,
+    "const h = {",
+    `  authorization: "Bearer ${live}",`,
+    "  token: t1,",
+    "};",
+    `const q = await request("GET", "/api/me?token=${live}");`,
+    "return { me, junk, fixed, h, q, dec };",
+  ].join("\n")
+
+  test("a redacted PoC script still parses and loses only the live values", () => {
+    expect(() => new AsyncFunction(script)).not.toThrow()
+    const out = text(script)
+    expect(() => new AsyncFunction(out)).not.toThrow()
+    expect(out).not.toContain(live)
+    expect(out).toContain('{headers:{authorization:"Bearer "+t1}}')
+    expect(out).toContain('authorization: "Bearer junk"')
+    expect(out).toContain("  token: t1,")
+  })
+
+  test("a quoted header keeps its closing quote", () => {
+    expect(text(`curl -H 'X-Api-Key: AIzaSyFAKEfake1234' https://x`)).toBe(`curl -H 'X-Api-Key: [REDACTED]' https://x`)
+    expect(text(`curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://x`)).toBe(`curl -H "Authorization: Basic [REDACTED]" https://x`)
+    expect(text(`["Cookie: sid=s3ssionFAKEvalue9"]`)).toBe(`["Cookie: [REDACTED]"]`)
+    expect(text(`{"cmd":"curl -H \\"Authorization: Basic dXNlcjpodW50ZXIy\\" x"}`)).toBe(`{"cmd":"curl -H \\"Authorization: Basic [REDACTED]\\" x"}`)
+  })
+
+  test("a header line in a recorded HTTP dump is masked", () => {
+    const dump = `GET /api/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${live}\r\nX-Api-Key: ${live}\r\nCookie: sid=${live}\r\n\r\n`
+    expect(text(dump)).toBe("GET /api/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer [REDACTED]\r\nX-Api-Key: [REDACTED]\r\nCookie: [REDACTED]\r\n\r\n")
+    expect(text(`> Authorization: Bearer ${live}\n< HTTP/1.1 200 OK`)).toBe("> Authorization: Bearer [REDACTED]\n< HTTP/1.1 200 OK")
+    expect(text(`"HTTP/1.1 200\\r\\nx-session-token: ${live}\\r\\n"`)).toBe(`"HTTP/1.1 200\\r\\nx-session-token: [REDACTED]\\r\\n"`)
+  })
+
+  test("a query secret keeps the text after it", () => {
+    expect(text(`see \`/api/me?token=${live}\`, then`)).toBe("see `/api/me?token=[REDACTED]`, then")
+    expect(text(text(`/a?token=${live}&b=1`))).toBe("/a?token=[REDACTED]&b=1")
+  })
+})

@@ -32,16 +32,25 @@ function secretName(name) {
 const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
 
-// One or two words: "Bearer <token>" and "Basic <blob>" are both the secret.
-// A quote before the name is allowed: curl -H "Authorization: Basic …".
-const AUTH_HEADER = /\b(authorization|proxy-authorization)\s*:\s*\S+(?:\s+\S+)?/gi
-const APIKEY_HEADER = /\b(x-api-key|x-apikey|api-key|x-auth-token|x-access-token)\s*:\s*[^\s,;"]+/gi
-const COOKIE_HEADER = /\b(cookie|set-cookie)\s*:\s*[^\s;"]+(?:;\s*[^\s;"]+)*/gi
+// A header in text: "Name: value" where Name passes secretName. It counts
+// only in a header context: at the start of a line (a real line break or an
+// escaped "\n", with an optional curl -v "> " or "< "), or right after an
+// opening quote or backtick, as in curl -H "Authorization: Basic …". Prose
+// such as "Missing authorization: the endpoint …" is not a header.
+// The value is one or two words. It never takes a quote, a backslash, a
+// bracket, a comma or a semicolon, so the text around it keeps its syntax.
+const HEADER_NAME = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:[ \t]*)`
+const WORD = String.raw`[^\s"'` + "`" + String.raw`\\,;()\[\]{}<>]+`
+const HEADER_VALUE = `(${WORD}(?:[ \\t]+${WORD})?)`
+const LINE_HEADER = new RegExp(String.raw`(?<=^|[\r\n]|\\n)([ \t]*(?:[<>] )?)` + HEADER_NAME + HEADER_VALUE, "g")
+const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER_NAME + HEADER_VALUE, "g")
 
 // Each optional part has one way to match a run of spaces. Two adjacent
 // \s* / \s+ that can split the same run made this quadratic (ReDoS).
 const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})/gi
-const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token)=)([^&\s#"']+)/gi
+// The value stops at a quote, backtick, bracket, comma or backslash, so
+// "`?token=`," keeps its backtick and comma.
+const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token)=)([^&\s#"'`,;()[\]{}<>\\]+)/gi
 
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
 // snapshot hashes and commits are 40/64 hex and the proof needs them.
@@ -58,28 +67,70 @@ const SHAPES = [
   /\bnpm_[A-Za-z0-9]{36,}\b/g,
 ]
 
-function secretish(tok) {
-  if (tok.startsWith(MARK)) return false
+// True when one word looks like a credential and not like a lab placeholder
+// ("junk", "<bob token>", "$TOKEN"), a route or an English word.
+function secretish(tok, min = 8) {
+  if (tok.length < min || tok.startsWith("[REDACTED") || /^[<$\/{]/.test(tok)) return false
   if (/[0-9_\-./+=]/.test(tok)) return true
+  if (tok.length >= 12 && /[a-z]/.test(tok) && /[A-Z]/.test(tok)) return true
   return tok.length >= 20
 }
 
-// True when a value stored under this key or header name is a credential.
-function secretValue(name, value) {
-  return secretName(name) && value !== "" && !value.startsWith(MARK)
+// True when any word of a header value is a credential.
+function credential(value) {
+  if (/^\s*</.test(value)) return false
+  return value.split(/[\s,]+/).some((w) => secretish(w.replace(/^["'(]+|["'),;]+$/g, "")))
+}
+
+// The masked header value, or null to keep the value as it is. An
+// Authorization value keeps its scheme word: "Bearer [REDACTED]".
+function maskHeaderValue(name, value) {
+  if (!secretName(name) || value.startsWith("[REDACTED")) return null
+  if (/authorization$/i.test(name)) {
+    const m = /^([A-Za-z][\w-]*)([ \t]+)([\s\S]+)$/.exec(value)
+    if (m) return credential(m[3]) ? `${m[1]}${m[2]}${MARK}` : null
+  }
+  if (/cookie$/i.test(name)) return value.includes("=") ? MARK : null
+  return credential(value) ? MARK : null
+}
+
+function maskHeader(m, lead, name, sep, value) {
+  const masked = maskHeaderValue(name, value)
+  return masked == null ? m : `${lead}${name}${sep}${masked}`
+}
+
+// The masked value of a "key":"value" pair, or null to keep it. An
+// authorization value is judged like the header: "Bearer junk" and
+// "Bearer " + t stay.
+function maskPairValue(name, value) {
+  if (!secretName(name) || value === "" || value.startsWith("[REDACTED")) return null
+  if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
+  return MARK
+}
+
+// A query value: trailing sentence punctuation stays outside the mask, and
+// a short variable name such as ?token=t1 is not a credential.
+function maskQuery(m, head, value) {
+  const v = value.replace(/[.:!?]+$/, "")
+  return secretish(v, 6) ? head + MARK + value.slice(v.length) : m
 }
 
 function redactText(text) {
   if (!text || text.startsWith(MARK)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, AUTH_HEADER, APIKEY_HEADER, COOKIE_HEADER, BEARER, QUERY, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, ...SHAPES]) re.lastIndex = 0
   let out = text
-  out = out.replace(JSON_PAIR, (m, name, sep, v) => (secretValue(name, v) ? `"${name}"${sep}"${MARK}"` : m))
-  out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => (secretValue(name, v) ? `\\"${name}\\"${sep}\\"${MARK}\\"` : m))
-  out = out.replace(AUTH_HEADER, (_m, name) => `${name}: ${MARK}`)
-  out = out.replace(APIKEY_HEADER, (_m, name) => `${name}: ${MARK}`)
-  out = out.replace(COOKIE_HEADER, (_m, name) => `${name}: ${MARK}`)
+  out = out.replace(JSON_PAIR, (m, name, sep, v) => {
+    const masked = maskPairValue(name, v)
+    return masked == null ? m : `"${name}"${sep}"${masked}"`
+  })
+  out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => {
+    const masked = maskPairValue(name, v)
+    return masked == null ? m : `\\"${name}\\"${sep}\\"${masked}\\"`
+  })
+  out = out.replace(LINE_HEADER, maskHeader)
+  out = out.replace(QUOTE_HEADER, maskHeader)
   out = out.replace(BEARER, (m, tok) => (secretish(tok) ? `Bearer ${MARK}` : m))
-  out = out.replace(QUERY, `$1${MARK}`)
+  out = out.replace(QUERY, maskQuery)
   for (const re of SHAPES) out = out.replace(re, MARK)
   return out
 }
