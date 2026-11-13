@@ -117,7 +117,7 @@ export function chimeraSuites(ws) {
 // more than one file gives the union of their functions; a base we cannot find
 // adds none (a test from it is then dropped and is a gap, never silent).
 const FNS = /\bfunction\s+(\w+)\s*\([^)]*\)([^{;]*)/g;
-const HEAD = /\b(?:abstract\s+)?(?:contract|interface)\s+(\w+)\b([^{;]*)\{/g;
+const HEAD = /\b(?:abstract\s+)?(?:contract|interface)\s+(\w+)\b/g;
 const SKIP_DIRS = new Set([".git", "node_modules", "out", "cache", "crytic-export"]);
 
 function solFiles(ws) {
@@ -152,18 +152,33 @@ function solFiles(ws) {
 }
 
 // Each contract or interface in code-only text: { name, bases, fns }.
+// The header runs from the name to the first "{" outside parentheses, because
+// a base argument such as Properties(Options({marker: 1})) holds braces. The
+// text is code only, so a brace or a parenthesis inside a string is gone.
 function contractsIn(code) {
   const out = [];
-  for (const m of code.matchAll(HEAD)) {
-    const from = m.index + m[0].length;
-    let i = from;
-    for (let depth = 1; i < code.length && depth; i++) depth += code[i] === "{" ? 1 : code[i] === "}" ? -1 : 0;
-    // "is A, B(1, 2), lib.C" -> ["A", "B", "C"]
-    let heritage = m[2].match(/^\s*is\b([\s\S]*)$/)?.[1] ?? "";
+  const head = new RegExp(HEAD.source, "g");
+  for (let m = head.exec(code); m; m = head.exec(code)) {
+    let i = head.lastIndex;
+    for (let paren = 0; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "(") paren++;
+      else if (ch === ")") paren = Math.max(0, paren - 1);
+      else if (paren === 0 && (ch === "{" || ch === ";")) break;
+    }
+    if (code[i] !== "{") continue;
+    const header = code.slice(head.lastIndex, i);
+    const from = i + 1;
+    let j = from;
+    for (let depth = 1; j < code.length && depth; j++) depth += code[j] === "{" ? 1 : code[j] === "}" ? -1 : 0;
+    // "is A, B(1, f(2)), lib.C" -> ["A", "B", "C"]
+    let heritage = header.match(/^\s*is\b([\s\S]*)$/)?.[1] ?? "";
     for (let prev = ""; prev !== heritage; ) [prev, heritage] = [heritage, heritage.replace(/\([^()]*\)/g, "")];
     const bases = heritage.split(",").map((b) => b.trim().split(".").pop().trim()).filter((b) => /^\w+$/.test(b));
-    const fns = [...code.slice(from, i - 1).matchAll(FNS)].filter((f) => !/\b(internal|private)\b/.test(f[2])).map((f) => f[1]);
+    const fns = [...code.slice(from, j - 1).matchAll(FNS)].filter((f) => !/\b(internal|private)\b/.test(f[2])).map((f) => f[1]);
     out.push({ name: m[1], bases, fns });
+    // A contract body holds no other contract, so go on after it.
+    head.lastIndex = j;
   }
   return out;
 }

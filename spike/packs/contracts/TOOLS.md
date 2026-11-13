@@ -128,7 +128,9 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     solc 0.8 (checked with 0.8.38): a `//` comment ends at LF, CR or CRLF, so
     a CR-only file is read in full. (VT, FF, NEL, LS and PS also end it, but
     then the file does not compile.) A backslash before a line end inside a
-    string continues the string.
+    string continues the string. A contract header runs to the first `{`
+    outside parentheses, so a base argument such as
+    `Properties(Options({marker: 1}))` keeps every base.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
     Limits: a base name declared in more than one file gives the union of

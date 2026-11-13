@@ -443,6 +443,66 @@ test("CR-only and mixed line ends keep every property bound, and the lead surviv
   });
 });
 
+// The reviewer's layout: a struct literal in a base constructor argument,
+// Properties(Options({marker: 1})). Real Echidna 2.3.3 and Medusa 1.5.1 build
+// it and break property_solvent; their raw output is the fixture here.
+test("a struct literal in a base argument keeps the bases, and the real lead from both engines", async () => {
+  const prep = (ws) => {
+    const pf = join(ws, "test/recon/Properties.sol");
+    const props = readFileSync(pf, "utf8");
+    assert.ok(props.includes("abstract contract Properties is Setup, Asserts {"));
+    writeFileSync(pf, props.replace("abstract contract Properties is Setup, Asserts {", "struct Options { uint256 marker; }\nabstract contract Properties is Setup, Asserts { constructor(Options memory config) {}"));
+    const tf = join(ws, "test/recon/TargetFunctions.sol");
+    const src = readFileSync(tf, "utf8");
+    assert.ok(src.includes("abstract contract TargetFunctions is BaseTargetFunctions, Properties {"));
+    writeFileSync(tf, src
+      .replace('import {Properties} from "./Properties.sol";', 'import {Properties, Options} from "./Properties.sol";')
+      .replace("abstract contract TargetFunctions is BaseTargetFunctions, Properties {", "abstract contract TargetFunctions is BaseTargetFunctions, Properties(Options({marker: 1})) {"));
+  };
+  const echidna = fixture("echidna-2.3.3-vault-shares-struct-arg.txt");
+  const medusa = fixture("medusa-1.5.1-vault-shares-struct-arg.txt");
+  await withShim({ echidna, medusa, prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.dropped, []);
+    assert.deepEqual(scan.gaps, []);
+    assert.equal(scan.results.length, 6);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: null, leads: 1 });
+  });
+});
+
+// The neighbours of the struct case, in one header across many lines: nested
+// parentheses, a string argument with a brace and a parenthesis, and several
+// bases with arguments. Named and Paired each add a property that the engines
+// did not report, so two gaps per engine prove both bases were found.
+test("a many-line header with nested, string and struct base arguments keeps every base", async () => {
+  const prep = (ws) => {
+    writeFileSync(join(ws, "test/recon/Extra.sol"), [
+      "struct Pair { uint256 x; string y; }",
+      "abstract contract Named { constructor(string memory a, uint256 b) {} function property_named() public {} }",
+      "abstract contract Paired { constructor(Pair memory p) {} function property_paired() public {} }",
+      "",
+    ].join("\n"));
+    const ct = join(ws, SUITE);
+    const src = readFileSync(ct, "utf8");
+    assert.ok(src.includes("contract CryticTester is TargetFunctions, CryticAsserts {"));
+    writeFileSync(ct, src.replace("contract CryticTester is TargetFunctions, CryticAsserts {", [
+      "contract CryticTester is",
+      "    TargetFunctions,",
+      '    Named("a { b ( c ) }", uint256(keccak256(abi.encode((1), (2))))),',
+      '    Paired(Pair({x: (1 + 2), y: "}"})),',
+      "    CryticAsserts()",
+      "{",
+    ].join("\n")));
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.dropped, []);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
+    assert.deepEqual(scan.gaps.map((g) => `${g.engine} ${g.name}`).sort(), ["Echidna property_named()", "Echidna property_paired()", "Medusa property_named()", "Medusa property_paired()"]);
+  });
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";
