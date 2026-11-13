@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
+import { redactSecrets } from "./redact.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // app/server -> repo root -> spike/results/agent
@@ -385,7 +386,9 @@ export async function getFinding(id) {
   if (finding.modules && !events.some((e) => e.ev === "modules")) {
     opening.push({ ...modulesEvent(finding.modules), t: t0 })
   }
-  return { ...finding, events: [...opening, ...events] }
+  // The finding JSON is what a report is built from. Mask secrets on the way
+  // out. The recorded file is left as the engine wrote it.
+  return redactSecrets({ ...finding, events: [...opening, ...events] })
 }
 
 // Ledger override: mark a recorded finding dismissed (or restore it). This is a
