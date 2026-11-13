@@ -2,17 +2,22 @@
 
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
+  CheckIcon,
   ClockIcon,
   Loader2Icon,
+  MinusIcon,
+  PauseIcon,
   ShieldCheckIcon,
   ShieldIcon,
   ShieldMinusIcon,
   ShieldXIcon,
+  XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { INK, severityTone } from "@/lib/format";
 import type { Severity } from "@/lib/types";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import type { RunMarkKind } from "@/components/thread-model";
 
 // Small marks that replace a second status word. Each one is an icon with a
 // tooltip and an accessible name, so a row needs at most one text label.
@@ -171,5 +176,50 @@ export function ProofMark({
     <Hint label={word} tip={tip ?? word} className={className}>
       <ProofIcon state={state} />
     </Hint>
+  );
+}
+
+// The run's status as one mark, in one 14 px box for every state: the title
+// beside it never moves when a run starts, finishes or fails. The shapes are the
+// state indicator of the assistant-ui agent-status element (elements-agent-status
+// in https://r.assistant-ui.com): a soft pulsing dot while it works, a ring while
+// it waits, a check when done, a cross when it fails. Touchstone adds a pause and
+// a dash. Colour follows docs/restraint.md: working is neutral, green only for a
+// proven finding, an error is the warning tone and never red. Reduced motion
+// stills the dot; no other state is a solid dot, so it still reads.
+const RUN_MARK: Record<RunMarkKind, ReactNode> = {
+  starting: <span className="border-muted-foreground size-1.5 rounded-full border" />,
+  working: <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full motion-reduce:animate-none" />,
+  replaying: <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full motion-reduce:animate-none" />,
+  paused: <PauseIcon className="text-muted-foreground size-2.5 fill-current" strokeWidth={1.5} />,
+  proven: <CheckIcon className="text-ok size-3" strokeWidth={2.5} />,
+  done: <MinusIcon className="text-muted-foreground size-3" strokeWidth={2.5} />,
+  failed: <XIcon className="text-warn size-3" strokeWidth={2.5} />,
+};
+
+export function RunStatusMark({
+  kind,
+  label,
+  className,
+  "aria-hidden": hidden,
+}: {
+  kind: RunMarkKind;
+  /** The status word, read by screen readers ("Running", "Proven"). */
+  label: string;
+  className?: string;
+  /** Hide it when the row already says the status in its own text. */
+  "aria-hidden"?: boolean;
+}) {
+  return (
+    <span
+      data-slot="run-status-mark"
+      data-mark={kind}
+      role={hidden ? undefined : "img"}
+      aria-label={hidden ? undefined : label}
+      aria-hidden={hidden || undefined}
+      className={cn("inline-flex size-3.5 shrink-0 items-center justify-center", className)}
+    >
+      {RUN_MARK[kind]}
+    </span>
   );
 }

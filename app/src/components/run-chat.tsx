@@ -19,7 +19,8 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone, type HeadTone } from "@/components/thread-model"
+import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, headMarkKind, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone } from "@/components/thread-model"
+import { RunStatusMark } from "@/components/assistant-ui/elements/indicators"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
@@ -720,8 +721,9 @@ function RunHeader({
   control: React.ReactNode
   actions: React.ReactNode
 }) {
-  // The dot is the status. The word lives in its tooltip and its accessible
-  // name, so the title never moves when the status changes.
+  // The mark is the status: the same RunStatusMark as the sidebar, one size in
+  // every state. The word lives in its tooltip and its accessible name, so the
+  // title never moves when the status changes.
   const head = runHeadStatus(state, status)
   return (
     <header className={cn("flex h-12 shrink-0 items-center border-b px-5 pe-3 max-md:px-3", narrow ? "gap-2" : "gap-2.5")}>
@@ -738,7 +740,7 @@ function RunHeader({
               />
             }
           >
-            <span aria-hidden className={cn("size-[7px] rounded-full", HEAD_DOT[head.tone])} />
+            <RunStatusMark aria-hidden kind={headMarkKind(head)} label={head.word} />
           </TooltipTrigger>
           <TooltipContent side="bottom">{head.word}</TooltipContent>
         </Tooltip>
@@ -750,15 +752,6 @@ function RunHeader({
       {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
     </header>
   )
-}
-
-// The top bar's dot, one tone per state. Green only for a proven run; a live
-// run pulses, and stops pulsing when reduced motion is on.
-const HEAD_DOT: Record<HeadTone, string> = {
-  working: "bg-muted-foreground animate-pulse motion-reduce:animate-none",
-  proven: "bg-ok",
-  failed: "bg-bad",
-  neutral: "bg-muted-foreground/45",
 }
 
 // "‹ Name": back to the drawer page this one was opened from.
