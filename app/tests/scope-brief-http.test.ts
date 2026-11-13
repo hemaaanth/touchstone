@@ -1,3 +1,4 @@
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -10,10 +11,10 @@ import path from "node:path"
 const dir = mkdtempSync(path.join(tmpdir(), "scope-brief-http-test-"))
 const SCOPES = path.join(dir, "scopes.json")
 const GRANTS = path.join(dir, "grants.json")
-process.env.TOUCHSTONE_SCOPES_FILE = SCOPES
-process.env.TOUCHSTONE_GRANTS_FILE = GRANTS
+useEnv({ TOUCHSTONE_SCOPES_FILE: SCOPES })
+useEnv({ TOUCHSTONE_GRANTS_FILE: GRANTS })
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleScopes } = await import("../server/runs-http.mjs")

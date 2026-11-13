@@ -1,0 +1,5 @@
+[test]
+# Every test file runs in one process. isolated-env points the stores and the
+# console token at a throwaway folder for the whole run; env-guard fails the
+# run when a test file leaves a TOUCHSTONE_* or SPEND_* variable changed.
+preload = ["./tests/helpers/isolated-env.ts", "./tests/helpers/env-guard.ts"]

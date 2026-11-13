@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 
 // The client side of the console guard: every write in src/lib/api.ts carries
@@ -6,7 +7,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 // token is synthetic (the same value as the other test files: bun shares one
 // module cache, and the server reads the token once).
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 const api = await import("../src/lib/api.ts")
 // @ts-expect-error — plain .mjs module, no types
