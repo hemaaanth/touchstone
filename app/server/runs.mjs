@@ -29,7 +29,7 @@ import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } fro
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -1049,9 +1049,9 @@ function removeKept(id) {
   } catch (err) {
     // A part stayed. Put the mark back, so a later delete still passes the check.
     try {
-      writeFileSync(path.join(ws, WS_MARK), id, { mode: 0o600 })
+      writeFileSync(path.join(ws, WS_MARK), id, { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
     } catch {
-      // the folder itself is gone or closed
+      // the mark is still there, or the folder itself is gone or closed
     }
     throw err
   }
@@ -1125,9 +1125,17 @@ function restoreSecrets(ws, target) {
 }
 const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
 // The run's scope as the library has it now, or null when the scope is gone.
+// A scope store that cannot be read is not "gone": nobody knows then, so this throws.
 function libraryTarget(run) {
-  const library = run.scope?.id ? getTarget(run.scope.id) : null
-  return library ? withPack(library, run.scope.pack ?? library.pack) : null
+  if (!run.scope?.id) return null
+  const library = getTarget(run.scope.id)
+  if (library) return withPack(library, run.scope.pack ?? library.pack)
+  try {
+    loadScopes() // the lookup above reads a damaged store as empty; this read throws
+  } catch {
+    throw new Error("The scope library cannot be read, so this follow-up did not start. Repair the scope store file, then send the message again.")
+  }
+  return null
 }
 
 // A follow-up puts the credential back into the kept workspace, and the record
@@ -1153,7 +1161,11 @@ function cleanRestored(run) {
     delete rec.restored
     writeWorkspace(run.id, rec)
   } catch {
-    // The mark stays, so the next boot tries again and a follow-up does not trust the files.
+    // The mark stays, so the next boot tries again and a follow-up does not trust
+    // the files. This is also the path when the scope store cannot be read. The
+    // workspace is then left alone. That is safe: with the mark set, a follow-up
+    // must look the credential up first, and that lookup is refused too, so no
+    // worker gets the files and the token is not used.
   } finally {
     if (mine) release(run)
   }
@@ -1316,7 +1328,6 @@ export function followUp(run, text, clientId) {
   // The record's path is used only when the directory passes the check and
   // carries this run's mark. Otherwise the path leaves the record.
   let ws = checkedWorkspace(kept?.ws, run.id)
-  if (kept?.ws && !ws) unbindWorkspace(run.id)
   let target = run.target ?? kept?.target ?? libraryTarget(run)
   // The credential is not kept with the workspace. It comes back from the scope
   // library, where it already is. Only the credential: the rest stays the run's
@@ -1327,6 +1338,7 @@ export function followUp(run, text, clientId) {
     if (secretsOf({ mcp: found }).length) target = { ...target, mcp: { ...target.mcp, ...found } }
     else noCredential = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
   }
+  if (kept?.ws && !ws) unbindWorkspace(run.id) // after the lookups: a refusal above changes nothing
   if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
   if (target) run.target = target
   if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")

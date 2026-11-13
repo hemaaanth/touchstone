@@ -34,7 +34,8 @@ const SANDBOX_FOUNDRY = {
 
 // The scopes for a mutation. A missing file is an empty store. A file that
 // exists but cannot be read or parsed throws, so a mutation never writes over it.
-const loadScopes = () => loadStore(scopesFile(), "scope store");
+// Exported for a reader that must tell a damaged store from a scope that is gone.
+export const loadScopes = () => loadStore(scopesFile(), "scope store");
 
 // Read the whole store for a list or a lookup. A missing file is an empty list.
 // A damaged file also reads as "no user scopes", so the list still renders. It
