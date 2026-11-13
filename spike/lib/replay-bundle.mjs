@@ -13,6 +13,7 @@
 // placeholders. A file that is itself a key (a pem, an env file, a cloud
 // credential) is left out and named in the README.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -129,6 +130,8 @@ export function forgeCommand({ contract, test, fork, solc, image } = {}) {
   }
   if (contract && IDENT.test(contract)) args.push("--match-contract", contract);
   if (test && IDENT.test(test)) args.push("--match-test", test);
+  // The JSON trace is what check-harm.mjs reads, as the engine's own replay does.
+  args.push("--json", "-vvvv");
   const net = fork?.forked ? " -e RPC_URL" : " --network none";
   return `docker run --rm --pull never${net} -v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${imageOf(image)} '${args.join(" ")}'`;
 }
@@ -418,6 +421,20 @@ function omittedList(omitted) {
   return `\n\n## Left out\n\n${rows.map((o) => `- ${o.path ? `\`${o.path}\` — ` : ""}${o.reason}`).join("\n")}\n`;
 }
 
+// The replay a reader runs: check the files, rerun the proof, check the harm.
+function replaySteps(command) {
+  return `sha256sum -c SHA256SUMS && \\\n  ${command} > replay.json && \\\n  node check-harm.mjs replay.json`;
+}
+
+const CHECK_HARM = new URL("./replay-check-harm.mjs", import.meta.url);
+
+function sha256Sums(entries) {
+  return entries
+    .filter((e) => e.name !== "README.md")
+    .map((e) => `${createHash("sha256").update(e.data).digest("hex")}  ${e.name}`)
+    .join("\n") + "\n";
+}
+
 function forgeReadme({ title, replay, command, prepare, fork }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   if (!command) {
@@ -447,7 +464,9 @@ ${omittedList(replay?.omitted)}`;
 The proof test, the scope sources, and the Foundry config are in this folder. \`proof.json\` is the recorded verdict. Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.
 
 ${forkNote} ${solc} ${image} No provider key and no bearer token is in this folder.
-${prep}${fence(command, "Replay (offline)")}${omittedList(replay?.omitted)}`;
+
+The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in this folder, the proof test included, differs from what was recorded. Forge then reruns the named test and writes its JSON trace to \`replay.json\`. \`node check-harm.mjs\` (Node 18 or later) reads that trace and checks it against \`harm.json\`, the harm the engine recorded. It exits 0 when the test passed and the victim lost the recorded wei, 1 when not, and 2 when the recorded harm is not an ETH drain (a token, storage, or control harm needs the engine's storage reader).
+${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedList(replay?.omitted)}`;
 }
 
 function httpReadme({ title, hasScript }) {
@@ -496,10 +515,16 @@ This run was recorded before the workspace was snapshotted, and the workspace is
 `;
   const entries = [];
   pushFile(entries, "README.md", readme);
-  pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command, prepare }));
+  pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   for (const f of files) pushFile(entries, f.path, f.text);
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", scrubReplayText(testSource));
+  if (command) {
+    const harm = { contract: replay?.contract || null, test: replay?.test || null, harm: scrubValue(proof?.harm ?? null), transfers: scrubValue(proof?.transfers ?? []) };
+    pushFile(entries, "harm.json", JSON.stringify(harm, null, 2) + "\n");
+    pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"));
+    pushFile(entries, "SHA256SUMS", sha256Sums(entries));
+  }
   return zipStore(entries);
 }
 

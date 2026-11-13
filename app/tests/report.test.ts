@@ -255,12 +255,62 @@ describe("report: replay bundle", () => {
         const proof = JSON.parse(files.get("proof.json") || "")
         expect(proof.replay.command).toBe(cmd)
         expect(proof.replay.prepare).toBe(prepare)
+        expect(cmd.startsWith("sha256sum -c SHA256SUMS && ")).toBe(true)
+        expect(cmd).toContain("--json -vvvv' > replay.json && ")
+        expect(cmd.endsWith("node check-harm.mjs replay.json")).toBe(true)
+        for (const name of ["SHA256SUMS", "harm.json", "check-harm.mjs"]) expect(files.has(name)).toBe(true)
+        const sums = files.get("SHA256SUMS") || ""
+        expect(sums).toContain("  test/AgentPoc.t.sol\n")
+        expect(sums).toContain("  harm.json\n")
+        expect(sums).not.toContain("README.md")
+        execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
+        writeFileSync(path.join(dir, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public { assertTrue(true); } }\n`)
+        expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
         expect(JSON.stringify(proof)).not.toContain(ALCHEMY_KEY)
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
     } finally {
       rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("check-harm.mjs passes only when the replay moves the recorded wei", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-harm-"))
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-harm-zip-"))
+    try {
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest {}\n`)
+      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const vault = "0x00000000000000000000000000000000000000aa"
+      const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: vault, lostWei: "1000000000000000000" } }
+      unzip(buildReplayBundle({ finding: { title: "drain", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
+      const trace = (wei: string, status = "Success") => ({
+        "test/AgentPoc.t.sol:PocTest": { test_results: { "testDrain()": { status, traces: [["Execution", { arena: [
+          { parent: null, trace: { kind: "CALL", address: "0x00000000000000000000000000000000000000bb", caller: "0x00000000000000000000000000000000000000cc", success: true, value: "0x0" } },
+          { parent: 0, trace: { kind: "CALL", address: "0x00000000000000000000000000000000000000dd", caller: vault, success: true, value: wei } },
+        ] }]] } } },
+      })
+      const check = (body: unknown) => {
+        writeFileSync(path.join(dir, "replay.json"), JSON.stringify(body))
+        try {
+          execFileSync("node", ["check-harm.mjs", "replay.json"], { cwd: dir, stdio: "ignore" })
+          return 0
+        } catch (err) {
+          return (err as { status?: number }).status ?? -1
+        }
+      }
+      expect(check(trace("0xde0b6b3a7640000"))).toBe(0)
+      expect(check(trace("0x1"))).toBe(1)
+      expect(check(trace("0xde0b6b3a7640000", "Failure"))).toBe(1)
+      expect(check({})).toBe(1)
+      const harm = JSON.parse(readFileSync(path.join(dir, "harm.json"), "utf8"))
+      writeFileSync(path.join(dir, "harm.json"), JSON.stringify({ ...harm, harm: { ok: true, kind: "control", victim: vault } }))
+      expect(check(trace("0xde0b6b3a7640000"))).toBe(2)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -391,7 +441,7 @@ describe("report: replay bundle", () => {
       unzip(zip, dir)
       const readme = readFileSync(path.join(dir, "README.md"), "utf8")
       const cmd = section(readme, "Replay (offline)") || ""
-      expect(cmd.startsWith("docker run --rm --pull never --network none ")).toBe(true)
+      expect(cmd.startsWith("sha256sum -c SHA256SUMS && \\\n  docker run --rm --pull never --network none ")).toBe(true)
       expect(cmd).toMatch(/ ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64} /)
       expect(cmd).toContain("'forge test --offline --use 0.8.38 ")
       expect(cmd).toContain("--match-contract VaultExploitTest")
@@ -411,7 +461,23 @@ describe("report: replay bundle", () => {
         const failed = err as { stdout?: string; stderr?: string; message?: string }
         throw new Error(`replay command failed\n${cmd}\n${failed.stdout || ""}\n${failed.stderr || ""}\n${failed.message || ""}`)
       }
-      expect(out).toContain("[PASS] test_reentrancy_drains_vault")
+      expect(f.proof.harm.kind).toBe("funds")
+      expect(out).toContain(`OK: test_reentrancy_drains_vault() passed and ${f.proof.harm.victim} lost ${f.proof.harm.lostWei} wei`)
+      // A PoC that only asserts true still passes forge. With the sums redone
+      // to hide the edit, the harm check must still refuse it.
+      const poc = path.join(dir, "test", "AgentPoc.t.sol")
+      const body = readFileSync(poc, "utf8")
+      writeFileSync(poc, body.replace(/(function test_reentrancy_drains_vault\(\)[^{]*\{)/, "$1 assertTrue(true); return;"))
+      expect(readFileSync(poc, "utf8")).not.toBe(body)
+      expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
+      execFileSync("bash", ["-c", "sha256sum test/AgentPoc.t.sol > .sum && grep -v '  test/AgentPoc.t.sol$' SHA256SUMS >> .sum && mv .sum SHA256SUMS"], { cwd: dir })
+      let tampered = 0
+      try {
+        execFileSync("bash", ["-c", run], { cwd: dir, stdio: "ignore", timeout: 300_000 })
+      } catch (err) {
+        tampered = (err as { status?: number }).status ?? -1
+      }
+      expect(tampered).toBe(1)
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
