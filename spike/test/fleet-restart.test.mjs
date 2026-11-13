@@ -233,7 +233,9 @@ test("an agent that was mid-turn at the restart is ended with a plain reason, an
   assert.equal(run.status, "error");
   // Beta was mid-turn. Alpha had finished before the restart and stays done.
   assert.deepEqual(ends(run.events).map((e) => [e.id, e.agent, e.status]), [["a-3", "a-3", "failed"]]);
-  assert.match(ends(run.events)[0].error, /^The server restarted while this agent was working\. It was not started again\./);
+  assert.equal(ends(run.events)[0].error, "The server restarted while this agent was working. It was not started again.");
+  // Its time is the run's last event before the restart, not the boot.
+  assert.equal(ends(run.events)[0].t, 27);
   assert.equal(run.events.filter((e) => e.ev === "subagent-done" && e.id === "a-2").length, 1);
   // The run's own card: what happened, who was cut off, what it cost, what to do.
   assert.equal(run.errorInfo.kind, "cutoff");

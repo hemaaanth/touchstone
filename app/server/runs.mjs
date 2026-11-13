@@ -1736,7 +1736,7 @@ function rebuildEvents(id, record, engineEvents) {
 // mid-turn would read as working for ever. Its end is written into the stream,
 // with the reason. The server starts no agent again: an agent costs money, so
 // the operator decides. A message continues the run (followUp).
-const CUT_OFF = "The server restarted while this agent was working. It was not started again. Send a message to continue the work."
+const CUT_OFF = "The server restarted while this agent was working. It was not started again."
 
 // A run's children by their last lifecycle event. `working` still read as
 // working. `cut` were ended by a restart and have not worked since.
@@ -1754,8 +1754,11 @@ function fleetChildren(events) {
 
 // The end of each child that still reads as working. The view has no
 // "interrupted" state yet, so the status is "failed"; `interrupted` says why.
+// The time is the run's last event: the last moment the child is known to
+// have worked, not the moment the server came back.
 function cutOffEvents(events) {
-  return fleetChildren(events).working.map((id) => ({ t: Date.now(), ev: "subagent-done", agent: id, id, status: "failed", interrupted: true, error: CUT_OFF }))
+  const t = events.findLast((e) => typeof e.t === "number")?.t ?? Date.now()
+  return fleetChildren(events).working.map((id) => ({ t, ev: "subagent-done", agent: id, id, status: "failed", interrupted: true, error: CUT_OFF }))
 }
 
 // The error card of a fleet run that a restart cut off: who was mid-turn, that
