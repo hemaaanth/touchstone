@@ -184,3 +184,21 @@ test("leadsFrom keeps only the known lead fields, and proof only as text", async
   assert.deepEqual(Object.keys(forged).sort(), ["agent", "file", "id", "line", "reason", "severity", "t", "title"]);
   assert.equal(typed.proof, "send a request");
 });
+
+test("a run records at most 200 leads; the next one is refused with a clear error", async (t) => {
+  const { ws, events } = workspace();
+  t.mock.method(console, "log", () => {});
+  process.env.EVENTS_FILE = events;
+  t.after(() => { delete process.env.EVENTS_FILE; });
+  writeFileSync(join(ws, "src/svc/big.js"), Array.from({ length: 205 }, (_, i) => `const v${i} = ${i};`).join("\n") + "\n");
+  const record = review.tools(ws, {}).find((x) => x.name === "record_lead");
+  for (let line = 1; line <= 200; line++) {
+    const r = await exec(record, { ...lead, file: "src/svc/big.js", line });
+    assert.ok(!r.isError, `lead ${line} is recorded`);
+  }
+  const over = await exec(record, { ...lead, file: "src/svc/big.js", line: 201 });
+  assert.equal(over.isError, true);
+  assert.match(text({ content: over.output }), /200/);
+  assert.match(text({ content: over.output }), /cap/i);
+  assert.equal(fileEvents(events).filter((e) => e.ev === "lead").length, 200, "the refused lead writes no event");
+});

@@ -126,6 +126,9 @@ export const NUDGE = "You recorded no lead with record_lead. For each lead you r
 const SEVERITIES = ["critical", "high", "medium", "low"];
 const TITLE_CAP = 300;
 const REASON_CAP = 2000;
+// Leads one run may record. Each is an event the run view reduces again on
+// every update, so a runaway loop must stop here.
+export const LEAD_CAP = 200;
 
 export function tools(ws, state = {}) {
   const cfg = readTouchstone(ws);
@@ -246,6 +249,7 @@ export function tools(ws, state = {}) {
       const file = relative(realpathSync(ws), abs).split(sep).join("/");
       const id = "lead-" + createHash("sha1").update(`${file}:${line}`).digest("hex").slice(0, 12);
       if (recorded.has(id)) return text(`Already recorded as ${id} (${file}:${line}). One lead per line.`);
+      if (recorded.size >= LEAD_CAP) return text(`Lead cap reached: this run already recorded ${LEAD_CAP} leads, the most one run may record. This lead was not recorded. Stop recording and end with your ranked lead list.`, true);
       recorded.add(id);
       state.leads = recorded.size;
       event("lead", { id, severity, file, line, title, reason, ...(proof ? { proof } : {}) });
