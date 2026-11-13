@@ -117,6 +117,22 @@ test("harm gate: a target the test etched over is no longer a target", () => {
   assert.match(verdict(traces).reason, /deployed no contract from the audited scope/);
 });
 
+// H1d n2: the gate drops the target also for an etch in a frame that reverted.
+// It does not trust that forge undid the code (fail closed). The ETH loss after
+// it would prove if the etch were ignored.
+test("harm gate: a target etched in a reverted frame is no longer a target (fail closed)", () => {
+  const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
+  const traces = [setup(), exec(
+    node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }),
+    node(1, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: etch }),
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(3, { kind: "CALL", address: ATTACKER, caller: VAULT, value: ONE }),
+  )];
+  const harm = verdict(traces);
+  assert.equal(harm.ok, false);
+  assert.match(harm.reason, /deployed no contract from the audited scope/);
+});
+
 test("harm gate: a target the test etched over in setUp() is no longer a target either", () => {
   const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
   const traces = [setup(
@@ -458,6 +474,21 @@ test("harm gate: a net-zero logged flow with a balance-slot drop is not a token 
   ] }]];
   const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
   assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+// H1d n3: the impersonation text must not hide the true cause. The test pranks
+// scope target TOKEN (not the victim) and calls VAULT, which moves nothing. The
+// reason names the prank AND keeps the base reason.
+test("harm gate: the impersonation reason keeps the base reason after it (H1d n3)", () => {
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    prankNode(TOKEN),
+    callVault(),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, new RegExp(`impersonated scope target ${TOKEN}`));
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
@@ -988,6 +1019,42 @@ test("forge: the real lab ETH drain is STILL proven with its exact value (review
   assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
   assert.equal(f.proof.harm.kind, "funds");
   assert.equal(f.proof.harm.lostWei, "10000000000000000000"); // the honest deposits: 4 + 3 + 3 ether
+  assert.equal(isProven(f), true);
+});
+
+// H1c: a forge-std deal(token, …) in the test BODY makes a replay trace above the
+// 8 MiB cap (about 10 MiB on the pinned image). The cut trace is never judged; the
+// proof fails and the reason tells the agent to move deal into setUp(). The same
+// drain with deal in setUp() stays small and is proven with its exact value.
+const DEAL_DRAIN = (poc, setupDeal) => `import "../src/Tokens.sol";
+contract ${poc} is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); ${setupDeal ? "deal(address(tok), address(vault), 100e18);" : ""} }
+  function test_x() public {
+    ${setupDeal ? "" : "deal(address(tok), address(vault), 100e18);"}
+    vm.prank(address(0xBEEF)); vault.withdraw(100e18);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100e18);
+  }
+}
+`;
+test("forge: a deal() in the test body makes a trace above the cap; it is not judged and the reason says use setUp() (H1c)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealBodyTest", DEAL_DRAIN("DealBodyTest", false));
+  assert.equal(f.forgePassed, true);
+  assert.ok(f.proof, "a cut trace still gives a failed proof with a reason, not null");
+  assert.equal(f.proof.pass, false);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*call deal in setUp\(\)/);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: the same drain with deal() in setUp() is STILL proven with its exact value (H1c TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealSetupTest", DEAL_DRAIN("DealSetupTest", true));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.asset, "token");
+  assert.equal(f.proof.harm.lostUnits, "100000000000000000000");
   assert.equal(isProven(f), true);
 });
 

@@ -389,6 +389,19 @@ test("runTool's argv on the remote path has one --name, the one the watchdog kil
   });
 });
 
+// H1c: output above maxBuffer is cut on the remote path too, and the result says
+// so. The forge harm gate must never judge a cut trace.
+test("remoteDocker marks output above maxBuffer as overflow, like local execFile", async () => {
+  await withFake({}, async ({ mod, ws }) => {
+    const cut = await mod.remoteDocker(ARGS(ws), { ws, maxBuffer: 1 });
+    assert.equal(cut?.stdout, "h");
+    assert.equal(cut?.overflow, true);
+    const whole = await mod.remoteDocker(ARGS(ws), { ws });
+    assert.equal(whole?.stdout, "hi");
+    assert.equal(whole?.overflow, false);
+  });
+});
+
 test("M1: a failed machine is deleted and the call retries once on a new one", async () => {
   await withFake({ modes: ["fail", "ok"] }, async ({ mod, ws, fake, events, sidecar }) => {
     const r = await mod.remoteDocker(ARGS(ws), { ws });
