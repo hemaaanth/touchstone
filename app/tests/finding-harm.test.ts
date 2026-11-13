@@ -26,6 +26,9 @@ const record = (proof: Record<string, unknown>) => ({
 writeFileSync(path.join(dir, "run-harm-new-2611110619-1.json"), JSON.stringify(record({ transfers, harm })))
 // A record from before netWei and harm.
 writeFileSync(path.join(dir, "run-harm-old-2611110619-1.json"), JSON.stringify(record({ transfers: transfers.map(({ netWei: _, ...t }) => t) })))
+// H3b: the proof's replay carries the re-run verdict the engine recorded.
+writeFileSync(path.join(dir, "run-rerun-pass-2611110619-1.json"), JSON.stringify(record({ transfers, harm, replay: { kind: "forge", store: { sha256: "a".repeat(64) }, rerun: { checked: true, pass: true, command: "docker run ...", image: "img@sha256:x", ms: 1200 } } })))
+writeFileSync(path.join(dir, "run-rerun-fail-2611110619-1.json"), JSON.stringify(record({ transfers, harm, replay: { kind: "forge", store: { sha256: "b".repeat(64) }, rerun: { checked: true, pass: false, reason: "the proof forked a chain, which the offline re-run cannot" } } })))
 
 describe("the finding answer and the proof gate's harm (K5)", () => {
   test("a record with harm and exact wei sends both, and every field it sent before", async () => {
@@ -34,6 +37,20 @@ describe("the finding answer and the proof gate's harm (K5)", () => {
     const f = await getFinding("harm-new-2611110619-1.1", { events: false })
     expect(f.proof.harm).toEqual(harm)
     expect(f.proof.transfers).toEqual(transfers)
+  })
+
+  test("the proof surfaces the re-run verdict, read-only: pass, a reason, or null", async () => {
+    // @ts-expect-error — plain .mjs module, no types
+    const { getFinding } = await import("../server/findings.mjs")
+    const ok = await getFinding("rerun-pass-2611110619-1.1", { events: false })
+    expect(ok.proof.rerun).toEqual({ checked: true, pass: true })
+    const bad = await getFinding("rerun-fail-2611110619-1.1", { events: false })
+    expect(bad.proof.rerun).toEqual({ checked: true, pass: false, reason: "the proof forked a chain, which the offline re-run cannot" })
+    // No command or image leaks into the normalized proof; it is a bool + reason.
+    expect(JSON.stringify(ok.proof.rerun)).not.toContain("docker run")
+    // An older record without a verdict surfaces null.
+    const old = await getFinding("harm-old-2611110619-1.1", { events: false })
+    expect(old.proof.rerun).toBeNull()
   })
 
   test("an older record reads as before: no netWei, harm is null", async () => {

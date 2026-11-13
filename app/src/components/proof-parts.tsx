@@ -194,6 +194,26 @@ export function Verdict({ proven, line }: { proven: boolean; line: string }) {
   )
 }
 
+// A read-only line on a Foundry proof: whether the downloadable bundle's own
+// files re-ran the proof offline. Neutral, never green — green is reserved for
+// the proven verdict (docs/restraint.md). Null rerun renders nothing.
+export function RerunNote({ rerun }: { rerun?: { checked: boolean; pass: boolean; reason?: string } | null }) {
+  if (!rerun) return null
+  if (rerun.pass) {
+    return (
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <Check className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0">Re-run checked — Touchstone re-ran the bundle's own files on offline forge and the proof test passed.</span>
+      </p>
+    )
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      Not re-run-checked{rerun.reason ? `: ${rerun.reason}` : ""}. The bundle still downloads with the files and the command.
+    </p>
+  )
+}
+
 // The agent's own explanation — prose with its code highlighted. The "Why it
 // works" label only leads a plain-prose explanation; a self-structured one
 // supplies its own headings.

@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { hasBundle } from "@/lib/findings-view"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
-import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
+import { Block, CopyButton, ExportReport, Fold, RerunNote, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
 import { HttpProofCard } from "./http-proof"
 import { EvidenceProofCard } from "./evidence-proof"
 
@@ -205,6 +205,9 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
           </ul>
         </Block>
       ) : null}
+
+      {/* Whether the downloadable bundle's own files re-ran the proof offline. */}
+      <RerunNote rerun={proof.rerun} />
 
       {/* Reproduce it yourself. */}
       {proof.rerunCommand ? (

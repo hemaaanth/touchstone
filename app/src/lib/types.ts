@@ -96,6 +96,9 @@ export interface Proof {
   balances: Balance[]
   assertions: string[]
   rerunCommand: string | null
+  // Whether the downloadable bundle's own files re-ran the proof offline
+  // (recorded once by the engine). Read-only; a pass is neutral, never green.
+  rerun?: { checked: boolean; pass: boolean; reason?: string } | null
   testSource: string | null
   // What the proof gate says was lost (spike/lib/proof.mjs), when the server
   // passes it: an ETH or token drain, or a control takeover.

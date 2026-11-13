@@ -75,7 +75,7 @@ describe("bundle-check says what the bundle is, in its README's own first words 
     expect(r.status).toBe(200)
     const about = JSON.parse(r.body).about
     expect(about).toMatch(/^PROVEN: Touchstone proved this finding by its own replay/)
-    expect(about).toContain("it has no re-run command yet")
+    expect(about).toContain("it has no re-run command")
   })
 })
 
