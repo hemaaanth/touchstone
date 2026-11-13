@@ -9,6 +9,8 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
+//            Never pulled: an image that is not local makes the call fail, and
+//            the caller reports a coverage gap instead of reaching a registry.
 //   cmd      the command, as an argv array
 //   network  "none" unless the pack's TOOLS.md says the tool needs more
 //   user     runs as the host user by default, so it can read the workspace

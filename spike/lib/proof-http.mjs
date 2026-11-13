@@ -44,6 +44,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 
 function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolveDocker) => {
@@ -169,15 +170,15 @@ export async function startLab({
   const cleanup = async () => {
     await docker(["rm", "-f", proxyName]);
     await docker(["rm", "-f", labName]);
-    for (const n of nets) await docker(["network", "rm", n]);
+    for (const n of nets) await removeLabNetwork(n, { docker });
     if (proxyDir) { try { rmSync(proxyDir, { recursive: true, force: true }); } catch {} }
   };
   const fail = async (msg) => { await cleanup(); throw new Error(`startLab: ${msg}`); };
 
-  const ni = await docker(["network", "create", "--internal", netInner]);
+  const ni = await createLabNetwork(netInner, ["--internal"], { docker });
   if (ni.code !== 0) return fail(`inner network create failed: ${ni.stderr.trim().slice(0, 500)}`);
   nets.push(netInner);
-  const no = await docker(["network", "create", "--internal", netOuter]);
+  const no = await createLabNetwork(netOuter, ["--internal"], { docker });
   if (no.code !== 0) return fail(`outer network create failed: ${no.stderr.trim().slice(0, 500)}`);
   nets.push(netOuter);
 
@@ -256,8 +257,8 @@ export async function stopLab(handle) {
   if (!handle) return;
   if (handle.proxyName) await docker(["rm", "-f", handle.proxyName], { timeoutMs: 15_000 });
   if (handle.labName) await docker(["rm", "-f", handle.labName], { timeoutMs: 15_000 });
-  if (handle.netOuter) await docker(["network", "rm", handle.netOuter], { timeoutMs: 15_000 });
-  if (handle.netInner) await docker(["network", "rm", handle.netInner], { timeoutMs: 15_000 });
+  if (handle.netOuter) await removeLabNetwork(handle.netOuter, { docker });
+  if (handle.netInner) await removeLabNetwork(handle.netInner, { docker });
   if (handle.proxyDir) { try { rmSync(handle.proxyDir, { recursive: true, force: true }); } catch {} }
 }
 

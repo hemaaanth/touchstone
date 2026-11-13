@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react"
-import { fetchRun, streamRun } from "./api"
+import { fetchRun, HttpError, streamRun } from "./api"
 import { isTerminal } from "./format"
 import { repairFinalSay } from "./final-text"
 import type {
@@ -807,6 +807,12 @@ interface RunEntry {
   // The open stream, if any. `gen` counts loads: a stream only writes while
   // its load is the latest.
   stop?: () => void
+  // Only setRetry touches this. Invariant: at most one pending retry timer and
+  // at most one in-flight snapshot fetch per run id. (reloadRun may leave an
+  // older fetch running, but `gen` drops its result, so it schedules nothing.)
+  retry?: ReturnType<typeof setTimeout>
+  // Reloads in a row without a stream that stayed open 5 s. Sets the backoff.
+  failures: number
   gen: number
 }
 
@@ -860,7 +866,7 @@ function sameBrief(a: RunBrief | undefined, b: RunBrief): boolean {
 function entryFor(id: string): RunEntry {
   let en = entries.get(id)
   if (!en) {
-    en = { events: [], state: null, listeners: new Set(), loading: false, gen: 0 }
+    en = { events: [], state: null, listeners: new Set(), loading: false, failures: 0, gen: 0 }
     entries.set(id, en)
   }
   return en
@@ -886,6 +892,7 @@ function commit(id: string, en: RunEntry, events: RunEvent[]) {
 
 function follow(id: string, en: RunEntry) {
   const gen = en.gen
+  const opened = Date.now()
   let queue: RunEvent[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = () => {
@@ -905,10 +912,38 @@ function follow(id: string, en: RunEntry) {
     () => {
       if (en.gen !== gen) return
       flush()
-      // The stream dropped before the run closed: load it fresh next time.
-      if (!en.state?.closed) en.loading = false
+      // The server owns the event list. Reload it instead of replaying an old
+      // since= URL. A stream that keeps failing waits on the backoff.
+      if (!en.state?.closed) {
+        en.loading = false
+        // The server sends `status` on every subscribe, so one message proves
+        // nothing. Only a stream that stayed open 5 s resets the backoff.
+        if (Date.now() - opened >= 5000) en.failures = 0
+        retryLoad(id, en)
+      }
     },
   )
+}
+
+// Load again after a dropped stream or a failed fetch. The first reload after a
+// healthy stream is at once; then 1 s, 2 s, 4 s, and 5 s each time after that.
+function retryLoad(id: string, en: RunEntry) {
+  const delay = en.failures ? Math.min(1000 * 2 ** (en.failures - 1), 5000) : 0
+  en.failures = Math.min(en.failures + 1, 4)
+  setRetry(id, en, delay)
+}
+
+// The one place that sets or clears the retry timer. It always clears the old
+// timer first, so a run never has two retry chains. `null` only clears.
+function setRetry(id: string, en: RunEntry, delay: number | null) {
+  clearTimeout(en.retry)
+  en.retry =
+    delay === null
+      ? undefined
+      : setTimeout(() => {
+          en.retry = undefined
+          loadRun(id)
+        }, delay)
 }
 
 // Load a run into the store if it is not there yet. Safe to call often.
@@ -916,18 +951,26 @@ export function loadRun(id: string) {
   const en = entryFor(id)
   if (en.loading) return
   en.loading = true
+  // This fetch replaces any pending retry.
+  setRetry(id, en, null)
+  const gen = ++en.gen
   fetchRun(id)
     .then((view) => {
+      if (en.gen !== gen) return
       // The snapshot replaces the events. A stream still open from an earlier
       // load would add its events again on top, so stop it first.
-      en.gen++
       en.stop?.()
       en.stop = undefined
       commit(id, en, view.events ?? [])
       if (!en.state?.closed) follow(id, en)
     })
-    .catch(() => {
+    .catch((err) => {
+      if (en.gen !== gen) return
       en.loading = false
+      // A 4xx will not change on retry (deleted, forbidden). A 5xx or a network
+      // error is the server restarting, so it keeps retrying at most every 5 s.
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500) return
+      retryLoad(id, en)
     })
 }
 
@@ -935,11 +978,20 @@ export function loadRun(id: string) {
 // an idle run, or after it is archived: an idle run keeps no stream, so the
 // new events are only in a fresh snapshot.
 export function reloadRun(id: string) {
-  entryFor(id).loading = false
+  const en = entryFor(id)
+  en.gen++
+  en.stop?.()
+  en.stop = undefined
+  en.failures = 0
+  en.loading = false
   loadRun(id)
 }
 
 // The reduced state of one run. Null only until its snapshot first loads.
+export function getRunState(id: string): RunState | null {
+  return entries.get(id)?.state ?? null
+}
+
 export function useRun(runId: string | null): RunState | null {
   const subscribe = useCallback(
     (cb: () => void) => {
@@ -976,4 +1028,11 @@ export function onRunSettled(cb: (id: string) => void): () => void {
   return () => {
     settleListeners.delete(cb)
   }
+}
+
+// The header's Running word. A follow-up reply keeps the run's terminal status,
+// so `replying` counts as running while its stream is open. Before the run
+// loads, the sidebar's status decides.
+export function isRunningNow(state: RunState | null, status: RunStatus): boolean {
+  return state ? !state.closed && (!isTerminal(state.status) || state.replying) : status === "running"
 }
