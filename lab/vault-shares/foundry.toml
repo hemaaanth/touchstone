@@ -1,0 +1,8 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+# test/ ships the project's own property suites (Halmos check_ tests and a
+# Chimera suite). oracle/ holds the reference exploits; runs never copy it.
+remappings = ["@chimera/=lib/chimera/src/", "forge-std/=lib/forge-std/src/"]

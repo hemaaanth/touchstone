@@ -64,7 +64,7 @@ function solcUse(ws) {
 // copied, so the agent cannot read the reference exploit.
 //
 // A Contracts target gets only what the agent may see: contract source, the
-// vendored libs, and the build config. A target whose .touchstone.json names
+// vendored libs, the build config, and the target's own test/ if it has one. A target whose .touchstone.json names
 // another pack gets a copy of the whole directory, with .git, because those packs
 // need no Foundry files and their proofs cite commits. Nothing is added to it.
 // In both cases the target's .touchstone.json, with its `pack`, goes into the
@@ -89,6 +89,8 @@ export function makeWorkspace(targetDir) {
   cpSync(join(targetDir, "lib"), join(ws, "lib"), { recursive: true });
   cpSync(join(targetDir, "foundry.toml"), join(ws, "foundry.toml"));
   if (existsSync(cfgFile)) cpSync(cfgFile, join(ws, ".touchstone.json"));
+  // A target's own test/ holds its property suites (Halmos check_ functions).
+  if (existsSync(join(targetDir, "test"))) cpSync(join(targetDir, "test"), join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   return ws;
 }

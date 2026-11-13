@@ -195,9 +195,11 @@ function executionState(cfg) {
     backend: c.backend,
     saved: saved.backend === "daytona" ? "daytona" : "local",
     envOverride: process.env.TOUCHSTONE_EXEC || null,
+    // saved: a key is stored in Settings, even one that is held, so the form
+    // can remove it. Only the last 4 characters of a key in use leave here.
     key: c.apiKey
-      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
-      : { set: false, source: null, envName: null, last4: null, held: c.keyHeld },
+      ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null, saved: Boolean(saved.apiKey) }
+      : { set: false, source: null, envName: null, last4: null, held: c.keyHeld, saved: Boolean(saved.apiKey) },
     apiUrl: c.apiUrl,
     target: c.target,
     snapshot: c.snapshot,
