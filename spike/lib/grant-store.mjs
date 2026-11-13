@@ -23,11 +23,12 @@
 // real only when its proof replays and shows harm. A grant with no live run is
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { isPublicSuffix, sharedWildcardRefusal } from "./public-suffix.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -110,15 +111,189 @@ export function saveStore(file, arr) {
     } finally {
       closeSync(fd);
     }
+    lockStillOurs(file);
     renameSync(tmp, file);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw e;
   }
+  // The rename lives in the folder: fsync the folder too, so a crash right
+  // after this cannot bring the old file back.
+  syncFolder(path.dirname(file));
+}
+
+function syncFolder(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, "r");
+    fsyncSync(fd);
+  } catch (e) {
+    // A system that cannot fsync a folder (EISDIR, EINVAL, EPERM) keeps the old
+    // durability. Any other error is real.
+    if (!["EISDIR", "EINVAL", "EPERM", "EBADF"].includes(e.code)) throw e;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// ---- One writer at a time, across processes -------------------------------
+//
+// The server and the CLI can both write a store. Each mutation reads the whole
+// file, changes it and writes it back, so two at once could lose one update.
+// withStoreLock runs a mutation while it holds "<file>.lock", made with "wx"
+// (only one process can make it). The lock holds the owner's pid and the time.
+//   - The lock path must be a regular file. A link or a folder there is
+//     refused with a sentence and never followed (lstat).
+//   - A lock is STALE when its process is gone, or when it is older than
+//     LOCK_STALE_MS. A stale lock is taken over atomically: it is renamed to a
+//     unique name, and only the process whose rename moved THAT lock (same
+//     inode) goes on to make its own with "wx". A process whose rename moved a
+//     fresh lock by mistake puts it back (link) and waits.
+//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS (default
+//     5 s); then the mutation is refused with a sentence and nothing is written.
+//   - A writer that held its lock longer than LOCK_STALE_MS can lose it to a
+//     takeover. A real write takes milliseconds; only a stopped or hung process
+//     (a suspended machine, a stuck disk) is that slow. So saveStore checks,
+//     just before its rename, that the lock is still its own, and refuses if
+//     not. Release removes the lock only when it is still its own.
+// Re-entrant in one process: a mutation that calls another on the same store
+// does not wait for itself.
+const LOCK_STALE_MS = 30_000;
+const heldLocks = new Map(); // lock path -> the inode of our lock file
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// For tests only: called between judging a lock stale and taking it over, so a
+// test can make two processes judge the same stale lock at once.
+export const lockTestHooks = { afterStaleJudged: null };
+
+// What sits at the lock path: null (nothing), { bad: true } (not a regular
+// file), or { ino, owner, ageMs }.
+function lockAt(lock) {
+  let st;
+  try {
+    st = lstatSync(lock);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return { bad: true };
+  let owner = null;
+  try {
+    owner = JSON.parse(readFileSync(lock, "utf8"));
+  } catch {
+    /* being written right now, or damaged */
+  }
+  return { ino: st.ino, owner, ageMs: Date.now() - st.mtimeMs };
+}
+
+function lockIsStale(lock, { owner, ageMs }) {
+  if (ageMs > LOCK_STALE_MS) return true;
+  const pid = Number(owner?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // a lock with no owner yet: give the writer a moment
+  if (pid === process.pid) return !heldLocks.has(lock); // ours but not held: a leftover
+  try {
+    process.kill(pid, 0);
+    return false; // alive (or alive under another user: EPERM below)
+  } catch (e) {
+    return e.code === "ESRCH";
+  }
+}
+
+// Take over the stale lock `seen`. True when this process moved exactly that
+// lock away; then it may try "wx". False when another process got there first.
+function takeOver(lock, seen) {
+  const moved = `${lock}.stale-${process.pid}-${randomUUID().slice(0, 8)}`;
+  try {
+    renameSync(lock, moved);
+  } catch (e) {
+    if (e.code === "ENOENT") return false; // another process took it over first
+    throw e;
+  }
+  let ino = null;
+  try {
+    ino = lstatSync(moved).ino;
+  } catch {
+    /* gone: nothing to put back */
+  }
+  if (ino !== null && ino !== seen.ino) {
+    // We moved a FRESH lock: another process took the stale one over and made
+    // its own in between. Put it back. If a third lock is there already, the
+    // owner of the moved one notices at its save (lockStillOurs) and refuses.
+    try {
+      linkSync(moved, lock);
+    } catch {
+      /* a newer lock is there */
+    }
+    rmSync(moved, { force: true });
+    return false;
+  }
+  rmSync(moved, { force: true });
+  return true;
+}
+
+const notALockFile = (what, lock) =>
+  new Error(`Refused: the ${what} lock ${lock} is a link or a folder, not a lock file. Touchstone does not follow it. Nothing was changed. Remove it, then try again.`);
+
+export function withStoreLock(file, what, fn) {
+  const lock = `${file}.lock`;
+  if (heldLocks.has(lock)) return fn();
+  mkdirSync(path.dirname(file), { recursive: true });
+  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || 5_000;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    const seen = lockAt(lock);
+    if (seen?.bad) throw notALockFile(what, lock);
+    if (seen && lockIsStale(lock, seen)) {
+      lockTestHooks.afterStaleJudged?.();
+      takeOver(lock, seen);
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen?.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
+    }
+    pause(20);
+  }
+  heldLocks.set(lock, lstatSync(lock).ino);
+  try {
+    return fn();
+  } finally {
+    const ours = heldLocks.get(lock);
+    heldLocks.delete(lock);
+    if (lockAt(lock)?.ino === ours) rmSync(lock, { force: true });
+  }
+}
+
+// Called by saveStore just before its rename: a writer that holds the lock of
+// this file must still hold it. Throws when another process took it over.
+function lockStillOurs(file) {
+  const lock = `${file}.lock`;
+  if (!heldLocks.has(lock)) return;
+  if (lockAt(lock)?.ino !== heldLocks.get(lock)) {
+    throw new Error(`Refused: this write held the store lock ${lock} so long that another process took it over. Nothing was changed. Try again.`);
+  }
 }
 
 // The grants for a mutation: throws on a damaged file (see loadStore).
 export const loadGrants = () => loadStore(grantsFile(), "grant store");
+
+// A sentence when the grant store file exists but cannot be read, else null.
+// The gate then refuses every live run (readGrants reads it as empty).
+export function grantStoreError() {
+  try {
+    loadGrants();
+    return null;
+  } catch (e) {
+    // Read on a page that changes nothing: no "Nothing was changed".
+    const text = String(e?.message ?? e)
+      .replace(/^Refused: /, "")
+      .replace(/ Nothing was changed\. Repair the file or move it away, then try again\.$/, " Its grants are not shown, and none can be added or changed, until the file is repaired or moved away.");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+}
 
 // Read the whole store for a gate or a list. A missing file is an empty list.
 // A damaged file also reads as "no grants": the gate then refuses every run
@@ -226,26 +401,10 @@ export function ipKind(raw) {
   return "public";
 }
 
-// A short list of public suffixes we refuse to wildcard. A grant for
-// "*.<suffix>" would cover the whole registry (every .com, every .co.uk), which
-// is never a real scope. This is not the full Public Suffix List — it is the
-// common multi-party suffixes a fat-fingered or malicious grant would reach for.
-// A wildcard base must also have at least two labels, so "*.com" is refused on
-// the label count alone; this set catches the two-label public suffixes.
-export const PUBLIC_SUFFIXES = new Set([
-  "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
-  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
-  "co.nz", "net.nz", "org.nz", "govt.nz",
-  "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
-  "com.br", "net.br", "org.br", "gov.br",
-  "co.in", "net.in", "org.in", "gov.in", "ac.in",
-  "com.cn", "net.cn", "org.cn", "gov.cn",
-  "co.za", "org.za", "gov.za",
-  "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
-  "github.io", "gitlab.io", "pages.dev", "web.app", "firebaseapp.com",
-  "herokuapp.com", "vercel.app", "netlify.app", "workers.dev", "appspot.com",
-  "s3.amazonaws.com", "cloudfront.net", "azurewebsites.net", "blob.core.windows.net",
-]);
+// The public suffixes come from the Public Suffix List (lib/public-suffix.mjs),
+// the one source of truth. This name stays for the Domains CAA walk
+// (packs/domains/tls.mjs), which asks only `.has(name)`.
+export const PUBLIC_SUFFIXES = Object.freeze({ has: (name) => isPublicSuffix(name) });
 
 // True for a hostname that is loopback, unspecified, or an obvious local name
 // (not an IP — those are caught by isIP + isBlockedAddress at grant time). These
@@ -271,7 +430,10 @@ function grantEntryError(entry, allowPrivate) {
     const base = e.slice(2);
     const labels = base.split(".").filter(Boolean);
     if (labels.length < 2) return `"${e}" is too broad: a wildcard needs at least two labels after "*." (so "*.example.com", never "*.com").`;
-    if (PUBLIC_SUFFIXES.has(base)) return `"${e}" covers a whole public suffix (${base}); grant the exact subdomains instead.`;
+    // A public suffix, a name with public suffixes under it, or a shared name
+    // the PSL lacks: the wildcard would cover hosts that belong to other people.
+    const shared = sharedWildcardRefusal(base);
+    if (shared) return shared;
     return null;
   }
   if (!allowPrivate) {
@@ -389,9 +551,11 @@ export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, ex
     // grant for a public host never touches it.
     allowPrivate: priv,
   };
-  const all = loadGrants();
-  all.unshift(grant);
-  writeGrants(all);
+  withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    all.unshift(grant);
+    writeGrants(all);
+  });
   return grant;
 }
 
@@ -400,11 +564,13 @@ export function getGrant(id) {
 }
 
 export function removeGrant(id) {
-  const all = loadGrants();
-  const next = all.filter((g) => g.id !== id);
-  if (next.length === all.length) return false;
-  writeGrants(next);
-  return true;
+  return withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    const next = all.filter((g) => g.id !== id);
+    if (next.length === all.length) return false;
+    writeGrants(next);
+    return true;
+  });
 }
 
 // Is a grant live right now? A grant with an expiry in the past is inert.

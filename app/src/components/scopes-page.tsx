@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react"
-import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2 } from "lucide-react"
+import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2, TriangleAlert } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
 import { removeScope, saveScopeBrief } from "@/lib/api"
@@ -60,6 +60,7 @@ export function ScopesPage({
   briefs,
   onOpenRun,
   onChanged,
+  storeErrors = [],
 }: {
   catalog: CatalogState
   packs: PackChoice[]
@@ -68,6 +69,9 @@ export function ScopesPage({
   briefs: Record<string, RunBrief>
   onOpenRun: (id: string) => void
   onChanged: () => void
+  // A store file that cannot be read (GET /api/stores). Its scopes are missing
+  // from the list, so the page must say why, not show an empty list.
+  storeErrors?: string[]
 }) {
   const { scoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
   const runsOf = (t: TargetChoice) => scoped.filter((r) => r.brief.scope?.id === t.id)
@@ -96,6 +100,19 @@ export function ScopesPage({
       description="What a run may test: a website, a GitHub repository or a local folder. A run picks one scope and some of its modules."
       action={catalog === "loading" || (catalog === "error" && targets.length === 0) ? null : add}
     >
+      {storeErrors.length ? (
+        <div role="alert" className="flex gap-2.5 rounded-lg bg-muted/50 px-3.5 py-3 text-[13px] leading-relaxed">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warn" />
+          <div className="min-w-0">
+            <p className="font-medium">Some scopes cannot be shown</p>
+            {storeErrors.map((e) => (
+              <p key={e} className="mt-1 wrap-anywhere text-muted-foreground">
+                {e}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {catalog === "loading" ? (
         <ListLoading label="Loading scopes…" />
       ) : catalog === "error" && targets.length === 0 ? (

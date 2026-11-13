@@ -147,7 +147,7 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     }
     // A star in any spelling other than "*.example.com" would be dropped from
     // the grant without a word. Refuse it here, before anything is saved.
-    const refusal = liveHostsRefusal(hosts)
+    const refusal = liveHostsRefusal(hosts, { pack })
     if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
     const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
