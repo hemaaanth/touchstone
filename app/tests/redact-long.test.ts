@@ -234,3 +234,59 @@ describe("redact: a text of 64 KB or less gets no canary and no cut (review 3 Mi
     }
   })
 })
+
+describe("redact: seeded fuzz of long texts against a one-pass window (review 3)", () => {
+  // A small seeded PRNG, so a failure can be replayed.
+  const rng = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32)
+  const shapesOf = (id: string): string[] => [
+    `Authorization: Bearer tk_f${id}9Z`,
+    `use Bearer\ntk_f${id}9Z now`,
+    `It used Bearer token\ntk_f${id}9Z for it`,
+    `X-Api-Key: tk_f${id}9Z`,
+    `{"token":"tk_f${id}9Z"}`,
+    `{"password": "a b\ntk_f${id}9Z c"}`,
+    `{\\"token\\":\\"p\ntk_f${id}9Z\\"}`,
+    `{"name":"x-api-key","value":"tk_f${id}9Z"}`,
+    `{\n  "name": "Authorization",\n  "value": "Basic tk_f${id}9Z"\n}`,
+    `GET /a?token=tk_f${id}9Z HTTP/1.1`,
+    `DB_PASSWORD=tk_f${id}9Z node x`,
+    `--token tk_f${id}9Z --amount 5`,
+    `Cookie: sid=tk_f${id}9Z; theme=dark`,
+    `const apiKey = 'tk_f${id}9Z';`,
+    `-----BEGIN PRIVATE KEY-----\nMIIEtk_f${id}9Z\n-----END PRIVATE KEY-----`,
+  ]
+  const words = "the server did not check the caller so the lab returned a record for bob".split(" ")
+  const EOL = ["\n", "\n", "\n", "\r\n", "\r", " "]
+  const build = (r: () => number, n: number) => {
+    const parts: string[] = []
+    const secrets: string[] = []
+    let len = 0
+    for (let k = 0; len < n; k++) {
+      let piece: string
+      if (r() < 0.03) {
+        const id = `${k}x${Math.floor(r() * 1e6)}`
+        const all = shapesOf(id)
+        piece = all[Math.floor(r() * all.length)]
+        secrets.push(`tk_f${id}9Z`)
+      } else piece = words[Math.floor(r() * words.length)]
+      parts.push(piece, EOL[Math.floor(r() * EOL.length)])
+      len += piece.length + 1
+    }
+    return { s: parts.join(""), secrets }
+  }
+  for (let batch = 0; batch < 10; batch++) {
+    test(`batch ${batch}: 20 texts of 64 to 200 KB`, () => {
+      const r = rng(1000 + batch)
+      for (let t = 0; t < 20; t++) {
+        const { s, secrets } = build(r, 64 * KB + Math.floor(r() * 136 * KB))
+        const out = text(s)
+        for (const sec of secrets) {
+          const i = s.indexOf(sec)
+          const windowOut = redactOnePass(s.slice(Math.max(0, i - 6 * KB), i + sec.length + 6 * KB))
+          // A secret that one pass masks in its window must be masked in the long result.
+          if (!windowOut.includes(sec)) expect([batch, t, sec, out.includes(sec)]).toEqual([batch, t, sec, false])
+        }
+      }
+    }, 60000)
+  }
+})
