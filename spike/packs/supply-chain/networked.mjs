@@ -22,6 +22,7 @@ import { loadSnapshot, pinSnapshot, sha256 } from "../../lib/proof-evidence.mjs"
 import { githubTarget } from "../../lib/scopes-store.mjs";
 import { captureSnapshot } from "./snapshot.mjs";
 import { captureGithub } from "./github.mjs";
+import { captureBlocked, blockedFrom } from "./networked-blocked.mjs";
 
 // Scorecard v5.6.0, built locally from the release tarball checked by SHA-256
 // (images/scorecard/Dockerfile). The CLI has no write flags: it only reads.
@@ -49,7 +50,9 @@ const NOT_USED = { Vulnerabilities: "it needs api.osv.dev, which no run may reac
 // The pack never asks for more: a missing one is a "not covered" gap.
 const ADMIN_SCOPES = { "Branch-Protection": "Administration: read", Webhooks: "Webhooks: read" };
 
-export const NETWORKED_TOOLS = ["scorecard"];
+// legitify runs but always fails closed (networked-blocked.mjs): it saves its
+// output, and no lead comes from it until a parser is checked on a real run.
+export const NETWORKED_TOOLS = ["scorecard", "legitify"];
 
 const now = () => new Date().toISOString();
 const imageId = (image) => { try { return execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
@@ -146,6 +149,7 @@ export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree 
   const target = named.find((t) => t.repo) ?? null;
   const captures = {};
   if (tools.includes("scorecard")) captures.scorecard = await captureScorecard(snapshot, { target, reach: cfg.reach, token, run });
+  for (const t of tools) if (t !== "scorecard") captures[t] = await captureBlocked(t, { target, reach: cfg.reach, token, run });
   if (named.length > 1) captures.notes = [`networked tools read only ${target ? `${target.owner}/${target.repo}` : "no repo"}; ${named.length - 1} other targets were not captured`];
   const out = { ...snapshot, captures };
   return { snapshot: out, snapshotHash: pinSnapshot(ws, out) };
@@ -244,7 +248,7 @@ export function scorecardFrom(snapshot) {
 
 export function networkedResults(snapshot) {
   const out = { leads: [], coverage: [], gaps: [] };
-  for (const r of [scorecardFrom(snapshot)]) for (const k of Object.keys(out)) out[k].push(...r[k]);
+  for (const r of [scorecardFrom(snapshot), blockedFrom(snapshot)]) for (const k of Object.keys(out)) out[k].push(...r[k]);
   for (const note of snapshot.captures?.notes ?? []) out.gaps.push({ kind: "networked-target-not-captured", detail: note });
   return out;
 }

@@ -1,0 +1,38 @@
+{
+  "tool": "legitify",
+  "mode": "api",
+  "image": "touchstone/legitify:1.0.11",
+  "imageId": "sha256:9e76ff4baa889bd351eea33464848c429b072d33ed197fc091a2095bb256a4d8",
+  "cmd": [
+    "analyze",
+    "--repo",
+    "hemaaanth/touchstone",
+    "-n",
+    "repository",
+    "-f",
+    "json",
+    "--output-scheme",
+    "flattened",
+    "--color",
+    "none",
+    "--scorecard",
+    "no",
+    "-e",
+    "/tmp/legitify-error.log",
+    "--permissions-file",
+    "/tmp/legitify-permissions.json"
+  ],
+  "status": "unavailable",
+  "code": 1,
+  "timedOut": false,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "text": "",
+  "stderr": "Error: GitHub fine-grained tokens are not supported at this moment, please use classic PAT\n",
+  "reason": "not covered: needs a classic PAT. Legitify rejects fine-grained tokens (github_pat_) before any request",
+  "egress": {
+    "tunnels": {},
+    "blocked": {}
+  },
+  "capturedAt": "2026-11-13T02:19:01.742Z",
+  "target": "hemaaanth/touchstone"
+}
