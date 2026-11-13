@@ -52,6 +52,20 @@ export type StepKind =
   | "message"
   | "agent-error"
   | "submitted"
+  // A quiet line from the system, e.g. "the workspace was rebuilt".
+  | "system"
+  // A follow-up that stopped. `label` is the reason; `detail` is the raw output.
+  | "reply-error"
+
+// A server error can be one sentence, a blank line, then raw output (a
+// process's last lines). The sentence is for reading; the raw part is shown as
+// preformatted text.
+export function splitRaw(error: string): { text: string; raw: string | null } {
+  const at = error.search(/\n[ \t]*\n/)
+  if (at < 0) return { text: error.trim(), raw: null }
+  const raw = error.slice(at).replace(/^\s*\n/, "").trimEnd()
+  return { text: error.slice(0, at).trim(), raw: raw.trim() ? raw : null }
+}
 
 export interface Step {
   key: string
@@ -739,8 +753,15 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "note", phase, label: `The server restarted, so the ${step} started again` })
         break
       }
-      case "reply-error":
-        steps.push({ key, kind: "note", phase, label: `The follow-up stopped: ${str(e.error)}` })
+      case "reply-error": {
+        const { text, raw } = splitRaw(str(e.error))
+        steps.push({ key, kind: "reply-error", phase, label: text, detail: raw ?? undefined })
+        break
+      }
+      case "workspace":
+        // The run's old workspace was gone, so the server built a new one.
+        if (str(e.state) === "rebuilt" && str(e.message).trim())
+          steps.push({ key, kind: "system", phase, label: str(e.message).trim() })
         break
       case "archived":
         archived = Boolean(e.archived)

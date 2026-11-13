@@ -1,11 +1,12 @@
 import type { PrepassLead, PrepassView } from "@/lib/types"
-import { Fold } from "@/components/proof-parts"
+import { Check, Minus } from "lucide-react"
+import { cn } from "cn"
 import { DataTable, type DataColumn } from "@/components/assistant-ui/elements/data-table"
 import { mono } from "@/components/assistant-ui/elements/surfaces"
 
-// What the pack's tools found before the agent started: one closed fold, the
-// same for every pack. Leads are hints for the agent, not findings, so the
-// fold is neutral: no green, no red. Only a replay earns a colour.
+// What the pack's tools found before the agent started. It lives inside the
+// run's setup card, the same for every pack. Leads are hints for the agent,
+// not findings, so it is neutral: no green, no red. Only a replay earns a colour.
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
@@ -61,40 +62,46 @@ const LEAD_COLUMNS: DataColumn<PrepassLead>[] = [
   },
 ]
 
-export function PrepassFold({ prepass }: { prepass: PrepassView }) {
+// The tool scan's detail, shown inside the run's setup card: one row per tool,
+// in the setup card's row style, then the leads table. A scan that did not
+// finish says so in one line.
+export function PrepassDetail({ prepass }: { prepass: PrepassView }) {
   if (prepass.failed) {
     return (
-      <div className="py-1 text-xs text-muted-foreground">
+      <p className="border-t border-foreground/[0.06] px-3.5 py-2.5 text-xs text-muted-foreground">
         Tool scan did not finish. The agent worked from the source alone.
-      </div>
+      </p>
     )
   }
-  const ran = prepass.tools.filter((t) => t.status === "ran").length
-  const label =
-    `Tool scan · ${plural(prepass.tools.length, "tool")}` +
-    (prepass.tools.length > ran ? ` (${ran} ran)` : "") +
-    ` · ${plural(prepass.total, "lead")}`
   const hidden = prepass.total - prepass.leads.length
   return (
-    <Fold label={label}>
-      <div className="flex flex-col gap-5">
-        <ul className="flex flex-col gap-1.5">
-          {prepass.tools.map((t, i) => (
-            <li key={`${t.name}-${i}`} className="flex flex-wrap items-baseline gap-x-2 text-xs">
-              <span className="font-medium text-foreground">{t.name}</span>
-              <span className="min-w-0 break-words text-muted-foreground">
-                {t.status === "ran"
-                  ? `ran · ${plural(t.leads, "lead")}${t.reason ? ` · ${t.reason}` : ""}`
-                  : `unavailable${t.reason ? ` · ${t.reason}` : ""}`}
+    <div className="flex flex-col border-t border-foreground/[0.06]">
+      <ul className="flex flex-col py-1">
+        {prepass.tools.map((t, i) => {
+          const Icon = t.status === "ran" ? Check : Minus
+          return (
+            <li key={`${t.name}-${i}`} className="flex items-center gap-2.5 px-3.5 py-1.5">
+              <span className="flex size-3.5 shrink-0 items-center justify-center">
+                <Icon aria-hidden className="size-3 text-muted-foreground" />
+              </span>
+              <span className={cn(mono, "shrink-0 text-foreground/80")}>{t.name}</span>
+              {/* A ran row's caveat ("7 of 8 operations errored") follows the
+                  lead count and wraps, so a partial run never reads as clean. */}
+              <span className={cn("min-w-0 flex-1 text-xs text-muted-foreground", t.status === "ran" && t.reason ? "break-words" : "truncate")}>
+                {t.status === "ran" ? `${plural(t.leads, "lead")}${t.reason ? ` · ${t.reason}` : ""}` : `Unavailable${t.reason ? ` · ${t.reason}` : ""}`}
               </span>
             </li>
-          ))}
-        </ul>
-        {prepass.leads.length > 0 ? (
+          )
+        })}
+      </ul>
+      {prepass.leads.length > 0 ? (
+        <div className="px-3.5 pb-3">
           <DataTable columns={LEAD_COLUMNS} rows={prepass.leads} rowKey={(_, i) => String(i)} />
-        ) : null}
-        {hidden > 0 ? <span className="text-[11px] text-muted-foreground">{plural(hidden, "more lead")} not shown.</span> : null}
-      </div>
-    </Fold>
+        </div>
+      ) : null}
+      {hidden > 0 ? (
+        <p className="px-3.5 pb-3 text-[11px] text-muted-foreground">{plural(hidden, "more lead")} not shown.</p>
+      ) : null}
+    </div>
   )
 }

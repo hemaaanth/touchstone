@@ -1,0 +1,37 @@
+# Chimera property suites (Recon). Chimera is a Solidity library: one suite,
+# with a CryticTester entry point, runs under Echidna and Medusa. The suite and
+# the library ship with the target (lib/chimera). This image only holds the
+# two fuzzers that run it.
+# Build: spike/packs/contracts/images/build.sh chimera
+# Build time needs network. Run time is --network none --pull=never (runTool).
+#
+# Pins:
+#   python          3.12-slim by digest
+#   forge           copied from the Foundry image by digest (forge 1.9.0)
+#   solc            0.8.38 static binary, checked by sha256
+#   echidna         2.3.3 release tarball, checked by sha256 (AGPL-3.0)
+#   medusa          1.5.1 release tarball, checked by sha256 (AGPL-3.0)
+#   crytic-compile  0.4.2 and every Python dependency, exact versions (AGPL-3.0)
+FROM ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39 AS foundry
+
+FROM python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+COPY --from=foundry /usr/local/bin/forge /usr/local/bin/forge
+ADD --checksum=sha256:436d26cb5af34c6c525812b857ac53f218c7f6ad07d69495ef88bc4cdc85c764 \
+    https://github.com/crytic/echidna/releases/download/v2.3.3/echidna-2.3.3-x86_64-linux.tar.gz /tmp/echidna.tgz
+ADD --checksum=sha256:ddfe1517ae9028ef9fc331b00f5a6a9d5406f3fcd11a715d60c6b6fb3e4546d3 \
+    https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz /tmp/medusa.tgz
+COPY chimera-requirements.txt /tmp/req.txt
+RUN tar -xzf /tmp/echidna.tgz -C /usr/local/bin echidna \
+ && tar -xzf /tmp/medusa.tgz -C /usr/local/bin medusa \
+ && chmod 0755 /usr/local/bin/echidna /usr/local/bin/medusa \
+ && rm /tmp/echidna.tgz /tmp/medusa.tgz \
+ && pip install --no-cache-dir --no-deps -r /tmp/req.txt && rm /tmp/req.txt
+# pip's solc-select installs a `solc` shim that downloads compilers. Replace it
+# with the pinned binary, after pip, so nothing at run time needs the network.
+ADD --checksum=sha256:65c3180a336eabb6bdc4bbd49cc405aeb233976964ae6c11fba2a6c8be8f3243 \
+    https://github.com/ethereum/solidity/releases/download/v0.8.38/solc-static-linux /usr/local/bin/solc
+RUN chmod 0755 /usr/local/bin/solc && rm -f /usr/local/bin/solc-select \
+ && echidna --version && medusa --version && crytic-compile --version && forge --version && solc --version
+# runTool runs as the host user, who has no home in the image. Forge must never
+# try to download solc: it uses the baked binary and stays offline.
+ENV HOME=/tmp FOUNDRY_OFFLINE=true FOUNDRY_SOLC=/usr/local/bin/solc
