@@ -242,7 +242,6 @@ export function RunPanel({
               label="Candidates"
               count={state.candidates.length}
               status="Needs review"
-              warn
               expanded={section === "candidates"}
               onToggle={() => toggle("candidates")}
             >
@@ -406,7 +405,6 @@ function Section({
   pills,
   status,
   bad = false,
-  warn = false,
   expanded,
   onToggle,
   children,
@@ -417,7 +415,6 @@ function Section({
   pills?: Pill[]
   status: string | null
   bad?: boolean
-  warn?: boolean
   expanded: boolean
   onToggle: () => void
   children: React.ReactNode
@@ -452,7 +449,7 @@ function Section({
           </span>
         ) : null}
         {status ? (
-          <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : warn ? "text-warn" : "text-muted-foreground")}>{status}</span>
+          <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : "text-muted-foreground")}>{status}</span>
         ) : null}
       </button>
       {expanded ? <SectionBody>{children}</SectionBody> : null}

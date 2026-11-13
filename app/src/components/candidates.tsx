@@ -2,12 +2,17 @@ import { useState } from "react"
 import { ChevronRight, ShieldQuestionMark } from "lucide-react"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
+import { Badge } from "@/components/ui/badge"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Hint, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { WHY_UNPROVEN, type Candidate } from "@/lib/candidate"
 
 // The run's candidates. A candidate is unproven and agent-asserted: the agent
-// saw harm the pack's checks do not cover. It waits for human review. It is
-// styled amber with a question-mark shield, so it never reads as a finding
-// (green, a checked shield). Each row opens to its write-up, PoC and evidence.
+// saw harm the pack's checks do not cover. It waits for human review.
+// docs/restraint.md: it is neutral, like a lead. No red, no green, no accent:
+// its severity bars stay grey, and its shield carries a question mark, never
+// the check of a proven finding. Each row folds open to the write-up, the PoC,
+// the cited lines, and (one fold deeper) the raw evidence.
 export function CandidateList({ items }: { items: Candidate[] }) {
   if (!items.length) return <p className="px-3 py-2.5 text-xs text-muted-foreground">No candidates.</p>
   return (
@@ -22,49 +27,45 @@ export function CandidateList({ items }: { items: Candidate[] }) {
 // The badge every candidate carries, wherever it shows.
 export function UnprovenBadge({ className }: { className?: string }) {
   return (
-    <span
-      className={cn(
-        "shrink-0 rounded-full border border-warn/40 px-1.5 py-px text-[10px] leading-3 font-medium whitespace-nowrap text-warn",
-        className,
-      )}
-    >
+    <Badge variant="secondary" className={cn("h-4 px-1.5 text-[10px] leading-3 text-muted-foreground", className)}>
       unproven / agent-asserted
-    </span>
+    </Badge>
   )
 }
+
+const ROW = "flex w-full gap-2.5 px-3 py-[7px] text-left outline-none transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 
 function CandidateRow({ candidate: c }: { candidate: Candidate }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className={cn("border-l-2 border-warn/60", open && "bg-warn/[0.04]")}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex w-full gap-2.5 px-3 py-[7px] text-left transition-colors outline-none hover:bg-warn/[0.06] focus-visible:bg-warn/[0.06]"
-      >
-        <ShieldQuestionMark className="mt-px size-3.5 shrink-0 text-warn" />
+    <Collapsible open={open} onOpenChange={setOpen} className={cn(open && "bg-foreground/[0.03]")}>
+      <CollapsibleTrigger className={ROW}>
+        <Hint label="Candidate, not proven" tip="Candidate · not proven · needs review" className="mt-px">
+          <ShieldQuestionMark aria-hidden className="size-3.5 text-muted-foreground" />
+        </Hint>
         <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <span className="flex min-w-0 items-baseline gap-2">
+          <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{c.title}</span>
-            <span className="ml-auto shrink-0 text-[11px] leading-[14px] text-warn">Needs review</span>
+            <SeverityMark severity={c.severity} className="ml-auto" />
           </span>
-          <span className="flex min-w-0 items-center gap-2 text-xs leading-4 text-muted-foreground">
-            <span className="shrink-0 capitalize">{c.severity}</span>
+          <span className="flex min-w-0 items-center gap-2 text-[11px] leading-4 text-muted-foreground">
+            <span className="shrink-0">Needs review</span>
             <UnprovenBadge />
-            <ChevronRight className={cn("ml-auto size-3 shrink-0 transition-transform", open && "rotate-90")} />
+            <ChevronRight aria-hidden className={cn("ml-auto size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
           </span>
         </span>
-      </button>
-      {open ? <CandidateDetail candidate={c} /> : null}
-    </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <CandidateDetail candidate={c} />
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
 export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
   return (
-    <div className="flex flex-col gap-2 px-3 pt-0.5 pb-2.5 pl-9 text-xs">
-      <p className="text-warn">{WHY_UNPROVEN}</p>
+    <div className="flex flex-col gap-2.5 px-3 pt-0.5 pb-3 pl-9 text-xs">
+      <p className="text-muted-foreground">{WHY_UNPROVEN}</p>
       {c.explanation ? <Markdown text={c.explanation} className="text-xs" /> : null}
       <Field label="PoC">
         <span className="font-mono text-[11px] break-all">{c.poc}</span>
@@ -80,14 +81,26 @@ export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
           </ul>
         </Field>
       ) : null}
-      {c.evidence != null ? (
-        <Field label="Evidence">
-          <pre className="max-h-48 overflow-auto rounded-md bg-foreground/[0.04] p-2 font-mono text-[11px] leading-4 whitespace-pre">
-            {typeof c.evidence === "string" ? c.evidence : JSON.stringify(c.evidence, null, 2)}
-          </pre>
-        </Field>
-      ) : null}
+      {c.evidence != null ? <Evidence value={c.evidence} /> : null}
     </div>
+  )
+}
+
+// The captured evidence is raw machine output: one quiet fold, closed.
+function Evidence({ value }: { value: unknown }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-1">
+      <CollapsibleTrigger className="flex w-fit items-center gap-1 rounded-sm text-[11px] font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring">
+        <ChevronRight aria-hidden className={cn("size-3 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
+        Evidence
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <pre className="max-h-48 overflow-auto rounded-md bg-foreground/[0.04] p-2 font-mono text-[11px] leading-4 whitespace-pre">
+          {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+        </pre>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 

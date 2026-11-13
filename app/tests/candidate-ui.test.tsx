@@ -86,22 +86,29 @@ test("a candidate sent during the decide pass keeps its chat note", () => {
 describe("the Candidates group", () => {
   const c = candidateFrom(ev(cand("a")))!
 
-  test("a row reads as needs review, unproven and agent-asserted, in amber", () => {
+  // docs/restraint.md: red only on a proven finding, green only after a
+  // replay proved it. A candidate is neither, so it is neutral, with no accent.
+  test("a row reads as needs review, unproven and agent-asserted, and is neutral", () => {
     const html = renderToStaticMarkup(<CandidateList items={[c]} />)
     expect(html).toContain("Needs review")
     expect(html).toContain("unproven / agent-asserted")
-    expect(html).toContain("text-warn")
-    expect(html).not.toContain("text-ok")
+    expect(html).toContain('aria-label="Candidate, not proven"')
+    for (const tone of ["text-ok", "text-bad", "text-warn", "bg-ok", "bg-bad", "bg-warn", "border-warn", "text-destructive", "text-red", "text-green", "text-amber"]) {
+      expect([tone, html.includes(tone)]).toEqual([tone, false])
+    }
     expect(html).not.toContain("Proven")
+    expect(html).not.toContain("Why this isn")
   })
 
-  test("the detail shows the why line, write-up, PoC, cited lines and evidence", () => {
+  test("the detail shows the why line, write-up, PoC and cited lines; the raw evidence is one fold deeper, closed", () => {
     const html = renderToStaticMarkup(<CandidateDetail candidate={c} />)
     expect(html).toContain("Why this isn&#x27;t proven: no check covers this class yet.")
     expect(html).toMatch(/<strong[^>]*>export<\/strong>/)
     expect(html).toContain("GET /admin/export/1 -&gt; 200")
     expect(html).toContain("/admin/export/1")
-    expect(html).toContain("&quot;kind&quot;: &quot;transcript&quot;")
+    expect(html).toContain("Evidence")
+    expect(html).not.toContain("&quot;kind&quot;: &quot;transcript&quot;")
+    expect(html).not.toMatch(/text-(ok|bad|warn)/)
   })
 
   const panel = (events: RunEvent[]) =>
