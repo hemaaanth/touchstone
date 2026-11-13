@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as realFs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -695,6 +695,53 @@ for (const packs of [["web", "ai-mcp"], ["ai-mcp", "web"]]) {
       assert.deepEqual(Object.keys(second.mcp.tokens), [TOKEN, ADMIN]);
       assert.ok(!r.events.some((e) => e.ev === "workspace"), "nothing to tell the operator");
       assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "and it leaves again when the follow-up ends");
+    });
+  });
+}
+
+// A path under `modules/` that is a link out of the workspace. The real thing is
+// moved outside, under a name no run owns, and a link stands in its place. A
+// scrub or a restore that follows it writes into the outside copy.
+let outside = 0;
+function linkOut(ws, rel, empty = false) {
+  const from = path.join(ws, rel);
+  const to = path.join(dir, `outside-${++outside}`);
+  if (empty) mkdirSync(to);
+  else cpSync(from, to, { recursive: true });
+  rmSync(from, { recursive: true, force: true });
+  symlinkSync(to, from, lstatSync(to).isDirectory() ? "dir" : "file");
+  return to;
+}
+const outsideBytes = (p) => lstatSync(p).isDirectory()
+  ? [...readdirSync(p, { withFileTypes: true, recursive: true })].filter((e) => e.isFile()).map((e) => readFileSync(path.join(e.parentPath, e.name), "latin1")).join("\u0000")
+  : readFileSync(p, "latin1");
+
+for (const [rel, empty] of [["modules", false], ["modules", true], ["modules/ai-mcp", false], ["modules/ai-mcp/.touchstone.json", false]]) {
+  test(`safety: a link at ${rel}${empty ? " (an empty folder)" : ""} sends no write outside; the follow-up rebuilds`, async () => {
+    await withLivePack(async () => {
+      const live = livePair(["web", "ai-mcp"]);
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+      const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+      await settle(id);
+      const ws = spawns.at(-1).args[4];
+      made.push(ws);
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), []);
+      const out = linkOut(ws, rel, empty);
+      const before = outsideBytes(out);
+      const server = await restart();
+      scripts.push({ act: readJoined, events: [done] });
+      server.steerRun(id, "Go on.");
+      const r = await settle(id, closes(id, server), server);
+      const fresh = spawns.at(-1).args[4];
+      made.push(fresh);
+      // The folder went and a new one was built, joined and clean.
+      assert.notEqual(fresh, ws, "the linked workspace is not reused");
+      assert.ok(!existsSync(ws), "it is removed");
+      assert.ok(existsSync(path.join(fresh, "modules", "ai-mcp")), "both modules are built again");
+      assert.deepEqual(r.events.filter((e) => e.ev === "workspace").map((e) => e.state), ["rebuilt"]);
+      assert.deepEqual(holding(fresh, [TOKEN, ADMIN]), []);
+      // Nothing outside changed: no token, no rewrite.
+      assert.equal(outsideBytes(out), before, `nothing outside the workspace changed (${rel})`);
     });
   });
 }

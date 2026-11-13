@@ -1135,32 +1135,64 @@ function swapInFiles(dir, pairs) {
   }
 }
 
-// Every workspace config a credential can sit in: the run's own, and the one of
-// each module of a joined run (`modules/<id>/.touchstone.json`). A one-module
-// workspace has only the first. A link is not followed; a config that is not a
-// regular file is skipped.
-function workspaceConfigs(ws) {
-  const root = path.join(ws, ".touchstone.json")
-  const files = lstatSync(root, { throwIfNoEntry: false })?.isFile() ? [root] : []
-  let entries
+// The run's sub-workspaces, or null when any of them is not a real path inside
+// the workspace. `modules` and every `modules/<id>` must be a REAL directory
+// (`lstat`, never `stat`), and must resolve inside the workspace root: a link at
+// `modules` otherwise sends a scrub or a restore into a folder the delete will
+// never reach. On the checked root, links below `modules/` are skipped by
+// `swapInFiles` already, so only these three levels are checked.
+function subWorkspaces(ws) {
+  const dir = path.join(ws, MODULES_DIR)
+  const st = lstatSync(dir, { throwIfNoEntry: false })
+  if (!st) return [] // a one-module workspace has none
+  let root
   try {
-    entries = readdirSync(path.join(ws, MODULES_DIR), { withFileTypes: true })
+    root = realpathSync(ws)
   } catch {
-    entries = []
+    return null
   }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue
-    const file = path.join(ws, MODULES_DIR, e.name, ".touchstone.json")
-    if (lstatSync(file, { throwIfNoEntry: false })?.isFile()) files.push(file)
+  const real = (p, kind) => {
+    const s = lstatSync(p, { throwIfNoEntry: false })
+    if (!s || !s[kind]()) return null
+    return realpathSync(p).startsWith(root + path.sep) ? p : null
+  }
+  const top = real(dir, "isDirectory")
+  if (!top) return null
+  const out = []
+  for (const name of readdirSync(top)) {
+    const sub = real(path.join(top, name), "isDirectory")
+    if (!sub) return null
+    out.push(sub)
+  }
+  return out
+}
+
+// Every workspace config a credential can sit in: the run's own, and the one of
+// each module of a joined run. Null when the sub-workspace paths are not safe.
+function workspaceConfigs(ws) {
+  const subs = subWorkspaces(ws)
+  if (!subs) return null
+  const files = []
+  for (const dir of [ws, ...subs]) {
+    const file = path.join(dir, ".touchstone.json")
+    const st = lstatSync(file, { throwIfNoEntry: false })
+    if (!st) continue
+    if (!st.isFile()) return null // a link (or a folder) where a config belongs
+    files.push(file)
   }
   return files
 }
 
+const WS_LINK = "The modules folder of this workspace is not a real folder (a link, or outside the workspace), so nothing can safely be written into it."
+
 // Change the `mcp` part of every workspace config, which the AI/MCP tools read.
 // A credential in a kept workspace is scrubbed and restored in all of them: the
-// root of a joined run carries no `mcp`, only its ai-mcp module does.
+// root of a joined run carries no `mcp`, only its ai-mcp module does. Throws
+// before writing anything when a path is unsafe, so a caller can drop the folder.
 function editMcp(ws, change) {
-  for (const file of workspaceConfigs(ws)) {
+  const files = workspaceConfigs(ws)
+  if (!files) throw new Error(WS_LINK)
+  for (const file of files) {
     const cfg = JSON.parse(readFileSync(file, "utf8"))
     if (!cfg.mcp || typeof cfg.mcp !== "object") continue
     change(cfg.mcp)
@@ -1168,6 +1200,7 @@ function editMcp(ws, change) {
   }
 }
 
+// The config write goes first: it refuses an unsafe path before any text change.
 function scrubSecrets(ws, secrets) {
   editMcp(ws, (mcp) => {
     delete mcp.token
@@ -1177,8 +1210,8 @@ function scrubSecrets(ws, secrets) {
 }
 
 function restoreSecrets(ws, target) {
-  swapInFiles(ws, secretsOf(target).map((s, i) => [placeholder(i), bytes(s)]))
   editMcp(ws, (mcp) => Object.assign(mcp, credentialOf(target)))
+  swapInFiles(ws, secretsOf(target).map((s, i) => [placeholder(i), bytes(s)]))
 }
 const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
 // The target as the module that holds the credential has it. `withPack` gives
@@ -1413,10 +1446,13 @@ export function followUp(run, text, clientId) {
   if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
   if (target) run.target = target
   if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")
-  // The server stopped during an earlier follow-up, so the workspace still holds
-  // the credential. This follow-up has none, so it must not get those files: the
-  // workspace goes, and a new one is built below.
-  if (ws && kept.restored && noCredential) {
+  // The workspace goes, and a new one is built below, in two cases:
+  //   - the server stopped during an earlier follow-up, so it still holds the
+  //     credential and this follow-up has none;
+  //   - a path under `modules/` is a link, so nothing may be written into the
+  //     files that a scrub would reach.
+  const unsafe = ws ? workspaceConfigs(ws) === null : false
+  if (ws && ((kept.restored && noCredential) || unsafe)) {
     try {
       removeKept(run.id)
     } catch {
@@ -1424,7 +1460,11 @@ export function followUp(run, text, clientId) {
     }
     if (existsSync(ws)) {
       release(run)
-      throw new Error(`The earlier workspace of this run still holds the access token, and it could not be removed. Delete the folder ${ws}, then send the message again.`)
+      throw new Error(
+        unsafe
+          ? `The modules folder of this run's workspace is not a real folder, and the workspace could not be removed. Delete the folder ${ws}, then send the message again.`
+          : `The earlier workspace of this run still holds the access token, and it could not be removed. Delete the folder ${ws}, then send the message again.`,
+      )
     }
     unbindWorkspace(run.id)
     ws = null
