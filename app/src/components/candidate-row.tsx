@@ -40,7 +40,7 @@ export const CandidateListRow = memo(function CandidateListRow({
         <RowTitle title={f.title || "Candidate"} opens={Boolean(run)} />
         <RowMeta
           items={[
-            <span key="state" className="shrink-0 whitespace-nowrap">{candidateState(c)}</span>,
+            <span key="state" className="min-w-0 truncate" title={candidateState(c)}>{candidateState(c)}</span>,
             c.measured && c.measured.count > 1 ? <span key="count" className="shrink-0 whitespace-nowrap tabular-nums">{c.measured.count} places</span> : null,
             <TruncatedText key="scope" text={scopeOf(f)} />,
           ]}

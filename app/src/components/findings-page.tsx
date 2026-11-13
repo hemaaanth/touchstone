@@ -218,9 +218,13 @@ export function FindingsPage({
 
           <div className="-mt-3 flex min-h-5 items-center gap-3 text-xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">
-              {isFiltered(view) ? `${shown.length - candidates} of ${all.length - hiddenDismissed - allCandidates} findings` : `${shown.length - candidates} findings`}
+              {view.state === "candidate"
+                ? `${candidates} of ${allCandidates} ${allCandidates === 1 ? "candidate" : "candidates"}`
+                : isFiltered(view)
+                  ? `${shown.length - candidates} of ${all.length - hiddenDismissed - allCandidates} findings`
+                  : `${shown.length - candidates} ${shown.length - candidates === 1 ? "finding" : "findings"}`}
               {proven ? <span className="text-ok"> · {proven} proven</span> : null}
-              {candidates ? ` · ${candidates} ${candidates === 1 ? "candidate" : "candidates"}` : null}
+              {candidates && view.state !== "candidate" ? ` · ${candidates} ${candidates === 1 ? "candidate" : "candidates"}` : null}
               {hiddenDismissed ? ` · ${hiddenDismissed} dismissed, hidden` : null}
             </span>
             {/* Here, not in the filter rows, so showing it moves nothing. */}
