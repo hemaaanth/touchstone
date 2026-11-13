@@ -223,13 +223,17 @@ export function scorecardFrom(snapshot) {
         continue;
       }
       if (name === "Pinned-Dependencies") {
+        const unparsed = [];
         for (const d of c.details ?? []) {
           const m = String(d).match(PIN_RE);
-          if (!m) continue;
+          // An Info line is a count. A Warn line we cannot read is a finding we would lose.
+          if (!m) { if (/^Warn:/.test(String(d))) unparsed.push(String(d)); continue; }
           // Bound to this snapshot: a path the snapshot does not hold is a gap, not dropped.
           if (!Object.hasOwn(snapshot.files, m[2])) { gaps.push({ kind: "scorecard-result-outside-snapshot", detail: `Scorecard ${name} (${capture}) named ${m[2].slice(0, 120)}, which is not a file in the pinned snapshot. That result is not used.` }); continue; }
           leads.push(scorecardLead({ check: name, kind: m[1], file: m[2], line: Number(m[3]), endLine: m[4] ? Number(m[4]) : undefined, impact: "Low", capture, cap }));
         }
+        // A score below 10 with Warn lines we cannot read is not clean: the check is unchecked.
+        if (unparsed.length && c.score < 10) gap(name, { kind: "scorecard-detail-unparsed", detail: `Scorecard ${name} (${capture}) scored ${c.score}/10 with ${unparsed.length} Warn line(s) in a format the pack cannot read (first: ${unparsed[0].slice(0, 160)}). Those findings are not leads. Not a clean result.` });
       } else if (FILE_CHECKS.includes(name) && c.score === 0) {
         leads.push(scorecardLead({ check: name, impact: name === "License" ? "Informational" : "Low", capture, cap, score: 0 }));
       } else if (capture === "api" && c.score < 5) {

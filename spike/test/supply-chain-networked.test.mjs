@@ -360,6 +360,24 @@ test("bound to this snapshot: a result for a file outside it is a gap; a missing
   assert.match(scorecardFrom(s).coverage.find((c) => c.engine === "scorecard-api").reason, /report is for github.com\/someone\/else/);
 });
 
+test("a Warn line that does not parse: below 10 it is a gap and the check is unchecked, never clean", () => {
+  const odd = ["Warn: containerImage not pinned by hash: Dockerfile", "Warn: npmCommand not pinned by hash: Dockerfile:5 (in a RUN step)"];
+  const only = (j, score) => { const p = j.checks.find((c) => c.name === "Pinned-Dependencies"); p.score = score; p.details = [...odd, "Info:   0 out of   2 containerImage dependencies pinned"]; };
+  let d = scorecardFrom(withLocal((j) => only(j, 3)));
+  const g = d.gaps.filter((x) => x.kind === "scorecard-detail-unparsed");
+  assert.equal(g.length, 1);
+  assert.match(g[0].detail, /Pinned-Dependencies \(local\) scored 3\/10 with 2 Warn line/);
+  assert.match(localRow(d).reason, /Pinned-Dependencies/);
+  assert.equal(d.leads.filter((l) => l.check.startsWith("scorecard/Pinned-Dependencies")).length, 0);
+  // Parsed lines still give leads next to the gap.
+  d = scorecardFrom(withLocal((j) => { const p = j.checks.find((c) => c.name === "Pinned-Dependencies"); p.details.push(odd[0]); }));
+  assert.ok(d.gaps.some((x) => x.kind === "scorecard-detail-unparsed"));
+  assert.equal(d.leads.filter((l) => l.check.startsWith("scorecard/Pinned-Dependencies")).length, 3);
+  // A score of 10 has nothing to lose, and the real format gives no such gap.
+  assert.ok(!scorecardFrom(withLocal((j) => only(j, 10))).gaps.some((x) => x.kind === "scorecard-detail-unparsed"));
+  assert.ok(!scorecardFrom(fixtureSnapshot()).gaps.some((x) => x.kind === "scorecard-detail-unparsed"));
+});
+
 test("a gap is never shown as clean: -1 scores are gaps, the row counts them, all unchecked is unavailable", () => {
   let d = scorecardFrom(withLocal((j) => { const c = j.checks.find((x) => x.name === "Security-Policy"); c.score = -1; c.reason = "no files to analyze"; }));
   assert.ok(d.gaps.some((g) => g.kind === "scorecard-check-inconclusive" && /Security-Policy/.test(g.detail)));
