@@ -22,6 +22,7 @@
 // report. That keeps them unit-testable with a finding object and no server.
 
 import { FONT_MONO, FONT_SANS, brandCss, markSvg } from "./brand.mjs"
+import { redactSecrets } from "./redact.mjs"
 
 // Pull the fix and the harm narrative out of the engine's prose explanation.
 // The engine writes free prose; by convention a remediation sits under a "Fix:"
@@ -102,7 +103,10 @@ export function buildReport(finding) {
   for (const s of finding.staticScan?.top || []) leads.push({ from: finding.staticScan.tool || "static", check: s.check, impact: s.impact, where: s.where });
   for (const s of finding.fuzzScan?.top || []) leads.push({ from: finding.fuzzScan.tool || "fuzz", check: s.check, impact: s.impact, where: s.where });
 
-  return {
+  // Mask bearer tokens and other secrets last, so every format (html, markdown,
+  // json) is built from the same redacted report. Header names and proof
+  // facts stay; only the secret values change.
+  return redactSecrets({
     id: finding.id,
     runId: finding.runId,
     title: finding.title || "Untitled finding",
@@ -146,7 +150,7 @@ export function buildReport(finding) {
       ms: finding.ms ?? null,
       generatedAt: Date.now(),
     },
-  };
+  });
 }
 
 // A preview of a long text: the head, with a clear marker when it was cut, so a
