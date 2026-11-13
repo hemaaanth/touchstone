@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import http from "node:http"
@@ -11,10 +12,10 @@ import path from "node:path"
 // Throwaway stores and a synthetic token (the same value as the other test
 // files: bun shares one module cache, and the token is read once).
 const dir = mkdtempSync(path.join(tmpdir(), "console-origin-test-"))
-process.env.TOUCHSTONE_SCOPES_FILE ??= path.join(dir, "scopes.json")
-process.env.TOUCHSTONE_GRANTS_FILE ??= path.join(dir, "grants.json")
+useEnv({ TOUCHSTONE_SCOPES_FILE: process.env.TOUCHSTONE_SCOPES_FILE ?? path.join(dir, "scopes.json") })
+useEnv({ TOUCHSTONE_GRANTS_FILE: process.env.TOUCHSTONE_GRANTS_FILE ?? path.join(dir, "grants.json") })
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 const { build, createLogger, createServer } = await import("vite")
 const { default: config } = await import("../vite.config.ts")
