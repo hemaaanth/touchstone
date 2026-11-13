@@ -224,7 +224,8 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     let email, dnssec;
     if (deep) {
       const emailCheck = await checkEmail(run, domain, reach.resolver);
-      email = emailCheck.evidence;
+      // The snapshot stores the tool output and its hash; leads re-parse it.
+      email = emailCheck.record;
       const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
       if (email) {
         emailCoverage.leads = emailLeads({ root: domain, email }).length;
@@ -233,11 +234,11 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       // The DNSSEC chain is probed through the granted resolver. A failed chain
       // read is a coverage gap, not an unsigned zone.
       const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);
-      dnssec = dnssecCheck.evidence;
+      dnssec = dnssecCheck.record;
       const dnssecCoverage = coverage.find(c => c.engine === 'dnsviz-probe');
       if (dnssec) {
         dnssecCoverage.leads = dnssecLeads({ root: domain, dnssec }).length;
-        const gap = assessmentCoverage(dnssec);
+        const gap = assessmentCoverage(dnssecCheck.evidence);
         if (gap) for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = gap.status; row.reason = gap.reason; }
       } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
     }
@@ -306,7 +307,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     const tlsCheck = deep ? await captureTls(run, ws, testsslTargets(http.map(r => r.url)), host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]) : null;
     for (const check of tlsCheck?.runs ?? []) {
       const row = coverage.find(c => c.engine === check.engine);
-      if (check.report) row.leads = tlsLeads({ root: domain, tls: [check.report] }).length;
+      if (check.entry) row.leads = tlsLeads({ root: domain, tls: [check.entry] }).length;
       else { row.status = 'unavailable'; row.reason = row.reason || check.error || 'the handshake was not measured'; }
     }
     const hits = [];

@@ -1,7 +1,8 @@
 // checkdmarc evidence and leads. The tool runs as a separate process in Docker
-// (Apache-2.0, no code copied). Its JSON is narrowed to the records that matter
-// here and stored in the snapshot, so replay reads the pin, not the network.
+// (Apache-2.0, no code copied). The snapshot stores its stdout and the sha256
+// of it. Leads re-parse that stdout, so replay reads the pin, not the network.
 import { sha256 } from '../../lib/proof-evidence.mjs';
+import { readStored, storedRecord } from './stored.mjs';
 export const CHECKDMARC = 'letiemble/checkdmarc:6.0.3@sha256:be9d7e828fe80ace6140fdc0f4b499c10fffb2001be5f346718c3ec6dd6c90cd';
 const FAIL = { fail: '-all', softfail: '~all', neutral: '?all', pass: '+all', permerror: '?all', temperror: '?all' };
 const text = value => typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -50,38 +51,39 @@ export function parseCheckdmarc(stdout, domain) {
 
 // `run` is the caller's coverage-wrapped runTool. A tool error and an unparsable
 // answer both come back as `error`, so the caller records a coverage gap.
+// `record` is what the snapshot stores: the domain, the stdout and its sha256.
 export async function checkEmail(run, domain, resolver) {
   const result = await run('checkdmarc', { image: CHECKDMARC, cmd: [domain, ...(resolver ? ['-n', resolver] : []), '-t', '5', '--retries', '1'], timeoutMs: 60000 });
   if (result.code || result.timedOut) return { evidence: null, error: result.stderr.trim().slice(-200) || (result.timedOut ? 'timed out' : 'exit code ' + result.code) };
   try {
     const evidence = parseCheckdmarc(result.stdout, domain);
+    const record = { domain, ...storedRecord(result.stdout) };
     const unread = [evidence.spf, evidence.dmarc].filter(part => part.state === 'unread');
     return unread.length
-      ? { evidence, partial: true, error: 'checkdmarc did not report ' + (unread.length === 2 ? 'SPF and DMARC' : unread[0] === evidence.spf ? 'SPF' : 'DMARC') + ' state' }
-      : { evidence, error: null };
+      ? { evidence, record, partial: true, error: 'checkdmarc did not report ' + (unread.length === 2 ? 'SPF and DMARC' : unread[0] === evidence.spf ? 'SPF' : 'DMARC') + ' state' }
+      : { evidence, record, error: null };
   } catch (error) { return { evidence: null, error: error.message }; }
 }
 
-// Email-authentication leads from the stored evidence. A record fact proves the
-// published policy, never that a spoofed message reaches an inbox.
+// Email-authentication leads from the stored checkdmarc stdout. A record fact
+// proves the published policy, never that a spoofed message reaches an inbox.
 export function emailLeads(snapshot) {
   const root = String(snapshot.root ?? '');
-  const email = snapshot.email;
-  if (!email) {
+  if (!snapshot.email) {
     const coverage = (snapshot.discovery?.coverage ?? []).find(c => c.engine === 'checkdmarc');
     const why = coverage?.status === 'unavailable'
       ? ' checkdmarc did not run: ' + String(coverage.reason ?? 'no reason given').slice(0, 160)
       : ' The snapshot was captured without an email record scan.';
     return [{ check: 'email-auth-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no SPF or DMARC evidence, so this run does not cover email authentication.' + why + ' This does not prove the records are absent.' }];
   }
+  // The stdout must match its stored hash and parse for the snapshot root.
+  // A stored verdict field is ignored; only the re-parsed stdout counts.
+  const read = readStored(snapshot.email, output => parseCheckdmarc(output, root));
+  if (read.error) return [{ check: 'email-auth-evidence-missing', where: root, severity: 'informational', description: 'The stored email evidence cannot be used (' + read.error + '), so this run does not prove the record state. This does not prove a record is absent.' }];
+  const email = read.evidence;
   const leads = [];
-  const unread = [email.spf?.state === 'unread' && 'SPF', email.dmarc?.state === 'unread' && 'DMARC'].filter(Boolean);
-  const hash = (email.raw ?? '') && ' Tool output sha256: ' + String(email.raw).slice(0, 12) + '.';
-  const recorded = [email.spf?.state, email.dmarc?.state].every(state => ['present','absent','unread'].includes(state));
-  if (!recorded || !/^[0-9a-f]{64}$/.test(String(email.raw ?? ''))) {
-    const why = recorded ? 'no tool output hash' : 'SPF and DMARC state';
-    return [{ check: 'email-auth-evidence-missing', where: root, severity: 'informational', description: 'The stored email evidence is incomplete (' + why + '), so this run does not prove the record state.' + (email.raw ? hash : '') + ' This does not prove a record is absent.' }];
-  }
+  const unread = [email.spf.state === 'unread' && 'SPF', email.dmarc.state === 'unread' && 'DMARC'].filter(Boolean);
+  const hash = ' Tool output sha256: ' + email.raw.slice(0, 12) + '.';
   const parts = unread.length === 2 ? 'SPF and DMARC' : unread[0];
   if (unread.length) leads.push({ check: 'email-auth-evidence-missing', severity: 'informational', description: 'checkdmarc returned no ' + parts + ' state, so this run does not cover ' + parts + ' for ' + root + '. The rest of the email evidence is kept. This does not prove the record is absent.' + hash });
   if (email.dmarc?.state === 'absent') leads.push({ check: 'email-dmarc-missing', severity: 'medium', description: 'No DMARC record was published for ' + root + ' (the tool reported that it does not exist). Receivers have no policy for the From header, so spoofed mail can pass as the domain. This proves the record is absent at capture time, not that a spoof reaches an inbox.' + hash });

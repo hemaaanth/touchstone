@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import domains from '../packs/domains/pack.mjs';
 import {analyzeSnapshot,domainLeads,detectorsFor} from '../packs/domains/checks.mjs';
-import {pinSnapshot,replayEvidence,loadSnapshot} from '../lib/proof-evidence.mjs';
+import {pinSnapshot,replayEvidence,loadSnapshot,sha256} from '../lib/proof-evidence.mjs';
 const snapshot=JSON.parse(readFileSync(new URL('../packs/domains/lab/snapshot.json',import.meta.url),'utf8'));
 let analysis;
 before(async()=>{analysis=await analyzeSnapshot(snapshot);});
@@ -35,7 +35,9 @@ test('registry transfer locks and missing evidence are not treated as DNSSEC or 
   changed.rdap={status:['clientTransferProhibited']};
   assert(has(changed,'registry-lock-evidence-missing'));
   changed.rdap.status.push('server transfer prohibited');
-  changed.dnssec={complete:true,delegation:'SECURE',signed:true,validatedChain:true,errors:[],warnings:[],raw:'a'.repeat(64)};
+  // The real DNSViz assessment of the lab zone, stored the way a capture stores it.
+  const grok=readFileSync(new URL('../packs/domains/fixtures/dnsviz-unsigned.json',import.meta.url),'utf8');
+  changed.dnssec={domain:'touchstone.test',raw:sha256(grok),output:grok};
   changed.contenthash={name:'touchstone.eth',value:'ipfs://bafy-lab-content',pinnedCid:'bafy-lab-content'};
   assert.equal(has(changed,'registry-lock-evidence-missing'),false);
   assert.equal(has(changed,'dnssec-evidence-missing'),false);

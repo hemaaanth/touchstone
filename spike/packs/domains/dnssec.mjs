@@ -1,9 +1,10 @@
 // DNSViz evidence and leads. The tool runs as a separate pair of processes in
-// Docker (GPL-2.0, no code copied). Probe output is assessed once and the
-// assessment is stored in the snapshot, so replay reads the pin.
-import { readFileSync } from 'node:fs';
+// Docker (GPL-2.0, no code copied). Probe output is assessed once. The snapshot
+// stores the grok file and the sha256 of its bytes. Leads re-parse that file,
+// so replay reads the pin.
 import { join } from 'node:path';
 import { sha256 } from '../../lib/proof-evidence.mjs';
+import { readOutputFile, readStored, storedRecord } from './stored.mjs';
 export const DNSVIZ = 'dnsviz/dnsviz@sha256:5a4c5e8293d591010bd57fb2e79a803865607d72457e74335229130f69265932';
 const fqdn = domain => domain.endsWith('.') ? domain : domain + '.';
 const text = (value, max = 300) => String(value ?? '').slice(0, max);
@@ -11,14 +12,17 @@ const text = (value, max = 300) => String(value ?? '').slice(0, max);
 const IGNORED = new Set(['RECURSION_NOT_AVAILABLE']);
 const VERDICTS = new Set(['SECURE', 'INSECURE', 'BOGUS']);
 // Every graded error, including the ones nested under an RRSIG entry. Warnings
-// live in their own arrays and are not errors.
+// live in their own arrays and are not errors. An error with no code or text
+// is damaged output, so it fails the parse instead of being skipped.
+const coded = e => e && typeof e === 'object' && typeof e.code === 'string' && e.code && typeof e.description === 'string';
 function errorsOf(entry) {
   const out = new Map();
   const walk = node => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const item of node) walk(item); return; }
     if (Array.isArray(node.errors)) for (const e of node.errors) {
-      if (typeof e?.code !== 'string' || typeof e?.description !== 'string' || IGNORED.has(e.code)) continue;
+      if (!coded(e)) throw new Error('dnsviz returned an error with no code or description');
+      if (IGNORED.has(e.code)) continue;
       out.set(e.code + '\n' + e.description, { code: text(e.code, 60), description: text(e.description) });
     }
     for (const [key, value] of Object.entries(node)) if (key !== 'errors') walk(value);
@@ -33,7 +37,10 @@ export function parseDnssec(text_, domain) {
   const doc = JSON.parse(text_);
   const entry = doc[fqdn(domain)];
   if (!entry || typeof entry !== 'object') throw new Error('dnsviz assessed no entry for ' + domain);
-  const warnings = (Array.isArray(entry.warnings) ? entry.warnings : []).map(e => ({ code: text(e?.code, 60), description: text(e?.description) })).slice(0, 10);
+  const warnings = (Array.isArray(entry.warnings) ? entry.warnings : []).map(e => {
+    if (!coded(e)) throw new Error('dnsviz returned a warning with no code or description');
+    return { code: text(e.code, 60), description: text(e.description) };
+  }).slice(0, 10);
   const delegation = text(entry.delegation?.status, 30) || 'UNKNOWN';
   const dnskeys = Array.isArray(entry.dnskey) ? entry.dnskey : [];
   const signed = dnskeys.some(key => key && key.key_tag != null);
@@ -63,7 +70,8 @@ export function parseDnssec(text_, domain) {
 }
 
 // `run` is the caller's coverage-wrapped runTool. Probe needs DNS; grok does not.
-// A failure at either step comes back as an error.
+// A failure at either step comes back as an error. `record` is what the
+// snapshot stores: the domain, the grok file text and its sha256.
 export async function captureDnssec(run, ws, domain, resolver, tag = '') {
   const probe = '/work/.live/dnssec-probe' + tag + '.json';
   const report = '/work/.live/dnssec' + tag + '.json';
@@ -72,9 +80,9 @@ export async function captureDnssec(run, ws, domain, resolver, tag = '') {
   const assessed = await run('dnsviz-grok' + tag, { image: DNSVIZ, network: 'none', cmd: ['grok', '-r', probe, '-c', '-o', report, domain], timeoutMs: 60000 });
   if (assessed.code || assessed.timedOut) return { evidence: null, error: assessed.stderr.trim().slice(-160) || (assessed.timedOut ? 'grok timed out' : 'grok exit code ' + assessed.code) };
   let text;
-  try { text = readFileSync(join(ws, '.live', 'dnssec' + tag + '.json'), 'utf8'); }
-  catch { return { evidence: null, error: 'output file missing' }; }
-  try { return { evidence: parseDnssec(text, domain), error: null }; }
+  try { text = readOutputFile(join(ws, '.live', 'dnssec' + tag + '.json')); }
+  catch (error) { return { evidence: null, error: /not UTF-8/.test(error.message) ? error.message : 'output file missing' }; }
+  try { return { evidence: parseDnssec(text, domain), record: { domain, ...storedRecord(text) }, error: null }; }
   catch (error) { return { evidence: null, error: error.message || ('grok exit code ' + assessed.code) }; }
 }
 
@@ -84,24 +92,25 @@ export function assessmentCoverage(evidence) {
   return evidence && evidence.complete !== true ? { status: 'unavailable', reason: 'incomplete assessment: ' + (evidence.reason ?? 'missing fields') } : null;
 }
 
-// DNSSEC leads from the stored evidence. A signed and valid chain is reported
+// DNSSEC leads from the stored grok file. A signed and valid chain is reported
 // only by the absence of a lead; it never proves the operator wants DNSSEC.
 export function dnssecLeads(snapshot) {
   const root = String(snapshot.root ?? '');
-  const dnssec = snapshot.dnssec;
-  if (!dnssec) {
+  if (!snapshot.dnssec) {
     const coverage = (snapshot.discovery?.coverage ?? []).find(c => String(c.engine).startsWith('dnsviz'));
     const why = coverage?.status === 'unavailable'
       ? ' DNSViz did not run: ' + String(coverage.reason ?? 'no reason given').slice(0, 160)
       : ' The snapshot was captured without a DNSSEC probe.';
     return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no DNSSEC chain evidence, so this run does not cover DNSSEC.' + why + ' This does not prove DNSSEC is disabled.' }];
   }
-  const errors = Array.isArray(dnssec.errors) ? dnssec.errors : [], warnings = Array.isArray(dnssec.warnings) ? dnssec.warnings : [];
-  const hash = /^[0-9a-f]{64}$/.test(String(dnssec.raw ?? '')) ? ' Tool output sha256: ' + String(dnssec.raw).slice(0, 12) + '.' : '';
-  // Every error and warning must be a coded entry with text.
-  const damaged = ![...errors, ...warnings].every(e => e && typeof e === 'object' && typeof e.code === 'string' && typeof e.description === 'string');
-  // A verdict and its error list must be stored, and the tool output hashed.
-  if (dnssec.complete !== true || !Array.isArray(dnssec.errors) || !hash || damaged || !['SECURE','INSECURE','BOGUS'].includes(dnssec.delegation)) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The stored DNSViz assessment is incomplete (' + (dnssec.reason ?? (dnssec.complete !== true ? 'no complete verdict' : !hash ? 'no tool output hash' : damaged ? 'a damaged error or warning entry' : 'unknown chain verdict')) + '), so this run does not prove the chain state.' + hash + ' This does not prove DNSSEC is disabled.' }];
+  // The grok file must match its stored hash and parse for the snapshot root.
+  // A stored verdict field is ignored; only the re-parsed file counts.
+  const read = readStored(snapshot.dnssec, output => parseDnssec(output, root));
+  if (read.error) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The stored DNSViz evidence cannot be used (' + read.error + '), so this run does not prove the chain state. This does not prove DNSSEC is disabled.' }];
+  const dnssec = read.evidence;
+  const { errors, warnings } = dnssec;
+  const hash = ' Tool output sha256: ' + dnssec.raw.slice(0, 12) + '.';
+  if (!dnssec.complete) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The stored DNSViz assessment is incomplete (' + dnssec.reason + '), so this run does not prove the chain state.' + hash + ' This does not prove DNSSEC is disabled.' }];
   if (dnssec.delegation === 'INSECURE' && dnssec.signed) return [{ check: 'dnssec-no-ds', where: root, severity: 'low', description: 'The zone is signed, but the chain is not anchored: DNSViz rates the delegation INSECURE, so validators treat the zone as insecure. This happens when the parent is unsigned, or when the DS record is missing or unusable (for example an unsupported algorithm). This run does not tell these cases apart.' + hash }];
   // A bogus verdict or an invalid signature is broken, whatever the signing state.
   if (dnssec.delegation === 'BOGUS' || dnssec.errors.length || (dnssec.signed && !dnssec.validatedChain)) return [{ check: 'dnssec-broken-chain', where: root, severity: 'high', description: (dnssec.signed ? 'The zone is signed but the chain does not validate' : 'The chain is bogus') + ' (' + dnssec.delegation + '). ' + (errors[0]?.description ?? 'DNSViz reported no usable chain.') + ' A resolver that validates may treat the zone as bogus.' + hash }];
