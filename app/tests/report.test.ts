@@ -134,3 +134,18 @@ describe("report: html is self-contained and safe", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;")
   })
 })
+
+describe("report: brand comes from the app's own files", () => {
+  test("inlines the app's tokens, dark tokens as a media query, and the logo mark", () => {
+    const { readFileSync } = require("node:fs")
+    const tokens = readFileSync(new URL("../src/tokens.css", import.meta.url), "utf8")
+    const html = renderReportHtml(buildReport(forgeFinding))
+    // The same --background values the app uses, light and dark.
+    for (const m of tokens.matchAll(/--background:\s*([^;]+);/g)) expect(html).toContain(`--background: ${m[1]};`)
+    expect(html).toContain("@media (prefers-color-scheme: dark)")
+    expect(html).not.toContain(".dark {")
+    // The mark is inline SVG, and there is exactly one footer.
+    expect(html).toContain('fill-rule="evenodd"')
+    expect(html.match(/<footer/g)?.length).toBe(1)
+  })
+})
