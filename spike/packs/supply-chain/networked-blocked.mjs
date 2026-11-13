@@ -37,6 +37,14 @@ export const CHAIN_BENCH = {
   reason: "not covered: chain-bench v0.1.10 accepts the token only in argv (-t), which the token rule forbids; it is never run",
 };
 
+// raven (raven-cycode 1.0.9) is not wired: `download` takes the token only as
+// argv `--token`, it fetches workflow files from raw.githubusercontent.com
+// (outside the capture allow-list), and it needs Redis plus Neo4j servers.
+export const RAVEN = {
+  version: "1.0.9",
+  reason: "not covered: raven 1.0.9 takes the token only in argv (--token), reads raw.githubusercontent.com outside the capture allow-list, and needs Redis plus Neo4j; it is never run",
+};
+
 const now = () => new Date().toISOString();
 const imageId = (image) => { try { return execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
 const unavailable = (tool, reason, extra = {}) => ({ tool, mode: "api", status: "unavailable", reason, sha256: sha256(""), text: "", capturedAt: now(), ...extra });
@@ -74,12 +82,14 @@ export async function captureLegitify({ target = null, reach, token = process.en
 export async function captureBlocked(tool, opts) {
   if (tool === "legitify") return captureLegitify(opts);
   if (tool === "chain-bench") return unavailable("chain-bench", CHAIN_BENCH.reason, { gapKind: "not-covered-token-in-argv" });
+  if (tool === "raven") return unavailable("raven", RAVEN.reason, { gapKind: "not-covered-token-in-argv" });
   throw new Error(`Unknown networked tool ${tool}`);
 }
 
 const CHECKS = {
   legitify: "repository policies (branch protection, review rules, actions permissions, secret scanning settings)",
   "chain-bench": "CIS software supply chain benchmark (source code, build pipelines, dependencies, artifacts, deployment)",
+  raven: "cross-workflow CI/CD graph queries (injection, untrusted checkout, artifact poisoning across workflows)",
 };
 
 // Coverage and gaps from the saved captures. Never a lead.

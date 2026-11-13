@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CHAIN_BENCH, captureBlocked } from "../packs/supply-chain/networked-blocked.mjs";
+import { CHAIN_BENCH, RAVEN, captureBlocked } from "../packs/supply-chain/networked-blocked.mjs";
 import { prepareNetworkedSnapshot, networkedResults, NETWORKED_TOOLS } from "../packs/supply-chain/networked.mjs";
 
 const FAKE_TOKEN = "ghp_FAKEFAKEFAKEFAKEFAKEFAKE0123456789ab";
@@ -37,4 +37,19 @@ test("chain-bench never runs, even with a grant, a target and a token: no docker
     assert.ok(gap && /not a clean result/.test(gap.detail));
     assert.ok(!JSON.stringify(snapshot).includes(FAKE_TOKEN));
   } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("raven never runs either: no docker call, a not-covered gap that names each blocker, no lead", async () => {
+  assert.ok(NETWORKED_TOOLS.includes("raven"));
+  let calls = 0;
+  const run = async () => { calls++; return { code: 0, stdout: "{}", stderr: "" }; };
+  const c = await captureBlocked("raven", { target: { owner: "hemaaanth", repo: "touchstone" }, reach, token: FAKE_TOKEN, run });
+  assert.equal(calls, 0, "no docker call");
+  assert.equal(c.status, "unavailable");
+  assert.equal(c.reason, RAVEN.reason);
+  for (const why of [/--token/, /raw\.githubusercontent\.com/, /Redis plus Neo4j/]) assert.match(c.reason, why);
+  const d = networkedResults({ files: {}, captures: { raven: c } });
+  assert.equal(d.leads.length, 0);
+  assert.deepEqual(d.coverage.map((r) => [r.engine, r.status]), [["raven", "unavailable"]]);
+  assert.ok(d.gaps.some((g) => g.kind === "not-covered-token-in-argv" && /raven is unavailable/.test(g.detail)));
 });

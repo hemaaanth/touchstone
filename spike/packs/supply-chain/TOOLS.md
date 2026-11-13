@@ -47,7 +47,7 @@ itself runs only in capture mode (`runTool({ capture })`, see "Networked tools
 | chain-bench | CIS supply-chain benchmark against an SCM | not wired — token only in argv | chain-bench v0.1.10 takes the token only as the argv flag `-t`. The token rule forbids argv, so the pack never runs it. An opt-in (`--network-tools chain-bench`) gives `unavailable` and a `not-covered-token-in-argv` gap, with no docker call. See "chain-bench" below. It would close live repo settings; a snapshot scan cannot reach them. |
 | cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing and verification tool, not a scanner. It can verify offline: `--offline` with a local image, a saved signature or bundle, and trust material. The work is the image, a verifier adapter, a trust policy from the operator, and tests. The GitHub path reads source files, not release artifacts or signatures, so it does not close this. Fetching signatures from a registry or a transparency log needs its own live path. |
 | octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
-| raven | CI/CD pipeline graph scanner | blocked — needs a networked tool run | Ingests workflows from the GitHub API into a graph DB from inside the tool, so it needs a networked `runTool()` run with the token. The pack's own capture already reads workflows across an org (up to 10 repos) for zizmor and poutine, so part of its value is covered. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
+| raven | CI/CD pipeline graph scanner | not wired — token only in argv, a host outside the allow-list, two servers | raven 1.0.9 takes the token only as argv `--token`, reads workflow files from `raw.githubusercontent.com`, and needs Redis plus Neo4j. An opt-in gives `unavailable` and a `not-covered-token-in-argv` gap, with no docker call. See "raven" below. The pack's own capture already reads workflows across an org (up to 10 repos) for zizmor and poutine, so part of its value is covered. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
 
 ## Comparison observed
@@ -166,6 +166,17 @@ Target and token, observed 2026-11-12: the target is `hemaaanth/touchstone` (pri
 - At run time: `--network-tools chain-bench` gives coverage `unavailable` and a `not-covered-token-in-argv` gap. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
 - Image, kept for the record: `touchstone/chain-bench:0.1.10`, the release tarball by `ADD --checksum=sha256:03c73a9d…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Programs: the `chain-bench` binary (Apache-2.0) and the same unchanged Alpine 3.20 base packages as the Scorecard image.
 - Not covered: every CIS benchmark check chain-bench has (source code, build pipelines, dependencies, artifacts, deployment). It would work if chain-bench read its token from an env var or a file. That is an upstream change.
+
+### raven
+
+- Not wired. The pack never runs it, and no image is built.
+- Checked: raven-cycode 1.0.9 from PyPI (Apache-2.0, wheel sha256 `a68275fe…aec75a`). Read, not run.
+- Blocker 1: `raven download` takes the token only as `--token`, and the option is required. The token rule forbids a token in argv.
+- Blocker 2: it fetches each workflow file from its `download_url` on `raw.githubusercontent.com`. That host is outside the capture allow-list (`api.github.com`, `codeload.github.com`). Adding it widens what the token can reach during a capture.
+- Blocker 3: it needs a Redis server and a Neo4j server. Neo4j is not a local image here, and Neo4j Community is GPL-3.0. Two more stateful servers per capture is not a reasonable size for one opt-in tool.
+- It also has a Slack reporting option (`slack_token`). The pack would never use it.
+- At run time: `--network-tools raven` gives coverage `unavailable` and a `not-covered-token-in-argv` gap that names the three blockers. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
+- Not covered: raven's cross-workflow graph queries. zizmor and poutine on the snapshot cover single-workflow injection and untrusted checkout.
 
 ## Limits
 

@@ -52,8 +52,8 @@ const ADMIN_SCOPES = { "Branch-Protection": "Administration: read", Webhooks: "W
 
 // legitify runs but always fails closed (networked-blocked.mjs): it saves its
 // output, and no lead comes from it until a parser is checked on a real run.
-// chain-bench is never run: an opt-in gives a gap (token only in argv).
-export const NETWORKED_TOOLS = ["scorecard", "legitify", "chain-bench"];
+// chain-bench and raven are never run: an opt-in gives a gap (token only in argv).
+export const NETWORKED_TOOLS = ["scorecard", "legitify", "chain-bench", "raven"];
 
 const now = () => new Date().toISOString();
 const imageId = (image) => { try { return execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
