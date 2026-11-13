@@ -17,6 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
+import { DatabaseSync } from "node:sqlite"
 import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -258,6 +259,35 @@ const runs = new Map()
 let seq = 0
 const TERMINAL = ["recorded", "denied", "error", "no-finding"]
 
+// A SQLite write transaction is a process-owned lock. The OS releases it on a
+// crash, unlike a PID file. Keep it until the run is terminal, not just boot.
+function own(run) {
+  const db = new DatabaseSync(path.join(RESULTS_DIR, `run-${run.id}.owner.sqlite`), { timeout: 0 })
+  try {
+    db.exec("BEGIN IMMEDIATE")
+    run.owner = db
+    return true
+  } catch (err) {
+    db.close()
+    if (err.code === "ERR_SQLITE_ERROR" && /locked|busy/i.test(err.message)) return false
+    throw err
+  }
+}
+
+function release(run) {
+  if (!run.owner) return
+  run.owner.close()
+  run.owner = null
+}
+
+function savePhase(run, phase) {
+  run.phase = phase
+  if (!run.stateFile) return
+  const next = `${run.stateFile}.tmp`
+  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  renameSync(next, run.stateFile)
+}
+
 // No worker is running for this run: the audit is over and no follow-up is
 // being answered. The operator can still message it unless it is archived.
 function idle(run) {
@@ -269,8 +299,8 @@ function monotonicId(alias) {
   let id
   do {
     seq += 1
-    id = `${alias}-${stamp}-${seq}`
-  } while (runs.has(id))
+    id = `${alias}-${stamp}-${process.pid}${String(seq).padStart(4, "0")}`
+  } while (runs.has(id) || existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) || existsSync(path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)))
   return id
 }
 
@@ -288,6 +318,13 @@ function broadcast(run, event) {
       send(event)
     } catch {
       run.subscribers.delete(send)
+    }
+  }
+  if (event.ev === "closed") {
+    release(run)
+    if (TERMINAL.includes(run.status) && !run.replying) {
+      if (run.stateFile) rmSync(run.stateFile, { force: true })
+      if (run.db) rmSync(`${run.db}.audit.json`, { force: true })
     }
   }
 }
@@ -435,46 +472,34 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // returns the env that routes the module's network seam through it, so egress
   // is ENFORCED, not just pre-refused. A grant never widens what a run DOES; it
   // only clears the host the network seam may reach.
-  const reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" })
-  // The proxy (if the gate started one) is live from here. If any later setup
-  // step throws before the run is registered, stop it so a refused or broken run
-  // never leaks a listening gate.
-  let plan, budget, id, db, eventsFile, streamFile, ws
-  try {
-    // Resolve the module plan from the scope and the operator's request. A module
-    // the scope cannot support (static/fuzz on a brief with no local source yet) is
-    // off with a reason, never silently dropped. The plan rides into the workspace
-    // config, so the run worker builds exactly the tools this plan enables.
-    plan = planModules(target, modules)
-    // Each run has its own budget. The worker stops the run when it is spent.
-    budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
-
-    mkdirSync(RESULTS_DIR, { recursive: true })
-    id = monotonicId(alias)
-    db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
-    eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
-    streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
-    for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
-    ws = await prepareRunWorkspace(target, { modules: plan })
-  } catch (err) {
-    await reach.stop()
-    throw err
-  }
+  // Checkpoint the setup before opening the gate. A restart during gate or
+  // workspace preparation can retry with the same target and module plan.
+  // Resolve modules and budget before the setup checkpoint; nothing is spent.
+  const plan = planModules(target, modules)
+  const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
+  mkdirSync(RESULTS_DIR, { recursive: true })
+  const id = monotonicId(alias)
+  const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
+  const eventsFile = path.join(RESULTS_DIR, `run-${id}.events`)
+  const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
+  for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
 
   const run = {
-    reach,
+    reach: null,
     id,
     alias,
     provider: provider.id,
     target,
     modules: plan,
+    mode,
+    budget,
     model: provider.models[alias].id,
     status: "starting",
     startedAt: Date.now(),
     events: [],
     subscribers: new Set(),
     db,
-    ws,
+    ws: null,
     eventsFile,
     streamFile,
     pending: null,
@@ -484,6 +509,14 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
     error: null,
     child: null,
     stderr: "",
+    stateFile: path.join(RESULTS_DIR, `run-${id}.state.json`),
+  }
+  if (!own(run)) throw new Error("another server already owns this run")
+  try {
+    savePhase(run, "setup")
+  } catch (err) {
+    release(run)
+    throw err
   }
   runs.set(id, run)
 
@@ -501,6 +534,25 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // The provider and model, so a follow-up after a restart uses the same pair.
   broadcast(run, { t: Date.now(), ev: "provider", provider: provider.id, model: run.model })
 
+  setRunStatus(run, "starting")
+  try {
+    run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" })
+    run.ws = await prepareRunWorkspace(target, { modules: plan })
+    savePhase(run, "prepass")
+  } catch (err) {
+    run.error = String(err?.message ?? err)
+    if (run.ws) await endWorkspace(run).catch(() => {})
+    else await run.reach?.stop?.().catch(() => {})
+    setRunStatus(run, "error")
+    finalize(run)
+    broadcast(run, { ev: "closed" })
+    throw err
+  }
+  if (run.stopping) {
+    await endWorkspace(run)
+    endStopped(run)
+    return view(run)
+  }
   setRunStatus(run, "running")
   // Drive the full engine asynchronously: the pre-pass ensemble first (so the
   // agent starts with leads), then the agent worker. This takes minutes — docker
@@ -556,6 +608,8 @@ async function startEngine(run) {
     endStopped(run)
     return
   }
+  run.leads = leads
+  savePhase(run, "agent")
   spawnAgent(run, leads)
 }
 
@@ -586,6 +640,7 @@ function engineEvents(run) {
         usage: e.usage ?? null,
         reports: e.reports ?? [],
       }
+      savePhase(run, "proof")
       // The view gets only the final text, so it can repair prose that ended one
       // chunk short. The findings and sources stay on the server.
       broadcast(run, slimSettled(e))
@@ -617,8 +672,13 @@ function fleetEnv(run) {
 // follow-up carries the spent amount forward, so the budget covers the whole run.
 function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
-  const spend = run.events.findLast((e) => e.ev === "spend")
-  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(spend?.usd ?? 0) }
+  // A charge may reach the worker's files before its stdout reaches the server.
+  // Use the highest cumulative total from all three copies.
+  const charged = run.events.filter((e) => e.ev === "spend")
+  if (run.eventsFile && existsSync(run.eventsFile)) charged.push(...readJsonl(run.eventsFile).filter((e) => e.ev === "spend"))
+  const chargeFile = path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`)
+  if (existsSync(chargeFile)) charged.push(...readJsonl(chargeFile))
+  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(Math.max(0, ...charged.map((e) => Number(e.usd) || 0))) }
 }
 
 // A transient provider fault: the gateway was busy, slow, or briefly down. The
@@ -703,7 +763,7 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  const env = { ...process.env, PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
+  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -724,6 +784,11 @@ function spawnAgent(run, leads) {
   child.on("exit", async () => {
     if (run.status !== "running" && run.status !== "starting") return
     const s = run.settled
+    if (run.stopping) {
+      await endWorkspace(run)
+      endStopped(run)
+      return
+    }
     // Findings come from the settled event, which carries each passing source.
     // If the worker died before settling, fall back to the live list: those
     // findings still record, but without a fresh replay proof.
@@ -733,10 +798,6 @@ function spawnAgent(run, leads) {
       return
     }
     await endWorkspace(run)
-    if (run.stopping) {
-      endStopped(run)
-      return
-    }
     if (s && s.status === "done") {
       // Terminal, but not an error: the agent audited and found nothing to prove.
       run.error = null
@@ -775,22 +836,25 @@ function spawnAgent(run, leads) {
 function announceFindings(run, findings, first) {
   findings.forEach((f, k) => {
     const id = run.findingIds[first + k]
-    broadcast(run, {
-      ev: "finding",
-      id,
-      runId: run.id,
-      title: f.title,
-      severity: f.severity,
-      poc: f.poc,
-      proofKind: proofKind(f),
-      proven: isProven(f),
-      target: scopeOf(run)?.title ?? null,
-    })
-    // Each proven finding's replay proof is a pane document. Its body is
-    // fetched by finding id via /api/findings/:id, which the record now holds.
+    if (!run.events.some((e) => e.ev === "finding" && e.id === id)) {
+      broadcast(run, {
+        ev: "finding",
+        id,
+        runId: run.id,
+        title: f.title,
+        severity: f.severity,
+        poc: f.poc,
+        proofKind: proofKind(f),
+        proven: isProven(f),
+        target: scopeOf(run)?.title ?? null,
+      })
+    }
+    // A crash can land between finding and artifact; only add the missing part.
     if (!isProven(f)) return
-    broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc ?? f.title}`, kind: "proof", findingId: id })
-    broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
+    if (!run.events.some((e) => e.ev === "artifact-open" && e.id === `proof-${id}`)) {
+      broadcast(run, { ev: "artifact-open", id: `proof-${id}`, title: `Replay proof — ${f.poc ?? f.title}`, kind: "proof", findingId: id })
+    }
+    if (!run.events.some((e) => e.ev === "artifact-done" && e.id === `proof-${id}`)) broadcast(run, { ev: "artifact-done", id: `proof-${id}` })
   })
 }
 
@@ -863,18 +927,20 @@ export function steerRun(id, text, clientId) {
 }
 
 // Stop a run's work: the live audit or a follow-up reply. The worker process
-// is killed. Its exit handler records any finding it proved before the stop;
-// otherwise the run ends as stopped, not failed. The saved agent session
+// is killed. A stop wins over any findings waiting in the exit handler;
+// the run ends as stopped, not failed. The saved agent session
 // stays, so a message continues the work. Before the agent starts (the
 // pre-pass), the stop lands as soon as the pre-pass returns.
 export function stopRun(id) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
   if (idle(run)) throw new Error("the run is not working")
+  if (!run.owner) throw new Error("another server owns this run; stop it there")
   const child = run.child
   const alive = child && child.exitCode == null && child.signalCode == null
-  if (!alive && run.status !== "running") throw new Error(`the run is ${run.status}; it ends on its own`)
+  if (!alive && run.status !== "running" && run.status !== "starting") throw new Error(`the run is ${run.status}; it ends on its own`)
   run.stopping = true
+  broadcast(run, { t: Date.now(), ev: "stop-requested" })
   if (alive) child.kill("SIGTERM")
   return { ok: true }
 }
@@ -896,6 +962,7 @@ function endStopped(run) {
 // there first: new events must append to the full history, not replace it.
 function ensureFiles(run) {
   run.db ??= path.join(RESULTS_DIR, `run-${run.id}.sqlite`)
+  run.stateFile ??= path.join(RESULTS_DIR, `run-${run.id}.state.json`)
   run.eventsFile ??= path.join(RESULTS_DIR, `run-${run.id}.events`)
   if (!run.streamFile) {
     run.streamFile = path.join(RESULTS_DIR, `run-${run.id}.stream.jsonl`)
@@ -910,14 +977,20 @@ function followUp(run, text, clientId) {
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)
-  if (!existsSync(run.db)) throw new Error("this run has no saved agent session to resume")
+  if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
   const target = run.target ?? (run.scope?.id ? getTarget(run.scope.id) : null)
   if (!target) throw new Error("this run's scope is no longer in the library")
   run.target = target
   // A generated lab is new on every run, with its own throwaway keys, so a reopened
   // session would meet a different repository than the one it audited.
   if (target.generated) throw new Error("this run's lab was generated for that run only, so it cannot be reopened for a follow-up")
-  run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
+  if (!own(run)) throw new Error("another server is already answering this run; try again when it finishes")
+  try {
+    run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
+  } catch (err) {
+    release(run)
+    throw err
+  }
   // Steps from earlier turns are keyed by attempt; start past the last one.
   const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
@@ -932,9 +1005,11 @@ function followUp(run, text, clientId) {
     cwd: SPIKE,
     env: {
       ...process.env,
+      TOUCHSTONE_PARENT_PIPE: "1",
       PROVIDER: runProvider(run),
       ALIAS: run.alias,
       EVENTS_FILE: run.eventsFile,
+      RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
       ...money,
       ...fleetEnv(run),
       FOLLOWUP: text,
@@ -1123,7 +1198,9 @@ function persistRun(run, findings) {
     usage: s.usage ?? null,
     reports: s.reports ?? [],
   }
-  writeFileSync(path.join(RESULTS_DIR, `run-${run.id}.json`), JSON.stringify({ result, transcript: summary }, null, 2))
+  const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
+  writeFileSync(`${file}.tmp`, JSON.stringify({ result, transcript: summary }, null, 2))
+  renameSync(`${file}.tmp`, file)
 }
 
 // Write the record of a run that ends with no finding to record: a clean
@@ -1149,7 +1226,7 @@ function finalize(run) {
 // it broadcast. An older app run has only the engine's `run-<id>.events` plus
 // its `run-<id>.json` record; we rebuild the same event shape from those two.
 // CLI runs (`run-<alias>.json`, no stamp) are not app runs and are skipped.
-const APP_RUN = /^run-([a-z0-9.-]+-\d{10}-\d+)\.(stream\.jsonl|json)$/
+const APP_RUN = /^run-([a-z0-9.-]+-\d{10}-\d+)\.(stream\.jsonl|state\.json|json)$/
 
 function readJsonl(file) {
   const out = []
@@ -1228,7 +1305,7 @@ function rebuildEvents(id, record, engineEvents) {
 // finding ids are read back from the events themselves.
 function savedRun(id, events, mtime) {
   const alias = id.replace(/-\d{10}-\d+$/, "")
-  let status = "error"
+  let status = existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`)) ? "starting" : "error"
   let decision = null
   let error = null
   let findingIds = []
@@ -1258,9 +1335,14 @@ function savedRun(id, events, mtime) {
   // A terminal status always lands in the stream file. Without one, the server
   // stopped mid-run. Mark it in memory only: the file stays the true record.
   const interrupted = !TERMINAL.includes(status)
-  if (interrupted) {
+  const stopPending = events.findLastIndex((e) => e.ev === "stop-requested") > events.findLastIndex((e) => e.ev === "stopped")
+  const stateFile = path.join(RESULTS_DIR, `run-${id}.state.json`)
+  const savedMode = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")).mode : null
+  if (interrupted && (!existsSync(stateFile) || ((events.findLast((e) => e.ev === "mode")?.mode ?? savedMode) !== "solo" && !stopPending))) {
     status = "error"
-    error = "the server restarted during this run, so it stopped"
+    error = events.findLast((e) => e.ev === "mode")?.mode === "fleet"
+      ? "this fleet run stopped at the server restart; its coordinator cannot safely resume yet"
+      : "the server restarted during this run, so it stopped"
     events.push({ t: Date.now(), ev: "status", status, error })
   }
   // Same for a follow-up the restart cut off: it started after the last close.
@@ -1269,7 +1351,7 @@ function savedRun(id, events, mtime) {
     events.push({ t: Date.now(), ev: "reply-error", error: "the server restarted during this reply, so it stopped" })
     events.push({ t: Date.now(), ev: "closed" })
   }
-  if (!events.some((e) => e.ev === "closed")) events.push({ t: Date.now(), ev: "closed" })
+  if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: Date.now(), ev: "closed" })
   return {
     id,
     alias,
@@ -1295,6 +1377,78 @@ function savedRun(id, events, mtime) {
   }
 }
 
+async function resumeRun(run) {
+  const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
+  if (!state.target || (state.phase !== "setup" && !state.ws)) throw new Error("the saved workspace or target is missing; start a new run")
+  run.ws = state.ws
+  run.target = state.target // Never replace this snapshot with a newer, wider scope.
+  run.leads = state.leads ?? {}
+  run.prepass = state.prepass ?? null
+  run.static = run.prepass?.static ?? null
+  run.fuzz = run.prepass?.fuzz ?? null
+  run.settled = state.settled ?? null
+  if (state.phase === "setup") {
+    run.modules = state.modules ?? run.modules
+    run.provider = state.provider ?? run.provider
+    run.model = state.model ?? run.model
+    const initial = [
+      { ev: "scope", scope: targetSummary(run.target) },
+      { ev: "budget", usd: state.budget },
+      { ev: "mode", mode: state.mode },
+      modulesEvent(run.modules ?? []),
+      { ev: "provider", provider: run.provider, model: run.model },
+      { ev: "status", status: "starting" },
+    ]
+    for (const event of initial) if (!run.events.some((e) => e.ev === event.ev)) broadcast(run, { t: Date.now(), ...event })
+    run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy" })
+    broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: "setup" })
+    run.ws = await prepareRunWorkspace(run.target, { modules: run.modules ?? [] })
+    savePhase(run, "prepass")
+    if (run.stopping) {
+      await endWorkspace(run)
+      return endStopped(run)
+    }
+    setRunStatus(run, "running")
+    return startEngine(run)
+  }
+  const recordFile = path.join(RESULTS_DIR, `run-${run.id}.json`)
+  if (state.phase === "proof" && existsSync(recordFile)) {
+    // The record is the commit point. A crash after its write must not replay
+    // proof or overwrite it, even if the workspace has already been removed.
+    const result = JSON.parse(readFileSync(recordFile, "utf8")).result
+    if (result?.outcome === "recorded" && result.findings?.length) {
+      run.findingIds = result.findings.map((_, k) => `${run.id}.${k + 1}`)
+      announceFindings(run, result.findings, 0)
+      run.status = "recorded"
+      run.decision = "approve"
+      broadcast(run, { ev: "status", status: "recorded", decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
+      await endWorkspace(run)
+      broadcast(run, { ev: "closed" })
+      return
+    }
+  }
+  if (!existsSync(path.join(run.ws, ".touchstone.json"))) throw new Error("the saved workspace is missing; start a new run")
+  run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy" })
+  // This event is a real retry marker. The old stream is never renumbered.
+  broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: state.phase })
+  if (state.phase === "prepass") {
+    await packFor(readTouchstone(run.ws)).teardown?.(run.ws)
+    return startEngine(run)
+  }
+  if (state.phase === "agent") return spawnAgent(run, run.leads)
+  if (state.phase === "proof" && run.settled) {
+    const found = run.settled.findings?.length ? run.settled.findings : run.submitted
+    if (found.length) return recordRun(run, found)
+    if (run.settled.status === "done" && run.settled.final) broadcast(run, { ev: "no-finding", final: run.settled.final })
+    setRunStatus(run, run.settled.status === "done" ? "no-finding" : "error")
+    finalize(run)
+    await endWorkspace(run)
+    broadcast(run, { ev: "closed" })
+    return
+  }
+  throw new Error(`unknown saved phase: ${state.phase}`)
+}
+
 function loadSavedRuns() {
   if (!existsSync(RESULTS_DIR)) return
   const ids = new Set()
@@ -1311,18 +1465,56 @@ function loadSavedRuns() {
       if (existsSync(streamFile)) {
         events = readJsonl(streamFile)
         mtime = statSync(streamFile).mtimeMs
-      } else {
+      } else if (existsSync(recordFile)) {
         const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
         const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
         events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
         mtime = statSync(recordFile).mtimeMs
-      }
-      if (!events.length) continue
+      } else if (existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
+        events = []
+        mtime = statSync(path.join(RESULTS_DIR, `run-${id}.state.json`)).mtimeMs
+      } else continue
+      if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) continue
       const run = savedRun(id, events, mtime)
+      // A second server must not finalize a fleet run that its first server
+      // still owns, even though fleet recovery itself is not supported.
+      if (run.interrupted && run.status === "error" && !own(run)) continue
       runs.set(id, run)
+      if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
+        ensureFiles(run)
+        if (own(run)) {
+          try {
+            run.ws = JSON.parse(readFileSync(run.stateFile, "utf8")).ws
+            endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
+          } catch (err) {
+            release(run)
+            throw err
+          }
+        }
+      }
       // The server stopped during this run, so no record was written. Write
       // one now from the stream: the run is an error, with its reason.
-      if (run.interrupted && !existsSync(recordFile)) finalize(run)
+      if (run.interrupted && run.status === "error") {
+        if (!existsSync(recordFile)) finalize(run)
+        release(run)
+      }
+      if (run.interrupted && run.status !== "error") {
+        ensureFiles(run)
+        if (own(run)) {
+          const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
+          if (stopped) {
+            const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
+            run.ws = state.ws
+            endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
+          } else resumeRun(run).catch(async (err) => {
+            run.error = `Recovery could not continue: ${String(err?.message ?? err)}`
+            await endWorkspace(run).catch(() => {})
+            setRunStatus(run, "error")
+            finalize(run)
+            broadcast(run, { ev: "closed" })
+          })
+        }
+      }
     } catch (err) {
       console.warn(`[runs] skipped saved run ${id}: ${String(err?.message ?? err).slice(0, 200)}`)
     }

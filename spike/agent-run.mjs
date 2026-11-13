@@ -20,6 +20,7 @@ import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
 import { readSpendWith } from "./lib/attempt-cap.mjs";
+import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -54,10 +55,6 @@ mkdirSync(DIR, { recursive: true });
 //   poc     run_poc attempts so far
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
-function auditState() {
-  return { poc: 0, passed: new Map(), found: [] };
-}
-
 async function openHarness(db, ws, state) {
   const pack = packFor(readTouchstone(ws));
   // Source navigation is the DEFAULT code-reading layer for any run given a local
@@ -197,7 +194,13 @@ async function chat({ harness, root, reports, state, fleet }) {
 
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
-  const state = auditState();
+  // The server owns this worker. A closed parent pipe means a restart; do not
+  // keep charging or writing the session while a new server recovers it.
+  if (process.env.TOUCHSTONE_PARENT_PIPE === "1") {
+    process.stdin.on("end", () => process.exit(1));
+    process.stdin.resume();
+  }
+  const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
   const { harness, root, reports, pack, fleet } = await openHarness(db, ws, state);
   event("opened", { mode });
   if (mode === "chat") {
