@@ -405,10 +405,14 @@ export function multiPack(members) {
         for (const f of proven) out.push({ ...f, pack: p.id });
       }
       // A finding with no module is still a finding: it records unproven, as one
-      // on a one-module run does when its replay cannot run.
+      // on a one-module run does when its replay cannot run. No module replayed
+      // it, so a proof it carries in (from submit time, or an edited row) is
+      // dropped: it could otherwise read as proven. It gets a reason instead.
       const loose = (found ?? []).filter((f) => !ids.includes(f?.pack));
       if (loose.length) log(`${loose.length} finding(s) name no module of this run; they are kept unproven`);
-      for (const f of loose) out.push({ ...f, pocProved: false });
+      for (const f of loose) {
+        out.push({ ...f, pocProved: false, proof: null, unprovenReason: `this finding names no module of this run (${f?.pack ? `"${String(f.pack).slice(0, 40)}"` : "none"}), so no module replayed it and it is not proven` });
+      }
       return out.map((f, i) => ({ f, i })).sort((a, b) => rank(a.f.severity) - rank(b.f.severity) || a.i - b.i).map((x) => x.f);
     },
 
