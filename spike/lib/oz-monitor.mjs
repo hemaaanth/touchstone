@@ -103,7 +103,8 @@ export function monitorConfig(obs) {
     monitors: {
       admin: monitor("admin", obs.address, ABI, {
         functions: FUNCTIONS.map((s) => ({ signature: s, expression: null })),
-        events: EVENTS.map((s) => ({ signature: s, expression: null })) }),
+        events: EVENTS.map((s) => ({ signature: s, expression: null })),
+        transactions: [{ status: "Success", expression: null }] }),
       non_owner: monitor("non_owner", obs.address, ABI, {
         functions: FUNCTIONS.map((s) => ({ signature: s, expression: null })),
         transactions: [{ status: "Success", expression: `from != ${owner}` }] }),
@@ -128,6 +129,10 @@ function matchLeads(monitor, block, match, ctx) {
   if (!m || typeof m !== "object" || !m.transaction || !m.matched_on) throw new Error("match has no EVM transaction");
   if (m.monitor?.name !== monitor) throw new Error(`match names monitor ${m.monitor?.name}, expected ${monitor}`);
   if (m.network_slug !== "lab") throw new Error(`match is on network ${m.network_slug}, expected lab`);
+  // Every monitor matches only successful transactions. The match must say so, and a
+  // receipt, when the trigger gets one, must agree.
+  if (!(m.matched_on.transactions ?? []).some((t) => t?.status === "Success")) throw new Error("match was not matched on a successful transaction");
+  if (m.receipt && m.receipt.status != null && !["0x1", 1, true].includes(m.receipt.status)) throw new Error(`match has receipt status ${m.receipt.status}`);
   const tx = m.transaction;
   if (Number(BigInt(tx.blockNumber)) !== block) throw new Error(`match is in block ${tx.blockNumber}, expected ${block}`);
   const from = lc(tx.from);

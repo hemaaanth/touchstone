@@ -64,14 +64,17 @@ const leftNothingNew = async (before) => {
 
 // One match in the shape the script trigger receives on stdin.
 const match = (monitor, block, { from = ATTACKER, to = PROXY, functions = [], events = [], hash = "0xabc0000000000000",
-  slug = "lab", watched = monitor === "canary" ? CANARY : PROXY, logs = events.length ? [{ address: PROXY }] : [] } = {}) => ({
+  slug = "lab", watched = monitor === "canary" ? CANARY : PROXY, logs = events.length ? [{ address: PROXY }] : [],
+  status = "Success", receipt = null } = {}) => ({
   args: [],
   monitor_match: { EVM: {
     monitor: { name: monitor, addresses: [{ address: watched, contract_spec: null }] },
     network_slug: slug,
     logs,
+    receipt,
     transaction: { blockNumber: `0x${block.toString(16)}`, from, hash, to },
-    matched_on: { functions: functions.map((s) => ({ signature: s, expression: null })), events: events.map((s) => ({ signature: s, expression: null })), transactions: [] },
+    matched_on: { functions: functions.map((s) => ({ signature: s, expression: null })), events: events.map((s) => ({ signature: s, expression: null })),
+      transactions: status ? [{ status, expression: null }] : [] },
     matched_on_args: { functions: functions.map((s) => ({ signature: s, args: [{ name: "implementation", value: "0xdead" }] })), events: null },
   } },
 });
@@ -170,6 +173,22 @@ test("parseOzMonitor fails closed on a non-owner match whose sender is the owner
   assert.equal(noOwner.available, false, "no owner to compare with is a failure");
 });
 
+test("parseOzMonitor fails closed on a match that is not from a successful transaction", () => {
+  const swap = (m) => goodOutput().replace(/^MATCH admin 5 .*$/m, line("admin", 5, m));
+  assert.equal(parseOzMonitor(swap(match("admin", 5, { functions: [UPGRADE], receipt: { status: "0x1" } })), EXPECT, CTX).available, true);
+  const cases = [
+    [match("admin", 5, { functions: [UPGRADE], status: null }), /not matched on a successful transaction/],
+    [match("admin", 5, { functions: [UPGRADE], status: "Failure" }), /not matched on a successful transaction/],
+    [match("admin", 5, { functions: [UPGRADE], receipt: { status: "0x0" } }), /receipt status 0x0/],
+  ];
+  for (const [m, reason] of cases) {
+    const r = parseOzMonitor(swap(m), EXPECT, CTX);
+    assert.equal(r.available, false, reason.source);
+    assert.match(r.reason, reason);
+    assert.deepEqual(r.leads, []);
+  }
+});
+
 test("monitorConfig points only at the lab alias and keys the non-owner check to the baseline owner", () => {
   const obs = { address: PROXY, chainId: 31337, fromBlock: 5, toBlock: 10, snapshots: [{ block: 4, owner: OWNER }],
     canary: { address: CANARY, transactions: [{ block: 11 }] } };
@@ -177,6 +196,7 @@ test("monitorConfig points only at the lab alias and keys the non-owner check to
   assert.deepEqual(c.network.rpc_urls.map((u) => u.url.value), ["http://labchain:8545"]);
   assert.deepEqual(c.monitors.non_owner.match_conditions.transactions, [{ status: "Success", expression: `from != ${OWNER}` }]);
   assert.equal(c.monitors.canary.addresses[0].address, CANARY);
+  assert.deepEqual(c.monitors.admin.match_conditions.transactions, [{ status: "Success", expression: null }], "the admin monitor matches only successful calls");
   assert.equal(c.trigger.record_match.config.script_path, "/opt/touchstone/record.sh");
   assert.deepEqual(Object.keys(c.monitors), MONITORS);
   assert.deepEqual(blockRange(obs), { from: 5, to: 11 });
