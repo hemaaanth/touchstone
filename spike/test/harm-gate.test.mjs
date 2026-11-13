@@ -619,6 +619,94 @@ contract TokenDepositTest is Test {
   assert.equal(isProven(f), false);
 });
 
+// ---- forged-drain rejections, real forge (B1, M3, M4) ----------------------
+//
+// Each of these is a real forge replay of a forgery the reviewer raised. The
+// attacker makes a Transfer and a balance-slot write look like a drain of the
+// scope vault, but no scope token truly moved. These run the whole pipeline —
+// forge trace, extractControlTrace, judgeHarm — so they also check that
+// control-trace.mjs reads the cloneAccount and prank cheatcodes out of real
+// foundry output at the right offsets.
+//
+// A FakeTok shares Tok's storage layout (balanceOf at slot 0) so a clone lands
+// a funded victim slot. `drain` zeroes the victim's slot and emits a matching
+// Transfer — a forged drain the gate must reject.
+const FAKE_TOK = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract FakeTok {
+  mapping(address => uint256) public balanceOf;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function setBal(address who, uint256 a) external { balanceOf[who] = a; }
+  function drain(address victim, address to) external { uint256 a = balanceOf[victim]; balanceOf[victim] = 0; emit Transfer(victim, to, a); }
+}
+`;
+
+// M3: cloneAccount over the scope token overwrites its code and storage with the
+// attacker's. The forged Transfer is emitted FROM the scope token's address, so
+// before the fix it authenticated. Recording the clone as an etch of its target
+// drops that address from the scope set, so the emitter is no longer trusted.
+test("forge: a cloneAccount over the scope token forges a drain that is NOT proven (M3)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, "CloneOverTest",
+    `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+contract CloneOverTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function test_cloneover() public {
+    fake.setBal(address(vault), 100);
+    vm.cloneAccount(address(fake), address(tok));
+    FakeTok(address(tok)).drain(address(vault), address(0xBEEF));
+  }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// B1 / M3: a Transfer emitted from code the test cloned onto a NON-scope address.
+// Offline there is no real external token, so a non-scope emitter is never
+// trusted, and the clone is also recorded as an etch of that address.
+test("forge: a Transfer from code cloned onto a non-scope address is NOT proven (B1)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, "CloneTest",
+    `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+contract CloneTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); }
+  function test_clone() public {
+    address fakeTok = address(0xC10E);
+    fake.setBal(address(vault), 100);
+    vm.cloneAccount(address(fake), fakeTok);
+    FakeTok(fakeTok).drain(address(vault), address(0xBEEF));
+  }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
+// M4: the test pranks AS the scope vault and moves the vault's real tokens with
+// the real scope token. The emitter is authentic and the balance slot really
+// falls, but the test is acting as the victim, so this is not an exploit.
+test("forge: a drain where the test pranks AS the victim is NOT proven (M4)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "PrankVictimTest",
+    `import "../src/Tokens.sol";
+contract PrankVictimTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function test_prankDrain() public {
+    vm.prank(address(vault));
+    tok.transfer(address(0xBEEF), 100);
+  }
+}
+`);
+  assert.equal(f.proof.harm.ok, false);
+  assert.equal(isProven(f), false);
+});
+
 // A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
 // balance storage is identical to TOKENS; only the advisory logs are gone. The
 // ground-truth storage channel must prove a drain of it, and must NOT over-fire on
