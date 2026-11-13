@@ -88,7 +88,18 @@ const neverReach = (addr) => NEVER.has(ipKind(addr));
 // spellings isBlockedAddress does not parse, like ::ffff:7f00:1.
 const blocked = (addr) => isBlockedAddress(addr) || ipKind(addr) !== "public";
 
-async function resolvePinned(host, allowPrivate) {
+// A localhost name (RFC 6761): "localhost" or "*.localhost", in any case, with
+// or without trailing dots. A grant for "localhost" covers "localhost." too, and
+// the resolver may send that form to DNS. So a localhost name is pinned to
+// loopback at run time: every answer must be a loopback address, whatever DNS
+// says, or the request is refused.
+const isLocalhostName = (h) => {
+  const n = String(h || "").toLowerCase().replace(/\.+$/, "");
+  return n === "localhost" || n.endsWith(".localhost");
+};
+
+// `resolve` is the DNS lookup; a test passes a stand-in to fake the answers.
+export async function resolvePinned(host, allowPrivate, resolve = lookup) {
   // A URL hostname keeps IPv6 brackets ("[::1]"); the address is inside them.
   const h = String(host || "").replace(/^\[(.*)\]$/, "$1");
   if (isIP(h)) {
@@ -98,12 +109,14 @@ async function resolvePinned(host, allowPrivate) {
   }
   let addrs;
   try {
-    addrs = await lookup(h, { all: true });
+    addrs = await resolve(h, { all: true });
   } catch {
     return { ok: false, reason: `could not resolve ${h}` };
   }
   if (!addrs.length) return { ok: false, reason: `${h} resolved to nothing` };
+  const localName = isLocalhostName(h);
   for (const { address } of addrs) {
+    if (localName && ipKind(address) !== "loopback") return { ok: false, reason: `${h} is a localhost name but resolves to a non-loopback address (${address})` };
     if (!allowPrivate && blocked(address)) return { ok: false, reason: `${h} resolves to a non-public address (${address})` };
     if (neverReach(address)) return { ok: false, reason: `${h} resolves to a never-reachable address (${address})` };
   }
@@ -210,7 +223,8 @@ function httpTarget(req) {
 //                 Off by default (an SSRF and DNS-rebinding defense); a grant for
 //                 the operator's own LAN, or a test, opts in. The covering grant
 //                 carries this, and lib/reach.mjs passes it here.
-export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", port = 0, allowPrivate = false } = {}) {
+//   resolve       the DNS lookup; default node:dns lookup. Tests only.
+export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", port = 0, allowPrivate = false, resolve = lookup } = {}) {
   const allow = [...allowedHosts];
   const scopeLog = log || new ScopeLog();
 
@@ -239,7 +253,7 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
     // Allowed by name — now check the ADDRESS and pin it, so a granted name that
     // resolves to private/metadata space is refused, and the forward connects to
     // exactly the address we checked.
-    resolvePinned(targetHost, allowPrivate).then((pin) => {
+    resolvePinned(targetHost, allowPrivate, resolve).then((pin) => {
       if (!pin.ok) {
         scopeLog.record({ host: targetHost, method: req.method, url: target, allowed: false, reason: pin.reason, status: 403 });
         res.writeHead(403, { "content-type": "text/plain" });
@@ -267,7 +281,7 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
       clientSocket.end();
       return;
     }
-    resolvePinned(targetHost, allowPrivate).then((pin) => {
+    resolvePinned(targetHost, allowPrivate, resolve).then((pin) => {
       if (!pin.ok) {
         scopeLog.record({ host: targetHost, method: "CONNECT", url: req.url, allowed: false, reason: pin.reason, status: 403 });
         clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\nScope gate: blocked by address.\r\n");
