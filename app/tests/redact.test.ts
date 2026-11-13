@@ -387,3 +387,27 @@ describe("redact: secret command-line flags (delta review 4)", () => {
     expect(timeMs("--token " + " ".repeat(MB))).toBeLessThan(2000)
   })
 })
+
+describe("redact: assignments in any case (delta review 4)", () => {
+  const aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYFAKEKEY99"
+  test("lowercase names, spaces around = and export are masked", () => {
+    expect(text(`[default]\naws_secret_access_key = ${aws}\nregion = us-east-1`)).toBe("[default]\naws_secret_access_key = [REDACTED]\nregion = us-east-1")
+    expect(text("PASSWORD = hunter2hunter2")).toBe("PASSWORD = [REDACTED]")
+    expect(text("export api_key=tk_alice_7f3a9c2e && run")).toBe("export api_key=[REDACTED] && run")
+  })
+  test("code that reads a secret stays and still parses", () => {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+    const script = "let token = res.body.token\nconst api_key = get_token(1)\nif (token == x_9) token = auth_token2;\nreturn token"
+    const out = text(script)
+    expect(out).toContain("res.body.token")
+    expect(out).toContain("get_token(1)")
+    expect(out).toContain("token == x_9")
+    expect(() => new AsyncFunction(out)).not.toThrow()
+    for (const s of ['api_key = os.environ["API_KEY"]', "api_key = settings.API_KEY", "TOKEN=$TOKEN"]) expect(text(s)).toBe(s)
+  })
+  test("1 MB of open assignments finishes in linear time", () => {
+    expect(timeMs("api_key = " + "a".repeat(MB) + "(")).toBeLessThan(2000)
+    expect(timeMs("a=b ".repeat(MB / 4))).toBeLessThan(2000)
+    expect(timeMs("token" + " ".repeat(MB) + "=")).toBeLessThan(2000)
+  })
+})

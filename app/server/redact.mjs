@@ -86,7 +86,14 @@ const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s
 // A command-line flag whose name passes secretName: cast send
 // --private-key 0x…, --api-key=…, --token "…".
 const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\r\n]*)\3|([^\s"'`;&|()<>]+))/g
-const ENV_ASSIGN = /\b([A-Z][A-Z0-9_]{1,63})=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|]+))/g
+// An assignment in a shell, an .env file or a config file: DB_PASSWORD=…,
+// export api_key=…, aws_secret_access_key = …. The name may be any case and
+// "=" may have spaces around it. A bare value must end at a space, a
+// separator or the end; so a call such as get_token() and an index such as
+// os.environ["X"] never match. == never matches either.
+const ENV_ASSIGN = /(?<![\w$.-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|()[\]{}<>=][^\s"'`;&|()[\]{}<>]*)(?![^\s;,&|]))/g
+// A code reference such as settings.API_KEY or res.body.token, not a value.
+const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
 // snapshot hashes and commits are 40/64 hex and the proof needs them.
@@ -176,11 +183,11 @@ function maskFlag(m, head, name, q, quoted, bare) {
   return q ? `${head}${q}${MARK}${q}` : head + MARK
 }
 
-function maskEnv(m, name, dq, sq, bare) {
+function maskEnv(m, name, sep, dq, sq, bare) {
   const v = dq ?? sq ?? bare
-  if (!secretName(name) || !secretish(v, 6)) return m
+  if (!secretName(name) || !secretish(v, 6) || (bare != null && MEMBER_PATH.test(v))) return m
   const q = dq != null ? '"' : sq != null ? "'" : ""
-  return `${name}=${q}${MARK}${q}`
+  return `${name}${sep}${q}${MARK}${q}`
 }
 
 function redactText(text) {
