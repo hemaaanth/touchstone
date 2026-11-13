@@ -110,8 +110,10 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
     const emailCheck = await checkEmail(run, domain, reach.resolver);
     const email = emailCheck.evidence;
     const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
-    if (email) emailCoverage.leads = emailLeads({ root: domain, email }).length;
-    else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
+    if (email) {
+      emailCoverage.leads = emailLeads({ root: domain, email }).length;
+      if (emailCheck.partial) { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCheck.error; }
+    } else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
     // The DNSSEC chain is probed through the granted resolver. A failed chain
     // read is a coverage gap, not an unsigned zone.
     const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);

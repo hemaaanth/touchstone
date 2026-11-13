@@ -182,7 +182,7 @@ export async function scanSnapshot(ws, id = 'domains') {
 
 export function detectorsFor(id = 'domains') {
   const cache = new WeakMap();
-  const checks = id === 'surface' ? ['discovered-host','discovered-service'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','email-auth-evidence-missing','email-dmarc-missing','email-dmarc-policy-none','email-dmarc-no-reporting','email-spf-missing','email-spf-allows-all','tls-evidence-missing','dnssec-evidence-missing','dnssec-unsigned','dnssec-broken-chain','dnssec-warning','registry-lock-evidence-missing','frontend-content-pin-missing'];
+  const checks = id === 'surface' ? ['discovered-host','discovered-service'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','email-auth-evidence-missing','email-dmarc-missing','email-dmarc-policy-none','email-dmarc-no-reporting','email-dmarc-invalid','email-spf-invalid','email-spf-missing','email-spf-allows-all','tls-evidence-missing','dnssec-evidence-missing','dnssec-unsigned','dnssec-broken-chain','dnssec-warning','registry-lock-evidence-missing','frontend-content-pin-missing'];
   const base = Object.fromEntries(checks.map(check => [check,async(snapshot,where) => {
     if (!cache.has(snapshot)) cache.set(snapshot,analyzeSnapshot(snapshot));
     const analysis = await cache.get(snapshot);

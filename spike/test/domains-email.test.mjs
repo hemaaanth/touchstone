@@ -31,13 +31,35 @@ test('the parser accepts a list and refuses another domain and non-JSON', () => 
   assert.throws(() => parseCheckdmarc('not json', root));
 });
 
-test('missing and permissive records each raise one lead', () => {
+test('a parsed record is marked present and a listed absence is marked absent', () => {
+  assert.equal(evidence().spf.state, 'present');
+  assert.equal(evidence().dmarc.state, 'present');
+  const absent = JSON.stringify({ domain: root, spf: { record: null, valid: false, error: 'An SPF record does not exist.', warnings: [] }, dmarc: { record: null, valid: false, error: 'A DMARC record does not exist.', warnings: [] } });
+  const email = parseCheckdmarc(absent, root);
+  assert.equal(email.spf.state, 'absent');
+  assert.equal(email.dmarc.state, 'absent');
+  assert.deepEqual(emailLeads({ root, email }).map(l => l.check), ['email-dmarc-missing', 'email-spf-missing']);
+});
+
+test('an answer with no record field is unread, not absent', () => {
+  const email = parseCheckdmarc(JSON.stringify({ domain: root }), root);
+  assert.equal(email.spf.state, 'unread');
+  assert.equal(email.dmarc.state, 'unread');
+  const leads = emailLeads({ root, email });
+  assert.deepEqual(leads.map(l => l.check), ['email-auth-evidence-missing']);
+  assert.match(leads[0].description, /SPF and DMARC/);
+  const partial = emailLeads({ root, email: { ...evidence(), spf: { ...evidence().spf, state: 'unread' } } });
+  assert(partial[0].check === 'email-auth-evidence-missing');
+  assert.match(partial[0].description, /SPF/);
+});
+
+test('malformed and permissive records each raise one lead', () => {
   const checks = email => emailLeads({ root, email }).map(l => l.check);
   assert.deepEqual(checks(evidence()), ['email-dmarc-no-reporting']);
-  assert.deepEqual(checks({ ...evidence(), dmarc: { ...evidence().dmarc, valid: false, policy: null } }), ['email-dmarc-missing']);
+  assert.deepEqual(checks({ ...evidence(), dmarc: { ...evidence().dmarc, valid: false } }), ['email-dmarc-invalid']);
   assert.deepEqual(checks({ ...evidence(), dmarc: { ...evidence().dmarc, policy: 'none' } }), ['email-dmarc-policy-none', 'email-dmarc-no-reporting']);
-  assert.deepEqual(checks({ ...evidence(), spf: { record: 'v=spf1 +all', valid: true, all: '+all', warnings: [] } }), ['email-dmarc-no-reporting', 'email-spf-allows-all']);
-  assert.deepEqual(checks({ ...evidence(), spf: { record: null, valid: false, all: null, warnings: [] } }), ['email-dmarc-no-reporting', 'email-spf-missing']);
+  assert.deepEqual(checks({ ...evidence(), spf: { record: 'v=spf1 +all', valid: true, all: '+all', warnings: [], state: 'present' } }), ['email-dmarc-no-reporting', 'email-spf-allows-all']);
+  assert.deepEqual(checks({ ...evidence(), spf: { record: 'v=spf1 include:x.test', valid: false, all: null, warnings: [], state: 'present' } }), ['email-dmarc-no-reporting', 'email-spf-invalid']);
 });
 
 test('no email evidence is a coverage gap that names the tool failure', () => {
@@ -55,6 +77,10 @@ test('a tool error and an unparsable answer come back as an error', async () => 
   assert.match((await checkEmail(garbage, root)).error, /JSON/);
   const recorded = async () => ({ code: 0, stdout: fixture, stderr: '', timedOut: false });
   assert.equal((await checkEmail(recorded, root)).evidence.dmarc.policy, 'reject');
+  const partial = async () => ({ code: 0, stdout: JSON.stringify({ domain: root }), stderr: '', timedOut: false });
+  const half = await checkEmail(partial, root);
+  assert.equal(half.partial, true);
+  assert.match(half.error, /SPF and DMARC/);
 });
 
 test('email leads replay from the pinned snapshot', async () => {
@@ -73,7 +99,7 @@ test('email leads replay from the pinned snapshot', async () => {
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test('a real capture stores the email evidence and its lead', { timeout: 420000 }, async () => {
+test('a real capture stores the email evidence and its lead (TOUCHSTONE_LIVE=1)', { skip: process.env.TOUCHSTONE_LIVE ? false : 'set TOUCHSTONE_LIVE=1 to scan example.com', timeout: 420000 }, async () => {
   const ws = mkdtempSync(join(tmpdir(), 'domain-email-live-'));
   try {
     const snapshot = await captureDomain({ ws, domain: root, reach: { network: 'bridge', granted: true, scope: [root], ports: [{ scheme: 'https', port: 443 }] } });
@@ -84,6 +110,7 @@ test('a real capture stores the email evidence and its lead', { timeout: 420000 
     const leads = domainLeads(snapshot, await analyzeSnapshot(snapshot));
     assert(leads.some(l => l.check === 'email-dmarc-no-reporting' && l.engine === 'checkdmarc'));
     assert.equal(leads.some(l => l.check === 'email-auth-evidence-missing'), false);
-    assert.equal(CHECKDMARC.split('@')[1], check.digest ?? CHECKDMARC.split('@')[1]);
+    assert.match(CHECKDMARC, /@sha256:[0-9a-f]{64}$/);
+    assert.equal(check.status, 'ran');
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
