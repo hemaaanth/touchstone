@@ -23,6 +23,9 @@ export function sortFindings(list) {
 // submitted: [{ n, title, severity, poc, explanation, source }] from the engine.
 // events: every engine event, used to check that the named test really passed.
 // Returns the findings worst first, each with its own replay proof (or null).
+// Each recorded finding keeps `source`, the exact test the replay ran. A fleet
+// child's run_poc is not in the root transcript, and the workspace is deleted
+// after this returns, so the report can show that test only if it is stored now.
 //
 // A passing test is NOT enough. `forgePassed` records that Foundry passed the
 // named test. `pocProved` is true only when the final replay also passed AND its
@@ -45,7 +48,9 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
       }
     }
     const pocProved = forgePassed && proof?.pass === true && proof?.harm?.ok === true;
-    out.push({ n: f.n, title: f.title, severity: f.severity, poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof });
+    // The submitted test, not proof.source (that label is "engine-replay").
+    const source = typeof f.source === "string" && f.source.trim() ? f.source : undefined;
+    out.push({ n: f.n, title: f.title, severity: f.severity, poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof, ...(source ? { source } : {}) });
   }
   return out;
 }
