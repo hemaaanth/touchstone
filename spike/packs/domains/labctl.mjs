@@ -102,7 +102,7 @@ export async function startLab(lab = LAB, { docker: run = labDocker } = {}) {
     copy = makeLabCopy(lab, ips);
     for (const [suffix, role, image, cmd, caps] of SERVICES) {
       const name = network + '-' + suffix;
-      const r = await run(['run', '-d', '--name', name, '--network', network, '--ip', ips[role], '--cap-drop', 'ALL', ...caps, '--security-opt', 'no-new-privileges', '--user', process.getuid() + ':' + process.getgid(), '-v', copy + ':/lab:ro', image, ...cmd]);
+      const r = await run(['run', '-d', '--pull=never', '--name', name, '--network', network, '--ip', ips[role], '--cap-drop', 'ALL', ...caps, '--security-opt', 'no-new-privileges', '--user', process.getuid() + ':' + process.getgid(), '-v', copy + ':/lab:ro', image, ...cmd]);
       names.push(name); // a failed run can still leave a created container
       if (r.code !== 0) throw new Error('Lab ' + suffix + ' did not start: ' + r.stderr);
     }

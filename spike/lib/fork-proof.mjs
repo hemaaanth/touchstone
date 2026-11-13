@@ -103,7 +103,7 @@ export async function startForkLab({ image = KEYS_IMAGE, mode = "keys", readyTim
   const handle = { net, labName, labWs, image, mode, obs: null, block: null, targets: [] };
   try {
     const labArgs = [
-      "run", "-d", "--init", "--name", labName,
+      "run", "-d", "--init", "--pull=never", "--name", labName,
       "--network", net, "--network-alias", LAB_ALIAS,
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--pids-limit", "512", "--memory", "2g",
@@ -188,7 +188,7 @@ export async function runForkPoc(handle, source, { contract, timeoutMs = 240_000
       "-vvvv", "--json",
     ];
     const args = [
-      "run", "--rm", "--init", "--network", handle.net,
+      "run", "--rm", "--init", "--pull=never", "--network", handle.net,
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--pids-limit", "512", "--memory", "2g",
       "--user", `${process.getuid()}:${process.getgid()}`,
