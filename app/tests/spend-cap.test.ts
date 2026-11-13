@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -15,7 +16,7 @@ const LEDGER = path.join(dir, "spend.json")
 const saved = { ledger: process.env.SPEND_LEDGER, cap: process.env.SPEND_CAP_USD }
 process.env.SPEND_LEDGER = LEDGER
 delete process.env.SPEND_CAP_USD
-process.env.TOUCHSTONE_GRANT_TOKEN = "test-grant-token"
+useEnv({ TOUCHSTONE_GRANT_TOKEN: "test-grant-token" })
 
 // @ts-expect-error — plain .mjs module, no types
 const runs = await import("../server/runs.mjs")
