@@ -75,6 +75,15 @@ Minor findings do not block a merge. They go to a minors list in this file and a
 - A dependency upgrade. A scan of a target outside the authorized scope. Mainnet.
 - A third-party tool that would run outside Docker `runTool()` offline mode (the four approved network tools excepted).
 
+**hstack skills** (owner, 2026-11-13: use them when they help; optional)
+
+- Every thread may use the hstack skills. They are a starting point, not a rule. A thread that finds one unhelpful works without it.
+- Authors: `map` (callers and blast radius before a change), `investigate` and `trace` (unclear symptom, root cause), `plan`, `build`, `prove` (evidence before a claim in the report), `exercise` (hands-on UI check), `trim` (simplify own code), `handoff` (at a stop condition).
+- Reviewers: `review` and `prove`.
+- Coordinator: `delegate` (already the policy above), `babysit` for the open cloud PRs, `handoff` at wave ends.
+- Children do not use `ship`, `land`, `yolo`, `babysit` or `delegate`: those push, open or merge PRs, or spawn threads. The rules above and the assignment file win over a skill's default steps.
+- The short form for children is in the shared rules file (`wave/RULES.md` in the coordinator's thread storage).
+
 **Reporting**
 
 - This file changes state at every merge. The progress page is republished at the end of each wave.
@@ -137,7 +146,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 |------|----------|-----------|
 | ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
 | ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. Second new token received 2026-11-13: it reads `hemaaanth/touchstone` (repo, contents, pull requests, Actions workflows: HTTP 200). Branch protection and hooks answer HTTP 403 (see the coordinator note in the thread). Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. Second new token received 2026-11-13: it reads `hemaaanth/touchstone` (repo, contents, pull requests, Actions workflows: HTTP 200). Branch protection answers HTTP 403 with "Upgrade to GitHub Pro or make this repository public": a GitHub plan limit for private repos, not a token gap. The token is complete. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
 | ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
 | ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
