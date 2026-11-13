@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { Boxes, FolderGit2, Settings2 } from "lucide-react"
+import { Boxes, Bug, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import type { RunSummary } from "@/lib/types"
 import { ago, DOT, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
@@ -20,9 +20,10 @@ import markRaw from "@/assets/touchstone-mark.svg?raw"
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
   | { kind: "run"; id: string }
-  | { kind: "page"; id: "scopes" | "modules" | "settings" }
+  | { kind: "page"; id: "findings" | "scopes" | "modules" | "settings" }
 
 const PAGES = [
+  { id: "findings", label: "Findings", icon: Bug },
   { id: "scopes", label: "Scopes", icon: FolderGit2 },
   { id: "modules", label: "Modules", icon: Boxes },
 ] as const
@@ -104,7 +105,7 @@ export function AppSidebar({
       </SidebarContent>
 
       {/* Workspace nav + account controls sit together at the base, divided
-          from the runs list above. Scopes / Modules are
+          from the runs list above. Findings / Scopes / Modules are
           destinations you leave the runs for, so they live down here by
           Settings rather than competing with the list. */}
       <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">
