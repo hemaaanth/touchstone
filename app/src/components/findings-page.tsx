@@ -431,7 +431,7 @@ function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onC
         <CalendarDays aria-hidden className="text-muted-foreground" />
         <span className="tabular-nums">{label}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" initialFocus={firstFocus} className="w-auto gap-0 p-0">
+      <PopoverContent align="end" initialFocus={firstFocus} aria-label="Filter by run date" className="w-auto gap-0 p-0">
         <div ref={box}>
           {/* autoFocus gives the calendar its focused day, so the arrow keys move; the popover's
               initialFocus puts the DOM focus on that same day. */}
