@@ -65,10 +65,13 @@ const labPort = Number(new URL(JSON.parse(recorded.split('\n')[0]).request.endpo
 const reach = { network: 'bridge', granted: true, allowPrivate: true, scope: ['touchstone.test', '127.0.0.1'], ports: [{ scheme: 'http', port: 80 }, { scheme: 'http', port: labPort }] };
 // The scripts the jsluice fixtures were recorded from, in the recorded file order.
 const labScripts = scriptBodies(recorded, [], ['127.0.0.1'], [{ scheme: 'http', port: labPort }]);
-async function prepass(pack) {
+// The run's reach as app/server/runs.mjs hands it to the prepass: openReach's confine boundary.
+// Nothing runs here: the capture only reads the two names.
+const CONFINE = { netClient: 'touchstone-reach-client-test', gateUrl: 'http://scope-gate:8080' };
+async function prepass(pack, runReach = { confine: CONFINE }) {
   current = mkdtempSync(join(tmpdir(), 'surface-katana-wiring-'));
   writeFileSync(join(current, '.touchstone.json'), JSON.stringify({ kind: 'live', pack: pack.id, domain: 'touchstone.test', reach }));
-  return { ws: current, ...(await pack.prepass(current, { emit: () => {} })) };
+  return { ws: current, ...(await pack.prepass(current, { emit: () => {}, reach: runReach })) };
 }
 beforeEach(() => {
   calls.length = 0;
@@ -85,7 +88,9 @@ test('a live surface run crawls with katana and shows the endpoints as leads', a
   try {
     const crawl = calls.find(c => c.name === 'katana');
     assert(crawl, 'katana ran');
-    assert.equal(crawl.network, 'bridge', 'katana uses the grant network');
+    // katana looks each name up again, so it runs where the scope proxy is its only way out.
+    assert.equal(crawl.network, CONFINE.netClient, 'katana uses the confined network');
+    assert.equal(crawl.cmd[crawl.cmd.indexOf('-proxy') + 1], CONFINE.gateUrl, 'katana sends every request through the scope proxy');
     assert.equal(crawl.timeoutMs, 180000);
     assert.equal(crawl.cmd[crawl.cmd.indexOf('-cs') + 1], crawlScope(reach.scope, reach.ports, true), 'katana gets the grant hosts and ports, each host exact');
     assert(crawl.cmd.includes('-dr'), 'a live crawl follows no redirect');
@@ -151,6 +156,20 @@ test('endpoints on a port the grant does not name are dropped', async () => {
     assert.equal(record.leads.some(l => l.check === 'discovered-endpoint'), false);
     assert.equal(record.coverage.find(c => c.engine === 'katana').leads, 0);
   } finally { reach.ports = saved; }
+});
+
+test('a live surface run with no scope proxy does not crawl, and the run view says why', async () => {
+  for (const runReach of [null, { confine: null }]) {
+    calls.length = 0;
+    const { ws, record } = await prepass(surface, runReach);
+    rmSync(ws, { recursive: true, force: true });
+    assert.equal(calls.some(c => c.name === 'katana'), false, 'katana did not run');
+    const shown = prepassView(record).tools.find(t => t.name === 'katana');
+    assert.equal(shown.status, 'unavailable');
+    assert.match(shown.reason, /no scope proxy/);
+    // The script httpx fetched is still read, offline.
+    assert.equal(calls.find(c => c.name === 'jsluice')?.network, 'none');
+  }
 });
 
 test('a live domains run does not crawl', async () => {

@@ -26,6 +26,7 @@ export function evidenceTools(ws,state,id) {
 }
 // The scope can name a domain: `.touchstone.json` has `domain` and `reach`. The platform fills `reach`.
 // With no pinned snapshot yet, the prepass captures the domain once and pins the result. A pinned lab skips this.
+// `reach` is the run's reach (lib/reach.mjs openReach). Its `confine` boundary carries the live crawl.
 function scopeConfig(ws) { try { return JSON.parse(readFileSync(join(ws,'.touchstone.json'),'utf8')); } catch { return {}; } }
 // Which engines ran. Capture tools come first, then the engines that read the snapshot.
 export function coverageOf(snapshot,leads) {
@@ -33,11 +34,11 @@ export function coverageOf(snapshot,leads) {
   const reads = ['dns-zonefile','csp-evaluator','jsdom-replay','retire.js','touchstone'].map(engine=>({engine,status:'ran',leads:leads.filter(l=>(l.engines ?? [l.engine]).includes(engine)).length}));
   return [...capture.map(({engine,status,leads,reason})=>({engine,status,leads,...(reason ? {reason} : {})})),...reads];
 }
-export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
+export function prepassFor(id) { return async(ws,{emit=()=>{},reach}={})=>{
   const cfg = scopeConfig(ws);
   if(cfg.domain && !cfg.evidenceSnapshot) {
     emit({ev:id+'-capture-start',domain:cfg.domain});
-    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface',deep:id==='domains'});
+    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface',deep:id==='domains',confine:reach?.confine ?? null});
   }
   const scan = await scanSnapshot(ws,id);
   const {snapshot} = loadSnapshot(ws);

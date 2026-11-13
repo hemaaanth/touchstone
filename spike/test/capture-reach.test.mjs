@@ -75,10 +75,12 @@ const { prepareWorkspace } = await import('../lib/targets.mjs');
 ensureImage(() => {});
 
 const live = (scope, more = {}) => ({ network: 'bridge', granted: true, scope, ...more });
+// The run's reach boundary, as lib/reach-confine.mjs hands it over. Nothing runs here: only the names are read.
+const CONFINE = { netClient: 'touchstone-reach-client-test', gateUrl: 'http://scope-gate:8080' };
 async function capture(domain, reach, options = {}) {
   ws = mkdtempSync(join(tmpdir(), 'capture-reach-ws-'));
   workspaces.push(ws);
-  const snapshot = await captureDomain({ ws, domain, reach, ...options });
+  const snapshot = await captureDomain({ ws, domain, reach, confine: CONFINE, ...options });
   assert.equal(existsSync(join(ws, '.live')), false, 'the capture removes its input files');
   return snapshot;
 }
@@ -162,7 +164,8 @@ test('a covered host is probed, with the stops inside each tool', async () => {
   assert.deepEqual(snapshot.discovery.hosts, ['example.com', 'shop.example.com', 'www.example.com']);
   assert.equal(snapshot.discovery.refused, undefined);
   assert.equal(snapshot.discovery.coverage.some(c => c.engine === 'address-check'), false);
-  for (const c of calls) if (c.name !== 'jsluice') assert.equal(c.network, 'bridge');
+  for (const c of calls) if (!['jsluice', 'katana'].includes(c.name)) assert.equal(c.network, 'bridge');
+  assert.equal(call('katana').network, CONFINE.netClient, 'katana runs on the confined network');
   // httpx and nuclei refuse a private address by themselves. katana takes exact hosts and follows no redirect.
   const httpx = call('httpx').cmd, at = httpx.indexOf('-e');
   assert.equal(httpx[at + 1], 'private-ips');
@@ -283,4 +286,43 @@ test('the capture reach takes allowPrivate from the scope\'s own grant only', ()
   assert.equal(allowsPrivate(lab), false);
   // A direct target with no saved permission gets none.
   assert.equal(allowsPrivate({ kind: 'live', hosts: ['app.example.com'] }), false);
+});
+
+// F1. katana looks each name up again by itself. A live crawl must go through the scope proxy,
+// which checks the address and connects to that same address.
+test('a live crawl goes through the run\'s scope proxy, on its confined network', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }), { crawl: true });
+  for (const k of calls.filter(c => c.name === 'katana')) {
+    assert.equal(k.network, CONFINE.netClient);
+    assert.equal(k.cmd[k.cmd.indexOf('-proxy') + 1], CONFINE.gateUrl);
+    // The proxy resolves the name. katana's own resolver would be unreachable on the confined network.
+    assert.equal(k.cmd.includes('-r'), false);
+    assert(k.cmd.includes('-dr'));
+  }
+  assert.equal(call('katana').cmd.includes('-proxy'), true);
+});
+
+test('a live crawl with no scope proxy does not run katana, and says why', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  web = { 'https://example.com': { body: '<script src="/app.js"></script>' } };
+  const snapshot = await capture('example.com', live(['example.com']), { crawl: true, confine: null });
+  assert.equal(call('katana'), undefined, 'katana did not run');
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'katana');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^Not run: this run has no scope proxy\. katana looks each name up again/);
+  assert.equal(snapshot.discovery.crawl, undefined, 'no crawl is stored, so none reads as clean');
+  // httpx still probed the checked name.
+  assert.deepEqual(contacted(), ['example.com']);
+  // A half-built boundary is no boundary.
+  calls = [];
+  await capture('example.com', live(['example.com']), { crawl: true, confine: { netClient: CONFINE.netClient } });
+  assert.equal(call('katana'), undefined);
+});
+
+test('the lab crawl needs no scope proxy: its network has no route out', async () => {
+  zone = { 'touchstone.test': { a: ['10.89.0.2'] } };
+  await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] }, { crawl: true, confine: null });
+  assert.equal(call('katana').network, 'touchstone-domains-test');
+  assert.equal(call('katana').cmd.includes('-proxy'), false);
 });

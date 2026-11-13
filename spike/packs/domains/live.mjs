@@ -11,6 +11,9 @@
 //   - httpx, katana and nuclei get only names whose every address is public.
 //     `allowPrivate: true` (from the grant) lifts the address rule, not the cover rule.
 //   - katana does not follow redirects. A redirect could name any host.
+//   - katana looks each name up again by itself. So a live crawl runs on the run's
+//     confined network and goes through its scope proxy (`confine`), which checks the
+//     address and connects to that same address. With no proxy, katana does not run.
 // The lab keeps its own rule (a listed name or a subdomain of one): its network has no route out.
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -123,9 +126,10 @@ const hostPattern = h => h.startsWith('*.') ? '([a-z0-9-]+\\.)+' + quote(h.slice
 export const crawlScope = (scope, ports = PORTS, exact = false) => '^(?:' + ports.map(p => p.scheme + '://' + (exact ? '(' + scope.map(hostPattern).join('|') + ')' : '([a-z0-9-]+\\.)*(' + scope.map(quote).join('|') + ')') + (isDefault(p) ? '(:' + p.port + ')?' : ':' + p.port)).join('|') + ')(?:/|$)';
 const portAllowed = (u, ports) => ports.some(p => p.scheme + ':' === u.protocol && Number(u.port || (u.protocol === 'https:' ? 443 : 80)) === p.port);
 // exact: a live crawl. The scope is exact and redirects are off (-dr): katana follows a redirect to any host.
-export const katanaArgs = (list, scope, resolver, ports = PORTS, exact = false) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
+// proxy: the scope proxy URL. katana then sends every request through it and needs no resolver.
+export const katanaArgs = (list, scope, resolver, ports = PORTS, exact = false, proxy = null) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
   '-rl', '5', '-c', '2', '-p', '2', '-timeout', '10', '-retry', '1', '-mrs', '2097152', '-cs', crawlScope(scope, ports, exact),
-  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver ? ['-r', 'udp:' + resolver + ':53'] : []), ...(exact ? ['-dr'] : [])];
+  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver && !proxy ? ['-r', 'udp:' + resolver + ':53'] : []), ...(exact ? ['-dr'] : []), ...(proxy ? ['-proxy', proxy] : [])];
 // katana -jsonl rows to crawl rows. Seed URLs have no source, and httpx already has them.
 // A row with no status_code is a URL katana requested whose answer it did not keep (often an SPA fallback page).
 export function parseKatana(stdout, scope, ports = PORTS) {
@@ -216,7 +220,9 @@ export function failReason(result, image) {
 // crawl: also run katana over the live pages. Surface sets it. Domains does not need it.
 // deep: also run checkdmarc, DNSViz and testssl.sh. Only the domains pack sets
 // it; surface leaves it off, so its capture is the same as on main.
-export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false, deep = true }) {
+// confine: the run's reach boundary (lib/reach-confine.mjs): `netClient`, the network
+// whose only way out is the scope proxy, and `gateUrl`, the proxy. A live crawl needs it.
+export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false, deep = true, confine = null }) {
   const scope = assertReach(reach, domain);
   // lab: the lab network, with no route out. open: no address rule (the lab, or a grant that allows private addresses).
   const lab = isLab(reach), open = lab || reach.allowPrivate === true, covered = coveredBy(reach);
@@ -340,8 +346,15 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       const secrets = parseJsluiceSecrets(k.stdout, scripts); k.note(secrets.length);
       return { scripts: scripts.map(s => s.url), urls, secrets };
     };
-    if (crawl && pages.length) {
-      const katana = (engine, seeds) => { put('crawl.txt', seeds); return run(engine, { image: KATANA, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: lab ? katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports) : katanaArgs('/work/.live/crawl.txt', open ? scope : checked, reach.resolver, ports, true), timeoutMs: 180000 }); };
+    // katana looks each name up again. Without the scope proxy it could reach an address the capture did not check.
+    const unconfined = !lab && !(confine?.netClient && confine?.gateUrl);
+    if (crawl && pages.length && unconfined) {
+      coverage.push({ engine: 'katana', status: 'unavailable', reason: 'Not run: this run has no scope proxy. katana looks each name up again by itself, so without the proxy it could reach an address the capture did not check.', leads: 0 });
+      js = await readScripts(scriptBodies('', http, within, ports));
+    } else if (crawl && pages.length) {
+      // A live crawl runs on the confined network, so the scope proxy is its only way out.
+      const proxied = lab ? {} : { network: confine.netClient };
+      const katana = (engine, seeds) => { put('crawl.txt', seeds); return run(engine, { image: KATANA, ...proxied, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: lab ? katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports) : katanaArgs('/work/.live/crawl.txt', open ? scope : checked, reach.resolver, ports, true, confine.gateUrl), timeoutMs: 180000 }); };
       // A live crawl follows no redirect. A redirect that stays inside the checked hosts and ports becomes a seed.
       const target = (from, to) => { try { const u = new URL(to, from); u.hash = ''; return /^https?:$/.test(u.protocol) && within(u.hostname) && portAllowed(u, ports) ? [u.href] : []; } catch { return []; } };
       const moved = rows => lab ? [] : rows.flatMap(r => r.status >= 300 && r.status < 400 && r.location ? target(r.url, r.location) : []);
