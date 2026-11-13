@@ -46,6 +46,12 @@ test("planRemote rewrites the workspace mount and keeps named volumes", () => {
     "-e", "A=b c", "img:1", "forge", "test", "-v", "x"]);
 });
 
+test("planRemote keeps --pull=never on the remote path", () => {
+  const p = planRemote(["run", "--rm", "--pull=never", "--network", "none", "img:1"], null, null);
+  assert.equal(p.local, null);
+  assert.deepEqual(p.args, ["--rm", "--pull=never", "--network", "none", "img:1"]);
+});
+
 test("planRemote keeps host networks and foreign mounts local", () => {
   assert.match(planRemote(["run", "--network", "host", "img"], null, null).local, /network host/);
   assert.match(planRemote(["run", "--network", "touchstone-lab", "img"], null, null).local, /network/);
