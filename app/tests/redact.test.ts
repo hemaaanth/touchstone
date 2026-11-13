@@ -60,3 +60,23 @@ describe("redact: secrets inside a JSON string", () => {
     expect(text(`{"token":"","name":"alice","tokens":12}`)).toBe(`{"token":"","name":"alice","tokens":12}`)
   })
 })
+
+describe("redact: secret header names by suffix", () => {
+  const v = "tok-Zq7Xv9KpR2mN4tW8yB3cL6"
+  const names = ["x-goog-api-key", "x-csrf-token", "x-amz-security-token", "Ocp-Apim-Subscription-Key", "x-session-token", "PRIVATE-TOKEN", "X-Hub-Signature", "DB_PASSWORD"]
+
+  test("a header cell with a secret-suffix name is masked", () => {
+    for (const name of names) {
+      expect(redactSecrets({ name, redacted: false, value: v }).value).toBe("[REDACTED]")
+    }
+  })
+  test("an object key with a secret suffix is masked", () => {
+    const out = redactSecrets({ signerPrivateKey: v, sessionToken: v, client_api_key: v })
+    expect(JSON.stringify(out)).not.toContain(v)
+  })
+  test("a public key, a bare key and a SIWE signature stay", () => {
+    const keep = { publicKey: "0x04ab", public_key: "0x04ab", key: "users/2", signature: "0xd8f1", tokens: 3, monkey: "m" }
+    expect(redactSecrets(keep)).toEqual(keep)
+    expect(redactSecrets({ name: "Content-Type", redacted: false, value: "application/json" }).value).toBe("application/json")
+  })
+})

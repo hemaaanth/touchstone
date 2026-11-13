@@ -14,6 +14,17 @@ const MARK = "[REDACTED]"
 
 // Object keys and header-cell names whose value is a credential.
 const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|cookie|set-cookie))$/i
+// Any other name that ends in a secret word: x-goog-api-key, x-csrf-token,
+// PRIVATE-TOKEN, DB_PASSWORD, signerPrivateKey. A bare "key" or "signature"
+// is not enough; prose says "Key:" and a SIWE body carries its signature.
+const SECRET_SUFFIX = /[-_](?:token|key|secret|signature|password|passwd)$/i
+const SECRET_CAMEL = /[a-z0-9](?:Token|Key|Secret|Password)$/
+const PUBLIC_KEY = /public[-_]?key$/i
+
+function secretName(name) {
+  if (SECRET_KEY.test(name)) return true
+  return (SECRET_SUFFIX.test(name) || SECRET_CAMEL.test(name)) && !PUBLIC_KEY.test(name)
+}
 
 // A "key":"value" pair inside a JSON string, such as a recorded HTTP body
 // or tool output. The second form is the same pair escaped one level deeper,
@@ -54,7 +65,7 @@ function secretish(tok) {
 
 // True when a value stored under this key or header name is a credential.
 function secretValue(name, value) {
-  return SECRET_KEY.test(name) && value !== "" && !value.startsWith(MARK)
+  return secretName(name) && value !== "" && !value.startsWith(MARK)
 }
 
 function redactText(text) {
@@ -86,16 +97,16 @@ function walk(value, key) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "string") {
     if (value.startsWith(MARK)) return value
-    if (key && SECRET_KEY.test(key)) return MARK
+    if (key && secretName(key)) return MARK
     return redactText(value)
   }
   if (Array.isArray(value)) {
-    const blank = key && SECRET_KEY.test(key)
+    const blank = key && secretName(key)
     return value.map((item) => (blank && typeof item === "string" ? MARK : walk(item, "")))
   }
   if (typeof value !== "object") return value
   if (value.redacted === true && typeof value.sha256 === "string") return copyRedactedCell(value)
-  if (typeof value.name === "string" && typeof value.value === "string" && value.redacted !== true && SECRET_KEY.test(value.name)) {
+  if (typeof value.name === "string" && typeof value.value === "string" && value.redacted !== true && secretName(value.name)) {
     const copy = {}
     for (const [k, v] of Object.entries(value)) copy[k] = k === "value" ? MARK : walk(v, k)
     return copy
