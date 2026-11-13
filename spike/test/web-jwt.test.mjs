@@ -295,6 +295,8 @@ test("jwt_tool real run: the full prepass cracks the weak HS256 key behind GET /
     const onDisk = JSON.parse(readFileSync(join(ws, ".web-leads.json"), "utf8"));
     assert.ok(onDisk.leads.some((l) => l.engine === "jwt-tool" && l.path === TOKEN_PATH));
   } finally {
-    cleanupWorkspace(ws);
+    // prepass() starts a persisted lab; stop it (lab, proxy, networks) before
+    // the workspace that holds its handle is removed.
+    try { await web.teardown(ws); } finally { cleanupWorkspace(ws); }
   }
 });

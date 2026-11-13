@@ -355,6 +355,8 @@ test("schemathesis real run: the full prepass finds the HTTP 500 on GET /api/blo
     const onDisk = JSON.parse(readFileSync(join(ws, ".web-leads.json"), "utf8"));
     assert.ok(onDisk.leads.some((l) => l.engine === "schemathesis" && l.path === "/api/block/{height}"));
   } finally {
-    cleanupWorkspace(ws);
+    // prepass() starts a persisted lab; stop it (lab, proxy, networks) before
+    // the workspace that holds its handle is removed.
+    try { await web.teardown(ws); } finally { cleanupWorkspace(ws); }
   }
 });
