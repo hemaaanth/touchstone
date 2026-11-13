@@ -122,6 +122,13 @@ describe("the bundle control shows the server's answer calmly (H3c)", () => {
     expect(out).not.toMatch(RED)
   })
 
+  test("the bundle's own words keep their code spans as code, not as backticks", () => {
+    const out = html({ ok: true, bytes: 7000, about: "PROVEN: re-checked by `rerun.mjs` against the lab.", note: null, unjudged: [] })
+    expect(out).toContain("<code")
+    expect(out).toContain(">rerun.mjs</code>")
+    expect(out).not.toContain("`")
+  })
+
   test("a bundle with nothing to check shows no check line", () => {
     const out = html({ ok: true, bytes: 900, about: null, note: null, unjudged: [] })
     expect(out).not.toContain("Check these")

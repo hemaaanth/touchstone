@@ -616,6 +616,19 @@ function BundleControl({ id, start }: { id: string; start: boolean }) {
   )
 }
 
+// The README's text is Markdown: a `name` in backticks reads as code.
+function codeSpans(text: string) {
+  return text.split(/(`[^`]+`)/).map((part, i) =>
+    /^`[^`]+`$/.test(part) ? (
+      <code key={i} className="font-mono text-[0.92em]">
+        {part.slice(1, -1)}
+      </code>
+    ) : (
+      part
+    ),
+  )
+}
+
 // What the server said about the bundle. A refusal shows its one sentence and
 // no download. Otherwise: what the bundle is (the README's own first words),
 // the counts it could not judge (never a value), and the download with its size.
@@ -633,7 +646,7 @@ export function BundleResult({ check, href }: { check: BundleCheck; href: string
       <Button size="sm" variant="outline" render={<a href={href} download />}>
         <FileArchive /> {BUNDLE_LABEL} <span className="text-muted-foreground tabular-nums">· {sizeText(check.bytes)}</span>
       </Button>
-      {check.about ? <p className="text-xs leading-relaxed text-muted-foreground">{check.about}</p> : null}
+      {check.about ? <p className="text-xs leading-relaxed text-muted-foreground">{codeSpans(check.about)}</p> : null}
       {check.note && check.unjudged.length ? (
         <p role="status" className="text-xs leading-relaxed text-muted-foreground">
           {check.note}: {check.unjudged.map((u) => u.text).join("; ")}.
