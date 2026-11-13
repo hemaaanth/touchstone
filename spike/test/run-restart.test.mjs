@@ -86,7 +86,7 @@ const committedId = fixture("proof-committed", "proof", [
   { ev: "finding", t: 8, id: "proof-committed-2611122323-1.1", title: "Proof" },
   { ev: "artifact-open", t: 9, id: "proof-proof-committed-2611122323-1.1" },
 ], { settled: { status: "done", findings: [{ n: 1, title: "Proof", severity: "low", poc: "test" }] } });
-writeFileSync(join(dir, `run-${committedId}.json`), JSON.stringify({ result: { outcome: "recorded", findings: [{ n: 1, title: "Proof", severity: "low", poc: "test", proof: { status: "pass", kind: "http" } }] } }));
+writeFileSync(join(dir, `run-${committedId}.json`), JSON.stringify({ result: { outcome: "recorded", findings: [{ n: 1, title: "Proof", severity: "low", poc: "test", proof: { status: "pass", kind: "http", oracle: { name: "bola-wallet-idor" } } }] } }));
 const reportId = fixture("report-writing", "proof", [{ ev: "settled", t: 6 }, { ev: "status", t: 7, status: "deciding" }], {
   settled: { status: "done", findings: [{ n: 1, title: "Proof", severity: "low", poc: "test" }], summary: { calls: [] } },
 });

@@ -121,10 +121,10 @@ describe("candidatesOf and trackCandidate", () => {
     for (const p of ["k1", "k2", "k3", "k4"]) trackCandidate(run, ev(candidate(p)))
     const sent: { ev: string; poc: string; by: string }[] = []
     supersedeProven(run, [
-      { poc: "k1", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } },
+      { poc: "k1", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true, kind: "funds" } } },
       { poc: "k2", pocProved: false, proof: { kind: "forge", pass: true, harm: { ok: false, reason: "no ETH left the target" } } },
       { poc: "k3", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: false } } },
-      { poc: "other", rootCause: "root-k4", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } },
+      { poc: "other", rootCause: "root-k4", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true, kind: "funds" } } },
     ], (e: { ev: string; poc: string; by: string }) => sent.push(e))
     expect(sent.map((e) => [e.ev, e.poc, e.by])).toEqual([["candidate-superseded", "k1", "k1"], ["candidate-superseded", "k4", "other"]])
     expect(recordCandidates(run).map((c: { poc: string }) => c.poc)).toEqual(["k2", "k3"])
