@@ -427,7 +427,7 @@ function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onC
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        render={<Button variant="outline" aria-label={`Run date: ${label}`} className="shrink-0 text-[13px] font-normal" />}
+        render={<Button variant="outline" aria-label={`Run date: ${label}`} className="shrink-0 border-input text-[13px] font-normal" />}
       >
         <CalendarDays aria-hidden className="text-muted-foreground" />
         <span className="tabular-nums">{label}</span>
