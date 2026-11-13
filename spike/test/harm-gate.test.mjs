@@ -1115,7 +1115,7 @@ test("forge: a deal() in the test body makes a trace above the cap; it is not ju
   assert.ok(f.proof, "a cut trace still gives a failed proof with a reason, not null");
   assert.equal(f.proof.pass, false);
   assert.equal(f.proof.harm.ok, false);
-  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*call deal in setUp\(\)/);
+  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*use deal in setUp\(\) only to fund a scope contract.*get the attacker's tokens through the protocol, or use a token outside the scope/);
   assert.equal(isProven(f), false);
 });
 
