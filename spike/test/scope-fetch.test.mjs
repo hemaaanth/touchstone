@@ -12,7 +12,7 @@ import { test, after, mock, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import * as realDns from "node:dns/promises";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -26,9 +26,10 @@ function execFile(cmd, args, opts, cb) {
   const files = clones.get(url);
   setImmediate(() => {
     if (!files) return cb(Object.assign(new Error("fail"), { killed: false }), "", "fatal: repository not found");
-    for (const [rel, content] of Object.entries({ ".git/config": "[core]\n", ...files })) {
+    for (const [rel, content] of Object.entries({ ".git/config": "[core]\n", ".git/HEAD": "ref: refs/heads/main\n", ...files })) {
       mkdirSync(path.dirname(path.join(dest, rel)), { recursive: true });
-      writeFileSync(path.join(dest, rel), content);
+      if (typeof content === "object" && content?.link) symlinkSync(content.link, path.join(dest, rel)); // { link: target } plants a symlink
+      else writeFileSync(path.join(dest, rel), content);
     }
     cb(null, "", "");
   });
@@ -263,4 +264,86 @@ test("the UI hint cannot make non-Solidity folder content Contracts; known Solid
   assert.equal(addScope({ title: "go", members: [go], pack: "contracts" }).pack, "review");
   assert.equal(addScope({ title: "sol", members: [{ kind: "repo", url: "https://github.com/acme/v/blob/main/src/V.sol" }] }).pack, "contracts");
   assert.equal(addScope({ title: "plain", members: [{ kind: "repo", url: "https://github.com/acme/v" }] }).pack, "review");
+});
+
+// ---- F: a large repo is audited in parts (folder URLs) -----------------------
+
+const many = (k, dir) => Object.fromEntries(Array.from({ length: k }, (_, i) => [`${dir}/f${i}.go`, `package p${i}\n`]));
+
+test("a folder URL fetches only that folder, and the cap counts only that folder", async () => {
+  const url = "https://github.com/cosmos/sdk/tree/main/x/bank";
+  const ws = scopeWs([url]);
+  clones.set("https://github.com/cosmos/sdk.git", { ...many(300, "x/staking"), ...many(5, "x/bank/keeper"), "go.mod": "module sdk\n" });
+  const r = await fetchSource(ws, url);
+  assert.equal(r.where, "vendor/cosmos__sdk@main/x/bank");
+  assert.deepEqual(walk(path.join(ws, "vendor")), Array.from({ length: 5 }, (_, i) => `cosmos__sdk@main/x/bank/keeper/f${i}.go`).sort());
+  assert.deepEqual(readdirSync(ws).filter((n) => n.startsWith(".fetch")), [], "the temporary clone is removed");
+});
+
+test("two folder members of one repo land side by side", async () => {
+  const bank = "https://github.com/cosmos/sdk/tree/main/x/bank", auth = "https://github.com/cosmos/sdk/tree/main/x/auth";
+  const ws = scopeWs([bank, auth]);
+  clones.set("https://github.com/cosmos/sdk.git", { ...many(3, "x/bank"), ...many(4, "x/auth"), ...many(2, "x/gov") });
+  await fetchSource(ws, bank);
+  await fetchSource(ws, auth);
+  assert.equal(walk(path.join(ws, "vendor")).length, 7, "only the two folders land");
+  assert.equal(walk(path.join(ws, "vendor/cosmos__sdk@main/x/bank")).length, 3);
+  assert.equal(walk(path.join(ws, "vendor/cosmos__sdk@main/x/auth")).length, 4);
+});
+
+test("a folder URL that names a missing folder, or a symlink, is refused and nothing is kept", async () => {
+  const gone = "https://github.com/cosmos/sdk/tree/main/x/nope";
+  const ws = scopeWs([gone]);
+  clones.set("https://github.com/cosmos/sdk.git", many(3, "x/bank"));
+  await assert.rejects(fetchSource(ws, gone), /x\/nope.*(not a folder|does not exist)/);
+  assert.deepEqual(walk(path.join(ws, "vendor")), []);
+  assert.deepEqual(readdirSync(ws).filter((n) => n.startsWith(".fetch")), []);
+  const link = "https://github.com/cosmos/sdk/tree/main/x/link";
+  const ws2 = scopeWs([link]);
+  clones.set("https://github.com/cosmos/sdk.git", { ...many(3, "x/bank"), "x/link": { link: "bank" } });
+  await assert.rejects(fetchSource(ws2, link), /x\/link.*not a folder/);
+  assert.deepEqual(walk(path.join(ws2, "vendor")), []);
+});
+
+test("a scope still over the cap is refused with the file count, the cap, the largest folders, and what to do", async () => {
+  const url = "https://github.com/cosmos/sdk";
+  const ws = scopeWs([url]);
+  clones.set("https://github.com/cosmos/sdk.git", { ...many(250, "x/staking"), ...many(40, "x/bank"), ...many(10, "types") });
+  const err = await fetchSource(ws, url).then(() => null, (e) => e);
+  assert.ok(err, "the fetch is refused");
+  assert.match(err.message, /300 source files/);
+  assert.match(err.message, /cap is 200/);
+  assert.match(err.message, /x\/staking \(250\)/);
+  assert.match(err.message, /https:\/\/github\.com\/cosmos\/sdk\/tree\/[\w.-]+\/x\/bank/);
+  assert.ok(!existsSync(path.join(ws, "vendor/cosmos__sdk")));
+});
+
+test("fetchSource emits one source-fetch event for a fetch that lands and one for a refusal", async () => {
+  const ok = "https://github.com/acme/vault", big = "https://github.com/org/big";
+  const ws = scopeWs([ok, big]);
+  clones.set("https://github.com/acme/vault.git", { "src/V.sol": "contract V {}\n" });
+  clones.set("https://github.com/org/big.git", many(201, "src"));
+  const file = path.join(ws, "..", `events-${path.basename(ws)}.jsonl`);
+  cleanup.push(file);
+  process.env.EVENTS_FILE = file;
+  try {
+    await fetchSource(ws, ok);
+    await assert.rejects(fetchSource(ws, big));
+  } finally { delete process.env.EVENTS_FILE; }
+  const evs = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.ev === "source-fetch");
+  assert.equal(evs.length, 2);
+  assert.deepEqual([evs[0].url, evs[0].ok, evs[0].where, evs[0].files], [ok, true, "vendor/acme__vault", 1]);
+  assert.deepEqual([evs[1].url, evs[1].ok], [big, false]);
+  assert.match(evs[1].error, /201 source files/);
+});
+
+test("a refused refetch keeps what an earlier folder member already fetched", async () => {
+  const folder = "https://github.com/cosmos/sdk/tree/main/x/bank";
+  const whole = "https://github.com/cosmos/sdk/tree/main";
+  const ws = scopeWs([folder, whole]);
+  clones.set("https://github.com/cosmos/sdk.git", { ...many(250, "x/staking"), ...many(4, "x/bank") });
+  await fetchSource(ws, folder);
+  await assert.rejects(fetchSource(ws, whole), /254 source files/);
+  assert.deepEqual(walk(path.join(ws, "vendor")), Object.keys(many(4, "cosmos__sdk@main/x/bank")).sort());
+  assert.deepEqual(readdirSync(ws).filter((n) => n.startsWith(".fetch")), []);
 });
