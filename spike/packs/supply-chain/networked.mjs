@@ -215,6 +215,7 @@ export function scorecardFrom(snapshot) {
     const gap = (name, g) => { unchecked.push(name); gaps.push(g); };
     for (const name of units) {
       const c = results.get(name);
+      const leadsBefore = leads.length, gapsBefore = gaps.length;
       const why = String(c?.reason ?? "").slice(0, 200);
       if (!c) { gap(name, { kind: "scorecard-check-missing", detail: `Scorecard ${name} (${capture}) has no result in the report. Not a clean result.` }); continue; }
       if (c.score === -1 && /internal error/i.test(why)) {
@@ -245,6 +246,11 @@ export function scorecardFrom(snapshot) {
         leads.push(scorecardLead({ check: name, impact: name === "License" ? "Informational" : "Low", capture, cap, score: 0 }));
       } else if (capture === "api" && c.score < 5) {
         leads.push(scorecardLead({ check: name, impact: "Low", capture, cap, score: c.score }));
+      }
+      // A file check below 10 that gave no lead and no gap: the pack cannot say
+      // what lost the points. That is not clean: the check is unchecked.
+      if (FILE_CHECKS.includes(name) && c.score < 10 && leads.length === leadsBefore && gaps.length === gapsBefore) {
+        gap(name, { kind: "scorecard-detail-unparsed", detail: `Scorecard ${name} (${capture}) scored ${c.score}/10, and no detail line says why in a form the pack can read (${why || "no reason"}). Not a clean result.` });
       }
     }
     if (capture === "local") {
