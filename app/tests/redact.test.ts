@@ -294,3 +294,64 @@ describe("redact: evidence under a secret name (review Minor 4)", () => {
     expect(redactSecrets({ token: [hex, addr] })).toEqual({ token: ["[REDACTED]", addr] })
   })
 })
+
+describe("redact: a secret pair in JS or Python code (delta review 2)", () => {
+  const basic = "Basic dXNlcjpzM2NyZXQ="
+  const key = "tk_alice_7f3a9c2e"
+
+  test("the six code forms are masked and keep their quotes", () => {
+    expect(text(`{ Authorization: '${basic}' }`)).toBe("{ Authorization: 'Basic [REDACTED]' }")
+    expect(text(`headers={'Authorization': '${basic}'}`)).toBe("headers={'Authorization': 'Basic [REDACTED]'}")
+    expect(text(`headers: { 'x-api-key': '${key}' }`)).toBe("headers: { 'x-api-key': '[REDACTED]' }")
+    expect(text(`{ apiKey: '${key}' }`)).toBe("{ apiKey: '[REDACTED]' }")
+    expect(text(`const token = "${key}"`)).toBe('const token = "[REDACTED]"')
+    expect(text(`api_key = "${key}"`)).toBe('api_key = "[REDACTED]"')
+  })
+
+  test("backtick values and the escaped form are masked", () => {
+    expect(text("const apiKey = `" + key + "`")).toBe("const apiKey = `[REDACTED]`")
+    expect(text(`{\\"script\\":\\"fetch(u,{headers:{apiKey: \\"${key}\\"}})\\"}`)).not.toContain(key)
+  })
+
+  test("comparisons, templates, variables and plain names stay", () => {
+    for (const s of [
+      `if (token === "${key}") ok()`,
+      "const token = `${t1}`",
+      'const apiKey = "$API_KEY"',
+      `{ authorization: "Bearer " + t1 }`,
+      `{ title: '${key}' }`,
+      `{ publicKey: '${key}' }`,
+      `{ token: '0x5fbdb2315678afecb367f032d93f642f64180aa3' }`,
+    ]) expect(text(s)).toBe(s)
+  })
+
+  test("a PoC script with code pairs still parses after redaction", () => {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+    const script = [
+      `const apiKey = '${key}'`,
+      `const r = await fetch("http://lab/x", { headers: { Authorization: '${basic}', 'x-api-key': apiKey } })`,
+      "return r.status",
+    ].join("\n")
+    const out = text(script)
+    expect(out).not.toContain(key)
+    expect(out).not.toContain("dXNlcjpzM2NyZXQ=")
+    expect(() => new AsyncFunction(out)).not.toThrow()
+  })
+
+  test("1 MB of open code pairs finishes in linear time", () => {
+    expect(timeMs("a:'" + "b:\"c:`".repeat(MB / 6))).toBeLessThan(2000)
+    expect(timeMs("token = '" + "\\'".repeat(MB / 2))).toBeLessThan(2000)
+    expect(timeMs("apiKey: \\\"" + "x\\\\".repeat(MB / 3))).toBeLessThan(2000)
+    expect(timeMs("a".repeat(MB) + ":")).toBeLessThan(2000)
+  })
+})
+
+describe("redact: code pairs keep markdown and empty cookies (delta review 2)", () => {
+  test("text between two markdown code spans stays", () => {
+    for (const s of [
+      "tried `?apiKey=`, `authorization` and `?token=`, `Bearer` forms",
+      "`/api/me?access_token=` 401 and `/api/me` 200",
+      'request("GET", "/api/me", { headers: { cookie: "token=" + t } })',
+    ]) expect(text(s)).toBe(s)
+  })
+})

@@ -39,6 +39,15 @@ function secretName(name) {
 // as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
 const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
+// The same pair in JS, Python or a config file: the key is unquoted or in
+// ', ` or " quotes, the separator is ":" or "=", and the value is in ', ` or
+// " quotes. { apiKey: 'tk_…' }, headers={'Authorization': 'Basic …'} and
+// const token = "…" all match. A key never starts inside a word or right
+// after a quote or backslash, so each value scan starts once. The value
+// stops at its own closing quote or a line break. The second form is a
+// \"…\" value one escape level deeper. == and === never match.
+const CODE_PAIR = /(?<![\w$"'`\\])(["'`]?)([A-Za-z_$][\w$-]{0,63})\1([ \t]*[:=][ \t]*)(["'`])((?:\\[^\r\n]|(?!\4)[^\\\r\n])*)\4/g
+const CODE_PAIR_ESC = /(?<![\w$"'`\\])([A-Za-z_$][\w$-]{0,63})([ \t]*[:=][ \t]*)\\"((?:[^"\\\r\n]|\\(?!")[^\r\n])*)\\"/g
 
 // A header in text: "Name: value" where Name passes secretName. It counts
 // only in a header context: at the start of a line (a real line break or an
@@ -124,6 +133,16 @@ function maskHeader(m, lead, name, sep, raw) {
 // The masked value of a "key":"value" pair, or null to keep it. An
 // authorization value is judged like the header: "Bearer junk" and
 // "Bearer " + t stay.
+// A code value that is a template or a variable stays: `${t}`, "$TOKEN".
+// So does a "value" that starts or ends with a space or a comma. That is
+// the text between two markdown code spans, as in "`?token=`, `Bearer`".
+// A cookie with no value, such as "token=" + t, stays too.
+function maskCodeValue(name, value) {
+  if (/^[<$\s,;:)\]}]|\s$|\$\{/.test(value)) return null
+  if (/cookie$/i.test(name) && !/=[^;\s]/.test(value)) return null
+  return maskPairValue(name, value)
+}
+
 function maskPairValue(name, value) {
   if (!secretName(name) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
@@ -152,7 +171,7 @@ function maskEnv(m, name, dq, sq, bare) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -161,6 +180,14 @@ function redactText(text) {
   out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
     return masked == null ? m : `\\"${name}\\"${sep}\\"${masked}\\"`
+  })
+  out = out.replace(CODE_PAIR, (m, kq, name, sep, q, v) => {
+    const masked = maskCodeValue(name, v)
+    return masked == null ? m : `${kq}${name}${kq}${sep}${q}${masked}${q}`
+  })
+  out = out.replace(CODE_PAIR_ESC, (m, name, sep, v) => {
+    const masked = maskCodeValue(name, v)
+    return masked == null ? m : `${name}${sep}\\"${masked}\\"`
   })
   out = out.replace(LINE_HEADER, maskHeader)
   out = out.replace(QUOTE_HEADER, maskHeader)
