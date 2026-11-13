@@ -95,6 +95,7 @@ const stoppedId = fixture("operator-stopped", "prepass", [{ ev: "stop-requested"
 const loopId = fixture("restart-loop", "prepass", [1, 2, 3].map((t) => ({ ev: "phase-restarted", t: 5 + t, phase: "prepass" })));
 const corruptId = fixture("corrupt-state", "prepass");
 writeFileSync(join(dir, `run-${corruptId}.state.json`), '{"phase":"prepass",');
+const fleetRestartId = fixture("fleet-restart", "prepass", [{ ev: "mode", t: 6, mode: "fleet" }]);
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
 
 const logged = [];
@@ -190,7 +191,10 @@ test("a second server cannot restart a run while its owner is alive, then takes 
   try {
     assert.equal(second.getRun(locked).status, "running");
     assert.equal(second.getRun(locked).events.filter((e) => e.ev === "phase-restarted").length, 0);
-    assert.equal(second.getRun(fleet), null);
+    // Owned by a live first server: listed, not hidden, and left for that owner.
+    assert.equal(second.getRun(fleet).status, "error");
+    assert.match(second.getRun(fleet).error, /fleet run stopped at the server restart/);
+    assert.equal(existsSync(join(dir, `run-${fleet}.state.json`)), true);
   } finally {
     owner.close();
     fleetOwner.close();
@@ -227,6 +231,17 @@ test("recovery gives up after three restarts of the same run", async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(existsSync(join(dir, `run-${loopId}.state.json`)), false);
+});
+
+test("an owned fleet run that cannot resume ends as an error and drops its state file", async () => {
+  assert.ok(listRuns().some((r) => r.id === fleetRestartId));
+  for (let i = 0; i < 100 && !getRun(fleetRestartId).events.some((e) => e.ev === "closed"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const run = getRun(fleetRestartId);
+  assert.equal(run.status, "error");
+  assert.match(run.error, /fleet run stopped at the server restart/);
+  assert.equal(existsSync(join(dir, `run-${fleetRestartId}.state.json`)), false);
 });
 
 test("a corrupt state file shows the run as an error and logs once", async () => {

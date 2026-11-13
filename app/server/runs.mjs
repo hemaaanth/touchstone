@@ -1530,9 +1530,11 @@ function loadSavedRun(id) {
     } else return
     if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) return
     const run = savedRun(id, events, mtime)
-    // A second server must not finalize a fleet run that its first server
-    // still owns, even though fleet recovery itself is not supported.
-    if (run.interrupted && run.status === "error" && !own(run)) return
+    // Never hide an interrupted-error run: list it so a later boot can finish
+    // it. Acquire its lock here (as the non-error paths below already rely on)
+    // so the TERMINAL branch does not try to own it a second time. A run a live
+    // owner still holds gets listed but left for that owner.
+    const ownedError = run.interrupted && run.status === "error" && own(run)
     runs.set(id, run)
     if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
       ensureFiles(run)
@@ -1549,10 +1551,19 @@ function loadSavedRun(id) {
     // The server stopped during this run, so no record was written. Write
     // one now from the stream: the run is an error, with its reason.
     if (run.interrupted && run.status === "error") {
+      if (!ownedError) return // a live owner still holds it; leave the cleanup to that owner
       if (!existsSync(recordFile)) finalize(run)
       if (run.saved === false) {
         ensureFiles(run)
         broadcast(run, { ev: "closed" }) // releases the lock and removes the torn state file
+      } else if (run.saved) {
+        // A valid checkpoint we will not resume (a fleet, or unknown-mode, run).
+        // Drop the stale state file so a later boot does not keep seeing it
+        // interrupted; it shows as ended at the restart. Fleet resume itself is
+        // unsupported — the coordinator's state lives in memory.
+        ensureFiles(run)
+        run.ws = run.saved.ws ?? null
+        endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
       } else release(run)
     }
     if (run.interrupted && run.status !== "error") {
