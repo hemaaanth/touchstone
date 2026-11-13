@@ -27,8 +27,9 @@ interface ExecutionSetting {
   backend: "local" | "daytona"
   saved: "local" | "daytona"
   envOverride: string | null
-  // held: why a saved key is not used (it was saved for another host).
-  key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null; held?: string | null }
+  // held: why a key is set but not sent. saved: a key is stored in Settings,
+  // in use or held.
+  key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null; held?: string | null; saved?: boolean }
   apiUrl: string
   target: string
   envNames: { apiUrl: string | null; target: string | null }
@@ -325,7 +326,7 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
             valid ? (
               "Each new run starts with this budget"
             ) : (
-              <span key="bad" role="alert" className="min-w-0 text-bad">
+              <span key="bad" role="alert" className="min-w-0">
                 Enter $0.01 to $1,000.
               </span>
             ),
@@ -366,7 +367,7 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
           title="Total spend cap"
           meta={[
             capAlert ? (
-              <span key="alert" role="alert" className="min-w-0 text-bad">
+              <span key="alert" role="alert" className="min-w-0">
                 {capAlert}
               </span>
             ) : (
@@ -819,10 +820,20 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
   const [target, setTarget] = useState(ex.envNames.target || ex.target === ex.defaults.target ? "" : ex.target)
   const [busy, setBusy] = useState<"save" | "clear" | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const needKey = use && !ex.key.set && !apiKey.trim()
-  // The server drops a saved key when the server host changes (settings.mjs).
+  // Daytona in use, or about to be, needs a key: the server refuses it without one.
+  const inUse = use || ex.saved === "daytona"
+  const needKey = inUse && !ex.key.set && !apiKey.trim()
+  // A key goes only to the host it is bound to: a new host drops a saved key
+  // (settings.mjs) and holds back DAYTONA_API_KEY (daytona.mjs execConfig).
   const typedHost = hostOf(apiUrl.trim() || ex.defaults.apiUrl)
-  const dropsKey = ex.key.source === "settings" && !ex.envNames.apiUrl && !apiKey.trim() && typedHost !== "" && typedHost !== hostOf(ex.apiUrl)
+  const losesKey = ex.key.set && !ex.envNames.apiUrl && !apiKey.trim() && typedHost !== "" && typedHost !== hostOf(ex.apiUrl)
+  const keyLine = !losesKey
+    ? null
+    : inUse
+      ? "Daytona is in use: enter the key for the new server."
+      : ex.key.source === "settings"
+        ? "Changing the server removes the saved key."
+        : "The key from DAYTONA_API_KEY is not sent to another server."
 
   const send = async (kind: "save" | "clear", body: Parameters<typeof setExecution>[0]) => {
     setBusy(kind)
@@ -854,7 +865,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
       className="flex min-h-0 flex-1 flex-col"
       onSubmit={(e) => {
         e.preventDefault()
-        if (!busy && !needKey) save()
+        if (!busy && !needKey && !(inUse && losesKey)) save()
       }}
     >
       <SheetHeader className="flex-row items-start gap-3 pr-12">
@@ -875,7 +886,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
           <Label>Server URL</Label>
           <UrlField value={ex.envNames.apiUrl ? ex.apiUrl : apiUrl} onChange={setApiUrl} placeholder={ex.defaults.apiUrl} disabled={Boolean(ex.envNames.apiUrl)} />
           {ex.envNames.apiUrl ? <span className="text-xs text-muted-foreground">Set by {ex.envNames.apiUrl} on the server.</span> : null}
-          {dropsKey ? <span className="text-xs text-muted-foreground">Changing the server removes the saved key.</span> : null}
+          {keyLine ? <span className="text-xs text-muted-foreground">{keyLine}</span> : null}
         </label>
         <label className="flex flex-col gap-2">
           <Label>Region</Label>
@@ -897,20 +908,22 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
         ) : null}
       </div>
       <SheetFooter className="flex-row flex-wrap items-center border-t">
-        <Button type="submit" size="sm" disabled={busy !== null || needKey}>
+        <Button type="submit" size="sm" disabled={busy !== null || needKey || (inUse && losesKey)}>
           {busy === "save" ? <Loader2 className="animate-spin" /> : <Check />} {use ? "Save and use" : "Save"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        {ex.key.source === "settings" ? (
+        {ex.key.saved ? (
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="ml-auto text-muted-foreground hover:text-destructive"
-            disabled={busy !== null || ex.saved === "daytona"}
-            title={ex.saved === "daytona" ? "Use local Docker first" : undefined}
+            // A held key can go too. With Daytona in use and no env key, the
+            // server would refuse: switch to local Docker first.
+            disabled={busy !== null || (ex.saved === "daytona" && ex.key.source !== "env")}
+            title={ex.saved === "daytona" && ex.key.source !== "env" ? "Use local Docker first" : undefined}
             onClick={() => send("clear", { backend: ex.saved, clearKey: true })}
           >
             {busy === "clear" ? <Loader2 className="animate-spin" /> : <Trash2 />} Remove key
