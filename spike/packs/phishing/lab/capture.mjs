@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { startLab, LAB } from '../labctl.mjs';
+import { startLab, LAB, toCanonSnapshot } from '../labctl.mjs';
 import { captureLookalikes } from '../live.mjs';
 import { pinSnapshot } from '../../../lib/proof-evidence.mjs';
 
@@ -14,5 +14,6 @@ try {
   await sleep(1500);
   const snapshot = await captureLookalikes({ ws: LAB, domain: cfg.domain, owned: cfg.owned, reach: lab, blocklists: cfg.blocklists, lab: true });
   if (snapshot.coverage[0].status !== 'ran') throw new Error('Capture failed: ' + snapshot.coverage[0].reason);
-  console.log('rows', snapshot.dnstwist.rows.length, 'hash', pinSnapshot(LAB, snapshot));
+  // Pin the canonical resolver address, not this run's own (each run has its own subnet).
+  console.log('rows', snapshot.dnstwist.rows.length, 'hash', pinSnapshot(LAB, toCanonSnapshot(snapshot, lab)));
 } finally { await lab.stop(); }

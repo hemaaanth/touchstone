@@ -21,6 +21,7 @@
 // Swapping a module's direct network for this gated one happens here, behind the
 // seam, with no change to any module (WAVE2.md SEAM rule).
 import { requireGrant, normalizeHost, getGrant, grantActive, hostCovers } from "./grant-store.mjs";
+import { getUserScope } from "./scopes-store.mjs";
 import { startScopeProxy } from "./scope-proxy.mjs";
 import { confineReach } from "./reach-confine.mjs";
 
@@ -86,8 +87,9 @@ export function allowsPrivate(target, { now = Date.now() } = {}) {
 // one its permission tick wrote (scope.permission.grantId). Only that grant
 // counts. A grant of another scope that covers the same host does not let this
 // scope run, and does not add its hosts or its private-address opt-in to this
-// run. A target with no saved permission (a direct call with a host list) may
-// use any active grant that covers its hosts.
+// run. A saved live scope with no permission is refused. A target that is not a
+// saved scope (a direct call with a host list) may use any active grant that
+// covers its hosts.
 export function enforceReach(target, { now = Date.now(), grantIds } = {}) {
   const hosts = reachHosts(target);
   const networkKind = isNetworkKind(target && target.kind);
@@ -105,6 +107,14 @@ export function enforceReach(target, { now = Date.now(), grantIds } = {}) {
   // A resumed run may use only its original active grants. A replacement grant
   // cannot widen the scope or revive a run after its first grant was revoked.
   if (grantIds != null) pool = (pool ?? grantIds.map(getGrant)).filter((g) => g && grantIds.includes(g.id));
+  // A live scope SAVED in the scope store must carry its own permission. One
+  // without it (an old or hand-edited scope file) is refused, never matched to
+  // another scope's grant. A direct call with a host list (no saved scope)
+  // keeps the old rule below. A resumed run (grantIds) keeps only its own
+  // saved grants above.
+  if (pool == null && target.kind === "live" && getUserScope(target.id)) {
+    throw new Error("Refused: this live scope has no saved permission, so no grant counts for it. Add the scope again and tick the permission box.");
+  }
   if (pool == null) return { hosts, networkKind, grants: requireGrant(hosts, now) };
   const grants = hosts.map((host) => {
     const grant = pool.find((g) => grantActive(g, now) && g.hosts.some((h) => hostCovers(h, host)));

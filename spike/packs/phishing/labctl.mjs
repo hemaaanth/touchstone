@@ -9,7 +9,7 @@
 // copy tracking).
 import { fileURLToPath } from 'node:url';
 import { createLabNetwork, removeLabNetwork } from '../../lib/lab-net.mjs';
-import { labAddresses, labDocker, makeLabCopy, removeLabCopy } from '../domains/labctl.mjs';
+import { labAddresses, labDocker, makeLabCopy, removeLabCopy, swapAddresses } from '../domains/labctl.mjs';
 import { randomBytes } from 'node:crypto';
 export const LAB = fileURLToPath(new URL('./lab', import.meta.url));
 export const LAB_SCOPE = ['tidekeep.test'];
@@ -41,4 +41,12 @@ export async function startLab(lab = LAB, { docker: run = labDocker } = {}) {
     // The lab is ours, so its reach carries its own grant for the lab brand.
     return { network, subnet: net.subnet, resolver, dir: copy, granted: true, scope: LAB_SCOPE, stop };
   } catch (error) { await stop(); throw error; }
+}
+
+// A capture names this run's resolver (dnstwist --nameservers, the controls, and
+// `resolver`). Map it back to CANON before the snapshot is pinned, so the stored
+// arguments are the same on every run, as the committed lab/snapshot.json has them
+// (the Domains smoke does the same for its capture).
+export function toCanonSnapshot(snapshot, lab) {
+  return JSON.parse(swapAddresses(JSON.stringify(snapshot), { dns: lab.resolver }, CANON));
 }

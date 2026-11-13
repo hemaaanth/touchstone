@@ -534,6 +534,15 @@ export function AddScope({
       setUrl("")
       return
     }
+    // A user name or password in the address: say so, and never keep it.
+    try {
+      const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`)
+      if (u.username || u.password) {
+        return onError(`The address for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a website address. Remove it; an AI and MCP scope takes its token in the Bearer token field.`)
+      }
+    } catch {
+      // not a URL: the checks below say so
+    }
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
     const origin = href ? null : siteOrigin(text)
     const host = origin ? new URL(origin).hostname : null

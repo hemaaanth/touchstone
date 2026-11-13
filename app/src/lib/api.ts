@@ -122,6 +122,13 @@ export async function fetchModels(): Promise<{
   }>("/api/models")
 }
 
+// The sentences for a store file that cannot be read (scopes, grants). Empty
+// when both are fine. A damaged store lists as empty, so the page must say so.
+export async function fetchStoreErrors(): Promise<string[]> {
+  const data = await getJson<{ errors: string[] }>("/api/stores")
+  return data.errors
+}
+
 export async function fetchRuns(): Promise<RunSummary[]> {
   const data = await getJson<{ runs: RunSummary[] }>("/api/runs")
   return data.runs
