@@ -37,6 +37,7 @@ const ws = (args[args.indexOf('-v') + 1] || '').split(':/work')[0];
 const out = flag => path.join(ws, args[args.indexOf(flag) + 1].replace(/^\\/work\\//, ''));
 const image = args.find(a => a.includes('@sha256:')) || '';
 const https = process.env.SHIM_HTTPS !== '0';
+if (args.includes('drill')) { const name = args[args.indexOf('CAA') + 1]; process.stdout.write(';; ->>HEADER<<- rcode: NOERROR\\n;; ANSWER SECTION:\\n' + name + '.\\t60\\tIN\\tCAA\\t0 issue "letsencrypt.org"\\n'); process.exit(0); }
 if (image.startsWith('letiemble/checkdmarc')) { process.stdout.write(fx('checkdmarc-example.com.json')); process.exit(Number(process.env.SHIM_CHECKDMARC_EXIT || 0)); }
 if (image.startsWith('drwetter/testssl.sh')) fs.writeFileSync(out('--jsonfile-pretty'), fx('testssl-example.com.json'));
 if (image.startsWith('dnsviz/dnsviz')) fs.writeFileSync(out('-o'), args.includes('grok') ? fx('dnsviz-example.com.json') : '{}');

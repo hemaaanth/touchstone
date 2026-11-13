@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { hostPins, runTool, sarifLeads } from "../lib/wrap.mjs";
+import { entrypointFlag, hostPins, runTool, sarifLeads } from "../lib/wrap.mjs";
 import { planRemote } from "../lib/daytona.mjs";
 import { mergeStatic } from "../lib/ensemble.mjs";
 
@@ -133,6 +133,8 @@ test("addHosts adds one --add-host per pair and a dead resolver, and checks its 
     [["x.com", "not-an-ip"]], [["x.com", "1.2.3.4 --privileged"]], [["x.com"]], ["x.com"], "x.com:1.2.3.4"]) {
     assert.throws(() => hostPins(bad), /addHosts/, JSON.stringify(bad));
   }
+  // A zone id parses as an IP (isIP accepts it) but is refused with a clear message.
+  assert.throws(() => hostPins([["x.com", "fe80::1%eth0"]]), /IPv6 zone id is not allowed/);
   // runTool puts the flags in the argv it runs.
   const dir = mkdtempSync(join(tmpdir(), "wrap-pins-"));
   const record = join(dir, "args");
@@ -156,4 +158,32 @@ test("addHosts adds one --add-host per pair and a dead resolver, and checks its 
 test("a call with addHosts never goes to Daytona: the planner keeps it local", () => {
   const args = ["run", "--rm", "--pull=never", "--network", "none", ...hostPins([["www.example.com", "93.184.216.34"]]), "img@sha256:" + "0".repeat(64), "true"];
   assert.ok(planRemote(args, null, "/remote").local, "a flag the planner does not know keeps the call on this host");
+});
+
+test("entrypoint adds --entrypoint before the image, checks its input, and no option means the old argv", async () => {
+  assert.deepEqual(entrypointFlag(null), []);
+  assert.deepEqual(entrypointFlag("drill"), ["--entrypoint", "drill"]);
+  assert.deepEqual(entrypointFlag("/usr/bin/drill"), ["--entrypoint", "/usr/bin/drill"]);
+  for (const bad of ["drill x", "a;b", "a|b", "$(x)", "`x`", "a&b", "drill\n", "", "../drill", "-x", "--privileged", ".", "..", "/a/../b", "/", "//x", 7, {}]) {
+    assert.throws(() => entrypointFlag(bad), /entrypoint/, JSON.stringify(bad));
+  }
+  const dir = mkdtempSync(join(tmpdir(), "wrap-entry-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const image = "example.invalid/tool@sha256:" + "0".repeat(64);
+    await runTool({ image, cmd: ["CAA", "x"], entrypoint: "drill" });
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    const at = args.indexOf("--entrypoint"), img = args.indexOf(image);
+    assert(at > 0 && at < img, "the entrypoint comes before the image");
+    assert.deepEqual(args.slice(at, at + 2), ["--entrypoint", "drill"]);
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    // A bad entrypoint throws before any docker call.
+    await assert.rejects(runTool({ image, cmd: [], entrypoint: "a;b" }), /entrypoint/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

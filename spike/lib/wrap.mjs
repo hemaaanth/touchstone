@@ -29,20 +29,39 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [] }) {
+//   entrypoint  override the image's entrypoint (e.g. "drill" in an image whose
+//               default entrypoint is another tool). A plain binary name or an
+//               absolute path only; anything with shell text throws. Omitted
+//               (the default) means the argv is exactly as before.
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [], entrypoint = null }) {
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
   const pins = hostPins(addHosts);
+  const entry = entrypointFlag(entrypoint);
   const args = [
     "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     "--name", name,
     ...pins,
+    ...entry,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
   return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user, name });
+}
+
+// The --entrypoint flag, or []. A plain binary name (letters, digits, _ . -) or an
+// absolute path; each segment starts with a letter, digit or underscore (so no leading
+// "-" option, no "." or ".." segment), and holds no spaces or shell metacharacters, so a
+// value can never smuggle extra docker words or shell text. (--entrypoint is already a
+// known value flag to Daytona's planner; a live-reach call keeps its non-none network,
+// which keeps it local anyway.)
+const ENTRYPOINT = /^(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$|^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+export function entrypointFlag(entrypoint) {
+  if (entrypoint == null) return [];
+  if (typeof entrypoint !== "string" || !ENTRYPOINT.test(entrypoint)) throw new Error("runTool: entrypoint must be a plain binary name or absolute path: " + String(entrypoint).slice(0, 80));
+  return ["--entrypoint", entrypoint];
 }
 
 // The docker flags for addHosts. Daytona's parser does not know --add-host or
@@ -55,6 +74,9 @@ export function hostPins(addHosts) {
   for (const pair of addHosts) {
     const [host, ip] = Array.isArray(pair) ? pair : [];
     if (typeof host !== "string" || !HOST_NAME.test(host) || isIP(host)) throw new Error("addHosts: not a plain host name: " + String(host).slice(0, 80));
+    // A zone id (fe80::1%eth0) names a host interface, which means nothing inside a
+    // container; isIP accepts it, so refuse it here with a clear message.
+    if (typeof ip === "string" && ip.includes("%")) throw new Error("addHosts: an IPv6 zone id is not allowed in a pinned address: " + ip.slice(0, 80));
     if (typeof ip !== "string" || !isIP(ip)) throw new Error("addHosts: not an IP address: " + String(ip).slice(0, 80));
     out.push("--add-host", host + ":" + ip);
   }

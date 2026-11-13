@@ -7,6 +7,7 @@
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
@@ -184,28 +185,66 @@ export async function handleFindings(req, res) {
     return true
   }
 
-  // GET /api/findings/:id/report?format=html|md|json|agent — the shareable report of a
-  // finished run's finding (the finding, its proof, the harm, the fix). json is
-  // the structured report the UI renders; html is one self-contained page to
-  // share; md is for a README or an issue. The report invents nothing: the fix
-  // is shown only when the run stated one (report.mjs).
+  // GET /api/findings/:id/report?format=html|md|json|agent|bundle — the shareable
+  // report of a finished run's finding (the finding, its proof, the harm, the
+  // fix). json is the structured report the UI renders; html is one
+  // self-contained page to share; md is for a README or an issue; agent is a
+  // short brief for a coding agent. bundle is a zip a judge can unzip and
+  // rerun: the proof sources, foundry config, proof JSON, and fork parameters,
+  // with one command in README.md. The report invents nothing: the fix is shown
+  // only when the run stated one (report.mjs). bundle-check is the same build
+  // as bundle, answered as JSON: the values the zip could not judge, counted by
+  // shape, for the line next to the download.
+  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "agent", "bundle", "zip", "bundle-check"])
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
+    if (!REPORT_FORMATS.has(format)) {
+      send(res, 400, { error: `unknown format: use one of ${[...REPORT_FORMATS].join(", ")}` })
+      return true
+    }
     try {
       const finding = await getFinding(id)
       if (!finding) {
         send(res, 404, { error: "no such finding" })
         return true
       }
-      const report = buildReport(finding)
       const slug = String(id).replace(/[^\w.-]+/g, "-")
-      if (format === "html") {
+      if (format === "bundle" || format === "zip" || format === "bundle-check") {
+        const recorded = loadRecordedReplay(id)
+        const refused = bundleRefusal({ finding, recorded })
+        if (refused) {
+          send(res, 409, { error: refused })
+          return true
+        }
+        let plan
+        try {
+          plan = planReplayBundle({ finding, recorded })
+        } catch (err) {
+          // The builder refuses a zip that would leak a secret it cannot mask.
+          if (err?.refused !== true) throw err
+          send(res, 409, { error: err.message })
+          return true
+        }
+        const { zip, unjudged } = plan
+        if (format === "bundle-check") {
+          send(res, 200, { bundle: true, bytes: zip.length, unjudged, note: unjudged.length ? UNJUDGED_NOTE : null })
+          return true
+        }
+        res.statusCode = 200
+        // Counts by shape only, never a value. JSON is ASCII here: the texts are fixed.
+        res.setHeader("x-touchstone-unjudged", JSON.stringify(unjudged.map(({ shape, count }) => ({ shape, count }))))
+        res.setHeader("content-type", "application/zip")
+        res.setHeader("content-disposition", `attachment; filename="touchstone-replay-${slug}.zip"`)
+        res.end(zip)
+      } else if (format === "html") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/html; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.html"`)
         res.end(renderReportHtml(report))
       } else if (format === "md" || format === "markdown") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/markdown; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
@@ -214,9 +253,9 @@ export async function handleFindings(req, res) {
         // The short brief for a coding agent (report.mjs renderReportAgent).
         res.statusCode = 200
         res.setHeader("content-type", "text/plain; charset=utf-8")
-        res.end(renderReportAgent(report))
+        res.end(renderReportAgent(buildReport(finding)))
       } else {
-        send(res, 200, report)
+        send(res, 200, buildReport(finding))
       }
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })

@@ -5,6 +5,9 @@
 import { isIP } from 'node:net';
 import { join } from 'node:path';
 import { sha256 } from '../../lib/proof-evidence.mjs';
+import { runTool } from '../../lib/wrap.mjs';
+import { PUBLIC_SUFFIXES } from '../../lib/grant-store.mjs';
+import { DOMAIN } from './live.mjs';
 import { readOutputFile, readStored, storedRecord } from './stored.mjs';
 export const TESTSSL = 'drwetter/testssl.sh:3.2@sha256:64bab3c1fd8eee440f68d5e020dd633c1f2d375fe0ae593bdfec2725110a7e29';
 // Severities testssl grades. OK and INFO carry no finding a person must read.
@@ -77,7 +80,14 @@ export async function captureTls(run, ws, targets, ipOf) {
     const gap = error => { runs.push({ engine, error }); entries.push({ url: endpoint.origin, host: endpoint.host, port: Number(endpoint.port), error }); errors.push(error); };
     if (!ip) { gap('Not run: no checked address for ' + endpoint.host + '. testssl.sh would look the name up again by itself.'); continue; }
     const pin = isIP(endpoint.host) ? [] : [[endpoint.host, ip]];
-    const result = await run(engine, { image: TESTSSL, env: TESTSSL_ENV, addHosts: pin, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--nodns', 'none', '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
+    // testssl.sh connects over IPv4 unless told otherwise, so an IPv6 checked
+    // address needs -6. The name stays pinned to that one address.
+    const family = isIP(ip) === 6 ? ['-6'] : [];
+    // A bad pin (an address or name our own validation refuses) fails this one
+    // endpoint as a gap, never the whole capture.
+    let result;
+    try { result = await run(engine, { image: TESTSSL, env: TESTSSL_ENV, addHosts: pin, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--nodns', 'none', ...family, '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 }); }
+    catch (error) { gap('the endpoint was not scanned: ' + String(error?.message ?? error).slice(0, 160)); continue; }
     if (result.code || result.timedOut) { gap(result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code)); continue; }
     let text;
     try { text = readOutputFile(join(ws, '.live', 'tls-' + i + '.json')); }
@@ -89,6 +99,128 @@ export async function captureTls(run, ws, targets, ipOf) {
     } catch (error) { gap(error.message); }
   }
   return { runs, entries, evidence, errors };
+}
+
+// CAA evidence. testssl.sh asks DNS for the CAA record, but the capture runs it
+// with --nodns none (so a rebind cannot move its connection). So the capture asks
+// the CAA question itself, through the granted resolver, with drill (it ships in
+// the testssl image). A domain with no CAA record at any level up to the
+// registrable domain lets any CA issue for it: a LOW lead, the same testssl made.
+export const DRILL_IMAGE = TESTSSL;
+
+// The names to ask: the granted name and each parent, stopping at the registrable
+// domain (one label below the public suffix). The public-suffix set is the scope
+// code's own `PUBLIC_SUFFIXES` (lib/grant-store.mjs), so `example.co.uk` asks
+// `example.co.uk` but never `co.uk`. Most specific first.
+export function caaNames(domain) {
+  const labels = String(domain ?? '').split('.').filter(Boolean);
+  if (labels.length < 2) return labels.length ? [labels.join('.')] : [];
+  if (PUBLIC_SUFFIXES.has(labels.join('.'))) return [];
+  let etld = 1; // labels in the public suffix; default a single TLD label
+  for (let i = 2; i < labels.length; i++) if (PUBLIC_SUFFIXES.has(labels.slice(labels.length - i).join('.'))) etld = i;
+  const registrable = etld + 1;
+  if (labels.length < registrable) return [];
+  const out = [];
+  for (let i = 0; i <= labels.length - registrable; i++) out.push(labels.slice(i).join('.'));
+  return out;
+}
+
+// One drill answer to the CAA records that apply to `name`, following the CNAME
+// chain the answer returned (RFC 8659 counts the alias target's CAA). `ok` is true
+// only for a full answer: not truncated (tc), and a definite rcode (NOERROR or
+// NXDOMAIN). A truncated or odd answer is never read as "no record". `target` is a
+// CNAME target with no CAA in this answer, so the caller can ask it at the resolver.
+const fqdnName = name => String(name).toLowerCase().replace(/\.+$/, '') + '.';
+export function parseCaaBlock(block, name) {
+  const text = String(block ?? '');
+  const flags = /flags:\s*([a-z ]*?)\s*;/.exec(text)?.[1] ?? '';
+  const rcode = /rcode:\s*([A-Za-z]+)/.exec(text)?.[1]?.toUpperCase();
+  const ok = !/\btc\b/.test(flags) && (rcode === 'NOERROR' || rcode === 'NXDOMAIN');
+  const caa = new Map(), cname = new Map();
+  for (const line of text.split('\n')) {
+    let m = /^(\S+)\s+\d+\s+IN\s+CAA\s+(.+?)\s*$/.exec(line);
+    if (m) { const o = m[1].toLowerCase(); if (!caa.has(o)) caa.set(o, []); caa.get(o).push(m[2].trim().slice(0, 200)); continue; }
+    m = /^(\S+)\s+\d+\s+IN\s+CNAME\s+(\S+?)\.?\s*$/.exec(line);
+    if (m) cname.set(m[1].toLowerCase(), fqdnName(m[2]));
+  }
+  let cur = fqdnName(name); const origin = cur; const seen = new Set();
+  for (let hop = 0; hop < 8; hop++) {
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    if (caa.has(cur)) return { ok, records: caa.get(cur), target: null };
+    if (cname.has(cur)) { cur = cname.get(cur); continue; }
+    return { ok, records: [], target: cur === origin ? null : cur.replace(/\.$/, '') };
+  }
+  return { ok, records: [], target: cur === origin ? null : cur.replace(/\.$/, '') };
+}
+
+// The stored drill output is one block per queried name, each after a
+// "TOUCHSTONE-CAA <name>" marker. The walk returns the first level with a CAA
+// record (present), or incomplete when a query before any record was not a full
+// answer. A truncated stored answer therefore replays as incomplete, not "no record".
+export function caaVerdict(output) {
+  const parts = String(output ?? '').split(/^;; TOUCHSTONE-CAA (.+)$/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    const name = parts[i].trim(), { ok, records } = parseCaaBlock(parts[i + 1] ?? '', name);
+    if (records.length) return { present: true, name, records };
+    if (!ok) return { incomplete: true, name };
+  }
+  return { present: false };
+}
+
+// `run` is runTool (a test stand-in replaces it), so the drill call gets runTool's
+// guards: --pull=never, the capture's network, the hardening, a named container and
+// the Daytona decision. drill asks the granted resolver directly over TCP (-t, so a
+// large answer is not truncated), so no name of the target is resolved and no page is
+// fetched. A CNAME target whose CAA is not inline is asked at the SAME resolver, with
+// a small hop limit; a target name is only ever a question to the resolver. Returns
+// { record, present } to store, or { error } so the caller gaps the row.
+export async function captureCaa(domain, { resolver, network, env = {}, run = runTool, timeoutMs = 20000 } = {}) {
+  const names = caaNames(domain);
+  if (!resolver) return { record: null, present: null, error: 'no resolver, so the CAA question was not asked' };
+  if (!names.length) return { record: null, present: null, error: 'no registrable name to ask CAA for' };
+  const MAX_HOPS = 4;
+  const blocks = [];
+  const gap = reason => ({ record: null, present: null, error: reason });
+  // -- ends drill's option parsing, so a label is never read as an option; the name
+  // is validated below, so it is a plain domain anyway. The target is sent only as a
+  // DNS question to the checked resolver.
+  const ask = async (name) => {
+    const res = await run({ image: DRILL_IMAGE, network, env, entrypoint: 'drill', cmd: ['-t', '--', 'CAA', name, '@' + resolver], timeoutMs });
+    if (res.timedOut || res.code) return { error: 'the CAA query for ' + name + ' did not run: ' + (String(res.stderr ?? '').trim().slice(-120) || (res.timedOut ? 'timed out' : 'exit code ' + res.code)) };
+    blocks.push(';; TOUCHSTONE-CAA ' + name + '\n' + String(res.stdout ?? ''));
+    return { out: String(res.stdout ?? '') };
+  };
+  for (const start of names) {
+    let cur = start;
+    const seen = new Set();
+    for (let hop = 0; ; hop++) {
+      // A CNAME target is data from a DNS answer: it is asked only when it passes
+      // the capture's own domain-name rule (so never a "-" option or an "@server").
+      if (!DOMAIN.test(cur)) return gap('a CAA CNAME target for ' + start + ' ("' + String(cur).slice(0, 80) + '") is not a plain domain name, so CAA was not checked');
+      if (seen.has(cur)) return gap('the CAA CNAME chain for ' + start + ' loops at ' + cur + ', so CAA was not checked');
+      if (hop >= MAX_HOPS) return gap('the CAA CNAME chain for ' + start + ' is longer than ' + MAX_HOPS + ' hops, so CAA was not checked');
+      seen.add(cur);
+      const a = await ask(cur);
+      if (a.error) return gap(a.error);
+      const p = parseCaaBlock(a.out, cur);
+      if (!p.ok) return gap('the CAA answer for ' + cur + ' was not a full answer (truncated or no definite result), so CAA was not checked');
+      if (p.records.length) return { record: { domain, ...storedRecord(blocks.join('\n')) }, present: true };
+      if (p.target) { cur = p.target; continue; }
+      break; // no CAA for this name and its CNAME chain; go to the parent
+    }
+  }
+  return { record: { domain, ...storedRecord(blocks.join('\n')) }, present: false };
+}
+
+// A CAA lead from the stored drill output. No record anywhere up to the registrable
+// domain is a LOW lead. The output is re-parsed, so replay reads the pin.
+export function caaLeads(snapshot) {
+  const root = String(snapshot.root ?? '');
+  if (!snapshot.caa) return [];
+  const read = readStored(snapshot.caa, output => caaVerdict(output));
+  if (read.error || read.evidence.present !== false) return [];
+  return [{ check: 'tls-dns_caarecord', where: root, severity: 'low', description: 'No CAA record is published for ' + root + ' or its parents up to the registrable domain, so any certificate authority may issue a certificate for the name. The capture asked the granted resolver, not the TLS scanner. This is a configuration gap, not proof of mis-issuance.' }];
 }
 
 const hashOf = entry => /^[0-9a-f]{64}$/.test(String(entry?.raw ?? '')) ? 'Tool output sha256: ' + String(entry.raw).slice(0, 12) + '. ' : '';
@@ -111,7 +243,7 @@ export function tlsLeads(snapshot) {
     const why = coverage?.status === 'unavailable'
       ? ' testssl.sh did not run: ' + String(coverage.reason ?? 'no reason given').slice(0, 160)
       : ' The snapshot was captured without a TLS handshake scan.';
-    return [{ check: 'tls-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no TLS handshake evidence, so this run does not cover the TLS configuration.' + why + ' This does not prove the TLS is fine.' }];
+    return [{ check: 'tls-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no TLS handshake evidence, so this run does not cover the TLS configuration.' + why + ' This does not prove the TLS is fine.' }, ...caaLeads(snapshot)];
   }
   const leads = [];
   for (const stored of snapshot.tls) {
@@ -137,5 +269,5 @@ export function tlsLeads(snapshot) {
       });
     }
   }
-  return leads;
+  return [...leads, ...caaLeads(snapshot)];
 }
