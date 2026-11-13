@@ -6,9 +6,15 @@ import path from "node:path"
 // An evidence finding's snapshot is raw files from the target. None of that
 // text may reach the stored run record, a zip, or an API response. A throwaway
 // results folder, set before the server modules load.
+// bun runs every test file in one process: put the old value back at the end.
 const results = mkdtempSync(path.join(tmpdir(), "replay-evidence-results-"))
+const prevResults = process.env.TOUCHSTONE_RESULTS_DIR
 process.env.TOUCHSTONE_RESULTS_DIR = results
-afterAll(() => rmSync(results, { recursive: true, force: true }))
+afterAll(() => {
+  if (prevResults === undefined) delete process.env.TOUCHSTONE_RESULTS_DIR
+  else process.env.TOUCHSTONE_RESULTS_DIR = prevResults
+  rmSync(results, { recursive: true, force: true })
+})
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")
