@@ -563,6 +563,88 @@ test("harm gate: a balance-slot store on a token with no known balance layout is
   assert.match(h.reason, tamperReason);
 });
 
+// ---- H1f (A), the neighbours (synthetic) ----------------------------------------
+const ALICE = "0x00000000000000000000000000000000000a11ce";
+const BOB = "0x0000000000000000000000000000000000000b0b";
+const TESTKIT = "0x0000000000000000000000000000000000001e1f"; // a non-scope contract the test deploys
+const TWO = "0x1bc16d674ec80000"; // 2 ether
+const pay = (parent, to, value) => node(parent, { kind: "CALL", address: to, caller: VAULT, value });
+const withdrawCall = () => node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" });
+const vmCall = (sig, args) => node(0, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: id(sig).slice(0, 10) + args });
+const returnedReason = /ETH left scope target 0x[0-9a-f]{40} \(\w+\) in the test body, but no address took out more than it had put in/;
+
+test("harm gate: a setUp() deposit by A and a withdraw paid to B counts: pranked addresses are separate parties (H1f)", () => {
+  // The gate cannot tell an attacker address from an honest user. It assumes two
+  // addresses are two parties; B put nothing in, so B's take is the loss.
+  const traces = [setup(node(0, { kind: "CALL", address: VAULT, caller: ALICE, value: ONE })), exec(withdrawCall(), pay(1, BOB, ONE))];
+  const h = verdict(traces);
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.lostWei, "1000000000000000000");
+});
+
+test("harm gate: the test contract and the contracts it deployed are one party: a deposit by one and a take by the other is returned (H1f)", () => {
+  const traces = [setup(
+    node(0, { kind: "CREATE", address: TESTKIT, caller: TEST, data: "0x60016001" }),
+    node(0, { kind: "CALL", address: VAULT, caller: TESTKIT, value: ONE }),
+  ), exec(withdrawCall(), pay(1, TEST, ONE))];
+  const h = verdict(traces);
+  assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, returnedReason);
+});
+
+test("harm gate: the loss is never more than the body net (monotone): a body deposit by A and a take of 2 by B is 1 (H1f)", () => {
+  const traces = [setup(), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: ALICE, value: ONE }),
+    withdrawCall(),
+    pay(2, BOB, TWO),
+  )];
+  const h = verdict(traces);
+  assert.equal(h.ok, true);
+  assert.equal(h.lostWei, "1000000000000000000");
+});
+
+test("harm gate: ETH sent with the vault's CREATE is put in by its creator; taking it back is returned (H1f)", () => {
+  const traces = [["Setup", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x0a9254e4" }),
+    node(0, { kind: "CREATE", address: VAULT, caller: TEST, data: VAULT_INIT, value: ONE }),
+  ] }], exec(withdrawCall(), pay(1, TEST, ONE))];
+  const h = verdict(traces);
+  assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, returnedReason);
+});
+
+test("harm gate: a deposit in a reverted frame puts nothing in; the take still counts (H1f)", () => {
+  const traces = [setup(
+    node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }),
+    node(2, { kind: "CALL", address: VAULT, caller: ALICE, value: ONE }), // under the reverted frame (index 2)
+  ), exec(withdrawCall(), pay(1, ALICE, ONE))];
+  const h = verdict(traces);
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.lostWei, "1000000000000000000");
+});
+
+// ETH that reaches the vault without a value CALL from the test: vm.deal, vm.coinbase,
+// or a selfdestruct of a test contract (the trace does not name the beneficiary).
+// It counts as the test's own: the test side's take is not a loss. A take by another
+// address (here the attacker EOA) still counts.
+for (const [label, extra] of [
+  ["vm.deal on the vault", () => [vmCall("deal(address,uint256)", word(VAULT).slice(2) + word(ONE).slice(2))]],
+  ["vm.coinbase set to the vault", () => [vmCall("coinbase(address)", word(VAULT).slice(2))]],
+  ["a selfdestruct of a test contract", () => [
+    node(0, { kind: "CREATE", address: TESTKIT, caller: TEST, data: "0x60016001", value: ONE }),
+    node(0, { kind: "CALL", address: TESTKIT, caller: TEST, data: "0x12345678", status: "SelfDestruct" }),
+  ]],
+]) {
+  test(`harm gate: ETH put on the vault by ${label} is the test's own: the test's take is not a loss, an outsider's is (H1f)`, () => {
+    const mine = verdict([setup(...extra()), exec(withdrawCall(), pay(1, TEST, ONE))]);
+    assert.equal(mine.ok, false, JSON.stringify(mine));
+    assert.match(mine.reason, returnedReason);
+    const theirs = verdict([setup(...extra()), exec(withdrawCall(), pay(1, ATTACKER, ONE))]);
+    assert.equal(theirs.ok, true, JSON.stringify(theirs));
+    assert.equal(theirs.lostWei, "1000000000000000000");
+  });
+}
+
 // ---- the whole impersonation family (M4, delta review) ---------------------
 //
 // vm.prank / vm.startPrank each have four overloads: plain, with a tx.origin,
@@ -740,6 +822,8 @@ test("forge: contracts submit_finding refuses a passing tautology with reason no
 // positive. These replace position/value guesses with the compiled storage layout
 // and add an ERC-20 token channel. See lib/proof.mjs scopeLayouts / layoutTakeovers
 // / tokenDrains.
+
+const makeWs = () => { const ws = makeWorkspace(LAB); workspaces.push(ws); return ws; };
 
 // Shorthand: drop the lab's Vault, write scope `src` files, prove one PoC contract.
 async function proveScope(ws, files, poc, body) {
@@ -1208,6 +1292,76 @@ contract StdStoreFixTest is Test {
   assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
   assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(TokVault\) via vm\.store;/);
   assert.equal(isProven(f), false);
+});
+
+// ---- H1f (A): the ETH loss is net per counterparty ------------------------------
+//
+// A setUp() deposit and the same address's own withdraw in the body moved ETH out
+// of the vault, and the old body-only net read it as a drain. Now a loss counts
+// only as what an address took out beyond what it put in, across setUp() and the
+// body. Honest shapes only: none of these is an attack.
+const RETURN_REASON = /ETH left scope target 0x[0-9a-f]{40} \(Vault\) in the test body, but no address took out more than it had put in.*Taking back a deposit is not a drain/;
+
+test("forge: a setUp() deposit and the same user's own withdraw in the body is NOT proven (H1f)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Vault.sol": LAB_VAULT }, "OwnWithdrawTest", `import "../src/Vault.sol";
+contract OwnWithdrawTest is Test {
+  Vault v; address alice = makeAddr("alice");
+  function setUp() public { v = new Vault(); vm.deal(alice, 1 ether); vm.prank(alice); v.deposit{value: 1 ether}(); }
+  function test_x() public { vm.prank(alice); v.withdraw(); assertEq(alice.balance, 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, RETURN_REASON);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: the test contract's own setUp() deposit and withdraw is NOT proven (H1f)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Vault.sol": LAB_VAULT }, "SelfWithdrawTest", `import "../src/Vault.sol";
+contract SelfWithdrawTest is Test {
+  Vault v;
+  receive() external payable {}
+  function setUp() public { v = new Vault(); vm.deal(address(this), 1 ether); v.deposit{value: 1 ether}(); }
+  function test_x() public { v.withdraw(); assertEq(address(this).balance, 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, RETURN_REASON);
+  assert.equal(isProven(f), false);
+});
+
+// The lab reentrancy with the attacker's 1 ether deposit moved into setUp(): the old
+// body-only net saw 11 ether leave. The attacker put 1 in, so the loss is the excess,
+// 10 ether: the same value as the tracked lab true positive.
+test("forge: a depositor that takes out more than it put in loses only the excess (H1f TP)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Vault.sol": LAB_VAULT }, "SplitReentryTest", `import "../src/Vault.sol";
+contract Reenter {
+  Vault public vault; uint256 public unit;
+  constructor(Vault v) { vault = v; }
+  function seed() external payable { unit = msg.value; vault.deposit{value: msg.value}(); }
+  function go() external { vault.withdraw(); }
+  receive() external payable { if (address(vault).balance >= unit) vault.withdraw(); }
+}
+contract SplitReentryTest is Test {
+  Vault v; Reenter r;
+  function setUp() public {
+    v = new Vault();
+    address alice = makeAddr("alice"); address bob = makeAddr("bob"); address carol = makeAddr("carol");
+    vm.deal(alice, 4 ether); vm.deal(bob, 3 ether); vm.deal(carol, 3 ether);
+    vm.prank(alice); v.deposit{value: 4 ether}();
+    vm.prank(bob); v.deposit{value: 3 ether}();
+    vm.prank(carol); v.deposit{value: 3 ether}();
+    r = new Reenter(v); vm.deal(address(this), 1 ether); r.seed{value: 1 ether}();
+  }
+  function test_x() public { r.go(); assertEq(v.totalAssets(), 0); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.lostWei, "10000000000000000000");
+  assert.equal(isProven(f), true);
 });
 
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a

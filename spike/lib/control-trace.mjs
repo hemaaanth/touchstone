@@ -29,6 +29,7 @@
 //   revert does not undo it. A target the test impersonated is no target at all (not a
 //   victim, token or takeover context): the move is the test acting as that target, not
 //   an exploit (see lib/proof.mjs).
+// - ethFunded: the accounts that vm.deal or vm.coinbase acted on, in any trace and frame.
 // - tampers: cheatcodes that write a contract's storage or fake its call answers, with the
 //   address they act on: { target, how, slot?, kept }. `store` also keeps its slot. Read from
 //   EVERY trace, for any call kind, kept or not (fail closed: an entry can only drop a target).
@@ -104,6 +105,10 @@ const TAMPER_SIGS = [
   ["mockCalls(address,uint256,bytes,bytes[])", "mockCalls", 0],
 ];
 const TAMPER = new Map(TAMPER_SIGS.map(([sig, how, arg]) => [selector4(sig), { how, arg }]));
+// Cheatcodes that put ETH on an account without a value CALL: vm.deal sets the
+// balance, vm.coinbase makes the account receive the block's fees. The harm gate
+// counts such ETH as the test's own (see ethLosses in lib/proof.mjs).
+const ETH_FUND = new Set(["deal(address,uint256)", "coinbase(address)"].map(selector4));
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -115,7 +120,7 @@ const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces) {
-  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], calls: [] };
+  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], ethFunded: [], calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
   const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
@@ -208,6 +213,9 @@ export function extractControlTrace(traces) {
           // mockFunction(callee, target, data): the FIRST word is the callee whose
           // code is replaced. No code is recorded, as for cloneAccount.
           out.etches.push({ index: out.calls.length, target: "0x" + data.slice(24, 64), code: "0x", kept });
+        } else if (ETH_FUND.has(selector)) {
+          // Recorded kept or not, like a tamper: an entry can only shrink a loss.
+          out.ethFunded.push("0x" + data.slice(24, 64));
         } else if (TAMPER.has(selector)) {
           // Forge writes the state DB (or keeps the mock in its inspector) directly. Record
           // it whether or not the frame was kept: an entry can only drop a target.

@@ -177,6 +177,21 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   `lab/vault-shares/lib/chimera/`. This still needs a licensing review before
   any release that includes the lab.
 
+## Harm gate: what a proven loss means, and its limit
+
+The forge replay proves a funds finding when a scope target loses value in the test body.
+- ETH: a loss counts only as the excess of what one party took out of the target over what that
+  same party put in, across setUp() and the body. The test contract and the contracts it deployed
+  are one party. ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct is the
+  test's own. So a setUp() deposit and the same address's own withdraw is not a drain. The loss
+  is never more than the target's net ETH change in the body.
+- Every other address (a pranked EOA, a makeAddr user) is its own party. The replay cannot tell
+  the attacker's addresses from honest users: both are pranked addresses.
+
+**Limit: a replay cannot judge authorization.** A legitimate sweep by an address that never paid
+in (an admin withdraw, a fee claim, a payout to a user another address funded) still reads as a
+drain. The gate trusts the attack path the PoC shows. A reviewer must still read the path.
+
 ## Gaps in our wrapping
 
 - Aderyn runs on the host, not in Docker. Untrusted code is parsed outside the

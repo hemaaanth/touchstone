@@ -709,6 +709,69 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 // compiled artifacts) the gate falls back to the slot-0/EIP-1967 heuristic in
 // control-trace.mjs; a real replay always passes the layout, so production harm
 // is judged from the layout, never a position guess.
+// The ETH channel, net per counterparty (H1f). `net` is the old measure: each
+// target's net ETH in the test body. That alone counts a setUp() deposit and the
+// same address's own withdraw in the body as a drain. So a loss counts only as the
+// excess of what a counterparty took out of the target over what that same
+// counterparty put in, across setUp() AND the body (value CALLs, and the value of
+// a CREATE). The reported loss is the smaller of the two measures, so it can only
+// shrink: a verdict the old measure did not prove stays not proven.
+// Counterparties:
+// - The test contract and every non-scope contract it deployed are ONE party, "the
+//   test": they all run the test's code.
+// - Every other address (a pranked EOA, a makeAddr user) is its own party. The gate
+//   cannot tell an attacker address from an honest user: both are pranked
+//   addresses. So a deposit by one address and a withdraw by another counts.
+// - ETH that the test put on a target without a value CALL (vm.deal, vm.coinbase)
+//   is the test's own. The test side's take from that target is not counted. A
+//   selfdestruct by a test contract does the same for every target, because the
+//   trace does not name its beneficiary.
+// Returns [{ victim, lostWei, gross }] for every target the old measure saw lose ETH.
+function ethLosses(traces, targets, net, controlTrace) {
+  const { testContract, created } = replayParties(traces);
+  const TEST = "the test";
+  const side = (a) => (a && (a === testContract || (created.has(a) && !targets.has(a))) ? TEST : a);
+  const flows = new Map(); // target -> Map(party -> put in minus took out)
+  const bump = (target, party, wei) => {
+    const m = flows.get(target) ?? new Map();
+    m.set(party, (m.get(party) ?? 0n) + wei);
+    flows.set(target, m);
+  };
+  const forced = new Set((controlTrace?.ethFunded ?? []).map(lc));
+  let selfDestructed = false;
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      const t = node?.trace ?? {};
+      if (!ok(i)) return;
+      const to = lc(t.address), from = lc(t.caller);
+      if (t.status === "SelfDestruct" && side(to) === TEST) selfDestructed = true;
+      let wei = 0n;
+      try { wei = BigInt(t.value ?? "0x0"); } catch { wei = 0n; }
+      if (wei <= 0n) return;
+      if (t.kind === "CALL" || t.kind === "CREATE" || t.kind === "CREATE2") {
+        if (targets.has(to)) bump(to, side(from), wei);
+        if (t.kind === "CALL" && targets.has(from)) bump(from, side(to), -wei);
+      }
+    });
+  }
+  const out = [];
+  for (const [victim, w] of net.entries()) {
+    if (!targets.has(victim) || w >= 0n) continue;
+    const gross = -w;
+    let excess = 0n;
+    for (const [party, v] of flows.get(victim) ?? []) {
+      if (v >= 0n) continue;
+      if (party === TEST && (selfDestructed || forced.has(victim))) continue;
+      excess += -v;
+    }
+    out.push({ victim, lostWei: excess < gross ? excess : gross, gross });
+  }
+  return out.sort((a, b) => (a.lostWei > b.lostWei ? -1 : a.lostWei < b.lostWei ? 1 : 0));
+}
+
 // The scope targets the test tampered with: address -> "0x… (Name) via vm.how[, vm.how]".
 // One store is exempt: a write of a scope token's balance slot, at a base the
 // compiled layout names, for a holder that is itself a scope target. That is how
@@ -772,12 +835,13 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   });
   if (!targets.size) return refuse("the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target");
   if (!invoked) return refuse("the test never made a successful call into a scope target");
-  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  const eth = ethLosses(traces, targets, net, controlTrace);
   const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
-  if (losses.length) {
-    const [victim, wei] = losses[0];
-    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
+  if (eth.length && eth[0].lostWei > 0n) {
+    return { ok: true, kind: "funds", victim: eth[0].victim, lostWei: eth[0].lostWei.toString(), targets: names };
   }
+  // ETH left a target, but only back to addresses that had put it in.
+  const returned = eth.map((e) => `${e.victim} (${targets.get(e.victim)})`);
   // Prefer the ground-truth storage read. Fall back to Transfer logs only for a
   // token the layout does not cover (a real external ERC-20, or a balance under
   // a name we don't track). The fallback still requires the balance slot to have
@@ -789,5 +853,6 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
+  if (returned.length) return refuse(`ETH left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct counts as the test's own). Taking back a deposit is not a drain: show an address that takes out more than it put in. It took over none of its control slots either`);
   return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }
