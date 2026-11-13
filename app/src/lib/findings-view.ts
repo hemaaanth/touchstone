@@ -42,6 +42,46 @@ export function dayOf(ms: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
+// ── The date filter as one range (the date-range picker) ───────────────────
+// The view keeps two local days, "YYYY-MM-DD" or "" for no bound. The picker
+// works with Dates. These convert both ways and name the range on its button.
+
+// A local day as a Date at local midnight, or undefined for "" or a bad day.
+export function parseDay(day: string): Date | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
+  if (!m) return undefined
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  return d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d : undefined
+}
+const dayOfDate = (d: Date | undefined) => (d ? dayOf(d.getTime()) : "")
+
+export interface DayRange {
+  from: Date | undefined
+  to?: Date
+}
+// The view's two days as the picker's range; undefined when neither is set.
+export function toDayRange(from: string, to: string): DayRange | undefined {
+  const f = parseDay(from)
+  const t = parseDay(to)
+  return f || t ? { from: f, to: t } : undefined
+}
+// The picker's range as the view's two days. No range clears both.
+export function fromDayRange(range: DayRange | undefined): { from: string; to: string } {
+  return { from: dayOfDate(range?.from), to: dayOfDate(range?.to) }
+}
+// The button's text: "Any date", "Nov 1 – Nov 13", "From Nov 1", "Until Nov 13",
+// one day as "Nov 13". A day outside `now`'s year carries its year.
+export function rangeLabel(from: string, to: string, now = new Date()): string {
+  const name = (d: Date) =>
+    d.toLocaleDateString("en-US", d.getFullYear() === now.getFullYear() ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })
+  const f = parseDay(from)
+  const t = parseDay(to)
+  if (f && t) return from === to ? name(f) : `${name(f)} – ${name(t)}`
+  if (f) return `From ${name(f)}`
+  if (t) return `Until ${name(t)}`
+  return "Any date"
+}
+
 export function isFiltered(v: FindingsView): boolean {
   return v.q.trim() !== "" || v.scope !== ALL || v.module !== ALL || v.severity !== ALL || v.state !== "all" || v.from !== "" || v.to !== ""
 }

@@ -22,6 +22,7 @@ import { Ellipsis, type LucideIcon } from "lucide-react"
 import type { ScopedRun } from "@/lib/catalog"
 import { ago, DOT, runTitle, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "@/lib/utils"
+import { LIST_CARD_CLASS, rowClass } from "@/components/page-parts-style"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -153,7 +154,7 @@ export function ListSection({
   )
 }
 
-const CARD = "overflow-hidden rounded-xl border bg-card"
+const CARD = LIST_CARD_CLASS
 
 // The one bordered card that holds the rows. Up and Down move between rows.
 // Home and End go to the first and the last row.
@@ -187,7 +188,9 @@ function useCutTooltip(ref: React.RefObject<HTMLSpanElement | null>) {
 
 // The name of a row. It is the row's one focus stop when the row opens a
 // detail. A name too long for the row ends in "…" and shows whole in a tooltip.
-function RowTitle({ title, opens }: { title: string; opens: boolean }) {
+// A row's title. With `opens`, it is the row's button (data-row-main): the
+// list's arrow keys move between these, and Enter opens the row.
+export function RowTitle({ title, opens }: { title: string; opens: boolean }) {
   const text = useRef<HTMLSpanElement>(null)
   const cut = useCutTooltip(text)
   return (
@@ -202,6 +205,23 @@ function RowTitle({ title, opens }: { title: string; opens: boolean }) {
       </TooltipTrigger>
       <TooltipContent align="start">{title}</TooltipContent>
     </Tooltip>
+  )
+}
+
+// A row's one muted line: the items joined with a dot. A false item is
+// skipped. A plain item never wraps; a JSX item sets its own shrink.
+export function RowMeta({ items }: { items?: React.ReactNode[] }) {
+  const line = (items ?? []).filter((m) => m !== null && m !== undefined && m !== false && m !== "")
+  if (!line.length) return null
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
+      {Children.map(line, (m, i) => (
+        <>
+          {i > 0 ? <span aria-hidden className="shrink-0 opacity-60">·</span> : null}
+          {isValidElement(m) ? m : <span className="shrink-0 whitespace-nowrap">{m}</span>}
+        </>
+      ))}
+    </div>
   )
 }
 
@@ -238,18 +258,8 @@ export function ListRow({
   active?: boolean
   className?: string
 }) {
-  const line = (meta ?? []).filter((m) => m !== null && m !== undefined && m !== false && m !== "")
   return (
-    <li
-      data-slot="list-row"
-      data-active={active || undefined}
-      onClick={onOpen}
-      className={cn(
-        "flex items-start gap-3 px-4 py-3 transition-colors first:rounded-t-[calc(var(--radius-xl)-1px)] last:rounded-b-[calc(var(--radius-xl)-1px)] data-active:bg-muted/50",
-        onOpen && "cursor-pointer hover:bg-muted/50 has-[[data-row-main]:focus-visible]:bg-muted/50 has-[[data-row-main]:focus-visible]:ring-2 has-[[data-row-main]:focus-visible]:ring-ring/50 has-[[data-row-main]:focus-visible]:ring-inset",
-        className,
-      )}
-    >
+    <li data-slot="list-row" data-active={active || undefined} onClick={onOpen} className={cn("flex items-start gap-3", rowClass(!!onOpen), className)}>
       {icon ? (
         <span aria-hidden className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
           {icon}
@@ -269,16 +279,7 @@ export function ListRow({
             )}
             {badges ? <span className="flex shrink-0 items-center gap-1.5">{badges}</span> : null}
           </div>
-          {line.length ? (
-            <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
-              {Children.map(line, (m, i) => (
-                <>
-                  {i > 0 ? <span aria-hidden className="shrink-0 opacity-60">·</span> : null}
-                  {isValidElement(m) ? m : <span className="shrink-0 whitespace-nowrap">{m}</span>}
-                </>
-              ))}
-            </div>
-          ) : null}
+          <RowMeta items={meta} />
         </div>
         {trailing ? <div className="flex min-w-0 shrink-0 items-center @xl:max-w-[55%] @xl:justify-end">{trailing}</div> : null}
       </div>

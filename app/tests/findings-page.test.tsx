@@ -370,4 +370,98 @@ describe("a row: red only on a proven finding, green only after a replay", () =>
   })
 })
 
+// ── N2: still columns, and one date range ──────────────────────────────────
+
+const { fromDayRange, parseDay, rangeLabel, toDayRange } = await import("../src/lib/findings-view")
+const { FINDING_ROW_COLS, FindingsLoading } = await import("../src/components/findings-page")
+
+describe("the date range (one picker for the view's two days)", () => {
+  const NOW = new Date(2026, 10, 13)
+  const d = (y: number, m: number, day: number) => new Date(y, m - 1, day)
+
+  test("from only: the range has a start and no end, and reads 'From …'", () => {
+    expect(toDayRange("2026-11-01", "")).toEqual({ from: d(2026, 11, 1), to: undefined })
+    expect(fromDayRange({ from: d(2026, 11, 1) })).toEqual({ from: "2026-11-01", to: "" })
+    expect(rangeLabel("2026-11-01", "", NOW)).toBe("From Nov 1")
+  })
+
+  test("to only: the range has an end and no start, and reads 'Until …'", () => {
+    expect(toDayRange("", "2026-11-13")).toEqual({ from: undefined, to: d(2026, 11, 13) })
+    expect(fromDayRange({ from: undefined, to: d(2026, 11, 13) })).toEqual({ from: "", to: "2026-11-13" })
+    expect(rangeLabel("", "2026-11-13", NOW)).toBe("Until Nov 13")
+  })
+
+  test("both: one range, both ways; one day reads as that day; another year carries its year", () => {
+    const r = toDayRange("2026-11-01", "2026-11-13")
+    expect(r).toEqual({ from: d(2026, 11, 1), to: d(2026, 11, 13) })
+    expect(fromDayRange(r)).toEqual({ from: "2026-11-01", to: "2026-11-13" })
+    expect(rangeLabel("2026-11-01", "2026-11-13", NOW)).toBe("Nov 1 – Nov 13")
+    expect(rangeLabel("2026-11-13", "2026-11-13", NOW)).toBe("Nov 13")
+    expect(rangeLabel("2025-12-30", "2026-01-02", NOW)).toBe("Dec 30, 2025 – Jan 2")
+  })
+
+  test("clear: no range gives two empty days and 'Any date'; a bad day is no bound", () => {
+    expect(fromDayRange(undefined)).toEqual({ from: "", to: "" })
+    expect(toDayRange("", "")).toBeUndefined()
+    expect(rangeLabel("", "", NOW)).toBe("Any date")
+    for (const bad of ["2026-02-30", "2026-13-01", "11/01/2026", "x"]) expect(parseDay(bad)).toBeUndefined()
+    expect(toDayRange("2026-02-30", "")).toBeUndefined()
+  })
+
+  test("the filter itself is unchanged: the picker's days filter as the two inputs did", () => {
+    const days = fromDayRange({ from: d(2026, 9, 10), to: d(2026, 9, 12) })
+    const shown = filterFindings(many, { ...DEFAULT_VIEW, ...days })
+    expect(shown.length).toBeGreaterThan(0)
+    for (const f of shown) {
+      const day = new Date(f.at as number)
+      expect(day >= d(2026, 9, 10) && day < d(2026, 9, 13)).toBe(true)
+    }
+  })
+})
+
+describe("still columns: every row has the same tracks, whatever its title, module or state", () => {
+  const rows: FindingSummary[] = [
+    { ...many[1], title: "A" },
+    { ...many[2], title: "A much longer finding title that will be cut at the edge of its own column, never pushing the marks", pack: "supply-chain" },
+    { ...many[3], title: "Proven high", proven: true, severity: "high" as const, pack: "web" },
+    { ...many[4], title: "Dismissed", dismissed: true, pack: "domains" },
+    { ...many[5], title: "No module", pack: "" },
+    { ...many[6], title: "tls-cipherlist_3des_idea", severity: "low", at: null },
+  ]
+  const html = renderToStaticMarkup(
+    <ul>
+      {rows.map((f) => (
+        <FindingListRow key={f.id} finding={f} moduleTitle={f.pack || "Unknown"} run={undefined} active={false} onOpen={() => {}} onCopy={() => {}} onOpenRun={() => {}} />
+      ))}
+    </ul>,
+  )
+  const lis = [...html.matchAll(/<li data-slot="finding-row"[^>]*class="([^"]*)"/g)].map((m) => m[1])
+
+  test("every row is one grid with the same column tracks", () => {
+    expect(lis).toHaveLength(rows.length)
+    for (const cls of lis) expect(cls).toContain(FINDING_ROW_COLS)
+    // Only the dismissed row adds a class (its muted title); the tracks are the same.
+    const tracks = lis.map((c) => c.match(/grid-cols-\[[^\]]*\]/)?.[0])
+    expect(new Set(tracks).size).toBe(1)
+    expect(tracks[0]).toBe("grid-cols-[2rem_minmax(0,1fr)_1.25rem_1.75rem_2rem]")
+  })
+
+  test("each row has its severity and module cells in their own tracks, in the same order, even with no module", () => {
+    const cells = html.split('<li data-slot="finding-row"').slice(1).map((li) => [...li.matchAll(/data-col="(\w+)"/g)].map((m) => m[1]))
+    expect(cells).toEqual(rows.map(() => ["severity", "module"]))
+  })
+
+  test("the loading rows use the same tracks, so the list does not move when the findings arrive", () => {
+    const loading = renderToStaticMarkup(<FindingsLoading />)
+    const tracks = [...loading.matchAll(/data-slot="finding-row" class="([^"]*)"/g)].map((m) => m[1])
+    expect(tracks.length).toBeGreaterThan(0)
+    for (const cls of tracks) expect(cls).toContain(FINDING_ROW_COLS)
+  })
+
+  test("the title is the only flexible track, and it truncates", () => {
+    expect(FINDING_ROW_COLS.match(/minmax\(0,1fr\)/g)).toHaveLength(1)
+    expect(html).toContain('class="truncate"')
+  })
+})
+
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }))
