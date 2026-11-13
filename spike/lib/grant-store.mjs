@@ -171,7 +171,7 @@ const heldLocks = new Map(); // lock path -> our token
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // For tests only: called between judging a lock stale and breaking it, so a
 // test can change the lock in that gap or make two processes meet there.
-export const lockTestHooks = { afterStaleJudged: null };
+export const lockTestHooks = { afterStaleJudged: null, beforeBreakUnlink: null };
 
 // What sits at a lock path: null (nothing), { bad: true } (not a regular
 // file), or { raw, token, owner, ageMs }.
@@ -212,29 +212,50 @@ function isStale(lock, { owner, ageMs }, maxAgeMs) {
 }
 
 // Break the stale lock `seen`, one breaker at a time. Removes the lock only
-// when it is still exactly `seen`. Returns nothing: the caller tries "wx" again.
-function breakStale(lock, seen) {
+// when it is still exactly `seen`. Returns the pid of another live breaker
+// when one is at work (the caller waits), else null; the caller tries "wx"
+// again either way.
+//   THE BREAKER FILE "<lock>.break" holds { pid, at, token }. It must be a
+//   regular file: a link or a folder there is refused like one at the lock
+//   path, never followed and never removed. A breaker file is stale when its
+//   process is gone, when it has no owner after 2 s, or when it is older than
+//   BREAK_STALE_MS (a break takes microseconds, so a breaker that old is
+//   stuck); a stale one is removed. A live, young breaker is waited for, inside
+//   the same bound as a live lock.
+function breakStale(what, lock, seen) {
   const breaker = `${lock}.break`;
   try {
-    writeFileSync(breaker, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+    writeFileSync(breaker, JSON.stringify({ pid: process.pid, at: Date.now(), token: randomUUID() }), { flag: "wx", mode: 0o600 });
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
     // Another process is breaking it now, or crashed while doing so.
     const b = lockAt(breaker);
-    if (b && !b.bad && isStale(breaker, b, BREAK_STALE_MS)) rmSync(breaker, { force: true });
-    return;
+    if (!b) return null; // finished just now
+    if (b.bad) throw notALockFile(what, breaker);
+    if (isStale(breaker, b, BREAK_STALE_MS)) {
+      // Only that very breaker file: the same content it had when judged.
+      if (lockAt(breaker)?.raw === b.raw) rmSync(breaker, { force: true });
+      return null;
+    }
+    return b.owner?.pid ?? "unknown";
   }
   try {
     const now = lockAt(lock);
-    if (now && !now.bad && now.raw === seen.raw && isStale(lock, now, LOCK_STALE_MS)) unlinkSync(lock);
+    if (now && !now.bad && now.raw === seen.raw && isStale(lock, now, LOCK_STALE_MS)) {
+      lockTestHooks.beforeBreakUnlink?.();
+      unlinkSync(lock);
+    }
   } finally {
     rmSync(breaker, { force: true });
   }
+  return null;
 }
 
 const notALockFile = (what, lock) =>
   new Error(`Refused: the ${what} lock ${lock} is a link or a folder, not a lock file. Touchstone does not follow it. Nothing was changed. Remove it, then try again.`);
 
+// Every pass of the loop ends at one place: the deadline check, then a short
+// pause. No path tries again without both, so the wait bound holds everywhere.
 export function withStoreLock(file, what, fn) {
   const lock = `${file}.lock`;
   if (heldLocks.has(lock)) return fn();
@@ -250,18 +271,19 @@ export function withStoreLock(file, what, fn) {
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
+    let holder = "unknown";
     const seen = lockAt(lock);
-    if (!seen) continue; // released just now: try again at once
-    if (seen.bad) throw notALockFile(what, lock);
-    if (isStale(lock, seen, LOCK_STALE_MS)) {
+    if (seen?.bad) throw notALockFile(what, lock);
+    if (seen && isStale(lock, seen, LOCK_STALE_MS)) {
       lockTestHooks.afterStaleJudged?.();
-      breakStale(lock, seen);
-      continue;
+      holder = breakStale(what, lock, seen) ?? holder;
+    } else if (seen) {
+      holder = seen.owner?.pid ?? holder;
     }
     if (Date.now() > deadline) {
-      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${holder}) is writing it. Nothing was changed. Try again in a moment.`);
     }
-    pause(10);
+    pause(seen ? 10 : 1);
   }
   try {
     return fn();
