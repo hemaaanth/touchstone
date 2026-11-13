@@ -914,6 +914,13 @@ function attemptBase(run) {
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
+  // A Stop that was taken before this point starts no worker. Every start of
+  // an audit worker comes through here (a new run, and a run the boot resumes),
+  // so no caller can miss the check.
+  if (run.stopping) {
+    endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
+    return
+  }
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
@@ -1729,7 +1736,12 @@ export function followUp(run, text, clientId) {
     broadcast(run, { t: Date.now(), ev: "stopped" })
     await end()
   }
+  // The one place that starts a follow-up worker. A Stop can be taken while the
+  // workspace is prepared (stopRun): during the build, during the last fetch of
+  // a source restore, or when there is nothing to restore. Whatever the path,
+  // it ends here, and a Stop that was taken starts no worker.
   const start = (note) => {
+    if (run.stopping) return void stopped()
     const since = Date.now()
     const errFrom = run.stderr.length // the card must not quote an earlier worker's output
     const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {

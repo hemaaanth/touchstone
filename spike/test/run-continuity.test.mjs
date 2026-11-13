@@ -81,7 +81,12 @@ mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmS
 // A live run opens a Docker boundary. These tests have no live target, so a live
 // scope gets an inert gate. Every other scope keeps the real one.
 const realReach = await import("../lib/reach.mjs");
-const openReach = (target, opts) => (target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts));
+// One extra: a test can act while the reach opens (a boot that resumes a run waits here).
+let reachHook = null;
+const openReach = async (target, opts) => {
+  await reachHook?.();
+  return target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts);
+};
 mock.module("../lib/reach.mjs", { exports: { ...realReach, openReach } });
 // No DNS: the server's restore of a fetched source asks for github.com's address.
 const realDns = await import("node:dns/promises");
@@ -135,7 +140,12 @@ const prepareRunWorkspace = async (...args) => {
   afterBuild?.(ws);
   return ws;
 };
-mock.module("../lib/targets.mjs", { exports: { ...realTargets, prepareRunWorkspace } });
+const prepareMultiWorkspace = async (...args) => {
+  const ws = await realTargets.prepareMultiWorkspace(...args);
+  afterBuild?.(ws);
+  return ws;
+};
+mock.module("../lib/targets.mjs", { exports: { ...realTargets, prepareRunWorkspace, prepareMultiWorkspace } });
 const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-store.mjs");
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
@@ -1607,8 +1617,8 @@ test("A6: the pin is found whatever the event's spelling of the URL, and a fetch
 });
 
 // A finished run whose agent fetched two repos, each at its first commit. The branches moved on since.
-async function twoFetched(api, name) {
-  const members = [1, 2].map((n) => ({ url: `https://github.com/acme/${name}${n}`, where: `vendor/acme__${name}${n}`, repo: path.join(GIT_REMOTE, "acme", `${name}${n}.git`) }));
+async function twoFetched(api, name, count = 2) {
+  const members = Array.from({ length: count }, (_, k) => k + 1).map((n) => ({ url: `https://github.com/acme/${name}${n}`, where: `vendor/acme__${name}${n}`, repo: path.join(GIT_REMOTE, "acme", `${name}${n}.git`) }));
   for (const m of members) {
     m.commit = gitCommit(m.repo, { "src/Lib.ts": "export const v = 1\n" });
     gitCommit(m.repo, { "src/Lib.ts": "export const v = 2\n" });
@@ -1733,6 +1743,133 @@ test("A6: a joined run whose stream has no packs event still gets the restored c
       assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
     }
   });
+});
+
+// ---- A Stop that was taken starts no worker ---------------------------------------
+
+// The run's lock is free: this process can take it.
+function lockFree(id) {
+  const db = new DatabaseSync(path.join(RESULTS, `run-${id}.owner.sqlite`), { timeout: 0 });
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+// After a Stop that was taken while a follow-up prepared its workspace.
+function stoppedClean(api, id, workersBefore, why) {
+  const r = api.getRun(id);
+  assert.equal(spawns.length, workersBefore, `${why}: no worker started`);
+  assert.ok(r.events.slice(-2).map((e) => e.ev).join() === "stopped,closed", `${why}: the run is stopped (${r.events.slice(-4).map((e) => e.ev)})`);
+  assert.ok(["no-finding", "recorded", "error"].includes(r.status) && r.replying === false, `${why}: the run is idle`);
+  assert.ok(lockFree(id), `${why}: the run's lock is free`);
+  const ws = kept(id).ws;
+  if (ws) {
+    made.push(ws);
+    assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], `${why}: no credential in the kept workspace`);
+  }
+  assert.equal(kept(id).restored, undefined, `${why}: the record does not say a credential is in the files`);
+  return r;
+}
+
+test("a Stop taken during the only source of a restore, or during the last of several, starts no worker", async () => {
+  await withGit(async () => {
+    for (const [name, count] of [["only", 1], ["last", 3]]) {
+      const run = await twoFetched(runs, name, count);
+      rmSync(run.ws, { recursive: true, force: true });
+      const before = spawns.length;
+      const n = closes(run.id);
+      let stop = null;
+      // The operator presses Stop while the last source is fetched.
+      restoreHook = async (ws, u, real) => {
+        if (u === run.members.at(-1).url) stop = runs.stopRun(run.id);
+        return real(ws, u);
+      };
+      try {
+        steerRun(run.id, "Look again.");
+        await settle(run.id, n);
+      } finally {
+        restoreHook = null;
+      }
+      assert.deepEqual(stop, { ok: true }, `${name}: the Stop was taken`);
+      stoppedClean(runs, run.id, before, name);
+      // Every source came back before the stop was seen, so nothing is left to restore.
+      assert.equal(kept(run.id).restoring, undefined);
+    }
+  });
+});
+
+test("a Stop taken while a lost workspace is built, with nothing to restore, starts no worker: one module and a joined run, with a credential", async () => {
+  await withLivePack(async () => {
+    const server = await restart();
+    // One module (ai-mcp), and a joined run (web, ai-mcp). Each has the scope's access token.
+    const one = await liveEnded(server);
+    const pair = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    const joined = await server.createRun({ targetId: pair.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    await settle(joined.id, 0, server);
+    for (const [why, run] of [["one module", one], ["a joined run", { id: joined.id, ws: spawns.at(-1).args[4] }]]) {
+      rmSync(run.ws, { recursive: true, force: true });
+      const before = spawns.length;
+      const n = closes(run.id, server);
+      let stop = null;
+      let built = null;
+      // The operator presses Stop while the new workspace is built. It holds the token at that moment.
+      afterBuild = (ws) => {
+        if (stop) return; // a joined run builds each module through the same step
+        built = ws;
+        stop = server.stopRun(run.id);
+      };
+      try {
+        server.steerRun(run.id, "Look again.");
+        await settle(run.id, n, server);
+      } finally {
+        afterBuild = null;
+      }
+      assert.deepEqual(stop, { ok: true }, `${why}: the Stop was taken`);
+      assert.ok(built);
+      made.push(built);
+      stoppedClean(server, run.id, before, why);
+      if (existsSync(built)) assert.deepEqual(holding(built, [TOKEN, ADMIN]), [], `${why}: the built workspace holds no credential`);
+    }
+  });
+});
+
+test("a Stop taken while the boot resumes a run starts no worker", async () => {
+  // A solo run whose worker is running when the server dies.
+  let server = await restart();
+  scripts.push({ act: work, hang: true });
+  const { id } = await server.createRun({ targetId: scope.id, pack: "review", mode: "solo" });
+  for (let i = 0; i < 300 && server.getRun(id).status !== "running"; i++) await new Promise((res) => setTimeout(res, 10));
+  for (let i = 0; i < 300 && !existsSync(path.join(RESULTS, `run-${id}.state.json`)); i++) await new Promise((res) => setTimeout(res, 10));
+  const ws = spawns.at(-1).args[4];
+  made.push(ws);
+  const before = spawns.length;
+  lockOf(id).close();
+  // The next boot resumes it. The operator presses Stop while the reach opens, before the worker starts.
+  let ready;
+  const booted = new Promise((res) => (ready = res));
+  let stop = null;
+  reachHook = async () => {
+    const api = await booted;
+    reachHook = null;
+    stop = api.stopRun(id);
+  };
+  try {
+    server = await restart();
+    ready(server);
+    await settle(id, 0, server);
+  } finally {
+    reachHook = null;
+  }
+  assert.deepEqual(stop, { ok: true });
+  assert.equal(spawns.length, before, "no worker started");
+  const r = server.getRun(id);
+  assert.deepEqual(r.events.slice(-3).map((e) => e.ev), ["stopped", "status", "closed"]);
+  assert.ok(lockFree(id));
 });
 
 // ---- A workspace record that cannot be read is not a record that is not there --------
