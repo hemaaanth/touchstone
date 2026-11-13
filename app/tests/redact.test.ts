@@ -459,3 +459,37 @@ describe("redact: a cookie value is masked per cookie (delta review 4)", () => {
     for (const s of ["Cookie: " + "a=b; ".repeat(MB / 6), "Cookie: a=" + ";".repeat(MB), "Cookie: " + "=".repeat(MB)]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })
+
+describe("redact: a HAR or app header cell held as text (delta review 4)", () => {
+  const basic = "Basic dXNlcjpwYXNzd29yZDEyMw=="
+  test("the value under a secret name is masked", () => {
+    expect(text(`{"name":"Authorization","value":"${basic}"}`)).toBe(`{"name":"Authorization","value":"Basic [REDACTED]"}`)
+    expect(text(`[{"name":"x-api-key", "value": "tk_live9fakeZ"},{"name":"Accept","value":"*/*"}]`)).toBe(`[{"name":"x-api-key", "value": "[REDACTED]"},{"name":"Accept","value":"*/*"}]`)
+    expect(text(`{"name":"X-Api-Key","redacted":false,"value":"tk_live9fakeZ"}`)).toBe(`{"name":"X-Api-Key","redacted":false,"value":"[REDACTED]"}`)
+    expect(text(`{\\"name\\":\\"Authorization\\",\\"value\\":\\"${basic}\\"}`)).toBe(`{\\"name\\":\\"Authorization\\",\\"value\\":\\"Basic [REDACTED]\\"}`)
+  })
+  test("a placeholder, a weak Bearer value and a 0x address stay", () => {
+    for (const s of [
+      `{"name":"token","value":"<your token>"}`,
+      `{"name":"Authorization","value":"Bearer junk"}`,
+      `{"name":"token","value":"0x1111111111111111111111111111111111111111"}`,
+      `{"name":"Accept","value":"application/json"}`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a PoC script that holds a HAR cell still parses", () => {
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor
+    const script = `const har = JSON.parse('{"name":"Authorization","value":"${basic}"}');\nconst esc = "{\\"name\\":\\"X-Api-Key\\",\\"value\\":\\"tk_live9fakeZ\\"}";`
+    const out = text(script)
+    expect(out).not.toContain("tk_live9fakeZ")
+    expect(() => new AsyncFunction(out)).not.toThrow()
+  })
+  test("1 MB of cells finishes in linear time", () => {
+    const MB = 1 << 20
+    for (const s of [
+      '"name":"a"'.repeat(MB / 10),
+      '{"name":"Authorization"' + ',"x":1'.repeat(MB / 6),
+      '{"name":"Authorization","value":"' + "\\\\".repeat(MB / 2),
+      '{\\"name\\":\\"token\\"' + ',\\"x\\":true'.repeat(MB / 12),
+    ]) expect(timeMs(s)).toBeLessThan(2000)
+  })
+})

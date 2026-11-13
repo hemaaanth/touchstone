@@ -39,6 +39,17 @@ function secretName(name) {
 // as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
 const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
+// A HAR or app header cell held as text: {"name":"Authorization",
+// "value":"Basic …"}, maybe with short fields between them, such as
+// "redacted":false. The value is judged under the name. The second form is
+// the same cell escaped one level deeper.
+function namedValue(q, body) {
+  const field = String.raw`${q}(?!value${q})[\w-]{1,32}${q}\s*:\s*(?:true|false|null|-?\d{1,20}|${q}[^"\\\r\n]{0,64}${q})`
+  return new RegExp(String.raw`(${q}name${q}\s*:\s*${q})([^"\\\r\n]{1,64})(${q}(?:\s*,\s*${field})*\s*,\s*${q}value${q}\s*:\s*${q})(${body})${q}`, "g")
+}
+const NAMED_VALUE = namedValue('"', String.raw`(?:\\.|[^"\\])*`)
+const NAMED_VALUE_ESC = namedValue(String.raw`\\"`, String.raw`(?:[^"\\]|\\(?!"))*`)
+
 // The same pair in JS, Python or a config file: the key is unquoted or in
 // ', ` or " quotes, the separator is ":" or "=", and the value is in ', ` or
 // " quotes. { apiKey: 'tk_…' }, headers={'Authorization': 'Basic …'} and
@@ -182,6 +193,11 @@ function maskCodeValue(name, value) {
   return maskPairValue(name, value)
 }
 
+function maskNamed(m, head, name, mid, value) {
+  const masked = maskCodeValue(name, value)
+  return masked == null ? m : `${head}${name}${mid}${masked}${m.slice(head.length + name.length + mid.length + value.length)}`
+}
+
 function maskPairValue(name, value) {
   if (!secretName(name) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
@@ -218,7 +234,7 @@ function maskEnv(m, name, sep, dq, sq, bare) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -228,6 +244,8 @@ function redactText(text) {
     const masked = maskPairValue(name, v)
     return masked == null ? m : `\\"${name}\\"${sep}\\"${masked}\\"`
   })
+  out = out.replace(NAMED_VALUE, maskNamed)
+  out = out.replace(NAMED_VALUE_ESC, maskNamed)
   out = out.replace(CODE_PAIR, (m, kq, name, sep, q, v) => {
     const masked = maskCodeValue(name, v)
     return masked == null ? m : `${kq}${name}${kq}${sep}${q}${masked}${q}`
