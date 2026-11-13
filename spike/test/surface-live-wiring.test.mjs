@@ -1,7 +1,7 @@
 // katana and jsluice in the live surface path: capture -> pinned snapshot -> inventory leads -> run view.
 // The capture tools are faked with recorded output. No request leaves the machine.
 // The snapshot analyzer is real: it runs in the domains tools image, offline.
-import { test, mock, beforeEach } from 'node:test';
+import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +52,13 @@ mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
   calls.push({ name, ...opts });
   return { stderr: '', timedOut: false, ...answers[name](opts) };
 } } });
+// The capture loads grant-store, which reads the console token when it loads. Point it at
+// test values first, so no real token, grant or scope file is read (1h review F4).
+const store = mkdtempSync(join(tmpdir(), 'surface-wiring-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(store, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(store, 'scopes.json');
+after(() => rmSync(store, { recursive: true, force: true }));
 const { default: surface } = await import('../packs/surface/pack.mjs');
 const { default: domains } = await import('../packs/domains/pack.mjs');
 const { detectorsFor } = await import('../packs/domains/checks.mjs');
