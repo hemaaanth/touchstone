@@ -141,6 +141,15 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     rejected(status, verdict, /control: healthy reference must pass[\s\S]*strong campaign/);
   });
 
+  // Differential: a raw cheatcode call hides from the AST scan (the name is only a string).
+  // The old gate accepted it (pass, killRate 0.67). Only the behavior-equal build B exposes it.
+  it("ReviewRawCheat: raw-selector getDeployedCode size oracle fails on build B", { skip }, async () => {
+    const { status, verdict } = await gate("ReviewRawCheat", ["--known-bug"]);
+    rejected(status, verdict, /differential: invariant_rawCheat\(\) passes on healthy build A but fails on behavior-equal build B/);
+    assert.deepEqual(verdict.differential.builds.map((b) => b.name), ["A", "B"]);
+    assert.notEqual(verdict.differential.builds[0].runtimeHash, verdict.differential.builds[1].runtimeHash);
+  });
+
   it("ReviewProof accepts behavioral control and new mutant failures", { skip }, async () => {
     const { status, verdict } = await gate("ReviewProof", ["--known-bug"]);
     assert.equal(status, 0, JSON.stringify(verdict.reasons));

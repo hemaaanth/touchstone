@@ -1,31 +1,60 @@
 #!/usr/bin/env node
 // Vacuity gate: decide whether a Foundry invariant suite is evidence or theatre.
 //
-// A suite is evidence only if all three hold:
-//   1. liveness  - the handler reaches the target and leaves the initial state
-//   2. mutants   - at least one small defect in the target is killed
-//   3. known bug - when a planted bug exists, at least one invariant fails on it
+// A suite is evidence only if all of these hold:
+//   1. environment  - the gate owns foundry.toml, forge-std and the fuzz seed
+//   2. scan         - no compiled project source reads code, files, env or randomness
+//   3. control      - the invariant passes on the healthy FeeVault, also in a strong campaign
+//   4. differential - it also passes on build B: same behavior, different bytes
+//   5. liveness     - the handler reaches src/FeeVault.sol and changes its state
+//   6. mutants      - at least one small defect in src/FeeVault.sol is killed
+//   7. known bug    - with --known-bug, the invariant fails on the planted bug
 //
-// The gate always works on a throwaway copy. It never edits the project.
+// The gate always works on throwaway copies. It never edits the project.
 //
 // Usage:
-//   node gate.mjs --project <dir> --test <test/File.t.sol> [--known-bug]
+//   node gate.mjs --project <dir> --test <test/File.t.sol> [--known-bug] [--keep]
 //
 // stdout is one JSON verdict. Progress goes to stderr.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { runDocker } from "../../../lib/wrap.mjs";
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
+const SOLC = "0.8.38";
+const USER = `${process.getuid()}:${process.getgid()}`;
+// One fixed seed for every run: healthy A, healthy B, known bug, each mutant.
+const SEED = "0x7661637569747921";
+const CAMPAIGN = {
+  score: { runs: 32, depth: 32 }, // A, B, known bug and mutants are compared with this
+  strong: { runs: 256, depth: 32 }, // healthy A only, no --debug
+  debug: { runs: 1, depth: 32 }, // one replayed campaign for the liveness trace
+};
+// The gate's own forge-std. The project's lib/forge-std is never copied or compiled.
+const FORGE_STD = {
+  version: "1.9.4",
+  dir: path.join(HERE, "vendor", "forge-std", "src"),
+  // sha256 over sorted lines "<relative path>\0<sha256 of file>\n" for every file in src/.
+  treeSha256: "bc3cf851aeea54c57710b26436641a985a599ba4d1eaa98fba7317773c3194ca",
+  mount: "/forge-std/src",
+};
+// The scored target is fixed. A decoy contract cannot take its place.
+const TARGET = {
+  path: "src/FeeVault.sol",
+  contract: "FeeVault",
+  sha256: "131fcfda4b5b4fe2d3e1c3653c9d034c4781447afefa31efe83f89742843d615",
+};
 const REPAIR = {
   find: "    function rescue(address payable to, uint256 amount) external {",
   replace: "    function rescue(address payable to, uint256 amount) external onlyOwner {",
 };
-const USER = `${process.getuid()}:${process.getgid()}`;
 
-const SKIP = new Set(["out", "cache", ".git", "broadcast", ".vacuity-gate"]);
+const SKIP = new Set(["out", "cache", ".git", "broadcast", ".vacuity-gate", "node_modules"]);
 
 // Fixed, deterministic mutants. Each is one literal edit of the reference
 // FeeVault. A pattern must occur exactly once, else the mutant is reported as
@@ -85,6 +114,8 @@ function log(msg) {
   process.stderr.write(`[gate] ${msg}\n`);
 }
 
+const sha256 = (data) => crypto.createHash("sha256").update(data).digest("hex");
+
 function parseArgs(argv) {
   const out = { knownBug: false, keep: false };
   for (let i = 0; i < argv.length; i++) {
@@ -108,51 +139,101 @@ function parseArgs(argv) {
     if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`test symlink forbidden: ${out.test}`);
   }
   if (!fs.statSync(current).isFile()) throw new Error(`no such test file: ${out.test}`);
-  out.test = relative;
+  if (!relative.endsWith(".sol")) throw new Error(`test must be a .sol file: ${out.test}`);
+  out.test = relative.split(path.sep).join("/");
   return out;
 }
 
-function copyProject(src, dest) {
+function listFiles(root) {
+  const out = [];
+  (function walk(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isSymbolicLink()) throw new Error(`symlink forbidden: ${path.relative(root, full)}`);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile()) out.push(path.relative(root, full).split(path.sep).join("/"));
+    }
+  })(root);
+  return out.sort();
+}
+
+function treeHash(root) {
+  return sha256(listFiles(root).map((rel) => `${rel}\0${sha256(fs.readFileSync(path.join(root, rel)))}\n`).join(""));
+}
+
+// Copy only Solidity sources. foundry.toml, remappings.txt, .env and the
+// project's lib/forge-std are never copied, so they cannot change the build.
+function copySolidity(src, dest) {
+  const files = [];
+  (function walk(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      const rel = path.relative(src, full).split(path.sep).join("/");
+      if (e.isSymbolicLink()) throw new Error(`project symlink forbidden: ${rel}`);
+      if (e.isDirectory()) {
+        if (SKIP.has(rel.split("/")[0]) || rel === "lib/forge-std") continue;
+        walk(full);
+      } else if (e.isFile() && rel.endsWith(".sol")) {
+        files.push(rel);
+      }
+    }
+  })(src);
+  for (const rel of files) {
+    fs.mkdirSync(path.dirname(path.join(dest, rel)), { recursive: true });
+    fs.copyFileSync(path.join(src, rel), path.join(dest, rel));
+  }
+  return files;
+}
+
+// Copy a gate workspace (sources and the gate's foundry.toml, no build output).
+function copyWorkspace(src, dest) {
   fs.cpSync(src, dest, {
     recursive: true,
     filter: (p) => {
       const rel = path.relative(src, p);
       if (!rel) return true;
       if (SKIP.has(rel.split(path.sep)[0])) return false;
-      if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`project symlink forbidden: ${rel}`);
+      if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`workspace symlink forbidden: ${rel}`);
       return true;
     },
   });
 }
 
-// Follow both relative and Foundry remapped imports. Do not mistake an unused
-// helper for evidence; only files reachable from the selected test matter.
-function fingerprintReads(root, test) {
-  const found = [], seen = new Set();
-  const config = fs.readFileSync(path.join(root, "foundry.toml"), "utf8");
-  const remaps = [...config.matchAll(/"([^"\s=]+)=([^"\s]+)"/g)].map((m) => [m[1], m[2]]);
-  function walk(file) {
-    if (seen.has(file) || file.startsWith(path.join(root, "lib", "forge-std") + path.sep)) return;
-    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) throw new Error(`unresolved project import: ${file}`);
-    seen.add(file);
-    const text = fs.readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
-    if (/\.code(?:hash|\b)|\bextcode(?:hash|size|copy)\b|\b(?:creationCode|runtimeCode)\b|\bgetCode\s*\(/i.test(text)) {
-      found.push(path.relative(root, file));
-    }
-    for (const match of text.matchAll(/\bimport\s+(?:[^;]*?\bfrom\s*)?["']([^"']+)["']\s*;/g)) {
-      const name = match[1];
-      if (name.startsWith("forge-std/")) continue;
-      const mapped = remaps.find(([prefix]) => name.startsWith(prefix));
-      const candidates = name.startsWith(".") ? [path.resolve(path.dirname(file), name)] : [
-        path.resolve(root, name),
-        ...(mapped ? [path.resolve(root, mapped[1], name.slice(mapped[0].length))] : []),
-        path.resolve(root, "lib", name.split("/")[0], "src", ...name.split("/").slice(1)),
-      ];
-      walk(candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]);
-    }
-  }
-  walk(path.resolve(root, test));
-  return found;
+// The gate's own config. Written into every workspace, for every run.
+function gateConfig() {
+  return [
+    "[profile.default]",
+    'src = "src"',
+    'test = "test"',
+    'script = "script"',
+    'out = "out"',
+    "libs = []",
+    "auto_detect_remappings = false",
+    `remappings = ["forge-std/=${FORGE_STD.mount}/"]`,
+    `allow_paths = ["${path.posix.dirname(FORGE_STD.mount)}"]`,
+    "ffi = false",
+    "fs_permissions = []",
+    `solc = "${SOLC}"`,
+    "offline = true",
+    "optimizer = false",
+    "via_ir = false",
+    // Forge 1.9 otherwise rewrites `new X()` in tests into vm.deployCode calls.
+    "dynamic_test_linking = false",
+    'extra_output = ["storageLayout"]',
+    "",
+    "[lint]",
+    "lint_on_build = false",
+    "",
+    "[invariant]",
+    `runs = ${CAMPAIGN.score.runs}`,
+    `depth = ${CAMPAIGN.score.depth}`,
+    "fail_on_revert = false",
+    "",
+  ].join("\n");
+}
+
+function writeConfig(ws) {
+  fs.writeFileSync(path.join(ws, "foundry.toml"), gateConfig());
 }
 
 function svmVolume() {
@@ -165,38 +246,392 @@ function svmVolume() {
   return null;
 }
 
-async function forge(ws, argv, timeoutMs = 300_000) {
+let forgeStdMount = null; // verified host copy of the pinned forge-std, mounted read-only
+
+async function forge(ws, argv, { runs = CAMPAIGN.score.runs, depth = CAMPAIGN.score.depth, timeoutMs = 300_000 } = {}) {
   const volume = svmVolume();
   const args = [
     "run", "--rm", "--pull=never", "--network", "none",
-    "-e", "FOUNDRY_INVARIANT_RUNS=1",
+    "-e", `FOUNDRY_INVARIANT_RUNS=${runs}`, "-e", `FOUNDRY_INVARIANT_DEPTH=${depth}`,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", USER,
     "-v", `${ws}:/work`, "-w", "/work",
+    "-v", `${forgeStdMount}:${FORGE_STD.mount}:ro`,
     ...(volume ? ["-v", `${volume}:/home/foundry/.svm`] : []),
     "--entrypoint", "forge", IMAGE, ...argv,
   ];
   return runDocker(args, { ws, timeoutMs });
 }
 
-function resultsFile(ws) {
-  return path.join(ws, ".vacuity-gate", "results.json");
+function compilerErrors(run) {
+  // Show pinned forge-std paths as the import the author wrote (forge-std/X.sol).
+  const text = `${run.stderr}\n${run.stdout}`.replace(/\x1b\[[0-9;]*m/g, "").split(`${FORGE_STD.mount}/`).join("forge-std/");
+  const lines = text.split("\n").filter((l) => /Error|not found|-->/.test(l)).slice(0, 6);
+  return (lines.length ? lines : text.trim().split("\n").slice(-4)).join(" ").replace(/\s+/g, " ").slice(0, 900);
 }
 
-async function runSuite(ws, test, { debug = false, matchTest = null } = {}) {
+const BUILD_NOTE = "The gate ignores the project's foundry.toml and remappings.txt; " +
+  `project lib/forge-std is ignored and forge-std/ resolves to the pinned forge-std ${FORGE_STD.version}.`;
+
+async function buildInfo(ws, paths = []) {
+  fs.rmSync(path.join(ws, "out"), { recursive: true, force: true });
+  fs.rmSync(path.join(ws, "cache"), { recursive: true, force: true });
+  const run = await forge(ws, ["build", "--build-info", "--force", ...paths]);
+  if (run.code !== 0 || run.timedOut) return { error: `build: forge build failed (${compilerErrors(run)}). ${BUILD_NOTE}` };
+  const dir = path.join(ws, "out", "build-info");
+  const sources = new Map(); // path -> { content, ast }
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const info = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+    if (info.solcVersion && info.solcVersion !== SOLC) return { error: `build: unexpected solc ${info.solcVersion}` };
+    for (const [p, s] of Object.entries(info.input?.sources ?? {})) {
+      const ast = info.output?.sources?.[p]?.ast;
+      if (typeof s.content !== "string" || !ast) return { error: `build: build info lacks source or AST for ${p}` };
+      sources.set(p, { content: s.content, ast });
+    }
+  }
+  if (!sources.size) return { error: "build: no build info written" };
+  return { sources };
+}
+
+// Every compiled source must be either the pinned forge-std or a plain
+// project-relative path. Returns an error string or null.
+function checkSources(sources) {
+  for (const [p, s] of sources) {
+    if (p.startsWith(`${FORGE_STD.mount}/`)) {
+      const local = path.join(forgeStdMount, p.slice(FORGE_STD.mount.length + 1));
+      if (!fs.existsSync(local) || fs.readFileSync(local, "utf8") !== s.content) return `build: ${p} is not the pinned forge-std file`;
+      continue;
+    }
+    if (path.posix.isAbsolute(p) || p.split("/").includes("..") || p.startsWith("./")) return `build: compiled source outside the project: ${p}`;
+    if (p === "lib/forge-std" || p.startsWith("lib/forge-std/")) return `build: project lib/forge-std must not be compiled: ${p}`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Scan: read the solc AST of every compiled project source. Strings and
+// comments are not code in the AST, so they cannot hide or fake an access.
+
+const YUL_BANNED = new Map([
+  ["extcodesize", "code access"], ["extcodehash", "code access"], ["extcodecopy", "code access"],
+  ["codesize", "code access"], ["codecopy", "code access"], ["gas", "gas read"],
+]);
+// Groups of Vm cheatcodes. Matched against every function name declared in the pinned Vm.sol.
+const CHEAT_GROUPS = [
+  /code/i, /^read/i, /ffi/i, /^random/i, /^env/i, /gas/i, /^setEnv$/, /^unixTime$/, /^prompt/,
+  /^exists$/, /^is(File|Dir)$/, /^fsMetadata$/, /^projectRoot$/, /^write/, /^copyFile$/, /^remove/,
+  /^createDir$/, /^closeFile$/, /^getArtifactPath/, /^getDeployment/, /^getBroadcast/, /^rpc/,
+  /^sleep$/, /^getFoundryVersion$/,
+];
+const isCodeName = (name) => /code/i.test(name) && !/^(en|de)code/i.test(name);
+
+function walkAst(node, visit, ctx = { fn: null }) {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const n of node) walkAst(n, visit, ctx);
+    return;
+  }
+  let inner = ctx;
+  if (node.nodeType === "FunctionDefinition" || node.nodeType === "ModifierDefinition") inner = { fn: node.id };
+  if (node.nodeType) visit(node, inner);
+  for (const [key, value] of Object.entries(node)) {
+    if (key !== "typeDescriptions" && value && typeof value === "object") walkAst(value, visit, inner);
+  }
+}
+
+function lineOf(content, src) {
+  const start = Number(String(src ?? "").split(":")[0]);
+  if (!Number.isFinite(start)) return 0;
+  return Buffer.from(content).subarray(0, start).toString("utf8").split("\n").length;
+}
+
+function scanSources(sources) {
+  const isVendor = (p) => p.startsWith(`${FORGE_STD.mount}/`);
+  // Cheat names declared by the pinned Vm interfaces.
+  const bannedCheats = new Set();
+  const bannedIds = new Map(); // declaration id -> description
+  const vm = sources.get(`${FORGE_STD.mount}/Vm.sol`);
+  if (vm) walkAst(vm.ast, (n) => {
+    if (n.nodeType === "FunctionDefinition" && CHEAT_GROUPS.some((re) => re.test(n.name))) {
+      bannedCheats.add(n.name);
+      bannedIds.set(n.id, `cheatcode \`vm.${n.name}\``);
+    }
+  });
+
+  function direct(n) {
+    if (n.nodeType === "MemberAccess") {
+      const name = n.memberName;
+      if (isCodeName(name)) return { what: `code access \`.${name}\`` };
+      if (bannedCheats.has(name)) return { what: `cheatcode \`${name}\`` };
+      const type = n.expression?.typeDescriptions?.typeString ?? "";
+      if (/^contract (Vm|VmSafe)$/.test(type) && CHEAT_GROUPS.some((re) => re.test(name))) return { what: `cheatcode \`vm.${name}\`` };
+    }
+    if (n.nodeType === "Identifier" && n.name === "gasleft" && n.referencedDeclaration < 0) return { what: "gas read `gasleft()`", gas: true };
+    if (n.nodeType === "YulFunctionCall") {
+      const name = n.functionName?.name;
+      if (YUL_BANNED.has(name)) return { what: `${YUL_BANNED.get(name)} \`${name}\` in inline assembly`, gas: name === "gas" };
+    }
+    return null;
+  }
+
+  // Taint: a forge-std function that reads code, files, env or randomness, or
+  // calls one that does. Gas reads alone do not taint (console.log uses gas()).
+  const fnDirect = new Map(), fnRefs = new Map(), fnName = new Map();
+  for (const [p, s] of sources) {
+    if (!isVendor(p)) continue;
+    walkAst(s.ast, (n, ctx) => {
+      if (n.nodeType === "FunctionDefinition" || n.nodeType === "ModifierDefinition") fnName.set(n.id, n.name);
+      if (ctx.fn == null) return;
+      const hit = direct(n);
+      if (hit && !hit.gas) fnDirect.set(ctx.fn, true);
+      if (Number.isInteger(n.referencedDeclaration) && n.referencedDeclaration >= 0) {
+        if (!fnRefs.has(ctx.fn)) fnRefs.set(ctx.fn, new Set());
+        fnRefs.get(ctx.fn).add(n.referencedDeclaration);
+      }
+    });
+  }
+  const tainted = new Set([...fnDirect.keys(), ...bannedIds.keys()]);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [fn, refs] of fnRefs) {
+      if (!tainted.has(fn) && [...refs].some((r) => tainted.has(r))) {
+        tainted.add(fn);
+        changed = true;
+      }
+    }
+  }
+
+  const findings = [];
+  const scanned = [];
+  for (const [p, s] of sources) {
+    if (isVendor(p)) continue;
+    scanned.push(p);
+    walkAst(s.ast, (n) => {
+      let hit = direct(n);
+      const ref = n.referencedDeclaration;
+      if (!hit && (n.nodeType === "Identifier" || n.nodeType === "MemberAccess") && tainted.has(ref)) {
+        hit = { what: bannedIds.get(ref) ?? `forge-std helper \`${fnName.get(ref) ?? n.name ?? n.memberName}\` (reads code, files, env or randomness)` };
+      }
+      if (hit) findings.push(`${hit.what} at ${p}:${lineOf(s.content, n.src)}`);
+    });
+  }
+  return { sources: scanned.sort(), findings: [...new Set(findings)] };
+}
+
+function firstInvariant(sources, test) {
+  const unit = sources.get(test);
+  const found = [];
+  if (unit) walkAst(unit.ast, (n) => {
+    if (n.nodeType === "FunctionDefinition" && /^invariant_\w*$/.test(n.name ?? "")) found.push({ name: n.name, at: Number(n.src.split(":")[0]) });
+  });
+  return found.sort((a, b) => a.at - b.at)[0]?.name ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Differential: build B is FeeVault with the same behavior and different bytes.
+//
+// Transform (source level):
+//   - leading 4-space indentation becomes tabs (whitespace only)
+//   - a random trailing comment (changes the metadata hash)
+//   - 1-3 pads at the start of every function and receive body:
+//       assembly { if lt(0x<random literal>, 0) { invalid() } }
+//     `lt(x, 0)` is false for every uint256 x, so the body never runs.
+//     solc (optimizer off) emits exactly:
+//       PUSH0  PUSHn lit  LT  ISZERO  PUSH2 T  JUMPI  INVALID  T: JUMPDEST
+//     The jump is always taken, the stack is unchanged, and nothing touches
+//     memory, storage, logs, calls or returndata. Only gas and code bytes change.
+//     (A plain `pop(lit)` is not used: solc's peephole pass deletes PUSH+POP.)
+const PAD = /[ ]assembly \{ if lt\(0x([0-9a-f]+), 0\) \{ invalid\(\) \} \}/g;
+const NONCE = /\n\/\/ vacuity-gate behavior-equal variant [0-9a-f]{16}\n$/;
+
+function variant(text) {
+  const pads = [];
+  const pad = () => {
+    const bytes = crypto.randomBytes(4 + crypto.randomInt(29)); // 4..32 bytes
+    if (bytes[0] === 0) bytes[0] = 1; // keeps PUSHn width equal to the literal width
+    const hex = bytes.toString("hex");
+    pads.push(hex);
+    return ` assembly { if lt(0x${hex}, 0) { invalid() } }`;
+  };
+  let out = text.replace(/^((?: {4})+)/gm, (m) => "\t".repeat(m.length / 4));
+  out = out.replace(/^([ \t]*(?:function\s[^;{]*|receive\s*\(\s*\)\s*external\s+payable\s*)\{)/gm,
+    (m) => `${m}${Array.from({ length: 1 + crypto.randomInt(3) }, pad).join("")}`);
+  out += `\n// vacuity-gate behavior-equal variant ${crypto.randomBytes(8).toString("hex")}\n`;
+  // Inverse check: removing exactly the pads, comment and tabs must give the input back.
+  const back = out.replace(PAD, "").replace(NONCE, "").replace(/^(\t+)/gm, (m) => "    ".repeat(m.length));
+  if (back !== text || !pads.length) throw new Error("source transform is not exactly invertible");
+  return { text: out, pads };
+}
+
+function disassemble(hex) {
+  const b = Buffer.from(hex.replace(/^0x/, ""), "hex");
+  const out = [];
+  for (let pc = 0; pc < b.length;) {
+    const op = b[pc];
+    const n = op >= 0x60 && op <= 0x7f ? op - 0x5f : 0;
+    if (pc + 1 + n > b.length) throw new Error(`truncated PUSH at ${pc}`);
+    out.push({ pc, op, imm: n ? b.subarray(pc + 1, pc + 1 + n).toString("hex") : null });
+    pc += 1 + n;
+  }
+  return out;
+}
+
+function stripMetadata(hex) {
+  const b = Buffer.from(hex.replace(/^0x/, ""), "hex");
+  const len = b.readUInt16BE(b.length - 2);
+  if (len + 2 > b.length) throw new Error("runtime has no CBOR metadata trailer");
+  const cbor = b[b.length - 2 - len];
+  if (cbor < 0xa1 || cbor > 0xb7) throw new Error("runtime has no CBOR metadata trailer");
+  return b.subarray(0, b.length - 2 - len).toString("hex");
+}
+
+// Remove exactly the pad blocks listed in `pads` (a multiset). Each must match
+// the 8-instruction pattern above, with T the pc of its own JUMPDEST.
+function removePads(ins, pads) {
+  const left = new Map();
+  for (const p of pads) left.set(p, (left.get(p) ?? 0) + 1);
+  const kept = [], removedTargets = new Set();
+  let removed = 0;
+  for (let i = 0; i < ins.length; i++) {
+    const w = ins.slice(i, i + 8);
+    const isPad = w.length === 8 && w[0].op === 0x5f && w[1].imm && left.get(w[1].imm) > 0 &&
+      w[2].op === 0x10 && w[3].op === 0x15 && w[4].imm && w[5].op === 0x57 && w[6].op === 0xfe &&
+      w[7].op === 0x5b && parseInt(w[4].imm, 16) === w[7].pc;
+    if (isPad) {
+      left.set(w[1].imm, left.get(w[1].imm) - 1);
+      removedTargets.add(w[7].pc);
+      removed++;
+      i += 7;
+      continue;
+    }
+    kept.push(ins[i]);
+  }
+  if ([...left.values()].some((n) => n !== 0)) throw new Error("an inserted pad was not found as the exact no-op pattern");
+  for (const x of kept) {
+    if (x.imm && removedTargets.has(parseInt(x.imm, 16)) && x.imm.length <= 8) throw ambiguous(`a value outside the pads equals a pad JUMPDEST offset (pc ${x.pc})`);
+  }
+  return { kept, removed };
+}
+
+// A coincidence the bytecode alone cannot settle: a value that is a JUMPDEST
+// offset in one build only. It may be data or a jump target. The gate does not
+// guess; it retries with fresh random pads.
+function ambiguous(msg) {
+  return Object.assign(new Error(msg), { retry: true });
+}
+
+// Compare two instruction lists. Opcodes must be equal. For each PUSH:
+//   - equal values that point to the same JUMPDEST index (or to none): equal
+//   - different values: both must be JUMPDEST offsets with the same index.
+//     (In solc output the only runtime values that depend on code layout are
+//     jump targets; CODECOPY and immutables are rejected separately.)
+//   - equal values that are a JUMPDEST in only one build: ambiguous, retry.
+// `tokens` names values that may differ (code length, code offset).
+function compareCode(label, a, b, tokensA = new Map(), tokensB = new Map()) {
+  const jd = (list) => new Map(list.filter((x) => x.op === 0x5b).map((x, i) => [x.pc, i]));
+  const ja = jd(a), jb = jd(b);
+  if (a.length !== b.length) throw new Error(`${label}: ${a.length} vs ${b.length} instructions after removing pads`);
+  let relabeled = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i];
+    if (x.op !== y.op) throw new Error(`${label}: instruction ${i} opcode ${x.op.toString(16)} vs ${y.op.toString(16)}`);
+    if (x.imm == null) continue;
+    const va = BigInt(`0x${x.imm}`), vb = BigInt(`0x${y.imm}`);
+    if (tokensA.has(va) || tokensB.has(vb)) {
+      if (tokensA.get(va) !== tokensB.get(vb)) throw new Error(`${label}: instruction ${i} value ${va} vs ${vb}`);
+      continue;
+    }
+    const pa = va < 0x10000n ? ja.get(Number(va)) : undefined, pb = vb < 0x10000n ? jb.get(Number(vb)) : undefined;
+    if (va === vb) {
+      if (pa !== pb) throw ambiguous(`${label}: instruction ${i} value 0x${x.imm} is JUMPDEST J${pa} in A but J${pb} in B`);
+      continue;
+    }
+    if (pa === undefined || pa !== pb) throw new Error(`${label}: instruction ${i} value 0x${x.imm} vs 0x${y.imm}`);
+    relabeled++;
+  }
+  return relabeled;
+}
+
+const CODE_READS = new Set([0x38, 0x39, 0x3b, 0x3c, 0x3f]); // CODESIZE CODECOPY EXTCODESIZE EXTCODECOPY EXTCODEHASH
+
+// Mechanical proof that B differs from A only by the pads, jump offsets,
+// code length and metadata. Throws with the first difference.
+function proveEqual(a, b, pads) {
+  if (JSON.stringify(a.abi) !== JSON.stringify(b.abi)) throw new Error("ABI differs");
+  if (JSON.stringify(a.methodIdentifiers) !== JSON.stringify(b.methodIdentifiers)) throw new Error("selectors differ");
+  if (!a.storageLayout?.storage || layout(a) !== layout(b)) throw new Error("storage layout differs or is missing");
+  const runtime = (x) => x.deployedBytecode.object.replace(/^0x/, "");
+  const creation = (x) => x.bytecode.object.replace(/^0x/, "");
+  if (runtime(a) === runtime(b)) throw new Error("B has the same runtime bytes as A");
+  if (a.deployedBytecode.immutableReferences && Object.keys(a.deployedBytecode.immutableReferences).length) throw new Error("immutables are not supported");
+  const ra = disassemble(stripMetadata(runtime(a)));
+  const rb = disassemble(stripMetadata(runtime(b)));
+  const aImm = new Set(ra.map((x) => x.imm).filter(Boolean));
+  if (pads.some((p) => aImm.has(p))) throw new Error("a pad literal also occurs in A");
+  const { kept, removed } = removePads(rb, pads);
+  if (ra.some((x) => CODE_READS.has(x.op)) || kept.some((x) => CODE_READS.has(x.op))) {
+    throw new Error("runtime reads code; byte changes could change behavior");
+  }
+  const relabeled = compareCode("runtime", ra, kept);
+  // Creation code = init code + runtime. Only the runtime length and offset may differ.
+  const init = (x) => {
+    const c = creation(x), r = runtime(x);
+    if (!c.endsWith(r)) throw new Error("creation code does not end with the runtime");
+    const initHex = c.slice(0, c.length - r.length);
+    return { ins: disassemble(initHex), tokens: new Map([[BigInt(r.length / 2), "RUNTIME_LEN"], [BigInt(initHex.length / 2), "INIT_LEN"]]) };
+  };
+  const ia = init(a), ib = init(b);
+  compareCode("constructor", ia.ins, ib.ins, ia.tokens, ib.tokens);
+  return {
+    abi: "equal", selectors: "equal", storageLayout: "equal (label, slot, offset, type)",
+    runtime: `equal after removing ${removed} pad blocks (${pads.length} inserted); ${ra.length} instructions compared; ${relabeled} jump-target operands matched by JUMPDEST index`,
+    constructor: "equal except runtime length and offset operands",
+    metadata: "differs (CBOR trailer excluded from the comparison)",
+    source: "removing the pads, the trailing comment and the tabs gives the input text back exactly",
+  };
+}
+
+function artifact(ws) {
+  const file = path.join(ws, "out", path.basename(TARGET.path), `${TARGET.contract}.json`);
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function layout(a) {
+  const types = a.storageLayout?.types ?? {};
+  return JSON.stringify((a.storageLayout?.storage ?? []).map((s) => [s.label, s.slot, s.offset, types[s.type]?.label ?? s.type]));
+}
+
+// Mechanical proof that B differs from A only by the inserted no-ops,
+// jump offsets, code length and metadata. Throws with the first difference.
+function artifactSummary(a) {
+  const r = a.deployedBytecode.object.replace(/^0x/, "");
+  return { runtimeSize: r.length / 2, runtimeHash: `sha256:${sha256(Buffer.from(r, "hex"))}` };
+}
+
+// ---------------------------------------------------------------------------
+// Forge runs. Every run uses the gate config, the fixed seed and the same
+// invariant selection; only runs and depth change between profiles.
+
+async function runSuite(ws, test, invariant, profile, { debug = false } = {}) {
   const dir = path.join(ws, ".vacuity-gate");
   fs.mkdirSync(dir, { recursive: true });
-  try {
-    fs.rmSync(resultsFile(ws));
-  } catch {}
-  const argv = ["test", "--match-path", test, "--match-test", matchTest ?? "^invariant_", "--json-file", ".vacuity-gate/results.json"];
+  const file = path.join(dir, "results.json");
+  fs.rmSync(file, { force: true });
+  const argv = ["test", "--match-path", test, "--match-test", `^${invariant}\\(`, "--fuzz-seed", SEED,
+    "--json-file", ".vacuity-gate/results.json"];
   if (debug) argv.push("--debug", "--dump", ".vacuity-gate/dump");
-  const run = await forge(ws, argv);
+  const run = await forge(ws, argv, { ...profile, timeoutMs: 600_000 });
   let results = null;
   try {
-    results = JSON.parse(fs.readFileSync(resultsFile(ws), "utf8"));
+    results = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {}
-  return { ...run, results };
+  const statuses = invariantStatuses({ ...run, results });
+  return { ...run, results, statuses };
+}
+
+async function build(ws) {
+  const run = await forge(ws, ["build", "--force"]);
+  return run.code === 0 && !run.timedOut ? null : compilerErrors(run);
 }
 
 function allTestResults(results) {
@@ -307,25 +742,6 @@ function declaredSources(dumpDir, contract) {
   }
 }
 
-function resolveTarget(dumpDir, testPath, results) {
-  const list = contracts(dumpDir);
-  const testDir = path.dirname(testPath);
-  const inTestDir = (c) => declaredSources(dumpDir, c).some((f) => f === testDir || f.startsWith(`${testDir}/`));
-  const sourceOf = (c) => declaredSources(dumpDir, c).find((f) => f.startsWith("src/") || f.startsWith("./src/")) ?? null;
-  const testContract = list.find((c) => c.name === path.basename(testPath, ".t.sol"));
-  const handlers = new Set(list.filter((c) => c !== testContract && inTestDir(c)).map((c) => c.address));
-  const candidates = list.filter((c) => c !== testContract && !handlers.has(c.address) && sourceOf(c));
-  if (candidates.length === 1) return { target: candidates[0].address, name: candidates[0].name, handlers };
-  // Fallback: pick the candidate with the most execution calls.
-  let best = null;
-  for (const c of candidates) {
-    const n = tracedTargetCalls(results, c.address).length;
-    if (!best || n > best.n) best = { n, c };
-  }
-  if (best && best.n > 0) return { target: best.c.address, name: best.c.name, handlers };
-  return { target: null, name: null, handlers };
-}
-
 async function inspectSelectors(ws, name) {
   const r = await forge(ws, ["inspect", name, "methods"]);
   if (r.code !== 0 || r.timedOut) throw new Error(`forge inspect failed: ${(r.stderr || r.stdout).trim().slice(-300)}`);
@@ -414,10 +830,26 @@ function livenessCheck({ dumpDir, results, target, handlers, handlerMethods }) {
   };
 }
 
+
+// The scored target is the deployed contract named FeeVault from src/FeeVault.sol.
+function resolveTarget(dumpDir, testPath, results) {
+  const list = contracts(dumpDir);
+  const testDir = path.dirname(testPath);
+  const inTestDir = (c) => declaredSources(dumpDir, c).some((f) => f === testDir || f.startsWith(`${testDir}/`));
+  const testContract = list.find((c) => c.name === path.basename(testPath, ".t.sol"));
+  const handlers = new Set(list.filter((c) => c !== testContract && inTestDir(c)).map((c) => c.address));
+  const candidates = list.filter((c) => c.name === TARGET.contract && declaredSources(dumpDir, c).includes(TARGET.path));
+  let best = null;
+  for (const c of candidates) {
+    const n = tracedTargetCalls(results, c.address).length;
+    if (!best || n > best.n) best = { n, c };
+  }
+  return { target: best?.c.address ?? null, handlers };
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const volume = svmVolume();
-  if (!volume) throw new Error("no solc cache volume (foundry-svm or touchstone_svm_cache); refusing to use the network");
+  if (!svmVolume()) throw new Error("no solc cache volume (foundry-svm or touchstone_svm_cache); refusing to use the network");
   try {
     execFileSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" });
   } catch {
@@ -425,84 +857,154 @@ async function main() {
   }
 
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-gate-"));
-  const ws = path.join(base, "project");
   const verdict = {
     pass: false,
+    environment: {
+      image: IMAGE, solc: SOLC, seed: SEED, campaign: CAMPAIGN,
+      ffi: false, fs_permissions: [], dynamic_test_linking: false,
+      projectConfig: "ignored (foundry.toml, remappings.txt and lib/forge-std are not copied)",
+      forgeStd: { version: FORGE_STD.version, treeSha256: null, mount: `${FORGE_STD.mount} (read-only)` },
+    },
+    target: { path: TARGET.path, contract: TARGET.contract, pinnedSha256: TARGET.sha256, sha256: null },
+    scan: { sources: [], findings: [] },
+    differential: { pass: false, builds: [], proof: null, failing: [] },
+    campaign: {},
     liveness: { pass: false, reasons: [] },
     mutants: [],
     killRate: 0,
     knownBug: { planted: opts.knownBug, detected: false, failingInvariants: [] },
     reasons: [],
   };
+  const fail = (reason) => {
+    verdict.reasons.push(reason);
+    return verdict;
+  };
 
   try {
-    log(`copying ${opts.project}`);
-    copyProject(opts.project, ws);
-    const fingerprints = fingerprintReads(ws, opts.test);
-    if (fingerprints.length) {
-      verdict.reasons.push(`control: code fingerprint reads are not behavioral evidence (${fingerprints.join(", ")})`);
-      return verdict;
+    // 1. Environment: verified copy of the pinned forge-std, mounted read-only.
+    forgeStdMount = path.join(base, "forge-std");
+    fs.cpSync(FORGE_STD.dir, forgeStdMount, { recursive: true });
+    const stdHash = treeHash(forgeStdMount);
+    verdict.environment.forgeStd.treeSha256 = stdHash;
+    if (stdHash !== FORGE_STD.treeSha256) return fail(`environment: vendored forge-std tree ${stdHash} is not the pinned ${FORGE_STD.treeSha256}`);
+
+    // 2. Target: src/FeeVault.sol with the pinned hash.
+    const original = path.join(opts.project, TARGET.path);
+    if (!fs.existsSync(original) || fs.lstatSync(original).isSymbolicLink()) return fail(`target: ${TARGET.path} is missing`);
+    const pinnedText = fs.readFileSync(original, "utf8");
+    verdict.target.sha256 = sha256(pinnedText);
+    if (verdict.target.sha256 !== TARGET.sha256) {
+      return fail(`target: ${TARGET.path} sha256 ${verdict.target.sha256} is not the pinned ${TARGET.sha256}`);
     }
-    const invariant = fs.readFileSync(path.join(ws, opts.test), "utf8").match(/\bfunction\s+(invariant_\w+)/)?.[1];
-    if (!invariant) {
-      verdict.reasons.push("control: no invariant function found");
-      return verdict;
+
+    // 3. Find what solc compiles for the selected test, under the gate config.
+    log(`staging Solidity sources from ${opts.project}`);
+    const stage = path.join(base, "stage");
+    copySolidity(opts.project, stage);
+    writeConfig(stage);
+    const closure = await buildInfo(stage, [opts.test]);
+    if (closure.error) return fail(closure.error);
+    const bad = checkSources(closure.sources);
+    if (bad) return fail(bad);
+    if (!closure.sources.has(TARGET.path)) return fail(`target: the selected test does not compile ${TARGET.path}`);
+    if (!closure.sources.has(opts.test)) return fail(`build: build info does not contain ${opts.test}`);
+
+    // 4. The workspace holds only those sources and the gate config.
+    const ws = path.join(base, "A");
+    const projectFiles = [...closure.sources.keys()].filter((p) => !p.startsWith(`${FORGE_STD.mount}/`));
+    for (const rel of projectFiles) {
+      fs.mkdirSync(path.dirname(path.join(ws, rel)), { recursive: true });
+      fs.copyFileSync(path.join(stage, rel), path.join(ws, rel));
     }
-    const matchTest = `^${invariant}\\(`;
-    const targetSourcePath = path.join(ws, "src", "FeeVault.sol");
+    writeConfig(ws);
+    let healthyText = pinnedText;
     if (opts.knownBug) {
-      const text = fs.readFileSync(targetSourcePath, "utf8");
-      if (text.split(REPAIR.find).length !== 2) {
-        verdict.reasons.push("known-bug: reference repair pattern must occur exactly once");
-        return verdict;
-      }
-      const buggy = path.join(base, "buggy");
-      copyProject(ws, buggy);
-      fs.writeFileSync(targetSourcePath, text.replace(REPAIR.find, REPAIR.replace));
+      if (pinnedText.split(REPAIR.find).length !== 2) return fail("known-bug: reference repair pattern must occur exactly once");
+      healthyText = pinnedText.replace(REPAIR.find, REPAIR.replace);
+      fs.writeFileSync(path.join(ws, TARGET.path), healthyText);
     }
+    const full = await buildInfo(ws);
+    if (full.error) return fail(full.error);
+    const fullBad = checkSources(full.sources);
+    if (fullBad) return fail(fullBad);
+    const same = full.sources.size === closure.sources.size && [...full.sources.keys()].every((p) => closure.sources.has(p));
+    if (!same) return fail(`build: compiled source set changed between staging and workspace (${[...full.sources.keys()].sort().join(", ")})`);
 
-    log("healthy control: compiling and running the same invariant selection");
-    const build = await forge(ws, ["build", "--quiet"]);
-    if (build.code !== 0) {
-      verdict.reasons.push(`compile: ${(build.stderr || build.stdout).trim().split("\n").slice(-3).join(" ")}`);
+    // 5. Scan the solc AST of every compiled project source.
+    verdict.scan = scanSources(full.sources);
+    log(`scan: ${verdict.scan.sources.length} project sources, ${verdict.scan.findings.length} findings`);
+    if (verdict.scan.findings.length) {
+      for (const f of verdict.scan.findings) verdict.reasons.push(`scan: banned ${f}`);
       return verdict;
     }
+    const invariant = firstInvariant(full.sources, opts.test);
+    if (!invariant) return fail("control: no invariant function found");
+    verdict.campaign.invariant = invariant;
 
-
-    // One configured invariant run makes the debugger replay the entire
-    // scored campaign. The other predicates still appear in its result.
-    const baseRun = await runSuite(ws, opts.test, { debug: true, matchTest });
-    const healthy = invariantStatuses(baseRun);
-    if (!healthy || baseRun.code !== 0 || failures(healthy).length) {
-      verdict.reasons.push("control: healthy reference must pass every selected invariant (no skips or execution errors)");
-      return verdict;
+    // 6. Build B and prove it is behavior-equal to A.
+    const A = artifact(ws);
+    let B;
+    try {
+      B = await paddedBuild(base, ws, "B", healthyText);
+    } catch (e) {
+      return fail(`differential: could not verify B is behavior-equal: ${e.message}`);
     }
+    verdict.differential.builds = [
+      { name: "A", description: `healthy ${TARGET.path}${opts.knownBug ? " (rescue repaired with onlyOwner)" : ""}`, ...artifactSummary(A) },
+      { name: "B", description: "A with tabs for indentation, a random trailing comment, and 1-3 never-taken `assembly { if lt(0x<random>, 0) { invalid() } }` pads at the start of every function and receive body",
+        pads: B.pads.length, ...artifactSummary(B.artifact) },
+    ];
+    verdict.differential.proof = B.proof;
+
+    // 7. Strong healthy campaign on A.
+    const prof = (p) => `${p.runs} runs x depth ${p.depth}, seed ${SEED}`;
+    log(`control: strong campaign (${prof(CAMPAIGN.strong)})`);
+    const strong = await runSuite(ws, opts.test, invariant, CAMPAIGN.strong);
+    verdict.campaign.strong = { runs: CAMPAIGN.strong.runs, depth: CAMPAIGN.strong.depth, statuses: Object.fromEntries(strong.statuses ?? []) };
+    if (!strong.statuses || strong.code !== 0 || failures(strong.statuses).length) {
+      return fail(`control: healthy reference must pass every selected invariant (strong campaign: ${prof(CAMPAIGN.strong)}; no skips or execution errors)`);
+    }
+
+    // 8. Scored campaign on A, then the same campaign on B.
+    log(`control: scored campaign on A (${prof(CAMPAIGN.score)})`);
+    const healthyRun = await runSuite(ws, opts.test, invariant, CAMPAIGN.score);
+    const healthy = healthyRun.statuses;
+    if (!healthy || healthyRun.code !== 0 || failures(healthy).length) {
+      return fail(`control: healthy reference must pass every selected invariant (scored campaign: ${prof(CAMPAIGN.score)}; no skips or execution errors)`);
+    }
+    log("differential: scored campaign on B");
+    const bRun = await runSuite(B.dir, opts.test, invariant, CAMPAIGN.score);
+    verdict.differential.statuses = { A: Object.fromEntries(healthy), B: Object.fromEntries(bRun.statuses ?? []) };
+    if (!bRun.statuses || bRun.timedOut) {
+      return fail(`differential: build B gave no complete result for ${invariant} (incomplete campaign or execution error)`);
+    }
+    verdict.differential.failing = failures(bRun.statuses).filter((n) => healthy.get(n) === "Success");
+    if (verdict.differential.failing.length || bRun.code !== 0) {
+      return fail(`differential: ${verdict.differential.failing.join(", ") || invariant} passes on healthy build A but fails on behavior-equal build B ` +
+        `(A ${verdict.differential.builds[0].runtimeHash} vs B ${verdict.differential.builds[1].runtimeHash}; fingerprint oracle or too-strict/flaky invariant)`);
+    }
+    verdict.differential.pass = true;
+
+    // 9. Liveness from one replayed campaign on A.
+    log("liveness: one debug campaign on A");
+    const debugRun = await runSuite(ws, opts.test, invariant, CAMPAIGN.debug, { debug: true });
     const dumpDir = path.join(ws, ".vacuity-gate", "dump");
-    const { target, name, handlers } = resolveTarget(dumpDir, opts.test, baseRun.results);
-    if (opts.knownBug) {
-      const buggyRun = await runSuite(path.join(base, "buggy"), opts.test, { matchTest });
-      const buggy = invariantStatuses(buggyRun);
-      verdict.knownBug.failingInvariants = failures(buggy).filter((name) => healthy.get(name) === "Success");
-      verdict.knownBug.detected = Boolean(buggy && buggyRun.code === 1 && !buggyRun.timedOut && verdict.knownBug.failingInvariants.length);
-      if (!verdict.knownBug.detected) verdict.reasons.push("known-bug: no new invariant Failure against the repaired reference");
-    }
-
+    if (!debugRun.statuses || debugRun.code !== 0) return fail("liveness: debug campaign on the healthy reference did not complete");
+    const { target, handlers } = resolveTarget(dumpDir, opts.test, debugRun.results);
     if (!target) {
-      verdict.liveness = { pass: false, reasons: ["liveness: could not identify a target contract outside the test directory"] };
-      verdict.reasons.push(...verdict.liveness.reasons);
-      return verdict;
+      verdict.liveness = { pass: false, reasons: [`target: the suite does not deploy ${TARGET.path}:${TARGET.contract}`] };
+      return fail(verdict.liveness.reasons[0]);
     }
-    log(`target: ${name} (${target})`);
-
+    verdict.target.address = target;
     const handlerMethods = new Map();
     for (const c of contracts(dumpDir).filter((c) => handlers.has(c.address))) {
       const methods = await inspectSelectors(ws, `${opts.test}:${c.name}`);
       handlerMethods.set(c.address.toLowerCase(), new Map([...methods].map(([selector, signature]) =>
         [selector, `${opts.test}:${c.name}.${signature.split("(")[0]}`])));
     }
-    verdict.liveness = livenessCheck({ dumpDir, results: baseRun.results, target,
+    verdict.liveness = livenessCheck({ dumpDir, results: debugRun.results, target,
       handlers: new Set([...handlers].map((h) => h.toLowerCase())), handlerMethods });
-    const names = await inspectSelectors(ws, name);
+    const names = await inspectSelectors(ws, `${TARGET.path}:${TARGET.contract}`);
     for (const row of verdict.liveness.selectors) row.name = names.get(row.selector) ?? null;
     verdict.liveness.deadSelectors = verdict.liveness.deadSelectors.map((s) => names.get(s) ?? s);
     if (!verdict.liveness.pass) {
@@ -510,49 +1012,83 @@ async function main() {
       return verdict;
     }
 
-    const src = contracts(dumpDir)
-      .find((c) => c.address === target);
-    const targetSource = src ? declaredSources(dumpDir, src).find((f) => f.startsWith("src/") || f.startsWith("./src/")) : null;
-    if (!targetSource) {
-      verdict.reasons.push("mutants: could not locate the target source file");
-    } else {
-      log(`mutants: ${MUTANTS.length} against ${targetSource}`);
-      for (const [i, mutant] of MUTANTS.entries()) {
-        const mws = path.join(base, `mutant-${i}`);
-        copyProject(ws, mws);
-        const file = path.join(mws, targetSource);
-        const text = fs.readFileSync(file, "utf8");
-        const hits = text.split(mutant.find).length - 1;
-        const entry = { id: mutant.id, applied: hits === 1, compiled: false, killed: false };
-        verdict.mutants.push(entry);
-        if (hits !== 1) {
-          log(`${mutant.id}: pattern hits ${hits}, skipped`);
-          continue;
-        }
-        fs.writeFileSync(file, text.replace(mutant.find, mutant.replace));
-        const mb = await forge(mws, ["build", "--quiet"]);
-        if (mb.code !== 0) {
-          entry.error = "compile failed";
-          continue;
-        }
-        entry.compiled = true;
-        const mr = await runSuite(mws, opts.test, { matchTest });
-        const mutantStatuses = invariantStatuses(mr);
-        entry.failingInvariants = failures(mutantStatuses).filter((name) => healthy.get(name) === "Success");
-        entry.killed = Boolean(mutantStatuses && mr.code === 1 && !mr.timedOut && entry.failingInvariants.length);
-        log(`${mutant.id}: ${entry.killed ? "killed" : "survived"}`);
+    // 10. Known bug and mutants. Each is padded with fresh random no-ops, and
+    // the padding is proven against an unpadded build of the same text.
+    const scored = async (label, text) => {
+      const built = await paddedBuild(base, ws, label, text);
+      const run = await runSuite(built.dir, opts.test, invariant, CAMPAIGN.score);
+      const failing = failures(run.statuses).filter((n) => healthy.get(n) === "Success");
+      return { killed: Boolean(run.statuses && run.code === 1 && !run.timedOut && failing.length), failing, runtimeHash: artifactSummary(built.artifact).runtimeHash };
+    };
+    if (opts.knownBug) {
+      try {
+        const r = await scored("buggy", pinnedText);
+        verdict.knownBug.failingInvariants = r.failing;
+        verdict.knownBug.detected = r.killed;
+        verdict.knownBug.runtimeHash = r.runtimeHash;
+      } catch (e) {
+        verdict.knownBug.error = e.message;
       }
-      const applied = verdict.mutants.filter((m) => m.applied && m.compiled);
-      const killed = applied.filter((m) => m.killed);
-      verdict.killRate = applied.length ? Number((killed.length / applied.length).toFixed(4)) : 0;
-      if (killed.length === 0) verdict.reasons.push(`mutants: killed 0 of ${applied.length} applied mutants`);
+      if (!verdict.knownBug.detected) verdict.reasons.push("known-bug: no new invariant Failure against the repaired reference");
     }
+    log(`mutants: ${MUTANTS.length} against ${TARGET.path}`);
+    for (const mutant of MUTANTS) {
+      const hits = healthyText.split(mutant.find).length - 1;
+      const entry = { id: mutant.id, applied: hits === 1, compiled: false, killed: false };
+      verdict.mutants.push(entry);
+      if (hits !== 1) continue;
+      try {
+        const r = await scored(`mutant-${mutant.id}`, healthyText.replace(mutant.find, mutant.replace));
+        Object.assign(entry, { compiled: true, killed: r.killed, failingInvariants: r.failing, runtimeHash: r.runtimeHash });
+      } catch (e) {
+        entry.error = e.message;
+      }
+      log(`${mutant.id}: ${entry.killed ? "killed" : entry.compiled ? "survived" : "not scored"}`);
+    }
+    const applied = verdict.mutants.filter((m) => m.applied && m.compiled);
+    const killed = applied.filter((m) => m.killed);
+    verdict.killRate = applied.length ? Number((killed.length / applied.length).toFixed(4)) : 0;
+    if (killed.length === 0) verdict.reasons.push(`mutants: killed 0 of ${applied.length} applied mutants`);
 
-    verdict.pass = verdict.liveness.pass && verdict.killRate > 0 && (!opts.knownBug || verdict.knownBug.detected);
+    verdict.pass = verdict.liveness.pass && verdict.differential.pass && verdict.killRate > 0 &&
+      (!opts.knownBug || verdict.knownBug.detected) && verdict.reasons.length === 0;
     return verdict;
   } finally {
     if (opts.keep) log(`kept ${base}`);
     else fs.rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// Build `text` as src/FeeVault.sol twice: plain and padded with fresh random
+// pads. Prove the padded build equal to the plain one. Throws on any doubt.
+// Only an ambiguous offset coincidence is retried, with new random pads.
+const PAD_ATTEMPTS = 8;
+async function paddedBuild(base, ws, label, text) {
+  const plain = path.join(base, `${label}-plain`);
+  const dir = path.join(base, label);
+  copyWorkspace(ws, plain);
+  copyWorkspace(ws, dir);
+  fs.writeFileSync(path.join(plain, TARGET.path), text);
+  let v = variant(text);
+  fs.writeFileSync(path.join(dir, TARGET.path), v.text);
+  const [e1, e2] = await Promise.all([build(plain), build(dir)]);
+  if (e1 || e2) throw new Error(`compile failed (${e1 || e2})`);
+  const a = artifact(plain);
+  const retried = [];
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const proof = proveEqual(a, artifact(dir), v.pads);
+      if (retried.length) proof.retries = retried;
+      fs.rmSync(plain, { recursive: true, force: true });
+      return { dir, pads: v.pads, proof, artifact: artifact(dir) };
+    } catch (e) {
+      if (!e.retry || attempt >= PAD_ATTEMPTS) throw new Error(`${e.message}${retried.length ? ` (after ${retried.length} retries)` : ""}`);
+      retried.push(e.message);
+    }
+    v = variant(text);
+    fs.writeFileSync(path.join(dir, TARGET.path), v.text);
+    const err = await build(dir);
+    if (err) throw new Error(`compile failed (${err})`);
   }
 }
 
@@ -562,6 +1098,7 @@ main()
     process.exitCode = v.pass ? 0 : 1;
   })
   .catch((e) => {
+    if (process.env.VACUITY_DEBUG) process.stderr.write(`${e.stack}\n`);
     process.stdout.write(`${JSON.stringify({ pass: false, error: String(e), reasons: [String(e)] }, null, 2)}\n`);
     process.exitCode = 1;
   });
