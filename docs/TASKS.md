@@ -136,10 +136,10 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | Need | Unblocks | Without it |
 |------|----------|-----------|
 | Yes or no on the protected fleet files | A5, I7 | Both stay blocked |
-| Yes for Daytona use on the owner's account | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| A classic GitHub token, read-only | G3 live path (Scorecard API, Legitify) | G3 ships with the fixture path only |
+| ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). The key in the form counts as the yes for wave 4 use. | J1, I1 to I6 | Waves 1 to 3 are not affected |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`) | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
-| A fork RPC URL (the owner can give one) | Stader fork work | Stays blocked |
+| ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction) | Stader fork work | no longer blocked |
 | Yes to close PR 3 on GitHub | H1 tidy-up | PR 3 stays open |
 | An eye on the UI work | B, C, D, E, F | Merges on review + screenshots; the owner checks the morning page |
 
