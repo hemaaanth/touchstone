@@ -358,6 +358,15 @@ describe("report: replay bundle", () => {
     expect(firstLine(buildReplayBundle({ finding: { ...http, stages: { proven: true } } }))).toMatch(/^PROVEN: /)
   })
 
+  test("the zip drops a file name with a backslash, a colon, or a control character", () => {
+    const bad = ["src/a\\..\\..\\evil1.sol", "src/C:evil2.sol", "src/evil3\n.sol", "src/evil4\u0007.sol"]
+    const replay = { version: 1, kind: "forge", files: [...bad, "src/Fine.sol"].map((p) => ({ path: p, text: "contract X {}\n" })) }
+    const zip = buildReplayBundle({ finding: forgeFinding, recorded: { replay, proof: forgeFinding.proof } })
+    const names = execFileSync("python3", ["-I", "-c", "import sys, zipfile; print('\\0'.join(zipfile.ZipFile(sys.stdin.buffer).namelist()), end='')"], { input: zip }).toString().split("\0")
+    expect(names).toContain("src/Fine.sol")
+    for (const n of names) expect(n).not.toMatch(/evil/)
+  })
+
   test("an http bundle keeps the script and says the lab cannot be bundled", () => {
     const script = `const r = await request("GET", "/api/users/2", { headers: { authorization: "Bearer ${BEARER}" } });\n`
     const proof = {

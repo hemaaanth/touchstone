@@ -344,7 +344,10 @@ function proofJson(proof, replay) {
   return JSON.stringify(body, null, 2) + "\n";
 }
 
+// No backslash, drive colon, or control character: Windows extractors read
+// those as path syntax, and a newline would break SHA256SUMS.
 function zipPath(name) {
+  if (/[\\:\x00-\x1f\x7f]/.test(String(name))) return null;
   const parts = String(name).split("/").filter(Boolean);
   if (!parts.length || parts.some((p) => p === ".." || p === "." || p.startsWith("\\") || p.includes("\0"))) return null;
   return parts.join("/");
