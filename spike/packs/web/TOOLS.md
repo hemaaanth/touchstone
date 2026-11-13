@@ -3,15 +3,17 @@
 Modules M3 (Web app and sign-in) and M4 (API testing). Same table as
 `packs/README.md`. Licenses marked "check" must be confirmed against the
 upstream repo before a release. The lab is one small Express service with two
-routes worth attacking, one undocumented debug route, and one HTML page that
-reflects a query value (planted so an XSS scanner has something real to hit).
-It is a narrow, crypto-specific target, not a general web app. That shapes
-every verdict below.
+routes worth attacking, two undocumented routes (one debug route linked to a
+nuclei template, one unlinked `/internal/metrics` with no template), and one
+HTML page that reflects a query value (planted so an XSS scanner has something
+real to hit). It is a narrow, crypto-specific target, not a general web app.
+That shapes every verdict below.
 
-Three tools are wrapped through `runTool()` in `scan.mjs`: ZAP, Nuclei and
-dalfox. They run in the prepass, in Docker, on a throwaway copy of the lab. Their
-output is LEADS. A lead is never a finding: only a replayed request script that
-the oracle accepts is a finding.
+Four tools are wrapped through `runTool()` in the prepass, in Docker, on a
+throwaway copy of the lab: ZAP, Nuclei and dalfox (in `scan.mjs`), and ffuf (in
+`ffuf.mjs`, collected by `discovery.mjs`). Their output is LEADS. A lead is
+never a finding: only a replayed request script that the oracle accepts is a
+finding.
 
 ## Wrapped today
 
@@ -22,13 +24,13 @@ the oracle accepts is a finding.
 | ZAP baseline (OWASP ZAP 2.16.1) | Apache-2.0 | `runTool()` on `ghcr.io/zaproxy/zaproxy:2.16.1`, `zap-baseline.py` as the image user (uid 1000), scratch dir linked to `/zap/wrk` | Yes, `--internal` network, no outbound route | Base URL; the spider follows links | ZAP JSON report | One lead per alert: missing CSP/anti-clickjacking/nosniff headers, `X-Powered-By` leak. The spider also finds `/explorer?q=...`, the URL dalfox then tests | none: a lead only | Our oracles prove the harm. ZAP baseline is passive and cannot sign in | The baseline rule set and the spider (it feeds dalfox its URLs) | No SIWE awareness. It cannot build or sign an EIP-4361 message, so it never reaches the session or BOLA bugs. A clean ZAP report on this lab still hides 2 of the 4 planted bugs | wrap (leads and URL discovery) |
 | Nuclei v3.4.10 | MIT | `runTool()` on `projectdiscovery/nuclei:v3.4.10`, `-t /work/templates -jsonl -or -ot -duc` | Yes: our own template ships in `packs/web/scan/templates/`, so no template download | Base URL + templates | JSONL, one match per line (we drop the raw request and response) | `debug-config-exposed`: an anonymous 200 whose JSON holds a key-shaped field. The lead names the field, never the value | none: a lead only | Our `debug-route-signer-key-leak` oracle proves the harm in the agent's replay; the template only points at it | The template is a cheap start for a shared "debug and config exposure" pack (module M11 has the same gap) | Stock templates know no SIWE or wallet-session checks. We wrote one exposure template ourselves. We did not lift upstream templates | wrap (own templates, offline) |
 | dalfox v2.12.0 | MIT | `runTool()` on `hahwul/dalfox:v2.12.0`, binary `/app/dalfox`, `url <u> --format json` | Yes | URLs with a query string, taken from ZAP's spider and from `/path?query` URLs in the brief and `openapi.yaml`. None known: dalfox is not launched and coverage says `no-input` | JSON array (a trailing `{}` is normal) | One lead per URL: `reflected-xss`, verified (`V`) or reflected (`R`) | none: a lead only | Our `reflected-xss` oracle proves the harm: the request's own markup comes back unescaped in a 200 HTML page with no CSP | Payload set and DOM-verification | Not crypto specific. It finds the reflection on `/explorer`, a block-explorer style page | wrap |
+| ffuf v2.3.0 | MIT | `runTool()` on our own pinned local image `touchstone/web-ffuf:2.3.0` (`Dockerfile.ffuf`, binary verified by SHA-256 at build, `--pull never`, runs as uid 1000 on the lab's `--internal` network), `ffuf -u <base>/FUZZ -w /work/content.txt -of json -s` | Yes, `--internal` network, no outbound route (build fetches the pinned binary; run has no network out) | Base URL + a 32-entry content wordlist shipped in `scan/wordlists/content.txt` (ours) | ffuf JSON (`results[]`); we keep only `{path, status}`, never a response body | One `content-discovery` lead per served path: sensitive reachable paths (`/internal/*`, `admin`, `.env`, …) rank Medium, other reachable Low, gated (status ≥ 400) Informational | none: a lead only. A path is not a leak; our `debug-route-signer-key-leak` oracle is what proves harm on a replay | ZAP's spider finds linked paths; ffuf finds UNLINKED ones. On this lab ffuf is the only engine that reaches `/internal/metrics` (unlinked, no nuclei template, no query), so it adds a lead the other three miss | A crypto-flavored `/internal/*`, `/_debug`, `/.well-known/*` wordlist is a cheap lift for a bigger target | None beyond path discovery; still needs an oracle to tell "found a path" from "found a leak" | wrap (lead generator; the planted unlinked route is found only by ffuf) |
 
 ## Evaluated, not wrapped
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
 |------|------|------|------|------|------|------|------|------|------|------|------|
 | Schemathesis | check (core was MIT; confirm current split before any release use) | `schemathesis/schemathesis` CLI against `openapi.yaml` | Yes | `openapi.yaml` + base URL | JUnit/JSON | Schema-conformance bugs (wrong status code, type mismatch) | none wired | None of our three bugs are schema-conformance bugs; all three are authorization/session-logic bugs a conformance fuzzer does not model | Property-based case generation from a spec is a real asset for a bigger OpenAPI surface | No concept of a second identity or a "is this field someone else's" check; it only knows what the schema states, not who is allowed to see what | skip for this lab; keep for a future pack with a richer OpenAPI surface |
-| ffuf | MIT | `ffuf/ffuf` CLI, wordlist against the lab host | Yes | Wordlist + base URL | JSON | Hidden paths (could in principle discover `/internal/debug/config` by brute force) | none wired | Overlaps the "undocumented route" part of our own audit instructions; our agent found the debug route by reasoning from the brief's own hint, not by brute force, and the oracle proves the harm either way | A small crypto-flavored debug/internal-path wordlist (`/internal/*`, `/_debug`, `/debug/config`, `/.well-known/*`) would be a cheap lift for a bigger target | None beyond path discovery; still needs our oracle to tell "found a path" from "found a leak" | skip for this lab (the planted debug route is already found by the agent); `wrap` as a lead generator once a target has more than a handful of routes |
 | jwt_tool | MIT | `ticarpi/jwt_tool` CLI | Yes | A captured token | Attack report (alg confusion, weak secret, etc.) | n/a | n/a | n/a | n/a | Not applicable: the lab's bearer tokens are opaque random hex, never JWTs. A pack targeting a real JWT-based session (many dashboards are) should wire this in | skip (not applicable to this lab) |
 | Arjun | MIT | `s0md3v/Arjun` CLI | Yes | Base URL/endpoint | JSON | Hidden GET/POST parameters | none wired | Overlaps ffuf's path-discovery role at the parameter level | None | The lab's two documented routes take no hidden parameters worth mining; this would matter on a wider API | skip for this lab |
 | Caido / Burp Suite (+ Burp AI, Burp MCP) | Proprietary (commercial) | Interactive proxy, not a CLI we call from `runTool()` | n/a | n/a | n/a | n/a | n/a | n/a | n/a | Interactive human-in-the-loop tools, not something a fully automated pack tool wraps. Their SIWE-aware replay and multi-account diffing workflows (Caido's Replay, Burp's session handling) are a useful design reference for `run_request_script`'s own shape | read only (design reference) |

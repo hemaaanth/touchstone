@@ -179,6 +179,26 @@ app.get("/internal/debug/config", (_req, res) => {
   res.json(LEAKED_SIGNER);
 });
 
+// BUG 3b: a second undocumented, unauthenticated operations route. Unlike
+// /internal/debug/config it carries no nuclei template and is not linked from
+// any page, so the prepass scanners (zap spider, nuclei templates, dalfox)
+// never reach it. It is here to be found only by brute-force path discovery
+// (ffuf) against a wordlist. It leaks internal counters and the signer address
+// (not the key) -- a real, if lower-severity, information exposure.
+let requestCount = 0;
+app.use((_req, _res, next) => { requestCount += 1; next(); });
+app.get("/internal/metrics", (_req, res) => {
+  res.json({
+    service: "touchstone-dapp-oracle",
+    uptimeSec: Math.round(process.uptime()),
+    requests: requestCount,
+    sessionsOpen: sessions.size,
+    noncesLive: nonces.size,
+    signerAddress: LEAKED_SIGNER.signerAddress,
+    buildEnv: "staging",
+  });
+});
+
 // The public landing page. It links to the explorer so a crawler can find it.
 app.get("/", (_req, res) => {
   res.type("html").send(`<!doctype html><html><head><title>touchstone dApp</title></head><body>

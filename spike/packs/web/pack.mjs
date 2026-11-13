@@ -35,6 +35,7 @@ import {
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
+import { extraScans, foldScan } from "./discovery.mjs";
 import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubProof } from "./redact.mjs";
@@ -630,6 +631,9 @@ async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
     // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
     const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
     scan = await scanWeb({ net: scanLab.net, baseUrl: scanLab.netBaseUrl, urls: docQueryUrls(docs, scanLab.netBaseUrl) });
+    // Extra discovery tools (ffuf, ...) run against the same throwaway lab and
+    // fold their leads in. Each is fail-closed, so this never aborts the scan.
+    for (const extra of await extraScans({ net: scanLab.net, baseUrl: scanLab.netBaseUrl })) scan = foldScan(scan, extra);
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {
