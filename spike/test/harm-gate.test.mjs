@@ -299,6 +299,26 @@ test("harm gate: a Transfer log cannot inflate the loss past the balance-slot wr
   assert.equal(h.lostUnits, "1000000000000000000");
 });
 
+test("harm gate: a scope target GAINING a token balance is not a drain (Minor, gain-counts guard)", () => {
+  // The vault's balance slot in a scope token RISES in the body (0 -> 100): the
+  // vault received tokens, it was not drained. balanceDrains counts only a net
+  // loss (delta < 0). A mutant that drops the `delta >= 0n` guard would report
+  // this gain as a drain with a negative loss.
+  const TOK = "0xc0ffee0000000000000000000000000000000002";
+  const scope = [...SCOPE, { name: "Tok", path: "src/Tok.sol", code: "6080ee" }];
+  const traces = [setup(
+    node(0, { kind: "CREATE", address: TOK, caller: TEST, data: "0x6080ee" }),
+  ), exec(
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(0, { kind: "CALL", address: TOK, caller: TEST, data: "0xa9059cbb", steps: [sstore(balSlot(VAULT), "0x0", "0x64")] }),
+  )];
+  const h = judgeHarm(traces, {
+    scope, controlTrace: extractControlTrace(traces), layouts: new Map(), balances: new Map([["Tok", [word("0x0")]]]),
+  });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
 test("harm gate: a setUp-funded vault drained in the test body is still a token drain", () => {
   // The mint happened in setUp, so it is not an execution write. The body's
   // SSTORE still carries the funded balance as its old value (100 -> 0). No
