@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLabNetwork, removeLabNetwork } from '../lib/lab-net.mjs';
-import { assertReach, captureDomain, dnsRows, httpRows, inScope, originOf, parseSubfinder, scriptUrls, synthZone } from '../packs/domains/live.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-live-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { assertReach, captureDomain, dnsRows, httpRows, inScope, originOf, parseSubfinder, scriptUrls, synthZone } = await import('../packs/domains/live.mjs');
 
 test('a real target needs a grant that covers the domain', () => {
   assert.throws(() => assertReach({ network: 'bridge' }, 'example.com'), /grant/);
