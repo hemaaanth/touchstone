@@ -22,9 +22,11 @@
 //   canary     any successful transaction sent by the canary wallet.
 //
 // Fail closed: a missing image, a lab that does not start, a network that is not
-// --internal, a timeout, a run that exits non-zero, a match count that does not
-// agree with the monitor's own count, or a match we cannot read gives
-// `available: false` with a reason. It never gives a clean result.
+// --internal or not our own lab network, a timeout, a run that exits non-zero, a
+// match count that does not agree with the monitor's own count, a match we cannot
+// read, or a match that is not bound to this lab (network, watched address, the
+// proxy or the canary) gives `available: false` with a reason. It never gives a
+// clean result.
 import { execFile } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -113,7 +115,10 @@ export function monitorConfig(obs) {
 
 const argText = (args) => (args ?? []).map((a) => `${a.name}=${a.value}`).join(", ");
 
-// One match as leads. `ctx` is { address, owner, baseline }.
+// One match as leads. `ctx` is { address, owner, baseline, canary }.
+// A match must be bound to this lab: network slug "lab", the monitor's own address,
+// and a transaction to the proxy (a log from the proxy for an event), or from the
+// canary for the canary monitor. A match that is not is a failure, not a lead.
 // The texts for the admin and canary monitors stay short on purpose. mergeChain keeps the
 // longest text, and the pack's own text for the same change says more (the slots, the
 // missing event). The monitor's own lead, admin-call-by-non-owner, carries the detail.
@@ -121,10 +126,19 @@ function matchLeads(monitor, block, match, ctx) {
   const m = match?.monitor_match?.EVM;
   if (!m || typeof m !== "object" || !m.transaction || !m.matched_on) throw new Error("match has no EVM transaction");
   if (m.monitor?.name !== monitor) throw new Error(`match names monitor ${m.monitor?.name}, expected ${monitor}`);
+  if (m.network_slug !== "lab") throw new Error(`match is on network ${m.network_slug}, expected lab`);
   const tx = m.transaction;
   if (Number(BigInt(tx.blockNumber)) !== block) throw new Error(`match is in block ${tx.blockNumber}, expected ${block}`);
   const from = lc(tx.from);
   const where = lc(ctx.address);
+  const watched = monitor === "canary" ? lc(ctx.canary) : where;
+  const addresses = (m.monitor.addresses ?? []).map((a) => lc(a.address));
+  if (!watched || addresses.length !== 1 || addresses[0] !== watched) throw new Error(`match watches ${addresses.join(",") || "no address"}, expected ${watched}`);
+  if (monitor === "canary" && from !== watched) throw new Error(`match is from ${from}, expected the canary ${watched}`);
+  if (monitor !== "canary" && (m.matched_on.functions ?? []).length && lc(tx.to) !== where) throw new Error(`match calls ${lc(tx.to)}, expected ${where}`);
+  if (monitor === "admin" && (m.matched_on.events ?? []).length && !(m.logs ?? []).some((l) => lc(l.address) === where)) {
+    throw new Error(`match has an event but no log from ${where}`);
+  }
   const fnArgs = new Map((m.matched_on_args?.functions ?? []).map((f) => [f.signature, f.args]));
   const leads = [];
   if (monitor === "canary") {
@@ -155,7 +169,8 @@ function matchLeads(monitor, block, match, ctx) {
 
 // Parse the stdout of run.sh. Pure, so the failure cases are easy to test.
 //   expected  { monitors, from, to }: every monitor must have run on every block.
-//   ctx       { address, owner, baseline } for the lead text.
+//   ctx       { address, owner, baseline, canary }: the lab target, to bind each
+//             match to, and the lead text.
 // Returns { available, reason?, leads }.
 export function parseOzMonitor(stdout, expected, ctx) {
   const fail = (reason) => ({ available: false, reason, leads: [] });
@@ -227,8 +242,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Start the chain-watch lab from the workspace's own lab source on a fresh
 // --internal network. Throws with a reason. The caller must stopWatchLab().
-export async function startWatchLab(ws, { readyTimeoutMs = 240_000, labImage = OZ_LAB_IMAGE } = {}) {
-  const tag = randomBytes(4).toString("hex");
+// tag (8 hex) names the network and the lab container. A test passes its own.
+export async function startWatchLab(ws, { readyTimeoutMs = 240_000, labImage = OZ_LAB_IMAGE, tag = randomBytes(4).toString("hex") } = {}) {
+  if (!/^[0-9a-f]{8}$/.test(tag)) throw new Error("tag must be 8 hex characters");
   const handle = { net: `touchstone-ozmon-${tag}`, name: `touchstone-ozmon-lab-${tag}`, labWs: mkdtempSync(join(tmpdir(), `ozmon-lab-${tag}-`)), started: false, netMade: false };
   try {
     for (const part of ["src", "lib", "foundry.toml"]) {
@@ -288,7 +304,10 @@ function writeConfig(dir, config) {
 }
 
 // Run the monitors over a lab that is already up. Resolves (never rejects).
+// The only network it runs on is the lab's own --internal network.
+const LAB_NET = /^touchstone-ozmon-[0-9a-f]{8}$/;
 export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
+  if (!LAB_NET.test(String(handle?.net))) return { available: false, reason: `not an owned lab network: ${String(handle?.net).slice(0, 60)}`, leads: [] };
   const obs = handle.obs;
   const range = blockRange(obs);
   if (!range || !obs.address || !obs.snapshots?.[0]?.owner || !obs.canary?.address) {
@@ -297,15 +316,19 @@ export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ozmon-cfg-"));
   try {
     writeConfig(dir, monitorConfig(obs));
+    const t0 = Date.now();
     const r = await runTool({ image: ozMonitorImage(), ws: dir, network: handle.net, timeoutMs,
       cmd: ["bash", "/opt/touchstone/run.sh", String(range.from), String(range.to), ...MONITORS] });
-    if (r.timedOut) return { available: false, reason: "timed out", leads: [] };
+    // A result after the deadline is a timeout too. Without the shared runDocker fix
+    // (6526bbe), a killed client can wait for the container and report code 0 and
+    // timedOut false.
+    if (r.timedOut || Date.now() - t0 > timeoutMs) return { available: false, reason: "timed out", leads: [] };
     if (/unable to find image|no such image|pull access denied/i.test(r.stderr)) {
       return { available: false, reason: "image not built (spike/tools/build-oz-monitor-image.sh)", leads: [] };
     }
     if (r.code !== 0) return { available: false, reason: `monitor container exited ${r.code}: ${r.stderr.trim().split("\n").pop()?.slice(0, 200) ?? ""}`, leads: [] };
     return parseOzMonitor(r.stdout, { monitors: MONITORS, ...range },
-      { address: obs.address, owner: obs.snapshots[0].owner, baseline: obs.snapshots[0].block });
+      { address: obs.address, owner: obs.snapshots[0].owner, baseline: obs.snapshots[0].block, canary: obs.canary.address });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -313,13 +336,13 @@ export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
 
 // Monitor leads in the shape the chain packs merge (packs/keys/common.mjs). Starts
 // and stops its own lab chain. Resolves (never rejects). A lead is never a finding.
-export async function ozMonitorLeads(ws, { timeoutMs, readyTimeoutMs, labImage } = {}) {
+export async function ozMonitorLeads(ws, { timeoutMs, readyTimeoutMs, labImage, tag } = {}) {
   let handle = null;
   try {
     // Check the image first: a missing image must not cost a lab start.
     const image = await docker(["image", "inspect", ozMonitorImage()]);
     if (image.code !== 0) return { available: false, reason: "image not built (spike/tools/build-oz-monitor-image.sh)", leads: [] };
-    handle = await startWatchLab(ws, { readyTimeoutMs, labImage });
+    handle = await startWatchLab(ws, { readyTimeoutMs, labImage, tag });
     return await runMonitors(handle, { timeoutMs });
   } catch (error) {
     return { available: false, reason: String(error?.message ?? error).slice(0, 300), leads: [] };
