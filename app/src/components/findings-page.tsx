@@ -544,8 +544,8 @@ export const FindingListRow = memo(function FindingListRow({
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={f.proven} />
       </span>
-      {/* The module as one dot in the fixed 28 px box the sidebar uses. Its
-          name is in the tooltip and the label. No module keeps the empty box. */}
+      {/* The module as one dot, right-aligned in the fixed column. Hover,
+          focus or a tap grows it into a pill with its name. */}
       <span data-col="module" className="flex justify-end">
         <ModuleDots ids={[moduleOf(f)]} packs={[{ id: moduleOf(f), title: moduleTitle }]} />
       </span>
