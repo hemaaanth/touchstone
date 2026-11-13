@@ -84,6 +84,9 @@ const fleetWork = [
   { t: 27, ev: "assistant-delta", conv: "root", attempt: 0, text: "Alpha is done. Waiting for Beta." },
 ];
 
+function onStream(id) {
+  return readFileSync(join(dir, `run-${id}.stream.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+}
 function save(name, events, { state, session = true, audit } = {}) {
   const id = `${name}-2611130900-1`;
   writeFileSync(join(dir, `run-${id}.stream.jsonl`), events.map((e) => JSON.stringify(e) + "\n").join(""));
@@ -180,7 +183,45 @@ const replyId = save("fleet-reply", [
 const ownedId = save("fleet-owned", [...head(), ...noFinding], { state: { ws: workspace(), phase: "agent" } });
 const otherServer = new DatabaseSync(join(dir, `run-${ownedId}.owner.sqlite`));
 otherServer.exec("BEGIN IMMEDIATE");
-const before = Object.fromEntries([cutId, liveId, earlyId, proofId, doneId, claimId, tornId, replyId, ownedId].map((id) => [id, readFileSync(join(dir, `run-${id}.stream.jsonl`), "utf8")]));
+// 11. The same as 9, but another live server answers that follow-up right now.
+const replyOwnedId = save("fleet-reply-owned", onStream(replyId));
+const otherReply = new DatabaseSync(join(dir, `run-${replyOwnedId}.owner.sqlite`));
+otherReply.exec("BEGIN IMMEDIATE");
+// 12. A stream that keeps the id of a proven finding and names another one. The
+// record's replay passed for every entry. Only the last line is the record's own.
+const relabelId = save("fleet-relabel", [
+  ...head(),
+  { t: 31, ev: "finding", id: "fleet-relabel-2611130900-1.1", title: "Remote code execution", severity: "critical", poc: "rce", proven: true },
+  { t: 32, ev: "finding", id: "fleet-relabel-2611130900-1.2", title: "Remote code execution", severity: "low", poc: "upload_name", proven: true },
+  { t: 32, ev: "finding", id: "fleet-relabel-2611130900-1.3", title: "Cookie has no flag", severity: "critical", poc: "cookie_flag", proven: true },
+  { t: 32, ev: "finding", id: "fleet-relabel-2611130900-1.4", title: "Open redirect", severity: "low", poc: "other_test", proven: true },
+  { t: 32, ev: "finding", id: "fleet-relabel-2611130900-1.5", title: "Login accepts a forged session", severity: "high", poc: "forged_session", proven: true },
+  { t: 33, ev: "status", status: "recorded", decision: "approve" },
+  { t: 34, ev: "closed" },
+]);
+record(relabelId, [
+  { title: "Missing header", severity: "low", poc: "header", proof: { kind: "http", status: "pass" } },
+  { title: "Upload keeps the file name", severity: "low", poc: "upload_name", proof: { kind: "http", status: "pass" } },
+  { title: "Cookie has no flag", severity: "low", poc: "cookie_flag", proof: { kind: "http", status: "pass" } },
+  { title: "Open redirect", severity: "low", poc: "open_redirect", proof: { kind: "http", status: "pass" } },
+  { title: "Login accepts a forged session", severity: "high", poc: "forged_session", proof: { kind: "http", status: "pass" } },
+]);
+// The older record form: its one finding has the run id. A line with another
+// title, and a line with another id, do not get its proof.
+const oldClaimId = save("fleet-oldclaim", [
+  ...head(),
+  { t: 31, ev: "finding", id: "fleet-oldclaim-2611130900-1", title: "Old form", severity: "high", proven: true },
+  { t: 32, ev: "finding", id: "fleet-oldclaim-2611130900-1", title: "Remote code execution", severity: "high", proven: true },
+  { t: 32, ev: "finding", id: "fleet-oldclaim-2611130900-1.1", title: "Old form", severity: "high", proven: true },
+  { t: 32, ev: "finding", id: "fleet-old-2611130900-1", title: "Old form", severity: "high", proven: true },
+  { t: 33, ev: "status", status: "recorded" },
+  { t: 34, ev: "closed" },
+]);
+writeFileSync(join(dir, `run-${oldClaimId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "pass", pass: true } } }));
+// 13. A solo run that stopped while its one agent worked, with a finding
+// submitted. Only a fleet takes the proof check here: a solo run starts its agent again.
+const soloId = save("solo-agent", [...head("solo"), fleetWork.find((e) => e.ev === "finding-submitted")], { state: { ws: workspace(), phase: "agent", mode: "solo" }, audit: { poc: 3, found: [submitted], passed: [["forged_session", submitted.source]] } });
+const before = Object.fromEntries([cutId, liveId, earlyId, proofId, doneId, claimId, tornId, replyId, ownedId, replyOwnedId].map((id) => [id, readFileSync(join(dir, `run-${id}.stream.jsonl`), "utf8")]));
 
 const logged = [];
 const consoleError = console.error;
@@ -190,6 +231,7 @@ const { getRun, listRuns, steerRun } = await import("../../app/server/runs.mjs")
 console.error = consoleError;
 after(() => {
   otherServer.close();
+  otherReply.close();
   for (const ws of made) rmSync(ws, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
@@ -282,6 +324,8 @@ test("a second restart keeps the same history: the end of a child is written onc
   assert.deepEqual(ends(onDisk(cutId)).map((e) => e.id), ["a-3"]);
   // The card still names the agent that was cut off.
   assert.match(again.errorInfo.hint, /Beta was cut off mid-turn/);
+  // The workspace was kept at the first boot, so the card may still say "its files".
+  assert.match(again.errorInfo.hint, /The run keeps its history, its agents and its files\.$/);
   assert.equal(startedFor(cutId).length, 0);
 });
 
@@ -342,6 +386,14 @@ test("with the workspace gone there is no proof check: the fleet gets its card, 
   assert.deepEqual(ends(run.events).map((e) => e.id), ["a-3"]);
 });
 
+test("the card says the run keeps its files only when the workspace is there", async () => {
+  const gone = await closed(goneId);
+  assert.match(gone.errorInfo.hint, /Press Run again to continue in this chat\. The run keeps its history and its agents\.$/);
+  assert.doesNotMatch(gone.errorInfo.hint, /files/);
+  // A fleet whose workspace is there (and that no later test continues) says "its files".
+  assert.match((await closed(threeId)).errorInfo.hint, /The run keeps its history, its agents and its files\.$/);
+});
+
 test("a fleet that stopped during its proof check finishes the check; no agent runs", async () => {
   const run = await closed(proofId);
   assert.equal(run.status, "recorded");
@@ -375,6 +427,31 @@ test("a fleet that another live server owns is left alone: nothing is written to
   assert.equal(readFileSync(join(dir, `run-${ownedId}.stream.jsonl`), "utf8"), before[ownedId]);
   assert.equal(existsSync(join(dir, `run-${ownedId}.state.json`)), true);
   assert.equal(startedFor(ownedId).length, 0);
+});
+
+test("a follow-up that another live server answers is left alone: no end is written to its stream", async () => {
+  assert.equal(readFileSync(join(dir, `run-${replyOwnedId}.stream.jsonl`), "utf8"), before[replyOwnedId]);
+  assert.equal(startedFor(replyOwnedId).length, 0);
+});
+
+test("a stream line that keeps a proven finding's id but names another finding is not proven", async () => {
+  // Another title, severity and test; another title; another severity; another test; the record's own.
+  assert.deepEqual(getRun(relabelId).events.filter((e) => e.ev === "finding").map((e) => e.proven), [false, false, false, false, true]);
+  // The older record form: its own line; another title; another id of the same run; another run's id.
+  assert.deepEqual(getRun(oldClaimId).events.filter((e) => e.ev === "finding").map((e) => e.proven), [true, false, false, false]);
+});
+
+test("a solo run that stopped while its agent worked starts its agent again; its submitted finding is not sent to the proof check alone", async () => {
+  for (let i = 0; i < 300 && !startedFor(soloId).length; i++) await new Promise((r) => setTimeout(r, 10));
+  const [w] = startedFor(soloId);
+  assert.ok(w, "the agent was started again");
+  assert.deepEqual(w.args.slice(1, 3), ["child", "run"]);
+  const run = getRun(soloId);
+  assert.deepEqual(run.events.filter((e) => e.ev === "phase-restarted").map((e) => e.phase), ["agent"]);
+  assert.deepEqual(run.events.filter((e) => e.ev === "finding"), []);
+  assert.equal(run.status, "running");
+  w.child.emit("exit", 0, null); // end the worker, so the run closes
+  await closed(soloId);
 });
 
 test("a finished fleet comes back whole, and a finding is proven only when its stored replay record says so", async () => {
