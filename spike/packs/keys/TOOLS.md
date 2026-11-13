@@ -21,7 +21,7 @@ image `touchstone-chain-tools:wave1` (built from `runtime/Dockerfile`), with
 | cast (Foundry) | MIT or Apache-2.0 | Binary is in the tools image. Nothing in this pack calls it | Yes | Local RPC | `cast storage`, `cast logs` | Slot values and logs | None | `observe.mjs` ethers reads and the forge cheatcodes read the same data | None | None | skip (in the image, not called, no gain over what we read) |
 | safe-tx-hashes-util (`pcaversaccio`) | AGPL-3.0 | Not wired | Needs the Safe Transaction Service (network) | Safe tx or message hash | Verified hash, decoded call | Would flag a signed hash that does not match the call shown to signers | `evidence` (later) | None | None | Blind-signing check. Needs a real Safe tx history | read-only (separate program, never pasted) |
 | safe-cli (`safe-global/safe-cli`) | MIT | Not wired | Needs an RPC. Could point at Anvil | Safe address | Prints owners, threshold, modules | None beyond protocol-kit | None | Safe protocol-kit | None | None | skip (protocol-kit already covers it) |
-| safe-hash-rs (`Frontier159/safe-hash-rs`) | License not confirmed | Not wired | Hash computation is offline | Tx fields | Safe tx hash | Hash mismatch | None | safe-tx-hashes-util | None | Same as safe-tx-hashes-util | read-only until the license is checked |
+| safe-hash-rs 0.0.19 (`Cyfrin/safe-hash-rs`) | **No licence published** (checked 2026-11-12: no LICENSE file, no `license` in any Cargo.toml, GitHub shows none). See `THIRD_PARTY.md`. Release blocker until Cyfrin grants permission | `safe-hash.mjs` `hashWithSafeHash`, through `runTool()`, image `touchstone/safe-hash:0.0.19` built from `safe-hash/Dockerfile` (the official release binary, fetched by sha256 at build time, on a digest-pinned Debian base). `--network none`, `--pull=never`, no workspace mount. One container hashes the whole batch | Yes. `safe-hash typed --standalone` needs no RPC and no Safe API | The Safe queue lab (`runtime/safe-queue.mjs`, run in the tools image on a local Anvil with chain ID 11155111): the transactions the wallet showed the signers, plus the chain evidence (`ApproveHash` events, `ExecutionSuccess` hashes, decoded `execTransaction` calls). The pack turns each into EIP-712 SafeTx typed data | EIP-712 hash, domain hash, message hash per transaction | `safe-hash-mismatch` (High): an owner approved a hash that no shown transaction hashes to (blind signing), or an executed nonce whose hash is not the hash of what was shown. Calibration first: the tool's hash of each executed call must equal the hash the Safe emitted, or the check is unavailable. Leads go into the brief and the `chain-scan` event, not the `key_leads` tool | None. A lead only. The lab approval is a hash on chain, and the real fields stay unknown until it runs, so there is no forge replay of it | safe-tx-hashes-util | None. The binary is run, not linked or copied | Blind-signing check, offline. It does NOT cover: source mode (no queue), a live Safe Transaction Service queue, off-chain signatures that never reach the chain (only `approveHash` and executions are read), nested Safes, `execTransaction` called through another contract (the call is not decoded), Safe versions below 1.3 (other domain), Safe messages | wrap |
 
 ## Source mode (a real folder)
 
@@ -43,8 +43,10 @@ this pack through the CLI only. That is a platform gap, not a pack gap.
   proxy and the grant (I tier).
 - Only Safe 1.4.1 is deployed. The `old-safe-version` check fires on the version
   string. The lab has no old singleton to exploit.
-- The blind-signing check (hash shown to signers against the call executed) needs
-  the Safe Transaction Service. No tool in this pack can run it offline yet.
+- The blind-signing check runs offline on the Safe queue lab only (safe-hash-rs). The
+  queue lab is its own local chain (ID 11155111), separate from the two lab Safes the
+  agent attacks. Its lead cannot be proven by forge. A real Safe Transaction Service
+  queue and off-chain signatures are not read.
 
 - Control harm reads Safe 1.4.1 slots only: singleton, owner count, threshold, guard,
   fallback handler, and the owner and module list entries. Other slots are not control.

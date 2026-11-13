@@ -536,21 +536,25 @@ export function sourceKickoff(mode, brief) {
 // Tell the agent when Aderyn did not run, so "no Aderyn leads" is never read as "clean".
 export const aderynNote = (aderyn) => aderyn.available ? "" : `\n\nNOTE: Aderyn did NOT run (${String(aderyn.reason ?? "its image is missing").slice(0, 160)}). Having no Aderyn leads here does NOT mean the code is clean. Read the code yourself.`;
 
-export async function chainPrepass(ws, { emit }, { mode, analyze }) {
+// `extra(ws, { world })` is an optional pack check that never throws. It returns
+// { key, available, leads, note } (Keys: the safe-hash blind-signing check).
+export async function chainPrepass(ws, { emit }, { mode, analyze, extra }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
   const obs = world ? await observe(ws, mode) : null;
   const aderyn = await aderynLeads(ws);
+  const more = extra ? await extra(ws, { world }) : null;
+  const flags = { aderyn: aderyn.available, ...(more ? { [more.key]: more.available } : {}) };
   const base = leadsFor(ws, analyze);
   // Aderyn leads come last in each impact class. They are a second engine on the source.
-  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads]);
+  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads, ...(more?.leads ?? [])]);
   const block = obs ? (obs.block ?? obs.toBlock) : null;
   emit({ t: Date.now(), ev: "chain-scan", pack: mode, engines: [...new Set(leads.flatMap((l) => l.engines))],
-    block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    block, suspects: leads.length, source: !world, ...flags,
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
-    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) },
-    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) + (more?.note ?? "") },
+    record: { mode, block, suspects: leads.length, source: !world, ...flags,
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };
 }
