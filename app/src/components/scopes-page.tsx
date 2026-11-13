@@ -71,6 +71,9 @@ export function ScopesPage({
   const [removing, setRemoving] = useState<{ scope: TargetChoice; open: boolean } | null>(null)
 
   const shown = detail ? targets.find((t) => t.id === detail.id) : undefined
+  // The sheet takes the focus itself. The first control in it can be "Remove
+  // scope", and Enter must not land there.
+  const sheet = useRef<HTMLDivElement>(null)
   const openDetail = (t: TargetChoice) => setDetail({ id: t.id, open: true })
   const askRemove = (t: TargetChoice) => setRemoving({ scope: t, open: true })
 
@@ -116,10 +119,10 @@ export function ScopesPage({
                 }
                 meta={[
                   items.length ? (
-                    <TruncatedText mono middle={items.length === 1} text={items.map((i) => i.text).join(", ")} />
+                    <TruncatedText key="contents" mono middle={items.length === 1} text={items.map((i) => i.text).join(", ")} />
                   ) : null,
                   plural(mine.length, "run"),
-                  proven > 0 ? <span className="shrink-0 whitespace-nowrap text-ok tabular-nums">{proven} proven</span> : null,
+                  proven > 0 ? <span key="proven" className="shrink-0 whitespace-nowrap text-ok tabular-nums">{proven} proven</span> : null,
                 ]}
                 trailing={<ModulePills ids={modulesOf(t)} packs={packs} compact max={2} className="@xl:flex-nowrap @xl:justify-end" />}
                 menu={
@@ -143,7 +146,7 @@ export function ScopesPage({
       )}
 
       <Sheet open={detail?.open === true && !!shown} onOpenChange={(open) => setDetail((d) => (d ? { ...d, open } : d))}>
-        <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-md">
+        <SheetContent ref={sheet} initialFocus={sheet} className="gap-0 outline-none data-[side=right]:w-full data-[side=right]:sm:max-w-md">
           {shown ? (
             <ScopeDetail
               target={shown}
@@ -158,7 +161,7 @@ export function ScopesPage({
       </Sheet>
 
       <Dialog open={adding} onOpenChange={setAdding}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-lg">
+        <DialogContent className="max-h-[calc(100svh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Add scope</DialogTitle>
             <DialogDescription>Type a GitHub URL, a website address or a folder path, then press Enter. One scope holds code or websites, not both.</DialogDescription>
@@ -310,7 +313,7 @@ function AddScopeForm({ packs, onAttached, onClose }: { packs: PackChoice[]; onA
   }, [])
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 flex-col gap-2">
       {/* The dialog has its own close button, so the form's is hidden. So is
           the closed-state button, which would flash while the dialog fades. */}
       <div ref={box} className="[&_button[aria-label=Cancel]]:hidden [&>button]:hidden [&>div]:mt-0">

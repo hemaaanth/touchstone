@@ -1,7 +1,7 @@
 import { describe, test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
-import { MODULE_COLOR, MODULE_FALLBACK_TOKEN, MODULE_TOKENS, moduleColor, moduleToken } from "./module-colors"
+import { MODULE_COLOR, MODULE_FALLBACK_TOKEN, MODULE_TOKENS, moduleColor, moduleToken, orderModules } from "./module-colors"
 
 // The real pack list the server sends as `availablePacks` (GET /api/models).
 // @ts-expect-error — plain .mjs module, no types
@@ -72,5 +72,24 @@ describe("module colours", () => {
       }
       assert.match(value(body, MODULE_FALLBACK_TOKEN)!, /^oklch\(\s*[\d.]+\s+0\s+0\s*\)$/)
     }
+  })
+})
+
+describe("module order", () => {
+  test("a row's modules take the order of the server's list", () => {
+    const order = ["contracts", "web", "review"]
+    assert.deepEqual(orderModules(["review", "contracts"], order), ["contracts", "review"])
+    assert.deepEqual(orderModules(["contracts", "review"], order), ["contracts", "review"])
+  })
+
+  test("an unknown module goes last and keeps its place", () => {
+    const order = ["contracts", "web"]
+    assert.deepEqual(orderModules(["new-b", "web", "new-a", "contracts"], order), ["contracts", "web", "new-b", "new-a"])
+  })
+
+  test("the input list is not changed", () => {
+    const ids = ["web", "contracts"]
+    orderModules(ids, ["contracts", "web"])
+    assert.deepEqual(ids, ["web", "contracts"])
   })
 })

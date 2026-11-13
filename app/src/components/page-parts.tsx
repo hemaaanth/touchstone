@@ -4,7 +4,7 @@
 //     {loading ? <ListLoading /> : none ? <ListEmpty icon={X} title="No scopes yet">Why.</ListEmpty> : (
 //       <ListCard aria-label="Scopes">
 //         <ListRow icon={<Globe />} title="example.com" badges={<Badge variant="outline">Demo</Badge>}
-//                  meta={[<TruncatedText mono middle text={url} />, "3 runs"]}
+//                  meta={[<TruncatedText key="url" mono middle text={url} />, "3 runs"]}
 //                  trailing={<ModulePills ids={ids} packs={packs} compact max={2} />}
 //                  menu={<RowMenu><RowMenuItem onClick={open}>View details</RowMenuItem></RowMenu>}
 //                  onOpen={open} />
@@ -178,6 +178,33 @@ export function ListCard({ children, className, ...props }: React.ComponentProps
 // tile, the name with its badges, one muted meta line, pills at the right, and
 // the "…" menu. The whole row opens the detail (`onOpen`). The name is the
 // button a keyboard lands on. The row never expands in place.
+// A tooltip that opens only when the text in `ref` is cut.
+function useCutTooltip(ref: React.RefObject<HTMLSpanElement | null>) {
+  const [open, setOpen] = useState(false)
+  const onOpenChange = (next: boolean) => setOpen(next && !!ref.current && ref.current.scrollWidth > ref.current.clientWidth)
+  return { open, onOpenChange }
+}
+
+// The name of a row. It is the row's one focus stop when the row opens a
+// detail. A name too long for the row ends in "…" and shows whole in a tooltip.
+function RowTitle({ title, opens }: { title: string; opens: boolean }) {
+  const text = useRef<HTMLSpanElement>(null)
+  const cut = useCutTooltip(text)
+  return (
+    <Tooltip open={cut.open} onOpenChange={cut.onOpenChange}>
+      <TooltipTrigger
+        render={opens ? <button type="button" data-row-main aria-haspopup="dialog" /> : <span />}
+        className="flex min-w-0 text-left text-sm leading-5 font-medium outline-none"
+      >
+        <span ref={text} className="truncate">
+          {title}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent align="start">{title}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function ListRow({
   icon,
   title,
@@ -195,6 +222,7 @@ export function ListRow({
   // Badges after the name: `<Badge variant="outline">Demo</Badge>`.
   badges?: React.ReactNode
   // The one muted line. Items are joined with a dot. A false item is skipped.
+  // A JSX item needs a `key` (the lint rule asks for it).
   meta?: React.ReactNode[]
   // Pills at the right (`ModulePills`). They move under the meta line in a narrow card.
   trailing?: React.ReactNode
@@ -219,20 +247,14 @@ export function ListRow({
       )}
     >
       {icon ? (
-        <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
+        <span aria-hidden className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
           {icon}
         </span>
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col gap-x-4 gap-y-2 @xl:flex-row @xl:items-center">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-2">
-            {onOpen ? (
-              <button type="button" data-row-main aria-haspopup="dialog" className="min-w-0 truncate text-left text-sm leading-5 font-medium outline-none">
-                {title}
-              </button>
-            ) : (
-              <span className="min-w-0 truncate text-sm leading-5 font-medium">{title}</span>
-            )}
+            <RowTitle title={title} opens={!!onOpen} />
             {badges ? <span className="flex shrink-0 items-center gap-1.5">{badges}</span> : null}
           </div>
           {line.length ? (
@@ -258,7 +280,7 @@ export function ListRow({
 export function RowMenu({ label = "More actions", children }: { label?: string; children: React.ReactNode }) {
   const stop = (e: React.SyntheticEvent) => e.stopPropagation()
   return (
-    <div data-slot="row-menu" className="-mr-1.5 shrink-0" onClick={stop} onKeyDown={stop}>
+    <div data-slot="row-menu" className="-mr-1.5 shrink-0 @xl:self-center" onClick={stop} onKeyDown={stop}>
       <DropdownMenu>
         <DropdownMenuTrigger
           render={<Button variant="ghost" size="icon-sm" aria-label={label} className="text-muted-foreground data-popup-open:bg-muted data-popup-open:text-foreground" />}
@@ -294,18 +316,21 @@ export function TruncatedText({
   className?: string
 }) {
   const head = useRef<HTMLSpanElement>(null)
-  const [open, setOpen] = useState(false)
-  const cut = () => !!head.current && head.current.scrollWidth > head.current.clientWidth
+  const cut = useCutTooltip(head)
   const split = middle && text.length > tail * 2
   return (
-    <Tooltip open={open} onOpenChange={(next) => setOpen(next && cut())}>
+    <Tooltip open={cut.open} onOpenChange={cut.onOpenChange}>
       <TooltipTrigger render={<span />} data-slot="truncated-text" className={cn("flex min-w-0", mono && "font-mono text-[0.92em]", className)}>
         <span ref={head} className="overflow-hidden text-ellipsis whitespace-pre">
           {split ? text.slice(0, -tail) : text}
         </span>
         {split ? <span className="shrink-0 whitespace-pre">{text.slice(-tail)}</span> : null}
       </TooltipTrigger>
-      <TooltipContent className={cn("max-w-md break-all", mono && "font-mono text-[11px]")}>{text}</TooltipContent>
+      {/* Under the text and from its left edge: the full value reads as the
+          same line, longer. Above, it would cover the row's own title. */}
+      <TooltipContent side="bottom" align="start" className={cn("max-w-md break-all", mono && "font-mono text-[11px]")}>
+        {text}
+      </TooltipContent>
     </Tooltip>
   )
 }
@@ -347,7 +372,7 @@ export function ListLoading({ rows = 4, label = "Loading…" }: { rows?: number;
       <span className="sr-only">{label}</span>
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} aria-hidden className="flex items-start gap-3 px-4 py-3">
-          <Skeleton className="mt-0.5 size-8 shrink-0 rounded-lg" />
+          <Skeleton className="mt-1 size-8 shrink-0 rounded-lg" />
           <div className="flex flex-1 flex-col gap-2 py-1">
             <Skeleton className="h-3.5" style={{ width: `${[38, 52, 30, 44][i % 4]}%` }} />
             <Skeleton className="h-3" style={{ width: `${[56, 40, 62, 48][i % 4]}%` }} />

@@ -59,3 +59,14 @@ export function moduleColor(id: string | null | undefined): string {
 export function moduleStyle(id: string | null | undefined): CSSProperties {
   return { "--module": moduleColor(id) } as CSSProperties
 }
+
+// The modules of one row, in the order of the server's module list. Every
+// screen then shows the same module in the same place. An unknown module goes
+// last and keeps its place among the unknown ones.
+export function orderModules(ids: readonly string[], order: readonly string[]): string[] {
+  const at = (id: string) => {
+    const i = order.indexOf(id)
+    return i === -1 ? order.length : i
+  }
+  return [...ids].sort((a, b) => at(a) - at(b))
+}

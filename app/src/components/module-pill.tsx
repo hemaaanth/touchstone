@@ -14,7 +14,7 @@ import {
   SearchCode,
   type LucideIcon,
 } from "lucide-react"
-import { moduleStyle } from "@/lib/module-colors"
+import { moduleStyle, orderModules } from "@/lib/module-colors"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 // The one way the console shows a module (pack): a pill in the module's own
@@ -50,7 +50,7 @@ export function ModuleIcon({ id, className }: { id: string; className?: string }
 const PILL = "inline-flex max-w-full min-w-0 shrink-0 items-center rounded-full font-medium whitespace-nowrap"
 const SIZE = {
   default: "h-[22px] gap-1.5 px-2 text-xs [&>svg]:size-3",
-  compact: "h-[18px] gap-1 px-1.5 text-[11px] [&>svg]:size-2.5",
+  compact: "h-[18px] gap-1 px-1.5 text-[11px] [&>svg]:size-[11px]",
 }
 
 export function ModulePill({
@@ -83,7 +83,8 @@ export function ModulePill({
 }
 
 // A scope's or a run's modules as pills. `max` keeps a row short: the rest
-// fold into a "+N" pill that names them in a tooltip.
+// fold into a "+N" pill that names them in a tooltip. With `packs`, the pills
+// take the order of the server's module list, the same on every row.
 export function ModulePills({
   ids,
   packs,
@@ -100,8 +101,9 @@ export function ModulePills({
   className?: string
 }) {
   const title = (id: string) => packs?.find((p) => p.id === id)?.title ?? id
-  const shown = max != null && ids.length > max ? ids.slice(0, max) : ids
-  const rest = ids.slice(shown.length)
+  const all = packs ? orderModules(ids, packs.map((p) => p.id)) : ids
+  const shown = max != null && all.length > max ? all.slice(0, max) : all
+  const rest = all.slice(shown.length)
   if (ids.length === 0) return null
   return (
     <span data-slot="module-pills" className={cn("flex min-w-0 flex-wrap items-center gap-1", className)}>
