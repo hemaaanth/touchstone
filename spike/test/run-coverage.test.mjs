@@ -188,6 +188,37 @@ test("a follow-up that retries a failed run and still leaves a gap broadcasts th
   assert.equal(last.errorInfo?.kind, "coverage", "the UI and a replay see the coverage error");
 });
 
+test("a follow-up that records a finding on a run with part of its scope unread still says what was not read", async () => {
+  // The first turn ends as a coverage error. A follow-up then proves a finding.
+  // recordMore sets the record to "recorded" and clears errorInfo, so without
+  // its coverage note the run would look clean while the repo is still unread.
+  scripts.push({ events: [refused, done] });
+  const { id } = await start();
+  let r = await settle(id);
+  assert.equal(r.errorInfo?.kind, "coverage");
+  writeFileSync(path.join(process.env.TOUCHSTONE_RESULTS_DIR, `run-${id}.sqlite`), "");
+  const finding = { title: "Unchecked send", severity: "high", poc: "x/bank/keeper/send.go" };
+  const before = r.events.length;
+  // The review pack proves nothing (prove returns []). Stand in a pack that
+  // keeps the follow-up's finding, so recordMore records it; restored below.
+  const { PACKS } = await import("../packs/index.mjs");
+  const prove = PACKS.review.prove;
+  PACKS.review.prove = async (_ws, found) => found;
+  try {
+    scripts.push({ events: [{ ...done, findings: [finding] }] });
+    steerRun(id, "Look at the send path.");
+    r = await settle(id, 1);
+  } finally {
+    PACKS.review.prove = prove;
+  }
+  assert.equal(r.status, "recorded");
+  assert.equal(record(id).outcome, "recorded");
+  const note = r.events.slice(before).findLast((e) => e.ev === "coverage");
+  assert.ok(note, "the follow-up broadcasts a coverage note");
+  assert.equal(note.info?.kind, "coverage", "the note is not a cleared note: the repo is still unread");
+  assert.match(note.info?.detail ?? "", /Not read:\n- https:\/\/github\.com\/cosmos\/cosmos-sdk/);
+});
+
 test("coverageGap is exported, so another end path (for example a restart) can gate on it", async () => {
   const { coverageGap } = await import("../../app/server/runs.mjs");
   assert.equal(typeof coverageGap, "function", "app/server/runs.mjs exports coverageGap");
