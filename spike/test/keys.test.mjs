@@ -140,7 +140,7 @@ test("the keys pack is registered and has a stable tool set", () => {
   assert.equal(typeof keys.prove, "function");
   const state = { poc: 0, passed: new Map(), found: [] };
   const names = keys.tools("/nonexistent", state).map((t) => t.name);
-  assert.deepEqual(names, ["list_sources", "read_source", "safe_state", "key_leads", "run_poc", "submit_finding"]);
+  assert.deepEqual(names, ["list_sources", "read_source", "safe_state", "key_leads", "run_poc", "submit_finding", "submit_candidate"]);
   assert.equal(keys.nudge({ poc: 0, passed: new Map(), found: [] }), null);
 });
 

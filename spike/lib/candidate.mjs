@@ -16,6 +16,8 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { arr, obj, str } from "@earendil-works/pi-schema";
 import { event } from "./event.mjs";
 import { redactSecret, sha256 } from "./proof-evidence.mjs";
+import { proofDelta } from "./proof.mjs";
+import { gate } from "./record.mjs";
 
 export const CANDIDATE_CAP = 3;
 export const WHY_UNPROVEN = "No check covers this class yet.";
@@ -207,3 +209,35 @@ export function scriptLookup(state) {
 }
 
 export const SCRIPT_POC = "the label of a run_request_script attempt that matched no harm pattern";
+
+// ---------------------------------------------------------------- harm packs
+// contracts, keys, chain-watch. A candidate comes from a test that passed in
+// this session. The lookup replays its exact source. If the harm check fires,
+// it is a finding. If the test does not pass on replay, there is no evidence.
+
+export function recordForge(state, contract, output) {
+  state.attempts ??= new Map();
+  state.attempts.set(String(contract), { output: String(output ?? "") });
+}
+
+// `judge` is the pack's harm check (null: the replay's own harm verdict).
+export function forgeLookup({ ws, state, judge = null, stateTrace = false }) {
+  return async (contract) => {
+    const source = state.passed.get(contract);
+    if (!source) return null;
+    const delta = await proofDelta(ws, { source, contract, stateTrace });
+    if (!delta) throw new Error("the replay produced no result");
+    const proof = gate({ kind: "forge", ...delta }, judge);
+    if (proof.pass) return { proved: true };
+    if (!delta.pass) throw new Error(`the test did not pass on replay: ${delta.reason ?? delta.status ?? "no reason"}`);
+    const output = state.attempts?.get(contract)?.output ?? "";
+    const { test, status, gasUsed, logs, transfers, harm } = proof;
+    return {
+      evidence: { kind: "forge-trace", contract, test, status: delta.status, harmCheck: harm, gasUsed, logs, transfers, source, output },
+      text: `${output}\n${JSON.stringify({ logs, transfers }, null, 1)}`,
+      rootCause: `source:${sha256(source).slice(0, 16)}`,
+    };
+  };
+}
+
+export const FORGE_POC = "the name of a test contract that passed run_poc but whose replay the harm check did not count";

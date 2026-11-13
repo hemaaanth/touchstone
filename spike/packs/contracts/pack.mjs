@@ -19,6 +19,7 @@ import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { runPrepass } from "../../lib/prepass.mjs";
 import { gate, proveFindings } from "../../lib/record.mjs";
 import { proofDelta } from "../../lib/proof.mjs";
+import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, recordForge } from "../../lib/candidate.mjs";
 
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
 // set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
@@ -316,6 +317,7 @@ function tools(ws, state) {
       // Remember the exact source that passed. submit_finding's gate reads this,
       // and the final replay proof re-runs this source, not a later edit.
       if (r.passed) state.passed.set(args.contract_name, args.test_source);
+      recordForge(state, args.contract_name, r.output);
       const note = r.passed && !state.found.some((f) => f.poc === args.contract_name)
         ? `\n\nThis test PASSED. If it proves a real bug, call submit_finding for \`${args.contract_name}\` now, then continue with the next suspect.`
         : "";
@@ -360,7 +362,7 @@ function tools(ws, state) {
       if (!proof?.pass) {
         const why = proof?.harm?.reason ?? proof?.reason ?? "the replay produced no result";
         event("submit-rejected", { poc, reason: "no-harm", detail: String(why).slice(0, 200) });
-        return { output: [{ type: "text", text: `Cannot record this finding: the replay of \`${poc}\` passed but shows no harm (${why}). A proof must call a contract deployed from the audited code and, in that call, move ETH out of it or change its storage. Rewrite the test so it performs the real attack, run it with run_poc, then call submit_finding again.` }], isError: true };
+        return { output: [{ type: "text", text: `Cannot record this finding: the replay of \`${poc}\` passed but shows no harm (${why}). A proof must call a contract deployed from the audited code and, in that call, move ETH out of it or change its storage. Rewrite the test so it performs the real attack, run it with run_poc, then call submit_finding again. ${CANDIDATE_HINT}` }], isError: true };
       }
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
@@ -420,7 +422,9 @@ function tools(ws, state) {
   if (moduleOn(modules, "static")) out.push(staticFindings);
   if (moduleOn(modules, "fuzz")) out.push(fuzzFindings);
   if (moduleOn(modules, "fetch")) out.push(fetchSourceTool);
-  out.push(runPoc, submitFinding);
+  const forge = forgeLookup({ ws, state });
+  const lookup = async (contract) => { if (!proofOpen(ws)) throw new Error("no Solidity is in the workspace yet"); return forge(contract); };
+  out.push(runPoc, submitFinding, candidateTool({ pack: "contracts", state, lookup, poc: FORGE_POC }));
   return out;
 }
 

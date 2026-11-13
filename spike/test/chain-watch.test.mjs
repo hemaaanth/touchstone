@@ -107,7 +107,7 @@ test("the chain-watch pack is registered and has a stable tool set", () => {
   assert.equal(typeof chainWatch.prepass, "function");
   assert.equal(typeof chainWatch.prove, "function");
   const names = chainWatch.tools("/nonexistent", { poc: 0, passed: new Map(), found: [] }).map((t) => t.name);
-  assert.deepEqual(names, ["list_sources", "read_source", "chain_state", "watch_leads", "run_poc", "submit_finding"]);
+  assert.deepEqual(names, ["list_sources", "read_source", "chain_state", "watch_leads", "run_poc", "submit_finding", "submit_candidate"]);
 });
 
 test("watch_leads returns the ranked leads from the observation file", async () => {
