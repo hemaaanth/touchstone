@@ -490,3 +490,29 @@ test("an agent that works again leaves the cut-off list", () => {
   // An idle report is not work: the agent stays cut off.
   assert.deepEqual(Object.keys(reduceEvents([...cut, ev("agent-status", { id: "a-1", state: "idle" })]).cutOff), ["a-1"])
 })
+
+test("the scope brief: Run Info gets the last one, a follow-up can remove it, and it is no step", () => {
+  const base: RunEvent[] = [{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }, { t: 2, ev: "brief", text: "Look at auth first." }]
+  let s = reduceEvents(base)
+  assert.equal(s.brief, "Look at auth first.")
+  assert.ok(!s.steps.some((st) => /brief/i.test(st.label ?? "")))
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "Second." }])
+  assert.equal(s.brief, "Second.")
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "" }])
+  assert.equal(s.brief, null)
+  assert.equal(reduceEvents([{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }]).brief, null)
+})
+
+test("an older run's read of the Touchstone BRIEF.md is not shown as a repo file", () => {
+  const reads = (kind: string | null) =>
+    reduceEvents([
+      ...(kind ? [{ t: 0, ev: "scope", scope: { id: "s", title: "svc", kind } }] : []),
+      { t: 1, ev: "read_source", file: "BRIEF.md" },
+      { t: 2, ev: "read_source", file: "src/Vault.sol" },
+    ]).steps.filter((st) => st.kind === "read").map((st) => st.label)
+  // A scope run got its text in that file.
+  for (const kind of ["scope", "brief", "live"]) assert.deepEqual(reads(kind), ["Read the scope brief", "Read src/Vault.sol"])
+  // A lab never had a scope brief: the agent only looked for the file.
+  assert.deepEqual(reads("lab"), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
+  assert.deepEqual(reads(null), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
+})

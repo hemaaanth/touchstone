@@ -92,7 +92,8 @@ export function extractLinks(md) {
 // what the operator actually wrote.
 export function addBriefScope({ title, brief, blurb } = {}) {
   const t = String(title || "").trim();
-  const body = String(brief || "").trim();
+  // The pasted markdown is the scope brief, so the same limit holds here.
+  const body = checkBrief(brief == null ? "" : String(brief));
   if (!t) throw new Error("a brief needs a title");
   if (!body) throw new Error("a brief needs some markdown");
   const links = extractLinks(body);
@@ -391,8 +392,9 @@ export function memberFilePaths(members) {
   return folders.flatMap((m) => m.files.map((f) => ({ path: folders.length === 1 ? f.path : `${m.name}/${f.path}`, content: f.content })));
 }
 
-// The BRIEF.md a scope run reads first: its members and where each one is.
-export function scopeBrief(scope) {
+// What a scope run is told about its members and where each one is. It goes
+// into the agent's instructions (targets.mjs scopeEnv), not into a file.
+export function scopeOutline(scope) {
   const lines = [`# ${scope.title}`, "", "One scope, tested as one unit. Its members:", ""];
   const several = scope.members.filter((m) => m.kind === "folder").length > 1;
   for (const m of scope.members) {
@@ -578,6 +580,39 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     removeGrant(grant.id);
     throw err;
   }
+  return scope;
+}
+
+// ---- The scope brief --------------------------------------------------------
+//
+// Free text from the operator that every run of the scope receives, in the
+// agent's instructions (targets.mjs scopeEnv). It is guidance for the model
+// only. It never changes the grant, the allow-list, the modules or the tools:
+// nothing in reach.mjs, fetch.mjs or modules.mjs reads it. A "brief" scope
+// (older records) already holds its pasted markdown in this same field.
+export const BRIEF_MAX = 8000;
+
+// The brief as it is stored: trimmed, "" for none. Refuses a brief over the limit.
+export function checkBrief(text) {
+  if (text != null && typeof text !== "string") throw new Error("A scope brief must be text.");
+  const brief = String(text ?? "").trim();
+  if (brief.length > BRIEF_MAX) {
+    throw new Error(`A scope brief holds at most ${BRIEF_MAX.toLocaleString("en-US")} characters. This one has ${brief.length.toLocaleString("en-US")}. Shorten it and save again.`);
+  }
+  return brief;
+}
+
+// Set or clear the brief of one scope. Writes the store atomically (saveStore)
+// and refuses a damaged store (loadScopes). Returns the stored scope. An empty
+// brief removes the field, so the record looks like one that never had a brief.
+export function setScopeBrief(id, text) {
+  const brief = checkBrief(text);
+  const all = loadScopes();
+  const scope = all.find((s) => s.id === id);
+  if (!scope) throw new Error(`unknown scope: ${id}`);
+  if (brief) scope.brief = brief;
+  else delete scope.brief;
+  writeScopes(all);
   return scope;
 }
 
