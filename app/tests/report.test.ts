@@ -552,7 +552,7 @@ describe("report: replay bundle", () => {
       linkSync(path.join(outside, "secret.sol"), path.join(ws, "src", "Linked.sol"))
       const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       expect(snap.files.map((f: { path: string }) => f.path)).not.toContain("src/Linked.sol")
-      expect(snap.omitted).toContainEqual({ path: "src/Linked.sol", reason: "a hard link" })
+      expect(snap.omitted.find((o: { path: string }) => o.path === "src/Linked.sol")?.reason).toBe("a hard link")
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(outside, { recursive: true, force: true })
@@ -1187,13 +1187,11 @@ describe("report: replay bundle", () => {
       return false
     }
   })()
-  ;(forgeReady ? test : test.skip)("a Foundry bundle re-runs from its own files offline, and the README command is the one that runs", async () => {
+  ;(forgeReady ? test : test.skip)("a Foundry bundle re-runs from its own files offline; a data-needing proof makes no claim", async () => {
     // @ts-expect-error — plain .mjs module, no types
-    const { makeWorkspace, forgeTest } = await import("../../spike/lib/sandbox.mjs")
+    const { makeWorkspace, forgeTest, forgeReplayCommand } = await import("../../spike/lib/sandbox.mjs")
     // @ts-expect-error — plain .mjs module, no types
-    const { proveFindings } = await import("../../spike/lib/record.mjs")
-    // @ts-expect-error — plain .mjs module, no types
-    const { forgeReplayCommand, verifyForgeReplay } = await import("../../spike/lib/sandbox.mjs").then(async (sb) => ({ forgeReplayCommand: sb.forgeReplayCommand, verifyForgeReplay: (await import("../../spike/lib/replay-bundle.mjs")).verifyForgeReplay }))
+    const { verifyForgeReplay } = await import("../../spike/lib/replay-bundle.mjs")
     const volume = `touchstone-replay-test-${process.pid}`
     execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" })
     execFileSync("docker", [
@@ -1201,30 +1199,29 @@ describe("report: replay bundle", () => {
       "-v", "foundry-svm:/from:ro", "-v", `${volume}:/svm`,
       "ghcr.io/foundry-rs/foundry:latest", "-c", "cp -a /from/0.8.38 /svm/ && chown -R 1000:1000 /svm",
     ], { stdio: "ignore" })
-    const proveLab = async (labRel: string, pocFile: string, contract: string) => {
+    // Build the allow-list workspace for a lab (a forge run first so build-info
+    // lists the compiled sources), then snapshot it.
+    const snapLab = async (labRel: string, pocFile: string, contract: string) => {
       const lab = new URL(`../../${labRel}/`, import.meta.url).pathname
-      const source = readFileSync(path.join(lab, "oracle", pocFile), "utf8")
       const ws = makeWorkspace(lab)
-      try {
-        const [f] = await proveFindings(ws, [{ title: labRel, severity: "critical", poc: contract, explanation: "x", source }], [{ ev: "run_poc-done", passed: true, contract }])
-        return f
-      } finally {
-        rmSync(ws, { recursive: true, force: true })
-      }
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", pocFile), "utf8"))
+      await forgeTest(ws, { matchContract: contract })
+      const snap = snapshotForgeReplay(ws, { contract, test: "t()" })
+      return { ws, snap }
     }
     try {
-      // (1) vault-reentrancy: the record earns the re-run claim, and the README
+      // (1) vault-reentrancy: a pure-source proof. The real offline re-run passes
+      // and binds the tree, the bundle claims RE-RUN CHECKED, and the README
       // command the test runs reproduces the pass from the bundle folder alone.
-      const f = await proveLab("lab/vault-reentrancy", "VaultExploit.t.sol", "VaultExploitTest")
-      expect(f.pocProved).toBe(true)
-      expect(f.proof.replay.rerun.checked).toBe(true)
-      expect(f.proof.replay.rerun.pass).toBe(true)
-      const wantCmd = forgeReplayCommand({ matchContract: "VaultExploitTest", solc: f.proof.replay.solc })
-      expect(f.proof.replay.rerun.command).toBe(wantCmd)
-      const replay = loadReplayFiles(f.proof.replay)
+      const { ws, snap } = await snapLab("lab/vault-reentrancy", "VaultExploit.t.sol", "VaultExploitTest")
+      const proof = { kind: "forge", pass: true, test: "t()" }
+      const rerun = await verifyForgeReplay({ replay: snap, proof })
+      expect(rerun.pass).toBe(true)
+      expect(rerun.tree).toMatch(/^[a-f0-9]{64}$/)
+      const wantCmd = forgeReplayCommand({ matchContract: "VaultExploitTest", solc: snap.solc })
       const dir = mkdtempSync(path.join(tmpdir(), "replay-e2e-"))
       try {
-        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: f.title, proofKind: "forge", proof: f.proof }, recorded: { proof: f.proof, replay, pocProved: true } }), dir)
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: { ...snap, rerun }, proof } }), dir)
         const readme = readFileSync(path.join(dir, "README.md"), "utf8")
         expect(readme.split("\n")[0].startsWith("RE-RUN CHECKED:")).toBe(true)
         expect(readme).toContain(wantCmd)
@@ -1232,45 +1229,56 @@ describe("report: replay bundle", () => {
         const run = wantCmd.replace("foundry-svm:", `${volume}:`)
         const out = execFileSync("bash", ["-c", run], { cwd: dir, encoding: "utf8", timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })
         expect(out).toContain("[PASS] test_reentrancy_drains_vault")
-        // (3) damaged hash: sha256sum -c fails after an edit.
         writeFileSync(path.join(dir, "test", "AgentPoc.t.sol"), readFileSync(path.join(dir, "test", "AgentPoc.t.sol"), "utf8") + "// edit\n")
         expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
-
-      // (2) vault-bytecode: proves the non-.sol `src/*.hex` ships and the re-run reads it.
-      const fb = await proveLab("lab/vault-bytecode", "BytecodeVaultExploit.t.sol", "BytecodeVaultExploitTest")
-      // The snapshot ships the non-.sol .hex; the re-run passes iff the proof did.
-      if (fb?.proof?.replay) {
-        expect(fb.proof.replay.paths).toContain("src/BytecodeVault.runtime.hex")
-        expect(fb.proof.replay.rerun.pass).toBe(fb.pocProved === true)
-      }
-
-      // (4) a needed file removed: the re-run fails, so there is no claim.
-      const missing = { ...replay, files: replay.files.filter((x: { path: string }) => x.path !== "src/Vault.sol") }
-      const bad = await verifyForgeReplay({ replay: missing, proof: f.proof })
+      // (2) a needed source removed from the checked tree: the re-run fails.
+      const missing = { ...snap, files: snap.files.filter((x: { path: string; vendored?: unknown }) => x.path !== "src/Vault.sol") }
+      const bad = await verifyForgeReplay({ replay: missing, proof })
       expect(bad.pass).toBe(false)
       expect(typeof bad.reason).toBe("string")
+      rmSync(ws, { recursive: true, force: true })
 
-      // (5) keys-class: a test that reads a shipped non-.sol data file via a
-      // cheatcode (the gap that broke the static rule) re-runs offline.
-      const ws = mkdtempSync(path.join(tmpdir(), "replay-keyscls-"))
+      // (3) a proof that reads a data file through a cheatcode: the allow-list
+      // ships sources+config only, not the data file, so the offline re-run
+      // fails and the bundle makes no claim — the honest scope-cut result.
+      const dw = mkdtempSync(path.join(tmpdir(), "replay-data-"))
       try {
-        mkdirSync(path.join(ws, "src"))
-        mkdirSync(path.join(ws, "test"))
-        mkdirSync(path.join(ws, "lib", "forge-std", "src"), { recursive: true })
-        writeFileSync(path.join(ws, "lib", "forge-std", "src", "Vm.sol"), "// SPDX-License-Identifier: MIT\npragma solidity >=0.8.0;\ninterface Vm { function readFile(string calldata) external view returns (string memory); }\n")
-        writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\nfs_permissions = [{ access = "read", path = "./data" }]\n`)
-        mkdirSync(path.join(ws, "data"))
-        writeFileSync(path.join(ws, "data", "answer.txt"), "forty-two")
-        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `// SPDX-License-Identifier: MIT\npragma solidity >=0.8.0;\nimport "forge-std/Vm.sol";\ncontract DataReadTest {\n  Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function test_reads_data() external view {\n    require(keccak256(bytes(vm.readFile("data/answer.txt"))) == keccak256("forty-two"), "data missing");\n  }\n}\n`)
-        const snap = snapshotForgeReplay(ws, { contract: "DataReadTest", test: "test_reads_data()" })
-        expect(snap.paths ?? snap.files.map((x: { path: string }) => x.path)).toContain("data/answer.txt")
-        const ok = await verifyForgeReplay({ replay: snap, proof: { kind: "forge", pass: true } }, { run: (d: string, o: unknown) => forgeTest(d, o) })
-        expect(ok.pass).toBe(true)
+        mkdirSync(path.join(dw, "src"))
+        mkdirSync(path.join(dw, "test"))
+        mkdirSync(path.join(dw, "lib", "forge-std", "src"), { recursive: true })
+        writeFileSync(path.join(dw, "lib", "forge-std", "src", "Vm.sol"), "// SPDX-License-Identifier: MIT\npragma solidity >=0.8.0;\ninterface Vm { function readFile(string calldata) external view returns (string memory); }\n")
+        writeFileSync(path.join(dw, "foundry.toml"), `[profile.default]
+src = "src"
+test = "test"
+fs_permissions = [{ access = "read", path = "./data" }]
+`)
+        mkdirSync(path.join(dw, "data"))
+        writeFileSync(path.join(dw, "data", "answer.txt"), "forty-two")
+        writeFileSync(path.join(dw, "test", "AgentPoc.t.sol"), `// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+import "forge-std/Vm.sol";
+contract DataReadTest {
+  Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+  function test_reads_data() external view {
+    require(keccak256(bytes(vm.readFile("data/answer.txt"))) == keccak256("forty-two"), "data missing");
+  }
+}
+`)
+        // With the data file present the proof passes in the workspace.
+        const live = await forgeTest(dw, { matchContract: "DataReadTest" })
+        expect(live.passed).toBe(true)
+        // The snapshot ships no data file (it is not a compiled source).
+        const dsnap = snapshotForgeReplay(dw, { contract: "DataReadTest", test: "test_reads_data()" })
+        expect(dsnap.files.map((f: { path: string }) => f.path)).not.toContain("data/answer.txt")
+        // So the offline re-run from the bundle files alone fails: no claim.
+        const dRerun = await verifyForgeReplay({ replay: dsnap, proof: { kind: "forge", pass: true } })
+        expect(dRerun.pass).toBe(false)
+        expect(typeof dRerun.reason).toBe("string")
       } finally {
-        rmSync(ws, { recursive: true, force: true })
+        rmSync(dw, { recursive: true, force: true })
       }
     } finally {
       execFileSync("docker", ["volume", "rm", "-f", volume], { stdio: "ignore" })

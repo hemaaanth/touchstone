@@ -1160,6 +1160,42 @@ ${omittedList(omitted)}`;
 // Docker available and the workspace still warm, and stores the verdict on the
 // replay; the download request never runs Docker. `run` is injected for tests.
 // Returns { checked, pass, command, prepare, image, matchContract, solc, ms?, reason? }.
+// Run the offline re-run check for each proven Foundry finding in a written
+// run record, and patch the verdict onto the record. Called AFTER the record
+// is written, so recording a finding is never delayed by the ≤180 s check.
+// Until this finishes, a reader sees no re-run note (the record has no rerun).
+// Best-effort: an error on one finding leaves it unchecked and does not throw.
+export async function recordReplayReruns(resultsDir, runId, { run } = {}) {
+  const file = join(resultsDir, `run-${runId}.json`);
+  let raw;
+  try { raw = JSON.parse(readFileSync(file, "utf8")); } catch { return { checked: 0 }; }
+  const result = raw?.result;
+  const list = Array.isArray(result?.findings) ? result.findings : result?.finding ? [result.finding] : result?.proof ? [{ proof: result.proof }] : [];
+  const storeDir = join(resultsDir, "replay");
+  let checked = 0;
+  for (const f of list) {
+    const proof = f?.proof;
+    const pointer = proof?.replay;
+    if (!proof || proof.kind !== "forge" || !pointer || pointer.rerun) continue;
+    if (!(f.pocProved === true || proof.pass === true)) continue;
+    const replay = loadReplayFiles(pointer, storeDir);
+    let rerun;
+    try {
+      rerun = await verifyForgeReplay({ replay, proof, finding: f }, { run });
+    } catch (err) {
+      rerun = { checked: false, reason: `the check could not run (${String(err?.message || err).slice(0, 60)})` };
+    }
+    // Store only the pointer plus the small verdict, never the files.
+    proof.replay = { ...pointer, rerun };
+    checked++;
+  }
+  if (checked) {
+    writeFileSync(`${file}.tmp`, JSON.stringify(raw, null, 2));
+    renameSync(`${file}.tmp`, file);
+  }
+  return { checked };
+}
+
 export async function verifyForgeReplay({ replay, proof, finding, recorded } = {}, { run } = {}) {
   const matchContract = replay?.contract || null;
   const solc = replay?.solc ?? null;
