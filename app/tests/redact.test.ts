@@ -403,7 +403,7 @@ describe("redact: assignments in any case (delta review 4)", () => {
     expect(out).toContain("get_token(1)")
     expect(out).toContain("token == x_9")
     expect(() => new AsyncFunction(out)).not.toThrow()
-    for (const s of ['api_key = os.environ["API_KEY"]', "api_key = settings.API_KEY", "TOKEN=$TOKEN"]) expect(text(s)).toBe(s)
+    for (const s of ['api_key = os.environ["API_KEY"]', "api_key = settings.API_KEY", "TOKEN=$TOKEN", "try tokenA in query? /api/me?token=tokenA."]) expect(text(s)).toBe(s)
   })
   test("1 MB of open assignments finishes in linear time", () => {
     expect(timeMs("api_key = " + "a".repeat(MB) + "(")).toBeLessThan(2000)

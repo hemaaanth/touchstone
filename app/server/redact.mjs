@@ -90,8 +90,9 @@ const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\
 // export api_key=…, aws_secret_access_key = …. The name may be any case and
 // "=" may have spaces around it. A bare value must end at a space, a
 // separator or the end; so a call such as get_token() and an index such as
-// os.environ["X"] never match. == never matches either.
-const ENV_ASSIGN = /(?<![\w$.-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|()[\]{}<>=][^\s"'`;&|()[\]{}<>]*)(?![^\s;,&|]))/g
+// os.environ["X"] never match. == never matches either. A query pair
+// (?token=…) is left to QUERY.
+const ENV_ASSIGN = /(?<![\w$.?&#/-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|()[\]{}<>=][^\s"'`;&|()[\]{}<>]*)(?![^\s;,&|]))/g
 // A code reference such as settings.API_KEY or res.body.token, not a value.
 const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 
