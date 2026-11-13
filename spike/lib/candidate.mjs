@@ -239,7 +239,9 @@ export function capEvidence(value, depth = 0) {
 // `origin` is "agent" (submit_candidate) or "measured" (the engine: a replay
 // that only repeated a measurement, splitMeasured). Who asserted it follows
 // from the origin; no input sets it.
-export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null, origin = "agent", measured = null }) {
+// `derived`: a measured candidate an older record's finding reads as, made at
+// read time. It is shown, never written into a record.
+export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null, origin = "agent", measured = null, derived = false }) {
   const engine = origin === "measured";
   return {
     n: Number(n) || 1,
@@ -254,6 +256,7 @@ export function makeCandidate({ n, pack, title, severity, poc, evidence, explana
     evidenceHash: evidenceHash == null ? null : String(evidenceHash),
     origin: engine ? "measured" : "agent",
     measured: engine ? measuredBlock(measured) : null,
+    ...(engine && derived === true ? { derived: true } : {}),
     kind: "candidate",
     assertedBy: engine ? "engine" : "agent",
     proven: false,
@@ -272,6 +275,7 @@ function measuredBlock(m) {
     words: MEASURED_WORDS[reason],
     repeated: m?.repeated === true,
     check: str(m?.check),
+    rule: str(m?.rule),
     proofKind: str(m?.proofKind),
     snapshotHash: str(m?.snapshotHash),
     oracle: str(m?.oracle),
@@ -294,12 +298,33 @@ const replayPassed = (f) => {
 // row reads the same way at load (nothing rewrites the record).
 export const isMeasured = (f) => Boolean(f) && typeof f === "object" && !isCandidate(f) && !isProven(f) && replayPassed(f) && proofClass(f) !== "harm";
 
+// The rule a scanner's evidence names: a scanner rule (zizmor/unpinned-uses),
+// an advisory id, or the identity of one secret or package. Rows of one check
+// with different rules are different issues and never fold.
+export const measuredRule = (f) => {
+  const w = f?.evidence?.where;
+  if (!w || typeof w !== "object") return "";
+  const v = w.rule ?? w.fingerprint ?? w.package ?? w.advisory ?? "";
+  return typeof v === "string" ? v : JSON.stringify(v);
+};
+
+// The fold key. Only evidence rows fold, and only with the same pack, the
+// exact check and the exact rule: the same issue at several places (one
+// weak-csp on three hosts). A forge or http row is its own root cause (each
+// is its own exploit or script), so it never folds: its key is its poc.
+function foldKey(f, c) {
+  if (f.proof?.kind !== "evidence") return `poc\u0000${f.poc ?? ""}\u0000${f.n ?? ""}`;
+  return `ev\u0000${f.pack ?? ""}\u0000${c.check}\u0000${measuredRule(f)}`;
+}
+
 // After the final proof: a finding whose replay passed but only repeated a
 // measurement (lib/proof-class.mjs) is not a finding. It becomes a measured
-// candidate. Findings of one pack and one check fold into one candidate that
-// lists each of them (evidence.items). A proven finding, and a finding whose
-// replay failed, stay findings. Every input finding ends in exactly one place:
-// `findings`, or one candidate's evidence.items.
+// candidate. Evidence findings of one pack, one check and one rule fold into
+// one candidate that lists each of them (evidence.items); nothing else folds.
+// A proven finding, and a finding whose replay failed, stay findings. Every
+// input finding ends in exactly one place: `findings`, or one candidate's
+// evidence.items. A candidate's poc is its first item's own poc, which is
+// unique per finding, so a later fold (a follow-up) never takes its place.
 // `from` numbers the candidates after the ones the run already has.
 export function splitMeasured(list, { from = 0 } = {}) {
   const findings = [];
@@ -311,19 +336,20 @@ export function splitMeasured(list, { from = 0 } = {}) {
       continue;
     }
     const c = proofClassOf(f);
-    const key = `${f.pack ?? ""}\u0000${c.check}`;
+    const key = foldKey(f, c);
     if (!groups.has(key)) groups.set(key, { c, items: [] });
     groups.get(key).items.push(f);
   }
   const candidates = [...groups.values()].map(({ c, items }, k) => {
     const first = items[0];
+    const rule = first.proof?.kind === "evidence" ? measuredRule(first) : "";
     const worst = items.reduce((w, f) => ((RANK[f.severity] ?? 9) < (RANK[w.severity] ?? 9) ? f : w), first);
-    const poc = items.length === 1 ? String(first.poc ?? `measured:${c.check}`) : `measured:${first.pack ?? ""}:${c.check}`;
+    const poc = String(first.poc ?? `measured:${c.check}:${from + k + 1}`);
     const more = items.length > 1 ? `\n\nThe same check fired at ${items.length} places; each is listed in the evidence.` : "";
     return makeCandidate({
       n: from + k + 1,
       pack: first.pack ?? "",
-      title: scrubText(readableTitle(first.title, c.check === "forge" ? "" : c.check)),
+      title: scrubText(readableTitle(first.title, first.proof?.kind === "evidence" ? c.check : "", rule)),
       severity: worst.severity,
       poc,
       rootCause: first.rootCause ?? null,
@@ -338,7 +364,7 @@ export function splitMeasured(list, { from = 0 } = {}) {
         })),
       }),
       origin: "measured",
-      measured: { reason: c.reason, check: c.check, proofKind: first.proof?.kind ?? "forge", snapshotHash: first.proof?.snapshotHash ?? null, oracle: first.proof?.oracle?.name ?? first.oracleName ?? null, repeated: true, count: items.length },
+      measured: { reason: c.reason, check: c.check, rule: rule || null, proofKind: first.proof?.kind ?? "forge", snapshotHash: first.proof?.snapshotHash ?? null, oracle: first.proof?.oracle?.name ?? first.oracleName ?? null, repeated: true, count: items.length },
     });
   });
   return { findings, candidates };
@@ -604,7 +630,7 @@ export function evidenceLookup(state, findingPoc = (id) => id) {
       rootCause: lead.rootCause ?? `lead:${lead.id}`,
       poc: findingPoc(id),
       // For a pack that keeps no model prose (supply-chain), as submit_finding.
-      packText: { title: readableTitle(lead.check, evidence?.check ?? lead.check), explanation: lead.description },
+      packText: { title: readableTitle(lead.check, evidence?.check ?? lead.check, evidence?.where?.rule), explanation: lead.description },
     };
   };
 }

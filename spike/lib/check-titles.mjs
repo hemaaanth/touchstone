@@ -87,6 +87,30 @@ export const CHECK_TITLES = {
   "assumed-role-reads-other-bucket": "A role reads a bucket it does not own",
 };
 
+// Scanner rules named in plain words. A rule not listed takes its tool's
+// title (CHECK_TITLES "tool:…"); its id stays in the evidence, never the title.
+export const RULE_TITLES = {
+  // zizmor (GitHub Actions)
+  "zizmor/excessive-permissions": "A CI workflow has more permissions than it needs (zizmor)",
+  "zizmor/unpinned-uses": "A CI workflow uses an action that is not pinned to a commit (zizmor)",
+  "zizmor/artipacked": "A CI workflow can leak its token in an uploaded artifact (zizmor)",
+  "zizmor/template-injection": "A CI workflow puts untrusted input into a script (zizmor)",
+  "zizmor/dangerous-triggers": "A CI workflow runs on a trigger that gives forks its secrets (zizmor)",
+  "zizmor/cache-poisoning": "A CI workflow can be fed a poisoned cache (zizmor)",
+  "zizmor/github-env": "A CI workflow writes untrusted input to GITHUB_ENV (zizmor)",
+  "zizmor/unpinned-images": "A CI workflow uses a container image that is not pinned (zizmor)",
+  "zizmor/secrets-inherit": "A CI workflow passes every secret to a called workflow (zizmor)",
+  // poutine (CI pipelines)
+  "untrusted_checkout_exec": "A CI job runs code from an untrusted checkout (poutine)",
+  "github_action_from_unverified_creator_used": "A CI workflow uses an action from an unverified creator (poutine)",
+  "injection": "A CI pipeline puts untrusted input into a command (poutine)",
+  "job_all_secrets": "A CI job can read every secret (poutine)",
+  "default_permissions_on_risky_events": "A CI workflow keeps default permissions on a risky trigger (poutine)",
+  "pr_runs_on_self_hosted": "Pull requests run on a self-hosted CI runner (poutine)",
+  "unpinnable_action": "A CI workflow uses an action that cannot be pinned (poutine)",
+  "known_vulnerability_in_build_component": "A CI build component has a known vulnerability (poutine)",
+};
+
 // testssl.sh ids seen in our runs, then families by prefix.
 const TLS_TITLES = {
   "tls-cipherlist_3des_idea": "TLS offers weak 3DES or IDEA ciphers",
@@ -122,9 +146,10 @@ export function checkTitle(check) {
 // every scanner (tool:*) title, whose rule stays in the evidence. A real
 // sentence is kept. An unknown check keeps its title.
 const ID_LIKE = /^[^\s]+$/;
-export function readableTitle(title, check) {
+export function readableTitle(title, check, rule = "") {
   const t = String(title ?? "").trim();
-  const readable = checkTitle(check) ?? checkTitle(t);
+  const ruleTitle = Object.hasOwn(RULE_TITLES, String(rule)) ? RULE_TITLES[rule] : null;
+  const readable = ruleTitle ?? checkTitle(check) ?? checkTitle(t);
   if (!readable) return t;
   if (!t || ID_LIKE.test(t) || String(check ?? "").startsWith("tool:")) return readable;
   return t;

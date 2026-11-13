@@ -4,10 +4,11 @@
 // "proven" because a Foundry replay in a sandbox reproduced it.
 import { open, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
-import { isCandidate, isMeasured, makeCandidate } from "../../spike/lib/candidate.mjs"
+import { isCandidate, isMeasured, makeCandidate, measuredRule } from "../../spike/lib/candidate.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { measuredOfRecord } from "./candidates.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
@@ -270,7 +271,7 @@ function normalize(raw, { id, runId, finding }) {
     // The run this finding came from. One run can record several findings.
     runId,
     // A title that is only a check id reads as the check's title (N3).
-    title: readableTitle(finding.title, finding.proof?.check ?? finding.evidence?.check ?? finding.proof?.oracle?.name ?? finding.oracleName) || null,
+    title: readableTitle(finding.title, finding.proof?.check ?? finding.evidence?.check ?? finding.proof?.oracle?.name ?? finding.oracleName, measuredRule(finding)) || null,
     severity: finding.severity || null,
     ...(pack ? { pack } : {}),
     proofKind: kind,
@@ -407,15 +408,28 @@ async function runStartedAt(runId) {
   return null
 }
 
+// A candidate's id comes from what it is, not from where it sits in a list:
+// the run, the module, its origin and its poc (unique in a run; a measured
+// candidate's poc is its first finding's). So a follow-up that adds a
+// candidate, or a dismissal, moves no id, and two copies of one row (an
+// older record's finding read as a candidate, and that same candidate if a
+// record ever held it) have one id and list once.
+export const candidateId = (runId, c) =>
+  `${runId}.c-${createHash("sha256").update(`${c.pack ?? ""}\u0000${c.origin ?? "agent"}\u0000${c.poc ?? ""}`).digest("hex").slice(0, 12)}`
+
 // The candidates of one stored run: its own `result.candidates` (the agent's,
 // and the measured ones a newer run recorded), then the measured candidates
-// its older finding rows read as. Ids are `<run>.c<k>` in that order, so they
-// stay the same from read to read: records are never rewritten.
+// its older finding rows read as (derived at each read). One per id.
 function runCandidates(raw, runId) {
   const r = raw.result || {}
   const own = (Array.isArray(r.candidates) ? r.candidates : []).map((c) => makeCandidate(c ?? {}))
   const derived = measuredOfRecord(runId, r, Math.max(0, ...own.map((c) => Number(c.n) || 0))).candidates
-  return [...own, ...derived].map((c, k) => ({ ...c, id: `${runId}.c${k + 1}`, runId }))
+  const out = new Map()
+  for (const c of [...own, ...derived]) {
+    const id = candidateId(runId, c)
+    if (!out.has(id)) out.set(id, { ...c, id, runId })
+  }
+  return [...out.values()]
 }
 
 const moduleOf = (pack) => (pack === "contracts" ? "Contracts" : pack ? (PACKS[pack]?.title ?? pack) : "Unknown")
@@ -442,15 +456,17 @@ export async function listCandidates() {
           id: c.id,
           runId,
           kind: "candidate",
-          title: readableTitle(c.title, c.measured?.check) || null,
+          title: readableTitle(c.title, c.measured?.check, c.measured?.rule) || null,
           severity: c.severity,
           module: moduleOf(pack),
           pack,
           target: r.target?.title || "Unknown",
           scope: r.target && typeof r.target === "object" ? (r.target.title ?? null) : null,
           at,
+          // The candidate's poc: the run view finds the candidate by it (N3, M2).
+          poc: c.poc,
           origin: c.origin,
-          measured: c.measured ? { reason: c.measured.reason, words: c.measured.words, count: c.measured.count, check: c.measured.check } : null,
+          measured: c.measured ? { reason: c.measured.reason, words: c.measured.words, count: c.measured.count, check: c.measured.check, rule: c.measured.rule } : null,
           proven: false,
         })
       }

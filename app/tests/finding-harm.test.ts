@@ -27,6 +27,8 @@ const record = (proof: Record<string, unknown>) => ({
 writeFileSync(path.join(dir, "run-harm-new-2611110619-1.json"), JSON.stringify(record({ transfers, harm })))
 // A record from before netWei and harm.
 writeFileSync(path.join(dir, "run-harm-old-2611110619-1.json"), JSON.stringify(record({ transfers: transfers.map(({ netWei: _, ...t }) => t) })))
+// A record with a harm verdict whose transfer table is from before netWei.
+writeFileSync(path.join(dir, "run-harm-mid-2611110619-1.json"), JSON.stringify(record({ transfers: transfers.map(({ netWei: _, ...t }) => t), harm })))
 
 describe("the finding answer and the proof gate's harm (K5)", () => {
   test("a record with harm and exact wei sends both, and every field it sent before", async () => {
@@ -35,6 +37,15 @@ describe("the finding answer and the proof gate's harm (K5)", () => {
     const f = await getFinding("harm-new-2611110619-1.1", { events: false })
     expect(f.proof.harm).toEqual(harm)
     expect(f.proof.transfers).toEqual(transfers)
+  })
+
+  // The older transfer shape still reads as before: no netWei on a row.
+  test("an older transfer table (no netWei) reads as before", async () => {
+    // @ts-expect-error — plain .mjs module, no types
+    const { getFinding } = await import("../server/findings.mjs")
+    const f = await getFinding("harm-mid-2611110619-1.1", { events: false })
+    expect(f.proof.harm.kind).toBe("funds")
+    for (const t of f.proof.transfers) expect(Object.keys(t).sort()).toEqual(["address", "gained", "label", "net"])
   })
 
   // N3 (B7): a record from before the harm check has no harm verdict. Harm was

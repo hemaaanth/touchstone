@@ -20,6 +20,8 @@ const { handleFindings } = await import("../server/runs-http.mjs")
 const { pinSnapshot, proveFindings } = await import("../../spike/lib/proof-evidence.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { buildReplayBundle } = await import("../../spike/lib/replay-bundle.mjs")
+// @ts-expect-error — plain .mjs module, no types
+const { HARM_CHECKS } = await import("../../spike/lib/proof-class.mjs")
 
 // Made-up values shaped like real ones. Each one is in a captured file.
 const SECRETS = [
@@ -171,6 +173,28 @@ describe("evidence replay keeps no snapshot text", () => {
       expect(JSON.parse(r.body).error).toBe("This finding is not proven by its replay, so it has no replay bundle: a bundle of a lead could be shared as if it were proof.")
     }
     expect((await call("/api/findings/http-lead.1/report?format=json")).status).toBe(200)
+  })
+
+  // If an evidence check is ever counted as harm (HARM_CHECKS, the owner's B1),
+  // its finding has a report again. The report must still send no snapshot
+  // text, and the bundle must still refuse with its reason. The check is
+  // flipped for this test only.
+  test("an evidence check counted as harm: its report has no snapshot text, and the bundle refuses", async () => {
+    HARM_CHECKS.add("key")
+    try {
+      const bundle = await call("/api/findings/ev-1.1/report?format=bundle")
+      expect(bundle.status).toBe(409)
+      expect(JSON.parse(bundle.body).error).toContain("no replay bundle")
+      for (const s of SECRETS) expect(bundle.body.includes(s)).toBe(false)
+      for (const format of ["json", "md", "html", "agent"]) {
+        const r = await call(`/api/findings/ev-1.1/report?format=${format}`)
+        expect([format, r.status]).toEqual([format, 200])
+        for (const s of SECRETS) expect([format, r.body.includes(s)]).toEqual([format, false])
+      }
+    } finally {
+      HARM_CHECKS.delete("key")
+    }
+    expect((await call("/api/findings/ev-1.1/report?format=md")).status).toBe(404)
   })
 
   test("an unknown report format is refused, not answered with json", async () => {

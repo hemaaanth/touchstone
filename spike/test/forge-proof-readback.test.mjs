@@ -239,6 +239,27 @@ test("an older forge record with a passing root run_poc and no harm field is not
   } finally {
     rmSync(file, { force: true })
   }
+  // The same older shape with a harm verdict is a finding, and its test source
+  // still reads back from the root run_poc (the record holds no `source`).
+  const judged = "zz-forge-readback-0000000000-3b"
+  const judgedFile = writeRun(judged, [{
+    title: "Reentrancy",
+    severity: "high",
+    poc: "LegacyExploit",
+    pocProved: true,
+    explanation: "x",
+    proof: { tool: "Foundry", pass: true, transfers: [], logs: [], harm: { ok: true, kind: "funds" } },
+  }], {
+    calls: [{ name: "run_poc", args: { contract_name: "LegacyExploit", test_source: legacy } }],
+    results: [{ name: "run_poc", text: "Solc 0.8.20\n[PASS] test_pwn() (gas: 50)\nSuite result: ok. 1 passed; 0 failed" }],
+  })
+  try {
+    const found = await getFinding(`${judged}.1`)
+    assert.equal(found.stages.proven, true)
+    assert.equal(found.proof.testSource, legacy)
+  } finally {
+    rmSync(file, { force: true })
+  }
 })
 
 // Records from before the recorder stored `source`: the proof is the child's

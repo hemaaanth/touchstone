@@ -42,6 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
+import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { candidateEvents, candidatesOf, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -420,7 +421,8 @@ export function listRuns() {
       startedAt: r.startedAt,
       name: r.name ?? null,
       scopeTitle: scopeOf(r)?.title ?? null,
-      title: r.pending?.title ?? null,
+      // A title that is only a check id reads as the check's title (N3).
+      title: r.pending?.title ? readableTitle(r.pending.title, r.pending.title) || null : null,
       // How an error run ended (`errorInfo.kind`), so the list can tell a
       // restart's cut-off ("cutoff") from a failure.
       errorKind: r.errorInfo?.kind ?? null,
@@ -652,6 +654,49 @@ function setRunStatus(run, status) {
   if (run.error) e.error = run.error
   if (run.errorInfo) e.errorInfo = run.errorInfo
   broadcast(run, e)
+}
+
+// A run that ends with nothing to record as a finding: the agent found
+// nothing, or (N3) everything it submitted only repeated a measurement and is
+// a candidate now. Its status says how the run ended: no-finding when the
+// agent finished and read the whole scope; an error when part of the scope
+// was not read, when the inference did not complete, or when the worker died
+// before it settled. A failed run never reads "No finding".
+function endFoundNothing(run, s, { code = null, signal = null } = {}) {
+  if (s && s.status === "done" && coverageGap(run)) {
+    // The agent finished, but part of the scope was never read. Keep its
+    // final answer; the status says the result is not clean.
+    if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
+    setRunStatus(run, "error")
+  } else if (s && s.status === "done") {
+    // Terminal, but not an error: the agent audited and found nothing to prove.
+    run.error = null
+    if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
+    setRunStatus(run, "no-finding")
+  } else if (s) {
+    // Settled "unanswered" — the inference did not complete. Report the real
+    // reason (classified, with the actual spend and a next step) rather than
+    // pretending the agent chose not to find anything, or that nothing ran.
+    const info = failureInfo(run)
+    run.errorInfo = info
+    run.error = info.message
+    setRunStatus(run, "error")
+  } else {
+    // The worker died before it settled anything, on stdout or in its own
+    // file. Say how the process ended; the tail of its stderr is the evidence.
+    const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
+    const tail = run.stderr.slice(-800).trim()
+    run.errorInfo = {
+      kind: "crash", retryable: true, reason: "no-settle",
+      spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+      detail: tail ? `${how}\n\n${tail}` : how,
+      title: "The run stopped unexpectedly",
+      hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
+      message: tail || how,
+    }
+    run.error = run.errorInfo.message
+    setRunStatus(run, "error")
+  }
 }
 
 // Run the pack's pre-pass before starting the agent with its leads.
@@ -962,7 +1007,7 @@ function spawnAgent(run, leads) {
     // findings still record, but without a fresh replay proof.
     const found = s?.findings?.length ? s.findings : run.submitted
     if (found.length) {
-      await recordRun(run, found)
+      await recordRun(run, found, { code, signal })
       return
     }
     await endWorkspace(run)
@@ -970,40 +1015,7 @@ function spawnAgent(run, leads) {
       endStopped(run)
       return
     }
-    if (s && s.status === "done" && coverageGap(run)) {
-      // The agent finished, but part of the scope was never read. Keep its
-      // final answer; the status says the result is not clean.
-      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
-      setRunStatus(run, "error")
-    } else if (s && s.status === "done") {
-      // Terminal, but not an error: the agent audited and found nothing to prove.
-      run.error = null
-      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
-      setRunStatus(run, "no-finding")
-    } else if (s) {
-      // Settled "unanswered" — the inference did not complete. Report the real
-      // reason (classified, with the actual spend and a next step) rather than
-      // pretending the agent chose not to find anything, or that nothing ran.
-      const info = failureInfo(run)
-      run.errorInfo = info
-      run.error = info.message
-      setRunStatus(run, "error")
-    } else {
-      // The worker died before it settled anything, on stdout or in its own
-      // file. Say how the process ended; the tail of its stderr is the evidence.
-      const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
-      const tail = run.stderr.slice(-800).trim()
-      run.errorInfo = {
-        kind: "crash", retryable: true, reason: "no-settle",
-        spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
-        detail: tail ? `${how}\n\n${tail}` : how,
-        title: "The run stopped unexpectedly",
-        hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
-        message: tail || how,
-      }
-      run.error = run.errorInfo.message
-      setRunStatus(run, "error")
-    }
+    endFoundNothing(run, s, { code, signal })
     finalize(run)
     broadcast(run, { ev: "closed" })
   })
@@ -1043,7 +1055,7 @@ function announceFindings(run, findings, first) {
 // proof delta (over the still-live workspace), writes the run record, then
 // broadcasts one `finding` and one replay-proof artifact per finding, worst
 // first. The workspace is torn down only after the replays finish.
-async function recordRun(run, found) {
+async function recordRun(run, found, exit = {}) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
@@ -1054,11 +1066,10 @@ async function recordRun(run, found) {
     const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
     if (!findings.length && proven.length) {
-      // Only measured candidates: the agent audited and nothing was proven.
-      // (A pack that proves nothing returns no findings; that path is as before.)
-      const final = run.settled?.final
-      if (final && run.settled?.status === "done") broadcast(run, { ev: "no-finding", final })
-      setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+      // Only measured candidates: the run ends as a run with nothing found
+      // does, its candidates kept. (A pack that proves nothing returns no
+      // findings; that path is as before.)
+      endFoundNothing(run, run.settled, exit)
       persistRun(run, [])
       return
     }

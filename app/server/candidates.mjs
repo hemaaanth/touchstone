@@ -87,8 +87,7 @@ export function recordMeasured(run, findings, send) {
   const split = splitMeasured(findings, { from })
   for (const candidate of split.candidates) {
     const e = { t: Date.now(), ev: "candidate-submitted", candidate }
-    trackCandidate(run, e)
-    send(e)
+    if (trackCandidate(run, e)) send(e)
   }
   dropMeasuredSubmitted(run)
   return split.findings
@@ -115,8 +114,10 @@ export function dropMeasuredSubmitted(run) {
   run.pending = sortFindings(run.submitted)[0] ?? null
 }
 
-// The candidates field of the run record.
-export const recordCandidates = (run) => (run.candidates ?? []).map(normalizeCandidate)
+// The candidates field of the run record. A derived candidate (an older
+// record's finding read as one, at load) is never written: the record keeps
+// that row as a finding, and every read derives it again.
+export const recordCandidates = (run) => (run.candidates ?? []).filter((c) => c?.derived !== true).map(normalizeCandidate)
 
 // Write the run's candidates into an existing run record, leaving every
 // other field as it is. Returns false if there is no record yet. The write
@@ -154,7 +155,8 @@ export function recordRows(id, result) {
 // record keeps them as findings; nothing rewrites it. Numbered after `from`.
 export function measuredOfRecord(id, result, from = 0) {
   const rows = recordRows(id, result).filter((x) => isMeasured(x.finding))
-  return { ids: new Set(rows.map((x) => x.id)), candidates: splitMeasured(rows.map((x) => x.finding), { from }).candidates }
+  const candidates = splitMeasured(rows.map((x) => x.finding), { from }).candidates.map((c) => makeCandidate({ ...c, derived: true }))
+  return { ids: new Set(rows.map((x) => x.id)), candidates }
 }
 
 // At load, in memory only: an older record's finding that only repeated a

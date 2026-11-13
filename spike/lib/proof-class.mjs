@@ -31,6 +31,8 @@ export const HARM_ORACLES = new Set([
   // infra-cloud live replay: an attacker credential assumes the role, from
   // the pinned policy in a private moto cloud, and reads a bucket it does not own.
   "assumed-role-reads-other-bucket",
+  // The same oracle under the name it had before (infra-cloud validation runs).
+  "assumed-role-reads-foreign-bucket",
 ]);
 
 // evidence: the replay reads the pinned snapshot again and never touches the

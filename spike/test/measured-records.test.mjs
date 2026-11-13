@@ -51,7 +51,7 @@ writeFileSync(join(dir, `run-${MIXED}.json`), JSON.stringify({ result: { pack: "
 const bytes = () => Object.fromEntries([`run-${OWNER}.json`, `run-${OWNER}.stream.jsonl`, `run-${MIXED}.json`].map((f) => [f, readFileSync(join(dir, f), "utf8")]));
 const before = bytes();
 
-const { listFindings, listCandidates, getFinding } = await import("../../app/server/findings.mjs");
+const { listFindings, listCandidates, getFinding, dismissFinding } = await import("../../app/server/findings.mjs");
 const { handleFindings } = await import("../../app/server/runs-http.mjs");
 const { handleApi } = await import("../../app/server/api.mjs");
 const { getRun, listRuns } = await import("../../app/server/runs.mjs");
@@ -67,7 +67,9 @@ test("the owner's run lists no finding; its six read as measured candidates besi
   const findings = await listFindings();
   assert.deepEqual(findings.filter((f) => f.runId === OWNER), []);
   const cands = (await listCandidates()).filter((c) => c.runId === OWNER);
-  assert.deepEqual(cands.map((c) => c.id), [1, 2, 3, 4, 5, 6, 7].map((k) => `${OWNER}.c${k}`));
+  // m8: an id is the run plus a hash of what the candidate is, never a position.
+  assert.ok(cands.every((c) => new RegExp(`^${OWNER}\\.c-[0-9a-f]{12}$`).test(c.id)), cands.map((c) => c.id).join(" "));
+  assert.equal(new Set(cands.map((c) => c.id)).size, 7);
   assert.deepEqual(cands.map((c) => c.origin), ["agent", ...SIX.map(() => "measured")]);
   for (const c of cands) {
     assert.equal(c.proven, false);
@@ -80,9 +82,36 @@ test("(a) ids stay the same across two reads, for findings and candidates", asyn
   const one = [await listFindings(), await listCandidates()];
   const two = [await listFindings(), await listCandidates()];
   assert.deepEqual(two.map((l) => l.map((x) => x.id)), one.map((l) => l.map((x) => x.id)));
-  // The proven finding of the mixed run keeps its own id (.2); the measured row is c1.
+  // The proven finding of the mixed run keeps its own id (.2); the measured row is a candidate.
   assert.deepEqual(one[0].filter((f) => f.runId === MIXED).map((f) => [f.id, f.proven]), [[`${MIXED}.2`, true]]);
-  assert.deepEqual(one[1].filter((c) => c.runId === MIXED).map((c) => [c.id, c.origin, c.title]), [[`${MIXED}.c1`, "measured", "The Content-Security-Policy allows unsafe sources"]]);
+  assert.deepEqual(one[1].filter((c) => c.runId === MIXED).map((c) => [c.origin, c.title]), [["measured", "The Content-Security-Policy allows unsafe sources"]]);
+});
+
+test("(m8) a follow-up that adds a candidate, or a dismissal, moves no candidate id", async () => {
+  const ids = async () => (await listCandidates()).map((c) => c.id).sort();
+  const before = await ids();
+  // A dismissal of the mixed run's proven finding (the file is put back after).
+  const mixedFile = join(dir, `run-${MIXED}.json`);
+  const mixedSaved = readFileSync(mixedFile, "utf8");
+  try {
+    await dismissFinding(`${MIXED}.2`, true);
+    assert.deepEqual(await ids(), before);
+  } finally {
+    writeFileSync(mixedFile, mixedSaved);
+  }
+  // A follow-up wrote one more agent candidate into the owner's record, first in the list.
+  const file = join(dir, `run-${OWNER}.json`);
+  const saved = readFileSync(file, "utf8");
+  const rec = JSON.parse(saved);
+  rec.result.candidates = [{ ...agentCandidate, poc: "probe-two", title: "Second probe" }, ...rec.result.candidates];
+  writeFileSync(file, JSON.stringify(rec));
+  try {
+    const after = await ids();
+    assert.equal(after.length, before.length + 1);
+    assert.ok(before.every((id) => after.includes(id)), "every earlier id is still there");
+  } finally {
+    writeFileSync(file, saved);
+  }
 });
 
 test("(b) the list API, the copy texts, the report and the bundle hold no measured item as proven", async () => {
@@ -114,6 +143,7 @@ test("the run view at load: the six are measured candidates, the run is No findi
   assert.equal(listRuns().find((r) => r.id === OWNER).findings, 0);
   const mixed = getRun(MIXED);
   assert.equal(mixed.status, "recorded");
+  assert.deepEqual(mixed.findingIds, [`${MIXED}.2`], "the measured row's id leaves the status lines");
   assert.deepEqual(mixed.events.filter((e) => e.ev === "finding").map((e) => [e.id, e.proven]), [[`${MIXED}.2`, true]]);
   assert.deepEqual(mixed.candidates.map((c) => c.origin), ["measured"]);
   assert.deepEqual(bytes(), before, "no record or stream is rewritten");

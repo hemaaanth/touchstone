@@ -8,6 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PACKS } from "../packs/index.mjs"
 import { proofKind, isProven, proofView, cell, withProven } from "../lib/proof-view.mjs"
+import { HARM_CHECKS } from "../lib/proof-class.mjs"
 import { getFinding, listCandidates, listFindings } from "../../app/server/findings.mjs"
 
 const RESULTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../results/agent")
@@ -92,6 +93,18 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
     assert.equal(await getFinding(`${stamp}.2`), null)
     assert.equal(await getFinding(`${stamp}.3`), null)
     assert.ok(!JSON.stringify(await listCandidates()).includes("sk-live-123"))
+    // With its check counted as harm (the owner's B1, flipped for this test
+    // only), the evidence finding has a view again, and the view never holds
+    // the secret whole.
+    HARM_CHECKS.add("secret-in-file")
+    try {
+      const e = await getFinding(`${stamp}.2`)
+      assert.equal(e.proofKind, "evidence")
+      assert.equal(e.stages.proven, true)
+      assert.ok(!JSON.stringify(e).includes("sk-live-123"))
+    } finally {
+      HARM_CHECKS.delete("secret-in-file")
+    }
   } finally {
     delete PACKS.fakeweb
     rmSync(file, { force: true })

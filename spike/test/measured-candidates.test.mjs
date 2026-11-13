@@ -63,7 +63,7 @@ test("splitMeasured never drops a finding: each input is in exactly one place", 
   const csp = candidates.find((c) => c.measured.check === "weak-csp");
   assert.deepEqual(csp.evidence.items.map((i) => i.poc), ["l3", "l7", "l8"]);
   assert.equal(csp.measured.count, 3);
-  assert.equal(csp.poc, "measured:domains:weak-csp");
+  assert.equal(csp.poc, "l3", "a fold carries its first finding's own poc");
   // B5 and B7.
   assert.equal(candidates.find((c) => c.measured.check === "reflected-xss").measured.reason, "no-effect");
   const forge = candidates.find((c) => c.pack === "contracts");
@@ -96,4 +96,52 @@ test("no input makes a measured candidate proven, or an agent one an engine one"
   assert.equal(forged.measured.repeated, false);
   const agent = makeCandidate({ title: "x", origin: "something", assertedBy: "engine" });
   assert.deepEqual([agent.origin, agent.assertedBy, agent.measured], ["agent", "agent", null]);
+});
+
+// Repair 1 (E4, UI M1): fold only evidence rows, by pack, exact check and
+// exact rule. A forge or http row is its own root cause and never folds.
+const scanner = (poc, rule, line, severity = "medium") => ({
+  ...evidence("tool:zizmor", poc, { file: ".github/workflows/deploy.yml", line, rule, fingerprint: `fp-${poc}` }),
+  pack: "supply-chain", title: rule, severity, file: ".github/workflows/deploy.yml", lines: [line],
+});
+test("different scanner rules never fold; the same rule at two places does, under its rule's title", () => {
+  const { candidates } = splitMeasured([
+    scanner("z1", "zizmor/excessive-permissions", 3),
+    scanner("z2", "zizmor/unpinned-uses", 8),
+    scanner("z3", "zizmor/artipacked", 8),
+    scanner("z4", "zizmor/unpinned-uses", 12, "high"),
+  ]);
+  assert.deepEqual(candidates.map((c) => [c.poc, c.measured.rule, c.measured.count]), [
+    ["z1", "zizmor/excessive-permissions", 1],
+    ["z2", "zizmor/unpinned-uses", 2],
+    ["z3", "zizmor/artipacked", 1],
+  ]);
+  assert.equal(candidates[1].title, "A CI workflow uses an action that is not pinned to a commit (zizmor)");
+  assert.equal(candidates[1].severity, "high", "a fold takes its worst severity");
+  assert.ok(candidates.every((c) => !/^[^\s]+$/.test(c.title)), "no rule id as a title");
+});
+
+test("old forge rows (harm not judged) and http rows never fold, even in one run", () => {
+  const forge = (poc, title) => ({ ...oldForge, poc, title });
+  const { candidates } = splitMeasured([forge("RescueTest", "Anyone can rescue"), forge("ReentrancyTest", "Reentrancy"), xss, { ...xss, poc: "s4", title: "XSS 2" }]);
+  assert.deepEqual(candidates.map((c) => [c.poc, c.title, c.measured.count]), [
+    ["RescueTest", "Anyone can rescue", 1], ["ReentrancyTest", "Reentrancy", 1], ["s3", "XSS", 1], ["s4", "XSS 2", 1],
+  ]);
+});
+
+test("the same check in two modules of a joined run does not fold", () => {
+  const { candidates } = splitMeasured([evidence("weak-csp", "d1"), { ...evidence("weak-csp", "w1"), pack: "web" }]);
+  assert.deepEqual(candidates.map((c) => [c.pack, c.measured.count]), [["domains", 1], ["web", 1]]);
+});
+
+// Repair 1: a measured candidate's evidence and write-up pass the candidate
+// scrub, as an agent candidate's do. Fake values built from pieces.
+test("a measured candidate's evidence and write-up are scrubbed", () => {
+  const gh = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0", "k1L2m3N4o5P6q7R8"].join("");
+  const f = evidence("tool:gitleaks", "s1", { file: ".env", line: 2, rule: "github-pat", token: gh });
+  f.explanation = `The file holds ${gh}.`;
+  f.proof.detail = `matched ${gh}`;
+  const [c] = splitMeasured([f]).candidates;
+  assert.ok(!JSON.stringify(c).includes(gh), "no token survives");
+  assert.match(c.explanation, /\[REDACTED\]/);
 });
