@@ -10,10 +10,11 @@
 //   etch of its callee, read from EVERY trace, `Setup` included, and for
 //   any call kind (a cheatcode declared `view` is reached by STATICCALL). A setUp() etch
 //   swaps a target's code before the test body runs, so the harm gate must still exclude
-//   the address; the record is not itself harm. A plain etch counts only when its call and
-//   every ancestor frame succeeded (code is journaled, a revert undoes it); a cloneAccount
-//   or mockFunction counts always (it can only drop a target). `index` is the out.calls offset the etch
-//   applies to.
+//   the address; the record is not itself harm. Every entry is recorded, also in a frame
+//   that reverted, with `kept`: true when the call and every ancestor frame succeeded. The
+//   harm gate drops the target for every entry (fail closed); packs/keys/control.mjs reads
+//   only kept entries, because it proves a change from the code that landed. `index` is the
+//   out.calls offset the etch applies to.
 // - writes (from the "Execution" trace only): a real SSTORE (value changed) in a call
 //   that did not revert and outside any contract constructor. A write made under a Safe
 //   `setup` call carries `setup: true`. A setUp write is fixture, not an exploit step.
@@ -165,25 +166,24 @@ export function extractControlTrace(traces) {
         const data = String(t.data).slice(10);
         // `kept`: the call succeeded and no ancestor frame reverted.
         const kept = t.success && ok(i);
+        // Every etch-like cheatcode is recorded, kept or not, with a `kept` flag. The
+        // harm gate drops the target for EVERY entry, so it does not depend on how
+        // forge journals the change (fail closed). packs/keys/control.mjs proves a
+        // 7702 delegation from `code`, so it reads only the kept entries.
         if (selector === ETCH) {
-          // Code is journaled EVM state: a revert undoes an etch. packs/keys/control.mjs
-          // reads `etches` as code that really landed, so a plain etch counts only when kept.
-          if (!kept) return;
           const target = "0x" + data.slice(24, 64);
           const length = parseInt(data.slice(128, 192) || "0", 16);
-          out.etches.push({ index: out.calls.length, target, code: "0x" + data.slice(192, 192 + length * 2) });
+          out.etches.push({ index: out.calls.length, target, code: "0x" + data.slice(192, 192 + length * 2), kept });
         } else if (selector === CLONE_ACCOUNT) {
           // cloneAccount(source, target): the SECOND word is the target whose code
           // was replaced. The cloned bytes come from source's live code, not the
           // calldata, so we record no code — the harm gate reads only `target`.
-          // Recorded even when not kept: it can only drop a target (fail closed),
-          // and the empty code is never a 7702 designator for packs/keys/control.mjs.
-          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(88, 128), code: "0x" });
+          // The empty code is never a 7702 designator for packs/keys/control.mjs.
+          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(88, 128), code: "0x", kept });
         } else if (selector === MOCK_FUNCTION) {
           // mockFunction(callee, target, data): the FIRST word is the callee whose
-          // code is replaced. No code is recorded, as for cloneAccount. Forge keeps
-          // the mock in its inspector, so a revert does not undo it: always record.
-          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(24, 64), code: "0x" });
+          // code is replaced. No code is recorded, as for cloneAccount.
+          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(24, 64), code: "0x", kept });
         } else if (IMPERSONATE.has(selector)) {
           // The impersonated msg.sender is the first address argument. Forge keeps
           // prank state in its inspector, not in EVM state, so a revert does NOT

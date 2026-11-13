@@ -117,6 +117,22 @@ test("harm gate: a target the test etched over is no longer a target", () => {
   assert.match(verdict(traces).reason, /deployed no contract from the audited scope/);
 });
 
+// H1d n2: the gate drops the target also for an etch in a frame that reverted.
+// It does not trust that forge undid the code (fail closed). The ETH loss after
+// it would prove if the etch were ignored.
+test("harm gate: a target etched in a reverted frame is no longer a target (fail closed)", () => {
+  const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
+  const traces = [setup(), exec(
+    node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }),
+    node(1, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: etch }),
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(3, { kind: "CALL", address: ATTACKER, caller: VAULT, value: ONE }),
+  )];
+  const harm = verdict(traces);
+  assert.equal(harm.ok, false);
+  assert.match(harm.reason, /deployed no contract from the audited scope/);
+});
+
 test("harm gate: a target the test etched over in setUp() is no longer a target either", () => {
   const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
   const traces = [setup(
