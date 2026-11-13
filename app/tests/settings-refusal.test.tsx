@@ -11,7 +11,8 @@ describe("Settings refusal line", () => {
     const shown = renderToStaticMarkup(<SettingsRefusal text="The key was refused." />)
     expect(box(none)).toBe(box(shown))
     expect(box(none)).toContain("h-0")
-    expect(shown).toMatch(/<p role="alert" class="[^"]*absolute[^"]*">The key was refused\.<\/p>/)
+    // One line in the gap: it floats, and a long sentence is cut, whole in its tooltip.
+    expect(shown).toMatch(/<p role="alert" title="The key was refused\." class="[^"]*absolute[^"]*truncate[^"]*">The key was refused\.<\/p>/)
     expect(none).not.toContain("<p")
   })
 })
