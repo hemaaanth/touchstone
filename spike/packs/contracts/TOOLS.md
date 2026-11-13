@@ -177,6 +177,66 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   `lab/vault-shares/lib/chimera/`. This still needs a licensing review before
   any release that includes the lab.
 
+## Harm gate: what a proven loss means, and its limit
+
+The forge replay proves a funds finding when a scope target loses value in the test body.
+- ETH: a loss counts only as the excess of what one party took out of the target over what that
+  same party put in, across setUp() and the body. The test contract and the contracts it deployed
+  are one party. ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct is the
+  test's own. So a setUp() deposit and the same address's own withdraw is not a drain. The loss
+  is never more than the target's net ETH change in the body.
+- Tokens: the same rule. Each drop of a scope holder's balance slot takes its recipient from the
+  token's own Transfer logs (setUp() and body), and is netted against what that recipient put in.
+  Tokens a funding deal() put on the holder are the test's own. The part of a drop that no
+  Transfer log covers has no recipient, so it stays counted as before. So a token that emits no
+  Transfer event keeps the old measure: there, a deposit and its own withdraw can still read as a
+  drain.
+- Every other address (a pranked EOA, a makeAddr user) is its own party. The replay cannot tell
+  the attacker's addresses from honest users: both are pranked addresses.
+
+**Limit: a replay cannot judge authorization.** A legitimate sweep by an address that never paid
+in (an admin withdraw, a fee claim, a payout to a user another address funded) still reads as a
+drain. The gate trusts the attack path the PoC shows. A reviewer must still read the path.
+
+## Harm gate: cheatcodes (the backstop)
+
+The gate reads the classified table `spike/lib/vm-cheatcodes.json`: every cheatcode of the pinned
+forge-std Vm.sol (1.9.4).
+- read, control, time and fs are trusted.
+- account and mock are judged per target (prank family, etch, store family, clone, nonce, deal, mock
+  family).
+- state (revertTo*), exec (gas metering), fork, broadcastRawTransaction, and any selector the table
+  does not have make every scope target unusable, with a reason that names the cheatcode.
+- If the table is missing or does not parse, nothing is proven.
+
+**Why outcome (expectRevert, expectPartialRevert) is trusted.** Measured on 2026-11-13 over the real
+recorded PoCs in `spike/results/agent/`, before the ruling:
+
+| PoCs | Using expectRevert | Where |
+|---|---|---|
+| proven findings, final PoC (32 run records) | 14 of 18 | always in the test body; in 13 of the 14 it comes after the drain, as a check |
+| every run_poc source (32 run records) | 57 of 108 | always in the test body |
+| every run_poc source (44 agent session stores) | 91 of 156 | always in the test body |
+
+No PoC used a state, exec or fork cheatcode. Refusing outcome would have cost 14 of 18 real proofs,
+for a risk the trace already closes:
+- The harm channels read the trace.
+- The trace marks the expected call as a reverted frame (`success: false`), even when the test sees a
+  success (a low-level call under expectRevert returns true).
+
+Real-forge tests pin this per channel: ETH, token storage, Transfer log, control, and the low-level
+form ("…reverts under vm.expectRevert is not counted, and its frame is reverted").
+
+One guard stays: the call an expectation was armed for must be a reverted frame in the trace. That
+call is the first later non-VM call at most as deep as the cheatcode call. If that call succeeded, or
+no call followed, every scope target is unusable.
+
+**Known gap (waits for the table).** The pinned forge rewrites `new X{value: v}()` of a scope
+contract into `deployCode(string,uint256)` (`0x0af6a701`). That overload is in the forge binary but
+not in forge-std 1.9.4's Vm.sol, so the backstop refuses it as unknown. Measured: 1 of 18 proven
+PoCs, 28 of 159 PoCs (17 times in setUp(), 8 in a test function). The workaround for a PoC: deploy
+with `new X()`, then fund it with `vm.deal`.
+
 ## Gaps in our wrapping
 
 - Aderyn runs on the host, not in Docker. Untrusted code is parsed outside the
