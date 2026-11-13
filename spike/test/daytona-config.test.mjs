@@ -1,6 +1,7 @@
 // E2: the Daytona server URL and region (target) settings, and the saved key
 // that goes only to the host it was saved for.
 // Settings are read and written in memory here, so the saved file never changes.
+import "./helpers/isolated-env.mjs";
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";

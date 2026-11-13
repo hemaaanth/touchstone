@@ -1,6 +1,7 @@
 // garak in the ai-mcp prepass: the parser, the live-only plan, and the
 // scanMcp wiring. No Docker: runTool is a stub that returns real garak output
 // recorded once from the echo stub (test/fixtures/garak/).
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

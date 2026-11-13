@@ -13,6 +13,7 @@
 //   2. Every follow-up, and "Run again", got a fresh workspace. The agent said
 //      "Sandbox is fresh: sources are gone".
 //   3. A run on a generated lab refused every follow-up.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";

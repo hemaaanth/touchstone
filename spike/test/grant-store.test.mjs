@@ -4,6 +4,7 @@
 // spike/data/grants.json is never touched. No network, no docker.
 //
 //   node --test spike/test/grant-store.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

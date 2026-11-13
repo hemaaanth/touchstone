@@ -23,6 +23,7 @@
 // skips with a reason rather than passing vacuously.
 //
 //   node --test spike/test/domains-tls-rebind.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';

@@ -8,6 +8,7 @@
 //   C: a Contracts run proves only once Solidity from the scope is on disk.
 //   D: two members that share a name land in separate places.
 //   E: a clone is filtered for secrets and held to the scope caps.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";

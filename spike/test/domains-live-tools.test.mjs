@@ -1,6 +1,7 @@
 // The live capture path, on the owned lab only. No public target is scanned.
 // One capture carries all three new evidence types through to leads, the same
 // way a real run does.
+import "./helpers/isolated-env.mjs";
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';

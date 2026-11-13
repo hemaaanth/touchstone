@@ -14,6 +14,7 @@
 //     run's allow-list does not grow.
 // No docker, no model call, no network. Builds are live-target builds: they only
 // write files. A throwaway grant store stands in for the operator's.
+import "./helpers/isolated-env.mjs";
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

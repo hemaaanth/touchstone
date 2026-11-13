@@ -3,6 +3,7 @@
 // leads, then the server stops before the run settles. Loading it must write a
 // record whose result.leads holds both leads with their evidence, and no lead
 // may read as proven.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

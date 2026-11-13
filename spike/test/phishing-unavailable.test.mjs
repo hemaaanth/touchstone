@@ -1,5 +1,6 @@
 // Phishing pack: a tool failure is `unavailable` plus a *-evidence-missing lead, never a pass.
 // runTool is mocked to fail the way Docker fails when the image is missing (--pull=never, exit 125).
+import "./helpers/isolated-env.mjs";
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';

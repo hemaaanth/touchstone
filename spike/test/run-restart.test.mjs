@@ -1,5 +1,6 @@
 // A crash in the tool prepass must not turn an unfinished solo run into an error.
 // No model calls or Docker: the prepass and worker are controlled by this test.
+import "./helpers/isolated-env.mjs";
 import { test, mock, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";

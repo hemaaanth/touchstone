@@ -1,6 +1,7 @@
 // Fail-closed checklist for checkdmarc, testssl.sh and DNSViz, through the real
 // captureDomain(). A PATH docker shim records every argv and answers with the
 // recorded tool output in packs/domains/fixtures/. No container runs.
+import "./helpers/isolated-env.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

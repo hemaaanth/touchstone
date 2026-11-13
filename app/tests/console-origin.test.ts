@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import http from "node:http"

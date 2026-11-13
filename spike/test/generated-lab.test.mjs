@@ -1,5 +1,6 @@
 // Generated labs: a pack may export `lab: { title, blurb, make }`. make() builds a
 // fresh directory for each run. A fake pack stands in, so no keys or git are made.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs"

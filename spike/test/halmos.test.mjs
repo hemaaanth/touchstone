@@ -1,6 +1,7 @@
 // Halmos runs in Docker. The real-run tests need the image
 // (spike/packs/contracts/images/build.sh halmos) and skip when it is not built.
 // The lab is lab/vault-shares: its withdraw rounds the shares it burns down.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

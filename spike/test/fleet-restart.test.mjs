@@ -3,6 +3,7 @@
 // shows what a fleet run keeps and what it loses when the server process goes
 // away while the coordinator and its children work.
 // No model call and no Docker: the worker, the packs and the workspace are fakes.
+import "./helpers/isolated-env.mjs";
 import { test, mock, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";

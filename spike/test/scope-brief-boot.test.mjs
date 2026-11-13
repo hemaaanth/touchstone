@@ -5,6 +5,7 @@
 //   node --experimental-test-module-mocks --test spike/test/scope-brief-boot.test.mjs
 //
 // spawn is mocked: no engine, no model, nothing spent.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
