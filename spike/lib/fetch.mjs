@@ -27,6 +27,7 @@
 //     protocol allowed, so a clone cannot execute a hook or follow a file:// or
 //     ssh:// submodule off the machine.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -163,6 +164,30 @@ export function memberLinks(ws) {
   try { cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")); } catch {}
   const links = Array.isArray(cfg.links) ? cfg.links : [];
   return [...new Set(links.map(memberUrl).filter(Boolean))].slice(0, MAX_MEMBERS);
+}
+
+// A pin: what an earlier fetch of this run read a member at. The server writes
+// the pins into .touchstone.json when it builds a lost workspace again, from the
+// run's own `source-fetch` events. A repo's pin is its commit; a single file's
+// pin is the hash of its content. A pinned member is fetched at its pin or not
+// at all, so the agent never reads other code in its place.
+//
+// Returns undefined when the member has no pin. A pin that is there but cannot
+// be read is not "no pin": it throws, and the fetch is refused.
+const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+function memberPin(ws, want, kind) {
+  let cfg;
+  try { cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")); } catch { cfg = null; }
+  const unreadable = () => new Error(`refused ${want}: the record of what this run read before for this source cannot be read, so it is not fetched. This run does not read other code in its place. Start a new run to audit the code as it is today`);
+  if (!cfg || typeof cfg !== "object") throw unreadable();
+  if (cfg.pins === undefined) return undefined;
+  if (!cfg.pins || typeof cfg.pins !== "object" || Array.isArray(cfg.pins)) throw unreadable();
+  if (!Object.hasOwn(cfg.pins, want)) return undefined;
+  const pin = cfg.pins[want];
+  const ok = pin && typeof pin === "object" && (kind === "repo" ? typeof pin.commit === "string" && COMMIT.test(pin.commit) : typeof pin.sha256 === "string" && SHA256.test(pin.sha256));
+  if (!ok) throw unreadable();
+  return pin;
 }
 
 // A ref or owner/repo part that is safe as one path segment.
@@ -399,7 +424,7 @@ function headBranch(clone) {
 // only the member's folder, prune it, and move it into place. The temporary
 // folder is hidden and outside src/ and vendor/, so the agent never sees it and
 // the caps never count it, and it is always removed.
-async function fetchRepo(ws, gh) {
+async function fetchRepo(ws, gh, pin) {
   await assertPublicHost("github.com");
   const rel = memberDest(gh);
   const dest = path.join(ws, rel);
@@ -408,25 +433,42 @@ async function fetchRepo(ws, gh) {
   const tmp = mkdtempSync(path.join(ws, ".fetch-"));
   const clone = path.join(tmp, "repo");
   let dropped;
+  let commit = null;
   try {
-    const args = [
+    const safe = [
       "-c", "protocol.allow=never",
       "-c", "protocol.https.allow=always",
       "-c", "core.hooksPath=/dev/null",
       "-c", "http.followRedirects=false",
-      "clone", "--depth", "1", "--no-tags", "--single-branch",
     ];
-    if (gh.ref) args.push("--branch", gh.ref);
-    args.push(cloneUrl, clone);
-    const r = await execFileP("git", args, {
+    const git = (args) => execFileP("git", args, {
       timeout: CLONE_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", HOME: ws },
     });
-    if (r.err) {
-      const why = r.timedOut ? "clone timed out" : r.stderr.trim().split("\n").slice(-1)[0] || "clone failed";
-      throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why}`);
+    const why = (r, what) => (r.timedOut ? `${what} timed out` : r.stderr.trim().split("\n").slice(-1)[0] || `${what} failed`);
+    if (pin) {
+      // The commit this run read before, and nothing else. No fallback to the
+      // branch head: other code must never take its place in silence.
+      const gone = (r, what) => new Error(`could not fetch commit ${pin.commit.slice(0, 12)} of ${gh.owner}/${gh.repo}, the commit this run read before: ${why(r, what)}. The fetch is refused, so this run does not read other code in its place. If the commit is gone (a force-push, or a deleted repository), start a new run to audit the code as it is today`);
+      let r = await git([...safe, "init", "-q", clone]);
+      if (r.err) throw gone(r, "git init");
+      r = await git(["-C", clone, ...safe, "fetch", "--depth", "1", "--no-tags", cloneUrl, pin.commit]);
+      if (r.err) throw gone(r, "the fetch");
+      r = await git(["-C", clone, ...safe, "checkout", "-q", "--detach", "FETCH_HEAD"]);
+      if (r.err) throw gone(r, "the checkout");
+    } else {
+      const args = [...safe, "clone", "--depth", "1", "--no-tags", "--single-branch"];
+      if (gh.ref) args.push("--branch", gh.ref);
+      args.push(cloneUrl, clone);
+      const r = await git(args);
+      if (r.err) throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why(r, "clone")}`);
     }
+    // The commit that is on disk now. It goes into the `source-fetch` event, so
+    // a later rebuild of this run's workspace can read the same code again.
+    const head = await git(["-C", clone, ...safe, "rev-parse", "HEAD"]);
+    commit = !head.err && COMMIT.test(head.stdout.trim()) ? head.stdout.trim() : null;
+    if (pin && commit !== pin.commit) throw new Error(`could not fetch commit ${pin.commit.slice(0, 12)} of ${gh.owner}/${gh.repo}, the commit this run read before: git gave another commit. The fetch is refused, so this run does not read other code in its place`);
     gh = { ...gh, headRef: headBranch(clone) };
     // Drop .git first — we keep the tree, not its history. A raw clone over the
     // disk cap is refused before we read it.
@@ -472,6 +514,7 @@ async function fetchRepo(ws, gh) {
     kind: "repo",
     where: rel,
     ref: gh.ref ?? "default branch",
+    ...(commit ? { commit } : {}),
     files,
     dropped,
     note: `Cloned ${label} into ${rel}/ (${files.length} Solidity file${files.length === 1 ? "" : "s"}; ${dropped} dependency, build, non-source or secret entr${dropped === 1 ? "y" : "ies"} dropped).`,
@@ -546,7 +589,7 @@ export async function githubGet(url, { token = null, accept = "application/vnd.g
   }
 }
 
-async function fetchBlob(ws, gh) {
+async function fetchBlob(ws, gh, pin) {
   const base = path.posix.basename(gh.filePath);
   if (classifyPath(gh.filePath) !== "keep") throw new Error(`refused to fetch ${gh.filePath}: it is not a source file, or it looks like a secret, dependency or build file`);
   const rel = memberDest(gh);
@@ -554,6 +597,10 @@ async function fetchBlob(ws, gh) {
   const { buf } = await httpGet(raw, FILE_CAP);
   const body = buf.toString("utf8");
   if (body.includes("\u0000") || secretContent(body)) throw new Error(`refused to save ${base}: its content is binary or looks like a secret`);
+  // A single file has no commit here. Its content hash stands in: a later
+  // rebuild of this run's workspace takes the file only when it is the same.
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+  if (pin && pin.sha256 !== sha256) throw new Error(`refused ${gh.filePath} of ${gh.owner}/${gh.repo}: the file changed since this run read it (it had the content hash ${pin.sha256.slice(0, 12)}, now ${sha256.slice(0, 12)}). This run does not read other code in its place. Start a new run to audit the code as it is today`);
   const dest = path.join(ws, rel);
   mkdirSync(path.dirname(dest), { recursive: true });
   // A refused refetch puts the earlier copy back, like fetchRepo does.
@@ -569,6 +616,7 @@ async function fetchBlob(ws, gh) {
   return {
     kind: "file",
     where: rel,
+    sha256,
     files: [{ path: rel, pragmas }],
     note: `Saved ${gh.filePath} to ${rel}.`,
   };
@@ -588,7 +636,7 @@ export async function fetchSource(ws, url) {
   const member = memberUrl(url) ?? String(url).slice(0, 200);
   try {
     const report = await fetchMember(ws, url);
-    event("source-fetch", { url: member, ok: true, where: report.where ?? null, files: report.where ? countFiles(path.join(ws, report.where)) : 0 });
+    event("source-fetch", { url: member, ok: true, where: report.where ?? null, files: report.where ? countFiles(path.join(ws, report.where)) : 0, ...(report.commit ? { commit: report.commit } : {}), ...(report.sha256 ? { sha256: report.sha256 } : {}) });
     return report;
   } catch (e) {
     event("source-fetch", { url: member, ok: false, error: String(e?.message ?? e).slice(0, 1500) });
@@ -596,13 +644,17 @@ export async function fetchSource(ws, url) {
   }
 }
 
+// The same fetch with no event: the server uses it to put a member back into a
+// workspace it built again. The member's pin decides what is fetched.
+export const restoreSource = (ws, url) => fetchMember(ws, url);
+
 async function fetchMember(ws, url) {
   const want = memberUrl(url);
   if (!want) throw new Error(`refused ${String(url).slice(0, 200)}: only GitHub repo, tree or file URLs that this scope lists are fetched`);
   if (!memberLinks(ws).includes(want)) throw new Error(`refused ${want}: it is not one of this scope's members. Fetch only a URL the scope section of your instructions lists. A scope brief cannot add one`);
   const gh = parseGithub(parseUrl(want));
-  if (gh?.kind === "repo") return fetchRepo(ws, gh);
-  if (gh?.kind === "blob") return fetchBlob(ws, gh);
+  if (gh?.kind === "repo") return fetchRepo(ws, gh, memberPin(ws, want, "repo"));
+  if (gh?.kind === "blob") return fetchBlob(ws, gh, memberPin(ws, want, "blob"));
   throw new Error(`refused ${want}: not a GitHub repo, tree or file URL`);
 }
 

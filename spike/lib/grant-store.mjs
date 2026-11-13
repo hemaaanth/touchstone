@@ -27,7 +27,7 @@ import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, ren
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import { isPublicSuffix, sharedWildcardRefusal } from "./public-suffix.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,33 +39,102 @@ const grantsFile = () => process.env.TOUCHSTONE_GRANTS_FILE || path.join(DATA_DI
 export const GRANT_KINDS = ["operator-owned", "authorized"];
 
 // One shared console token for every mutating console action — both the live-reach
-// grant routes and the settings-write guard import THIS. Single source => one
+// grant routes and the settings-write guard read it HERE. Single source => one
 // token, never two that happen to share the x-touchstone-grant-token header.
 //
-// The token is made once and saved next to the grants file, so it stays the same
-// across server restarts and an open page keeps working. The operator never
-// types it: the dev server writes it into the page it serves. It is saved in
-// a file, NOT in process.env, because the agent child inherits the server's env
-// and must never hold the token. TOUCHSTONE_GRANT_TOKEN pins a known value for
-// tests; TOUCHSTONE_GRANT_TOKEN_FILE moves the file so a test uses a throwaway.
-function savedToken() {
-  const file = process.env.TOUCHSTONE_GRANT_TOKEN_FILE || path.join(DATA_DIR, "console-token");
+// The token is saved next to the grants file, so it stays the same across server
+// restarts and an open page keeps working. The operator never types it: the dev
+// server writes it into the page it serves. It is saved in a file, NOT in
+// process.env, because the agent child inherits the server's env and must never
+// hold the token. TOUCHSTONE_GRANT_TOKEN pins a known value for tests (it cannot be
+// rotated); TOUCHSTONE_GRANT_TOKEN_FILE moves the file so a test uses a throwaway.
+//
+// consoleToken() reads the file on every call, so a rotate (rotateConsoleToken)
+// takes effect at once in the running server and in every other process that
+// reads it, such as a grant CLI started later. The value is never logged.
+export const consoleTokenFile = () => process.env.TOUCHSTONE_GRANT_TOKEN_FILE || path.join(DATA_DIR, "console-token");
+
+// A token for this process only, used while the file can be neither read nor
+// written (a read-only disk). Without it each call would make a new token.
+let fallbackToken = null;
+
+const readToken = (file) => {
   try {
-    const saved = readFileSync(file, "utf8").trim();
-    if (saved) return saved;
+    return readFileSync(file, "utf8").trim() || null;
   } catch {
-    /* no file yet */
+    return null;
   }
+};
+
+export function consoleToken() {
+  if (process.env.TOUCHSTONE_GRANT_TOKEN) return process.env.TOUCHSTONE_GRANT_TOKEN;
+  const file = consoleTokenFile();
+  const saved = readToken(file);
+  if (saved) return saved;
+  if (fallbackToken) return fallbackToken;
   const token = randomUUID();
   try {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, token + "\n", { mode: 0o600 });
-  } catch {
-    /* a read-only disk: the token lasts for this process only */
+    // wx: never write over a token another process saved a moment ago.
+    writeFileSync(file, token + "\n", { mode: 0o600, flag: "wx" });
+    return token;
+  } catch (e) {
+    const theirs = readToken(file);
+    if (theirs) return theirs;
+    // The file is there but holds no token (empty): it is no token, so replace it.
+    if (e?.code === "EEXIST") {
+      try {
+        writeFileSync(file, token + "\n", { mode: 0o600 });
+        return token;
+      } catch {
+        /* fall through */
+      }
+    }
+    fallbackToken = token; // a read-only disk: the token lasts for this process only
+    return token;
   }
+}
+
+// Same token? The compare takes the same time for every wrong token of the right length.
+export function sameToken(given, token) {
+  if (typeof given !== "string" || typeof token !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(token);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Replace the console token with a new random one. Only the holder of the current
+// token may: `given` must still be the current token at the moment of the swap
+// (the check and the write run in one synchronous step), so of two rotates at
+// once the second is refused and exactly one new token is valid. The write is
+// atomic: a temp file in the same folder (mode 0600), fsync, rename over the
+// old one. Returns the new token, or null when `given` is not the current token.
+// A failed write throws, removes its temp file, and leaves the old token valid.
+// The error never holds a token.
+export function rotateConsoleToken(given) {
+  if (process.env.TOUCHSTONE_GRANT_TOKEN) {
+    throw new Error("The console token is pinned by TOUCHSTONE_GRANT_TOKEN, so it cannot be rotated. Restart the console without it.");
+  }
+  if (!sameToken(given, consoleToken())) return null;
+  const file = consoleTokenFile();
+  const token = randomUUID();
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, token + "\n", { mode: 0o600 });
+    const fd = openSync(tmp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw new Error(`The console token was not changed: it could not be saved (${e.code || "write failed"}). The old token still works.`);
+  }
+  fallbackToken = null;
   return token;
 }
-export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || savedToken();
 
 // One JSON store file: an array of records. The grant store and the scope store
 // both use these two functions.

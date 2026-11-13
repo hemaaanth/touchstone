@@ -13,7 +13,7 @@ import type {
   PackChoice,
   RunMode,
 } from "./types"
-import { tokenHeaders } from "./console-token"
+import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
 
 export class HttpError extends Error {
   status: number
@@ -35,8 +35,26 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     headers: { "content-type": "application/json", ...tokenHeaders() },
     body: JSON.stringify(body),
   })
+  return writeResult<T>(url, res)
+}
+
+// A write refused because this page's console token is old. The app shows it
+// once (the stale-page notice, with Reload); a page's own error line can skip it.
+export class StalePageError extends Error {}
+
+// The answer to a write. A 403 means this page's console token is old: the app
+// is told (reportStalePage), and the caller gets the server's sentence as a
+// StalePageError.
+async function writeResult<T>(url: string, res: Response): Promise<T> {
   const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `${url} -> ${res.status}`)
+  if (!res.ok) {
+    const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
+    if (res.status === 403) {
+      reportStalePage(error)
+      throw new StalePageError(error)
+    }
+    throw new Error(error)
+  }
   return json as T
 }
 
@@ -44,9 +62,17 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 // refuses every write without it.
 async function deleteJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { method: "DELETE", headers: tokenHeaders() })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `${url} -> ${res.status}`)
-  return json as T
+  return writeResult<T>(url, res)
+}
+
+// Rotate the console token (Settings). The old token stops working at once, in
+// this server and for the grant CLI. This page takes the new one and keeps
+// working; any other open console page gets 403 on its next write. The token
+// is never returned to the caller.
+export async function rotateConsoleToken(): Promise<void> {
+  const { token } = await postJson<{ token?: string }>("/api/console-token/rotate", {})
+  if (!token) throw new Error("The server did not send the new token. Reload the page.")
+  setConsoleToken(token)
 }
 
 export async function fetchFindings(): Promise<FindingSummary[]> {

@@ -27,12 +27,12 @@ const info = (request) => ({ last: request.messages.findLast((m) => m.role !== "
 
 // Open the run's session the way spike/agent-run.mjs does: same storage file,
 // same extensions, the engine's own retry setting.
-async function open(db, route) {
+async function open(db, route, brief = {}) {
   const faux = fauxProvider({ tokensPerSecond: 100000 });
   faux.setResponses(Array.from({ length: 100 }, () => route));
   const models = createModels();
   models.setProvider(faux.provider);
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: (_model, input, output) => (input + output) / 1e6, max: 4 });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: (_model, input, output) => (input + output) / 1e6, max: 4, ...brief });
   const registry = createRegistry();
   registry.install(fleet.extension);
   const reports = [];
@@ -52,7 +52,7 @@ if (process.env.FLEET_CONTINUE_DB) {
     }
     if (last.role === "user" && text(last) === "start") return answer([call("spawn_agent", { name: "Alpha", task: "Map calls", area: "calls" })], { stopReason: "toolUse" });
     return answer("Waiting for Alpha.");
-  });
+  }, { brief: process.env.FLEET_CONTINUE_BRIEF ?? "" });
   await root.submit({ type: "input", requestId: "run1", content: "start" }, ctx);
   await new Promise(() => {});
 }
@@ -104,4 +104,49 @@ test("a follow-up puts a cut-off child back to work in the saved session; it end
   assert.equal(events.filter((e) => e.ev === "subagent-spawned").length, 0);
   const view = await (await second.harness.conversation(Number(child.conv), ctx)).context(ctx);
   assert.ok(view.messages.some((m) => m.role === "assistant" && /Calls mapped/.test(text(m))));
+});
+
+// The change text, in the form of the engine's briefChange (targets.mjs).
+const briefChange = (before, now) => ((before ?? "") === now ? "" : `The operator changed the scope brief. Follow this one instead of the earlier one.\n\n${now}`);
+
+test("a child that a restart cut off, reopened after the scope brief changed, reads the change in the turn it goes back to; with no change it reads nothing extra", { timeout: 90000 }, async (t) => {
+  // The first worker has the first brief. It dies while the child is mid-turn. Then a follow-up reopens the session.
+  async function cutOffThenReopen(now) {
+    const dir = mkdtempSync(join(tmpdir(), "fleet-continue-brief-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const db = join(dir, "run.sqlite");
+    const first = spawn(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, FLEET_CONTINUE_DB: db, FLEET_CONTINUE_BRIEF: "First brief.", NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    await new Promise((resolve, reject) => {
+      first.stdout.on("data", (d) => { out += d; if (out.includes("MIDTURN")) resolve(); });
+      first.on("exit", (code) => reject(new Error(`the first worker exited early (${code})`)));
+    });
+    first.removeAllListeners("exit");
+    first.kill("SIGKILL");
+    await new Promise((resolve) => first.on("exit", resolve));
+    const asked = []; // every user text the child's model call holds when it goes back to work
+    const changed = briefChange("First brief.", now);
+    const second = await open(db, (request) => {
+      const { system } = info(request);
+      if (!system.includes("trusted child")) return answer("Noted.");
+      asked.push(request.messages.filter((m) => m.role === "user").map(text));
+      return answer("Calls mapped.");
+    }, { brief: now, briefChange, changed });
+    const sub = await second.root.submit({ type: "input", requestId: "followup-1", content: "Continue the audit from where it stopped." }, ctx);
+    await sub.wait(ctx);
+    await second.fleet.drain(ctx, { enforce: false });
+    await second.fleet.close();
+    await second.harness.close(ctx);
+    return { asked, changed };
+  }
+  t.mock.method(console, "log", () => {});
+  const same = await cutOffThenReopen("First brief.");
+  assert.ok(same.asked.length >= 1, "the child went back to work");
+  assert.deepEqual(same.asked.flat().filter((m) => /scope brief/.test(m)), [], "no change: nothing extra");
+  const moved = await cutOffThenReopen("Second brief.");
+  assert.match(moved.changed, /^The operator changed the scope brief\.[^]*Second brief\./);
+  assert.ok(moved.asked.some((messages) => messages.includes(moved.changed)), "the child reads the change");
+  assert.equal(moved.asked.flat().filter((m) => m === moved.changed).length >= 1, true);
+  // Said once: no model call of the child holds the change twice.
+  for (const messages of moved.asked) assert.ok(messages.filter((m) => m === moved.changed).length <= 1);
 });
