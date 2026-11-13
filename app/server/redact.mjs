@@ -22,7 +22,9 @@ const AUTH_HEADER = /(?<!["'])\b(authorization|proxy-authorization)\s*:\s*\S+(?:
 const APIKEY_HEADER = /(?<!["'])\b(x-api-key|x-apikey|api-key|x-auth-token|x-access-token)\s*:\s*[^\s,;"]+/gi
 const COOKIE_HEADER = /(?<!["'])\b(cookie|set-cookie)\s*:\s*[^\s;"]+(?:;\s*[^\s;"]+)*/gi
 
-const BEARER = /\bBearer\s+(?:token\s*[:=]?\s+)?([A-Za-z0-9\-._~+/=]{8,})/gi
+// Each optional part has one way to match a run of spaces. Two adjacent
+// \s* / \s+ that can split the same run made this quadratic (ReDoS).
+const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})/gi
 const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token)=)([^&\s#"']+)/gi
 
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
