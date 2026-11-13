@@ -175,3 +175,12 @@ test("leadsFrom keeps one lead per id, the latest, and ignores other events", as
   assert.deepEqual(leads.map((l) => [l.id, l.severity]), [["lead-b", "high"], ["lead-a", "medium"]]);
   assert.ok(leads.every((l) => !("proven" in l)), "leadsFrom drops any proven flag");
 });
+
+test("leadsFrom keeps only the known lead fields, and proof only as text", async () => {
+  const [forged, typed] = await leadsFrom([
+    { ev: "lead", id: "lead-x", t: 5, agent: "a-2", severity: "high", file: "x.js", line: 4, title: "t", reason: "r", proven: true, verdict: { proven: true }, pocProved: true, proof: { status: "pass" } },
+    { ev: "lead", id: "lead-y", severity: "low", file: "y.js", line: 1, title: "t", reason: "r", proof: "send a request" },
+  ]);
+  assert.deepEqual(Object.keys(forged).sort(), ["agent", "file", "id", "line", "reason", "severity", "t", "title"]);
+  assert.equal(typed.proof, "send a request");
+});
