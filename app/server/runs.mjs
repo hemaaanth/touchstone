@@ -765,7 +765,9 @@ function spawnAgent(run, leads) {
       return
     }
     if (s && s.status === "done" && coverageGap(run)) {
-      // The agent finished, but part of the scope was never read.
+      // The agent finished, but part of the scope was never read. Keep its
+      // final answer; the status says the result is not clean.
+      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
       setRunStatus(run, "error")
     } else if (s && s.status === "done") {
       // Terminal, but not an error: the agent audited and found nothing to prove.

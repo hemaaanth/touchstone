@@ -80,7 +80,9 @@ test("a run whose repo fetch was refused ends as an error that says the scope wa
   assert.match(r.errorInfo?.title ?? "", /not read/i);
   assert.match(r.errorInfo?.detail ?? "", /3053 source files/);
   assert.match(r.errorInfo?.hint ?? "", /tree\//, "the hint tells the operator to split the repo into folder URLs");
-  assert.ok(!r.events.some((e) => e.ev === "no-finding"), "no no-finding event");
+  // The agent's final answer still reaches the operator; the status says error.
+  assert.equal(r.events.find((e) => e.ev === "no-finding")?.final, "I found no exploitable issue.");
+  assert.ok(r.events.indexOf(r.events.find((e) => e.ev === "no-finding")) < r.events.findLastIndex((e) => e.ev === "status"));
   const rec = record(id);
   assert.equal(rec.outcome, "error");
   assert.equal(rec.errorInfo?.kind, "coverage");
