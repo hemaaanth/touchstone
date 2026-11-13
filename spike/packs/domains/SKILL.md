@@ -72,8 +72,13 @@ From the repository root:
 
     docker build -t touchstone-domains-tools:wave2 spike/packs/domains
     docker build -f spike/packs/domains/Dockerfile.observatory -t touchstone-observatory:1.7.2 spike/packs/domains
-    node --test spike/test/domains.test.mjs spike/test/surface.test.mjs
+    node --test spike/test/domains.test.mjs spike/test/domains-live-tools.test.mjs spike/test/surface.test.mjs
     node spike/packs/domains/smoke.mjs --lab
+
+The default tests use recordings and the owned lab only. The three tests that
+scan `example.com` are skipped unless `TOUCHSTONE_LIVE=1` is set. `npm test`
+runs the lab test too. Tools are never pulled: pull each pinned image before a
+run, or the tool reports a coverage gap.
 
 The smoke checks fresh lab responses against lab/snapshot.json. It checks the
 live capture path on the lab. It also checks submission, final replay,
