@@ -223,7 +223,19 @@ async function runEngine(engine, ws, { fuzzSecs, testLimit, timeoutMs }) {
 //           results, gaps, leads }
 // available:false = no engine produced a report (gap for every suite).
 // applicable:false = the project ships no Chimera suite; nothing ran.
-export async function chimeraScan(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = (fuzzSecs + 120) * 1000 } = {}) {
+// Any throw inside the scan (for example ELOOP from a symlink loop under
+// test/) is a gap for Chimera only. It must never reject, or the pack's other
+// prepass leads are lost with it.
+export async function chimeraScan(ws, opts = {}) {
+  try {
+    return await scanChimera(ws, opts);
+  } catch (e) {
+    const reason = `Chimera could not scan the workspace (${e?.code ?? e?.message ?? e}); its checks are unchecked`;
+    return { tool: "Chimera", available: false, applicable: true, reason, suites: [], engines: [], trust: null, results: [], gaps: [{ suite: "test/", reason }], leads: [] };
+  }
+}
+
+async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = (fuzzSecs + 120) * 1000 } = {}) {
   const tool = "Chimera";
   const suites = chimeraSuites(ws);
   const base = { tool, suites, engines: [], trust: null, results: [], gaps: [], leads: [] };

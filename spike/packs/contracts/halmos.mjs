@@ -126,7 +126,19 @@ export function parseHalmos(report) {
 //   { tool, available, applicable, reason, suites, trust, results, gaps, leads }
 // available:false = the scan did not produce a report (gap for every suite).
 // applicable:false = the project ships no check_ function; nothing to run.
-export async function halmosScan(ws, { timeoutMs = 300_000 } = {}) {
+// Any throw inside the scan (for example ELOOP from a symlink loop under
+// test/) is a gap for Halmos only. It must never reject, or the pack's other
+// prepass leads are lost with it.
+export async function halmosScan(ws, opts = {}) {
+  try {
+    return await scanHalmos(ws, opts);
+  } catch (e) {
+    const reason = `Halmos could not scan the workspace (${e?.code ?? e?.message ?? e}); its checks are unchecked`;
+    return { tool: "Halmos", available: false, applicable: true, reason, suites: [], trust: null, results: [], gaps: [{ suite: "test/", reason }], leads: [] };
+  }
+}
+
+async function scanHalmos(ws, { timeoutMs = 300_000 } = {}) {
   const tool = "Halmos";
   const suites = symbolicSuites(ws);
   if (!suites.length) {

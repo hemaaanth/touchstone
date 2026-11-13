@@ -6,10 +6,11 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { chimeraBrief, chimeraRecord, chimeraScan, chimeraSuites, parseEchidna, parseMedusa } from "../packs/contracts/chimera.mjs";
+import { halmosRecord, halmosScan } from "../packs/contracts/halmos.mjs";
 import { makeWorkspace, cleanupWorkspace } from "../lib/sandbox.mjs";
 import { prepassView } from "../lib/prepass-view.mjs";
 import contracts from "../packs/contracts/pack.mjs";
@@ -348,4 +349,39 @@ test("when every check is a gap the run view shows unavailable with a reason, no
     const view = viewOf(scan);
     assert.deepEqual([view.status, view.reason], ["unavailable", scan.reason]);
   });
+});
+
+// A symlink loop under test/ makes the suite walk throw ELOOP. Each scan must
+// turn that into its own gap and resolve, so the pack's Promise.all over both
+// scans (and with it the static and fuzz leads) is not lost.
+test("a symlink loop under test/ is a gap for Halmos and Chimera, never a throw, and starts no container", async () => {
+  const ws = makeWorkspace(LAB);
+  const dir = mkdtempSync(join(tmpdir(), "chimera-shim-"));
+  writeFileSync(join(dir, "docker"), `#!/bin/sh\necho called >> "${dir}/called"\nexit 1\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    symlinkSync("..", join(ws, "test", "recon", "loop"), "dir");
+    assert.throws(() => chimeraSuites(ws), /ELOOP/);
+    const [sym, prop] = await Promise.all([halmosScan(ws), chimeraScan(ws)]);
+    for (const [scan, record, tool] of [[sym, halmosRecord(sym), "Halmos"], [prop, chimeraRecord(prop), "Chimera"]]) {
+      assert.equal(scan.applicable, true, tool);
+      assert.equal(scan.available, false, tool);
+      assert.match(scan.reason, new RegExp(`^${tool} could not scan the workspace \\(ELOOP\\)`));
+      assert.deepEqual(scan.leads, []);
+      assert.equal(scan.gaps.length, 1);
+      assert.equal(record.status, "unavailable");
+    }
+    const view = prepassView({ static: STATIC, symbolic: halmosRecord(sym), chimera: chimeraRecord(prop) });
+    for (const tool of ["Halmos", "Chimera"]) {
+      const row = view.tools.find((t) => t.name === tool);
+      assert.equal(row.status, "unavailable", tool);
+      assert.match(row.reason, /could not scan the workspace \(ELOOP\)/);
+    }
+    assert.throws(() => readFileSync(join(dir, "called")), /ENOENT/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+    await cleanupWorkspace(ws);
+  }
 });
