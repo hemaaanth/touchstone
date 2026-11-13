@@ -23,8 +23,8 @@
 // We run in assertion mode. Chimera's asserts (t, eq, gte, ...) fail with
 // assert(false), so every property and target function that uses them is
 // checked. A property written as a bool-returning echidna_ function is not.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
 import { codeOnly } from "./solidity-source.mjs";
 import { suiteTrust } from "./suite-trust.mjs";
@@ -108,23 +108,86 @@ export function chimeraSuites(ws) {
   return out.sort();
 }
 
-// Function names declared in the .sol files under dir (recursive): only those
-// in the code (not in a comment or a string) and not internal or private, because the
-// engines call only ABI functions. So a commented-out property_ is not a gap.
+// The functions the engines can call on the entry contract, read from source.
+// The engines test the CryticTester ABI, and a property may be inherited from a
+// file anywhere in the workspace, so we walk the inheritance graph: the
+// CryticTester in the suite file, then each base by name, across every .sol
+// file in the workspace. A function counts only if it is in the code (not in a
+// comment or a string) and not internal or private. A base name declared in
+// more than one file gives the union of their functions; a base we cannot find
+// adds none (a test from it is then dropped and is a gap, never silent).
 const FNS = /\bfunction\s+(\w+)\s*\([^)]*\)([^{;]*)/g;
-function declared(dir) {
-  const names = new Set();
+const HEAD = /\b(?:abstract\s+)?(?:contract|interface)\s+(\w+)\b([^{;]*)\{/g;
+const SKIP_DIRS = new Set([".git", "node_modules", "out", "cache", "crytic-export"]);
+
+function solFiles(ws) {
+  const out = [];
+  const seen = new Set();
   const walk = (d) => {
-    if (!existsSync(d)) return;
-    for (const n of readdirSync(d)) {
+    let real;
+    let names;
+    try {
+      real = realpathSync(d);
+      if (seen.has(real)) return;
+      names = readdirSync(d);
+    } catch {
+      return;
+    }
+    seen.add(real);
+    for (const n of names) {
       const p = join(d, n);
-      if (statSync(p).isDirectory()) walk(p);
-      else if (n.endsWith(".sol")) {
-        for (const m of codeOnly(readFileSync(p, "utf8")).matchAll(FNS)) if (!/\b(internal|private)\b/.test(m[2])) names.add(m[1]);
+      let dir;
+      try {
+        dir = statSync(p).isDirectory();
+      } catch {
+        continue;
       }
+      if (dir) {
+        if (!SKIP_DIRS.has(n)) walk(p);
+      } else if (n.endsWith(".sol")) out.push(p);
     }
   };
-  walk(dir);
+  walk(ws);
+  return out;
+}
+
+// Each contract or interface in code-only text: { name, bases, fns }.
+function contractsIn(code) {
+  const out = [];
+  for (const m of code.matchAll(HEAD)) {
+    const from = m.index + m[0].length;
+    let i = from;
+    for (let depth = 1; i < code.length && depth; i++) depth += code[i] === "{" ? 1 : code[i] === "}" ? -1 : 0;
+    // "is A, B(1, 2), lib.C" -> ["A", "B", "C"]
+    let heritage = m[2].match(/^\s*is\b([\s\S]*)$/)?.[1] ?? "";
+    for (let prev = ""; prev !== heritage; ) [prev, heritage] = [heritage, heritage.replace(/\([^()]*\)/g, "")];
+    const bases = heritage.split(",").map((b) => b.trim().split(".").pop().trim()).filter((b) => /^\w+$/.test(b));
+    const fns = [...code.slice(from, i - 1).matchAll(FNS)].filter((f) => !/\b(internal|private)\b/.test(f[2])).map((f) => f[1]);
+    out.push({ name: m[1], bases, fns });
+  }
+  return out;
+}
+
+function entryFunctions(ws, suite) {
+  const byName = new Map();
+  const entry = [];
+  const suiteFile = join(ws, suite);
+  for (const p of solFiles(ws)) {
+    for (const c of contractsIn(codeOnly(readFileSync(p, "utf8")))) {
+      if (!byName.has(c.name)) byName.set(c.name, []);
+      byName.get(c.name).push(c);
+      if (c.name === ENTRY && p === suiteFile) entry.push(c);
+    }
+  }
+  const names = new Set();
+  const seen = new Set();
+  const visit = (c) => {
+    if (seen.has(c)) return;
+    seen.add(c);
+    for (const f of c.fns) names.add(f);
+    for (const b of c.bases) for (const x of byName.get(b) ?? []) visit(x);
+  };
+  entry.forEach(visit);
   return names;
 }
 
@@ -252,6 +315,11 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
   // Both engines build "CryticTester" by name, so two of them is ambiguous.
   if (suites.length > 1) return down(`more than one CryticTester (${suites.join(", ")}); Chimera ran none`);
   const suite = suites[0];
+  // Bind to the entry contract before any engine runs (see entryFunctions).
+  // Each property_ function it has that an engine did not report is a gap for
+  // that engine.
+  const known = entryFunctions(ws, suite);
+  const props = [...known].filter((n) => n.startsWith("property_"));
 
   const engines = await Promise.all(["Echidna", "Medusa"].map((e) => runEngine(e, ws, { fuzzSecs, testLimit, timeoutMs })));
   const ran = engines.filter((e) => e.ok);
@@ -259,18 +327,16 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
   if (!ran.length) return down(engines.map((e) => e.reason).join("; "), engineView);
 
   const gaps = engines.filter((e) => !e.ok).map((e) => ({ suite, engine: e.engine, reason: e.reason }));
-  // Bind the report to this suite. A test on another contract, or one whose
-  // function is not declared under the suite's folder, is a gap, never a lead.
-  // Each property_ function declared there that an engine did not report is a
-  // gap for that engine.
-  const known = declared(join(ws, dirname(suite)));
-  const props = [...known].filter((n) => n.startsWith("property_"));
+  // Bind the report to the entry contract. A test on another contract, or one
+  // whose function CryticTester does not have, is a gap, never a lead.
   const dropped = [];
+  const droppedNames = new Set();
   for (const e of ran) {
     e.tests = e.tests.filter((t) => {
       const fn = t.name.replace(/\(.*$/, "");
       if ((t.contract ?? ENTRY) === ENTRY && known.has(fn)) return true;
       dropped.push(`${e.engine}: ${t.contract ? `${t.contract}.` : ""}${t.name}`);
+      droppedNames.add(fn);
       gaps.push({ suite, engine: e.engine, name: t.name, reason: `${e.engine} reported a test that is not in this suite` });
       return false;
     });
@@ -317,16 +383,17 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
       description: `${x.brokenBy.join(" and ")} broke ${x.name} in the Chimera suite ${suite} after: ${sequence.join(" -> ") || "(no sequence reported)"}.`,
     };
   });
-  return { tool, available: true, applicable: true, reason: gapSummary(engines, results, props, gaps), suites, engines: engineView, trust, results, gaps, leads, dropped };
+  return { tool, available: true, applicable: true, reason: gapSummary(engines, results, props, gaps, droppedNames), suites, engines: engineView, trust, results, gaps, leads, dropped };
 }
 
 // "6 of 12 engine checks unchecked (...)", or null with no gap. One engine
 // check is one test under one engine. A test counts as checked under an engine
-// only if that engine ran and reported it broken or passing.
-function gapSummary(engines, results, props, gaps) {
+// only if that engine ran and reported it broken or passing. A dropped test
+// was not checked, so it counts too.
+function gapSummary(engines, results, props, gaps, droppedNames) {
   if (!gaps.length) return null;
   const base = (n) => n.replace(/\(.*$/, "");
-  const names = new Set([...results.map((x) => base(x.name)), ...props]);
+  const names = new Set([...results.map((x) => base(x.name)), ...props, ...droppedNames]);
   const total = names.size * engines.length;
   let checked = 0;
   for (const e of engines) if (e.ok) checked += new Set(e.tests.filter((t) => t.status === "broken" || t.status === "pass").map((t) => base(t.name))).size;

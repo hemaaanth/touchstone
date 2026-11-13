@@ -113,18 +113,26 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   - **Exit codes.** Only the documented pairs count: Echidna 0 with no broken
     test or 1 with one, Medusa 0 with no broken test or 7 with one. Any other
     code, or a code that does not match the report, fails that engine.
-  - **Bound to this suite.** A test on a contract other than `CryticTester`,
-    or a function not declared in a `.sol` file under the suite's folder, is
-    dropped (`dropped`) and is a gap, never a lead. Each `property_*` function
-    declared there that an engine did not report is a gap for that engine.
+  - **Bound to the entry contract.** The engines test the `CryticTester` ABI.
+    We read that ABI from source: the `CryticTester` in the suite file, then
+    each base it inherits, by name, across every `.sol` file in the workspace
+    (not `.git`, `node_modules`, `out`, `cache` or `crytic-export`). So a
+    property inherited from a file outside the suite's folder still binds.
+    A test on a contract other than `CryticTester`, or a function it does not
+    have, is dropped (`dropped`) and is a gap, never a lead. Each `property_*`
+    function it has that an engine did not report is a gap for that engine.
     One in a comment or a string, or `internal` or `private`, is not counted,
     because the engines call only ABI functions. A comment marker inside a
     string is not a comment, so it hides nothing. Both adapters read the
     source through one scanner, `solidity-source.mjs`.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
+    Limits: a base name declared in more than one file gives the union of
+    their functions (at worst an extra gap); an aliased import
+    (`import {A as B}`) is not followed, so its tests are dropped as gaps.
   - **Run view.** Any gap puts a reason on the "Chimera" row, for example
-    "1 of 12 engine checks unchecked (...)". When nothing was checked, the
+    "1 of 12 engine checks unchecked (...)". A dropped test counts as
+    unchecked. When nothing was checked, the
     row is `unavailable`, not `ran`.
   - One engine down is a gap for that engine; the other engine's results still
     count. Both down: the scan is `unavailable`.

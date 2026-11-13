@@ -380,6 +380,50 @@ test("a comment marker inside a string hides no property; a property_ inside a s
   });
 });
 
+// The reviewer's move-only regression. Properties.sol moves out of the suite's
+// folder; only the two import paths change. The engines still report the
+// property on CryticTester, which inherits it, so the lead must stay.
+test("a property CryticTester inherits from outside the suite folder keeps its lead; one it does not inherit is not a gap", async () => {
+  const prep = (ws) => {
+    const props = readFileSync(join(ws, "test/recon/Properties.sol"), "utf8");
+    assert.ok(props.includes('import {Setup} from "./Setup.sol";'));
+    writeFileSync(join(ws, "test/Properties.sol"), props.replace('import {Setup} from "./Setup.sol";', 'import {Setup} from "./recon/Setup.sol";'));
+    rmSync(join(ws, "test/recon/Properties.sol"));
+    const tf = join(ws, "test/recon/TargetFunctions.sol");
+    const src = readFileSync(tf, "utf8");
+    assert.ok(src.includes('import {Properties} from "./Properties.sol";'));
+    writeFileSync(tf, src.replace('import {Properties} from "./Properties.sol";', 'import {Properties} from "../Properties.sol";'));
+    // A qualified base name, base arguments and a comment in the base list.
+    const ct = join(ws, SUITE);
+    const tester = readFileSync(ct, "utf8");
+    assert.ok(tester.includes("contract CryticTester is TargetFunctions, CryticAsserts {"));
+    writeFileSync(ct, tester
+      .replace('import {TargetFunctions} from "./TargetFunctions.sol";', 'import * as recon from "./TargetFunctions.sol";')
+      .replace("contract CryticTester is TargetFunctions, CryticAsserts {", "contract CryticTester is\n    recon.TargetFunctions, // the handlers (and, through them, the properties)\n    CryticAsserts()\n{"));
+    // In the suite folder, but not a base of CryticTester: the engines never call it.
+    writeFileSync(join(ws, "test/recon/Unrelated.sol"), "contract Unrelated {\n    function property_other() public {}\n}\n");
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.dropped, []);
+    assert.deepEqual(scan.gaps, []);
+    assert.equal(scan.reason, null);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: null, leads: 1 });
+  });
+});
+
+// A dropped test was not checked. The run view must not say "0 unchecked".
+test("a dropped test counts as unchecked in the run view", async () => {
+  const echidna = ECHIDNA.replace("vault_withdraw(uint256): passing", "vault_withdraw(uint256): passing\nproperty_drain(): passing");
+  await withShim({ echidna }, (scan) => {
+    assert.deepEqual(scan.dropped, ["Echidna: property_drain()"]);
+    assert.deepEqual(scan.gaps.map((g) => g.reason), ["Echidna reported a test that is not in this suite"]);
+    assert.equal(scan.reason, "2 of 14 engine checks unchecked (Echidna reported a test that is not in this suite)");
+    assert.equal(viewOf(scan).reason, scan.reason);
+  });
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";
