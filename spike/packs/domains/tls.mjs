@@ -43,7 +43,10 @@ export function parseTestssl(text, endpoint) {
   for (const scan of doc.scanResult) {
     if (!scan?.ip || !scan?.port || !scan?.targetHost) throw new Error('testssl.sh returned no measured address for ' + endpoint.origin);
     if (!(scan.rating ?? []).some(f => f.id === 'overall_grade' && String(f.finding ?? '').trim())) throw new Error('testssl.sh returned no grade for ' + endpoint.origin);
-    if (scan.scanProblem?.severity === 'FATAL') throw new Error('testssl.sh could not scan ' + endpoint.origin + ': FATAL: ' + String(scan.scanProblem.finding ?? scan.scanProblem.code ?? 'FATAL scan problem').slice(0, 200));
+    // testssl writes a scan problem as {id:"scanProblem",severity:"FATAL"} inside
+    // whichever section array was open when it stopped. Look in every one.
+    const fatal = Object.values(scan).filter(Array.isArray).flat().find(f => f?.id === 'scanProblem' && f?.severity === 'FATAL');
+    if (fatal) throw new Error('testssl.sh could not scan ' + endpoint.origin + ': FATAL: ' + String(fatal.finding ?? 'FATAL scan problem').slice(0, 200));
   }
   return report(endpoint, doc);
 }

@@ -39,9 +39,13 @@ test('the parser refuses an answer with no measured scan or no grade', () => {
   const emptyGrade = JSON.parse(real);
   for (const scan of emptyGrade.scanResult) scan.rating[0].finding = '';
   assert.throws(() => parseTestssl(JSON.stringify(emptyGrade), endpoint), /no grade/);
-  const fatal = JSON.parse(real);
-  fatal.scanResult[0].scanProblem = { severity: 'FATAL', code: 'CONNECT_FAILED', finding: 'cannot connect' };
-  assert.throws(() => parseTestssl(JSON.stringify(fatal), endpoint), /FATAL/);
+  // m2: testssl writes a scan problem as a finding row inside a section array
+  // (fileout "scanProblem" "FATAL" ...), next to a grade it may still print.
+  for (const section of ['protocols', 'serverDefaults', 'vulnerabilities', 'pretest']) {
+    const fatal = JSON.parse(real);
+    fatal.scanResult[0][section] = [...(fatal.scanResult[0][section] ?? []), { id: 'scanProblem', severity: 'FATAL', finding: 'Scan interrupted' }];
+    assert.throws(() => parseTestssl(JSON.stringify(fatal), endpoint), /FATAL/, section);
+  }
   assert.throws(() => parseTestssl('not json', endpoint));
 });
 
