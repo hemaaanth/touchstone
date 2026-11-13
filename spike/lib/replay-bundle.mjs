@@ -153,7 +153,8 @@ const NAMED = /([A-Za-z][\w-]{0,63})["'`]?[ \t]*[:=][ \t]*["'`]([^"'`\r\n]{1,102
 const SECRET_NAME_END = /(?:api[\s_-]?key|apikey|secret|password|passwd|token|cookie|auth|authorization|private[\s_-]?key|privkey|mnemonic|credentials?|session)$/i;
 const HEADER_IN_TEXT = /(?:^|[^\w-])(cookie|set-cookie|authorization|proxy-authorization|x-[\w-]*(?:token|key|secret|auth|session))[ \t]*:[ \t]*(.+)$/i;
 
-const words = (s) => s.split(/[\s,;"'`]+/).filter(Boolean);
+// "=" splits too: in `session=[REDACTED]` the name is not the value.
+const words = (s) => s.split(/[\s,;"'`=]+/).filter(Boolean);
 const PLAIN = /^(?:\[REDACTED[^\]]*\]|\$\{[A-Z0-9_]+\}|(?:0x)?[0-9a-fA-F]{40})$/;
 
 export function leakShapes(text) {
@@ -606,7 +607,21 @@ ${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedLis
 const LAB_IMAGES = { web: "touchstone/web-lab:dev", "ai-mcp": "touchstone/ai-mcp-lab:dev" };
 const LAB_URL = /^http:\/\/origin:\d+\//;
 const RERUN = new URL("./replay-http-rerun.mjs", import.meta.url);
-const PROOF_HTTP = new URL("./proof-http.mjs", import.meta.url);
+// The engine files a rerun loads from the checkout. rerun.json keeps their
+// hashes, so the rerun can say when the checkout is not the code that proved it.
+const ENGINE_FILES = (pack) => ["spike/lib/proof-http.mjs", "spike/lib/lab-net.mjs", `spike/packs/${pack}/pack.mjs`];
+const REPO = new URL("../../", import.meta.url);
+function engineHashes(pack) {
+  const out = {};
+  for (const rel of ENGINE_FILES(pack)) {
+    try {
+      out[rel] = createHash("sha256").update(readFileSync(new URL(rel, REPO))).digest("hex");
+    } catch {
+      out[rel] = null;
+    }
+  }
+  return out;
+}
 
 function labRerun({ pack, proof, script }) {
   const image = LAB_IMAGES[pack];
@@ -639,7 +654,7 @@ There is no command in this folder that reruns the proof: ${rerun.why}.
 `;
   }
   return `${head}
-The proof ran \`script.mjs\` against the ${rerun.pack} pack's lab (\`${rerun.image}\`), on two internal Docker networks behind a recording proxy, and the \`${rerun.oracle}\` oracle read the proxy's transcript. \`rerun.mjs\` does the same with \`proof-http.mjs\`, the engine's own lab code, copied here. The lab image and the oracle are built from the Touchstone repo, so the rerun takes the path to a Touchstone checkout.
+The proof ran \`script.mjs\` against the ${rerun.pack} pack's lab (\`${rerun.image}\`), on two internal Docker networks behind a recording proxy, and the \`${rerun.oracle}\` oracle read the proxy's transcript. \`rerun.mjs\` does the same with the engine's own lab code (\`spike/lib/proof-http.mjs\`) and the pack's oracle, both loaded from a Touchstone checkout, so the rerun takes the path to one. \`rerun.json\` holds the SHA-256 of each engine file that made the proof; the rerun says so when the checkout differs.
 
 ## Prepare (once, online)
 
@@ -741,9 +756,8 @@ function httpBundle({ finding, recorded, proof }) {
   pushFile(entries, "transcript.json", JSON.stringify(transcript, null, 2) + "\n");
   if (text) pushFile(entries, "script.mjs", text.endsWith("\n") ? text : text + "\n");
   if (rerun.pack) {
-    pushFile(entries, "rerun.json", JSON.stringify({ pack: rerun.pack, image: rerun.image, oracle: rerun.oracle }, null, 2) + "\n");
+    pushFile(entries, "rerun.json", JSON.stringify({ pack: rerun.pack, image: rerun.image, oracle: rerun.oracle, engine: engineHashes(rerun.pack) }, null, 2) + "\n", { own: true });
     pushFile(entries, "rerun.mjs", readFileSync(RERUN, "utf8"), { own: true });
-    pushFile(entries, "proof-http.mjs", readFileSync(PROOF_HTTP, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
   return zipStore(entries);

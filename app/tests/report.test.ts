@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -314,7 +315,8 @@ describe("report: replay bundle", () => {
         "}",
         "",
       ].join("\n"))
-      writeFileSync(path.join(ws, "src", "Deploy.sol"), `contract Deploy { uint256 constant PRIVATE_KEY = ${V.privateKey}; }\n`)
+      // The redactor masks `PRIVATE_KEY = 0x…`; it keeps a short name like `pk`.
+      writeFileSync(path.join(ws, "src", "Deploy.sol"), `contract Deploy { uint256 pk = ${V.privateKey}; }\n`)
       writeFileSync(path.join(ws, "src", "Ops.sol"), `// aws ${V.awsBare}\ncontract Ops {}\n`)
       writeFileSync(path.join(ws, "src", "Words.sol"), `contract Words { string constant words = "${V.phrase}"; }\n`)
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
@@ -332,7 +334,7 @@ describe("report: replay bundle", () => {
       expect(chains).toContain('"https://mainnet.infura.io/v3/${RPC_URL_KEY}"')
       expect(chains).toContain('"https://rpc.ankr.com/eth/${RPC_URL_KEY}"')
       expect(chains).toContain('"https://young-wild-sun.quiknode.pro/${RPC_URL_KEY}/"')
-      expect(chains).toContain("// Cookie: [REDACTED]\n")
+      expect(chains).toContain("// Cookie: session=[REDACTED]\n")
       expect(chains).toContain("// X-Console-Token: [REDACTED]\n")
       expect(chains).toContain('string apiKey = "[REDACTED]";')
       expect(chains).toContain('string aws_secret_access_key = "[REDACTED]";')
@@ -348,7 +350,7 @@ describe("report: replay bundle", () => {
         files: [
           ...replay.files,
           { path: "src/OldChains.sol", text: `contract OldChains { string a = "https://eth-mainnet.g.alchemy.com/v2/${V.alchemy}"; }\n` },
-          { path: "src/OldDeploy.sol", text: `contract OldDeploy { uint256 constant PRIVATE_KEY = ${V.privateKey}; }\n` },
+          { path: "src/OldDeploy.sol", text: `contract OldDeploy { uint256 pk = ${V.privateKey}; }\n` },
         ],
       }
       const zip = buildReplayBundle({
@@ -523,15 +525,17 @@ describe("report: replay bundle", () => {
         "sha256sum -c SHA256SUMS && \\\n  node rerun.mjs <path-to-touchstone-checkout>",
       ])
       expect(section(readme, "Rerun (offline)")).toBe("sha256sum -c SHA256SUMS && \\\n  node rerun.mjs <path-to-touchstone-checkout>")
-      expect(JSON.parse(files.get("rerun.json") || "")).toEqual({ pack: "web", image: "touchstone/web-lab:dev", oracle: "debug-route-signer-key-leak" })
+      const engine = Object.fromEntries(["spike/lib/proof-http.mjs", "spike/lib/lab-net.mjs", "spike/packs/web/pack.mjs"].map((rel) => [rel, createHash("sha256").update(readFileSync(new URL(`../../${rel}`, import.meta.url))).digest("hex")]))
+      expect(JSON.parse(files.get("rerun.json") || "")).toEqual({ pack: "web", image: "touchstone/web-lab:dev", oracle: "debug-route-signer-key-leak", engine })
       expect(files.get("script.mjs")).toBe(script)
       expect(files.get("rerun.mjs")).toBe(readFileSync(new URL("../../spike/lib/replay-http-rerun.mjs", import.meta.url), "utf8"))
-      expect(files.get("proof-http.mjs")).toBe(readFileSync(new URL("../../spike/lib/proof-http.mjs", import.meta.url), "utf8"))
+      // The lab code is loaded from the checkout, not copied: it imports other engine files.
+      expect(files.has("proof-http.mjs")).toBe(false)
       const transcript = JSON.parse(files.get("transcript.json") || "")
       expect(transcript[0].request.url).toBe("http://origin:8080/internal/debug/config")
       expect(transcript[0].response.body.signerPrivateKey).toBe("[REDACTED]")
       const sums = files.get("SHA256SUMS") || ""
-      for (const name of ["script.mjs", "rerun.json", "rerun.mjs", "proof-http.mjs", "transcript.json", "proof.json"]) expect(sums).toContain(`  ${name}\n`)
+      for (const name of ["script.mjs", "rerun.json", "rerun.mjs", "transcript.json", "proof.json"]) expect(sums).toContain(`  ${name}\n`)
       execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
       // With no checkout path the rerun cannot load the oracle, and says so.
       let code = 0

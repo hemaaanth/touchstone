@@ -2,19 +2,20 @@
 //
 //   node rerun.mjs <path to a Touchstone checkout>
 //
-// It does what the engine's own http proof does (lib/proof-http.mjs, shipped
-// next to it): start a fresh lab behind the recording proxy, on two internal
+// It does what the engine's own http proof does (spike/lib/proof-http.mjs, loaded
+// from the checkout): start a fresh lab behind the recording proxy, on two internal
 // Docker networks with no internet route, run script.mjs against it, read the
 // proxy's transcript, and stop the lab. The new transcript goes to
 // replay-transcript.json. Then the pack's named oracle, loaded from the
-// Touchstone checkout, reads that transcript.
+// Touchstone checkout, reads that transcript. rerun.json holds the SHA-256 of
+// each engine file that made the proof; a different file is named, not refused.
 //
 // Exit codes: 0 the oracle passed, 1 it did not, 2 the check could not run
 // (no checkout path, the lab image is not built, or the oracle is not found).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { requireImage, runRequestScript, startLab, stopLab } from "./proof-http.mjs";
 
 const stop = (code, line) => {
   console.log(line);
@@ -28,7 +29,17 @@ if (script.includes("[REDACTED]")) {
 }
 const repo = process.argv[2] ? resolve(process.argv[2]) : null;
 const packFile = repo && join(repo, "spike", "packs", meta.pack, "pack.mjs");
-if (!packFile || !existsSync(packFile)) stop(2, "CANNOT CHECK: pass the path to a Touchstone checkout. The oracle is pack code and is not in this folder.");
+if (!packFile || !existsSync(packFile)) stop(2, "CANNOT CHECK: pass the path to a Touchstone checkout. The lab code and the oracle are engine code and are not in this folder.");
+for (const [rel, want] of Object.entries(meta.engine || {})) {
+  let have = null;
+  try {
+    have = createHash("sha256").update(readFileSync(join(repo, rel))).digest("hex");
+  } catch {
+    have = null;
+  }
+  if (want && have !== want) console.log(`note: ${rel} in the checkout is not the file that made the proof.`);
+}
+const { requireImage, runRequestScript, startLab, stopLab } = await import(pathToFileURL(join(repo, "spike", "lib", "proof-http.mjs")).href);
 try {
   await requireImage(meta.image, meta.pack);
 } catch (err) {
