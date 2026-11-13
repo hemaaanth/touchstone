@@ -40,7 +40,7 @@ import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
-import { restoreSource } from "../../spike/lib/fetch.mjs"
+import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, trackCandidate, writeCandidates } from "./candidates.mjs"
 
@@ -919,6 +919,13 @@ function attemptBase(run) {
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
+  // A Stop that was taken before this point starts no worker. Every start of
+  // an audit worker comes through here (a new run, and a run the boot resumes),
+  // so no caller can miss the check.
+  if (run.stopping) {
+    endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
+    return
+  }
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
@@ -1433,7 +1440,8 @@ function keepWorkspace(run, ws) {
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
     writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
-    writeWorkspace(run.id, workspaceRecord(run, real, target, old, secrets))
+    // `restoring`: the sources were not all put back yet (restoreSources). It stays until they are.
+    writeWorkspace(run.id, { ...workspaceRecord(run, real, target, old, secrets), ...(old?.restoring ? { restoring: true } : {}) })
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1521,7 +1529,10 @@ export function stopRun(id) {
   if (!run.owner) throw new Error("another server owns this run; stop it there")
   const child = run.child
   const alive = child && child.exitCode == null && child.signalCode == null
-  if (!alive && run.status !== "running" && run.status !== "starting") throw new Error(`the run is ${run.status}; it ends on its own`)
+  // A follow-up that still prepares its workspace has no worker yet. It can be
+  // stopped too: it ends before the next fetched source, and starts no worker.
+  const preparing = run.replying && !child
+  if (!alive && !preparing && run.status !== "running" && run.status !== "starting") throw new Error(`the run is ${run.status}; it ends on its own`)
   run.stopping = true
   broadcast(run, { t: Date.now(), ev: "stop-requested" })
   if (alive) child.kill("SIGTERM")
@@ -1572,13 +1583,19 @@ function buildWorkspace(run, target, kept) {
 // silence. A fetch from before commits were recorded has no pin: that member is
 // not put back, and the run says its code can differ.
 //
+// The record says `restoring` from before the first fetch until the last one
+// ended. A server stop or an operator's Stop in between leaves it set, and the
+// next follow-up puts the sources back again before its worker starts.
+//
 // Returns the three lists for the `workspace` event. Throws when the pins
 // cannot be written: the follow-up must not start without them.
-async function restoreSources(run, ws) {
+const repoName = (url) => /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)/.exec(url)?.[1] ?? "one source"
+async function restoreSources(run, ws, kept) {
   const out = { same: [], missing: [], unpinned: [] }
-  // The last fetch of each member that landed.
+  // The last fetch of each member that landed. The key is the member's URL as
+  // the fetch itself spells it, so the pin is found whatever the event's spelling.
   const before = new Map()
-  for (const e of run.events) if (e.ev === "source-fetch" && e.ok && e.where && typeof e.url === "string") before.set(e.url, e)
+  for (const e of run.events) if (e.ev === "source-fetch" && e.ok && e.where && typeof e.url === "string") before.set(memberUrl(e.url) ?? e.url, e)
   // A commit or a hash that is in the event is a pin, whatever it holds: the
   // fetch judges it, and refuses one it cannot read. Only a missing field is "no pin".
   const pins = {}
@@ -1587,23 +1604,55 @@ async function restoreSources(run, ws) {
     else if (e.sha256 !== undefined) pins[url] = { sha256: e.sha256 }
     else out.unpinned.push(`${url} (was in ${e.where})`)
   }
-  if (!Object.keys(pins).length) return out
+  const todo = Object.entries(pins)
+  if (!todo.length) return out
   const file = path.join(ws, ".touchstone.json")
   const cfg = JSON.parse(readFileSync(file, "utf8"))
   if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("the config of the new workspace is not a record")
   writeFileSync(file, JSON.stringify({ ...cfg, pins }, null, 2))
-  for (const [url, pin] of Object.entries(pins)) {
+  const mark = (on) => {
+    const rec = readWorkspace(run.id)
+    if (!rec || Boolean(rec.restoring) === on) return
+    if (on) rec.restoring = true
+    else delete rec.restoring
+    writeWorkspace(run.id, rec)
+  }
+  mark(true)
+  // The operator sees what the run is doing: a fetch can take up to 90 seconds.
+  // Only the repository's name goes into these events: no path of this host.
+  const say = (message) => broadcast(run, { t: Date.now(), ev: "workspace", state: "restoring", message })
+  say(`The fetched sources of this run are put back into its workspace, as this run read them before: ${todo.length} to fetch. Each one can take up to 90 seconds.`)
+  // A joined run keeps one tree for the run and a copy in each module that reads code.
+  const packs = run.packs ?? kept?.packs
+  for (const [k, [url, pin]] of todo.entries()) {
+    if (run.stopping) {
+      // `restoring` stays in the record. The line on the screen must not go on saying "Fetching".
+      say(`The restore stopped after ${k} of ${todo.length} sources. The next message to this run puts the sources back first.`)
+      return { ...out, stopped: true }
+    }
+    say(`Fetching ${repoName(url)} (${k + 1} of ${todo.length}).`)
     try {
       const report = await restoreSource(ws, url)
-      // A joined run keeps one tree for the run and a copy in each module that reads code.
-      if (run.packs?.length > 1) shareFetched(ws, run.packs, report.where)
+      // The fetch must have given what the pin names. Other code does not stay.
+      if (!(pin.commit !== undefined ? report.commit === pin.commit : report.sha256 === pin.sha256)) {
+        if (report.where) rmSync(path.join(ws, report.where), { recursive: true, force: true })
+        throw new Error("the fetch did not give what this run read before, so its result was taken out again")
+      }
+      if (packs?.length > 1) shareFetched(ws, packs, report.where)
       out.same.push(`${url} (${pin.commit ? `commit ${String(pin.commit).slice(0, 12)}` : "the same file"}, in ${report.where})`)
     } catch (err) {
       out.missing.push(`${url}: ${String(err?.message ?? err)}`)
     }
   }
+  mark(false)
   return out
 }
+// The sentences of the three lists, for the `workspace` event and the agent's note.
+const sourceLines = (sources) => [
+  sources.same.length ? `These fetched sources are in it again, as this run read them before: ${sources.same.join("; ")}.` : "",
+  sources.missing.length ? `These fetched sources could not be put back, so they are not in it: ${sources.missing.join("; ")}.` : "",
+  sources.unpinned.length ? `These fetched sources are not in it: ${sources.unpinned.join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
+]
 
 // Start a follow-up: one operator message to an idle run. The worker reopens
 // the run's saved agent session in the run's own kept workspace, answers, and
@@ -1676,6 +1725,7 @@ export function followUp(run, text, clientId) {
   run.errorInfo = null
   run.stopping = false
   run.replying = true
+  run.child = null // no worker yet: stopRun reads this as "the follow-up prepares its workspace"
   broadcast(run, { t: Date.now(), ev: "reply-start" })
   if (briefNote) broadcast(run, { t: Date.now(), ev: "brief", text: brief })
 
@@ -1686,7 +1736,17 @@ export function followUp(run, text, clientId) {
     run.replying = false
     broadcast(run, { t: Date.now(), ev: "closed" })
   }
+  // The operator pressed Stop before a worker started.
+  const stopped = async () => {
+    broadcast(run, { t: Date.now(), ev: "stopped" })
+    await end()
+  }
+  // The one place that starts a follow-up worker. A Stop can be taken while the
+  // workspace is prepared (stopRun): during the build, during the last fetch of
+  // a source restore, or when there is nothing to restore. Whatever the path,
+  // it ends here, and a Stop that was taken starts no worker.
   const start = (note) => {
+    if (run.stopping) return void stopped()
     const since = Date.now()
     const errFrom = run.stderr.length // the card must not quote an earlier worker's output
     const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
@@ -1753,6 +1813,33 @@ export function followUp(run, text, clientId) {
   if (ws) {
     run.ws = ws
     dropOldBriefFile(ws, target)
+    // The server stopped, or the operator pressed Stop, while the fetched
+    // sources were put back into this workspace. Put them back first, and say so.
+    if (kept.restoring) {
+      try {
+        if (kept.credential && !noCredential) {
+          writeWorkspace(run.id, { ...kept, restored: true }) // before the first file gets the credential
+          restoreSecrets(ws, target)
+        }
+      } catch (err) {
+        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The access token could not be put back into the workspace: ${String(err?.message ?? err)} Send the message again to retry.` })
+        end()
+        return { ok: true, followUp: true }
+      }
+      restoreSources(run, ws, kept).then(
+        async (sources) => {
+          if (sources.stopped) return stopped()
+          const message = ["The fetched sources of this workspace were not all put back when its last follow-up ended, so the server did that now.", ...sourceLines(sources), noCredential].filter(Boolean).join(" ")
+          broadcast(run, { t: Date.now(), ev: "workspace", state: "kept", message })
+          start(`Operator follow-up. Your workspace is the one you left: the files you wrote are still there. ${message}${noCredential ? " A placeholder text stands where a file held the access token." : ""}`)
+        },
+        async (err) => {
+          broadcast(run, { t: Date.now(), ev: "reply-error", error: `The fetched sources of this run's workspace could not be put back: ${String(err?.message ?? err)} So this follow-up did not start. Send the message again to retry.` })
+          await end()
+        },
+      )
+      return { ok: true, followUp: true }
+    }
     if (noCredential) {
       broadcast(run, { t: Date.now(), ev: "workspace", state: "kept", message: noCredential })
       start(`Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there. ${noCredential} A placeholder text stands where a file held it.`)
@@ -1771,6 +1858,7 @@ export function followUp(run, text, clientId) {
     start(null)
     return { ok: true, followUp: true }
   }
+
   // The workspace is gone: deleted, or left on another machine, or lost with
   // the temp folder at a reboot. Build a new one from the run's scope and say so.
   run.ws = null
@@ -1780,19 +1868,18 @@ export function followUp(run, text, clientId) {
       bindWorkspace(run, made, target, kept)
       let sources
       try {
-        sources = await restoreSources(run, made)
+        sources = await restoreSources(run, made, kept)
       } catch (err) {
         // Without the pins a fetch could read other code than before. Do not start.
         broadcast(run, { t: Date.now(), ev: "reply-error", error: `The workspace of this run is gone, and the new one could not be told which code this run read before: ${String(err?.message ?? err)} So this follow-up did not start. Send the message again to retry.` })
         await end()
         return
       }
+      if (sources.stopped) return stopped()
       const message = [
         "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
         "Files the agent wrote before are not in it.",
-        sources.same.length ? `These fetched sources are in it again, as this run read them before: ${sources.same.join("; ")}.` : "",
-        sources.missing.length ? `These fetched sources could not be put back, so they are not in it: ${sources.missing.join("; ")}.` : "",
-        sources.unpinned.length ? `These fetched sources are not in it: ${sources.unpinned.join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
+        ...sourceLines(sources),
         target.generated ? "The lab was generated again with new throwaway keys, so it is not the same repository as before." : "",
         noCredential,
       ].filter(Boolean).join(" ")
