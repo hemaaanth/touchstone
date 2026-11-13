@@ -776,7 +776,7 @@ export function failureInfo(run) {
     return {
       kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
       title: "Run stopped: the spend ledger stayed locked",
-      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock file next to the ledger, then start a new run.",
+      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock and spend.json.lock.break files next to the ledger, then start a new run.",
       message: `the run stopped because its spend could not be recorded in the ledger — ${spentNote}`,
     }
   }
