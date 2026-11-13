@@ -13,7 +13,9 @@ import { buildReport, buildReplayBundle, renderReportHtml, renderReportMarkdown,
 // @ts-expect-error — plain .mjs module, no types
 import { loadRecordedReplay } from "../server/replay-bundle.mjs"
 // @ts-expect-error — plain .mjs module, no types
-import { snapshotForgeReplay } from "../../spike/lib/replay-bundle.mjs"
+import { planReplayBundle, snapshotForgeReplay } from "../../spike/lib/replay-bundle.mjs"
+// @ts-expect-error — resolved from spike/node_modules; the app does not depend on ethers
+import { Mnemonic } from "../../spike/node_modules/ethers/lib.esm/index.js"
 
 // A proven forge finding, with a "Fix:" line in its explanation.
 const forgeFinding = {
@@ -602,6 +604,79 @@ describe("report: replay bundle", () => {
       expect(err?.message).toContain("proof.json")
       expect(err?.message).not.toContain(hex)
       expect(err?.message).not.toContain(aws)
+    }
+  })
+
+  test("a bundle counts the values it cannot judge, names none, and lists them in the README", () => {
+    // Made up. Two storage slots (one used twice), an AWS-shaped token with no
+    // "aws" word, and a URL token on a host that is not a known provider: each
+    // may be evidence. A value counts once, in however many files it is.
+    const slot = "0x" + "36".repeat(16) + "08".repeat(16)
+    const token = "Rb3Nc6Kd1Fg5Jy0Ts/Ua+Pe2Hq7Lm2Xp9Rt4Vw8Q"
+    const urlToken = "Zx81QwErTy56UiOp34AsDf"
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-unjudged-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Proxy.sol"), `contract Proxy {\n  bytes32 internal constant SLOT = ${slot};\n  bytes32 internal constant OTHER = ${slot.slice(0, -2)}09;\n  bytes32 internal constant AGAIN = ${slot};\n  string blob = "${token}";\n}\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
+      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const plan = planReplayBundle({
+        finding: { title: "Proxy takeover", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        recorded: { replay, proof: { kind: "forge", pass: true, test: "testDrain()" } },
+      })
+      expect(plan.unjudged).toEqual([
+        { shape: "hex64", count: 2, text: "2 values of 64 hex characters that may be keys or hashes" },
+        { shape: "aws40", count: 1, text: "1 token of 40 characters that may be an AWS secret key" },
+      ])
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-unjudged-zip-"))
+      try {
+        unzip(plan.zip, dir)
+        const readme = readTree(dir).get("README.md") || ""
+        expect(readme).toContain("## Check these before you share the bundle\n")
+        expect(readme).toContain("- 2 values of 64 hex characters that may be keys or hashes\n- 1 token of 40 characters that may be an AWS secret key\n")
+        expect(readme.includes(slot.slice(2))).toBe(false)
+        expect(readme.includes(token)).toBe(false)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+
+    const proof = {
+      kind: "http",
+      status: "pass",
+      oracle: { name: "cross-tenant-read", detail: "read another tenant", passed: true },
+      log: [{ label: "1", request: { method: "GET", url: `https://files.example.com/share/${urlToken}` }, response: { status: 200, body: "ok" } }],
+    }
+    const http = planReplayBundle({ finding: { title: "share link", proofKind: "http", proof }, recorded: { proof, pack: "web" } })
+    expect(http.unjudged).toEqual([{ shape: "urlToken", count: 1, text: "1 URL part that may be an access token" }])
+    const lab = { ...proof, log: [{ label: "1", request: { method: "GET", url: `http://origin:8080/share/${urlToken}` }, response: { status: 200, body: "ok" } }] }
+    expect(planReplayBundle({ finding: { title: "share link", proofKind: "http", proof: lab }, recorded: { proof: lab, pack: "web" } }).unjudged).toEqual([])
+  })
+
+  test("a BIP39 phrase with no keyword is named by its checksum and left out", () => {
+    // Made up: a phrase built from fixed entropy at test time, and a run of
+    // wordlist words that fails the checksum.
+    const phrase = Mnemonic.fromEntropy("0x" + "5a".repeat(16)).phrase
+    const notSeed = "orbit lemon cradle vivid tunnel amber frost gravel nephew silent wagon plume"
+    expect(Mnemonic.isValidMnemonic(notSeed)).toBe(false)
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-bip39-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Note.sol"), `// ops notes: ${phrase}\ncontract Note {}\n`)
+      writeFileSync(path.join(ws, "src", "Prose.sol"), `// ${notSeed}\ncontract Prose {}\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
+      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(JSON.stringify(replay).includes(phrase)).toBe(false)
+      expect(replay.omitted).toEqual([{ path: "src/Note.sol", reason: "holds a mnemonic the redactor cannot mask" }])
+      expect(replay.files.map((f: { path: string }) => f.path)).toContain("src/Prose.sol")
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
     }
   })
 

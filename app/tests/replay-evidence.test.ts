@@ -111,6 +111,31 @@ describe("evidence replay keeps no snapshot text", () => {
     expect(r.body.includes(hex)).toBe(false)
   })
 
+  test("the bundle route lists the values it could not judge, by count, with the zip and as JSON", async () => {
+    // Made up: a transaction hash in the response. It may be evidence or a key.
+    const txHash = "0x" + "7d".repeat(32)
+    const proof = {
+      kind: "http",
+      status: "pass",
+      oracle: { name: "replayed-withdrawal", detail: "the lab accepted the same withdrawal twice", passed: true },
+      log: [{ label: "1", request: { method: "POST", url: "http://origin:8080/withdraw" }, response: { status: 200, body: { txHash } } }],
+    }
+    const row = { title: "withdrawal replay", severity: "high", pocProved: true, script: 'await request("POST", "/withdraw");\n', proof }
+    writeFileSync(path.join(results, "run-http-hash.json"), JSON.stringify({ result: { findingSubmitted: true, recorded: true, decision: "approved", pack: "web", findings: [row] } }))
+    const check = await call("/api/findings/http-hash.1/report?format=bundle-check")
+    expect(check.status).toBe(200)
+    expect(check.headers["content-type"]).toBe("application/json")
+    const body = JSON.parse(check.body)
+    expect(body.unjudged).toEqual([{ shape: "hex64", count: 1, text: "1 value of 64 hex characters that may be a key or a hash" }])
+    expect(body.note).toBe("Check these before you share the bundle")
+    expect(check.body.includes(txHash.slice(2))).toBe(false)
+    const zip = await call("/api/findings/http-hash.1/report?format=bundle")
+    expect(zip.status).toBe(200)
+    expect(zip.headers["content-type"]).toBe("application/zip")
+    expect(JSON.parse(zip.headers["x-touchstone-unjudged"])).toEqual([{ shape: "hex64", count: 1 }])
+    expect(zip.headers["x-touchstone-unjudged"].includes(txHash.slice(2))).toBe(false)
+  })
+
   test("an unknown report format is refused, not answered with json", async () => {
     const r = await call("/api/findings/ev-1.1/report?format=bogus")
     expect(r.status).toBe(400)

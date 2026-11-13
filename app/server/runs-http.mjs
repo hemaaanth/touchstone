@@ -7,7 +7,7 @@
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
-import { buildReplayBundle, bundleRefusal, loadRecordedReplay } from "./replay-bundle.mjs"
+import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
 
@@ -188,8 +188,10 @@ export async function handleFindings(req, res) {
   // page to share; md is for a README or an issue. bundle is a zip a judge can
   // unzip and rerun: the proof sources, foundry config, proof JSON, and fork
   // parameters, with one command in README.md. The report invents nothing: the
-  // fix is shown only when the run stated one (report.mjs).
-  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "bundle", "zip"])
+  // fix is shown only when the run stated one (report.mjs). bundle-check is the
+  // same build as bundle, answered as JSON: the values the zip could not judge,
+  // counted by shape, for the line next to the download.
+  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "bundle", "zip", "bundle-check"])
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
@@ -204,23 +206,30 @@ export async function handleFindings(req, res) {
         return true
       }
       const slug = String(id).replace(/[^\w.-]+/g, "-")
-      if (format === "bundle" || format === "zip") {
+      if (format === "bundle" || format === "zip" || format === "bundle-check") {
         const recorded = loadRecordedReplay(id)
         const refused = bundleRefusal({ finding, recorded })
         if (refused) {
           send(res, 409, { error: refused })
           return true
         }
-        let zip
+        let plan
         try {
-          zip = buildReplayBundle({ finding, recorded })
+          plan = planReplayBundle({ finding, recorded })
         } catch (err) {
           // The builder refuses a zip that would leak a secret it cannot mask.
           if (err?.refused !== true) throw err
           send(res, 409, { error: err.message })
           return true
         }
+        const { zip, unjudged } = plan
+        if (format === "bundle-check") {
+          send(res, 200, { bundle: true, bytes: zip.length, unjudged, note: unjudged.length ? UNJUDGED_NOTE : null })
+          return true
+        }
         res.statusCode = 200
+        // Counts by shape only, never a value. JSON is ASCII here: the texts are fixed.
+        res.setHeader("x-touchstone-unjudged", JSON.stringify(unjudged.map(({ shape, count }) => ({ shape, count }))))
         res.setHeader("content-type", "application/zip")
         res.setHeader("content-disposition", `attachment; filename="touchstone-replay-${slug}.zip"`)
         res.end(zip)

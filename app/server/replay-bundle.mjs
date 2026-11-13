@@ -6,10 +6,10 @@
 // file for the snapshot and the request script.
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import { buildReplayBundle, bundleRefusal } from "../../spike/lib/replay-bundle.mjs"
+import { buildReplayBundle, bundleRefusal, planReplayBundle, UNJUDGED_NOTE } from "../../spike/lib/replay-bundle.mjs"
 import { resultsDir } from "./findings.mjs"
 
-export { buildReplayBundle, bundleRefusal }
+export { buildReplayBundle, bundleRefusal, planReplayBundle, UNJUDGED_NOTE }
 
 // The raw replay for one finding id (`<runId>` or `<runId>.<n>`). Null when
 // that run file is not on disk. Missing snapshot fields stay null so the zip

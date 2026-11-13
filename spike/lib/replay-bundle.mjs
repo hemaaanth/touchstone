@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { redactSecrets } from "../../app/server/redact.mjs";
+import { Mnemonic, wordlists } from "ethers";
 import { pinnedSolc, warmFor } from "./sandbox.mjs";
 
 const MAX_FILE = 1_500_000;
@@ -148,7 +149,9 @@ const AWS_WORD = /aws/i;
 const AWS_SECRET = /(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])/g;
 const MNEMONIC_QUOTED = /["'`]\s*((?:[a-z]{3,8}\s+){11,23}[a-z]{3,8})\s*["'`]/g;
 const MNEMONIC_NAMED = /(?:mnemonic|seed[\s_-]?phrase|recovery[\s_-]?phrase)\W{0,8}((?:[a-z]{3,8}\s+){11}[a-z]{3,8})/i;
-const RPC_HOST = /https?:\/\/[^\s"'`\\/]*(?:alchemy|infura|ankr|quiknode|quicknode|blastapi|chainstack|getblock|nodereal|drpc|tenderly|moralis|blockpi|pokt)[^\s"'`\\/]*([^\s"'`\\]*)/gi;
+const RPC_NAMES = "alchemy|infura|ankr|quiknode|quicknode|blastapi|chainstack|getblock|nodereal|drpc|tenderly|moralis|blockpi|pokt";
+const RPC_HOST = new RegExp(`https?:\\/\\/[^\\s"'\`\\\\/]*(?:${RPC_NAMES})[^\\s"'\`\\\\/]*([^\\s"'\`\\\\]*)`, "gi");
+const RPC_HOST_NAME = new RegExp(RPC_NAMES, "i");
 const NAMED = /([A-Za-z][\w-]{0,63})["'`]?[ \t]*[:=][ \t]*["'`]([^"'`\r\n]{1,1024})["'`]/g;
 const SECRET_NAME_END = /(?:api[\s_-]?key|apikey|secret|password|passwd|token|cookie|auth|authorization|private[\s_-]?key|privkey|mnemonic|credentials?|session)$/i;
 const HEADER_IN_TEXT = /(?:^|[^\w-])(cookie|set-cookie|authorization|proxy-authorization|x-[\w-]*(?:token|key|secret|auth|session))[ \t]*:[ \t]*(.+)$/i;
@@ -180,8 +183,79 @@ export function leakShapes(text) {
     const h = HEADER_IN_TEXT.exec(line);
     if (h && words(h[2]).some((w) => secretish(w, 8))) found.add("a header in text");
   }
+  if (hasMnemonic(text)) found.add("a mnemonic");
   return [...found];
 }
+
+// A BIP39 phrase can be named without a keyword: its last word carries a
+// checksum. A run of 12 or more English wordlist words is checked in every
+// window of 12, 15, 18, 21 or 24 words. A run that fails every checksum is
+// not a seed phrase.
+const WORDLIST = wordlists.en;
+function hasMnemonic(text) {
+  let run = [];
+  const check = () => {
+    for (let i = 0; i + 12 <= run.length; i++) {
+      for (const n of [12, 15, 18, 21, 24]) {
+        if (i + n > run.length) break;
+        if (Mnemonic.isValidMnemonic(run.slice(i, i + n).join(" "), WORDLIST)) return true;
+      }
+    }
+    return false;
+  };
+  for (const w of String(text ?? "").split(/[^a-z]+/)) {
+    if (w && WORDLIST.getWordIndex(w) >= 0) {
+      run.push(w);
+      continue;
+    }
+    if (w && check()) return true;
+    if (w) run = [];
+  }
+  return check();
+}
+
+// Values the bundle cannot judge: each may be a secret or may be evidence (a
+// transaction hash, a storage slot, an id in a URL). They are counted, never
+// shown, and listed for the reader. A line with a key word or the word "aws"
+// is not counted here: leakShapes names it, and the zip is refused or the file
+// left out.
+const HEX64_ALL = new RegExp(HEX64.source, "g");
+const URL_PARTS = /https?:\/\/([^\s"'`\\/?#]+)([^\s"'`\\]*)/gi;
+const LAB_HOST = /^origin(?::\d+)?$/;
+const UNJUDGED_TEXT = {
+  hex64: (n) => `${n} ${n === 1 ? "value" : "values"} of 64 hex characters that may be ${n === 1 ? "a key or a hash" : "keys or hashes"}`,
+  aws40: (n) => `${n} ${n === 1 ? "token" : "tokens"} of 40 characters that may be ${n === 1 ? "an AWS secret key" : "AWS secret keys"}`,
+  urlToken: (n) => `${n} URL ${n === 1 ? "part" : "parts"} that may be ${n === 1 ? "an access token" : "access tokens"}`,
+};
+// counts[shape] is a Set of SHA-256 hashes, so a value seen in two files
+// counts once. Only the hash is kept, never the value.
+export function unjudgedCounts(text, counts = {}) {
+  const add = (k, v) => (counts[k] ??= new Set()).add(createHash("sha256").update(v).digest("hex"));
+  for (const line of String(text ?? "").split(/\r?\n|\\n/)) {
+    // A value right after "sha256:" is a digest by name (the pinned image).
+    if (!KEY_WORD.test(line) && !KEY_CAMEL.test(line)) {
+      for (const m of line.matchAll(HEX64_ALL)) if (!/sha256:$/i.test(line.slice(Math.max(0, m.index - 7), m.index))) add("hex64", m[0].replace(/^0x/, "").toLowerCase());
+    }
+    if (!AWS_WORD.test(line)) {
+      for (const [t] of line.matchAll(AWS_SECRET)) {
+        if (/[a-z]/.test(t) && /[A-Z]/.test(t) && /[0-9]/.test(t) && !/^[0-9a-fA-F]+$/.test(t)) add("aws40", t);
+      }
+    }
+    for (const m of line.matchAll(URL_PARTS)) {
+      if (LAB_HOST.test(m[1]) || RPC_HOST_NAME.test(m[1])) continue;
+      for (const seg of m[2].split(/[/?#&=]/)) {
+        if (seg.length >= 20 && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !/^(?:\$\{|\[REDACTED|0x[0-9a-fA-F]+$)/.test(seg)) add("urlToken", seg);
+      }
+    }
+  }
+  return counts;
+}
+export function unjudgedList(counts) {
+  return Object.keys(UNJUDGED_TEXT)
+    .filter((k) => counts[k]?.size > 0)
+    .map((k) => ({ shape: k, count: counts[k].size, text: UNJUDGED_TEXT[k](counts[k].size) }));
+}
+export const UNJUDGED_NOTE = "Check these before you share the bundle";
 
 // A zip the module refuses to build. The report route answers 409 with the message.
 export class BundleRefused extends Error {
@@ -684,7 +758,23 @@ function pushFile(entries, name, text, { own = false } = {}) {
     const shapes = leakShapes(text);
     if (shapes.length) throw new BundleRefused(`No replay bundle: ${path} holds ${shapes.join(" and ")} that the redactor cannot mask, so the zip would leak it.`);
   }
-  entries.push({ name: path, data: Buffer.from(String(text), "utf8") });
+  entries.push({ name: path, data: Buffer.from(String(text), "utf8"), own });
+}
+
+// The README goes first, with the list of values the bundle could not judge.
+// The count runs over every file the zip takes from the record, the README
+// head included; the engine's own files are not counted.
+function finish(entries, head) {
+  const counts = {};
+  unjudgedCounts(head, counts);
+  for (const e of entries) if (!e.own) unjudgedCounts(e.data.toString("utf8"), counts);
+  const unjudged = unjudgedList(counts);
+  const section = unjudged.length
+    ? `\n## ${UNJUDGED_NOTE}\n\nThe redactor could not judge these values. Each one may be a secret, or it may be evidence (a transaction hash, a storage slot, an id). They are counted here, not shown:\n\n${unjudged.map((u) => `- ${u.text}`).join("\n")}\n`
+    : `\n## ${UNJUDGED_NOTE}\n\nThe bundle found no value it could not judge: no 64-hex value, no 40-character token, and no long URL part outside a known provider.\n`;
+  const readme = [];
+  pushFile(readme, "README.md", head.endsWith("\n") ? head + section : `${head}\n${section}`);
+  return { zip: zipStore([...readme, ...entries]), unjudged };
 }
 
 // Line 1 of every README. The normalized finding's stages.proven is the app's
@@ -731,7 +821,6 @@ This run was recorded before the workspace was snapshotted, and the workspace is
 \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as null. No provider key is included.
 ${omittedList(omitted)}`;
   const entries = [];
-  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + readme);
   pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   for (const f of files) pushFile(entries, f.path, f.text);
@@ -742,7 +831,7 @@ ${omittedList(omitted)}`;
     pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
-  return zipStore(entries);
+  return finish(entries, verdictLine({ finding, recorded }) + readme);
 }
 
 function httpBundle({ finding, recorded, proof }) {
@@ -751,7 +840,6 @@ function httpBundle({ finding, recorded, proof }) {
   const transcript = bundleValue(Array.isArray(proof?.log) ? proof.log : Array.isArray(proof?.exchanges) ? proof.exchanges : []);
   const rerun = labRerun({ pack: recorded?.pack ?? finding?.pack ?? null, proof, script: text });
   const entries = [];
-  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + httpReadme({ title: bundleText(finding?.title || "Finding"), hasScript: Boolean(text), rerun }));
   pushFile(entries, "proof.json", proofJson(proof, null));
   pushFile(entries, "transcript.json", JSON.stringify(transcript, null, 2) + "\n");
   if (text) pushFile(entries, "script.mjs", text.endsWith("\n") ? text : text + "\n");
@@ -760,13 +848,19 @@ function httpBundle({ finding, recorded, proof }) {
     pushFile(entries, "rerun.mjs", readFileSync(RERUN, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
-  return zipStore(entries);
+  return finish(entries, verdictLine({ finding, recorded }) + httpReadme({ title: bundleText(finding?.title || "Finding"), hasScript: Boolean(text), rerun }));
 }
 
 // Zip bytes for one finding. `recorded` is the raw run row (replay snapshot,
 // request script, proof). `finding` is the normalized finding the report uses.
 // Either may be missing fields; the zip says what it could not include.
 export function buildReplayBundle({ finding, recorded } = {}) {
+  return planReplayBundle({ finding, recorded }).zip;
+}
+
+// The zip and the list of values it could not judge ({ shape, count, text },
+// counts only). The report route sends the list with the zip.
+export function planReplayBundle({ finding, recorded } = {}) {
   const refused = bundleRefusal({ finding, recorded });
   if (refused) throw new BundleRefused(refused);
   const proof = recorded?.proof || finding?.proof || null;
