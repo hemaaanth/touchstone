@@ -1,11 +1,14 @@
-import { useState, type ReactNode } from "react"
-import { Check, ChevronRight, Copy, Info, Share2 } from "lucide-react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { Check, ChevronRight, Copy, FileArchive, Info, Loader2, Share2 } from "lucide-react"
 import type { FindingBase, ProofCell } from "@/lib/types"
 import { formatNum, formatUsd } from "@/lib/format"
 import { explanationSections, inlineParts } from "@/lib/explanation"
 import { tokenize, type TokenClass } from "@/lib/highlight"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
+import { Label } from "@/components/page-parts"
+import { bundleUrl, fetchBundleCheck, type BundleCheck } from "@/lib/api"
+import { BUNDLE_LABEL, sizeText } from "@/lib/findings-view"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 
 // The parts every proof card shares: the verdict, the folds, the prose and code
@@ -41,19 +44,23 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 // the shared artifact is exactly what the server records — no second source of
 // truth, and the report invents no fix the run did not state. Quiet, monochrome:
 // sharing is not a finding, so it never takes the one green accent.
-export function ExportReport({ findingId }: { findingId: string }) {
+export function ExportReport({ findingId, bundle = null }: { findingId: string; bundle?: { start: boolean } | null }) {
   const base = `/api/findings/${encodeURIComponent(findingId)}/report`
   const open = (format: string) => window.open(`${base}?format=${format}`, "_blank", "noopener,noreferrer")
   return (
-    <div className="flex items-center gap-2 border-t pt-4">
-      <Share2 className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="mr-auto text-xs text-muted-foreground">Shareable report</span>
-      <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("html")}>
-        HTML
-      </Button>
-      <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("md")}>
-        Markdown
-      </Button>
+    <div className="flex flex-col gap-3 border-t pt-4">
+      <div className="flex items-center gap-2">
+        <Share2 className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="mr-auto text-xs text-muted-foreground">Shareable report</span>
+        <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("html")}>
+          HTML
+        </Button>
+        <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => open("md")}>
+          Markdown
+        </Button>
+      </div>
+      {/* The replay bundle, for a finding that has one (ReplayProof decides). */}
+      {bundle ? <BundleControl key={findingId} id={findingId} start={bundle.start} /> : null}
     </div>
   )
 }
@@ -256,3 +263,82 @@ export function CellRows({ cells }: { cells: ProofCell[] }) {
 }
 
 export { shortHash }
+
+// ── Replay bundle (H3c) ─────────────────────────────────────────────────────
+
+// The replay bundle control, under the shareable report in the shared proof
+// view (run drawer and Findings sheet). It asks the server first
+// (`bundle-check`), then offers the download. Nothing here is red: it is not a destructive control.
+export function BundleControl({ id, start }: { id: string; start: boolean }) {
+  const [state, setState] = useState<{ kind: "idle" | "checking" | "failed" } | { kind: "done"; check: BundleCheck }>({ kind: start ? "checking" : "idle" })
+  const check = useCallback(
+    () =>
+      fetchBundleCheck(id).then(
+        (answer) => setState({ kind: "done", check: answer }),
+        () => setState({ kind: "failed" }),
+      ),
+    [id],
+  )
+  const ask = () => {
+    setState({ kind: "checking" })
+    void check()
+  }
+  // From the row menu: the state starts as "checking"; ask once.
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!start || asked.current) return
+    asked.current = true
+    void check()
+  }, [start, check])
+
+  if (state.kind === "done") return <BundleResult check={state.check} href={bundleUrl(id)} />
+  return (
+    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
+      <Button size="sm" variant="outline" disabled={state.kind === "checking"} onClick={ask}>
+        {state.kind === "checking" ? <Loader2 className="animate-spin" /> : <FileArchive />}
+        {state.kind === "checking" ? "Checking the bundle…" : BUNDLE_LABEL}
+      </Button>
+      {state.kind === "failed" ? <p role="status" className="text-xs text-muted-foreground">The server did not answer. Try again.</p> : null}
+    </section>
+  )
+}
+
+// The README's text is Markdown: a `name` in backticks reads as code.
+function codeSpans(text: string) {
+  return text.split(/(`[^`]+`)/).map((part, i) =>
+    /^`[^`]+`$/.test(part) ? (
+      <code key={i} className="font-mono text-[0.92em]">
+        {part.slice(1, -1)}
+      </code>
+    ) : (
+      part
+    ),
+  )
+}
+
+// What the server said about the bundle. A refusal shows its one sentence and
+// no download. Otherwise: what the bundle is (the README's own first words),
+// the counts it could not judge (never a value), and the download with its size.
+export function BundleResult({ check, href }: { check: BundleCheck; href: string }) {
+  if (!check.ok) {
+    return (
+      <section aria-label="Replay bundle" className="flex flex-col gap-1.5">
+        <Label>Replay bundle</Label>
+        <p role="status" className="text-xs leading-relaxed text-muted-foreground">{check.error}</p>
+      </section>
+    )
+  }
+  return (
+    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
+      <Button size="sm" variant="outline" render={<a href={href} download />}>
+        <FileArchive /> {BUNDLE_LABEL} <span className="text-muted-foreground tabular-nums">· {sizeText(check.bytes)}</span>
+      </Button>
+      {check.about ? <p className="text-xs leading-relaxed text-muted-foreground">{codeSpans(check.about)}</p> : null}
+      {check.note && check.unjudged.length ? (
+        <p role="status" className="text-xs leading-relaxed text-muted-foreground">
+          {check.note}: {check.unjudged.map((u) => u.text).join("; ")}.
+        </p>
+      ) : null}
+    </section>
+  )
+}

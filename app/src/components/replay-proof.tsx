@@ -3,6 +3,7 @@ import { ArrowRight, Check } from "lucide-react"
 import type { Balance, Finding, FindingBase, Proof, Transfer } from "@/lib/types"
 import { formatNum } from "@/lib/format"
 import { formatWei, harmText, type Harm } from "@/lib/eth"
+import { hasBundle } from "@/lib/findings-view"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
 import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
@@ -273,13 +274,24 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
   )
 }
 
-export function ReplayProof({ finding, children }: { finding: Finding; children?: ReactNode }) {
+export function ReplayProof({
+  finding,
+  children,
+  startBundle = false,
+}: {
+  finding: Finding
+  children?: ReactNode
+  // Start the bundle check at once (the Findings row menu asked for it).
+  startBundle?: boolean
+}) {
   // Every proof kind ends with the same shareable-report action, below the
-  // card's own children, built from this recorded finding's id.
+  // card's own children, built from this recorded finding's id. A proven
+  // finding also offers its replay bundle, except an evidence finding: the
+  // server has no bundle for one, so the control would end in its refusal.
   const footer = (
     <>
       {children}
-      <ExportReport findingId={finding.id} />
+      <ExportReport findingId={finding.id} bundle={hasBundle(finding) ? { start: startBundle } : null} />
     </>
   )
   if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{footer}</HttpProofCard>
