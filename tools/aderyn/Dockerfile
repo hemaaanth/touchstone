@@ -6,7 +6,7 @@
 # fails with "no report", and the static engine degrades to Slither only.
 #
 # Build once (needs network): tools/build-aderyn-image.sh
-FROM debian:bookworm-slim AS fetch
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq xz-utils \
   && rm -rf /var/lib/apt/lists/*
 ARG ADERYN_TAG=aderyn-v0.6.8
@@ -27,7 +27,7 @@ RUN set -eu; cd /tmp \
        chmod 0755 "/opt/data/svm/$v/solc-$v"; \
      done
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 COPY --from=fetch /usr/local/bin/aderyn /usr/local/bin/aderyn
 COPY --from=fetch /opt/data /opt/data
 # Aderyn finds solc in $XDG_DATA_HOME/svm. HOME is writable for any user.

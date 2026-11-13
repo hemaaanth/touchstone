@@ -3,6 +3,7 @@
 // (spike/packs/contracts/images/build.sh chimera) and skip when it is not built.
 // The lab is lab/vault-shares: its redeem takes shares off managedAssets, so
 // the vault counts assets it does not hold. Its suite is test/recon/.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

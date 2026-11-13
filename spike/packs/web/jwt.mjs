@@ -34,7 +34,7 @@ export const JWT_TOOL_CRACK_EXIT = 1;
 
 // The token-capture client. node:20-slim is already local (startLab uses it as
 // the recording proxy), so --pull=never is satisfied without a registry.
-export const FETCH_IMAGE = "node:20-slim";
+export const FETCH_IMAGE = "node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0";
 
 // The public endpoint that issues a v2 JWT, and jwt_tool's bundled dictionary.
 export const TOKEN_PATH = "/api/v2/token";

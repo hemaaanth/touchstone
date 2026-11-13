@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { SOLC_VERSION, closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
 
-const IMG = "ghcr.io/foundry-rs/foundry:latest";
+const IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
 const SVM_VOLUME = "foundry-svm";
 

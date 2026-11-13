@@ -31,7 +31,7 @@ import { parseNuclei } from "../web/scan.mjs";
 
 export const IMAGES = {
   inspector: "touchstone/mcp-inspector:0.17.2",
-  nuclei: "projectdiscovery/nuclei:v3.4.10",
+  nuclei: "projectdiscovery/nuclei:v3.4.10@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97",
   shield: "touchstone/mcp-shield:1.0.4",
   garak: "touchstone/garak:0.17.1",
 };

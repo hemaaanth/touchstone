@@ -7,6 +7,7 @@
 // test them directly with node --test — no docker, no network, no inference.
 //
 //   node --test spike/test/guards.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

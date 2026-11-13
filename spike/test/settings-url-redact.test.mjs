@@ -4,6 +4,7 @@
 // Settings are read and written in memory, and fetch is mocked where a request
 // could leave the machine. A URL with a user name makes Node's fetch throw
 // before any request, so those tests use the real fetch.
+import "./helpers/isolated-env.mjs";
 import { after, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";

@@ -8,6 +8,7 @@
 // a later model error does not lose it. A lead is never marked proven.
 //
 //   node --test spike/test/review-leads.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

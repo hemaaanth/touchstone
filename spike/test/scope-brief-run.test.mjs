@@ -6,6 +6,7 @@
 // spawn is mocked: the "engine" is a fake child that records its env and
 // workspace, prints the EVENT lines a test names and exits. No model is called
 // and nothing is spent.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";

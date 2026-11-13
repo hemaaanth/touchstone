@@ -584,7 +584,7 @@ describe("redact: header tuples (delta review 4)", () => {
 
 describe("redact: a name secret only by its ending keeps a plain value (delta review 4)", () => {
   test("plain settings stay in objects and text", () => {
-    const plain = { baseToken: "USDC", quoteToken: "WETH", rewardToken: "NEAR", sort_key: "created_at", storageKey: "auth-state", cache_key: "user:42", primaryKey: "id", nextToken: "", tokenKey: "sub", storageKey: "theme", tags: { authToken: undefined } }
+    const plain = { baseToken: "USDC", quoteToken: "WETH", rewardToken: "NEAR", sort_key: "created_at", cache_key: "user:42", primaryKey: "id", nextToken: "", tokenKey: "sub", storageKey: "theme", tags: { authToken: undefined } }
     expect(redactSecrets(plain)).toEqual(plain)
     for (const s of [`{"baseToken":"USDC","primaryKey":"id"}`, `const q = { quoteToken: 'WETH', sort_key: "name" }`]) expect(text(s)).toBe(s)
   })

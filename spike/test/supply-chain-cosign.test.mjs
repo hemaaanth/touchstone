@@ -1,6 +1,7 @@
 // cosign: offline verify-blob of lab release artifacts against a pinned key.
 // The real tool runs through the real runTool(). The image is built from
 // packs/supply-chain/cosign/Dockerfile if it is not local yet (build time only).
+import "./helpers/isolated-env.mjs";
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { describe, expect, test } from "bun:test"
 import { MODULE_TESTS, moduleTests, PROOF_KIND } from "../src/lib/catalog"
 import type { PackChoice } from "../src/lib/types"

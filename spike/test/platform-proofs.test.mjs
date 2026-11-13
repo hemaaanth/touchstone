@@ -1,5 +1,6 @@
 // Proof kinds: the run record keeps each finding's proof.kind and the pack's
 // prepass, and the app serves a card shape per kind. Secrets never go out whole.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { writeFileSync, rmSync } from "node:fs"

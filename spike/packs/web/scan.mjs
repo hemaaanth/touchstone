@@ -16,9 +16,9 @@ import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
 
 export const IMAGES = {
-  zap: "ghcr.io/zaproxy/zaproxy:2.16.1",
-  nuclei: "projectdiscovery/nuclei:v3.4.10",
-  dalfox: "hahwul/dalfox:v2.12.0",
+  zap: "ghcr.io/zaproxy/zaproxy:2.16.1@sha256:7840969c7c9fead565bf9734b12f49f6886db90b1d35b1f74d79710bbd081dab",
+  nuclei: "projectdiscovery/nuclei:v3.4.10@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97",
+  dalfox: "hahwul/dalfox:v2.12.0@sha256:11c1249ef35f8eb3482d180e247304b351b37da2929eecd518dd8057d2687dc7",
 };
 
 const TEMPLATES = new URL("./scan/templates", import.meta.url).pathname;
