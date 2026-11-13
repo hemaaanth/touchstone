@@ -29,7 +29,7 @@ import { pinSnapshot, sha256 } from '../../lib/proof-evidence.mjs';
 import { hostCovers, ipKind } from '../../lib/grant-store.mjs';
 import { IMAGE, ensureImage, missingImage } from './checks.mjs';
 import { checkEmail, emailLeads } from './email.mjs';
-import { captureTls, testsslTargets, tlsLeads } from './tls.mjs';
+import { captureCaa, caaLeads, captureTls, testsslTargets, tlsLeads } from './tls.mjs';
 import { assessmentCoverage, captureDnssec, dnssecLeads } from './dnssec.mjs';
 import { assertInternal } from './labctl.mjs';
 
@@ -43,7 +43,7 @@ export const JSLUICE = 'touchstone-jsluice:0ddfab1';
 const TEMPLATE = fileURLToPath(new URL('./templates/github-takeover.yaml', import.meta.url));
 // A short list of names that real projects use. subfinder adds the names that public sources know.
 export const WORDLIST = ['www', 'app', 'api', 'cdn', 'docs', 'staging', 'stage', 'dev', 'test', 'beta', 'old', 'static', 'assets', 'blog', 'status', 'admin', 'portal', 'rpc', 'wallet', 'bridge', 'swap', 'claim', 'airdrop', 'mint', 'stake', 'dashboard', 'mail', 'ns'];
-const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
+export const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 const LAB_NAME = /^touchstone-domains-/;
 
 // A host is in scope when it is a listed name or a subdomain of one.
@@ -255,14 +255,14 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     if (!lab && !covered(wild)) coverage.push({ engine: 'subdomain-discovery', status: 'skipped', reason: 'Not run: the grant names ' + domain + ' but has no *.' + domain + ' entry, so no subdomain was resolved or probed. Add *.' + domain + ' to the grant to cover them.', leads: 0 });
     // Email authentication is DNS only. It keeps its own evidence key, so a
     // failed run is a coverage gap, never a clean result.
-    let email, dnssec;
+    let email, dnssec, caa;
     // checkdmarc and DNSViz send DNS questions. On a live run the resolver must be
     // a checked address the grant names; with none, the tools would fall back to
     // the container's own resolver, which nobody checked. So they do not run: the
     // rows are gaps with the reason. A lab keeps its own internal resolver.
     if (deep && !lab && reach.resolver == null) {
       const why = 'Not run: a live run needs a resolver the grant names, so every DNS question goes to a checked address. This run has none, and the tool is not given the container\'s own resolver. Set reach.resolver for the scope.';
-      for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok']) coverage.push({ engine, status: 'unavailable', reason: why, leads: 0 });
+      for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok', 'caa']) coverage.push({ engine, status: 'unavailable', reason: why, leads: 0 });
     } else if (deep) {
       const emailCheck = await checkEmail(run, domain, reach.resolver);
       // The snapshot stores the tool output and its hash; leads re-parse it.
@@ -282,6 +282,12 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
         const gap = assessmentCoverage(dnssecCheck.evidence);
         if (gap) for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = gap.status; row.reason = gap.reason; }
       } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
+      // CAA is a DNS record, not a handshake. testssl runs with DNS off, so the
+      // capture asks the granted resolver itself (drill) and builds the same lead.
+      const caaCheck = await captureCaa(domain, { resolver: reach.resolver, network: reach.network, env });
+      caa = caaCheck.record;
+      if (caa) coverage.push({ engine: 'caa', status: 'ran', leads: caaLeads({ root: domain, caa }).length });
+      else coverage.push({ engine: 'caa', status: 'unavailable', reason: 'CAA not checked: ' + caaCheck.error, leads: 0 });
     }
     // Names the grant lists one by one. Under the domain they are hosts to check. The others are resolved only,
     // so the crawl may follow a link to them.
@@ -385,7 +391,9 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     // The A record is passed as --ip, so the lab needs no resolver in the container.
     const tlsTargets = deep ? testsslTargets(http.map(r => r.url)) : [];
     // The https origins are httpx rows, so their hosts already passed the input filter.
-    // testssl.sh gets an address the capture checked, so it never looks the name up again.
+    // testssl.sh gets an address the capture checked for the handshake, and the name is
+    // pinned to that address inside the container (captureTls), so a name-based check cannot
+    // reach a second, unchecked address.
     // IPv4 first. Outside an open reach, only a public address. None: the endpoint is a gap.
     const tlsAddress = host => {
       if (ipKind(host)) return open || ipKind(host) === 'public' ? host : null;
@@ -410,7 +418,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, ...(deep ? { email, tls: tlsCheck.entries, dnssec } : {}), rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : listed.includes(h) ? ['grant'] : [])]])), wildcard: Boolean(wildAnswers), ...(refused.length ? { refused } : {}), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
+    return { schema: 1, root: domain, zone, dns, http, ...(deep ? { email, tls: tlsCheck.entries, dnssec, ...(caa ? { caa } : {}) } : {}), rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : listed.includes(h) ? ['grant'] : [])]])), wildcard: Boolean(wildAnswers), ...(refused.length ? { refused } : {}), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.

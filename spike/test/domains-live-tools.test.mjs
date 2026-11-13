@@ -38,6 +38,8 @@ test('every new tool reports a coverage row and no evidence gap', () => {
   const tls = coverage.filter(c => String(c.engine).startsWith('testssl'));
   assert(tls.length > 0);
   assert(tls.every(c => c.status === 'ran'), JSON.stringify(tls));
+  // CAA was asked through the lab resolver (drill), not testssl.
+  assert.equal(coverage.find(c => c.engine === 'caa')?.status, 'ran', 'caa: ' + JSON.stringify(coverage));
   for (const check of ['email-auth-evidence-missing', 'tls-evidence-missing', 'dnssec-evidence-missing']) {
     assert.equal(leads.some(l => l.check === check), false, check);
   }
@@ -50,10 +52,12 @@ test('the lab gaps reach the lead list', () => {
   const tls = leads.filter(l => l.check === 'tls-cert_chain_of_trust');
   assert(tls.length > 0);
   assert(tls.every(l => l.severity === 'critical' && l.where.endsWith(':8443')));
+  // The lab zone publishes no CAA record, so the LOW lead is raised for the root.
+  assert(leads.some(l => l.check === 'tls-dns_caarecord' && l.severity === 'low' && l.where === 'touchstone.test'), 'caa lead');
 });
 
 test('one lead from each tool replays from the pin', async () => {
-  for (const check of ['email-spf-missing', 'dnssec-unsigned', 'tls-cert_chain_of_trust']) {
+  for (const check of ['email-spf-missing', 'dnssec-unsigned', 'tls-cert_chain_of_trust', 'tls-dns_caarecord']) {
     const lead = leads.find(l => l.check === check);
     const proof = await replayEvidence(ws, { check, where: lead.where, snapshotHash }, { detectors: detectorsFor('domains') });
     assert.equal(proof.status, 'pass', check);

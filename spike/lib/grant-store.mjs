@@ -232,7 +232,7 @@ export function ipKind(raw) {
 // common multi-party suffixes a fat-fingered or malicious grant would reach for.
 // A wildcard base must also have at least two labels, so "*.com" is refused on
 // the label count alone; this set catches the two-label public suffixes.
-const PUBLIC_SUFFIXES = new Set([
+export const PUBLIC_SUFFIXES = new Set([
   "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
   "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
   "co.nz", "net.nz", "org.nz", "govt.nz",

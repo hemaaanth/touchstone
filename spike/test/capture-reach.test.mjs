@@ -26,8 +26,8 @@ const workspaces = [];
 after(() => { for (const d of [store, ...workspaces]) rmSync(d, { recursive: true, force: true }); });
 
 // What the fake tools answer. Each test sets these.
-let zone, found, web, crawlOut, calls, ws;
-beforeEach(() => { zone = {}; found = []; web = {}; crawlOut = {}; calls = []; });
+let zone, found, web, crawlOut, calls, caa, caaCalls, ws;
+beforeEach(() => { zone = {}; found = []; web = {}; crawlOut = {}; calls = []; caa = {}; caaCalls = []; });
 const PUBLIC = '93.184.216.34';
 const rows = list => list.map(r => JSON.stringify(r) + '\n').join('');
 const listOf = cmd => {
@@ -50,7 +50,25 @@ const answers = {
 // The Domains deep tools (checkdmarc, testssl.sh, DNSViz). Each call is recorded with its
 // argv, network and env, and answered as a failed run, so no evidence is built from it.
 const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
+// Build one drill CAA answer. cfg: 'absent' | 'fail' | 'tc' | [rdata...] | { cname, records }.
+const caaAnswer = (name, cfg) => {
+  if (cfg === 'fail') return ';; ->>HEADER<<- rcode: SERVFAIL\n;; flags: qr rd ;\n';
+  const tc = cfg === 'tc';
+  const head = ';; ->>HEADER<<- rcode: NOERROR\n;; flags: qr' + (tc ? ' tc' : '') + ' rd ;\n;; ANSWER SECTION:\n';
+  const lines = [];
+  if (cfg && cfg.cname) { lines.push(name + '.\t60\tIN\tCNAME\t' + cfg.cname + '.'); for (const r of cfg.records ?? []) lines.push(cfg.cname + '.\t60\tIN\tCAA\t' + r); }
+  else if (Array.isArray(cfg)) for (const r of cfg) lines.push(name + '.\t60\tIN\tCAA\t' + r);
+  return head + lines.join('\n') + '\n';
+};
 mock.module('../lib/wrap.mjs', { exports: { ...realWrap, runTool: async opts => {
+  // drill (the CAA query) runs through runTool with an entrypoint override, so it gets
+  // runTool's guards; it is dispatched before the image check (its image is the testssl one).
+  if (opts.entrypoint === 'drill') {
+    const name = opts.cmd[opts.cmd.indexOf('CAA') + 1];
+    caaCalls.push({ name, network: opts.network, cmd: opts.cmd, entrypoint: opts.entrypoint });
+    const cfg = name in caa ? caa[name] : ['0 issue "letsencrypt.org"']; // default: a record is present
+    return { code: 0, stderr: '', timedOut: false, stdout: caaAnswer(name, cfg) };
+  }
   const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
   if (deep) { calls.push({ name: deep, cmd: opts.cmd, network: opts.network, env: opts.env, addHosts: opts.addHosts, input: [] }); return { code: 1, stdout: '', stderr: 'not run in this test', timedOut: false }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
@@ -65,6 +83,7 @@ mock.module('../packs/domains/labctl.mjs', { exports: { ...realLab, assertIntern
 
 const { ensureImage } = await import('../packs/domains/checks.mjs');
 const { assertReach, captureDomain, crawlScope, katanaArgs, PORTS, WORDLIST } = await import('../packs/domains/live.mjs');
+const { caaLeads } = await import('../packs/domains/tls.mjs');
 const { coverageOf } = await import('../packs/domains/pack.mjs');
 const { prepassView } = await import('../lib/prepass-view.mjs');
 const { addLiveScope } = await import('../lib/scopes-store.mjs');
@@ -423,6 +442,107 @@ test('a live run with no resolver does not run checkdmarc or DNSViz, and says wh
   await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] });
   assert(call('checkdmarc'), 'the lab runs checkdmarc');
   assert(call('dnsviz'), 'the lab runs DNSViz');
+});
+
+test('CAA is asked through the granted resolver with runTool, and no record is a LOW lead', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  caa = { 'example.com': 'absent' };
+  const snapshot = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  // drill ran through runTool (so it has runTool's guards), over TCP, to the granted resolver.
+  assert.deepEqual(caaCalls.map(c => c.name), ['example.com']);
+  const c = caaCalls[0];
+  assert.equal(c.entrypoint, 'drill');
+  assert.deepEqual(c.cmd, ['-t', '--', 'CAA', 'example.com', '@1.1.1.1']);
+  assert.equal(c.network, 'bridge');
+  // The drill output is stored, and the LOW lead replays from it.
+  assert.match(snapshot.caa.raw, /^[0-9a-f]{64}$/);
+  assert.deepEqual(caaLeads(snapshot).map(l => [l.check, l.severity, l.where]), [['tls-dns_caarecord', 'low', 'example.com']]);
+  assert.equal(snapshot.discovery.coverage.find(c => c.engine === 'caa').leads, 1);
+
+  // A CAA record present → no lead, the row still ran.
+  caa = { 'example.com': ['0 issue "letsencrypt.org"'] };
+  const ok = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(caaLeads(ok), []);
+  assert.deepEqual([ok.discovery.coverage.find(c => c.engine === 'caa').status, ok.discovery.coverage.find(c => c.engine === 'caa').leads], ['ran', 0]);
+
+  // The query could not be asked (SERVFAIL) → a gap with the reason, never a lead.
+  caa = { 'example.com': 'fail' };
+  const gap = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.equal(gap.caa, undefined);
+  const row = gap.discovery.coverage.find(c => c.engine === 'caa');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^CAA not checked:/);
+  assert.deepEqual(caaLeads(gap), []);
+
+  // No resolver → CAA is a gap and drill is never run.
+  caaCalls = [];
+  const noR = await capture('example.com', live(['example.com']));
+  assert.equal(noR.discovery.coverage.find(c => c.engine === 'caa').status, 'unavailable');
+  assert.equal(caaCalls.length, 0);
+});
+
+test('a truncated CAA answer is a gap, not a false "no record" lead, and replays as a gap', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  caa = { 'example.com': 'tc' };          // the tc flag, 0 answers: a large answer drill did not fully read
+  const snapshot = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.equal(snapshot.caa, undefined, 'a truncated answer is not stored as evidence');
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'caa');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /full answer|truncated|not checked/);
+  // Even a stored truncated block replays as incomplete, never "no record".
+  const stored = ';; TOUCHSTONE-CAA example.com\n;; ->>HEADER<<- rcode: NOERROR\n;; flags: qr tc rd ;\n';
+  const { sha256 } = await import('../lib/proof-evidence.mjs');
+  assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output: stored, raw: sha256(stored) } }), []);
+});
+
+test('CAA follows a CNAME: a target with CAA is no lead, a target without is a lead', async () => {
+  zone = { 'www.example.com': { a: [PUBLIC] } };
+  // www is a CNAME whose target publishes CAA inline: no lead.
+  caa = { 'www.example.com': { cname: 'cdn.example.net', records: ['0 issue "ca.example"'] }, 'example.com': 'absent' };
+  const ok = await capture('www.example.com', live(['www.example.com', '*.example.com'], { resolver: '1.1.1.1' }), { });
+  assert.deepEqual(caaLeads(ok), []);
+  // The CNAME target has no CAA, and the parent has none either: the LOW lead.
+  caaCalls = [];
+  caa = { 'www.example.com': { cname: 'cdn.example.net', records: [] }, 'cdn.example.net': 'absent', 'example.com': 'absent' };
+  const miss = await capture('www.example.com', live(['www.example.com', '*.example.com'], { resolver: '1.1.1.1' }), { });
+  // The target was asked at the same resolver, then the parent.
+  assert(caaCalls.map(c => c.name).includes('cdn.example.net'));
+  assert.deepEqual(caaLeads(miss).map(l => l.where), ['www.example.com']);
+});
+
+test('the CAA walk stops below a public suffix: example.co.uk is asked, co.uk is not', async () => {
+  zone = { 'example.co.uk': { a: [PUBLIC] } };
+  caa = { 'example.co.uk': 'absent' };
+  await capture('example.co.uk', live(['example.co.uk'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(caaCalls.map(c => c.name), ['example.co.uk']);
+  assert.equal(caaCalls.some(c => c.name === 'co.uk'), false);
+});
+
+test('a CNAME target that is not a plain domain name is never asked: a gap, not a lead', async () => {
+  zone = { 'www.example.com': { a: [PUBLIC] } };
+  // drill returns a CNAME whose "target" is an @server / a -option: it must not reach the argv.
+  for (const bad of ['@ns.trap.test', '-T.trap.test']) {
+    caaCalls = [];
+    caa = { 'www.example.com': { cname: bad, records: [] }, 'example.com': 'absent' };
+    const snap = await capture('www.example.com', live(['www.example.com', '*.example.com'], { resolver: '1.1.1.1' }));
+    assert.deepEqual(caaCalls.map(c => c.name), ['www.example.com'], bad);
+    assert.equal(snap.caa, undefined, bad);
+    const row = snap.discovery.coverage.find(c => c.engine === 'caa');
+    assert.equal(row.status, 'unavailable', bad);
+    assert.match(row.reason, /not a plain domain name/, bad);
+    assert.deepEqual(caaLeads(snap), [], bad);
+  }
+});
+
+test('a CNAME loop is a gap, not a "no CAA" lead', async () => {
+  zone = { 'loop.example.com': { a: [PUBLIC] } };
+  caa = { 'loop.example.com': { cname: 'loop2.example.com', records: [] }, 'loop2.example.com': { cname: 'loop.example.com', records: [] } };
+  const snap = await capture('loop.example.com', live(['loop.example.com', '*.example.com'], { resolver: '1.1.1.1' }));
+  assert.equal(snap.caa, undefined);
+  const row = snap.discovery.coverage.find(c => c.engine === 'caa');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /loops/);
+  assert.deepEqual(caaLeads(snap), []);
 });
 
 // F2. An exact-host grant skips subdomain discovery. The run view says so.
