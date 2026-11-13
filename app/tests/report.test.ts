@@ -561,6 +561,60 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("a forged build-info cannot ship a .json or a path outside the workspace, and an over-cap .sol is left out", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-bi-"))
+    const outside = mkdtempSync(path.join(tmpdir(), "replay-bi-out-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      mkdirSync(path.join(ws, "out", "build-info"), { recursive: true })
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      writeFileSync(path.join(ws, "src", "Big.sol"), "contract Big {}\n" + "//x\n".repeat(600000)) // > 1.5 MB
+      writeFileSync(path.join(outside, "Outside.sol"), "contract Outside {}\n")
+      writeFileSync(path.join(ws, "src", "Thing.json"), JSON.stringify({ bytecode: "0x60" }))
+      // A forged build-info lists a .json, a path outside the workspace, the big
+      // source, and the real sources.
+      writeFileSync(path.join(ws, "out", "build-info", "b.json"), JSON.stringify({ source_id_to_path: { 0: "src/Vault.sol", 1: "test/AgentPoc.t.sol", 2: "src/Thing.json", 3: "../" + path.basename(outside) + "/Outside.sol", 4: "src/Big.sol" } }))
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "t()" })
+      const shipped = snap.files.map((f: { path: string }) => f.path).sort()
+      expect(shipped).toEqual(["foundry.toml", "src/Vault.sol", "test/AgentPoc.t.sol"])
+      // The .json is not even a candidate (only .sol from build-info); the
+      // outside path and the over-cap source are named, left out.
+      expect(JSON.stringify(snap)).not.toContain("Thing.json")
+      const reasons = snap.omitted.map((o: { reason: string }) => o.reason)
+      expect(reasons).toContain("outside the workspace")
+      expect(reasons).toContain("larger than 1.5 MB")
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("an over-size build-info is refused without a read; the bundle ships no sources and says why", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-bisize-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      mkdirSync(path.join(ws, "out", "build-info"), { recursive: true })
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      // A sparse 600 MB build-info: no bytes on disk, never read (the stat-size
+      // check refuses it first). execFileSync keeps the node RSS low.
+      execFileSync("truncate", ["-s", "600M", path.join(ws, "out", "build-info", "b.json")])
+      const rssBefore = process.memoryUsage().rss
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "t()" })
+      expect((process.memoryUsage().rss - rssBefore) < 100 * 1024 * 1024).toBe(true)
+      // The config still ships, but no source file does.
+      expect(snap.files.map((f: { path: string }) => f.path)).toEqual(["foundry.toml"])
+      expect(snap.omitted.some((o: { reason: string }) => /build-info is larger than 64 MB/.test(o.reason))).toBe(true)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
   test("past the file-count cap the bundle is incomplete and makes no re-run claim", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-count-"))
     try {

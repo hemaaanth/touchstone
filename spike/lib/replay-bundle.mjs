@@ -28,6 +28,7 @@ import { pinnedSolc, forgeTest, forgeReplayCommand, forgePrepareCommand, FOUNDRY
 const MAX_FILE = 1_500_000;   // per file, checked by stat before any read
 const MAX_TOTAL = 8_000_000;  // bytes across the bundle
 const MAX_FILES = 5_000;      // file-count cap; past it the bundle makes no re-run claim
+const MAX_BUILDINFO = 64 * 1024 * 1024; // the build-info is agent-written; stat before reading
 const SKIP_DIRS = new Set(["node_modules", "out", "cache", "broadcast", "artifacts", "oracle", "coverage", "dist", "target"]);
 // A file that is a key, not a source file that mentions one. Dropped whole.
 const SECRET_CONTENT = [
@@ -448,13 +449,16 @@ function compiledSources(ws) {
   if (!files.length) return null;
   // The newest build-info is this proof's compile.
   const newest = files
-    .map((f) => { try { return { f, at: statSync(join(dir, f)).mtimeMs }; } catch { return null; } })
+    .map((f) => { try { const st = statSync(join(dir, f)); return { f, at: st.mtimeMs, size: st.size }; } catch { return null; } })
     .filter(Boolean)
     .sort((x, y) => y.at - x.at)[0];
   if (!newest) return null;
+  // The build-info is agent-written: stat its size before any read (M3).
+  if (newest.size > MAX_BUILDINFO) return "too-large";
   try {
     const j = JSON.parse(readFileSync(join(dir, newest.f), "utf8"));
-    const paths = Object.values(j.source_id_to_path || {}).filter((p) => typeof p === "string");
+    // Only .sol paths: a forged build-info cannot name a .json to ship (Minor 3).
+    const paths = Object.values(j.source_id_to_path || {}).filter((p) => typeof p === "string" && p.endsWith(".sol"));
     return paths.length ? [...new Set(paths)] : null;
   } catch {
     return null;
@@ -480,11 +484,16 @@ function allSol(root) {
   return found;
 }
 function collectForgeFiles(ws) {
-  const sources = compiledSources(ws) ?? allSol(ws);
   const config = ["foundry.toml", "remappings.txt"].filter((f) => existsSync(join(ws, f)));
+  const compiled = compiledSources(ws);
+  if (compiled === "too-large") {
+    // The compiled-source list cannot be read safely: ship no sources, say why.
+    return { paths: [...config], note: `the build-info is larger than ${Math.round(MAX_BUILDINFO / (1024 * 1024))} MB, so the compiled-source list was not read and the sources are not in this bundle` };
+  }
+  const sources = compiled ?? allSol(ws);
   const all = [...new Set([...config, ...sources])];
   all.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
-  return all;
+  return { paths: all, note: null };
 }
 
 // The filesystem checks a candidate must pass before it is read, so an
@@ -512,7 +521,7 @@ function fileGuard(ws, rel) {
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const paths = collectForgeFiles(ws);
+  const { paths, note: collectNote } = collectForgeFiles(ws);
   const files = [];
   const omitted = [];
   let total = 0;
@@ -551,6 +560,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
     else files.push({ path: rel, text: out.text });
   }
+  if (collectNote) omitted.push({ path: "", reason: collectNote });
   if (tooMany) omitted.push({ path: "", reason: `the workspace has ${paths.length} files, over the ${MAX_FILES} cap, so the bundle is not complete` });
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
   let toml = "";
