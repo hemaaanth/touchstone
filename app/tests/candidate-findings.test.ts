@@ -86,6 +86,8 @@ describe("the list API and the page list candidates apart (N3)", () => {
     const { json } = await handleApi("/api/findings")
     expect(json.findings.some((f: { id: string }) => f.id.includes(".c"))).toBe(false)
     const own = json.candidates.filter((c: { runId: string }) => c.runId === "cand-ledger-1")
-    expect(own.map((c: { id: string; origin: string; proven: boolean }) => [c.id, c.origin, c.proven])).toEqual([["cand-ledger-1.c1", "agent", false]])
+    expect(own.map((c: { origin: string; proven: boolean }) => [c.origin, c.proven])).toEqual([["agent", false]])
+    // A candidate id is the run plus a hash of what it is (repair 1, m8).
+    expect(own[0].id).toMatch(/^cand-ledger-1\.c-[0-9a-f]{12}$/)
   })
 })
