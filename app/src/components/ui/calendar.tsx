@@ -196,6 +196,9 @@ function CalendarDayButton({
 
   return (
     <Button
+      // Ours: the registry's base-nova calendar leaves the ref off, so the effect above never moves
+      // the DOM focus and the arrow keys do nothing (react-day-picker moves only its own state).
+      ref={ref}
       variant="ghost"
       size="icon"
       data-day={day.date.toLocaleDateString(locale?.code)}

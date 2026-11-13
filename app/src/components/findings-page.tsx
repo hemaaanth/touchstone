@@ -410,6 +410,16 @@ function Filters({
 // Escape closes it and puts focus back on the button.
 function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onChange: (r: { from: string; to: string }) => void }) {
   const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  // Focus on open: the range's first day, else today, else the month's first day.
+  // Stable: the popover applies a new initialFocus again, which would pull focus back on every arrow key.
+  const firstFocus = useCallback(() => {
+    for (const sel of ["[data-range-start=true]", "[data-selected-single=true]", "td[data-today] button", "td:not([data-outside]) button[data-day]"]) {
+      const el = box.current?.querySelector<HTMLElement>(sel)
+      if (el) return el
+    }
+    return true
+  }, [])
   const range = toDayRange(from, to)
   const label = rangeLabel(from, to)
   const set = !!(from || to)
@@ -421,8 +431,12 @@ function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onC
         <CalendarDays aria-hidden className="text-muted-foreground" />
         <span className="tabular-nums">{label}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-auto gap-0 p-0">
-        <Calendar mode="range" selected={range} onSelect={(r: DayRange | undefined) => onChange(fromDayRange(r))} defaultMonth={range?.to ?? range?.from} autoFocus />
+      <PopoverContent align="end" initialFocus={firstFocus} className="w-auto gap-0 p-0">
+        <div ref={box}>
+          {/* autoFocus gives the calendar its focused day, so the arrow keys move; the popover's
+              initialFocus puts the DOM focus on that same day. */}
+          <Calendar mode="range" selected={range} onSelect={(r: DayRange | undefined) => onChange(fromDayRange(r))} defaultMonth={range?.to ?? range?.from} autoFocus />
+        </div>
         <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
           <span className="text-xs text-muted-foreground tabular-nums">{label}</span>
           <Button

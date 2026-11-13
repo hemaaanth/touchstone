@@ -420,13 +420,13 @@ describe("the date range (one picker for the view's two days)", () => {
 })
 
 describe("still columns: every row has the same tracks, whatever its title, module or state", () => {
-  const rows = [
+  const rows: FindingSummary[] = [
     { ...many[1], title: "A" },
     { ...many[2], title: "A much longer finding title that will be cut at the edge of its own column, never pushing the marks", pack: "supply-chain" },
     { ...many[3], title: "Proven high", proven: true, severity: "high" as const, pack: "web" },
     { ...many[4], title: "Dismissed", dismissed: true, pack: "domains" },
     { ...many[5], title: "No module", pack: "" },
-    { ...many[6], title: "tls-cipherlist_3des_idea", severity: "informational" as const, at: null },
+    { ...many[6], title: "tls-cipherlist_3des_idea", severity: "low", at: null },
   ]
   const html = renderToStaticMarkup(
     <ul>
