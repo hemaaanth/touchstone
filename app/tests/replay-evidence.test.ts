@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -8,6 +8,7 @@ import path from "node:path"
 // results folder, set before the server modules load.
 const results = mkdtempSync(path.join(tmpdir(), "replay-evidence-results-"))
 process.env.TOUCHSTONE_RESULTS_DIR = results
+afterAll(() => rmSync(results, { recursive: true, force: true }))
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")
@@ -89,7 +90,13 @@ describe("evidence replay keeps no snapshot text", () => {
       }
     } finally {
       rmSync(ws, { recursive: true, force: true })
-      rmSync(results, { recursive: true, force: true })
     }
+  })
+
+  test("an unknown report format is refused, not answered with json", async () => {
+    const r = await call("/api/findings/ev-1.1/report?format=bogus")
+    expect(r.status).toBe(400)
+    expect(JSON.parse(r.body).error).toContain("unknown format")
+    expect((await call("/api/findings/ev-1.1/report?format=JSON")).status).toBe(200)
   })
 })

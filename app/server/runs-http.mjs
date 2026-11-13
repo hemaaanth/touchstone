@@ -178,9 +178,14 @@ export async function handleFindings(req, res) {
   // unzip and rerun: the proof sources, foundry config, proof JSON, and fork
   // parameters, with one command in README.md. The report invents nothing: the
   // fix is shown only when the run stated one (report.mjs).
+  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "bundle", "zip"])
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
+    if (!REPORT_FORMATS.has(format)) {
+      send(res, 400, { error: `unknown format: use one of ${[...REPORT_FORMATS].join(", ")}` })
+      return true
+    }
     try {
       const finding = await getFinding(id)
       if (!finding) {
