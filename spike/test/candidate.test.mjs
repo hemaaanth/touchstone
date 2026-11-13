@@ -274,6 +274,16 @@ test("a token address, a token count and a nested label are not taken for secret
   assert.equal(scrubText("Basic authentication is off"), "Basic authentication is off");
 });
 
+// The two shapes the redactor does not reach that a candidate keeps: a key
+// block cut before its END line (a tool output tail), and a bare Basic value.
+test("an unended private key block and a bare Basic value are scrubbed", () => {
+  const body = ["MHcCAQEEIBkg4LVWM9nuwNSk3yBp", "kx2kMHcCAQEEIBkg4LVWM9nuwNSk"].join("");
+  const pem = scrubText(["-----BEGIN ", "EC PRIVATE KEY-----\n", body, "\n", body.slice(0, 20)].join(""));
+  assert.ok(!pem.includes(body.slice(0, 20)), pem);
+  const basic = ["dXNlcj", "pwYXNzd29yZDEyMw=="].join("");
+  assert.equal(scrubText(`sent Basic ${basic} to it`), "sent Basic [REDACTED] to it");
+});
+
 test("plain prose and ordinary values are not redacted", () => {
   const prose = "the admin export route returns every customer row without a session check, so any visitor can read them";
   assert.equal(scrubText(prose), prose);
