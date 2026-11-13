@@ -41,6 +41,10 @@ export const SCORECARD = {
 export const API_CHECKS = ["Branch-Protection", "CI-Tests", "CII-Best-Practices", "Code-Review", "Contributors", "Maintained", "Packaging", "SAST", "Signed-Releases", "Webhooks", "Fuzzing"];
 // File checks whose claim the detector re-checks on the pinned files.
 const FILE_CHECKS = ["Pinned-Dependencies", "License", "Security-Policy", "Dependency-Update-Tool"];
+// Checks the pack reads elsewhere or cannot trust. They are named as gaps.
+const NOT_USED = { Vulnerabilities: "it needs api.osv.dev, which no run may reach, and with no network it still reports 0 vulnerabilities. The osv and grype scanners cover locked dependencies",
+  "Binary-Artifacts": "it ran on the snapshot's text files, and the snapshot skips binaries. See the skipped list",
+  "Dangerous-Workflow": "the offline zizmor and poutine scanners read the workflows", "Token-Permissions": "the offline zizmor scanner reads workflow permissions" };
 // Checks that need a fine-grained token permission beyond Contents/Metadata read.
 // The pack never asks for more: a missing one is a "not covered" gap.
 const ADMIN_SCOPES = { "Branch-Protection": "Administration: read", Webhooks: "Webhooks: read" };
@@ -74,14 +78,25 @@ export function scorecardReason(r) {
   if (/rate limit/i.test(e)) return "rate limited";
   if (/\b403\b/.test(e)) return "forbidden (403): the token lacks a needed permission";
   if (/blocked|scope-gate|proxyconnect/i.test(e)) return "blocked by the egress allow-list";
+  if (r.code !== 0 && String(r.stdout ?? "").trim()) return `tool exited ${r.code}, which is not a documented Scorecard exit; its output is not used`;
   return `tool exited ${r.code} with no usable output`;
+}
+
+// Scorecard v5.6.0 exit codes. 0: every check ran. 1 with "one or more checks
+// failed during execution": it still printed the JSON, and at least one check
+// has score -1 and an "internal error" reason (seen in the real --local run:
+// Fuzzing has no network). Any other code, or 1 without both, is a failed run.
+const checkErrored = (json) => Array.isArray(json?.checks) && json.checks.some((c) => c?.score === -1 && /internal error/i.test(String(c.reason ?? "")));
+export function scorecardExitOk(code, stderr, json) {
+  if (code === 0) return true;
+  return code === 1 && /one or more checks failed during execution/.test(String(stderr ?? "")) && checkErrored(json);
 }
 
 // hide: secret values to strip from anything saved. Capture mode already scrubs
 // its own output; this also covers the offline run, which never gets the token.
 function record(mode, cmd, image, r, extra = {}, hide = []) {
   const text = scrub(r.stdout, hide);
-  const ran = !r.refused && !r.timedOut && text.trim().length > 0;
+  const ran = !r.refused && !r.timedOut && text.trim().length > 0 && scorecardExitOk(r.code, r.stderr, parse(text));
   return { tool: "scorecard", mode, image, imageId: imageId(image), cmd, status: ran ? "ran" : "unavailable", code: r.code, timedOut: Boolean(r.timedOut),
     sha256: sha256(text), text, stderr: scrub(r.stderr, hide).slice(0, 8192), ...(ran ? {} : { reason: scorecardReason(r) }), ...(r.egress ? { egress: r.egress } : {}), capturedAt: now(), ...extra };
 }
@@ -97,6 +112,7 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
   let dir;
   try {
     dir = stage(snapshot);
+    // runTool's plain path: `--network none`. A timeout is `unavailable`.
     const r = await run({ image: SCORECARD.image, cmd: SCORECARD.local, ws: dir, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp" }, timeoutMs: 180_000 });
     local = record("local", SCORECARD.local, SCORECARD.image, r, {}, [token]);
   } catch (err) { local = unavailable("local", `local run failed: ${scrub(err.message, [token]).slice(0, 200)}`); }
@@ -106,7 +122,9 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
   if (!target?.repo) api = unavailable("api", "no GitHub repo target for the API capture");
   else if (!token) api = unavailable("api", "no GITHUB_TOKEN: Scorecard needs a token for the API capture");
   else {
-    const cmd = SCORECARD.api(target, snapshot.scope === "github-commit" ? snapshot.commit : null);
+    // Read the pinned commit, so the API result is about the same code. A local
+    // commit that GitHub does not have makes the capture fail closed.
+    const cmd = SCORECARD.api(target, /^[0-9a-f]{40}$/.test(snapshot.commit ?? "") ? snapshot.commit : null);
     const r = await run({ image: SCORECARD.image, cmd, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp" }, timeoutMs: 300_000,
       capture: { reach, targets: [{ owner: target.owner, repo: target.repo }], hosts: SCORECARD.hosts, secrets: { GITHUB_TOKEN: token } } });
     api = record("api", cmd, SCORECARD.image, r, { target: `${target.owner}/${target.repo}` }, [token]);
@@ -136,7 +154,8 @@ export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree 
 // ---- Derive leads from saved bytes ----
 
 const PIN_RE = /^Warn: (.+?) not pinned by hash: (.+):(\d+)(?:-(\d+))?$/;
-const parse = (text) => { try { const j = JSON.parse(text); return j && Array.isArray(j.checks) ? j : null; } catch { return null; } };
+// A report with no checks array, or an empty one, is unparsable, not clean.
+const parse = (text) => { try { const j = JSON.parse(text); return j && Array.isArray(j.checks) && j.checks.length > 0 ? j : null; } catch { return null; } };
 const networkError = (s) => /dial tcp|lookup |network is unreachable|proxyconnect|Forbidden|blocked/i.test(s);
 const adminError = (s) => /admin|Resource not accessible|403/i.test(s);
 const slug = (s) => String(s).replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-|-$/g, "");
@@ -150,6 +169,8 @@ function scorecardLead({ check, kind, file, line, endLine, impact, capture, cap,
 }
 
 // Leads, coverage and gaps from one snapshot's saved Scorecard captures.
+// The units each run must answer: FILE_CHECKS (local) and API_CHECKS (api). A
+// unit with no usable score is a gap, and the coverage row says how many.
 export function scorecardFrom(snapshot) {
   const caps = snapshot.captures?.scorecard;
   if (!caps) return { leads: [], coverage: [], gaps: [] };
@@ -159,42 +180,64 @@ export function scorecardFrom(snapshot) {
     const engine = `scorecard-${capture}`;
     const json = cap?.status === "ran" && sha256(cap.text) === cap.sha256 ? parse(cap.text) : null;
     const wantRepo = capture === "api" ? `github.com/${cap?.target}` : "file://.";
-    if (!json || json.scorecard?.version !== SCORECARD.version || json.repo?.name !== wantRepo) {
-      const reason = cap?.reason ?? (cap?.status === "ran" ? "output was empty, unparsable, or not from the pinned Scorecard version" : "not captured");
+    const units = capture === "local" ? FILE_CHECKS : API_CHECKS;
+    let reason = null;
+    if (!json) reason = cap?.reason ?? (cap?.status === "ran" ? "unparsable report: empty, no checks, or not JSON" : "not captured");
+    else if (json.scorecard?.version !== SCORECARD.version) reason = "report is not from the pinned Scorecard version";
+    else if (json.repo?.name !== wantRepo) reason = `report is for ${String(json.repo?.name).slice(0, 80)}, not ${wantRepo}`;
+    else if (!(cap.code === 0 || (cap.code === 1 && checkErrored(json)))) reason = `tool exited ${cap.code}, which is not a documented Scorecard exit`;
+    // The API run must have read the pinned commit, or its results are about other code.
+    else if (capture === "api" && /^[0-9a-f]{40}$/.test(snapshot.commit ?? "") && json.repo?.commit !== snapshot.commit) reason = `report is for commit ${String(json.repo?.commit).slice(0, 40)}, not the pinned commit ${snapshot.commit}`;
+    const results = json ? new Map(json.checks.filter((c) => units.includes(c?.name)).map((c) => [c.name, c])) : new Map();
+    if (!reason && results.size === 0) reason = `unparsable report: none of the ${units.length} expected checks has a result`;
+    if (reason) {
       coverage.push({ engine, status: "unavailable", code: cap?.code ?? null, timedOut: Boolean(cap?.timedOut), reason, leads: 0 });
-      gaps.push({ kind: "networked-tool-unavailable", detail: `Scorecard ${capture} run is unavailable: ${reason}. ${capture === "api" ? `Its checks (${API_CHECKS.filter((c) => c !== "Fuzzing" && c !== "Packaging").join(", ")}) were not run.` : "Its file checks were not run."} This is not a clean result.` });
+      gaps.push({ kind: "networked-tool-unavailable", detail: `Scorecard ${capture} run is unavailable: ${reason}. ${capture === "api" ? `Its checks (${API_CHECKS.join(", ")}) were not run.` : `Its file checks (${FILE_CHECKS.join(", ")}) were not run.`} This is not a clean result.` });
       continue;
     }
     const before = leads.length;
-    for (const c of json.checks) {
-      const reason = String(c.reason ?? "");
-      const isApi = API_CHECKS.includes(c.name);
-      if (capture === "local" ? isApi : !isApi) continue; // each check from the run that can answer it
-      if (c.score === -1 && /internal error/i.test(reason)) {
-        const scope = capture === "api" && ADMIN_SCOPES[c.name] && adminError(reason);
-        gaps.push(scope
-          ? { kind: "not-covered-needs-scope", detail: `Scorecard ${c.name}: not covered: needs scope ${ADMIN_SCOPES[c.name]} on the repo. The token does not have it.` }
-          : { kind: "scorecard-check-error", detail: `Scorecard ${c.name} (${capture}) did not run${networkError(reason) ? ": its host is outside the GitHub-only egress allow-list" : ""}. Not a clean result.` });
+    const unchecked = [];
+    const gap = (name, g) => { unchecked.push(name); gaps.push(g); };
+    for (const name of units) {
+      const c = results.get(name);
+      const why = String(c?.reason ?? "").slice(0, 200);
+      if (!c) { gap(name, { kind: "scorecard-check-missing", detail: `Scorecard ${name} (${capture}) has no result in the report. Not a clean result.` }); continue; }
+      if (c.score === -1 && /internal error/i.test(why)) {
+        const scope = capture === "api" && ADMIN_SCOPES[name] && adminError(why);
+        gap(name, scope
+          ? { kind: "not-covered-needs-scope", detail: `Scorecard ${name}: not covered: needs scope ${ADMIN_SCOPES[name]} on the repo. The token does not have it.` }
+          : { kind: "scorecard-check-error", detail: `Scorecard ${name} (${capture}) did not run${networkError(why) ? ": its host is outside the GitHub-only egress allow-list" : ""}. Not a clean result.` });
         continue;
       }
-      if (c.name === "Pinned-Dependencies") {
+      if (!(Number.isInteger(c.score) && c.score >= 0 && c.score <= 10)) {
+        // -1 without an error is "inconclusive" (for example no workflows to read).
+        gap(name, { kind: "scorecard-check-inconclusive", detail: `Scorecard ${name} (${capture}) gave no score (${c.score}): ${why || "no reason"}. Not a clean result.` });
+        continue;
+      }
+      if (name === "Pinned-Dependencies") {
         for (const d of c.details ?? []) {
           const m = String(d).match(PIN_RE);
-          if (!m || !Object.hasOwn(snapshot.files, m[2])) continue;
-          leads.push(scorecardLead({ check: c.name, kind: m[1], file: m[2], line: Number(m[3]), endLine: m[4] ? Number(m[4]) : undefined, impact: "Low", capture, cap }));
+          if (!m) continue;
+          // Bound to this snapshot: a path the snapshot does not hold is a gap, not dropped.
+          if (!Object.hasOwn(snapshot.files, m[2])) { gaps.push({ kind: "scorecard-result-outside-snapshot", detail: `Scorecard ${name} (${capture}) named ${m[2].slice(0, 120)}, which is not a file in the pinned snapshot. That result is not used.` }); continue; }
+          leads.push(scorecardLead({ check: name, kind: m[1], file: m[2], line: Number(m[3]), endLine: m[4] ? Number(m[4]) : undefined, impact: "Low", capture, cap }));
         }
-      } else if (FILE_CHECKS.includes(c.name) && c.score === 0) {
-        leads.push(scorecardLead({ check: c.name, impact: c.name === "License" ? "Informational" : "Low", capture, cap, score: 0 }));
-      } else if (isApi && Number.isInteger(c.score) && c.score >= 0 && c.score < 5) {
-        leads.push(scorecardLead({ check: c.name, impact: "Low", capture, cap, score: c.score }));
+      } else if (FILE_CHECKS.includes(name) && c.score === 0) {
+        leads.push(scorecardLead({ check: name, impact: name === "License" ? "Informational" : "Low", capture, cap, score: 0 }));
+      } else if (capture === "api" && c.score < 5) {
+        leads.push(scorecardLead({ check: name, impact: "Low", capture, cap, score: c.score }));
       }
     }
     if (capture === "local") {
-      // Two local results look clean but are not: say so every time.
-      gaps.push({ kind: "scorecard-check-not-trusted", detail: "Scorecard Vulnerabilities is not used: it needs api.osv.dev, which no run may reach, and with no network it still reports 0 vulnerabilities. The osv and grype scanners cover locked dependencies." });
-      gaps.push({ kind: "scorecard-check-not-trusted", detail: "Scorecard Binary-Artifacts is not used: it ran on the snapshot's text files, and the snapshot skips binaries. See the skipped list." });
+      // Results that look clean but are not: say so every time.
+      for (const [name, why] of Object.entries(NOT_USED)) if (json.checks.some((c) => c?.name === name)) gaps.push({ kind: "scorecard-check-not-trusted", detail: `Scorecard ${name} is not used: ${why}.` });
     }
-    coverage.push({ engine, status: "ok", code: cap.code, timedOut: false, leads: leads.length - before });
+    if (unchecked.length === units.length) {
+      coverage.push({ engine, status: "unavailable", code: cap.code, timedOut: false, reason: `all ${units.length} checks unchecked`, leads: 0 });
+      leads.length = before;
+      continue;
+    }
+    coverage.push({ engine, status: "ok", code: cap.code, timedOut: false, ...(unchecked.length ? { reason: `${unchecked.length} of ${units.length} checks unchecked: ${unchecked.join(", ")}` } : {}), leads: leads.length - before });
   }
   return { leads, coverage, gaps };
 }

@@ -8,13 +8,14 @@
 //   node --test spike/test/supply-chain-networked.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { execFileSync } from "node:child_process";
 import { runTool } from "../lib/wrap.mjs";
 import { pinSnapshot, replayEvidence, sha256 } from "../lib/proof-evidence.mjs";
-import { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason } from "../packs/supply-chain/networked.mjs";
+import { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } from "../packs/supply-chain/networked.mjs";
 
 const fx = JSON.parse(readFileSync(new URL("./fixtures/supply-chain-networked/scorecard.json", import.meta.url), "utf8"));
 const FAKE_TOKEN = "github_pat_FAKEFAKEFAKEFAKEFAKE_0123456789abcdef";
@@ -118,6 +119,7 @@ test("a repo-setting lead from an API capture never passes replay: the tool alon
   // Take the real local output and present it as an API capture of the target.
   const json = JSON.parse(fx.captures.scorecard.local.text);
   json.repo.name = "github.com/hemaaanth/touchstone";
+  json.repo.commit = fx.commit;
   const text = JSON.stringify(json);
   const snap = fixtureSnapshot();
   snap.captures.scorecard.api = { ...snap.captures.scorecard.api, status: "ran", text, sha256: sha256(text), target: "hemaaanth/touchstone" };
@@ -157,8 +159,9 @@ test("fail closed: no target, no token, no grant, timeout, junk output, wrong ve
   const timed = async (o) => ({ code: 1, stdout: '{"checks":[]}', stderr: "", timedOut: true });
   c = await captureScorecard(snap, { target, reach, token: FAKE_TOKEN, run: timed });
   assert.equal(c.api.status, "unavailable"); assert.equal(c.api.reason, "timed out");
+  assert.equal(c.local.status, "unavailable"); assert.equal(c.local.reason, "timed out");
 
-  for (const stdout of ["not json", "{}", JSON.stringify({ ...JSON.parse(fx.captures.scorecard.local.text), scorecard: { version: "v9.9.9" } })]) {
+  for (const stdout of ["not json", "{}", '{"checks":[]}', '{"checks":null}', JSON.stringify({ ...JSON.parse(fx.captures.scorecard.local.text), scorecard: { version: "v9.9.9" } })]) {
     const s = fixtureSnapshot();
     s.captures.scorecard.local = { ...s.captures.scorecard.local, text: stdout, sha256: sha256(stdout) };
     const d = scorecardFrom(s);
@@ -189,12 +192,46 @@ test("capture argv for Scorecard: confined network, --pull=never, token by name,
   assert.ok(!args.some((a) => /^--(?:publish|serve|upload|token)/.test(a)));
   assert.equal(localRuns.length, 1);
   assert.equal(localRuns[0].capture, undefined, "the local run is not a capture");
+  assert.equal(localRuns[0].image, SCORECARD.image);
   assert.equal(localRuns[0].network, undefined, "the local run keeps runTool's default --network none");
+});
+
+// The real argv of the local run: the real runTool, with a PATH docker shim
+// that records its argv. A change to "bridge" or another tag fails here.
+async function shimmedLocalArgv() {
+  const dir = mkdtempSync(join(tmpdir(), "touchstone-net-shim-"));
+  const log = join(dir, "argv.jsonl");
+  writeFileSync(join(dir, "docker"), `#!/usr/bin/env node\nrequire("fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
+  chmodSync(join(dir, "docker"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, token: FAKE_TOKEN });
+    return readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((a) => a[0] === "run");
+  } finally { process.env.PATH = path; rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("local run argv (real runTool, PATH docker shim): --network none, the exact image tag, the local flags, no token", async () => {
+  const args = await shimmedLocalArgv();
+  assert.ok(args, "runTool called docker run");
+  assert.equal(args.filter((a) => a === "--network").length, 1);
+  assert.equal(args[args.indexOf("--network") + 1], "none");
+  assert.equal(SCORECARD.image, "touchstone/scorecard:5.6.0");
+  assert.ok(args.includes("touchstone/scorecard:5.6.0"));
+  assert.deepEqual(args.slice(args.indexOf("touchstone/scorecard:5.6.0") + 1), SCORECARD.local);
+  assert.ok(!args.join(" ").includes(FAKE_TOKEN), "the local run never gets the token");
+  assert.ok(!args.some((a) => /TOKEN/.test(a)), "no token variable is passed to the local run");
+});
+
+// --pull=never on the local run comes from runTool's shared argv. Main has it.
+// This base does not yet, so the test is a todo until main is merged.
+test("local run argv: --pull=never", { todo: "needs runTool's shared --pull=never from main" }, async () => {
+  assert.ok((await shimmedLocalArgv()).includes("--pull=never"));
 });
 
 test("the token value appears nowhere in the pinned snapshot, even when the tool prints it", async () => {
   const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
-  const exec = async (args, { env }) => ({ code: 1, stdout: `{"token":"${env.GITHUB_TOKEN}"}`, stderr: `401 Bad credentials for ${env.GITHUB_TOKEN}`, timedOut: false });
+  const exec = async (args, { env }) => ({ code: 0, stdout: `{"token":"${env.GITHUB_TOKEN}"}`, stderr: `401 Bad credentials for ${env.GITHUB_TOKEN}`, timedOut: false });
   const run = async (o) => (o.capture ? runTool({ ...o, capture: { ...o.capture, confine, exec } }) : { code: 0, stdout: `echo ${FAKE_TOKEN}`, stderr: "" });
   const ws = mkdtempSync(join(tmpdir(), "touchstone-net-tok-"));
   try {
@@ -216,4 +253,114 @@ test("the token value appears nowhere in the pinned snapshot, even when the tool
 test("no opt-in: a snapshot without captures gives no networked leads, coverage or gaps", async () => {
   assert.deepEqual(networkedResults({ files: {} }), { leads: [], coverage: [], gaps: [] });
   await assert.rejects(prepareNetworkedSnapshot(mkdtempSync(join(tmpdir(), "touchstone-net-bad-")), { networkTools: ["nmap"] }, { base: { files: {} } }), /Unknown networked tool/);
+});
+
+// ---- Fail-closed checklist ----
+
+const withLocal = (mutate, over = {}) => {
+  const s = fixtureSnapshot(over);
+  const json = JSON.parse(s.captures.scorecard.local.text);
+  mutate(json);
+  const text = JSON.stringify(json);
+  s.captures.scorecard.local = { ...s.captures.scorecard.local, text, sha256: sha256(text) };
+  return s;
+};
+const localRow = (d) => d.coverage.find((c) => c.engine === "scorecard-local");
+
+test("exit code: only 0, or Scorecard's exact '1 + checks failed + an internal-error check' pair, is a run", async () => {
+  const real = fx.captures.scorecard.local;
+  assert.equal(real.code, 1, "the real --local run exits 1 because Fuzzing has no network");
+  assert.ok(scorecardExitOk(real.code, real.stderr, JSON.parse(real.text)), "the real pair is accepted");
+  const json = JSON.parse(real.text);
+  assert.equal(scorecardExitOk(2, real.stderr, json), false);
+  assert.equal(scorecardExitOk(1, "", json), false, "1 without the message");
+  assert.equal(scorecardExitOk(1, real.stderr, { checks: json.checks.filter((c) => !/internal error/.test(c.reason)) }), false, "1 without an errored check");
+  // Through record(): valid JSON with an unexpected code gives no run.
+  for (const code of [2, 137, -1]) {
+    const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, run: async () => ({ code, stdout: real.text, stderr: real.stderr }) });
+    assert.equal(c.local.status, "unavailable", `code ${code}`);
+    assert.match(c.local.reason, new RegExp(`exited ${code}`));
+  }
+  // And in the saved snapshot: a "ran" capture with an undocumented code gives no leads.
+  const s = fixtureSnapshot(); s.captures.scorecard.local.code = 2;
+  const d = scorecardFrom(s);
+  assert.equal(localRow(d).status, "unavailable"); assert.equal(d.leads.length, 0);
+});
+
+test("empty success: no expected check in the report is unparsable, not a clean scan", () => {
+  const d = scorecardFrom(withLocal((j) => { j.checks = j.checks.filter((c) => !["Pinned-Dependencies", "License", "Security-Policy", "Dependency-Update-Tool"].includes(c.name)); }));
+  assert.equal(localRow(d).status, "unavailable");
+  assert.match(localRow(d).reason, /unparsable report: none of the 4 expected checks/);
+  assert.equal(d.leads.length, 0);
+  assert.ok(d.gaps.some((g) => g.kind === "networked-tool-unavailable"));
+});
+
+test("bound to this snapshot: a result for a file outside it is a gap; a missing check is a gap; a wrong commit is unavailable", () => {
+  const extra = ["Warn: containerImage not pinned by hash: ../outside/Dockerfile:1", "Warn: containerImage not pinned by hash: /etc/Dockerfile:2", "Warn: npmCommand not pinned by hash: not/in/snapshot/Dockerfile:3"];
+  let d = scorecardFrom(withLocal((j) => { j.checks.find((c) => c.name === "Pinned-Dependencies").details.push(...extra); }));
+  assert.equal(d.leads.filter((l) => l.check.startsWith("scorecard/Pinned-Dependencies")).length, 3, "only the real in-snapshot results");
+  assert.equal(d.gaps.filter((g) => g.kind === "scorecard-result-outside-snapshot").length, 3);
+  assert.ok(!d.leads.some((l) => /outside|^\/etc|not\/in/.test(l.file ?? "")));
+
+  d = scorecardFrom(withLocal((j) => { j.checks = j.checks.filter((c) => c.name !== "License"); }));
+  assert.ok(d.gaps.some((g) => g.kind === "scorecard-check-missing" && /License/.test(g.detail)));
+  assert.equal(localRow(d).status, "ok");
+  assert.match(localRow(d).reason, /^1 of 4 checks unchecked: License$/);
+  assert.ok(!d.leads.some((l) => l.check === "scorecard/License"));
+
+  // An API report for another commit than the pinned one.
+  const json = JSON.parse(fx.captures.scorecard.local.text);
+  json.repo = { name: "github.com/hemaaanth/touchstone", commit: "b".repeat(40) };
+  const text = JSON.stringify(json);
+  const s = fixtureSnapshot();
+  s.captures.scorecard.api = { ...s.captures.scorecard.api, status: "ran", code: 0, text, sha256: sha256(text), target: "hemaaanth/touchstone" };
+  d = scorecardFrom(s);
+  const api = d.coverage.find((c) => c.engine === "scorecard-api");
+  assert.equal(api.status, "unavailable"); assert.match(api.reason, /not the pinned commit/);
+  assert.ok(!d.leads.some((l) => l.where.capture === "api"));
+  // And a report for another repo.
+  json.repo = { name: "github.com/someone/else", commit: fx.commit };
+  const t2 = JSON.stringify(json);
+  s.captures.scorecard.api = { ...s.captures.scorecard.api, text: t2, sha256: sha256(t2) };
+  assert.match(scorecardFrom(s).coverage.find((c) => c.engine === "scorecard-api").reason, /report is for github.com\/someone\/else/);
+});
+
+test("a gap is never shown as clean: -1 scores are gaps, the row counts them, all unchecked is unavailable", () => {
+  let d = scorecardFrom(withLocal((j) => { const c = j.checks.find((x) => x.name === "Security-Policy"); c.score = -1; c.reason = "no files to analyze"; }));
+  assert.ok(d.gaps.some((g) => g.kind === "scorecard-check-inconclusive" && /Security-Policy/.test(g.detail)));
+  assert.match(localRow(d).reason, /^1 of 4 checks unchecked: Security-Policy$/);
+  assert.ok(!d.leads.some((l) => l.check === "scorecard/Security-Policy"));
+
+  d = scorecardFrom(withLocal((j) => { for (const c of j.checks) { c.score = -1; c.reason = "internal error: boom"; } }));
+  assert.equal(localRow(d).status, "unavailable");
+  assert.equal(localRow(d).reason, "all 4 checks unchecked");
+  assert.equal(d.leads.length, 0);
+
+  // The real report answers all four file checks, so its row carries no reason.
+  assert.equal(localRow(scorecardFrom(fixtureSnapshot())).reason, undefined);
+});
+
+const hasImages = (() => {
+  try { for (const i of ["alpine:3.20", SCORECARD.image]) execFileSync("docker", ["image", "inspect", i], { stdio: "ignore" }); return true; } catch { return false; }
+})();
+// The shared runTool timeout fault (a PID 1 that ignores SIGTERM) is fixed in
+// one shared commit that reaches this branch through main. Here: a timeout is
+// "unavailable" with a reason, never a run, even with valid output.
+test("a timed-out local run is unavailable with reason 'timed out', even with valid JSON", async () => {
+  const real = fx.captures.scorecard.local;
+  const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, run: async () => ({ code: 0, stdout: real.text, stderr: "", timedOut: true }) });
+  assert.equal(c.local.status, "unavailable");
+  assert.equal(c.local.reason, "timed out");
+  const s = fixtureSnapshot(); s.captures.scorecard.local = c.local;
+  assert.equal(scorecardFrom(s).leads.length, 0);
+});
+
+test("real local Scorecard run through runTool: no network, the exit pair is accepted, the lead names the pinned line", { skip: !hasImages && "docker or images missing", timeout: 120_000 }, async () => {
+  const snap = { version: 1, scope: "folder", files: { "Dockerfile": "FROM alpine:3.20\nRUN npm install left-pad\n" }, skipped: [] };
+  const { local } = await captureScorecard(snap, { target: null, reach });
+  assert.equal(local.status, "ran", local.reason);
+  assert.ok([0, 1].includes(local.code));
+  const s = { ...snap, captures: { scorecard: { local, api: { status: "unavailable", reason: "no target" } } } };
+  const d = scorecardFrom(s);
+  assert.ok(d.leads.some((l) => l.check === "scorecard/Pinned-Dependencies/containerImage" && l.file === "Dockerfile" && l.lines[0] === 1));
 });
