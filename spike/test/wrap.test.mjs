@@ -91,3 +91,23 @@ test("runTool mounts the workspace and has no network", { skip: !hasDocker && "n
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+test("runTool removes a named container by name when the docker client times out", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wrap-name-"));
+  const log = join(dir, "log");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), `#!/bin/sh\necho "$*" >> "${log}"\n[ "$1" = run ] && exec sleep 5\nexit 0\n`, { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const t0 = Date.now();
+    const r = await runTool({ image: "example.invalid/tool:1", cmd: ["true"], timeoutMs: 300, name: "touchstone-test-abc" });
+    assert.equal(r.timedOut, true);
+    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    assert.match(lines[0], /^run --rm --pull=never --name touchstone-test-abc --network none /);
+    assert.equal(lines[1], "rm -f touchstone-test-abc");
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

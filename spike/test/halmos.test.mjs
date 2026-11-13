@@ -4,9 +4,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { halmosBrief, halmosScan, parseHalmos, symbolicSuites } from "../packs/contracts/halmos.mjs";
+import { halmosBrief, halmosRecord, halmosScan, parseHalmos, symbolicSuites } from "../packs/contracts/halmos.mjs";
 import { suiteTrust } from "../packs/contracts/suite-trust.mjs";
 import { makeWorkspace, cleanupWorkspace } from "../lib/sandbox.mjs";
 import { prepassView } from "../lib/prepass-view.mjs";
@@ -120,18 +121,20 @@ test("Halmos reports unavailable when the image runs but writes no report", { sk
   } finally { delete process.env.HALMOS_IMAGE; await cleanupWorkspace(ws); }
 });
 
-test("Halmos reports unavailable on a timeout and leaves no container running", { skip: !hasHalmos && "image not built" }, async () => {
+test("Halmos reports unavailable on a timeout and leaves no container, running or created", { skip: !hasHalmos && "image not built" }, async () => {
   const ws = makeWorkspace(LAB);
   try {
     // 6s: the in-container kill (1s) ends Halmos before the client limit.
+    const t0 = Date.now();
     const scan = await halmosScan(ws, { timeoutMs: 6000 });
+    assert.ok(Date.now() - t0 < 6000 + 35_000, `took ${Date.now() - t0} ms`);
     assert.equal(scan.available, false);
-    assert.match(scan.reason, /timed out/);
+    assert.match(scan.reason, /timed out|killed after at most 1s \(time limit or out of memory\)/);
     assert.deepEqual(scan.leads, []);
     assert.equal(scan.gaps.length, 1);
     let left = "";
     for (let i = 0; i < 10; i++) {
-      left = execFileSync("docker", ["ps", "-q", "--filter", "ancestor=touchstone/halmos:0.3.3", "--filter", `volume=${ws}`]).toString().trim();
+      left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/halmos:0.3.3", "--filter", `volume=${ws}`]).toString().trim();
       if (!left) break;
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -179,10 +182,104 @@ test("parseHalmos turns a failed setUp, a solver timeout and an error into gaps"
   assert.ok(!results.some((r) => r.status === "pass"));
 });
 
-test("parseHalmos throws on output that is not a Halmos report, and a report with no tests is a gap", () => {
+test("parseHalmos throws on output that is not a Halmos report, and on a report with no tests", () => {
   assert.throws(() => parseHalmos("Error: compilation failed"));
+  assert.throws(() => parseHalmos(""));
   assert.throws(() => parseHalmos({ exitcode: 1 }));
-  assert.deepEqual(parseHalmos({ exitcode: 1, test_results: {} }).gaps.map((g) => g.reason), ["Halmos ran no check_ function"]);
+  assert.throws(() => parseHalmos({ exitcode: 0, test_results: null }));
+  assert.throws(() => parseHalmos({ exitcode: 0, test_results: [] }));
+  assert.throws(() => parseHalmos({ exitcode: 0, test_results: {} }), /no test results/);
+});
+
+// A fake docker on PATH. It records its argv, prints SHIM_OUT on stdout and
+// exits with SHIM_CODE. runTool finds docker through PATH, so halmosScan runs
+// unchanged against it.
+async function withShim({ out = "", err = "", code = 0 }, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "halmos-shim-"));
+  const path = process.env.PATH;
+  writeFileSync(join(dir, "out"), out);
+  writeFileSync(join(dir, "err"), err);
+  writeFileSync(join(dir, "docker"), `#!/bin/sh\nprintf "%s\\n" "$@" > "${dir}/args"\ncat "${dir}/out"\ncat "${dir}/err" >&2\nexit ${code}\n`, { mode: 0o755 });
+  const ws = makeWorkspace(LAB);
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    const scan = await halmosScan(ws, { timeoutMs: 20_000 });
+    return await fn(scan, readFileSync(join(dir, "args"), "utf8").trim().split("\n"));
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+    await cleanupWorkspace(ws);
+  }
+}
+
+test("the Halmos argv is pinned: --pull=never, --network none, the exact image, only check_ functions", async () => {
+  await withShim({ out: JSON.stringify(REPORT) }, (scan, args) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    assert.equal(args[args.indexOf("--network") + 1], "none");
+    assert.equal(args.filter((a) => a === "--network").length, 1);
+    assert.match(args[args.indexOf("--name") + 1], /^touchstone-halmos-[0-9a-f-]{12}$/);
+    const img = args.indexOf("touchstone/halmos:0.3.3");
+    assert.ok(img > 0, args.join(" "));
+    assert.deepEqual(args.slice(img + 1, img + 3), ["sh", "-c"]);
+    assert.match(args[img + 3], /halmos --function check_ --json-output/);
+  });
+});
+
+test("a valid report from a run that exited non-zero is unavailable, with no lead", async () => {
+  for (const code of [1, 125]) {
+    await withShim({ out: JSON.stringify(REPORT), code }, (scan) => {
+      assert.equal(scan.available, false);
+      assert.equal(scan.reason, `the Halmos container exited with code ${code}`);
+      assert.deepEqual(scan.leads, []);
+      assert.deepEqual(scan.gaps.map((g) => g.suite), [SUITE]);
+      assert.equal(halmosRecord(scan).status, "unavailable");
+    });
+  }
+});
+
+test("a report for a suite this workspace does not have is dropped, and the listed suite becomes a gap", async () => {
+  const foreign = { exitcode: 1, test_results: { "test/Other.t.sol:SomeOtherTarget": REPORT.test_results[`${SUITE}:ShareVaultSymbolicTest`] } };
+  await withShim({ out: JSON.stringify(foreign) }, (scan) => {
+    assert.deepEqual(scan.leads, []);
+    assert.deepEqual(scan.results, []);
+    assert.deepEqual(scan.dropped, ["test/Other.t.sol"]);
+    assert.deepEqual(scan.gaps, [{ suite: SUITE, reason: "Halmos reported no result for this suite" }]);
+    const rec = halmosRecord(scan);
+    assert.equal(rec.status, "unavailable");
+    assert.equal(rec.reason, "1 of 1 check unchecked (Halmos reported no result for this suite)");
+    assert.deepEqual(prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: rec }).tools.find((t) => t.name === "Halmos").status, "unavailable");
+  });
+});
+
+test("an empty report is unavailable, not clean", async () => {
+  await withShim({ out: JSON.stringify({ exitcode: 0, test_results: {} }) }, (scan) => {
+    assert.equal(scan.available, false);
+    assert.match(scan.reason, /could not be read \(the report has no test results\)/);
+    assert.deepEqual(scan.leads, []);
+  });
+});
+
+test("when every check is a gap the run view shows unavailable with a reason; a partial gap shows ran with a reason", async () => {
+  const key = `${SUITE}:ShareVaultSymbolicTest`;
+  const slow = { exitcode: 2, test_results: { [key]: [{ name: "check_a(uint256)", exitcode: 2, models: [] }, { name: "check_b(uint256)", exitcode: 2, models: [] }] } };
+  await withShim({ out: JSON.stringify(slow) }, (scan) => {
+    const rec = halmosRecord(scan);
+    assert.equal(rec.status, "unavailable");
+    assert.equal(rec.reason, "2 of 2 checks unchecked (solver timed out; the property is unchecked)");
+    assert.deepEqual(prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: rec }).tools.find((t) => t.name === "Halmos"), { name: "Halmos", status: "unavailable", reason: rec.reason, leads: 0 });
+  });
+  const partial = { exitcode: 2, test_results: { [key]: [REPORT.test_results[key][0], { name: "check_b(uint256)", exitcode: 2, models: [] }] } };
+  await withShim({ out: JSON.stringify(partial) }, (scan) => {
+    const view = prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: halmosRecord(scan) }).tools.find((t) => t.name === "Halmos");
+    assert.deepEqual(view, { name: "Halmos", status: "ran", reason: "1 of 2 checks unchecked (solver timed out; the property is unchecked)", leads: 0 });
+  });
+  // A setUp that reverts: Halmos reports an empty list for the suite.
+  await withShim({ out: JSON.stringify({ exitcode: 1, test_results: { [key]: [] } }) }, (scan) => {
+    const rec = halmosRecord(scan);
+    assert.equal(rec.status, "unavailable");
+    assert.match(rec.reason, /^1 of 1 check unchecked \(no check_ function ran/);
+  });
 });
 
 test("the vacuity gate call site fails closed until the gate is merged", async () => {

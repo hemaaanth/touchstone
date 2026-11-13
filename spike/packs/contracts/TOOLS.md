@@ -38,13 +38,21 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   `lab/vault-multi` FeeVault. The fuzzer passed all 7. The handler funded
   itself, not the actor, so every deposit reverted inside a `try/catch` and
   the vault stayed empty. Every invariant held vacuously.
-- **Fails closed.** A missing image, a timeout (an in-container kill at the
-  limit minus 5 s, so no container outlives it), a build error, no report,
-  unreadable output, a failed `setUp` (Halmos reports an empty list) or a
-  solver timeout on one test (exit 2) is a gap, never a clean result.
+- **Fails closed.** These are a gap, never a clean result: a missing image; a
+  timeout (an in-container kill at the limit minus 5 s, and the named
+  container is removed if the docker client times out); a kill by signal 9
+  (exit 137 is the time limit or the 2 GB memory limit; we cannot tell which,
+  and say so); any non-zero container exit, even with a valid report; a build
+  error; no report; an empty or unreadable report; a failed `setUp` (Halmos
+  reports an empty list); a solver timeout on one test (exit 2); and a listed
+  suite with no entry in the report. A report entry for a suite this
+  workspace does not list is dropped. When any check is a gap, the run view
+  says how many ("1 of 2 checks unchecked (...)"). When no check ran at all,
+  the run view shows Halmos as `unavailable`, not `ran`.
 - **Does not cover:** properties the target does not ship. Halmos does not
-  write properties. It checks only `check_*` functions, not `invariant_*`
-  functions. Its default loop bound and solver timeouts apply, so a pass is
+  write properties. We pass `--function check_`, so it runs only `check_*`
+  functions. Halmos 0.3.3 also runs `invariant_*` functions by default; we do
+  not. Its default loop bound and solver timeouts apply, so a pass is
   bounded even after the gate. Solidity must build with solc 0.8.38, the one
   baked into the image. A brief scope gets nothing, because it has no `test/`
   at start.

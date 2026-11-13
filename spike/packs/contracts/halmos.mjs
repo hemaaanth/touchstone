@@ -17,6 +17,7 @@
 //     (suite-trust.mjs). Today the gate is not merged, so no pass is trusted.
 //   - A timeout, a failed setUp, a build error, a missing image or output we
 //     cannot read is a GAP, never a clean result.
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
@@ -32,10 +33,14 @@ const KILLED = "HALMOS_KILLED";
 // Forge 1.9 links test contracts dynamically and rewrites `new X()` into a
 // deployCode cheat code Halmos does not support, so turn that off.
 // When the docker client times out, the container keeps running. The inner
-// `timeout` kills Halmos first, so the container never outlives the limit.
+// `timeout` kills Halmos first, so the container never outlives the limit, and
+// runTool removes the named container if the client times out anyway.
+// --function check_: Halmos 0.3.3 also runs invariant_ functions by default.
+// We list and bind only check_ suites, so run only those.
+// The sh wrapper exits 0 on a normal run. Any other code is a failed run.
 const scanCmd = (secs) => [
   "cp -a /work/. /tmp/p && cd /tmp/p",
-  `&& { timeout -s KILL ${secs} halmos --json-output /tmp/h.json >/tmp/h.log 2>&1; rc=$?; };`,
+  `&& { timeout -s KILL ${secs} halmos --function check_ --json-output /tmp/h.json >/tmp/h.log 2>&1; rc=$?; };`,
   `[ "$rc" = 137 ] && echo ${KILLED} >&2;`,
   `if [ "$rc" != 137 ] && [ -s /tmp/h.json ]; then cat /tmp/h.json; else echo ${NO_JSON} >&2; tail -c 4000 /tmp/h.log >&2; fi`,
 ].join(" ");
@@ -79,9 +84,11 @@ function modelArgs(model) {
 // Throws when the report is not a Halmos report, so the caller fails closed.
 export function parseHalmos(report) {
   const doc = typeof report === "string" ? JSON.parse(report) : report;
-  if (!doc || typeof doc !== "object" || !doc.test_results || typeof doc.test_results !== "object") {
+  if (!doc || typeof doc !== "object" || !doc.test_results || typeof doc.test_results !== "object" || Array.isArray(doc.test_results)) {
     throw new Error("not a Halmos report");
   }
+  // A report with no test entry is not a clean scan.
+  if (!Object.keys(doc.test_results).length) throw new Error("the report has no test results");
   const results = [];
   const gaps = [];
   for (const [key, tests] of Object.entries(doc.test_results)) {
@@ -114,7 +121,6 @@ export function parseHalmos(report) {
       }
     }
   }
-  if (!results.length && !gaps.length) gaps.push({ suite: null, reason: "Halmos ran no check_ function" });
   return { results, gaps };
 }
 
@@ -128,20 +134,31 @@ export async function halmosScan(ws, { timeoutMs = 300_000 } = {}) {
   if (!suites.length) {
     return { tool, available: true, applicable: false, reason: "no check_ functions in test/", suites, trust: null, results: [], gaps: [], leads: [] };
   }
-  const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", scanCmd(Math.max(1, Math.floor(timeoutMs / 1000) - 5))], ws, timeoutMs, env: { FOUNDRY_DYNAMIC_TEST_LINKING: "false" } });
+  const secs = Math.max(1, Math.floor(timeoutMs / 1000) - 5);
+  const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", scanCmd(secs)], ws, timeoutMs, env: { FOUNDRY_DYNAMIC_TEST_LINKING: "false" }, name: `touchstone-halmos-${randomUUID().slice(0, 12)}` });
   const down = (reason) => ({
     tool, available: false, applicable: true, reason, suites, trust: null, results: [],
     gaps: suites.map((suite) => ({ suite, reason })), leads: [],
   });
-  if (r.timedOut || r.stderr.includes(KILLED)) return down(`timed out after ${Math.round(timeoutMs / 1000)}s`);
+  if (r.timedOut) return down(`timed out after ${Math.round(timeoutMs / 1000)}s`);
+  // SIGKILL (137) is our time limit or the 2g memory limit; we cannot tell which.
+  if (r.stderr.includes(KILLED)) return down(`killed after at most ${secs}s (time limit or out of memory)`);
   if (/unable to find image|no such image|pull access denied/i.test(r.stderr)) return down(`image ${IMAGE} not built (spike/packs/contracts/images/build.sh halmos)`);
+  if (r.code !== 0) return down(`the Halmos container exited with code ${r.code}`);
   let parsed;
   try {
     parsed = parseHalmos(r.stdout);
-  } catch {
-    const why = r.stderr.includes(NO_JSON) ? (/compil|error/i.test(r.stderr) ? "the project did not build for Halmos" : "Halmos wrote no report") : "Halmos output could not be read";
+  } catch (e) {
+    const why = r.stderr.includes(NO_JSON) ? (/compil|error/i.test(r.stderr) ? "the project did not build for Halmos" : "Halmos wrote no report") : `Halmos report could not be read (${e.message})`;
     return down(why);
   }
+  // Bind the report to this workspace. A suite we did not list is dropped. A
+  // listed suite with no entry in the report is a gap.
+  const listed = new Set(suites);
+  const dropped = [...new Set([...parsed.results, ...parsed.gaps].map((x) => x.suite).filter((x) => !listed.has(x)))];
+  parsed = { results: parsed.results.filter((x) => listed.has(x.suite)), gaps: parsed.gaps.filter((x) => listed.has(x.suite)) };
+  const seen = new Set([...parsed.results, ...parsed.gaps].map((x) => x.suite));
+  for (const suite of suites) if (!seen.has(suite)) parsed.gaps.push({ suite, reason: "Halmos reported no result for this suite" });
   // The gate call site. One verdict per suite; today every verdict is "untrusted".
   const trust = {};
   for (const s of suites) trust[s] = await suiteTrust(ws, { tool, suite: s });
@@ -167,7 +184,16 @@ export async function halmosScan(ws, { timeoutMs = 300_000 } = {}) {
     supportsProof: trusted(x.suite),
     description: `Halmos found inputs that break the property ${x.name} in ${x.suite}: ${Object.entries(x.args).map(([k, v]) => `${k} = ${v}`).join(", ") || "(no arguments)"}.${x.validated ? "" : " Halmos could not validate this counterexample."}`,
   }));
-  return { tool, available: true, applicable: true, reason: null, suites, trust, results, gaps: parsed.gaps, leads };
+  return { tool, available: true, applicable: true, reason: gapSummary(results, parsed.gaps), suites, trust, results, gaps: parsed.gaps, leads, dropped };
+}
+
+// "2 of 3 checks unchecked (solver timed out; ...)", or null with no gap.
+// A check is one test result, or one suite that gave no test result at all.
+function gapSummary(results, gaps) {
+  if (!gaps.length) return null;
+  const total = results.length + gaps.filter((g) => !g.name).length;
+  const why = [...new Set(gaps.map((g) => g.reason))].join("; ");
+  return `${gaps.length} of ${total} check${total === 1 ? "" : "s"} unchecked (${why})`;
 }
 
 // The kickoff block for the agent. Empty when Halmos did not apply.
@@ -184,12 +210,14 @@ export function halmosBrief(scan) {
 }
 
 // The record and event fields the run view reads (prepass-view.mjs).
+// A run where nothing was checked (every check a gap) is "unavailable", not "ran".
 export function halmosRecord(scan) {
+  const checked = scan.results.filter((x) => x.status === "pass" || x.status === "counterexample").length;
   return {
     tool: scan.tool,
     engines: [scan.tool],
     applicable: scan.applicable,
-    status: scan.available ? "ran" : "unavailable",
+    status: scan.available && (checked > 0 || scan.applicable === false) ? "ran" : "unavailable",
     reason: scan.reason,
     suspects: scan.leads.length,
     gaps: scan.gaps.length,
