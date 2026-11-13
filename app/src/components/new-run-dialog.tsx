@@ -824,7 +824,8 @@ export function AddScope({
           ) : null}
           <div className="flex items-center justify-end gap-3 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
             <span className="text-[11px] text-muted-foreground">
-              {plural(sources.length, live ? "website" : "source")}, tested as one unit
+              {plural(sources.length - wildBases.length, live ? "website" : "source")}
+              {wildBases.length ? ` and ${plural(wildBases.length, "subdomain entry", "subdomain entries")}` : ""}, tested as one unit
             </span>
             <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
               Add scope
