@@ -167,7 +167,10 @@ export function getSettings() {
   const providers = Object.values(all).map((p) => ({
     id: p.id,
     label: p.label,
-    baseUrl: p.baseUrl ?? "",
+    // GET /api/settings needs no console token: no user name, password,
+    // query or #part of a URL goes out.
+    baseUrl: publicUrl(p.baseUrl).url,
+    baseUrlHidden: publicUrl(p.baseUrl).cut,
     builtIn: Boolean(p.builtIn),
     saved: Boolean(cfg.providers?.[p.id]),
     key: keyState(p),
@@ -200,7 +203,9 @@ function executionState(cfg) {
     key: c.apiKey
       ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null, saved: Boolean(saved.apiKey) }
       : { set: false, source: null, envName: null, last4: null, held: c.keyHeld, saved: Boolean(saved.apiKey) },
-    apiUrl: c.apiUrl,
+    apiUrl: publicUrl(c.apiUrl).url,
+    apiUrlHidden: publicUrl(c.apiUrl).cut,
+    envKeyHost: c.envKeyHost,
     target: c.target,
     snapshot: c.snapshot,
     // A server env var wins over the saved value. Name it, so the form can say so.
@@ -263,6 +268,28 @@ function slug(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32)
 }
 
+// A URL as the page may see it: scheme, host, port and path. A user name,
+// password, query or #part is cut, and `cut` says so. A plain URL comes back
+// as it is. Not a URL: nothing is shown.
+export function publicUrl(raw) {
+  if (!raw) return { url: "", cut: false }
+  let u
+  try {
+    u = new URL(String(raw))
+  } catch {
+    return { url: "", cut: true }
+  }
+  const cut = Boolean(u.username || u.password || u.search || u.hash)
+  return { url: cut ? `${u.protocol}//${u.host}${u.pathname}`.replace(/\/+$/, "") : String(raw), cut }
+}
+
+// The form sends back the URL it was shown. When that is the cut form of the
+// stored URL, keep the stored one, so the hidden parts are not lost.
+function keepHidden(posted, stored) {
+  const shown = publicUrl(stored)
+  return shown.cut && String(posted ?? "").trim() === shown.url ? stored : posted
+}
+
 function cleanBaseUrl(raw) {
   let u
   try {
@@ -314,7 +341,7 @@ export function saveProvider(body = {}) {
   const entry = {
     id,
     label: label || prev.label || preset?.label || id,
-    baseUrl: cleanBaseUrl(body.baseUrl || prev.baseUrl || preset?.baseUrl),
+    baseUrl: cleanBaseUrl(keepHidden(body.baseUrl, prev.baseUrl || preset?.baseUrl) || prev.baseUrl || preset?.baseUrl),
   }
   const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
   if (key) entry.apiKey = key
@@ -371,22 +398,23 @@ function perMillion(v) {
 // Uses the key from the body, else the saved or env key of provider `id`.
 export async function discoverModels(body = {}) {
   const saved = body.id ? allProviders()[body.id] : null
-  const baseUrl = cleanBaseUrl(body.baseUrl || saved?.baseUrl)
+  const baseUrl = cleanBaseUrl(keepHidden(body.baseUrl, saved?.baseUrl) || saved?.baseUrl)
+  const shown = publicUrl(baseUrl).url
   const key = (typeof body.apiKey === "string" && body.apiKey.trim()) || providerKey(saved)
   const res = await fetch(`${baseUrl}/models`, {
     headers: { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
     signal: AbortSignal.timeout(15_000),
   }).catch((err) => {
-    throw new Error(`could not reach ${baseUrl}/models: ${String(err?.message ?? err)}`)
+    throw new Error(`could not reach ${shown}/models: ${String(err?.message ?? err)}`)
   })
   const text = await res.text()
   const scrub = (s) => (key ? s.split(key).join("***") : s).slice(0, 300)
-  if (!res.ok) throw new Error(`${baseUrl}/models returned ${res.status}: ${scrub(text)}`)
+  if (!res.ok) throw new Error(`${shown}/models returned ${res.status}: ${scrub(text)}`)
   let json
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error(`${baseUrl}/models did not return JSON`)
+    throw new Error(`${shown}/models did not return JSON`)
   }
   const list = Array.isArray(json) ? json : json.data ?? json.models ?? []
   const models = list

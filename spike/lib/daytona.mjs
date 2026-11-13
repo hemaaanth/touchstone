@@ -96,6 +96,9 @@ export function execConfig(env = process.env, cfg = safeConfig()) {
     apiKey,
     keySource: savedKey ? "settings" : envKey ? "env" : null,
     keyHeld,
+    // The host DAYTONA_API_KEY is bound to, or null with no env key. A host
+    // name only, so the form can tell if the env key fits a new server.
+    envKeyHost: env.DAYTONA_API_KEY ? envKeyHost : null,
     apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),

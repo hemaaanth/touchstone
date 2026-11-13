@@ -619,6 +619,8 @@ export interface ProviderSetting {
   id: string
   label: string
   baseUrl: string
+  // The server cut a user name, password, query or #part from baseUrl.
+  baseUrlHidden?: boolean
   builtIn: boolean
   saved: boolean
   key: KeyState
