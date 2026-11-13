@@ -67,6 +67,7 @@ test("runTool passes --pull=never directly after run --rm", async () => {
   try {
     const args = readFileSync(record, "utf8").trim().split("\n");
     assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    assert.match(args[args.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -77,6 +78,19 @@ test("a missing image fails without a registry pull", { skip: !hasDocker && "no 
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /No such image/);
   assert.doesNotMatch(result.stderr, /Pulling from/);
+});
+
+// The tool's PID 1 ignores SIGTERM. A timeout must still stop it and say so.
+test("a timeout removes the container and returns near timeoutMs", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout-" + process.pid;
+  const started = Date.now();
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 2000 });
+  const took = Date.now() - started;
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  assert(took < 10000, "returned after " + took + " ms");
+  const left = execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Command}}"], { encoding: "utf8" });
+  assert.equal(left.includes(mark), false, "the container is still there");
 });
 
 test("runTool mounts the workspace and has no network", { skip: !hasDocker && "no docker" }, async () => {
