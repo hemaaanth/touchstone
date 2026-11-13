@@ -9,14 +9,17 @@
 // one command reruns the proof from inside the unzipped folder.
 //
 // An evidence finding gets no zip (bundleRefusal): its snapshot is raw target
-// files. Secrets never go in. Provider keys and bearer tokens are replaced with
-// placeholders. A file that is itself a key (a pem, an env file, a cloud
-// credential) is left out and named in the README.
+// files. Secrets never go in. Every text passes through app/server/redact.mjs
+// (bundleText, bundleValue), and leakShapes fails closed on the shapes that
+// module does not mask. A file that is itself a key (a pem, an env file, a
+// cloud credential) is left out and named in the README.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
 import { readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
+import { redactSecrets } from "../../app/server/redact.mjs";
 import { pinnedSolc, warmFor } from "./sandbox.mjs";
 
 const MAX_FILE = 1_500_000;
@@ -43,27 +46,149 @@ const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const RPC_PLACEHOLDER = "${RPC_URL}";
 const KEY_PLACEHOLDER = "${RPC_URL_KEY}";
-const BEARER_PLACEHOLDER = "${BEARER_TOKEN}";
+const ETHERSCAN_PLACEHOLDER = "${ETHERSCAN_API_KEY}";
 // Shown in Markdown. Built by concatenation so the `$` is not eaten by a template.
 const rpcShown = "`" + RPC_PLACEHOLDER + "`";
-const bearerShown = "`" + BEARER_PLACEHOLDER + "`";
+const MARK = "[REDACTED]";
 
-// Replace provider keys and bearer tokens in text a judge will read. The
-// placeholders are not credentials. Foundry expands ${RPC_URL} in foundry.toml
-// when the judge exports that variable; it is never a real endpoint.
-export function scrubReplayText(text) {
+// Every text that goes into a zip passes through bundleText or bundleValue.
+// The secret rules are app/server/redact.mjs, the same module the report
+// formats use. The steps here only feed that module text it can read:
+//  - a forge file gets ${RPC_URL_KEY} for a key in a URL path, so a provider
+//    key cannot leave and forge-std's StdChains.sol still compiles;
+//  - a home directory becomes "~";
+//  - a comment line ("// Cookie: …", "# Authorization: …") is redacted again
+//    without its comment mark, so the module sees a header at a line start;
+//  - `name = "value"` and `name: "value"` (an unquoted JS key, a Solidity or
+//    TOML assignment) are given to the module as one {name: value} pair.
+// After that, leakShapes checks for the shapes the module does not mask. A
+// hit fails closed: a source file is left out, any other file stops the zip.
+const URL_IN_TEXT = /https?:\/\/[^\s"'`\\<>()]+/g;
+function urlKeys(text) {
+  return text.replace(URL_IN_TEXT, (url) =>
+    url.replace(/\/([A-Za-z0-9_-]{20,})(?=[/?#]|$)/g, (m, seg) =>
+      /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !/^0x/i.test(seg) ? `/${KEY_PLACEHOLDER}` : m));
+}
+
+const HOME = homedir();
+// /home/foundry is the Foundry image's own home, used by the replay command.
+const HOME_PATH = /\/(?:home|Users)\/(?!foundry\b)[A-Za-z0-9._-]+/g;
+function homeToTilde(text) {
+  let s = text;
+  if (HOME && HOME.length > 1 && HOME !== "/home/foundry") s = s.split(HOME).join("~");
+  return s.replace(HOME_PATH, "~");
+}
+
+const COMMENT_LINE = /^([ \t]*(?:\/\/+|\/\*+|\*+|#+|--|;+)[ \t]*)(\S.*)$/gm;
+const ASSIGN = /(?<![\w$-])([A-Za-z_][\w-]{0,63})([ \t]*[:=][ \t]*)(["'`])((?:(?!\3)[^\\\r\n]|\\[^\r\n]){1,1024})\3/g;
+
+function secretish(tok, min) {
+  if (tok.length < min || tok.startsWith("[REDACTED") || /^(?:\$\{|[<$])/.test(tok)) return false;
+  if (/[0-9_\-./+=]/.test(tok)) return true;
+  if (tok.length >= 12 && /[a-z]/.test(tok) && /[A-Z]/.test(tok)) return true;
+  return tok.length >= 20;
+}
+
+function maskAssign(m, name, sep, q, value) {
+  if (!secretish(value.trim(), 6)) return m;
+  const out = redactSecrets({ [name]: value })[name];
+  return out === value ? m : `${name}${sep}${q}${MARK}${q}`;
+}
+
+export function bundleText(text, { forge = false } = {}) {
   let s = String(text ?? "");
-  s = s.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, `Bearer ${BEARER_PLACEHOLDER}`);
-  s = s.replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, BEARER_PLACEHOLDER);
-  s = s.replace(/(authorization\s*[:=]\s*)(?:"[^"]*"|'[^']*'|\S+)/gi, `$1"Bearer ${BEARER_PLACEHOLDER}"`);
-  s = s.replace(/((?:x-api-key|api-key)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|\S+)/gi, `$1"${KEY_PLACEHOLDER}"`);
-  // A separator is required (`private_key`, not the Solidity name `privateKey`),
-  // and the value has to look like a secret. Replacing an arbitrary expression
-  // would break the proof test.
-  s = s.replace(/\b((?:api|private|secret|alchemy|infura)[_-]key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9+/=._:-]{8,})/gi, `$1="${KEY_PLACEHOLDER}"`);
-  s = s.replace(/(https?:\/\/[^\s"'\\]*\/(?:v[0-9]|api)\/)([A-Za-z0-9_-]{8,})/g, `$1${KEY_PLACEHOLDER}`);
-  s = s.replace(/([?&](?:api[_-]?key|apikey|key|token|access[_-]?token)=)[^&\s"'\\]+/gi, `$1${KEY_PLACEHOLDER}`);
-  return s;
+  if (forge) s = urlKeys(s);
+  s = homeToTilde(s);
+  s = redactSecrets(s);
+  s = s.replace(COMMENT_LINE, (m, lead, rest) => lead + redactSecrets(rest));
+  return s.replace(ASSIGN, maskAssign);
+}
+
+// A JSON value for the zip: no controlTrace, no stored replay snapshot, every
+// string through bundleText. A two-string array (a header list as
+// [name, value] pairs) is shown to the module as a {name, value} cell.
+const PAIR = "__touchstonePair";
+function dropKeys(v) {
+  if (Array.isArray(v)) return v.map(dropKeys);
+  if (!v || typeof v !== "object") return v;
+  const out = {};
+  for (const [k, x] of Object.entries(v)) if (k !== "controlTrace" && k !== "replay") out[k] = dropKeys(x);
+  return out;
+}
+function toCells(v) {
+  if (Array.isArray(v)) {
+    if (v.length === 2 && typeof v[0] === "string" && typeof v[1] === "string") return { name: v[0], value: v[1], [PAIR]: true };
+    return v.map(toCells);
+  }
+  if (!v || typeof v !== "object") return v;
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = toCells(x);
+  return out;
+}
+function fromCells(v) {
+  if (typeof v === "string") return bundleText(v);
+  if (Array.isArray(v)) return v.map(fromCells);
+  if (!v || typeof v !== "object") return v;
+  if (v[PAIR] === true) return [fromCells(v.name), fromCells(v.value)];
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = fromCells(x);
+  return out;
+}
+export function bundleValue(value) {
+  // The first pass masks arrays under a secret key; the second sees the pairs.
+  return fromCells(redactSecrets(toCells(redactSecrets(dropKeys(value ?? null)))));
+}
+
+// Shapes redact.mjs does not mask, found after redaction. Each result is a
+// shape name, never the matched text.
+const HEX64 = /(?<![0-9A-Za-z])(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z])/;
+const KEY_WORD = /private[\s_-]?key|privkey|secret|mnemonic|seed|signer|deployer|wallet|(?<![A-Za-z])(?:pk|sk|key)(?![A-Za-z])|_key(?![A-Za-z])/i;
+const KEY_CAMEL = /[a-z]Key(?![a-z])/;
+const AWS_WORD = /aws/i;
+const AWS_SECRET = /(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])/g;
+const MNEMONIC_QUOTED = /["'`]\s*((?:[a-z]{3,8}\s+){11,23}[a-z]{3,8})\s*["'`]/g;
+const MNEMONIC_NAMED = /(?:mnemonic|seed[\s_-]?phrase|recovery[\s_-]?phrase)\W{0,8}((?:[a-z]{3,8}\s+){11}[a-z]{3,8})/i;
+const RPC_HOST = /https?:\/\/[^\s"'`\\/]*(?:alchemy|infura|ankr|quiknode|quicknode|blastapi|chainstack|getblock|nodereal|drpc|tenderly|moralis|blockpi|pokt)[^\s"'`\\/]*([^\s"'`\\]*)/gi;
+const NAMED = /([A-Za-z][\w-]{0,63})["'`]?[ \t]*[:=][ \t]*["'`]([^"'`\r\n]{1,1024})["'`]/g;
+const SECRET_NAME_END = /(?:api[\s_-]?key|apikey|secret|password|passwd|token|cookie|auth|authorization|private[\s_-]?key|privkey|mnemonic|credentials?|session)$/i;
+const HEADER_IN_TEXT = /(?:^|[^\w-])(cookie|set-cookie|authorization|proxy-authorization|x-[\w-]*(?:token|key|secret|auth|session))[ \t]*:[ \t]*(.+)$/i;
+
+const words = (s) => s.split(/[\s,;"'`]+/).filter(Boolean);
+const PLAIN = /^(?:\[REDACTED[^\]]*\]|\$\{[A-Z0-9_]+\}|(?:0x)?[0-9a-fA-F]{40})$/;
+
+export function leakShapes(text) {
+  const found = new Set();
+  for (const line of String(text ?? "").split(/\r?\n|\\n/)) {
+    if (HEX64.test(line) && (KEY_WORD.test(line) || KEY_CAMEL.test(line))) found.add("a 64-hex key");
+    if (AWS_WORD.test(line)) {
+      for (const [t] of line.matchAll(AWS_SECRET)) {
+        if (/[a-z]/.test(t) && /[A-Z]/.test(t) && /[0-9]/.test(t) && !/^[0-9a-fA-F]+$/.test(t)) found.add("an AWS secret key");
+      }
+    }
+    for (const m of line.matchAll(MNEMONIC_QUOTED)) {
+      if ([12, 15, 18, 21, 24].includes(m[1].split(/\s+/).length)) found.add("a mnemonic");
+    }
+    if (MNEMONIC_NAMED.test(line)) found.add("a mnemonic");
+    for (const m of line.matchAll(RPC_HOST)) {
+      if (m[1].split(/[/?#&=]/).some((seg) => seg.length >= 16 && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !seg.startsWith("${"))) found.add("an RPC provider key");
+    }
+    for (const m of line.matchAll(NAMED)) {
+      const v = m[2].trim();
+      if (SECRET_NAME_END.test(m[1]) && !PLAIN.test(v) && words(v).some((w) => secretish(w, 8))) found.add("a named secret");
+    }
+    const h = HEADER_IN_TEXT.exec(line);
+    if (h && words(h[2]).some((w) => secretish(w, 8))) found.add("a header in text");
+  }
+  return [...found];
+}
+
+// A zip the module refuses to build. The report route answers 409 with the message.
+export class BundleRefused extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "BundleRefused";
+    this.refused = true;
+  }
 }
 
 function secretFile(name) {
@@ -75,18 +200,33 @@ function secretBody(text) {
   return SECRET_CONTENT.some((re) => re.test(text));
 }
 
-// foundry.toml may name an RPC. Keep the block number; replace every endpoint
-// value so a provider key in the URL cannot leave with the bundle.
+// foundry.toml may name an RPC and an explorer key. Keep the block number;
+// replace every endpoint value so a provider key in the URL cannot leave with
+// the bundle, and every explorer key (`key = …` under [etherscan], which the
+// module cannot read as a secret name) with ${ETHERSCAN_API_KEY}.
 function scrubFoundryToml(text) {
-  let inRpc = false;
+  let section = "";
   const lines = String(text).split("\n").map((line) => {
-    if (/^\s*\[/.test(line)) inRpc = /^\s*\[rpc_endpoints\]/.test(line);
-    if (/^\s*(?:eth_rpc_url|rpc_url)\s*=/.test(line) || (inRpc && /^\s*[A-Za-z0-9_-]+\s*=/.test(line))) {
+    const head = /^\s*\[+\s*([A-Za-z0-9_.-]+)/.exec(line);
+    if (head) section = head[1].split(".")[0];
+    if (/^\s*(?:eth_rpc_url|rpc_url)\s*=/.test(line) || (section === "rpc_endpoints" && /^\s*[A-Za-z0-9_-]+\s*=/.test(line))) {
       return line.replace(/=.*/, `= "${RPC_PLACEHOLDER}"`);
+    }
+    if (/^\s*etherscan_api_key\s*=/.test(line)) return line.replace(/=.*/, `= "${ETHERSCAN_PLACEHOLDER}"`);
+    if (section === "etherscan") {
+      return line.replace(/(\bkey\s*=\s*)(?:"[^"\n]*"|'[^'\n]*'|[^,}\s]+)/g, `$1"${ETHERSCAN_PLACEHOLDER}"`);
     }
     return line;
   });
-  return scrubReplayText(lines.join("\n"));
+  return bundleText(lines.join("\n"), { forge: true });
+}
+
+// A forge file as it goes into the record and the zip: redacted, then checked.
+// Returns { text } or { reason } when the file has to be left out.
+function forgeFileText(path, raw) {
+  const text = path === "foundry.toml" ? scrubFoundryToml(raw) : bundleText(raw, { forge: true });
+  const shapes = leakShapes(text);
+  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
 }
 
 function testIdent(raw) {
@@ -251,8 +391,9 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
       continue;
     }
     total += raw.length;
-    const text = rel === "foundry.toml" ? scrubFoundryToml(raw) : scrubReplayText(raw);
-    files.push({ path: rel, text });
+    const out = forgeFileText(rel, raw);
+    if (out.reason) omitted.push({ path: rel, reason: out.reason });
+    else files.push({ path: rel, text: out.text });
   }
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
   let toml = "";
@@ -301,7 +442,7 @@ export function evidenceReplay(pinned) {
   };
 }
 
-const EVIDENCE_REFUSAL = "An evidence finding has no replay bundle yet. Its pinned snapshot holds raw files from the target, and no redaction layer strips secrets from them. The report's snapshotHash is the proof.";
+export const EVIDENCE_REFUSAL = "An evidence finding has no replay bundle yet. Its pinned snapshot holds raw files from the target, and no redaction layer strips secrets from them. The report's snapshotHash is the proof.";
 
 // Why this finding gets no zip, or null when it gets one.
 export function bundleRefusal({ finding, recorded } = {}) {
@@ -311,26 +452,13 @@ export function bundleRefusal({ finding, recorded } = {}) {
   return kind === "evidence" ? EVIDENCE_REFUSAL : null;
 }
 
-function scrubValue(value, key = "") {
-  if (typeof value === "string") {
-    if (/secret|private|token|passw|api[-_]?key|credential|authorization|cookie|session|bearer/i.test(key) && value) return "${REDACTED}";
-    return scrubReplayText(value);
-  }
-  if (Array.isArray(value)) return value.map((v) => scrubValue(v));
-  if (value && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (k === "controlTrace") continue;
-      if (k === "replay") continue;
-      out[k] = scrubValue(v, k);
-    }
-    return out;
-  }
-  return value;
-}
-
 function proofJson(proof, replay) {
-  const body = scrubValue(proof || {});
+  const body = bundleValue(proof || {});
+  // The proof test is its own file in the zip; a copy that holds a shape the
+  // module cannot mask is named, not kept.
+  if (typeof body.testSource === "string" && leakShapes(body.testSource).length) {
+    body.testSource = `left out: ${forgeFileText("test/AgentPoc.t.sol", body.testSource).reason}`;
+  }
   if (replay) {
     body.replay = {
       command: replay.command || null,
@@ -472,27 +600,75 @@ The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in thi
 ${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedList(replay?.omitted)}`;
 }
 
-function httpReadme({ title, hasScript }) {
+// An http proof against a pack lab can run again: the lab image is built
+// from the Touchstone repo, and the script and the oracle are what the engine
+// ran. A live target cannot: it is someone else's service at a later time.
+const LAB_IMAGES = { web: "touchstone/web-lab:dev", "ai-mcp": "touchstone/ai-mcp-lab:dev" };
+const LAB_URL = /^http:\/\/origin:\d+\//;
+const RERUN = new URL("./replay-http-rerun.mjs", import.meta.url);
+const PROOF_HTTP = new URL("./proof-http.mjs", import.meta.url);
+
+function labRerun({ pack, proof, script }) {
+  const image = LAB_IMAGES[pack];
+  const log = Array.isArray(proof?.log) ? proof.log : [];
+  const oracle = typeof proof?.oracle?.name === "string" && /^[\w.-]{1,80}$/.test(proof.oracle.name) ? proof.oracle.name : null;
+  if (!script) return { why: "the request script was not on the recorded finding" };
+  if (!image) return { why: pack ? `the ${pack} pack has no lab image to rerun against` : "the record does not name the pack" };
+  if (!oracle) return { why: "the record does not name the oracle" };
+  if (!log.length || !log.every((e) => LAB_URL.test(String(e?.request?.url ?? "")))) {
+    return { why: "the proof ran against a live target, not the pack lab, so there is no offline rerun" };
+  }
+  return { pack, image, oracle };
+}
+
+function httpReadme({ title, hasScript, rerun }) {
   const script = hasScript
-    ? `The request script is \`script.mjs\`. Bearer tokens in it were replaced with ${bearerShown}.`
-    : `The request script was not on the recorded finding, so it is not in this folder.`;
-  return `# Replay this finding
+    ? "The request script is `script.mjs`. A secret value in it was replaced with `[REDACTED]`."
+    : "The request script was not on the recorded finding, so it is not in this folder.";
+  const head = `# Replay this finding
 
 **${title || "Finding"}** · HTTP oracle
 
-${script} The recorded request and response transcript is \`transcript.json\`. The oracle verdict is \`proof.json\`.
+${script} The recorded request and response transcript is \`transcript.json\`. The oracle verdict is \`proof.json\`. No provider key and no bearer token is in this folder.
+`;
+  if (!rerun.pack) {
+    return `${head}
+## No rerun
 
-## What cannot be bundled
+There is no command in this folder that reruns the proof: ${rerun.why}.
+`;
+  }
+  return `${head}
+The proof ran \`script.mjs\` against the ${rerun.pack} pack's lab (\`${rerun.image}\`), on two internal Docker networks behind a recording proxy, and the \`${rerun.oracle}\` oracle read the proxy's transcript. \`rerun.mjs\` does the same with \`proof-http.mjs\`, the engine's own lab code, copied here. The lab image and the oracle are built from the Touchstone repo, so the rerun takes the path to a Touchstone checkout.
 
-The practice service is a pack lab image on a private Docker network, and the oracle is pack code that reads the proxy's transcript. Neither is in this zip. There is no command in this folder that reruns the proof. Rebuilding the lab (\`npm run build:labs\` in the Touchstone repo) and replaying through the pack is required.
+## Prepare (once, online)
 
-No provider key and no bearer token is included. A token the script sent is ${bearerShown} here; export that name yourself if you rebuild the lab and rerun the script.
+Run this in the Touchstone checkout:
+
+\`\`\`sh
+npm run build:labs -- ${rerun.pack} && docker pull node:20-slim
+\`\`\`
+
+## Rerun (offline)
+
+Run this from this directory (Node 18 or later):
+
+\`\`\`sh
+sha256sum -c SHA256SUMS && \\
+  node rerun.mjs <path-to-touchstone-checkout>
+\`\`\`
+
+The lab networks have no internet route. \`rerun.mjs\` writes the new transcript to \`replay-transcript.json\`. It exits 0 when the oracle passes, 1 when it does not, and 2 when it cannot check (no checkout path, the image is not built, or the oracle is gone).
 `;
 }
 
-function pushFile(entries, name, text) {
+function pushFile(entries, name, text, { own = false } = {}) {
   const path = zipPath(name);
   if (!path || entries.some((e) => e.name === path)) return;
+  if (!own) {
+    const shapes = leakShapes(text);
+    if (shapes.length) throw new BundleRefused(`No replay bundle: ${path} holds ${shapes.join(" and ")} that the redactor cannot mask, so the zip would leak it.`);
+  }
   entries.push({ name: path, data: Buffer.from(String(text), "utf8") });
 }
 
@@ -506,9 +682,23 @@ function verdictLine({ finding, recorded }) {
 }
 
 function forgeBundle({ finding, recorded, replay, proof }) {
-  const title = finding?.title || "Finding";
-  const files = Array.isArray(replay?.files) ? replay.files : [];
-  const testSource = proof?.testSource || finding?.proof?.testSource || null;
+  const title = bundleText(finding?.title || "Finding");
+  // Records are redacted when written; the bundle redacts and checks again, so
+  // a record written by an older scrubber gets today's rules.
+  const omitted = [...(Array.isArray(replay?.omitted) ? replay.omitted : [])];
+  const files = [];
+  for (const f of Array.isArray(replay?.files) ? replay.files : []) {
+    const out = forgeFileText(f.path, f.text);
+    if (out.reason) omitted.push({ path: f.path, reason: out.reason });
+    else files.push({ path: f.path, text: out.text });
+  }
+  let testSource = proof?.testSource || finding?.proof?.testSource || null;
+  if (testSource && !files.some((f) => f.path.startsWith("test/"))) {
+    const out = forgeFileText("test/AgentPoc.t.sol", testSource);
+    if (out.reason) omitted.push({ path: "test/AgentPoc.t.sol", reason: out.reason });
+    testSource = out.text ?? null;
+  }
+  replay = replay && { ...replay, omitted };
   const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
   // Rebuild the command from the recorded fields, so a record written before
@@ -524,31 +714,38 @@ function forgeBundle({ finding, recorded, replay, proof }) {
 This run was recorded before the workspace was snapshotted, and the workspace is deleted after record. ${testSource ? "The proof test source is in `test/AgentPoc.t.sol`." : "The proof test source was not on the recorded proof."} The scope sources and \`foundry.toml\` were not kept, so there is no command that can rerun the proof from this folder.
 
 \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as null. No provider key is included.
-`;
+${omittedList(omitted)}`;
   const entries = [];
   pushFile(entries, "README.md", verdictLine({ finding, recorded }) + readme);
   pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   for (const f of files) pushFile(entries, f.path, f.text);
-  if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", scrubReplayText(testSource));
+  if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   if (command) {
-    const harm = { contract: replay?.contract || null, test: replay?.test || null, harm: scrubValue(proof?.harm ?? null), transfers: scrubValue(proof?.transfers ?? []) };
+    const harm = { contract: replay?.contract || null, test: replay?.test || null, harm: bundleValue(proof?.harm ?? null), transfers: bundleValue(proof?.transfers ?? []) };
     pushFile(entries, "harm.json", JSON.stringify(harm, null, 2) + "\n");
-    pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"));
-    pushFile(entries, "SHA256SUMS", sha256Sums(entries));
+    pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"), { own: true });
+    pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
   return zipStore(entries);
 }
 
 function httpBundle({ finding, recorded, proof }) {
-  const script = recorded?.script ?? finding?.script ?? null;
-  const text = script ? scrubReplayText(script) : null;
-  const transcript = scrubValue(Array.isArray(proof?.log) ? proof.log : Array.isArray(proof?.exchanges) ? proof.exchanges : []);
+  const raw = recorded?.script ?? finding?.script ?? null;
+  const text = raw ? bundleText(raw) : null;
+  const transcript = bundleValue(Array.isArray(proof?.log) ? proof.log : Array.isArray(proof?.exchanges) ? proof.exchanges : []);
+  const rerun = labRerun({ pack: recorded?.pack ?? finding?.pack ?? null, proof, script: text });
   const entries = [];
-  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + httpReadme({ title: finding?.title, hasScript: Boolean(text) }));
+  pushFile(entries, "README.md", verdictLine({ finding, recorded }) + httpReadme({ title: bundleText(finding?.title || "Finding"), hasScript: Boolean(text), rerun }));
   pushFile(entries, "proof.json", proofJson(proof, null));
   pushFile(entries, "transcript.json", JSON.stringify(transcript, null, 2) + "\n");
   if (text) pushFile(entries, "script.mjs", text.endsWith("\n") ? text : text + "\n");
+  if (rerun.pack) {
+    pushFile(entries, "rerun.json", JSON.stringify({ pack: rerun.pack, image: rerun.image, oracle: rerun.oracle }, null, 2) + "\n");
+    pushFile(entries, "rerun.mjs", readFileSync(RERUN, "utf8"), { own: true });
+    pushFile(entries, "proof-http.mjs", readFileSync(PROOF_HTTP, "utf8"), { own: true });
+    pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
+  }
   return zipStore(entries);
 }
 
@@ -557,7 +754,7 @@ function httpBundle({ finding, recorded, proof }) {
 // Either may be missing fields; the zip says what it could not include.
 export function buildReplayBundle({ finding, recorded } = {}) {
   const refused = bundleRefusal({ finding, recorded });
-  if (refused) throw new Error(refused);
+  if (refused) throw new BundleRefused(refused);
   const proof = recorded?.proof || finding?.proof || null;
   const replay = recorded?.replay || proof?.replay || null;
   const kind = replay?.kind || proof?.kind || finding?.proofKind || "forge";

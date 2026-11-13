@@ -93,6 +93,24 @@ describe("evidence replay keeps no snapshot text", () => {
     }
   })
 
+  test("the bundle route answers 409 for an http record that holds a key the redactor cannot mask", async () => {
+    // Made up. The oracle detail holds a bare 64-hex key with a key word.
+    const hex = "9c4f1a7e3b8d2f6a0c5e9b1d7f3a8c2e6b0d4f9a1c7e3b5d8f2a6c0e4b9d1f7a"
+    const proof = {
+      kind: "http",
+      status: "pass",
+      oracle: { name: "debug-route-signer-key-leak", detail: `signer key 0x${hex}`, passed: true },
+      log: [{ label: "1", request: { method: "GET", url: "http://origin:8080/internal/debug/config" }, response: { status: 200, body: "ok" } }],
+    }
+    const row = { title: "debug route leaks the signer key", severity: "high", pocProved: true, script: 'await request("GET", "/internal/debug/config");\n', proof }
+    writeFileSync(path.join(results, "run-http-leak.json"), JSON.stringify({ result: { findingSubmitted: true, recorded: true, decision: "approved", pack: "web", findings: [row] } }))
+    const r = await call("/api/findings/http-leak.1/report?format=bundle")
+    expect(r.status).toBe(409)
+    expect(r.headers["content-type"]).toBe("application/json")
+    expect(JSON.parse(r.body).error).toContain("a 64-hex key")
+    expect(r.body.includes(hex)).toBe(false)
+  })
+
   test("an unknown report format is refused, not answered with json", async () => {
     const r = await call("/api/findings/ev-1.1/report?format=bogus")
     expect(r.status).toBe(400)

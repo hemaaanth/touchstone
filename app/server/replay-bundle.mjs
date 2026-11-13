@@ -31,10 +31,13 @@ export function loadRecordedReplay(findingId) {
   const list = raw?.result?.findings
   const row = index != null ? list?.[index] : (Array.isArray(list) && list.length === 1 ? list[0] : null)
   const proof = row?.proof ?? (index == null ? raw?.result?.proof ?? null : null)
-  if (!row && !proof) return { runId, index, pocProved: false, script: null, evidence: null, proof: null, replay: null }
+  // The pack names the lab image an http proof ran against.
+  const pack = typeof raw?.result?.pack === "string" ? raw.result.pack : typeof row?.pack === "string" ? row.pack : null
+  if (!row && !proof) return { runId, index, pack, pocProved: false, script: null, evidence: null, proof: null, replay: null }
   return {
     runId,
     index,
+    pack,
     pocProved: (row ? row.pocProved : raw?.result?.pocProved) === true,
     script: row?.script ?? null,
     evidence: row?.evidence ?? null,

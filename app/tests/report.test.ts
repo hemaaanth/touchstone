@@ -233,7 +233,7 @@ describe("report: replay bundle", () => {
         expect(files.has("src/Key.sol")).toBe(false)
         expect(files.get("foundry.toml")).toContain('"${RPC_URL}"')
         expect(files.get("foundry.toml")).not.toContain(ALCHEMY_KEY)
-        expect(files.get("src/Vault.sol")).toContain("${BEARER_TOKEN}")
+        expect(files.get("src/Vault.sol")).toContain("// Authorization: Bearer [REDACTED]\n")
         const fork = JSON.parse(files.get("fork.json") || "")
         expect(fork).toEqual({ rpc: "${RPC_URL}", block: 18000000, forked: true })
         const readme = files.get("README.md") || ""
@@ -267,6 +267,102 @@ describe("report: replay bundle", () => {
         writeFileSync(path.join(dir, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public { assertTrue(true); } }\n`)
         expect(() => execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })).toThrow()
         expect(JSON.stringify(proof)).not.toContain(ALCHEMY_KEY)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("a forge bundle masks every shape the redactor knows and leaves out the ones it cannot mask", () => {
+    // Made-up values. Each one must stay out of the record and the zip.
+    const V = {
+      alchemy: "Kd83nWq2Lx9Pz4Rt7Ys1Mv6Bc0Hj5Fg",
+      infura: "7c1e9a4f2b8d6e3a0c5f9b2d7e4a1c8f",
+      ankr: "5b7d9f1a3c5e7092b4d6f8a0c2e4f6a8b0d2f4a6c8e0a2c4e6f8a0b2d4f6a8c0",
+      quiknode: "4e8a2c6f0b3d7e1a5c9f2b6d0e4a8c3f7b1d5e9a",
+      etherscanTop: "ETHSCAN7Q2W9E4R6T1Y8U3I5O0PZ",
+      etherscanKey: "QWERT9YUIOP2ASDFG7HJKL4ZXCV3BNM",
+      cookie: "Zp4Lk8Qw2Mx7Vn3Rb9Tc",
+      consoleToken: "Cn5Hq8Wr3Zk1Lp7Ty2Mv",
+      apiKey: "Ap9Kx3Lm7Qr2Tv8Wz4Yb",
+      awsQuoted: "Hq7Lm2Xp9Rt4Vw8Zb3Nc6Kd1Fg5Jy0Ts/Ua+Pe2W",
+      awsBare: "Rb3Nc6Kd1Fg5Jy0Ts/Ua+Pe2Hq7Lm2Xp9Rt4Vw8Q",
+      privateKey: "0x" + "9c4f1a7e3b8d2f6a0c5e9b1d7f3a8c2e6b0d4f9a1c7e3b5d8f2a6c0e4b9d1f7a",
+      phrase: "orbit lemon cradle vivid tunnel amber frost gravel nephew silent wagon plume",
+      user: "/home/alice",
+    }
+    expect(V.awsQuoted).toHaveLength(40)
+    expect(V.awsBare).toHaveLength(40)
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-shapes-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\netherscan_api_key = "${V.etherscanTop}"\n\n[etherscan]\nmainnet = { key = "${V.etherscanKey}", url = "https://api.etherscan.io/api" }\n`)
+      writeFileSync(path.join(ws, "src", "Chains.sol"), [
+        `// built in ${V.user}/work/vault`,
+        "contract Chains {",
+        `  string a = "https://eth-mainnet.g.alchemy.com/v2/${V.alchemy}";`,
+        `  string b = "https://mainnet.infura.io/v3/${V.infura}";`,
+        `  string c = "https://rpc.ankr.com/eth/${V.ankr}";`,
+        `  string d = "https://young-wild-sun.quiknode.pro/${V.quiknode}/";`,
+        `  // Cookie: session=${V.cookie}`,
+        `  // X-Console-Token: ${V.consoleToken}`,
+        `  string apiKey = "${V.apiKey}";`,
+        `  string aws_secret_access_key = "${V.awsQuoted}";`,
+        "}",
+        "",
+      ].join("\n"))
+      writeFileSync(path.join(ws, "src", "Deploy.sol"), `contract Deploy { uint256 constant PRIVATE_KEY = ${V.privateKey}; }\n`)
+      writeFileSync(path.join(ws, "src", "Ops.sol"), `// aws ${V.awsBare}\ncontract Ops {}\n`)
+      writeFileSync(path.join(ws, "src", "Words.sol"), `contract Words { string constant words = "${V.phrase}"; }\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
+      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const record = JSON.stringify(replay)
+      for (const [name, v] of Object.entries(V)) expect([name, record.includes(v)]).toEqual([name, false])
+      expect(replay.omitted).toEqual([
+        { path: "src/Deploy.sol", reason: "holds a 64-hex key the redactor cannot mask" },
+        { path: "src/Ops.sol", reason: "holds an AWS secret key the redactor cannot mask" },
+        { path: "src/Words.sol", reason: "holds a mnemonic the redactor cannot mask" },
+      ])
+      const chains = replay.files.find((f: { path: string }) => f.path === "src/Chains.sol").text
+      expect(chains).toContain("// built in ~/work/vault\n")
+      expect(chains).toContain('"https://eth-mainnet.g.alchemy.com/v2/${RPC_URL_KEY}"')
+      expect(chains).toContain('"https://mainnet.infura.io/v3/${RPC_URL_KEY}"')
+      expect(chains).toContain('"https://rpc.ankr.com/eth/${RPC_URL_KEY}"')
+      expect(chains).toContain('"https://young-wild-sun.quiknode.pro/${RPC_URL_KEY}/"')
+      expect(chains).toContain("// Cookie: [REDACTED]\n")
+      expect(chains).toContain("// X-Console-Token: [REDACTED]\n")
+      expect(chains).toContain('string apiKey = "[REDACTED]";')
+      expect(chains).toContain('string aws_secret_access_key = "[REDACTED]";')
+      const toml = replay.files.find((f: { path: string }) => f.path === "foundry.toml").text
+      expect(toml).toContain('etherscan_api_key = "${ETHERSCAN_API_KEY}"')
+      expect(toml).toContain('mainnet = { key = "${ETHERSCAN_API_KEY}", url = "https://api.etherscan.io/api" }')
+
+      // A record written by an older scrubber still holds raw text. The bundle
+      // redacts and checks it again, so the zip gets today's rules.
+      const old = {
+        ...replay,
+        omitted: [],
+        files: [
+          ...replay.files,
+          { path: "src/OldChains.sol", text: `contract OldChains { string a = "https://eth-mainnet.g.alchemy.com/v2/${V.alchemy}"; }\n` },
+          { path: "src/OldDeploy.sol", text: `contract OldDeploy { uint256 constant PRIVATE_KEY = ${V.privateKey}; }\n` },
+        ],
+      }
+      const zip = buildReplayBundle({
+        finding: { title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        recorded: { replay: old, proof: { kind: "forge", pass: true, test: "testDrain()" } },
+      })
+      for (const [name, v] of Object.entries(V)) expect([name, zip.includes(v)]).toEqual([name, false])
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-shapes-zip-"))
+      try {
+        unzip(zip, dir)
+        const files = readTree(dir)
+        expect(files.get("src/OldChains.sol")).toContain("/v2/${RPC_URL_KEY}")
+        expect(files.has("src/OldDeploy.sol")).toBe(false)
+        expect(files.get("README.md")).toContain("- `src/OldDeploy.sol` — holds a 64-hex key the redactor cannot mask")
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
@@ -367,17 +463,17 @@ describe("report: replay bundle", () => {
     for (const n of names) expect(n).not.toMatch(/evil/)
   })
 
-  test("an http bundle keeps the script and says the lab cannot be bundled", () => {
+  test("an http bundle against a live target keeps the script and says there is no rerun", () => {
     const script = `const r = await request("GET", "/api/users/2", { headers: { authorization: "Bearer ${BEARER}" } });\n`
     const proof = {
       kind: "http",
       status: "pass",
-      oracle: { name: "cross-tenant read", detail: `returned Bearer ${BEARER}`, passed: true },
-      log: [{ label: "1", request: { method: "GET", url: "/api/users/2", headers: { authorization: `Bearer ${BEARER}` } }, response: { status: 200, body: "ok" } }],
+      oracle: { name: "cross-tenant-read", detail: `returned Bearer ${BEARER}`, passed: true },
+      log: [{ label: "1", request: { method: "GET", url: "https://app.example.com/api/users/2", headers: { authorization: `Bearer ${BEARER}` } }, response: { status: 200, body: "ok" } }],
     }
     const zip = buildReplayBundle({
       finding: { title: "IDOR", proofKind: "http", script, proof },
-      recorded: { script, proof },
+      recorded: { script, proof, pack: "web" },
     })
     expect(zip.includes(BEARER)).toBe(false)
     const dir = mkdtempSync(path.join(tmpdir(), "replay-http-"))
@@ -386,14 +482,122 @@ describe("report: replay bundle", () => {
       const files = readTree(dir)
       const readme = files.get("README.md") || ""
       expect(commands(readme)).toHaveLength(0)
-      expect(readme).toContain("What cannot be bundled")
-      expect(readme).toContain("no command")
-      expect(files.get("script.mjs")).toContain("${BEARER_TOKEN}")
+      expect(readme).toContain("## No rerun")
+      expect(readme).toContain("live target")
+      for (const name of ["rerun.mjs", "rerun.json", "proof-http.mjs", "SHA256SUMS"]) expect(files.has(name)).toBe(false)
+      expect(files.get("script.mjs")).toContain('authorization: "[REDACTED]"')
       expect(files.get("script.mjs")).not.toContain(BEARER)
       expect(files.get("transcript.json")).not.toContain(BEARER)
       expect(files.get("proof.json")).not.toContain(BEARER)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("an http bundle against the pack lab carries a rerun command and the engine's lab code", () => {
+    // Made up. The lab's debug route leaks a signer key; the transcript keeps
+    // the route and the key name, not the key.
+    const signerKey = "0x" + "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
+    const script = `await request("GET", "/internal/debug/config");\n`
+    const proof = {
+      kind: "http",
+      status: "pass",
+      detail: "the debug route returned the signer key",
+      oracle: { name: "debug-route-signer-key-leak", detail: "the debug route returned the signer key", passed: true },
+      log: [{
+        label: "1. GET /internal/debug/config",
+        request: { method: "GET", url: "http://origin:8080/internal/debug/config", headers: { "content-type": "application/json" }, body: null },
+        response: { status: 200, headers: {}, body: { signerPrivateKey: signerKey, signerAddress: "0x" + "ab".repeat(20) } },
+      }],
+    }
+    const zip = buildReplayBundle({ finding: { title: "debug route leaks the signer key", proofKind: "http", script, proof, stages: { proven: true } }, recorded: { script, proof, pack: "web" } })
+    expect(zip.includes(signerKey.slice(2))).toBe(false)
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-http-lab-"))
+    try {
+      unzip(zip, dir)
+      const files = readTree(dir)
+      const readme = files.get("README.md") || ""
+      expect(readme.split("\n")[0]).toMatch(/^PROVEN: /)
+      expect(commands(readme)).toEqual([
+        "npm run build:labs -- web && docker pull node:20-slim",
+        "sha256sum -c SHA256SUMS && \\\n  node rerun.mjs <path-to-touchstone-checkout>",
+      ])
+      expect(section(readme, "Rerun (offline)")).toBe("sha256sum -c SHA256SUMS && \\\n  node rerun.mjs <path-to-touchstone-checkout>")
+      expect(JSON.parse(files.get("rerun.json") || "")).toEqual({ pack: "web", image: "touchstone/web-lab:dev", oracle: "debug-route-signer-key-leak" })
+      expect(files.get("script.mjs")).toBe(script)
+      expect(files.get("rerun.mjs")).toBe(readFileSync(new URL("../../spike/lib/replay-http-rerun.mjs", import.meta.url), "utf8"))
+      expect(files.get("proof-http.mjs")).toBe(readFileSync(new URL("../../spike/lib/proof-http.mjs", import.meta.url), "utf8"))
+      const transcript = JSON.parse(files.get("transcript.json") || "")
+      expect(transcript[0].request.url).toBe("http://origin:8080/internal/debug/config")
+      expect(transcript[0].response.body.signerPrivateKey).toBe("[REDACTED]")
+      const sums = files.get("SHA256SUMS") || ""
+      for (const name of ["script.mjs", "rerun.json", "rerun.mjs", "proof-http.mjs", "transcript.json", "proof.json"]) expect(sums).toContain(`  ${name}\n`)
+      execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
+      // With no checkout path the rerun cannot load the oracle, and says so.
+      let code = 0
+      let out = ""
+      try {
+        out = execFileSync("node", ["rerun.mjs"], { cwd: dir, encoding: "utf8" })
+      } catch (err) {
+        code = (err as { status?: number }).status ?? -1
+        out = String((err as { stdout?: string }).stdout ?? "")
+      }
+      expect(code).toBe(2)
+      expect(out).toContain("CANNOT CHECK")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("an http bundle masks header pairs and unquoted secret keys", () => {
+    // Made up.
+    const sid = "sid=Xk4Pq8Lm2Rt7Vw3Zb9Nc"
+    const token = "Tt6Hq2Wr9Zk4Lp1Ty7Mv3B"
+    const script = `await request("GET", "/admin", { headers: { cookie: "${sid}" } });\n`
+    const proof = {
+      kind: "http",
+      status: "pass",
+      oracle: { name: "admin-without-auth", detail: "the admin page answered 200", passed: true },
+      log: [{
+        label: "1",
+        request: { method: "GET", url: "https://app.example.com/admin", headers: [["cookie", sid], ["x-touchstone-token", token], ["accept", "text/html"]] },
+        response: { status: 200, headers: [["set-cookie", sid]], body: "ok" },
+      }],
+    }
+    const zip = buildReplayBundle({ finding: { title: "admin page", proofKind: "http", script, proof }, recorded: { script, proof, pack: "web" } })
+    expect(zip.includes(sid)).toBe(false)
+    expect(zip.includes(token)).toBe(false)
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-http-pairs-"))
+    try {
+      unzip(zip, dir)
+      const files = readTree(dir)
+      expect(files.get("script.mjs")).toContain('cookie: "[REDACTED]"')
+      const t = JSON.parse(files.get("transcript.json") || "")
+      expect(t[0].request.headers).toEqual([["cookie", "[REDACTED]"], ["x-touchstone-token", "[REDACTED]"], ["accept", "text/html"]])
+      expect(t[0].response.headers).toEqual([["set-cookie", "[REDACTED]"]])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a proof that holds a shape the redactor cannot mask gets no zip, and the refusal names no value", () => {
+    // Made up. The redactor keeps a bare 64-hex value and a bare AWS secret.
+    const hex = "9c4f1a7e3b8d2f6a0c5e9b1d7f3a8c2e6b0d4f9a1c7e3b5d8f2a6c0e4b9d1f7a"
+    const aws = "Rb3Nc6Kd1Fg5Jy0Ts/Ua+Pe2Hq7Lm2Xp9Rt4Vw8Q"
+    for (const [detail, shape] of [[`the route returned signer key 0x${hex}`, "a 64-hex key"], [`the route returned aws ${aws}`, "an AWS secret key"]]) {
+      const proof = { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak", detail, passed: true }, log: [] }
+      let err: { refused?: boolean; name?: string; message?: string } | null = null
+      try {
+        buildReplayBundle({ finding: { title: "leak", proofKind: "http", script: "await request(\"GET\", \"/\");\n", proof }, recorded: { proof, pack: "web" } })
+      } catch (e) {
+        err = e as typeof err
+      }
+      expect(err?.refused).toBe(true)
+      expect(err?.name).toBe("BundleRefused")
+      expect(err?.message).toContain(shape)
+      expect(err?.message).toContain("proof.json")
+      expect(err?.message).not.toContain(hex)
+      expect(err?.message).not.toContain(aws)
     }
   })
 

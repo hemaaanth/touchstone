@@ -200,7 +200,15 @@ export async function handleFindings(req, res) {
           send(res, 409, { error: refused })
           return true
         }
-        const zip = buildReplayBundle({ finding, recorded })
+        let zip
+        try {
+          zip = buildReplayBundle({ finding, recorded })
+        } catch (err) {
+          // The builder refuses a zip that would leak a secret it cannot mask.
+          if (err?.refused !== true) throw err
+          send(res, 409, { error: err.message })
+          return true
+        }
         res.statusCode = 200
         res.setHeader("content-type", "application/zip")
         res.setHeader("content-disposition", `attachment; filename="touchstone-replay-${slug}.zip"`)
