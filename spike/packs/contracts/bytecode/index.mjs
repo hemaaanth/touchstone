@@ -14,6 +14,7 @@ import { obj } from "@earendil-works/pi-schema";
 import { event } from "../../../lib/event.mjs";
 import { bytecodeUnits } from "./units.mjs";
 import { mythrilScan } from "./mythril.mjs";
+import { heimdallScan, signatureOf } from "./heimdall.mjs";
 
 export { bytecodeUnits };
 
@@ -42,6 +43,37 @@ function mythrilRecord(scan) {
   };
 }
 
+// The record the run view reads (prepass-view.mjs, key `heimdall`). Heimdall is
+// a decompiler, so it contributes no vuln leads (suspects: 0). Its value is the
+// recovered ABI, carried for the agent in `abi`.
+const MAX_ABI = 64;
+function heimdallRecord(scan) {
+  return {
+    tool: "Heimdall",
+    engines: ["Heimdall"],
+    status: scan.available ? "ran" : "unavailable",
+    reason: scan.reason,
+    units: scan.units.map((u) => ({ name: u.name, file: u.file, status: u.status, reason: u.reason ?? null, functions: u.functions.length })),
+    suspects: 0,
+    recovered: scan.functions.length,
+    abi: scan.functions.slice(0, MAX_ABI).map((f) => ({
+      selector: f.selector, name: f.name, resolved: f.resolved,
+      inputs: f.inputs, outputs: f.outputs, stateMutability: f.stateMutability,
+      unit: f.unit, signature: signatureOf(f),
+    })),
+    top: [],
+  };
+}
+
+// The ABI block Heimdall contributes to the agent brief and the findings tool.
+function abiBlock(heim) {
+  if (!heim) return "";
+  if (heim.status === "unavailable") return `Heimdall: unavailable (${heim.reason}). This is a gap, not a clean result.`;
+  if (!heim.abi?.length) return "Heimdall: ran, recovered no callable functions.";
+  const lines = heim.abi.map((f) => `- ${f.signature}`).join("\n");
+  return `Heimdall decompiled the bytecode and recovered this ABI (offline, selectors not resolved to names):\n${lines}\nDeclare these in an interface to call the contract from your PoC.`;
+}
+
 function leadLine(l, i) {
   const pc = l.pc != null ? ` (opcode at pc ${l.pc})` : "";
   const seq = l.sequence?.length ? `\nCall sequence Mythril found: ${l.sequence.join(" → ")}` : "";
@@ -56,32 +88,38 @@ function toolLine(t) {
 
 // The short block for the agent's first message, or "" when no tool gave a
 // lead and none failed.
-function briefFor(units, records, leads) {
+function briefFor(units, records, leads, heim) {
   const names = units.map((u) => `${u.file} (${u.bytes} bytes)`).join(", ");
   const status = records.map(toolLine).join("\n");
   const top = leads.slice(0, 5).map(leadLine).join("\n\n");
-  return `Bytecode-only target: ${names}. Its source is not available. The matching src/<Name>.sol is a stub that deploys this exact runtime code; deploy it with \`new <Name>()\` and call it through an interface you declare in your test.\n${status}${top ? `\n\n${top}` : ""}`;
+  const abi = abiBlock(heim);
+  return `Bytecode-only target: ${names}. Its source is not available. The matching src/<Name>.sol is a stub that deploys this exact runtime code; deploy it with \`new <Name>()\` and call it through an interface you declare in your test.\n${status}${abi ? `\n\n${abi}` : ""}${top ? `\n\n${top}` : ""}`;
 }
 
 // Run every bytecode tool on every unit in the workspace. Returns the agent
 // env (BYTECODE_BRIEF, BYTECODE_JSON) and the record keys for the run view.
 // No units: nothing runs and both are empty.
-export async function bytecodePrepass(ws, { emit, scan = mythrilScan } = {}) {
+export async function bytecodePrepass(ws, { emit, scan = mythrilScan, heimdall = heimdallScan } = {}) {
   const { units, skipped } = bytecodeUnits(ws);
   if (!units.length) return { env: {}, record: {} };
-  const myth = await scan(ws, units);
-  const record = { mythril: mythrilRecord(myth) };
+  const [myth, heim] = await Promise.all([scan(ws, units), heimdall(ws, units)]);
+  const record = { mythril: mythrilRecord(myth), heimdall: heimdallRecord(heim) };
   if (skipped.length) record.mythril.skipped = skipped;
   emit?.({ t: Date.now(), ev: "bytecode-scan", tool: "Mythril", status: record.mythril.status, reason: record.mythril.reason, suspects: record.mythril.suspects, top: record.mythril.top });
+  emit?.({ t: Date.now(), ev: "bytecode-scan", tool: "Heimdall", status: record.heimdall.status, reason: record.heimdall.reason, recovered: record.heimdall.recovered });
   const leads = [...myth.leads].sort((a, b) => (RANK[a.impact] ?? 4) - (RANK[b.impact] ?? 4));
   const json = {
     units: units.map((u) => ({ name: u.name, file: u.file, bytes: u.bytes })),
     skipped,
-    tools: [{ tool: "Mythril", status: record.mythril.status, reason: record.mythril.reason, suspects: record.mythril.suspects }],
+    tools: [
+      { tool: "Mythril", status: record.mythril.status, reason: record.mythril.reason, suspects: record.mythril.suspects },
+      { tool: "Heimdall", status: record.heimdall.status, reason: record.heimdall.reason, recovered: record.heimdall.recovered },
+    ],
     leads: leads.slice(0, MAX_JSON_LEADS),
+    abi: record.heimdall.abi,
   };
   return {
-    env: { BYTECODE_BRIEF: briefFor(units, [record.mythril], leads), BYTECODE_JSON: JSON.stringify(json) },
+    env: { BYTECODE_BRIEF: briefFor(units, [record.mythril], leads, record.heimdall), BYTECODE_JSON: JSON.stringify(json) },
     record,
   };
 }
@@ -96,7 +134,7 @@ export function bytecodeKickoff(env) {
 export function bytecodeFindingsTool() {
   return defineTool({
     name: "bytecode_findings",
-    description: "Read the bytecode report for a target that ships deployed code without source: each tool's status, and every lead it found from the bytecode alone (the fault class, the opcode position, and the call sequence that reaches it). A lead is only a lead — prove it with run_poc against the contract the src/ stub deploys.",
+    description: "Read the bytecode report for a target that ships deployed code without source: each tool's status, the ABI Heimdall recovered (the functions you can call and their argument types), and every lead Mythril found from the bytecode alone (the fault class, the opcode position, and the call sequence that reaches it). A lead is only a lead — prove it with run_poc against the contract the src/ stub deploys.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => {
@@ -108,10 +146,13 @@ export function bytecodeFindingsTool() {
         ? `${t.tool}: unavailable (${t.reason}). This is a gap, not a clean result.`
         : `${t.tool}: ${t.status}, ${t.suspects} lead(s).`).join("\n");
       const units = (rep.units ?? []).map((u) => `${u.file} (${u.bytes} bytes)`).join(", ");
+      const abi = Array.isArray(rep.abi) && rep.abi.length
+        ? `Heimdall recovered this ABI (declare it as an interface for your PoC):\n${rep.abi.map((f) => `- ${f.signature}`).join("\n")}`
+        : "";
       const leads = Array.isArray(rep.leads) && rep.leads.length
         ? rep.leads.map(leadLine).join("\n\n")
         : "No lead within the tool budget. That does not mean the code is safe.";
-      return { output: [{ type: "text", text: `Units: ${units}\n${status}\n\n${leads}` }] };
+      return { output: [{ type: "text", text: `Units: ${units}\n${status}${abi ? `\n\n${abi}` : ""}\n\n${leads}` }] };
     },
   });
 }
