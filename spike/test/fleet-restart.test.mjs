@@ -104,6 +104,9 @@ const cutId = save("fleet-cut", [...head(), ...noFinding], { state: { ws: cutWs,
 const liveId = save("fleet-live", [...head(), ...fleetWork], { state: { ws: workspace(), phase: "agent" }, audit: { poc: 3, found: [submitted], passed: [["forged_session", submitted.source]] } });
 // Three children mid-turn: the card names them all.
 const threeId = save("fleet-three", [...head(), ...["a-2", "a-3", "a-4"].map((id, i) => ({ t: 10 + i, ev: "subagent-spawned", id, name: ["Alpha", "Beta", "Gamma"][i], title: "Task", area: "area", tier: "T1", parent: null, conv: String(i + 2) }))], { state: { ws: workspace(), phase: "agent" } });
+// A finding was submitted, but the workspace is gone (a reboot emptied the temp
+// folder). The proof check has nothing to run in.
+const goneId = save("fleet-gone", [...head(), ...fleetWork], { state: { ws: join(tmpdir(), "redteam-run-gone00"), phase: "agent" }, audit: { poc: 3, found: [submitted], passed: [] } });
 // 3. The server stopped before any child started (the tool scan).
 const earlyId = save("fleet-early", head(), { state: { ws: workspace(), phase: "prepass" }, session: false });
 // 4. The server stopped during the proof check: every agent had ended.
@@ -329,6 +332,16 @@ test("what the agents had submitted gets its proof check at the restart, from th
   assert.equal(existsSync(join(dir, `run-${liveId}.state.json`)), false);
 });
 
+test("with the workspace gone there is no proof check: the fleet gets its card, and the finding stays submitted", async () => {
+  const run = await closed(goneId);
+  assert.equal(run.status, "error");
+  assert.equal(run.errorInfo.title, "This fleet run stopped at the server restart");
+  assert.deepEqual(run.events.filter((e) => e.ev === "phase-restarted"), []);
+  assert.deepEqual(run.events.filter((e) => e.ev === "finding"), []);
+  assert.deepEqual(run.submitted.map((f) => f.poc), ["forged_session"]);
+  assert.deepEqual(ends(run.events).map((e) => e.id), ["a-3"]);
+});
+
 test("a fleet that stopped during its proof check finishes the check; no agent runs", async () => {
   const run = await closed(proofId);
   assert.equal(run.status, "recorded");
@@ -416,4 +429,6 @@ test("a damaged record does not stop the boot and does not hide the other runs",
   const lines = readFileSync(join(dir, `run-${damagedId}.stream.jsonl`), "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
   assert.deepEqual(ends(lines).map((e) => e.id), ["a-3"]);
   assert.deepEqual(working(lines), []);
+  // Written once, at the first boot: no end is lost inside the torn line and made again later.
+  assert.equal(readFileSync(join(dir, `run-${damagedId}.stream.jsonl`), "utf8").split('"interrupted":true').length - 1, 1);
 });
