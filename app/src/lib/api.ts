@@ -238,3 +238,14 @@ export function setDefaultModel(provider: string, model: string): Promise<Settin
 export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
 }
+
+// Where tool calls run. An empty apiUrl or target clears the saved value.
+export function setExecution(body: {
+  backend: "local" | "daytona"
+  apiKey?: string
+  clearKey?: boolean
+  apiUrl?: string
+  target?: string
+}): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/execution", body)
+}
