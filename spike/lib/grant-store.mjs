@@ -223,7 +223,8 @@ export function grantStoreError() {
     loadGrants();
     return null;
   } catch (e) {
-    return String(e?.message ?? e).replace(/^Refused: /, "");
+    const text = String(e?.message ?? e).replace(/^Refused: /, "");
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 }
 
