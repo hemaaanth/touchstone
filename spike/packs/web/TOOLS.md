@@ -10,10 +10,10 @@ in any page or spec), and one HTML page that reflects a query value (planted so
 an XSS scanner has something real to hit). It is a narrow, crypto-specific
 target, not a general web app. That shapes every verdict below.
 
-Five tools are wrapped through `runTool()` in the prepass, in Docker, on a
-throwaway copy of the lab: ZAP, Nuclei and dalfox (in `scan.mjs`), and ffuf and
-Arjun (in `ffuf.mjs` and `arjun.mjs`, collected by `discovery.mjs`). Their
-output is LEADS. A lead is never a finding: only a replayed request script that
+Six tools are wrapped through `runTool()` in the prepass, in Docker, on a
+throwaway copy of the lab: ZAP, Nuclei and dalfox (in `scan.mjs`), and ffuf,
+Arjun and Schemathesis (in `ffuf.mjs`, `arjun.mjs` and `schemathesis.mjs`,
+collected by `discovery.mjs`). Their output is LEADS. A lead is never a finding: only a replayed request script that
 the oracle accepts is a finding.
 
 ## Wrapped today
