@@ -488,12 +488,12 @@ function collectForgeFiles(ws) {
   const compiled = compiledSources(ws);
   if (compiled === "too-large") {
     // The compiled-source list cannot be read safely: ship no sources, say why.
-    return { paths: [...config], note: `the build-info is larger than ${Math.round(MAX_BUILDINFO / (1024 * 1024))} MB, so the compiled-source list was not read and the sources are not in this bundle` };
+    return { paths: [...config], note: `the build-info is larger than ${Math.round(MAX_BUILDINFO / (1024 * 1024))} MB, so the compiled-source list was not read and the sources are not in this bundle`, fromBuildInfo: false };
   }
   const sources = compiled ?? allSol(ws);
   const all = [...new Set([...config, ...sources])];
   all.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
-  return { paths: all, note: null };
+  return { paths: all, note: null, fromBuildInfo: Array.isArray(compiled) };
 }
 
 // The filesystem checks a candidate must pass before it is read, so an
@@ -521,7 +521,7 @@ function fileGuard(ws, rel) {
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const { paths, note: collectNote } = collectForgeFiles(ws);
+  const { paths, note: collectNote, fromBuildInfo } = collectForgeFiles(ws);
   const files = [];
   const omitted = [];
   let total = 0;
@@ -581,6 +581,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     contract: testIdent(contract),
     test: testIdent(test),
     solc: pinnedSolc(ws),
+    fromBuildInfo,
     fork,
     files,
     omitted,
@@ -883,17 +884,26 @@ function vendoredNote(libs) {
 // claim: closing the "claims a re-run it cannot do" class needs every
 // workspace file, which is a later task. The README says what the folder is
 // and what it is not.
-function forgeReadme({ title, replay, fork, libs = [], haveCommand }) {
+function forgeReadme({ title, replay, fork, libs = [], haveCommand, cheat }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   const forkNote = fork?.forked
     ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder, and the offline re-run cannot fork, so it is not re-run-checked.`
     : `The proof did not fork a chain; \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.`;
+  // Minor 3: say "the compiled sources" only when they came from the build-info;
+  // the fallback ships every .sol in the workspace.
+  const sourceLine = replay?.fromBuildInfo
+    ? "the compiled sources the proof read, the proof test, and the Foundry config"
+    : "every .sol source in the workspace, the proof test, and the Foundry config";
+  // Minor 2: name the cheatcode that reads a file the bundle does not ship.
+  const dataLine = cheat
+    ? `This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.`
+    : "A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked.";
   const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract }) : "";
   return `# Proof source for this finding
 
 **${title || "Finding"}** · Foundry
 
-This folder holds the proof's source files: the compiled sources the proof read, the proof test, and the Foundry config. A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
+This folder holds the proof's source files: ${sourceLine}. ${dataLine} \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
 
 A library's own test suite under \`lib/\` is not included: the proof does not import it, and some ship sample provider keys.${vendoredNote(libs)} No provider key and no bearer token from the run is in this folder.
 ${section}${omittedList(replay?.omitted)}`;
@@ -1036,13 +1046,15 @@ export function provenDate({ finding, recorded } = {}) {
 // Line 1 of a Foundry bundle README. bundleRefusal lets only a proven finding
 // reach here, so it states the proof plainly, with the date and harm kind from
 // the record, and says the folder is source to read, not a folder to re-run.
-function forgeLine1({ finding, recorded, harm, haveCommand }) {
+function forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked }) {
   const date = provenDate({ finding, recorded });
   const noun = harmNoun(harm);
   const head = `Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}`;
   // An automatic re-run check does not ship yet, so the bundle makes no re-run
   // claim: it carries the exact command for you to run by hand.
   if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked (an automatic re-run check does not ship yet); the re-run command is in this README for you to run.\n\n`;
+  if (cheat) return `PROVEN: ${head}. This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.\n\n`;
+  if (forked) return `PROVEN: ${head}. This proof forked a chain, which an offline re-run cannot, so it has no re-run command.\n\n`;
   return `PROVEN: ${head}. This folder holds the proof's source files for reading; it has no re-run command.\n\n`;
 }
 
@@ -1052,7 +1064,56 @@ function forgeReplaySection({ solc, matchContract }) {
   const command = forgeReplayCommand({ matchContract, solc });
   const prepare = forgePrepareCommand({ solc });
   const prep = prepare ? `\n## Prepare (once, online)\n\nOn a fresh machine, create and warm the pinned image's solc cache:\n\n\`\`\`sh\n${prepare}\n\`\`\`\n` : "";
-  return `\n## Re-run (offline)\n\nTouchstone does not run an automatic re-run check yet, so this bundle is not re-run-checked. Run the proof yourself from this folder:\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). A pass means the named test compiled and passed from these files alone.\n${prep}`;
+  const passLine = matchContract
+    ? "A pass means the named test compiled and passed from these files alone."
+    : "A pass means the bundle compiled and its tests passed from these files alone.";
+  return `\n## Re-run (offline)\n\nTouchstone does not run an automatic re-run check yet, so this bundle is not re-run-checked. Run the proof yourself from this folder:\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). ${passLine}\n${prep}`;
+}
+
+// The cheatcodes that make a proof read a file from the workspace a bundle does
+// not ship. The `fs` class from the pinned forge table covers ffi and the
+// writers; the file-content reads are classed `read` there (mixed with
+// non-file ops), so they are listed by name. getCode/getDeployedCode are read
+// cheatcodes too, but only when their argument is a path, not an `X.sol[:Name]`
+// artifact that forge resolves from out/. A hit drops the re-run command and
+// the README names the cheatcode (never a path of this host).
+const FS_CLASS = (() => {
+  try {
+    const list = JSON.parse(readFileSync(new URL("./vm-cheatcodes.json", import.meta.url), "utf8"));
+    return new Set(list.filter((c) => c && c.class === "fs").map((c) => c.name));
+  } catch {
+    return new Set(["ffi", "tryFfi", "writeFile", "writeFileBinary", "writeLine", "writeJson", "writeToml", "copyFile", "createDir", "removeDir", "removeFile", "dumpState"]);
+  }
+})();
+const FILE_READS = ["readFile", "readFileBinary", "readLine", "readDir"];
+const FILE_CHEATS = new Set([...FS_CLASS, ...FILE_READS]);
+const ARTIFACT_CHEATS = new Set(["getCode", "getDeployedCode"]);
+const ARTIFACT_NAME = /^[^"'\s]+\.sol(?::[A-Za-z0-9_$]+)?$/;
+function firstStringArg(afterParen) {
+  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/.exec(afterParen);
+  return m ? m[2] : null;
+}
+function stripComments(text) {
+  return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+}
+// The first file cheatcode a shipped source calls (as `vm.<name>`), or null.
+// Scans the comment-stripped text, on any receiver.
+const CHEAT_CALL = new RegExp("\\.\\s*([A-Za-z]+)\\s*\\(([\\s\\S]{0,160})", "g");
+function fileCheatUsed(sources) {
+  for (const text of sources) {
+    const code = stripComments(text);
+    CHEAT_CALL.lastIndex = 0;
+    let m;
+    while ((m = CHEAT_CALL.exec(code))) {
+      const name = m[1];
+      if (FILE_CHEATS.has(name)) return name;
+      if (ARTIFACT_CHEATS.has(name)) {
+        const arg = firstStringArg(m[2]);
+        if (arg !== null && !ARTIFACT_NAME.test(arg)) return name; // a path, not an artifact
+      }
+    }
+  }
+  return null;
 }
 
 // The final text files a bundle ships (vendored resolved, redacted), including
@@ -1129,12 +1190,15 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   const harm = proof?.harm ?? null;
   // The re-run verdict was recorded once (record.mjs), never in this request.
   // The re-run command is offered for a proof that can run offline: it needs
-  // foundry.toml and a test, and must not fork a chain (an offline re-run
-  // cannot fork). The bundle makes no automatic re-run claim (that check does
-  // not ship yet); the reader runs the command by hand.
-  const haveCommand = haveProject && !fork.forked;
+  // foundry.toml and a test, must not fork a chain (an offline re-run cannot
+  // fork), and must not read a file the bundle does not ship (a file cheatcode).
+  // Scan only the proof's own sources, not vendored libraries: forge-std's own
+  // code calls ffi/getCode, which does not mean this proof reads a file.
+  const cheat = fileCheatUsed(files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string" && f.vendored !== true).map((f) => f.text));
+  const noCmd = !haveProject ? null : fork.forked ? "forked" : cheat ? cheat : null;
+  const haveCommand = !noCmd && haveProject;
   const readme = files.length
-    ? forgeReadme({ title, replay, fork, libs, haveCommand })
+    ? forgeReadme({ title, replay, fork, libs, haveCommand, cheat })
     : `# Proof source for this finding
 
 **${title}** · Foundry
@@ -1152,7 +1216,7 @@ ${omittedList(omitted)}`;
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   // The hashes of every file the bundle ships, so a reader can check the folder.
   if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
-  return finish(entries, forgeLine1({ finding, recorded, harm, haveCommand }) + readme);
+  return finish(entries, forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked: fork.forked }) + readme);
 }
 
 // Re-run the Foundry proof from the bundle's own files, offline, and say
