@@ -98,3 +98,12 @@ test('testssl.sh runs pinned on the granted network, and no https page is an una
   assert.match(tls.reason, /no https endpoint/);
   assert.match(tlsLeads(none.snapshot)[0].description, /no https endpoint/);
 });
+
+test('DNSViz probe runs pinned on the granted network, and grok runs with no network', async () => {
+  const { snapshot, calls } = await capture({ SHIM_HTTPS: '1' });
+  pinned(calls, DNSVIZ, 'probe', NETWORK);
+  pinned(calls, DNSVIZ, 'grok', 'none');
+  for (const engine of ['dnsviz-probe', 'dnsviz-grok']) assert.equal(row(snapshot, engine).status, 'ran', engine);
+  assert.equal(snapshot.dnssec.output, fixture('dnsviz-example.com.json'));
+  assert.equal(snapshot.dnssec.raw, sha256(snapshot.dnssec.output));
+});
