@@ -10,8 +10,9 @@
 //    retry must not double-count spend or pass either budget.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import fs, { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -283,6 +284,68 @@ test("ledger lock: a lock held too long stops the call with its own reason, not 
   assert.equal(total(), 1);
 });
 
+// A pid that was just in use and is now dead.
+const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid;
+
+test("ledger lock: a lock whose holder is dead is removed at once", (t) => {
+  const saved = { ...LEDGER_LOCK_MS };
+  t.after(() => Object.assign(LEDGER_LOCK_MS, saved));
+  Object.assign(LEDGER_LOCK_MS, { waitMs: 5_000, staleMs: 10_000 });
+  ledger(1);
+  writeFileSync(`${LEDGER}.lock`, String(deadPid())); // fresh, so only the pid says it is stale
+  const t0 = Date.now();
+  charge("unknown-model", { input: 1_000_000, output: 0 });
+  assert.ok(Date.now() - t0 < 1_000, `waited ${Date.now() - t0} ms`);
+  assert.ok(Math.abs(total() - 2) < 1e-9, `ledger ${total()}`);
+  assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("spend.json.")), []);
+});
+
+test("ledger lock: a lock whose holder is alive is kept, however old", (t) => {
+  const saved = { ...LEDGER_LOCK_MS };
+  t.after(() => Object.assign(LEDGER_LOCK_MS, saved));
+  Object.assign(LEDGER_LOCK_MS, { waitMs: 100, staleMs: 10 });
+  ledger(1);
+  const lock = `${LEDGER}.lock`;
+  writeFileSync(lock, String(process.ppid)); // the test runner: alive
+  utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  t.after(() => rmSync(lock, { force: true }));
+  assert.throws(() => charge("unknown-model", { input: 1_000_000, output: 0 }), (err) => err.message.includes(LEDGER_LOCKED));
+  assert.equal(readFileSync(lock, "utf8"), String(process.ppid));
+  assert.equal(total(), 1);
+  assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("spend.json.") && f !== "spend.json.lock"), []);
+});
+
+// The race in a fixed order. Process B sees a dead holder's lock. Before B can
+// remove it, process A removes it and takes the lock. B must then keep A's lock.
+test("ledger lock: a stale lock that another process replaced is not removed", (t) => {
+  const saved = { ...LEDGER_LOCK_MS };
+  Object.assign(LEDGER_LOCK_MS, { waitMs: 100, staleMs: 10_000 });
+  ledger(1);
+  const lock = `${LEDGER}.lock`;
+  writeFileSync(lock, String(deadPid()));
+  const real = fs.readFileSync;
+  let swapped = false;
+  fs.readFileSync = function (path, ...rest) {
+    const out = real.call(this, path, ...rest);
+    if (!swapped && path === lock) {
+      swapped = true;
+      rmSync(lock);
+      writeFileSync(lock, String(process.ppid)); // A, alive, now holds the lock
+    }
+    return out;
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    fs.readFileSync = real;
+    syncBuiltinESMExports();
+    Object.assign(LEDGER_LOCK_MS, saved);
+    rmSync(lock, { force: true });
+  });
+  assert.throws(() => charge("unknown-model", { input: 1_000_000, output: 0 }), (err) => err.message.includes(LEDGER_LOCKED));
+  assert.ok(swapped);
+  assert.equal(real(lock, "utf8"), String(process.ppid), "A's lock is still there");
+});
+
 // ---- Many processes share one ledger. No charge is lost and the file never
 // tears. Each worker loops guard() then charge() at $0.01.
 
@@ -297,11 +360,16 @@ for (let i = 0; i < n; i++) {
 }
 console.log(JSON.stringify({ corrupt, capped, charged, other }));
 `;
-async function race(name, workers, rounds, cap) {
+// `lock` is the text of a stale lock file left before the workers start.
+async function race(name, workers, rounds, cap, lock) {
   const d = join(dir, name);
   mkdirSync(d);
   const file = join(d, "spend.json");
   writeFileSync(file, JSON.stringify({ totalUsd: 0, calls: 0, byModel: {} }));
+  if (lock !== undefined) {
+    writeFileSync(`${file}.lock`, lock);
+    utimesSync(`${file}.lock`, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  }
   const worker = join(d, "worker.mjs");
   writeFileSync(worker, WORKER);
   const env = { ...process.env, SPEND_LEDGER: file, SPEND_CAP_USD: String(cap), RUN_BUDGET_USD: "1000" };
@@ -344,3 +412,18 @@ test("ledger race: 4 processes at a $2 cap record every charge and stop near the
   assert.ok(results.some((r) => r.capped > 0));
   assert.deepEqual(leftover, []);
 });
+
+// Two processes must not both remove one stale lock: the second would remove
+// the first one's new lock, and both would write at once.
+for (const [kind, lock] of [["dead holder", () => String(deadPid())], ["no pid, 60 s old", () => ""]]) {
+  test(`ledger race: 8 processes start on a stale lock (${kind}) and lose no charge`, { timeout: 120000 }, async () => {
+    for (let round = 0; round < 10; round++) {
+      const { results, l, leftover } = await race(`stale-${kind.replace(/\W+/g, "-")}-${round}`, 8, 20, 1000, lock());
+      const charged = results.reduce((a, r) => a + r.charged, 0);
+      assert.deepEqual(results.flatMap((r) => r.other), []);
+      assert.equal(charged, 160);
+      assert.equal(l.calls, charged, `round ${round}`);
+      assert.deepEqual(leftover, []);
+    }
+  });
+}

@@ -3,7 +3,7 @@
 // BASE_URL, MODELS and the key come from the provider active when this module
 // loads: PROVIDER=<id>, else the Settings default. Each engine run is a fresh
 // process, so this snapshot is that run's provider and budget.
-import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FALLBACK_PRICE, activeProvider, readConfig, runBudgetUsd, providerKey } from "./providers.mjs";
 import { createRunBudget } from "./run-budget.mjs";
@@ -81,24 +81,65 @@ export function ledgerState() {
 // Many processes share the ledger (fleet children, parallel app runs). Each
 // charge is a read-modify-write, so it runs under a lock file, and the new
 // ledger is written to a temp file and renamed over the old one. A reader never
-// sees a half-written file, and no charge is lost. A lock older than staleMs is
-// left by a dead process and is removed. waitMs is longer than staleMs, so a
-// waiter outlasts a dead lock and still writes its charge. Tests shorten both.
+// sees a half-written file, and no charge is lost.
+//
+// The lock file holds its holder's pid. It is made whole in a temp file and
+// hard-linked into place, so it is never seen empty. A lock whose holder is dead
+// is stale. A lock with no pid (an older one) is stale once it is older than
+// staleMs. Only the holder of `${lock}.break` removes a stale lock, and it checks
+// the lock again under that hold, so two processes cannot both remove it and
+// then each take a lock. waitMs is longer than staleMs, so a waiter outlasts a
+// dead lock and still writes its charge. Tests shorten both.
 export const LEDGER_LOCK_MS = { waitMs: 45_000, staleMs: 30_000 };
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Take `path` by linking the pid file to it. False when someone else has it.
+function take(pidFile, path) {
+  try { linkSync(pidFile, path); return true; } catch (err) { if (err.code === "EEXIST") return false; throw err; }
+}
+// The pid in a lock: a number, null when it has none, undefined when it is gone.
+function holderOf(path) {
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return undefined; }
+  const pid = Number(text.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+function alive(pid) {
+  // This code is synchronous and holds no lock while it waits, so a lock with
+  // this process's pid is left from an earlier process that had the same pid.
+  if (pid === process.pid) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === "EPERM"; }
+}
+function stale(lock, pid) {
+  if (pid === undefined) return false;
+  if (pid !== null) return !alive(pid);
+  try { return Date.now() - statSync(lock).mtimeMs > LEDGER_LOCK_MS.staleMs; } catch { return false; }
+}
+function breakStale(lock, pidFile) {
+  const pid = holderOf(lock);
+  if (!stale(lock, pid)) return;
+  const brk = `${lock}.break`;
+  if (!take(pidFile, brk)) return; // another process is removing it
+  try {
+    // Still the same stale lock? A new holder's lock has a live pid.
+    const again = holderOf(lock);
+    if (again === pid && stale(lock, again)) unlinkSync(lock);
+  } finally {
+    try { unlinkSync(brk); } catch { /* already removed */ }
+  }
+}
 function withLedgerLock(file, fn) {
   const lock = `${file}.lock`;
+  const pidFile = `${lock}.${process.pid}.tmp`;
+  writeFileSync(pidFile, String(process.pid));
   const until = Date.now() + LEDGER_LOCK_MS.waitMs;
-  for (;;) {
-    try {
-      closeSync(openSync(lock, "wx"));
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      try { if (Date.now() - statSync(lock).mtimeMs > LEDGER_LOCK_MS.staleMs) unlinkSync(lock); } catch { /* gone already */ }
-      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${LEDGER_LOCKED} Remove the lock file if no run is active.`);
+  try {
+    while (!take(pidFile, lock)) {
+      breakStale(lock, pidFile);
+      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${LEDGER_LOCKED} If no run is active, remove the lock file and any ${lock}.break file.`);
       sleepMs(2 + Math.random() * 8);
     }
+  } finally {
+    try { unlinkSync(pidFile); } catch { /* already removed */ }
   }
   try {
     return fn();
