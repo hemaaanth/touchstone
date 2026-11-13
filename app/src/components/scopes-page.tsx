@@ -374,6 +374,7 @@ function BriefField({ target, onSaved }: { target: TargetChoice; onSaved: () => 
       ) : (
         <p className="text-[11px] leading-relaxed text-muted-foreground">Text for the model only. It never adds a host, a grant or a tool.</p>
       )}
+      <p className="-mt-1 text-[11px] leading-relaxed text-muted-foreground">Do not paste secrets here. The brief is saved with each run.</p>
     </>
   )
 }

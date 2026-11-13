@@ -117,6 +117,12 @@ export interface RunFailure {
   reason?: string
 }
 
+// The step label of one read_source call.
+function readLabel(file: string, scope: TargetScope | null): string {
+  if (file.replace(/^\.\//, "") !== "BRIEF.md") return `Read ${file || "a source file"}`
+  return scope && ["brief", "scope", "live"].includes(scope.kind) ? "Read the scope brief" : "Looked for a BRIEF.md file"
+}
+
 export interface RunState {
   events: RunEvent[]
   steps: Step[]
@@ -321,9 +327,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "list", phase, label: "Listed the contract sources" })
         break
       case "read_source":
-        // Older runs got the scope text as a BRIEF.md file that Touchstone wrote.
-        // It was never a file of the repo, so it is not named as one.
-        steps.push({ key, kind: "read", phase, label: str(e.file).replace(/^\.\//, "") === "BRIEF.md" ? "Read the scope brief" : `Read ${str(e.file) || "a source file"}` })
+        // Older runs of a scope got its text as a BRIEF.md file that Touchstone
+        // wrote; it was never a file of the repo. A lab never had one (the two
+        // labs that ship a BRIEF.md hand it over in the first message), so there
+        // the agent only looked for it.
+        steps.push({ key, kind: "read", phase, label: readLabel(str(e.file), scope) })
         break
       case "run_poc":
         steps.push({

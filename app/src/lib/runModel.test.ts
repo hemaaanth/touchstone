@@ -369,7 +369,15 @@ test("the scope brief: Run Info gets the last one, a follow-up can remove it, an
 })
 
 test("an older run's read of the Touchstone BRIEF.md is not shown as a repo file", () => {
-  const s = reduceEvents([{ t: 1, ev: "read_source", file: "BRIEF.md" }, { t: 2, ev: "read_source", file: "src/Vault.sol" }])
-  const labels = s.steps.filter((st) => st.kind === "read").map((st) => st.label)
-  assert.deepEqual(labels, ["Read the scope brief", "Read src/Vault.sol"])
+  const reads = (kind: string | null) =>
+    reduceEvents([
+      ...(kind ? [{ t: 0, ev: "scope", scope: { id: "s", title: "svc", kind } }] : []),
+      { t: 1, ev: "read_source", file: "BRIEF.md" },
+      { t: 2, ev: "read_source", file: "src/Vault.sol" },
+    ]).steps.filter((st) => st.kind === "read").map((st) => st.label)
+  // A scope run got its text in that file.
+  for (const kind of ["scope", "brief", "live"]) assert.deepEqual(reads(kind), ["Read the scope brief", "Read src/Vault.sol"])
+  // A lab never had a scope brief: the agent only looked for the file.
+  assert.deepEqual(reads("lab"), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
+  assert.deepEqual(reads(null), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
 })
