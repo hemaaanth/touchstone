@@ -93,9 +93,15 @@ writeFileSync(join(dir, `run-${reportId}.json.tmp`), '{"result":');
 const terminalId = fixture("terminal-cleanup", "proof", [{ ev: "status", t: 6, status: "no-finding" }]);
 const stoppedId = fixture("operator-stopped", "prepass", [{ ev: "stop-requested", t: 6 }]);
 const loopId = fixture("restart-loop", "prepass", [1, 2, 3].map((t) => ({ ev: "phase-restarted", t: 5 + t, phase: "prepass" })));
+const corruptId = fixture("corrupt-state", "prepass");
+writeFileSync(join(dir, `run-${corruptId}.state.json`), '{"phase":"prepass",');
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
 
-const { getRun, subscribe } = await import("../../app/server/runs.mjs");
+const logged = [];
+const consoleError = console.error;
+console.error = (...args) => logged.push(args.join(" "));
+const { getRun, listRuns, subscribe } = await import("../../app/server/runs.mjs");
+console.error = consoleError;
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("boot resumes a solo run killed in prepass without duplicate history", async () => {
@@ -219,4 +225,16 @@ test("recovery gives up after three restarts of the same run", async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(existsSync(join(dir, `run-${loopId}.state.json`)), false);
+});
+
+test("a corrupt state file shows the run as an error and logs once", async () => {
+  assert.equal(logged.filter((line) => line.includes(corruptId)).length, 1);
+  assert.ok(listRuns().some((r) => r.id === corruptId));
+  for (let i = 0; i < 100 && !getRun(corruptId).events.some((e) => e.ev === "closed"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const run = getRun(corruptId);
+  assert.equal(run.status, "error");
+  assert.match(run.error, /saved recovery state is unreadable/);
+  assert.equal(existsSync(join(dir, `run-${corruptId}.state.json`)), false);
 });

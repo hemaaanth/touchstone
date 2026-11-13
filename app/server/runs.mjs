@@ -1342,12 +1342,23 @@ function savedRun(id, events, mtime) {
   const interrupted = !TERMINAL.includes(status)
   const stopPending = events.findLastIndex((e) => e.ev === "stop-requested") > events.findLastIndex((e) => e.ev === "stopped")
   const stateFile = path.join(RESULTS_DIR, `run-${id}.state.json`)
-  const savedMode = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")).mode : null
-  if (interrupted && (!existsSync(stateFile) || ((events.findLast((e) => e.ev === "mode")?.mode ?? savedMode) !== "solo" && !stopPending))) {
+  // A torn state file must not hide the run: it ends as an error instead.
+  let saved = null
+  if (existsSync(stateFile)) {
+    try {
+      saved = JSON.parse(readFileSync(stateFile, "utf8"))
+    } catch (err) {
+      console.error(`[runs] saved recovery state for ${id} is unreadable: ${String(err?.message ?? err).slice(0, 200)}`)
+      saved = false
+    }
+  }
+  if (interrupted && (!saved || ((events.findLast((e) => e.ev === "mode")?.mode ?? saved.mode) !== "solo" && !stopPending))) {
     status = "error"
-    error = events.findLast((e) => e.ev === "mode")?.mode === "fleet"
-      ? "this fleet run stopped at the server restart; its coordinator cannot safely resume yet"
-      : "the server restarted during this run, so it stopped"
+    error = saved === false
+      ? "saved recovery state is unreadable; start a new run"
+      : events.findLast((e) => e.ev === "mode")?.mode === "fleet"
+        ? "this fleet run stopped at the server restart; its coordinator cannot safely resume yet"
+        : "the server restarted during this run, so it stopped"
     events.push({ t: Date.now(), ev: "status", status, error })
   }
   // Same for a follow-up the restart cut off: it started after the last close.
@@ -1377,6 +1388,7 @@ function savedRun(id, events, mtime) {
     decision,
     error,
     interrupted,
+    saved,
     child: null,
     stderr: "",
   }
@@ -1390,7 +1402,7 @@ function checkRestarts(run) {
 }
 
 async function resumeRun(run) {
-  const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
+  const state = run.saved
   if (!state.target || (state.phase !== "setup" && !state.ws)) throw new Error("the saved workspace or target is missing; start a new run")
   run.ws = state.ws
   run.target = state.target // Never replace this snapshot with a newer, wider scope.
@@ -1521,7 +1533,7 @@ function loadSavedRun(id) {
       ensureFiles(run)
       if (own(run)) {
         try {
-          run.ws = JSON.parse(readFileSync(run.stateFile, "utf8")).ws
+          run.ws = run.saved?.ws ?? null
           endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
         } catch (err) {
           release(run)
@@ -1533,15 +1545,17 @@ function loadSavedRun(id) {
     // one now from the stream: the run is an error, with its reason.
     if (run.interrupted && run.status === "error") {
       if (!existsSync(recordFile)) finalize(run)
-      release(run)
+      if (run.saved === false) {
+        ensureFiles(run)
+        broadcast(run, { ev: "closed" }) // releases the lock and removes the torn state file
+      } else release(run)
     }
     if (run.interrupted && run.status !== "error") {
       ensureFiles(run)
       if (own(run)) {
         const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
         if (stopped) {
-          const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
-          run.ws = state.ws
+          run.ws = run.saved.ws
           endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
         } else resumeRun(run).catch(async (err) => {
           run.error = `Recovery could not continue: ${String(err?.message ?? err)}`
