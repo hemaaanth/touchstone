@@ -515,16 +515,17 @@ export function RunChat({
   )
 
   // The panel floats in the chat's top-right corner, below the top bar (the
-  // placement of 68f772a), and opens down over the chat. It stops above the
-  // composer. Only the panel itself takes clicks. It comes before the chat in
-  // the page, so Tab goes bar, panel, chat. On a phone it shows only when
-  // open, below the bar, across the width, right after the bar in the page,
-  // so Tab goes from its control into it.
+  // placement of 68f772a), and opens down over the chat. It stops 12 px above
+  // the composer, also when the composer grows (run-layout.ts). Only the panel
+  // itself takes clicks. It comes before the chat in the page, so Tab goes
+  // bar, panel, chat. On a phone it shows only when open, below the bar,
+  // across the width, right after the bar in the page, so Tab goes from its
+  // control into it.
   const panelLayer =
     showPanel && (!narrow || panelOpen) ? (
       <div
         inert={drawerOpen && !beside}
-        className={cn("pointer-events-none absolute bottom-28 flex items-start justify-end", panelLayerClass(narrow), beside ? "z-30" : "z-10")}
+        className={cn("pointer-events-none absolute flex items-start justify-end", panelLayerClass(narrow), beside ? "z-30" : "z-10")}
         style={beside ? { right: drawerWidth + 12 } : undefined}
       >
         <RunPanel
@@ -587,7 +588,7 @@ export function RunChat({
           </div>
           {narrow ? panelLayer : null}
 
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          <div data-run-chat-area className="relative flex min-h-0 flex-1 flex-col">
             {narrow ? null : panelLayer}
             <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>

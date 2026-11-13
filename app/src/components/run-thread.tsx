@@ -41,6 +41,7 @@ import { ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indi
 import { splitRaw, type RunFailure, type Step } from "@/lib/runModel"
 import { candidateGroupLabel } from "@/lib/candidate"
 import { cn } from "cn"
+import { composerRoomRef } from "@/lib/run-layout"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { card, cardInteractive, ShimmerLabel, StatusMark, type Mark } from "@/components/assistant-ui/elements/surfaces"
@@ -288,7 +289,8 @@ function Composer({
   context: ContextUse | null
 }) {
   return (
-    <div className="px-5 pt-2 pb-5 max-md:px-3 max-md:pb-3">
+    // The ref tells the run panel where the composer's top is (run-layout.ts).
+    <div ref={composerRoomRef} className="px-5 pt-2 pb-5 max-md:px-3 max-md:pb-3">
       <div className="mx-auto max-w-(--thread-max-width)">
         <ComposerPrimitive.Root
           className={cn(
