@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runTool } from "../lib/wrap.mjs";
-import { holdsSecret } from "../lib/capture.mjs";
+import { holdsSecret, runCapture } from "../lib/capture.mjs";
 import { sha256 } from "../lib/proof-evidence.mjs";
 import { LEGITIFY, captureLegitify, blockedFrom, legitifyReason } from "../packs/supply-chain/networked-blocked.mjs";
 import { prepareNetworkedSnapshot, networkedResults, NETWORKED_TOOLS } from "../packs/supply-chain/networked.mjs";
@@ -23,7 +23,7 @@ const FAKE_TOKEN = "ghp_FAKEFAKEFAKEFAKEFAKEFAKE0123456789ab";
 const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
 const target = { owner: "hemaaanth", repo: "touchstone" };
 const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
-const seam = (exec) => async (o) => runTool({ ...o, capture: { ...o.capture, confine, exec } });
+const seam = (exec) => async (o) => runCapture({ ...o, ...o.capture, confine, exec });
 const legRow = (d) => d.coverage.find((c) => c.engine === "legitify");
 
 test("real capture: Legitify rejects the fine-grained token; the result is a not-covered gap, no lead, never clean", () => {

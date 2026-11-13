@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { execFileSync } from "node:child_process";
 import { runTool } from "../lib/wrap.mjs";
-import { holdsSecret } from "../lib/capture.mjs";
+import { holdsSecret, runCapture } from "../lib/capture.mjs";
 import { pinSnapshot, replayEvidence, sha256 } from "../lib/proof-evidence.mjs";
 import { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } from "../packs/supply-chain/networked.mjs";
 
@@ -178,7 +178,7 @@ test("capture argv for Scorecard: confined network, --pull=never, token by name,
   const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: "touchstone-reach-proxy-t", gateUrl: "http://scope-gate:8080", stop: async () => {} });
   const exec = async (args, { env }) => { calls.push({ args, env }); return { code: 0, stdout: "", stderr: "", timedOut: false }; };
   const localRuns = [];
-  const run = async (o) => (o.capture ? runTool({ ...o, capture: { ...o.capture, confine, exec } }) : (localRuns.push(o), { code: 0, stdout: "", stderr: "" }));
+  const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : (localRuns.push(o), { code: 0, stdout: "", stderr: "" }));
   await captureScorecard({ version: 1, scope: "github-commit", commit: "a".repeat(40), files: { "a.txt": "x" } }, { target, reach, token: FAKE_TOKEN, run });
 
   const { args, env } = calls.find((c) => c.args[0] === "run");
@@ -233,7 +233,7 @@ test("local run argv: --pull=never", async () => {
 test("the token value appears nowhere in the pinned snapshot, even when the tool prints it", async () => {
   const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
   const exec = async (args, { env }) => ({ code: 0, stdout: `{"token":"${env.GITHUB_TOKEN}"}`, stderr: `401 Bad credentials for ${env.GITHUB_TOKEN}`, timedOut: false });
-  const run = async (o) => (o.capture ? runTool({ ...o, capture: { ...o.capture, confine, exec } }) : { code: 0, stdout: `echo ${FAKE_TOKEN}`, stderr: "" });
+  const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : { code: 0, stdout: `echo ${FAKE_TOKEN}`, stderr: "" });
   const ws = mkdtempSync(join(tmpdir(), "touchstone-net-tok-"));
   try {
     const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
@@ -256,7 +256,7 @@ test("an encoded or split copy of the token: the capture is unavailable and the 
   const half = FAKE_TOKEN.length >> 1;
   for (const leak of [(t) => Buffer.from(t).toString("base64"), (t) => `${t.slice(0, half)}\n${t.slice(half)}`]) {
     const exec = async (args, { env }) => ({ code: 0, stdout: `{"checks":[],"note":"${leak(env.GITHUB_TOKEN)}"}`, stderr: "", timedOut: false });
-    const run = async (o) => (o.capture ? runTool({ ...o, capture: { ...o.capture, confine, exec } }) : { code: 1, stdout: "", stderr: "" });
+    const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : { code: 1, stdout: "", stderr: "" });
     const ws = mkdtempSync(join(tmpdir(), "touchstone-net-leak-"));
     try {
       const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };

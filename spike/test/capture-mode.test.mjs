@@ -1,13 +1,18 @@
 // Capture mode in runTool(): the only path where a pack tool gets the network.
 //
-// The seam tests record the exact docker argv runTool hands to docker, with a
-// stand-in boundary, so no network is built. The last test builds the real
-// boundary and runs a real container in capture mode (no GitHub request).
+// The seam tests call runCapture with a stand-in boundary and docker, and
+// record the exact docker argv, so no network is built. runTool passes only
+// { reach, targets, hosts, secrets } on, so its seams cannot be set from there.
+// The last tests build the real boundary and run a real container in capture
+// mode (no GitHub request).
 //
 //   node --test spike/test/capture-mode.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { runTool } from "../lib/wrap.mjs";
 import { captureArgs, assertCaptureReach, CAPTURE_TARGETS, egressSummary, scrub, runNamed, runCapture, holdsSecret, cleanOutput, LEAK_REASON, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
@@ -34,8 +39,8 @@ function seams({ print = "", printErr = "", code = 0, timedOut = false } = {}) {
 
 test("capture argv: network on only through the grant's boundary, --pull=never always, token by name only", async () => {
   const s = seams({ print: "{}" });
-  const r = await runTool({ image: "touchstone/scorecard:5.6.0", cmd: ["--repo=github.com/hemaaanth/touchstone", "--format=json"], user: "1000:1000",
-    capture: { reach, targets, hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec: s.exec } });
+  const r = await runCapture({ image: "touchstone/scorecard:5.6.0", cmd: ["--repo=github.com/hemaaanth/touchstone", "--format=json"], user: "1000:1000",
+    reach, targets, hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec: s.exec });
   assert.equal(r.code, 0);
   assert.equal(r.refused, undefined);
   const { args, env } = s.calls[0];
@@ -55,9 +60,33 @@ test("capture argv: network on only through the grant's boundary, --pull=never a
   assert.deepEqual(r.egress, { tunnels: { "api.github.com": 1 }, blocked: { "api.osv.dev": 1 } });
 });
 
+// runTool passes on only the grant, targets, hosts and secrets. A caller's own
+// confine or exec is dropped, so it cannot pick its own open network. Every
+// docker call here goes to a PATH shim that logs it and does nothing, so the
+// real boundary fails to start and the capture is refused.
+test("runTool drops a caller's confine and exec: only { reach, targets, hosts, secrets } reach runCapture", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "touchstone-cap-shim-"));
+  const log = join(dir, "argv.jsonl");
+  writeFileSync(join(dir, "docker"), `#!/usr/bin/env node\nrequire("fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
+  chmodSync(join(dir, "docker"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  let used = 0;
+  try {
+    const confine = async () => { used++; return { netClient: "my-own-open-net", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} }; };
+    const exec = async () => { used++; return { code: 0, stdout: "{}", stderr: "" }; };
+    const r = await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { reach, targets, hosts: ["api.github.com"], confine, exec } });
+    assert.equal(used, 0, "the caller's seams were not used");
+    assert.match(r.refused ?? "", /could not build the egress boundary/);
+    const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+    assert.ok(calls.some((a) => a[0] === "network"), "the real boundary was tried (against the shim)");
+    assert.ok(!JSON.stringify(calls).includes("my-own-open-net"));
+  } finally { process.env.PATH = path; rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("capture argv has no token flag when the tool needs no secret", async () => {
   const s = seams({ print: "{}" });
-  await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { reach, targets, hosts: ["api.github.com"], confine: s.confine, exec: s.exec } });
+  await runCapture({ image: "x:1", cmd: [], user: "1:1", reach, targets, hosts: ["api.github.com"], confine: s.confine, exec: s.exec });
   assert.ok(!s.calls[0].args.includes("GITHUB_TOKEN"));
 });
 
@@ -75,7 +104,7 @@ test("no grant, wrong scope, a non-GitHub host or a missing token: refused befor
   ];
   for (const capture of bad) {
     const s = seams();
-    const r = await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { ...capture, confine: s.confine, exec: s.exec } });
+    const r = await runCapture({ image: "x:1", cmd: [], user: "1:1", ...capture, confine: s.confine, exec: s.exec });
     assert.equal(r.code, -1);
     assert.ok(r.refused, JSON.stringify(capture.reach));
     assert.equal(s.built.length, 0, "no boundary built");
@@ -87,7 +116,7 @@ test("no grant, wrong scope, a non-GitHub host or a missing token: refused befor
 
 test("the token value never appears in what a capture returns, even when the tool prints it", async () => {
   const s = seams({ print: 'token is $TOKEN {"ok":1}', printErr: "auth $TOKEN failed" });
-  const r = await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { reach, targets, hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec: s.exec } });
+  const r = await runCapture({ image: "x:1", cmd: [], user: "1:1", reach, targets, hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec: s.exec });
   assert.ok(!JSON.stringify(r).includes(FAKE_TOKEN));
   assert.match(r.stdout, /\[REDACTED\]/);
   assert.match(r.stderr, /\[REDACTED\]/);
@@ -95,7 +124,7 @@ test("the token value never appears in what a capture returns, even when the too
 
 test("every capture removes its container by name, even one that ended on its own", async () => {
   const s = seams({ code: 1, timedOut: true });
-  const r = await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { reach, targets, hosts: ["api.github.com"], confine: s.confine, exec: s.exec } });
+  const r = await runCapture({ image: "x:1", cmd: [], user: "1:1", reach, targets, hosts: ["api.github.com"], confine: s.confine, exec: s.exec });
   assert.equal(r.timedOut, true);
   const name = s.calls[0].args[s.calls[0].args.indexOf("--name") + 1];
   assert.deepEqual(s.calls.find((c) => c.args[0] === "rm").args, ["rm", "-f", name]);

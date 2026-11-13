@@ -32,7 +32,11 @@ import { runCapture } from "./capture.mjs";
 //          allow-list, keeps --pull=never, and passes secrets by env name only.
 //          `network` is ignored in this mode. Capture runs on local Docker only.
 export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, capture = null }) {
-  if (capture) return runCapture({ ...capture, image, cmd, ws, user, env, timeoutMs, maxBuffer });
+  if (capture) {
+    // Only these four. confine and exec are runCapture's test seams, not options.
+    const { reach, targets, hosts, secrets } = capture;
+    return runCapture({ reach, targets, hosts, secrets, image, cmd, ws, user, env, timeoutMs, maxBuffer });
+  }
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
   const args = [
     "run", "--rm", "--pull=never", "--network", network,
