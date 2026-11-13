@@ -1,0 +1,57 @@
+[2026-11-13 02:08:09.56] Compiling `.`... Done! (3.627505285s)
+Analyzing contract: /tmp/p/test/recon/CryticTester.sol:CryticTester
+[2026-11-13 02:08:13.90] [Worker 1] Test property_solvent() falsified!
+  Call sequence:
+CryticTester.vault_redeem(1524785991) from: 0x0000000000000000000000000000000000020000 Time delay: 412373 seconds Block delay: 5023
+CryticTester.property_shareSupply() from: 0x0000000000000000000000000000000000020000 Time delay: 289103 seconds Block delay: 127
+CryticTester.property_solvent() from: 0x0000000000000000000000000000000000020000 Time delay: 116188 seconds Block delay: 30256
+CryticTester.vault_deposit(1440029146431446997131742392540875951092207397373728382709682340335418099482) from: 0x0000000000000000000000000000000000020000 Time delay: 166184 seconds Block delay: 18944
+CryticTester.property_shareSupply() from: 0x0000000000000000000000000000000000010000 Time delay: 444463 seconds Block delay: 23978
+CryticTester.vault_withdraw(2644534967557195211019272716478793037224680647239287046093519225299182031879) from: 0x0000000000000000000000000000000000030000 Time delay: 196663 seconds Block delay: 30256
+CryticTester.property_shareSupply() from: 0x0000000000000000000000000000000000030000 Time delay: 67960 seconds Block delay: 38100
+CryticTester.vault_withdraw(30688124761815251762402883543084228833596581917360466678064584138225046671200) from: 0x0000000000000000000000000000000000020000 Time delay: 332369 seconds Block delay: 38350
+CryticTester.vault_withdraw(94026705650185758984770900223608143334259527834734901487111431251833652798092) from: 0x0000000000000000000000000000000000030000 Time delay: 412373 seconds Block delay: 59982
+CryticTester.property_shareSupply() from: 0x0000000000000000000000000000000000020000 Time delay: 136393 seconds Block delay: 58783
+CryticTester.property_shareSupply() from: 0x0000000000000000000000000000000000020000 Time delay: 73040 seconds Block delay: 57086
+CryticTester.vault_redeem(115792089237316195423570985008687907853269984665640564039457584007913129639934) from: 0x0000000000000000000000000000000000030000 Time delay: 136393 seconds Block delay: 30784
+CryticTester.property_solvent() from: 0x0000000000000000000000000000000000030000 Time delay: 32767 seconds Block delay: 15369
+
+[2026-11-13 02:08:13.91] [Worker 0] New coverage: 5382 instr, 3 contracts, 1 seqs in corpus
+[2026-11-13 02:08:13.91] [Worker 1] New coverage: 5382 instr, 3 contracts, 2 seqs in corpus
+[2026-11-13 02:08:14.28] [Worker 0] New coverage: 5385 instr, 3 contracts, 3 seqs in corpus
+[2026-11-13 02:08:16.89] [status] tests: 1/7, fuzzing: 7561/50000, values: [], cov: 5385, corpus: 3, shrinking: W1:2033/5000(3), gas/s: 183614323
+[2026-11-13 02:08:19.90] [status] tests: 1/7, fuzzing: 13773/50000, values: [], cov: 5385, corpus: 3, shrinking: W1:3740/5000(3), gas/s: 152122558
+[2026-11-13 02:08:22.90] [status] tests: 1/7, fuzzing: 22466/50000, values: [], cov: 5385, corpus: 3, gas/s: 213985271
+[2026-11-13 02:08:25.00] [Worker 0] Test limit reached. Stopping.
+[2026-11-13 02:08:25.90] [status] tests: 1/7, fuzzing: 33699/50000, values: [], cov: 5385, corpus: 3, gas/s: 278788390
+[2026-11-13 02:08:28.91] [status] tests: 1/7, fuzzing: 40484/50000, values: [], cov: 5385, corpus: 3, gas/s: 167682416
+[2026-11-13 02:08:31.91] [status] tests: 1/7, fuzzing: 47149/50000, values: [], cov: 5385, corpus: 3, gas/s: 165361397
+[2026-11-13 02:08:33.03] [Worker 1] Test limit reached. Stopping.
+[2026-11-13 02:08:33.04] [status] tests: 1/7, fuzzing: 50021/50000, values: [], cov: 5385, corpus: 3, gas/s: 215819409
+vault_redeem(uint256): passing
+property_solvent(): failed!💥  
+  Reason: ErrorRevert
+  Call sequence:
+    CryticTester.vault_deposit(0)
+    CryticTester.vault_redeem(0)
+    CryticTester.property_solvent()
+
+Traces: 
+call 0x62d69f6867A0A084C6d313943dC22023Bc263691::managedAssets() (/tmp/p/test/recon/Properties.sol:11)
+ └╴← (999999999999)
+call MockAsset::balanceOf(address)(0x62d69f6867A0A084C6d313943dC22023Bc263691) (/tmp/p/test/recon/Properties.sol:11)
+ └╴← (0)
+emit Log(«vault counts assets it does not hold») (/tmp/p/lib/chimera/src/CryticAsserts.sol:46)
+
+property_shareSupply(): passing
+vault_deposit(uint256): passing
+vault_addYield(uint256): passing
+vault_withdraw(uint256): passing
+AssertionFailed(..): passing
+
+Unique instructions: 5385
+Unique codehashes: 3
+Corpus size: 3
+Seed: 3313398184754419725
+Total calls: 50021
+

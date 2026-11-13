@@ -26,7 +26,7 @@
 // only this provisioning step reaches out.
 
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -42,7 +42,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // group = the pack the image belongs to. optional = heavy / rarely needed.
 // daytona = true for the images that reach a Daytona sandbox on main today.
 
-const MANIFEST = [
+export const MANIFEST = [
   // ---- contracts (EVM static/dynamic analysis + proof replay) ----
   { tag: "ghcr.io/foundry-rs/foundry:latest", group: "contracts", kind: "pull",
     ref: "ghcr.io/foundry-rs/foundry:latest", daytona: true,
@@ -56,6 +56,12 @@ const MANIFEST = [
     file: "spike/packs/contracts/Dockerfile.heimdall", context: "spike/packs/contracts", daytona: true },
   { tag: "touchstone/aderyn:0.6.8", group: "contracts", kind: "build",
     context: "tools/aderyn", daytona: true },
+  { tag: "touchstone/halmos:0.3.3", group: "contracts", kind: "build",
+    file: "spike/packs/contracts/images/Dockerfile.halmos", context: "spike/packs/contracts/images",
+    note: "Halmos pre-pass; same build as images/build.sh halmos." },
+  { tag: "touchstone/chimera:e2.3.3-m1.5.1", group: "contracts", kind: "build",
+    file: "spike/packs/contracts/images/Dockerfile.chimera", context: "spike/packs/contracts/images",
+    note: "Chimera pre-pass (Echidna + Medusa); same build as images/build.sh chimera." },
 
   // ---- keys (Safe / signing) ----
   { tag: "touchstone-chain-tools:wave1", group: "keys", kind: "build",
@@ -194,7 +200,10 @@ const opt = {
   jobs: Math.max(1, parseInt(val("--jobs") || "4", 10) || 4),
 };
 
-if (has("--help") || has("-h")) {
+// Imported (by a test), it only exports MANIFEST. Run, it is the CLI.
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isCli && (has("--help") || has("-h"))) {
   console.log(`Touchstone tool-image setup
 
   node spike/scripts/setup.mjs [flags]
@@ -338,4 +347,4 @@ async function main() {
   process.exit(failed.length ? 1 : 0);
 }
 
-main();
+if (isCli) main();

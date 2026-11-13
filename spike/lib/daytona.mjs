@@ -69,21 +69,33 @@ let downUntil = 0;
 //   backend   "local" | "daytona"
 //   apiKey    the Daytona key, or "" when none is set
 //   apiUrl    the Daytona server, with no trailing slash
-//   keyHeld   why a saved key is not used, or null
-// A saved key is sent only to the host it was saved for (saved.keyHost; an
-// older key without one was saved for the saved or default URL).
+//   keyHeld   why a key is set but not sent, or null
+// A key is sent only to the host it is bound to, and only over https with no
+// user name, query or #part. A saved key is bound to saved.keyHost (an older
+// key without one: the saved or default URL). DAYTONA_API_KEY is bound to
+// DAYTONA_API_URL, else to the default server.
 export function execConfig(env = process.env, cfg = safeConfig()) {
   const saved = cfg.execution ?? {};
   const pick = String(env.TOUCHSTONE_EXEC || saved.backend || "local").toLowerCase();
   const apiUrl = String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, "");
+  const host = hostOf(apiUrl);
+  const safe = safeUrl(apiUrl);
   const keyHost = saved.keyHost || hostOf(saved.apiUrl || DEFAULT_API_URL);
-  const held = Boolean(saved.apiKey) && keyHost !== hostOf(apiUrl);
-  const savedKey = held ? "" : saved.apiKey;
+  const envKeyHost = hostOf(env.DAYTONA_API_URL || DEFAULT_API_URL);
+  const savedKey = safe && saved.apiKey && keyHost === host ? saved.apiKey : "";
+  const envKey = safe && env.DAYTONA_API_KEY && envKeyHost === host ? env.DAYTONA_API_KEY : "";
+  const apiKey = String(savedKey || envKey || "");
+  let keyHeld = null;
+  if (!apiKey && (saved.apiKey || env.DAYTONA_API_KEY)) {
+    if (!safe) keyHeld = `No key is sent to ${host || "the Daytona server"}: its URL must be https, with no user name, query or #part.`;
+    else if (saved.apiKey) keyHeld = `The saved key is for ${keyHost}, not ${host}. Enter the key again.`;
+    else keyHeld = `The key from DAYTONA_API_KEY is only sent to ${envKeyHost}, not ${host}.`;
+  }
   return {
     backend: pick === "daytona" ? "daytona" : "local",
-    apiKey: String(savedKey || env.DAYTONA_API_KEY || ""),
-    keySource: savedKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
-    keyHeld: held ? `The saved key is for ${keyHost}, not ${hostOf(apiUrl) || "this server"}. Enter the key again.` : null,
+    apiKey,
+    keySource: savedKey ? "settings" : envKey ? "env" : null,
+    keyHeld,
     apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
@@ -96,6 +108,17 @@ export function hostOf(url) {
     return new URL(url).host.toLowerCase();
   } catch {
     return "";
+  }
+}
+
+// True when a key may be sent to this URL: https, and no user name, password,
+// query or #part. The same rule as a saved URL (settings.mjs daytonaUrl).
+function safeUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash;
+  } catch {
+    return false;
   }
 }
 
