@@ -102,6 +102,11 @@ const coverageGapId = fixture("coverage-gap", "proof", [{ ev: "settled", t: 6, s
   target: { ...target, links: ["https://github.com/example/repo"] },
   settled: { status: "done", findings: [], final: { text: "nothing proven" } },
 });
+// A proof-phase restart whose saved settle is a failure (not "done"): it ends
+// as an error with a structured reason, not a bare status.
+const settleFailedId = fixture("settle-failed", "proof", [{ ev: "settled", t: 6 }], {
+  settled: { status: "error", findings: [] },
+});
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
 
 const logged = [];
@@ -257,6 +262,16 @@ test("a restarted run that settled with no finding but did not read its whole sc
   const run = getRun(coverageGapId);
   assert.equal(run.status, "error");
   assert.match(run.error, /not read/);
+});
+
+test("a restarted run whose saved settle failed ends with a structured error reason", async () => {
+  for (let i = 0; i < 100 && !getRun(settleFailedId).events.some((e) => e.ev === "closed"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const run = getRun(settleFailedId);
+  assert.equal(run.status, "error");
+  assert.match(run.error, /did not complete/);
+  assert.equal(run.errorInfo?.message, run.error);
 });
 
 test("a corrupt state file shows the run as an error and logs once", async () => {

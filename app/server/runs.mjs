@@ -1526,6 +1526,12 @@ async function resumeRun(run) {
 // coverageGap check on clean-end paths) is a one-line change here.
 async function endRestartedRun(run) {
   if (run.settled.status === "done" && run.settled.final) broadcast(run, { ev: "no-finding", final: run.settled.final })
+  // A saved settle that is not "done" is a real failure (the worker died, the
+  // budget ran out). Give the error card its structured reason before ending.
+  if (run.settled.status !== "done") {
+    run.errorInfo = failureInfo(run)
+    run.error = run.errorInfo.message
+  }
   setRunStatus(run, run.settled.status !== "done" || coverageGap(run) ? "error" : "no-finding")
   finalize(run)
   await endWorkspace(run)
