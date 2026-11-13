@@ -63,7 +63,12 @@ const CODE_PAIR_ESC = /(?<![\w$"'`\\])([A-Za-z_$][\w$-]{0,63})([ \t]*[:=][ \t]*)
 const HEADER_NAME = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:[ \t]*)`
 const LINE_VALUE = String.raw`((?:=(?:"[^"\\\r\n]*"|\\"[^"\\\r\n]*\\")|\[REDACTED[^\]\r\n]{0,80}\]|[^\r\n\\"'` + "`" + String.raw`()\[\]{}<>]|\\[^rn"\r\n])+)`
 const QUOTE_VALUE = String.raw`((?:=\\"[^"\\\r\n]*\\"|(?!\1)[^\\\r\n]|\\(?![rn]|\1)[^\r\n])+)`
-const LINE_HEADER = new RegExp(String.raw`(?<=^|[\r\n]|\\n)([ \t]*(?:[<>] )?)` + HEADER_NAME + LINE_VALUE, "g")
+// The lead may also be a list mark ("- ", "* "), a table bar ("| "), or a
+// tab or ", " inside a log line: "Host: lab, Authorization: Basic …".
+const LINE_HEADER = new RegExp(String.raw`((?<=^|[\r\n]|\\n)[ \t]*(?:[<>*-] |\| )?|(?<=\t|, ))` + HEADER_NAME + LINE_VALUE, "g")
+// A markdown table row: "| Authorization | Basic … |". The value cell
+// stops at the next bar.
+const TABLE_HEADER = /((?<=^|[\r\n]|\\n)[ \t]*\|[ \t]*)([A-Za-z][\w-]{0,63})([ \t]*\|[ \t]*)([^|\r\n\\`]+)/g
 const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER_NAME + QUOTE_VALUE, "g")
 
 // Each optional part has one way to match a run of spaces. Two adjacent
@@ -140,7 +145,8 @@ function maskHeaderValue(name, value) {
 }
 
 function maskHeader(m, lead, name, sep, raw) {
-  const value = raw.replace(/[ \t,;]+$/, "")
+  // In a table row the closing bar stays outside the mask.
+  const value = raw.replace(lead.includes("|") ? /[ \t]*\|[ \t]*$|[ \t,;]+$/ : /[ \t,;]+$/, "")
   const masked = value && maskHeaderValue(name, value)
   return masked ? `${lead}${name}${sep}${masked}${raw.slice(value.length)}` : m
 }
@@ -193,7 +199,7 @@ function maskEnv(m, name, sep, dq, sq, bare) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -212,6 +218,7 @@ function redactText(text) {
     return masked == null ? m : `${name}${sep}\\"${masked}\\"`
   })
   out = out.replace(LINE_HEADER, maskHeader)
+  out = out.replace(TABLE_HEADER, maskHeader)
   out = out.replace(QUOTE_HEADER, maskHeader)
   out = out.replace(BEARER, (m, tok) => (secretish(tok) ? `Bearer ${MARK}` : m))
   out = out.replace(QUERY, maskQuery)

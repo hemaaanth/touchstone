@@ -411,3 +411,31 @@ describe("redact: assignments in any case (delta review 4)", () => {
     expect(timeMs("token" + " ".repeat(MB) + "=")).toBeLessThan(2000)
   })
 })
+
+describe("redact: header lines after a list mark, a table bar, a tab or a comma (delta review 4)", () => {
+  const basic = "Basic dXNlcjpzM2NyZXQ="
+  test("each lead form is masked", () => {
+    expect(text(`Headers:\n- Authorization: ${basic}\n* X-Api-Key: tk_alice_7f3a9c2e`)).toBe("Headers:\n- Authorization: Basic [REDACTED]\n* X-Api-Key: [REDACTED]")
+    expect(text(`| Header | Value |\n|---|---|\n| Authorization | ${basic} |\n| Accept | */* |`)).toBe(
+      "| Header | Value |\n|---|---|\n| Authorization | Basic [REDACTED] |\n| Accept | */* |",
+    )
+    expect(text(`| Authorization: ${basic} |`)).toBe("| Authorization: Basic [REDACTED] |")
+    expect(text(`12:00:01 GET /x\tAuthorization: ${basic}`)).toBe("12:00:01 GET /x\tAuthorization: Basic [REDACTED]")
+    expect(text(`headers Host: lab, Authorization: ${basic}`)).toBe("headers Host: lab, Authorization: Basic [REDACTED]")
+  })
+  test("list and table prose without a credential stays", () => {
+    for (const s of [
+      "- Authorization: missing on /api/users/{id}",
+      "- token: the session token from step 2",
+      "| token | `t1` |",
+      "| Check | Result |\n| Authorization | none |",
+      "first, token: see above",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("1 MB of leads finishes in linear time", () => {
+    expect(timeMs("| a | ".repeat(MB / 6))).toBeLessThan(2000)
+    expect(timeMs("\n| token |" + " ".repeat(MB))).toBeLessThan(2000)
+    expect(timeMs(", token: " + "a".repeat(MB))).toBeLessThan(2000)
+    expect(timeMs("\t- ".repeat(MB / 3))).toBeLessThan(2000)
+  })
+})
