@@ -5,13 +5,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { entrypointFlag, hostPins, runTool, sarifLeads } from "../lib/wrap.mjs";
+import { entrypointFlag, hostPins, mountFlags, runTool, sarifLeads } from "../lib/wrap.mjs";
 import { planRemote } from "../lib/daytona.mjs";
 import { mergeStatic } from "../lib/ensemble.mjs";
+
+const SPIKE = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const SARIF = {
   version: "2.1.0",
@@ -182,6 +185,79 @@ test("entrypoint adds --entrypoint before the image, checks its input, and no op
     assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
     // A bad entrypoint throws before any docker call.
     await assert.rejects(runTool({ image, cmd: [], entrypoint: "a;b" }), /entrypoint/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mounts: a host path under a caller root is read-only, an allowed volume may be rw, and every other source is refused", () => {
+  const base = mkdtempSync(join(tmpdir(), "wrap-mounts-"));
+  const outside = mkdtempSync(join(tmpdir(), "wrap-outside-"));
+  try {
+    const std = join(base, "std");
+    mkdirSync(std);
+    const real = realpathSync(std);
+    assert.deepEqual(mountFlags([]), []);
+    // The two allowed forms. No mode means read-only.
+    assert.deepEqual(mountFlags([[std, "/forge-std/src"]], [base]), ["-v", `${real}:/forge-std/src:ro`]);
+    assert.deepEqual(mountFlags([[std, "/s", "ro"]], [base]), ["-v", `${real}:/s:ro`]);
+    assert.deepEqual(mountFlags([["foundry-svm", "/home/foundry/.svm", "rw"]]), ["-v", "foundry-svm:/home/foundry/.svm"]);
+    assert.deepEqual(mountFlags([["touchstone_svm_cache", "/svm"]]), ["-v", "touchstone_svm_cache:/svm:ro"]);
+    // A symlink under the root that points outside it is resolved first, then refused.
+    symlinkSync(outside, join(base, "link"));
+    const refusals = [
+      [[["/var/run/docker.sock", "/s"]], [base], /docker socket|outside the allowed roots/],
+      [[["/run/docker.sock", "/s"]], ["/run"], /docker socket/],
+      [[["/", "/s"]], [base], /source must be|refused/],
+      [[[homedir(), "/s"]], [base], /refused/],
+      [[[join(SPIKE, "data"), "/s"]], [base], /refused/],
+      [[[join(SPIKE, "data", "grants.json"), "/s"]], [base], /refused/],
+      [[[outside, "/s"]], [base], /outside the allowed roots/],
+      [[[join(base, "link"), "/s"]], [base], /outside the allowed roots/],
+      [[[std, "/s"]], [], /outside the allowed roots/],
+      [[[join(base, "missing"), "/s"]], [base], /does not exist/],
+      [[[std, "/s", "rw"]], [base], /read-only; rw is only for/],
+      [[["other-volume", "/s", "rw"]], [], /allowed volume/],
+      [[["other-volume", "/s"]], [], /allowed volume/],
+      [[[std, "/s"]], ["/"], /bad root|root is too wide/],
+      [[[std, "/s"]], [homedir()], /root is too wide/],
+      [[["/a:/b", "/c"]], [base], /source must be/],
+      [[[std, "/c,ro"]], [base], /bad target/],
+      [[[std, "c"]], [base], /bad target/],
+      [[[std, "/c", "x"]], [base], /mode must be/],
+      [[[std, "/c", "ro", "x"]], [base], /mode must be/],
+      [[[std]], [base], /bad target/],
+      [["/a:/c"], [base], /bad target/],
+      ["x", [base], /mounts must be a list/],
+    ];
+    for (const [mounts, roots, why] of refusals) assert.throws(() => mountFlags(mounts, roots), why, JSON.stringify([mounts, roots]));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("runTool: no mounts option gives the old argv word for word; mounts follow the workspace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wrap-argv-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const image = "example.invalid/tool@sha256:" + "0".repeat(64);
+    const user = `${process.getuid()}:${process.getgid()}`;
+    await runTool({ image, cmd: ["x", "y"], ws: dir, env: { A: "1" } });
+    const old = readFileSync(record, "utf8").trim().split("\n");
+    const name = old[old.indexOf("--name") + 1];
+    assert.deepEqual(old, ["run", "--rm", "--pull=never", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      "--pids-limit", "512", "--memory", "2g", "--user", user, "--name", name, "-v", `${dir}:/work`, "-w", "/work", "-e", "A=1", image, "x", "y"]);
+    mkdirSync(join(dir, "std"));
+    await runTool({ image, cmd: ["x", "y"], ws: dir, env: { A: "1" }, mounts: [[join(dir, "std"), "/std"]] });
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    const at = args.indexOf(`${dir}:/work`) + 3;
+    assert.deepEqual(args.slice(at, at + 2), ["-v", `${realpathSync(join(dir, "std"))}:/std:ro`]);
+    await assert.rejects(runTool({ image, cmd: [], ws: dir, mounts: [["/var/run/docker.sock", "/s"]] }), /mounts/);
   } finally {
     process.env.PATH = path;
     rmSync(dir, { recursive: true, force: true });
