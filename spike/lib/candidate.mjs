@@ -20,6 +20,7 @@ import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
 import { isProven } from "./proof-view.mjs";
+import { MEASURED_WORDS, proofClass, proofClassOf } from "./proof-class.mjs";
 import { readableTitle } from "./check-titles.mjs";
 import { LangEn } from "ethers";
 
@@ -235,7 +236,11 @@ export function capEvidence(value, depth = 0) {
 }
 
 // The one way to build a candidate. The fixed fields come last.
-export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null }) {
+// `origin` is "agent" (submit_candidate) or "measured" (the engine: a replay
+// that only repeated a measurement, splitMeasured). Who asserted it follows
+// from the origin; no input sets it.
+export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null, origin = "agent", measured = null }) {
+  const engine = origin === "measured";
   return {
     n: Number(n) || 1,
     pack: String(pack ?? ""),
@@ -247,12 +252,84 @@ export function makeCandidate({ n, pack, title, severity, poc, evidence, explana
     cites: Array.isArray(cites) ? cites.map(String) : [],
     rootCause: rootCause == null ? null : String(rootCause),
     evidenceHash: evidenceHash == null ? null : String(evidenceHash),
+    origin: engine ? "measured" : "agent",
+    measured: engine ? measuredBlock(measured) : null,
     kind: "candidate",
-    assertedBy: "agent",
+    assertedBy: engine ? "engine" : "agent",
     proven: false,
     candidate: true,
     provedBy: null,
   };
+}
+
+// The "measurement repeated" fact a measured candidate carries: why it is not
+// proven, the words for it, and the pins a reviewer can check.
+function measuredBlock(m) {
+  const reason = Object.hasOwn(MEASURED_WORDS, m?.reason) ? m.reason : "unknown";
+  const str = (v) => (v == null ? null : String(v).slice(0, 200));
+  return {
+    reason,
+    words: MEASURED_WORDS[reason],
+    repeated: m?.repeated === true,
+    check: str(m?.check),
+    proofKind: str(m?.proofKind),
+    snapshotHash: str(m?.snapshotHash),
+    oracle: str(m?.oracle),
+    count: Math.max(1, Number(m?.count) || 1),
+  };
+}
+
+const RANK = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
+const replayPassed = (f) => f?.proof?.status === "pass" || f?.proof?.pass === true || (f?.pocProved === true && f?.proof?.status !== "fail" && f?.proof?.pass !== false);
+
+// After the final proof: a finding whose replay passed but only repeated a
+// measurement (lib/proof-class.mjs) is not a finding. It becomes a measured
+// candidate. Findings of one pack and one check fold into one candidate that
+// lists each of them (evidence.items). A proven finding, and a finding whose
+// replay failed, stay findings. Every input finding ends in exactly one place:
+// `findings`, or one candidate's evidence.items.
+// `from` numbers the candidates after the ones the run already has.
+export function splitMeasured(list, { from = 0 } = {}) {
+  const findings = [];
+  const groups = new Map();
+  for (const f of list ?? []) {
+    if (!f || typeof f !== "object") continue;
+    if (isProven(f) || !replayPassed(f) || proofClass(f) === "harm") {
+      findings.push(f);
+      continue;
+    }
+    const c = proofClassOf(f);
+    const key = `${f.pack ?? ""}\u0000${c.check}`;
+    if (!groups.has(key)) groups.set(key, { c, items: [] });
+    groups.get(key).items.push(f);
+  }
+  const candidates = [...groups.values()].map(({ c, items }, k) => {
+    const first = items[0];
+    const worst = items.reduce((w, f) => ((RANK[f.severity] ?? 9) < (RANK[w.severity] ?? 9) ? f : w), first);
+    const poc = items.length === 1 ? String(first.poc ?? `measured:${c.check}`) : `measured:${first.pack ?? ""}:${c.check}`;
+    const more = items.length > 1 ? `\n\nThe same check fired at ${items.length} places; each is listed in the evidence.` : "";
+    return makeCandidate({
+      n: from + k + 1,
+      pack: first.pack ?? "",
+      title: scrubText(readableTitle(first.title, c.check === "forge" ? "" : c.check)),
+      severity: worst.severity,
+      poc,
+      rootCause: first.rootCause ?? null,
+      explanation: scrubText(`${String(first.explanation ?? "")}${more}`),
+      evidence: scrubValue({
+        kind: "measured",
+        check: c.check,
+        items: items.map((f) => ({
+          poc: f.poc ?? null, title: f.title ?? null, severity: f.severity ?? null,
+          file: f.file ?? null, lines: f.lines ?? null, where: f.evidence?.where ?? null,
+          proof: { kind: f.proof?.kind ?? "forge", status: f.proof?.status ?? null, check: f.proof?.check ?? null, snapshotHash: f.proof?.snapshotHash ?? null, commit: f.proof?.commit ?? null, oracle: f.proof?.oracle?.name ?? f.oracleName ?? null, detail: f.proof?.detail ?? null, harm: f.proof?.harm ?? null },
+        })),
+      }),
+      origin: "measured",
+      measured: { reason: c.reason, check: c.check, proofKind: first.proof?.kind ?? "forge", snapshotHash: first.proof?.snapshotHash ?? null, oracle: first.proof?.oracle?.name ?? first.oracleName ?? null, repeated: true, count: items.length },
+    });
+  });
+  return { findings, candidates };
 }
 
 // The candidate state a resumed run must get back. The list holds the cap, the
@@ -345,7 +422,8 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     event("candidate-rejected", { poc, reason });
     return { refused: message, reason };
   };
-  if (state.candidates.length >= CANDIDATE_CAP) {
+  // The cap is the agent's: a measured candidate (made by the engine) never counts.
+  if (state.candidates.filter((c) => c.origin !== "measured").length >= CANDIDATE_CAP) {
     return refuse("cap", `Cannot record this candidate: this run already has ${CANDIDATE_CAP} candidates, the most a run may hold. A candidate costs a human's attention. Keep auditing for proven findings, or write the coverage summary.`);
   }
   if (!poc) return refuse("no-attempt", "Cannot record this candidate: name the recorded attempt it comes from.");

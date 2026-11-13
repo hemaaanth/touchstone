@@ -8,8 +8,9 @@
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { makeCandidate, priorCandidate, supersededBy } from "../../spike/lib/candidate.mjs"
+import { makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
 import { redactSecrets } from "./redact.mjs"
+import { sortFindings } from "../../spike/lib/record.mjs"
 
 // The one shape the server stores and sends. makeCandidate sets the fixed
 // fields, so no input can make a candidate proven, and cuts the evidence to
@@ -71,9 +72,47 @@ export function supersedeProven(run, findings, send) {
 }
 
 // What a follow-up worker gets, so its cap, numbering and guards count the
-// candidates the run already holds.
+// candidates the run already holds. Only the agent's: a measured candidate is
+// the engine's and never counts toward the agent's cap.
 export function priorCandidatesEnv(run) {
-  return JSON.stringify((run.candidates ?? []).map(priorCandidate))
+  return JSON.stringify((run.candidates ?? []).filter((c) => c.origin !== "measured").map(priorCandidate))
+}
+
+// After the final proof: a finding whose replay only repeated a measurement
+// leaves the findings and becomes a measured candidate (spike/lib/candidate.mjs
+// splitMeasured). Each one is sent as a candidate-submitted event, so the run
+// view, the saved stream and the record all hold it. Returns the findings left.
+export function recordMeasured(run, findings, send) {
+  const from = Math.max(0, ...(run.candidates ?? []).map((c) => Number(c.n) || 0))
+  const split = splitMeasured(findings, { from })
+  for (const candidate of split.candidates) {
+    const e = { t: Date.now(), ev: "candidate-submitted", candidate }
+    trackCandidate(run, e)
+    send(e)
+  }
+  dropMeasuredSubmitted(run)
+  return split.findings
+}
+
+// The pocs of the findings that became measured candidates (their evidence
+// lists each one it folds).
+export function measuredPocs(candidates) {
+  const out = new Set()
+  for (const c of candidates ?? []) {
+    if (c?.origin !== "measured") continue
+    for (const item of c.evidence?.items ?? []) if (item?.poc != null) out.add(String(item.poc))
+  }
+  return out
+}
+
+// A submitted finding that became a measured candidate is no longer one of
+// the run's findings: it leaves `submitted` (the sidebar count) and the
+// headline is the worst finding left. Live, and when a saved run loads.
+export function dropMeasuredSubmitted(run) {
+  const gone = measuredPocs(run.candidates)
+  if (!gone.size || !Array.isArray(run.submitted)) return
+  run.submitted = run.submitted.filter((s) => !gone.has(String(s.poc)))
+  run.pending = sortFindings(run.submitted)[0] ?? null
 }
 
 // The candidates field of the run record.

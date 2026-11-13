@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { reduceEvents } from "../src/lib/runModel"
 import { candidateFrom, candidateGroupLabel } from "../src/lib/candidate"
+import { runHeadStatus } from "../src/components/thread-model"
+import { statusLabel, statusTone } from "../src/lib/format"
 import { CandidateDetail, CandidateList } from "../src/components/candidates"
 import { RunPanel } from "../src/components/run-panel"
 import type { RunEvent } from "../src/lib/types"
@@ -155,4 +157,17 @@ describe("the Candidates group", () => {
   test("a run with no candidates shows no Candidates group", () => {
     expect(panel([{ t: 2, ev: "status", status: "no-finding" }])).not.toContain(">Candidates<")
   })
+})
+
+// N3, test (c): a run whose only results are measured candidates ends
+// "no-finding". Its status word is neither "Proven" nor an error, and its tone is neutral.
+test("a run of measured candidates only reads as No finding, neutral", () => {
+  const measured = { ...cand("m1"), origin: "measured", assertedBy: "engine", measured: { reason: "repeated", words: "Measurement repeated: the replay found the same fact again. It shows no harm.", repeated: true } }
+  const state = reduceEvents([ev(measured), { t: 3, ev: "status", status: "no-finding" }])
+  expect(state.candidates.length).toBe(1)
+  const head = runHeadStatus(state, "no-finding")
+  expect(head.word).not.toBe("Proven")
+  expect(head.tone).toBe("neutral")
+  expect(statusLabel("no-finding")).not.toBe("Proven")
+  expect(statusTone("no-finding")).toBe("neutral")
 })

@@ -42,7 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
-import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { candidateEvents, candidatesOf, dropMeasuredSubmitted, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -1047,10 +1047,20 @@ async function recordRun(run, found) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+    const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
+    // A replay that only repeated a measurement is a candidate, not a finding.
+    const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
+    if (!findings.length) {
+      // Only measured candidates: the agent audited and nothing was proven.
+      const final = run.settled?.final
+      if (final && run.settled?.status === "done") broadcast(run, { ev: "no-finding", final })
+      setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+      persistRun(run, [])
+      return
+    }
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
@@ -1901,10 +1911,15 @@ export function followUp(run, text, clientId) {
 // Add findings a follow-up proved to the run record, after the ones it holds,
 // so earlier finding ids stay the same.
 async function recordMore(run, found) {
-  const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+  const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
   }))
+  // A replay that only repeated a measurement is a candidate, not a finding.
+  const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
   supersedeProven(run, findings, (e) => broadcast(run, e))
+  // Only measured candidates: the record keeps its findings and its status;
+  // the reply's exit writes the candidates into it.
+  if (!findings.length) return
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {
@@ -2381,6 +2396,8 @@ function savedRun(id, events, mtime) {
     events.push({ t: end, ev: "closed" })
   }
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
+  const loaded = { submitted, candidates: candidatesOf(events) }
+  dropMeasuredSubmitted(loaded) // a finding that became a measured candidate is not one of the run's findings
   return {
     id,
     alias,
@@ -2396,10 +2413,10 @@ function savedRun(id, events, mtime) {
     startedAt: events.find((e) => e.t)?.t ?? mtime,
     events,
     subscribers: new Set(),
-    pending: sortFindings(submitted)[0] ?? null,
-    submitted,
+    pending: sortFindings(loaded.submitted)[0] ?? null,
+    submitted: loaded.submitted,
     findingIds,
-    candidates: candidatesOf(events),
+    candidates: loaded.candidates,
     decision,
     error,
     errorInfo: errorInfo ?? streamInfo,
