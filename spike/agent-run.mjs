@@ -32,6 +32,7 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { leadsFrom } from "./lib/leads.mjs";
 
 // Tools tell the model how much of the run budget is left.
 readSpendWith(runSpend);
@@ -339,6 +340,7 @@ async function main() {
     proof: worst?.proof ?? null,
     decision: findings.length ? "approved" : null,
     recorded: findings.length > 0,
+    leads: leadsFrom(all),
     calls: settled?.summary?.calls?.map((c) => c.name),
     final: settled?.summary?.final?.text?.slice(0, 1200),
     usage: settled?.usage, reports: settled?.reports,

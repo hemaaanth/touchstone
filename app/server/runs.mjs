@@ -32,6 +32,7 @@ import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, 
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
+import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 
@@ -1116,6 +1117,10 @@ function persistRun(run, findings) {
     // What the agent submitted. With no recorded finding these are claims
     // that were never proven, so the findings ledger does not read them.
     submitted: (run.submitted ?? []).map(({ title, severity, poc }) => ({ title, severity, poc })),
+    // Every lead an agent recorded, worst first, with its evidence (file, line,
+    // reason) and the agent that found it. Saved as events the moment each lead
+    // was made, so a run that failed later still keeps them. Never proven.
+    leads: leadsFrom(evs),
     decision: recorded ? "approved" : null,
     recorded,
     calls: (summary.calls ?? []).map((c) => c.name),

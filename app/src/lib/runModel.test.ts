@@ -292,3 +292,26 @@ test("after a drop an open snapshot follows from its own length and appends live
     assert.equal(FakeEventSource.sources.length, 2)
   })
 })
+
+// A Review lead arrives as a `lead` event the moment the agent records it. The
+// run view lists it under Leads with its evidence, worst first, one per id.
+// A lead is never proven, whatever the event says.
+test("lead events fill state.leads with evidence, one per id, worst first, never proven", () => {
+  const state = reduceEvents([
+    ev("lead", { t: 1, id: "lead-a", severity: "medium", file: "src/svg.ts", line: 12, title: "SVG script passes through", reason: "no sanitizer", agent: "a-52" }),
+    ev("lead", { t: 2, id: "lead-b", severity: "high", file: "src/avatar.ts", line: 88, title: "SSRF via avatar URL", reason: "fetch with no host check", proof: "hit 169.254.169.254" }),
+    ev("lead", { t: 3, id: "lead-a", severity: "medium", file: "src/svg.ts", line: 12, title: "SVG script passes through", reason: "no sanitizer on render", agent: "a-52", proven: true }),
+    ev("lead", { t: 4, id: "", file: "", line: 0 }),
+  ])
+  assert.deepEqual(
+    state.leads.map((l) => [l.id, l.severity, l.file, l.line, l.author]),
+    [
+      ["lead-b", "high", "src/avatar.ts", 88, "coordinator"],
+      ["lead-a", "medium", "src/svg.ts", 12, "a-52"],
+    ],
+  )
+  assert.equal(state.leads[1].reason, "no sanitizer on render")
+  assert.equal(state.leads[0].proof, "hit 169.254.169.254")
+  assert.ok(state.leads.every((l) => !("proven" in l)))
+  assert.deepEqual(state.findings, [])
+})

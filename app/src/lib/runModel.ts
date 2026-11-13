@@ -15,6 +15,7 @@ import type {
   PrepassTool,
   PrepassView,
   RunEvent,
+  RunLead,
   RunStatus,
   Severity,
   SteerEntry,
@@ -142,6 +143,8 @@ export interface RunState {
   agents: AgentNode[]
   // Fleet: the run's shared Bulletin, in post order. Empty without a fleet.
   bulletin: BulletinNote[]
+  // Leads the agents recorded, worst first, one per id. Never proven.
+  leads: RunLead[]
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
@@ -186,6 +189,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
+  const leads: RunLead[] = []
   const findings: FindingSummary[] = []
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
@@ -526,6 +530,30 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         break
       }
+      case "lead": {
+        // One lead per id. A later event for the same id replaces it in place.
+        const id = str(e.id)
+        const file = str(e.file)
+        const line = num(e.line)
+        if (!id || !file || line == null || line < 1) break
+        const sev = str(e.severity).toLowerCase()
+        const lead: RunLead = {
+          id,
+          author: who || COORDINATOR,
+          t: num(e.t),
+          severity: sev in SEV_RANK ? (sev as Severity) : null,
+          file,
+          line,
+          title: str(e.title),
+          reason: str(e.reason),
+          proof: str(e.proof) || null,
+          stepKey: key,
+        }
+        const at = leads.findIndex((l) => l.id === id)
+        if (at >= 0) leads[at] = lead
+        else leads.push(lead)
+        break
+      }
       case "agent-spend": {
         const usd = num(e.usd)
         if (usd != null) patchAgent(str(e.id), { spendUsd: usd })
@@ -759,6 +787,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
     activity,
     agents,
     bulletin,
+    // Worst first; the sort is stable, so equal severities keep arrival order.
+    leads: leads.toSorted((a, b) => severityRank(a.severity ?? undefined) - severityRank(b.severity ?? undefined)),
     findings,
     steers,
     artifacts,
