@@ -27,7 +27,16 @@ export type DrawOptions = {
   // Tests only: bun has no DOMParser, and a failed chunk load is faked. The
   // page always uses the browser's DOMParser and the real lazy import.
   parse?: (svg: string) => SvgNode | null
-  load?: () => Promise<Pick<typeof import("pele/lazy"), "renderAsync" | "PeleError">>
+  load?: () => Promise<RenderAsync>
+}
+
+type RenderAsync = (typeof import("pele/lazy"))["renderAsync"]
+
+// The direct `const { renderAsync } = await import(…)` form lets the bundler
+// keep only what is used in Pele's lazy chunk (36.8 kB, not 50 kB).
+async function loadPele(): Promise<RenderAsync> {
+  const { renderAsync } = await import("pele/lazy")
+  return renderAsync
 }
 
 // The fixed render options. Only the app sets fontFamily, maxWidth and idPrefix.
@@ -63,15 +72,19 @@ export function drawMermaid(source: string, opts: DrawOptions = {}): Promise<Dra
   if (hit) return hit
   let run: Promise<Drawn> | null = null
   run = (async (): Promise<Drawn> => {
-    let lazy: Pick<typeof import("pele/lazy"), "renderAsync" | "PeleError"> | null = null
     try {
-      lazy = await (opts.load ?? (() => import("pele/lazy")))()
-      const r = await lazy.renderAsync(source, peleOptions(source, opts))
+      const renderAsync = await (opts.load ?? loadPele)()
+      const r = await renderAsync(source, peleOptions(source, opts))
       const svg = allowSvg(r.svg, opts.parse)
       if (!svg) return { ok: false, error: "This diagram has nothing this view can draw safely." }
       return { ok: true, svg, width: r.width, height: r.height, type: r.type }
     } catch (err) {
-      if (!(lazy && err instanceof lazy.PeleError) && cache.get(key) === run) cache.delete(key)
+      // A PeleError is the source's own fault (syntax, a limit) and stays
+      // cached. Anything else (a chunk that did not load) is tried again.
+      // The name is read rather than `instanceof`, so the lazy chunk keeps
+      // only what it uses.
+      const sourceFault = err instanceof Error && err.name === "PeleError"
+      if (!sourceFault && cache.get(key) === run) cache.delete(key)
       return { ok: false, error: errorText(err) }
     }
   })()

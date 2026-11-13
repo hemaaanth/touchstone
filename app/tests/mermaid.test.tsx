@@ -167,16 +167,12 @@ describe("the cache", () => {
   })
 
   test("a failed chunk load is not kept; a source error is", async () => {
-    const { PeleError } = await import("pele/lazy")
     let calls = 0
-    const flaky: DrawOptions["load"] = async () => ({
-      PeleError,
-      renderAsync: async () => {
-        calls++
-        if (calls === 1) throw new TypeError("Failed to fetch dynamically imported module")
-        return { svg: '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>', width: 1, height: 1, links: [], type: "flowchart", mermaidType: "flowchart-v2" } as never
-      },
-    })
+    const flaky: DrawOptions["load"] = async () => {
+      calls++
+      if (calls === 1) throw new TypeError("Failed to fetch dynamically imported module")
+      return (async () => ({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>', width: 1, height: 1, links: [], type: "flowchart", mermaidType: "flowchart-v2" })) as never
+    }
     const src = "flowchart LR\n  Flaky --> Load"
     const first = await draw(src, { load: flaky })
     expect(first.ok).toBe(false)
