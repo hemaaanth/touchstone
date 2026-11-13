@@ -1342,6 +1342,70 @@ test("a mark that a new workspace already holds does not stop the bind: the run'
   });
 });
 
+// ---- A workspace record that cannot be read is not a record that is not there --------
+
+test("a follow-up whose workspace record cannot be read is refused and changes nothing; with no record file it gets a new workspace as before", async () => {
+  const a = await finished();
+  const ws = a.call.args[4];
+  made.push(ws);
+  const good = readFileSync(record(a.id), "utf8");
+  const before = spawns.length;
+  const refused = (text) => {
+    const events = getRun(a.id).events.length;
+    assert.throws(() => steerRun(a.id, "Go on."), (err) => sentence.test(err.message) && err.message.startsWith(`The workspace record of this run cannot be read, so this follow-up did not start. Repair the file ${record(a.id)}, or delete it`));
+    if (text !== null) assert.equal(readFileSync(record(a.id), "utf8"), text, "the record is not changed");
+    assert.equal(getRun(a.id).events.length, events, "the chat gets no event: no 'the earlier workspace is gone'");
+    assert.ok(existsSync(path.join(ws, "notes.md")), "the old folder stays");
+  };
+  for (const text of ['{"ws":', "null", "[]"]) {
+    writeFileSync(record(a.id), text);
+    refused(text);
+  }
+  writeFileSync(record(a.id), good);
+  chmodSync(record(a.id), 0); // whole, but closed to the server
+  try {
+    refused(null);
+  } finally {
+    chmodSync(record(a.id), 0o600);
+  }
+  assert.equal(spawns.length, before, "no worker started, so no new workspace was built");
+  // The operator repairs the record: the follow-up works in the old workspace.
+  scripts.push({ act: look, events: [done] });
+  steerRun(a.id, "Go on.");
+  let r = await settle(a.id, 1);
+  assert.equal(spawns.at(-1).args[4], ws);
+  assert.deepEqual(spawns.at(-1).saw, { source: true, note: true });
+  assert.deepEqual(r.events.filter((e) => e.ev === "workspace"), []);
+  // The operator deletes the record instead: a new workspace, and the true sentence, as before.
+  rmSync(record(a.id));
+  scripts.push({ events: [done] });
+  steerRun(a.id, "Go on.");
+  r = await settle(a.id, 2);
+  assert.notEqual(spawns.at(-1).args[4], ws);
+  assert.deepEqual(r.events.filter((e) => e.ev === "workspace").map((e) => e.state), ["rebuilt"]);
+});
+
+test("a workspace record that is damaged while a follow-up works is not taken as no record when the follow-up ends", async () => {
+  const damage = (id) => () => writeFileSync(record(id), '{"ws":');
+  // No credential is known for this run, so nobody can say the files are clean: the workspace is not kept.
+  const a = await finished();
+  scripts.push({ act: damage(a.id), events: [done] });
+  steerRun(a.id, "Go on.");
+  await settle(a.id, 1);
+  assert.ok(!existsSync(a.call.args[4]), "not kept on the word of a record nobody can read");
+  assert.equal(readFileSync(record(a.id), "utf8"), '{"ws":', "and the damaged record is not written over");
+  // The credential is known: every copy leaves, and the record is written again from what the server knows.
+  await withLivePack(async () => {
+    const server = await restart();
+    const b = await liveEnded(server);
+    scripts.push({ act: damage(b.id), events: [done] });
+    server.steerRun(b.id, "Go on.");
+    await settle(b.id, 1, server);
+    assert.deepEqual(holding(b.ws, [TOKEN, ADMIN]), []);
+    assert.deepEqual([kept(b.id).ws, kept(b.id).credential, kept(b.id).restored], [b.ws, true, undefined]);
+  });
+});
+
 // ---- Messages -------------------------------------------------------------------
 
 test("messages: every refusal and every reply error is a full sentence that says what to do", async () => {

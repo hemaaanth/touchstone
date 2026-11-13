@@ -1061,9 +1061,15 @@ async function recordRun(run, found) {
 // names the workspace and holds the run's own scope snapshot. It survives a
 // restart, and it moves to the trash with the run's other files.
 const workspaceFile = (id) => path.join(RESULTS_DIR, `run-${id}.workspace.json`)
+// undefined: the run has no record. null: the record file is there but cannot
+// be read (torn, closed to this user, or not a record). The two are not the
+// same. A record that cannot be read may name a workspace, so no reader may
+// take it as "not there".
 function readWorkspace(id) {
   try {
-    return JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+    if (!lstatSync(workspaceFile(id), { throwIfNoEntry: false })) return undefined
+    const rec = JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+    return rec && typeof rec === "object" && !Array.isArray(rec) ? rec : null
   } catch {
     return null
   }
@@ -1390,14 +1396,11 @@ function removeOrphan(dir, id) {
     // A server may work on the run right now: this one (a run it resumes at
     // boot) or another live one. The run's lock says so.
     if (existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) && !(mine = own(lock))) return "kept"
-    // No record file: the run has no workspace. A file that is there but is
-    // torn, closed to this user or not a record is not "no record": it may name
-    // this folder, so the folder stays.
-    if (lstatSync(workspaceFile(id), { throwIfNoEntry: false })) {
-      const rec = readWorkspace(id)
-      if (!rec || typeof rec !== "object" || Array.isArray(rec)) return "unread"
-      if (checkedWorkspace(rec.ws, id) === dir) return "kept" // the run's own kept workspace
-    }
+    // No record: the run has no workspace. A record that cannot be read may
+    // name this folder, so the folder stays.
+    const rec = readWorkspace(id)
+    if (rec === null) return "unread"
+    if (checkedWorkspace(rec?.ws, id) === dir) return "kept" // the run's own kept workspace
     removeChecked(dir, id)
     return existsSync(dir) ? "kept" : "removed"
   } catch {
@@ -1418,7 +1421,8 @@ function keepWorkspace(run, ws) {
     const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
     const secrets = secretsOf(credentialTarget(target, run.packs))
     // A restored credential that is not known here cannot be scrubbed: do not keep.
-    if (old?.restored && !secrets.length) return false
+    // The same when the old record cannot be read: it may have said `restored`.
+    if ((old === null || old?.restored) && !secrets.length) return false
     if (secrets.length) scrubSecrets(real, secrets)
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
@@ -1570,6 +1574,9 @@ export function followUp(run, text, clientId) {
   // snapshot; its scope may allow several modules now, so it comes back under
   // the module this run used.
   const kept = readWorkspace(run.id)
+  // A record that cannot be read is not a lost workspace. Nothing is built and
+  // nothing is changed: the operator repairs the file, or deletes it on purpose.
+  if (kept === null) throw new Error(`The workspace record of this run cannot be read, so this follow-up did not start. Repair the file ${workspaceFile(run.id)}, or delete it to continue in a new workspace. Then send the message again.`)
   // The record's path is used only when the directory passes the check and
   // carries this run's mark. Otherwise the path leaves the record.
   let ws = checkedWorkspace(kept?.ws, run.id)
