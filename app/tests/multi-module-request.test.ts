@@ -1,3 +1,4 @@
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 
 // The run-create request the dialog makes: ONE request, with one module as the
@@ -12,7 +13,7 @@ const sent: Sent[] = []
 const g = globalThis as { fetch: unknown; document?: unknown }
 const original = { fetch: g.fetch, document: g.document }
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 beforeAll(() => {
   g.document = { querySelector: (sel: string) => (sel.includes("touchstone-console-token") ? { content: TOKEN } : null) }

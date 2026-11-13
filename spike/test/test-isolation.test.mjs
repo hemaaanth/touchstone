@@ -10,6 +10,9 @@
 //     Static imports run before the test body, so env set there is too late.
 //   - a store reached only by a dynamic import: the token (or token file),
 //     grants and scopes env are set above that import, or the helper is first.
+//     A set is `process.env.NAME = …`, or, in an app test, a call of the
+//     helper useEnv (app/tests/helpers/env.ts) whose object names NAME as a
+//     plain key: `useEnv({ NAME: … })`. A commented-out line counts for neither.
 // The check follows each test's relative imports to the stores, so a new
 // test, or a new import chain, that reaches a store is caught here.
 //
@@ -54,7 +57,14 @@ function reaches(file) {
   return hit;
 }
 
-const SETS = (src, name) => new RegExp(`process\\.env\\.${name}\\s*=`).test(src);
+// Source with its comments taken out: a block comment, or a line whose code is
+// only a comment. A commented-out set does not count.
+const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+// The keys each `useEnv({ ... })` call names: a plain or quoted key, never a
+// computed one.
+const USE_ENV = /\buseEnv\s*\(\s*\{([^{}]*)\}\s*\)/g;
+const useEnvKeys = (src) => [...src.matchAll(USE_ENV)].flatMap((m) => [...m[1].matchAll(/(?:^|,)\s*(["']?)([A-Za-z_$][\w$]*)\1\s*:/g)].map((k) => k[2]));
+const SETS = (src, name) => new RegExp(`process\\.env\\.${name}\\s*=`).test(code(src)) || useEnvKeys(code(src)).includes(name);
 export function violation(file, src) {
   const list = imports(src).map((i) => ({ ...i, path: resolveSpec(file, i.spec) }));
   const hits = list.filter((i) => i.path && reaches(i.path));
@@ -88,6 +98,18 @@ test("the guard sees the stores: it is not blind", () => {
   assert.match(violation(fake, 'process.env.TOUCHSTONE_GRANTS_FILE = "g";\nimport x from "../lib/grant-store.mjs";\n'), /static import/);
   assert.match(violation(fake, 'const m = await import("../lib/grant-store.mjs");\n'), /dynamic import/);
   assert.equal(violation(fake, 'process.env.TOUCHSTONE_GRANT_TOKEN = "t";\nprocess.env.TOUCHSTONE_GRANTS_FILE = "g";\nprocess.env.TOUCHSTONE_SCOPES_FILE = "s";\nconst m = await import("../lib/grant-store.mjs");\n'), null);
+  // The app helper's form: useEnv({ NAME: … }) above the import is a set.
+  const load = 'const m = await import("../lib/grant-store.mjs");\n';
+  const token = 'useEnv({ TOUCHSTONE_GRANT_TOKEN: "t" });\n', grants = 'useEnv({ TOUCHSTONE_GRANTS_FILE: g });\n', scopes = 'useEnv({ "TOUCHSTONE_SCOPES_FILE": s });\n';
+  assert.equal(violation(fake, token + grants + scopes + load), null);
+  assert.equal(violation(fake, 'useEnv({ TOUCHSTONE_GRANT_TOKEN_FILE: f, TOUCHSTONE_GRANTS_FILE: g, TOUCHSTONE_SCOPES_FILE: s });\n' + load), null);
+  // Below the import, missing one of the three, commented out, or a computed key: not a set.
+  assert.match(violation(fake, token + grants + load + scopes), /dynamic import/);
+  assert.match(violation(fake, token + grants + load), /dynamic import/);
+  assert.match(violation(fake, token + grants + '// ' + scopes + load), /dynamic import/);
+  assert.match(violation(fake, token + grants + '/* ' + scopes + ' */\n' + load), /dynamic import/);
+  assert.match(violation(fake, token + grants + 'useEnv({ [name]: s });\n' + load), /dynamic import/);
+  assert.match(violation(fake, token + grants + '// process.env.TOUCHSTONE_SCOPES_FILE = "s";\n' + load), /dynamic import/);
 });
 
 test("every test that loads the grant or scope store isolates them first", () => {
