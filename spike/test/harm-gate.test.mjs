@@ -944,6 +944,40 @@ contract RevEtchTest is Test {
 `);
 });
 
+// M1: vm.mockFunction(callee, target, data) runs target's code for calls to
+// callee, in callee's storage. That is an etch of callee: it stops being a
+// scope target.
+test("forge: a mockFunction over the scope token is NOT proven (review 2 M1, mockfn)", { skip, timeout: 300_000 }, async () => {
+  await forged("MockFnTest", { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+contract MockFnTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function test_x() public {
+    vault.tok();
+    vm.mockFunction(address(tok), address(fake), abi.encodeWithSelector(FakeTok.drain.selector));
+    FakeTok(address(tok)).drain(address(vault), address(0xBEEF));
+  }
+}
+`);
+});
+
+test("forge: a mockFunction that sweeps the ETH vault is NOT proven (review 2 M1, ethmockfn)", { skip, timeout: 300_000 }, async () => {
+  await forged("EthMockFnTest", { "Vault.sol": LAB_VAULT }, `import "../src/Vault.sol";
+contract Sweeper { function sweep(address to) external { payable(to).transfer(address(this).balance); } }
+contract EthMockFnTest is Test {
+  Vault v; Sweeper s;
+  function setUp() public { v = new Vault(); s = new Sweeper(); vm.deal(address(this), 5 ether); v.deposit{value: 5 ether}(); }
+  function test_x() public {
+    v.totalAssets();
+    vm.mockFunction(address(v), address(s), abi.encodeWithSelector(Sweeper.sweep.selector));
+    Sweeper(address(v)).sweep(address(0xBEEF));
+    require(address(0xBEEF).balance == 5 ether, "swept");
+  }
+}
+`);
+});
+
 // A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
 // balance storage is identical to TOKENS; only the advisory logs are gone. The
 // ground-truth storage channel must prove a drain of it, and must NOT over-fire on
