@@ -9,7 +9,7 @@
 # network (to fetch the tarball and pip deps); the finished image, and every
 # run of it, do not. jwt_tool is GPL-3.0; it runs here only as a program in its
 # own container (no linking), so it is listed in TOOLS.md, not THIRD_PARTY.md.
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # Pinned release and the SHA-256 of its GitHub source tarball. Bump both
 # together; a mismatch aborts the build rather than installing unverified code.

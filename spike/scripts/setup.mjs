@@ -53,11 +53,11 @@ export const MANIFEST = [
 
   // ---- contracts (EVM static/dynamic analysis + proof replay) ----
   { tag: "ghcr.io/foundry-rs/foundry:latest", group: "contracts", kind: "pull",
-    ref: "ghcr.io/foundry-rs/foundry:latest", daytona: true,
-    note: "forge, anvil, solc install, proof replay. Moving tag — not digest-pinned upstream." },
+    ref: "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39", daytona: true,
+    note: "forge, anvil, solc install, proof replay. A moving tag upstream: pinned here to the digest on the host." },
   { tag: "ghcr.io/trailofbits/eth-security-toolbox:nightly", group: "contracts", kind: "pull",
-    ref: "ghcr.io/trailofbits/eth-security-toolbox:nightly", daytona: true,
-    note: "Slither, Echidna, Medusa. Moving tag." },
+    ref: "ghcr.io/trailofbits/eth-security-toolbox:nightly@sha256:205f5d7c5f41c8ef4ead6ef5c95fddf0cb69352a547a8b47c3e172e5d01ac35c", daytona: true,
+    note: "Slither, Echidna, Medusa. A moving tag upstream: pinned here to the digest on the host." },
   { tag: "touchstone/mythril:0.24.8", group: "contracts", kind: "build",
     file: "spike/packs/contracts/Dockerfile.mythril", context: "spike/packs/contracts", daytona: true },
   { tag: "touchstone/heimdall:0.9.3", group: "contracts", kind: "build",
@@ -100,13 +100,13 @@ export const MANIFEST = [
   { tag: "touchstone/web-jwt-tool:2.3.0", group: "web", kind: "build",
     file: "spike/packs/web/Dockerfile.jwt_tool", context: "spike/packs/web" },
   { tag: "ghcr.io/zaproxy/zaproxy:2.16.1", group: "web", kind: "pull",
-    ref: "ghcr.io/zaproxy/zaproxy:2.16.1" },
+    ref: "ghcr.io/zaproxy/zaproxy:2.16.1@sha256:7840969c7c9fead565bf9734b12f49f6886db90b1d35b1f74d79710bbd081dab" },
   { tag: "projectdiscovery/nuclei:v3.4.2", group: "web", kind: "pull",
     ref: "projectdiscovery/nuclei:v3.4.2@sha256:d0e34e04a7180c6b944550b81fe50719f57383affcb18ae7a42c0045643d54af" },
   { tag: "projectdiscovery/nuclei:v3.4.10", group: "web", kind: "pull",
-    ref: "projectdiscovery/nuclei:v3.4.10" },
+    ref: "projectdiscovery/nuclei:v3.4.10@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97" },
   { tag: "hahwul/dalfox:v2.12.0", group: "web", kind: "pull",
-    ref: "hahwul/dalfox:v2.12.0" },
+    ref: "hahwul/dalfox:v2.12.0@sha256:11c1249ef35f8eb3482d180e247304b351b37da2929eecd518dd8057d2687dc7" },
 
   // ---- ai-mcp ----
   { tag: "touchstone/ai-mcp-lab:dev", group: "ai-mcp", kind: "build",
@@ -166,7 +166,7 @@ export const MANIFEST = [
   { tag: "trufflesecurity/trufflehog:3.99.8", group: "supply-chain", kind: "pull",
     ref: "trufflesecurity/trufflehog:3.99.8@sha256:674b2f187620a19df77f44cf9a7d77efcc581a5662accef2f2739cbb46ba4a3a" },
   { tag: "ghcr.io/mongodb/kingfisher:2.18.1", group: "supply-chain", kind: "pull",
-    ref: "ghcr.io/mongodb/kingfisher:2.18.1" },
+    ref: "ghcr.io/mongodb/kingfisher:2.18.1@sha256:e5cb2daee5521ad68f15f695c510fa87c1eefaa87103f13137cfb8420067700b" },
   { tag: "touchstone-cosign:v3.1.4", group: "supply-chain", kind: "build",
     context: "spike/packs/supply-chain/cosign" },
   // Opt-in networked tools (networked.mjs). Each runs only in capture mode.
@@ -324,6 +324,13 @@ async function ensure(item) {
       }
     }
     r = await run("docker", buildArgs(item), { capture: true });
+  }
+  // A pull by digest stores the image under `repo@sha256:…` only. Give it its
+  // short tag too (`alpine:3.20`), so a check by tag finds it, but never move
+  // a tag that already exists: that one may name another image.
+  if (r.code === 0 && item.kind === "pull" && item.ref !== item.tag && /:[^/]+$/.test(item.tag) && !(await present(item.tag))) {
+    const t = await run("docker", ["tag", item.ref, item.tag], { capture: true });
+    if (t.code !== 0) r = { code: t.code, out: `pulled, but docker tag ${item.tag} failed: ${t.out}` };
   }
   if (r.code === 0) {
     results.push({ item, state: item.kind === "pull" ? "pulled" : "built" });

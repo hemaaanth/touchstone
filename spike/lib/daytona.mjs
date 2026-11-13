@@ -777,7 +777,7 @@ async function pushImage(m, image) {
 
 // ---- Foundry on the machine
 
-const FOUNDRY_IMG = "ghcr.io/foundry-rs/foundry:latest";
+const FOUNDRY_IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 
 // A solc version we pass to a shell: digits and dots only.
 export const SOLC_VERSION = /^\d+\.\d+\.\d+$/;

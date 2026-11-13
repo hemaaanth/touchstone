@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { MANIFEST } from "../scripts/setup.mjs";
@@ -135,7 +136,8 @@ function imagesIn(files) {
 }
 const SETUP_FILE = join(ROOT, "spike/scripts/setup.mjs");
 const codeImages = imagesIn([...sources(join(ROOT, "spike")), ...sources(join(ROOT, "app/server"))].filter((f) => f !== SETUP_FILE));
-const testImages = imagesIn(sources(join(ROOT, "spike/test"), { tests: true }));
+// This file names images in its own exception lists; it is the guard, not a user.
+const testImages = imagesIn([...sources(join(ROOT, "spike/test"), { tests: true })].filter((f) => f !== fileURLToPath(import.meta.url)));
 
 // Named in the code but never run on this host, each with its reason.
 const NOT_RUN_HERE = {
@@ -162,4 +164,66 @@ test("every public image a test runs is in the setup manifest", () => {
     .filter(([ref]) => !/^touchstone/.test(ref) && !known.has(ref) && !NOT_RUN_HERE[ref])
     .map(([ref, at]) => `${ref} (${at})`);
   assert.deepEqual(missing, [], "add these to spike/scripts/setup.mjs");
+});
+
+// ---- pins (L9): a run cannot silently use a newer image
+
+test("every pulled image in the manifest is pinned by digest", () => {
+  const loose = MANIFEST.filter((m) => m.kind === "pull" && !/@sha256:[0-9a-f]{64}$/.test(m.ref)).map((m) => m.tag);
+  assert.deepEqual(loose, [], "pin these by digest: docker image inspect --format '{{json .RepoDigests}}' <image>");
+});
+
+test("the code runs a pulled image only by its pinned ref, never by tag alone", () => {
+  const builds = new Set(MANIFEST.filter((m) => m.kind === "build").map((m) => m.tag));
+  const pinned = new Set(MANIFEST.filter((m) => m.kind === "pull").map((m) => m.ref));
+  const loose = [...codeImages].filter(([ref]) => !builds.has(ref) && !pinned.has(ref) && !NOT_RUN_HERE[ref]).map(([ref, at]) => `${ref} (${at})`);
+  assert.deepEqual(loose, [], "use the manifest's pinned ref");
+});
+
+// Base images of local builds that are NOT on this host and have no digest
+// recorded anywhere in the repo. Pinning them needs one pull (thread 1e).
+const UNPINNED_BASES = {
+  "alpine:3.21": "spike/packs/web/Dockerfile.ffuf: not on this host, no recorded digest",
+  "oven/bun:1.4.4": "spike/packs/keys/runtime/Dockerfile: not on this host, no recorded digest",
+};
+
+test("every local build pins its base images by digest (named exceptions only)", () => {
+  const loose = [];
+  for (const m of MANIFEST.filter((x) => x.kind === "build")) {
+    const file = join(ROOT, m.file ?? join(m.context, "Dockerfile"));
+    const stages = new Set();
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const f = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
+      if (!f) continue;
+      const [, image, alias] = f;
+      if (!stages.has(image) && image !== "scratch" && !/@sha256:[0-9a-f]{64}$/.test(image) && !UNPINNED_BASES[image]) loose.push(`${image} (${file.slice(ROOT.length + 1)})`);
+      if (alias) stages.add(alias);
+    }
+  }
+  assert.deepEqual(loose, []);
+});
+
+// setup pulls `repo:tag@sha256:…`, which docker stores without the short tag.
+// It then adds the tag (a check by tag must find the pinned image), but never
+// moves a tag that already exists. Proven with a docker shim, no real docker.
+test("setup tags a pinned pull with its short tag, and leaves an existing tag alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "setup-shim-"));
+  try {
+    const log = join(dir, "calls");
+    // `image inspect` fails for everything except alpine:3.20 (an existing tag).
+    writeFileSync(join(dir, "docker"),
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "' + log + '"\n' +
+      'if [ "$1" = image ] && [ "$2" = inspect ]; then [ "$3" = "alpine:3.20" ] && exit 0; exit 1; fi\nexit 0\n',
+      { mode: 0o755 });
+    execFileSync(process.execPath, [SETUP, "--only", "base", "--jobs", "1"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    const node = MANIFEST.find((m) => m.tag === "node:20-slim");
+    const alpine = MANIFEST.find((m) => m.tag === "alpine:3.20");
+    assert.ok(calls.includes(`pull ${node.ref}`), "pulls the pinned ref");
+    assert.ok(calls.includes(`tag ${node.ref} node:20-slim`), "tags it with its short tag");
+    assert.ok(calls.includes(`pull ${alpine.ref}`));
+    assert.ok(!calls.some((c) => c.startsWith("tag ") && c.endsWith(" alpine:3.20")), "never moves an existing tag");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

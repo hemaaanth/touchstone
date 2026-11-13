@@ -72,7 +72,7 @@ export async function requireImage(image, buildArg) {
 const PROXY_PORT = 8080;          // the port the proxy listens on (what scripts call)
 const ORIGIN_ALIAS = "origin";    // the lab's alias on the inner network
 export const REC_MARKER = "__TOUCHSTONE_REC__";
-const PROXY_IMAGE = "node:20-slim";
+const PROXY_IMAGE = "node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0";
 
 // The recording reverse proxy, run in its own container with built-in `http`
 // only (no dependencies). It forwards every request to the real lab
