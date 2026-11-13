@@ -8,11 +8,11 @@ import {
 } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
 import type { Finding, RunSummary } from "@/lib/types"
-import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
+import { isRunningNow, reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { startProgress } from "@/lib/startup"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
-import { isTerminal, runTitle } from "@/lib/format"
+import { runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { TitleInput } from "@/components/title-input"
@@ -437,7 +437,6 @@ export function RunChat({
             <RunHeader
               state={state}
               status={status}
-              live={live}
               title={titleNode}
               actions={
                 <RunActions
@@ -593,17 +592,15 @@ function messageText(message: AppendMessage): string {
 function RunHeader({
   state,
   status,
-  live,
   title,
   actions,
 }: {
   state: RunState | null
   status: RunSummary["status"]
-  live: boolean
   title: React.ReactNode
   actions: React.ReactNode
 }) {
-  const running = !isTerminal(status) && (state ? live : status === "running")
+  const running = isRunningNow(state, status)
   // A stop is the newest fact about the run, so it wins over an older failure.
   const stopped = !!state?.stopped
   const failed = status === "error" && !stopped

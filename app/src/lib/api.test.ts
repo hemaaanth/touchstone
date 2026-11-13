@@ -3,7 +3,9 @@ import assert from "node:assert/strict"
 import { streamRun } from "./api"
 import type { RunEvent } from "./types"
 
-test("a dropped run stream closes so the store can reload its snapshot", () => {
+// Contract test, not a regression test: this already held before the reload fix.
+// The store's reload depends on it, so it guards against a native retry coming back.
+test("contract: a dropped run stream closes once and calls onEnd", () => {
   const original = globalThis.EventSource
   class FakeEventSource {
     static instance: FakeEventSource

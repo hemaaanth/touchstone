@@ -808,6 +808,7 @@ interface RunEntry {
   // its load is the latest.
   stop?: () => void
   retry?: ReturnType<typeof setTimeout>
+  // Reloads in a row with no stream message between them. Sets the backoff.
   failures: number
   gen: number
 }
@@ -900,6 +901,8 @@ function follow(id: string, en: RunEntry) {
   en.stop = streamRun(
     id,
     (e) => {
+      // Only a stream that delivers proves the connection works.
+      if (en.gen === gen) en.failures = 0
       queue.push(e)
       timer ??= setTimeout(flush, 32)
     },
@@ -908,13 +911,24 @@ function follow(id: string, en: RunEntry) {
       if (en.gen !== gen) return
       flush()
       // The server owns the event list. Reload it instead of replaying an old
-      // since= URL; fetch retries while the server is restarting.
+      // since= URL. A stream that keeps failing waits on the backoff.
       if (!en.state?.closed) {
         en.loading = false
-        loadRun(id)
+        retryLoad(id, en)
       }
     },
   )
+}
+
+// Load again after a dropped stream or a failed fetch. The first reload after a
+// working stream is at once; then 1 s, 2 s, 4 s, and 5 s each time after that.
+function retryLoad(id: string, en: RunEntry) {
+  const delay = en.failures ? Math.min(1000 * 2 ** (en.failures - 1), 5000) : 0
+  en.failures = Math.min(en.failures + 1, 4)
+  en.retry = setTimeout(() => {
+    en.retry = undefined
+    loadRun(id)
+  }, delay)
 }
 
 // Load a run into the store if it is not there yet. Safe to call often.
@@ -930,20 +944,16 @@ export function loadRun(id: string) {
       // load would add its events again on top, so stop it first.
       en.stop?.()
       en.stop = undefined
-      en.failures = 0
       commit(id, en, view.events ?? [])
       if (!en.state?.closed) follow(id, en)
     })
     .catch((err) => {
       if (en.gen !== gen) return
       en.loading = false
-      if (err instanceof HttpError && err.status === 404) return
-      const delay = Math.min(1000 * 2 ** en.failures, 5000)
-      en.failures = Math.min(en.failures + 1, 3)
-      en.retry = setTimeout(() => {
-        en.retry = undefined
-        loadRun(id)
-      }, delay)
+      // A 4xx will not change on retry (deleted, forbidden). A 5xx or a network
+      // error is the server restarting, so it keeps retrying at most every 5 s.
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500) return
+      retryLoad(id, en)
     })
 }
 
@@ -1003,4 +1013,11 @@ export function onRunSettled(cb: (id: string) => void): () => void {
   return () => {
     settleListeners.delete(cb)
   }
+}
+
+// The header's Running word. A follow-up reply keeps the run's terminal status,
+// so `replying` counts as running while its stream is open. Before the run
+// loads, the sidebar's status decides.
+export function isRunningNow(state: RunState | null, status: RunStatus): boolean {
+  return state ? !state.closed && (!isTerminal(state.status) || state.replying) : status === "running"
 }
