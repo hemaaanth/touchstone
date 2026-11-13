@@ -374,7 +374,8 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     }
     // TLS is measured only where the capture already found an https endpoint.
     // The A record is passed as --ip, so the lab needs no resolver in the container.
-    const tlsTargets = deep ? testsslTargets(http.map(r => r.url).filter(u => within(new URL(u).hostname))) : [];
+    const tlsTargets = deep ? testsslTargets(http.map(r => r.url)) : [];
+    // The https origins are httpx rows, so their hosts already passed the input filter.
     // testssl.sh gets an address the capture checked, so it never looks the name up again.
     // IPv4 first. Outside an open reach, only a public address. None: the endpoint is a gap.
     const tlsAddress = host => {
