@@ -370,6 +370,33 @@ const PIECE = 64 * 1024
 // A line that no piece can hold is replaced whole: it is never returned
 // unchecked.
 const tooLong = (n) => `[REDACTED: line of ${n} characters too long to check]`
+const notChecked = (n) => `[REDACTED: ${n} characters could not be checked]`
+
+// One line for each rule that can give up, each masked by that rule only.
+// It goes after each piece. A rule that gave up inside the piece also misses
+// its canary line, so the piece output no longer ends with CANARY_OUT, and
+// the piece is replaced whole. So does a piece whose last line holds an
+// unclosed pair that runs into the canary.
+const CANARY = [
+  '{"token"\n:"c4n4ry-v4lue-01"}',
+  '{\\"token\\"\n:\\"c4n4ry-v4lue-02\\"}',
+  '{"name"\n:"x-api-key","value":"c4n4ry-v4lue-03"}',
+  '{\\"name\\"\n:\\"x-api-key\\",\\"value\\":\\"c4n4ry-v4lue-04\\"}',
+  '[["x-api-key","c4n4ry-v4lue-05"]]',
+  "x(token: 'c4n4ry-v4lue-06')",
+  'x(token: \\"c4n4ry-v4lue-07\\")',
+  "X-Api-Key: c4n4ry-v4lue-08",
+  "| token | c4n4ry-v4lue-09 |",
+  'x("X-Api-Key: c4n4ry-v4lue-10")',
+  "use Bearer c4n4ry-v4lue-11 ok",
+  "/p?token=c4n4ry-v4lue-12 ok",
+  "curl -b sid=c4n4ry-v4lue-13 x",
+  "run --token c4n4ry-v4lue-14 x",
+  "DB_PASSWORD=c4n4ry-v4lue-15 x",
+  "Cookie: sid=c4n4ry-v4lue-16",
+].join("\n")
+const CANARY_OUT = redactText(CANARY)
+if (CANARY_OUT.includes("c4n4ry")) throw new Error("redact: a canary line is not masked")
 
 // Where to cut the piece that starts at `start`: just after a line end, at
 // most PIECE characters on. Some rules read across a line end: a PEM block,
@@ -427,7 +454,9 @@ function redactLong(text) {
       start = stop
       continue
     }
-    out += redactText(text.slice(start, end))
+    const piece = text.slice(start, end)
+    const done = redactText(piece + "\n" + CANARY)
+    out += done.endsWith("\n" + CANARY_OUT) ? done.slice(0, done.length - CANARY_OUT.length - 1) : notChecked(piece.length)
     start = end
   }
   return out

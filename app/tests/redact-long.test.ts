@@ -117,6 +117,14 @@ describe("redact: a cut never splits a rule that reads across a line end", () =>
     expect(out).not.toContain("tk_split9fakeZ")
     expect(out).toContain('{"token":\n  "[REDACTED]"}')
   })
+
+  test("a piece whose last line holds an unclosed pair is replaced, never returned unmasked", () => {
+    // The unclosed value runs into the canary after the piece; the check sees it.
+    const s = fill(64 * KB - 200) + '{"token":"tk_open9fakeZ\n' + "x".repeat(70 * KB) + "\n" + prose(KB)
+    const out = text(s)
+    expect(out).not.toContain("tk_open9fakeZ")
+    expect(out).toMatch(/^\[REDACTED: \d+ characters could not be checked\]/)
+  })
 })
 
 describe("redact: each rule pass alone is linear at 256 KB (final review B1, no pieces)", () => {
@@ -140,3 +148,12 @@ describe("redact: each rule pass alone is linear at 256 KB (final review B1, no 
   for (const [label, s] of cases) test(label, () => expect(ms(() => redactOnePass(s))).toBeLessThan(2000))
 })
 
+describe("redact: the engine fact the canary relies on (Bun)", () => {
+  test("a rule that gives up on a 512 KB match also misses a later match of the same rule", () => {
+    // Why a canary line after each piece shows a give-up. If a later Bun
+    // stops giving up, this test fails, and the 64 KB cap can be revisited.
+    const s = '{"name":"x-api-key","value":"' + "a1".repeat(256 * KB) + '"}\n{"name":"x-api-key","value":"tk_after9zz"}'
+    expect(redactOnePass(s)).toContain("tk_after9zz")
+    expect(redactOnePass(s.slice(s.indexOf("\n") + 1))).not.toContain("tk_after9zz")
+  })
+})
