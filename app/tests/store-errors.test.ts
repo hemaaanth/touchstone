@@ -1,3 +1,4 @@
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,9 +9,9 @@ import path from "node:path"
 const dir = mkdtempSync(path.join(tmpdir(), "store-errors-test-"))
 const SCOPES = path.join(dir, "scopes.json")
 const GRANTS = path.join(dir, "grants.json")
-process.env.TOUCHSTONE_SCOPES_FILE = SCOPES
-process.env.TOUCHSTONE_GRANTS_FILE = GRANTS
-process.env.TOUCHSTONE_GRANT_TOKEN = "test-grant-token"
+useEnv({ TOUCHSTONE_SCOPES_FILE: SCOPES })
+useEnv({ TOUCHSTONE_GRANTS_FILE: GRANTS })
+useEnv({ TOUCHSTONE_GRANT_TOKEN: "test-grant-token" })
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleApi } = await import("../server/api.mjs")

@@ -1,4 +1,5 @@
 import "./helpers/isolated-env"
+import { useEnv } from "./helpers/env"
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,7 +9,7 @@ import path from "node:path"
 // exact wei when the record has them, and an older record reads as before.
 // The shapes are those of the real FeeVault record (run …2611110619-1).
 const dir = mkdtempSync(path.join(tmpdir(), "finding-harm-test-"))
-process.env.TOUCHSTONE_RESULTS_DIR = dir
+useEnv({ TOUCHSTONE_RESULTS_DIR: dir })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const transfers = [
