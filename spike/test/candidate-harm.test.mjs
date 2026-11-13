@@ -161,7 +161,7 @@ for (const pack of [contracts, keys, chainWatch]) {
       assert.deepEqual(state.candidates.map((c) => c.poc), ["PauseTest"], "the candidate stays while the finding is unproven");
       const f = state.found[0];
       assert.deepEqual(supersededBy(state.candidates, [{ ...f, pocProved: false, proof: { kind: "forge", pass: true, harm: { ok: false } } }]), []);
-      assert.deepEqual(supersededBy(state.candidates, [{ ...f, pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true, kind: "funds" } } }]), [{ poc: "PauseTest", by: "PauseTest" }]);
+      assert.deepEqual(supersededBy(state.candidates, [{ ...f, pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } }]), [{ poc: "PauseTest", by: "PauseTest" }]);
     } finally { done(); }
   });
 }

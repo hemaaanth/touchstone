@@ -36,7 +36,7 @@ import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
-import { splitMeasured, supersededBy } from "./lib/candidate.mjs";
+import { supersededBy } from "./lib/candidate.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 import { leadsFrom } from "./lib/leads.mjs";
 import { afterNudge } from "./lib/nudge.mjs";
@@ -345,7 +345,6 @@ async function main() {
   let all = [];
   let settled = null;
   let findings = [];
-  let measured = [];
   let error = null;
   try {
     // One worker runs the whole audit. submit_finding never blocks, so nothing
@@ -364,10 +363,7 @@ async function main() {
     // test was written to assert. "Proven" binds to the submitted test only; a
     // throwaway diagnostic that happens to pass never turns a record green. Runs
     // before the workspace is torn down below.
-    // A replay that only repeated a measurement is a candidate, not a finding.
-    const split = splitMeasured(withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m))), { from: Math.max(0, ...(settled?.candidates ?? []).map((c) => Number(c.n) || 0)) });
-    findings = split.findings;
-    measured = split.candidates;
+    findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
     for (const f of findings) {
       console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
     }
@@ -397,7 +393,7 @@ async function main() {
     findings,
     // Unproven, agent-asserted results. Never findings, never counted as one.
     // A candidate a proven finding took the place of is left out.
-    candidates: [...(settled?.candidates ?? []).filter((c) => !supersededBy([c], findings).length), ...measured],
+    candidates: (settled?.candidates ?? []).filter((c) => !supersededBy([c], findings).length),
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,

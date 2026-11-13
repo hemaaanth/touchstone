@@ -4,7 +4,6 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
 import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, withCandidateLine, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
-import { readableTitle } from "../../lib/check-titles.mjs";
 import { proveFindings, replayEvidence, sha256 } from "../../lib/proof-evidence.mjs";
 import { analyze, cryptoDetectors, parseResources } from "./checks.mjs";
 import { prepareSnapshot } from "./snapshot.mjs";
@@ -89,7 +88,7 @@ function tools(ws, state) {
       if (state.found.some((f) => f.rootCause === lead.rootCause)) return output("Root cause already recorded.", true);
       const proof = await replayEvidence(ws, lead.evidence, { detectors: allowed });
       if (proof.status !== "pass") return output("Evidence replay failed.", true);
-      const finding = { n: state.found.length + 1, leadId: lead.id, title: readableTitle(lead.title ?? lead.check, lead.evidence?.check ?? lead.check), severity: { High: "high", Medium: "medium", Low: "low", Informational: "informational" }[lead.impact] ?? "low",
+      const finding = { n: state.found.length + 1, leadId: lead.id, title: lead.title ?? lead.check, severity: { High: "high", Medium: "medium", Low: "low", Informational: "informational" }[lead.impact] ?? "low",
         poc: `infra-evidence-${lead.id}`, rootCause: lead.rootCause, explanation: lead.description, file: lead.file, lines: lead.lines, resource: lead.resource, commit: lead.commit, evidence: lead.evidence, proof,
         ...(lead.secret ? { secret: lead.secret } : {}), ...(lead.address ? { address: lead.address } : {}) };
       state.found.push(finding);

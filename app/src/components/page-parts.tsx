@@ -190,15 +190,13 @@ function useCutTooltip(ref: React.RefObject<HTMLSpanElement | null>) {
 // detail. A name too long for the row ends in "…" and shows whole in a tooltip.
 // A row's title. With `opens`, it is the row's button (data-row-main): the
 // list's arrow keys move between these, and Enter opens the row.
-// `popup`: the row opens a dialog (the default). A row that goes elsewhere
-// (a candidate row opens its run) sets it false, so it says no such thing.
-export function RowTitle({ title, opens, popup = true }: { title: string; opens: boolean; popup?: boolean }) {
+export function RowTitle({ title, opens }: { title: string; opens: boolean }) {
   const text = useRef<HTMLSpanElement>(null)
   const cut = useCutTooltip(text)
   return (
     <Tooltip open={cut.open} onOpenChange={cut.onOpenChange}>
       <TooltipTrigger
-        render={opens ? <button type="button" data-row-main aria-haspopup={popup ? "dialog" : undefined} /> : <span />}
+        render={opens ? <button type="button" data-row-main aria-haspopup="dialog" /> : <span />}
         className="flex min-w-0 text-left text-sm leading-5 font-medium outline-none"
       >
         <span ref={text} className="truncate">

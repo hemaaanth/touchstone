@@ -5,7 +5,7 @@
 // It returns true when it handled the request, false to fall through to the
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
-import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
+import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
@@ -219,7 +219,7 @@ export async function handleFindings(req, res) {
     try {
       const finding = await getFinding(id)
       if (!finding) {
-        send(res, 404, (await nowCandidate(id)) ?? { error: "no such finding" })
+        send(res, 404, { error: "no such finding" })
         return true
       }
       const slug = String(id).replace(/[^\w.-]+/g, "-")

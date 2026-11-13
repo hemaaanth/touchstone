@@ -42,10 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
-import { readableTitle } from "../../spike/lib/check-titles.mjs"
-import { isMeasured } from "../../spike/lib/candidate.mjs"
-import { recordProven } from "./findings.mjs"
-import { candidateEvents, candidatesOf, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -423,8 +420,7 @@ export function listRuns() {
       startedAt: r.startedAt,
       name: r.name ?? null,
       scopeTitle: scopeOf(r)?.title ?? null,
-      // A title that is only a check id reads as the check's title (N3).
-      title: r.pending?.title ? readableTitle(r.pending.title, r.pending.title) || null : null,
+      title: r.pending?.title ?? null,
       // How an error run ended (`errorInfo.kind`), so the list can tell a
       // restart's cut-off ("cutoff") from a failure.
       errorKind: r.errorInfo?.kind ?? null,
@@ -656,49 +652,6 @@ function setRunStatus(run, status) {
   if (run.error) e.error = run.error
   if (run.errorInfo) e.errorInfo = run.errorInfo
   broadcast(run, e)
-}
-
-// A run that ends with nothing to record as a finding: the agent found
-// nothing, or (N3) everything it submitted only repeated a measurement and is
-// a candidate now. Its status says how the run ended: no-finding when the
-// agent finished and read the whole scope; an error when part of the scope
-// was not read, when the inference did not complete, or when the worker died
-// before it settled. A failed run never reads "No finding".
-function endFoundNothing(run, s, { code = null, signal = null } = {}) {
-  if (s && s.status === "done" && coverageGap(run)) {
-    // The agent finished, but part of the scope was never read. Keep its
-    // final answer; the status says the result is not clean.
-    if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
-    setRunStatus(run, "error")
-  } else if (s && s.status === "done") {
-    // Terminal, but not an error: the agent audited and found nothing to prove.
-    run.error = null
-    if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
-    setRunStatus(run, "no-finding")
-  } else if (s) {
-    // Settled "unanswered" — the inference did not complete. Report the real
-    // reason (classified, with the actual spend and a next step) rather than
-    // pretending the agent chose not to find anything, or that nothing ran.
-    const info = failureInfo(run)
-    run.errorInfo = info
-    run.error = info.message
-    setRunStatus(run, "error")
-  } else {
-    // The worker died before it settled anything, on stdout or in its own
-    // file. Say how the process ended; the tail of its stderr is the evidence.
-    const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
-    const tail = run.stderr.slice(-800).trim()
-    run.errorInfo = {
-      kind: "crash", retryable: true, reason: "no-settle",
-      spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
-      detail: tail ? `${how}\n\n${tail}` : how,
-      title: "The run stopped unexpectedly",
-      hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
-      message: tail || how,
-    }
-    run.error = run.errorInfo.message
-    setRunStatus(run, "error")
-  }
 }
 
 // Run the pack's pre-pass before starting the agent with its leads.
@@ -1009,7 +962,7 @@ function spawnAgent(run, leads) {
     // findings still record, but without a fresh replay proof.
     const found = s?.findings?.length ? s.findings : run.submitted
     if (found.length) {
-      await recordRun(run, found, { code, signal })
+      await recordRun(run, found)
       return
     }
     await endWorkspace(run)
@@ -1017,19 +970,50 @@ function spawnAgent(run, leads) {
       endStopped(run)
       return
     }
-    endFoundNothing(run, s, { code, signal })
+    if (s && s.status === "done" && coverageGap(run)) {
+      // The agent finished, but part of the scope was never read. Keep its
+      // final answer; the status says the result is not clean.
+      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
+      setRunStatus(run, "error")
+    } else if (s && s.status === "done") {
+      // Terminal, but not an error: the agent audited and found nothing to prove.
+      run.error = null
+      if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
+      setRunStatus(run, "no-finding")
+    } else if (s) {
+      // Settled "unanswered" — the inference did not complete. Report the real
+      // reason (classified, with the actual spend and a next step) rather than
+      // pretending the agent chose not to find anything, or that nothing ran.
+      const info = failureInfo(run)
+      run.errorInfo = info
+      run.error = info.message
+      setRunStatus(run, "error")
+    } else {
+      // The worker died before it settled anything, on stdout or in its own
+      // file. Say how the process ended; the tail of its stderr is the evidence.
+      const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
+      const tail = run.stderr.slice(-800).trim()
+      run.errorInfo = {
+        kind: "crash", retryable: true, reason: "no-settle",
+        spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+        detail: tail ? `${how}\n\n${tail}` : how,
+        title: "The run stopped unexpectedly",
+        hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
+        message: tail || how,
+      }
+      run.error = run.errorInfo.message
+      setRunStatus(run, "error")
+    }
     finalize(run)
     broadcast(run, { ev: "closed" })
   })
 }
 
 // Broadcast one `finding` event, and one replay-proof document if it passed, per
-// recorded finding.
-// `ids` are the findings' ledger ids, given with them: never read back by
-// position from run.findingIds, which a load-time split can shorten (N3).
-function announceFindings(run, findings, ids) {
+// recorded finding. `first` is the index of the first one in the run record.
+function announceFindings(run, findings, first) {
   findings.forEach((f, k) => {
-    const id = ids[k]
+    const id = run.findingIds[first + k]
     if (!run.events.some((e) => e.ev === "finding" && e.id === id)) {
       broadcast(run, {
         ev: "finding",
@@ -1059,28 +1043,18 @@ function announceFindings(run, findings, ids) {
 // proof delta (over the still-live workspace), writes the run record, then
 // broadcasts one `finding` and one replay-proof artifact per finding, worst
 // first. The workspace is torn down only after the replays finish.
-async function recordRun(run, found, exit = {}) {
+async function recordRun(run, found) {
   run.status = "deciding"
   broadcast(run, { ev: "status", status: run.status, pending: run.pending })
   try {
-    const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+    const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
-    // A replay that only repeated a measurement is a candidate, not a finding.
-    const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
-    if (!findings.length && proven.length) {
-      // Only measured candidates: the run ends as a run with nothing found
-      // does, its candidates kept. (A pack that proves nothing returns no
-      // findings; that path is as before.)
-      endFoundNothing(run, run.settled, exit)
-      persistRun(run, [])
-      return
-    }
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
-    announceFindings(run, findings, run.findingIds)
+    announceFindings(run, findings, 0)
     noteCoverage(run)
     run.status = "recorded"
     run.decision = "approve"
@@ -1588,14 +1562,8 @@ function ensureFiles(run) {
   run.eventsFile ??= path.join(RESULTS_DIR, `run-${run.id}.events`)
   if (!run.streamFile) {
     run.streamFile = path.join(RESULTS_DIR, `run-${run.id}.stream.jsonl`)
-    // A run with no stream file yet writes its events. An older record-only run
-    // writes the events as rebuilt from its record, never the load-time view
-    // (N3: measuredAtLoad's derived candidates and dropped finding events),
-    // then every event that came after the load.
-    const events = run.stored ? [...run.stored.events, ...run.events.slice(run.stored.from)] : run.events
-    if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, events.map((e) => JSON.stringify(e) + "\n").join(""))
+    if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, run.events.map((e) => JSON.stringify(e) + "\n").join(""))
   }
-  run.stored = null
 }
 
 // Build a fresh workspace for the run's own scope: joined when the run covers
@@ -1820,9 +1788,7 @@ export function followUp(run, text, clientId) {
       if (!run.stopping) recoverSettled(run, since)
       const s = run.settled
       try {
-        // What the reply recorded: findings, and findings that became measured candidates.
-        let more = { recorded: 0, measured: 0 }
-        if (s?.findings?.length) more = await recordMore(run, s.findings)
+        if (s?.findings?.length) await recordMore(run, s.findings)
         else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
         else if (!s) {
           const tail = run.stderr.slice(errFrom).slice(-800).trim()
@@ -1831,7 +1797,7 @@ export function followUp(run, text, clientId) {
         // A failed run that a follow-up retried: if the reply finished, or the
         // operator stopped it, the old failure no longer describes the run —
         // unless part of the scope is still unread.
-        if (run.status === "error" && !more.recorded && (run.stopping || s?.status === "done")) {
+        if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
           run.error = null
           run.errorInfo = null
           setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
@@ -1839,7 +1805,7 @@ export function followUp(run, text, clientId) {
         }
         // A reply that added candidates, or proved a finding that superseded
         // one, writes the run's candidates into its record.
-        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && (s?.candidates?.length || more.measured)) persistRun(run, [])
+        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && s?.candidates?.length) persistRun(run, [])
       } catch (err) {
         broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved:${String(err?.message ?? err)} Send the message again to retry.` })
       } finally {
@@ -1935,16 +1901,10 @@ export function followUp(run, text, clientId) {
 // Add findings a follow-up proved to the run record, after the ones it holds,
 // so earlier finding ids stay the same.
 async function recordMore(run, found) {
-  const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
+  const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
   }))
-  // A replay that only repeated a measurement is a candidate, not a finding.
-  const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
   supersedeProven(run, findings, (e) => broadcast(run, e))
-  const measured = (proven?.length ?? 0) - findings.length
-  // Only measured candidates: the record keeps its findings and its status;
-  // the reply's exit writes the candidates into it.
-  if (!findings.length) return { recorded: 0, measured }
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {
@@ -1969,17 +1929,12 @@ async function recordMore(run, found) {
   } else {
     persistRun(run, findings)
   }
-  // The new ids follow the record's whole list (measured rows included: they
-  // keep their places in the record). They are appended to the run's list,
-  // which a load-time split may have shortened, and announced as given.
-  const newIds = findings.map((_, k) => `${run.id}.${first + k + 1}`)
-  run.findingIds = [...run.findingIds.filter((x) => !newIds.includes(x)), ...newIds]
-  announceFindings(run, findings, newIds)
+  run.findingIds = [...run.findingIds.slice(0, first), ...findings.map((_, k) => `${run.id}.${first + k + 1}`)]
+  announceFindings(run, findings, first)
   noteCoverage(run, { always: true })
   run.status = "recorded"
   run.decision = "approve"
   broadcast(run, { t: Date.now(), ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
-  return { recorded: findings.length, measured }
 }
 
 // Archive a run, or bring it back. An archived run is locked: it takes no more
@@ -2306,28 +2261,29 @@ function submittedFindings(id) {
 }
 
 // A `finding` event in the stream says "proven" only as a copy. The run record
-// holds the replay proof, and its verdict is read as the Findings page reads
-// it (findings.mjs recordProven, today's rule), in both directions: a copy the
-// record does not back reads as not proven (no record, an unreadable record,
-// a replay that did not pass, a row of another title or test), and a copy of
-// a row the record proves reads as proven (N3: a rule that changed since the
-// stream was written). Only record rows: nothing unrecorded becomes proven.
-// Ids are the ledger's (splitRun in findings.mjs): `<run>.<k>`, or the run id
-// for an older record with one finding.
+// holds the replay proof. A copy that the record does not back reads as not
+// proven: no record, an unreadable record, or a replay that did not pass. This
+// only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
+// (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
+// with one finding. The copy must also be the record's finding, not only carry
+// its number: a line that keeps the id of a proven finding but names another
+// title, severity or test is not proven.
 const sameFinding = (e, f) => ["poc", "title", "severity"].every((k) => (e[k] ?? null) === (f?.[k] ?? null))
 function provenByRecord(id, events) {
-  const claims = events.filter((e) => e.ev === "finding")
+  const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
   if (!claims.length) return
-  let raw = null
+  let r = {}
   try {
-    raw = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8"))
+    r = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8")).result ?? {}
   } catch {
     // no readable record: nothing is proven
   }
-  const rows = raw ? recordProven(raw, id) : new Map()
+  const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
   for (const e of claims) {
-    const row = rows.get(String(e.id))
-    e.proven = Boolean(row && row.proven && sameFinding(e, row.finding))
+    const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
+    const entry = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id ? r.finding : null
+    const stored = list || !entry ? entry : { pocProved: r.pocProved, proof: r.proof }
+    if (!isProven(stored) || !sameFinding(e, entry)) e.proven = false
   }
 }
 
@@ -2425,8 +2381,6 @@ function savedRun(id, events, mtime) {
     events.push({ t: end, ev: "closed" })
   }
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
-  const loaded = { submitted, candidates: candidatesOf(events) }
-  dropMeasuredSubmitted(loaded) // a finding that became a measured candidate is not one of the run's findings
   return {
     id,
     alias,
@@ -2442,10 +2396,10 @@ function savedRun(id, events, mtime) {
     startedAt: events.find((e) => e.t)?.t ?? mtime,
     events,
     subscribers: new Set(),
-    pending: sortFindings(loaded.submitted)[0] ?? null,
-    submitted: loaded.submitted,
+    pending: sortFindings(submitted)[0] ?? null,
+    submitted,
     findingIds,
-    candidates: loaded.candidates,
+    candidates: candidatesOf(events),
     decision,
     error,
     errorInfo: errorInfo ?? streamInfo,
@@ -2527,11 +2481,8 @@ async function resumeRun(run) {
     // proof or overwrite it, even if the workspace has already been removed.
     const result = JSON.parse(readFileSync(recordFile, "utf8")).result
     if (result?.outcome === "recorded" && result.findings?.length) {
-      // An older record can hold measured rows: they are candidates, not
-      // findings. Each finding keeps its ledger id (its record position).
-      const rows = result.findings.map((f, k) => ({ f, id: `${run.id}.${k + 1}` })).filter((x) => !isMeasured(x.f))
-      run.findingIds = rows.map((x) => x.id)
-      announceFindings(run, rows.map((x) => x.f), run.findingIds)
+      run.findingIds = result.findings.map((_, k) => `${run.id}.${k + 1}`)
+      announceFindings(run, result.findings, 0)
       run.status = "recorded"
       run.decision = "approve"
       broadcast(run, { ev: "status", status: "recorded", decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
@@ -2627,30 +2578,13 @@ function loadSavedRun(id) {
       const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
       const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
       events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
-      provenByRecord(id, events)
       mtime = statSync(recordFile).mtimeMs
     } else if (existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
       events = []
       mtime = statSync(path.join(RESULTS_DIR, `run-${id}.state.json`)).mtimeMs
     } else return
     if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) return
-    // N3: an older record's finding that only repeated a measurement loads as
-    // a measured candidate (in memory; no file changes). For a run with no
-    // stream file, the events as rebuilt from the record are kept apart: a
-    // later write of the stream (ensureFiles) writes those, never this view.
-    let stored = null
-    if (events?.length && existsSync(recordFile)) {
-      const rebuilt = events.slice()
-      try {
-        measuredAtLoad(id, events, JSON.parse(readFileSync(recordFile, "utf8")).result)
-      } catch {
-        // an unreadable record: provenByRecord already reads it as not proven
-      }
-      if (!existsSync(streamFile)) stored = { rebuilt, view: events.length }
-    }
     const run = savedRun(id, events, mtime)
-    // What savedRun appended (cut-offs, a restart ending) belongs to both.
-    if (stored) run.stored = { events: [...stored.rebuilt, ...events.slice(stored.view)], from: events.length }
     // Never hide an interrupted-error run: list it so a later boot can finish
     // it. Acquire its lock here (as the non-error paths below already rely on)
     // so the TERMINAL branch does not try to own it a second time. A run a live

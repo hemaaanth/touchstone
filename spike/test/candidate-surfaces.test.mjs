@@ -25,9 +25,7 @@ const realPacks = await import("../packs/index.mjs");
 mock.module("../packs/index.mjs", { exports: { ...realPacks, packFor: () => ({
   prepass: async () => ({ record: { pack: "web", coverage: [], leads: [] }, env: {} }),
   teardown: async () => {},
-  // A finding that carries evidence gets an evidence replay (it repeats a
-  // measurement); any other gets an http replay by a harm oracle.
-  prove: async (_ws, found) => found.map((f) => ({ ...f, proof: f.evidence ? { kind: "evidence", status: "pass", check: f.evidence.check, snapshotHash: "ab".repeat(32) } : { kind: "http", status: replay.get(f.poc) ?? "pass", oracle: { name: "bola-wallet-idor" } } })),
+  prove: async (_ws, found) => found.map((f) => ({ ...f, proof: { kind: "http", status: replay.get(f.poc) ?? "pass" } })),
 }) } });
 const workers = [];
 const realChild = await import("node:child_process");
@@ -90,18 +88,6 @@ const proofId = save("cand-proof", [
 const cut = (name) => save(name, [...head, { t: 20, ev: "candidate-submitted", agent: "a-2", candidate: forged("pause_probe") }], { ws: workspace(), phase: "agent" });
 const replyPassId = cut("cand-reply-pass");
 const replyFailId = cut("cand-reply-fail");
-
-// 3. N3: a site run the server stopped during its proof check. Every finding
-// it submitted is a measured fact (an evidence replay), two of one check.
-const measuredFinding = (n, check, host) => ({ n, title: check, severity: "low", poc: `lead-${n}`, explanation: `The snapshot shows ${check}.`, evidence: { check, where: { host }, snapshotHash: "ab".repeat(32) } });
-const siteFound = [measuredFinding(1, "tls-cipherlist_3des_idea", "a.test"), measuredFinding(2, "weak-csp", "a.test"), measuredFinding(3, "weak-csp", "b.test")];
-const siteId = save("cand-site", [
-  ...head,
-  { t: 20, ev: "candidate-submitted", agent: "a-2", candidate: forged("pause_probe") },
-  ...siteFound.map((f, i) => ({ t: 21 + i, ev: "finding-submitted", agent: "a-2", n: f.n, title: f.title, severity: f.severity, poc: f.poc })),
-  { t: 29, ev: "settled", summary: { final: { text: "Coverage complete." } } },
-  { t: 30, ev: "status", status: "deciding" },
-], { ws: workspace(), phase: "proof", settled: { status: "done", final: "Coverage complete.", findings: siteFound, candidates: [forged("pause_probe")], summary: { calls: [] } } });
 
 const { getRun, listRuns, steerRun } = await import("../../app/server/runs.mjs");
 after(() => {
@@ -172,44 +158,4 @@ test("a follow-up whose finding the replay does not prove keeps the candidate", 
   assert.deepEqual(r.candidates.map((c) => c.poc), ["pause_probe", "upload_probe"]);
   assert.ok(r.candidates.every(unproven));
   assert.equal(onDisk(replyFailId).some((e) => e.ev === "candidate-superseded"), false);
-});
-
-// N3, test (c) and the record: a run whose only results are measured facts
-// records no finding, is not "Proven" and is not an error. Its measured
-// candidates sit beside the agent's, and they do not reach a follow-up's cap.
-test("a site run of measured facts records no finding; its candidates are measured, folded and outside the cap", async () => {
-  const run = await closed(siteId);
-  assert.equal(run.status, "no-finding");
-  assert.deepEqual(run.findingIds, []);
-  assert.deepEqual(run.events.filter((e) => e.ev === "finding"), []);
-  const r = recordOf(siteId);
-  assert.deepEqual(r.findings, []);
-  assert.equal(r.outcome, "no-finding");
-  assert.deepEqual(r.candidates.map((c) => [c.origin, c.title]), [
-    ["agent", "Export leaks rows (pause_probe)"],
-    ["measured", "TLS offers weak 3DES or IDEA ciphers"],
-    ["measured", "The Content-Security-Policy allows unsafe sources"],
-  ]);
-  const csp = r.candidates[2];
-  assert.deepEqual(csp.evidence.items.map((i) => i.poc), ["lead-2", "lead-3"]);
-  assert.equal(csp.measured.words, "Measurement repeated: the replay found the same fact again. It shows no harm.");
-  assert.ok(r.candidates.every((c) => c.proven === false && c.provedBy === null));
-  assert.equal(listRuns().find((x) => x.id === siteId).findings, 0);
-  assert.equal(listRuns().find((x) => x.id === siteId).title, null, "no measured fact is the run's headline");
-  // The same after a restart: the saved stream loads with the same split.
-  const shared = globalThis.__touchstoneRuns;
-  delete globalThis.__touchstoneRuns;
-  let second;
-  try {
-    second = await import(`../../app/server/runs.mjs?measured-boot-${Date.now()}`);
-  } finally {
-    globalThis.__touchstoneRuns = shared;
-  }
-  const again = second.getRun(siteId);
-  assert.equal(again.status, "no-finding");
-  assert.deepEqual(again.submitted, []);
-  assert.deepEqual(again.candidates.map((c) => c.origin), ["agent", "measured", "measured"]);
-  // A follow-up's worker gets the agent's candidate only.
-  const { priorCandidatesEnv } = await import("../../app/server/candidates.mjs");
-  assert.deepEqual(JSON.parse(priorCandidatesEnv(run)).map((c) => c.poc), ["pause_probe"]);
 });

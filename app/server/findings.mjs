@@ -4,13 +4,10 @@
 // "proven" because a Foundry replay in a sandbox reproduced it.
 import { open, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
-import { isCandidate, isMeasured, makeCandidate, measuredRule } from "../../spike/lib/candidate.mjs"
-import { readableTitle } from "../../spike/lib/check-titles.mjs"
-import { measuredOfRecord, recordRowOf } from "./candidates.mjs"
+import { isCandidate } from "../../spike/lib/candidate.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -116,15 +113,13 @@ function parseAssertions(testSource) {
 // A candidate (spike/lib/candidate.mjs) is never a finding. It lives in
 // `result.candidates`; a record that holds one under `findings` (forged, or
 // written by a bug) still does not list it, count it, open it or export it.
-// N3: neither does an older record's finding whose replay only repeated a
-// measurement (isMeasured): it reads as a measured candidate (listCandidates).
 // The others keep their ids and indexes.
 function splitRun(raw, runId) {
   const r = raw.result || {}
   if (Array.isArray(r.findings) && r.findings.length) {
-    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f })).filter((x) => !isCandidate(x.finding) && !isMeasured(x.finding))
+    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f })).filter((x) => !isCandidate(x.finding))
   }
-  if (r.finding && !isCandidate(r.finding) && !isMeasured({ ...r.finding, pocProved: r.pocProved, proof: r.proof })) {
+  if (r.finding && !isCandidate(r.finding)) {
     return [{
       id: runId,
       runId,
@@ -270,8 +265,7 @@ function normalize(raw, { id, runId, finding }) {
     id,
     // The run this finding came from. One run can record several findings.
     runId,
-    // A title that is only a check id reads as the check's title (N3).
-    title: readableTitle(finding.title, finding.proof?.check ?? finding.evidence?.check ?? finding.proof?.oracle?.name ?? finding.oracleName, measuredRule(finding)) || null,
+    title: finding.title || null,
     severity: finding.severity || null,
     ...(pack ? { pack } : {}),
     proofKind: kind,
@@ -360,22 +354,6 @@ function normalize(raw, { id, runId, finding }) {
   }
 }
 
-// Each finding of one stored run, by its ledger id, with the verdict the
-// Findings page shows for it (normalize's stages.proven, today's rule). The
-// run view reads this too (runs.mjs provenByRecord), so the two never
-// disagree. Only rows of the record: nothing unrecorded is in it.
-export function recordProven(raw, runId) {
-  const out = new Map()
-  for (const item of splitRun(raw ?? {}, runId)) {
-    try {
-      out.set(item.id, { proven: normalize(raw, item).stages.proven === true, finding: item.finding })
-    } catch {
-      out.set(item.id, { proven: false, finding: item.finding })
-    }
-  }
-  return out
-}
-
 async function readRuns() {
   let entries = []
   try {
@@ -422,75 +400,6 @@ async function runStartedAt(runId) {
     await file?.close()
   }
   return null
-}
-
-// A candidate's id comes from what it is, not from where it sits in a list:
-// the run, the module, its origin and its poc (unique in a run; a measured
-// candidate's poc is its first finding's). So a follow-up that adds a
-// candidate, or a dismissal, moves no id, and two copies of one row (an
-// older record's finding read as a candidate, and that same candidate if a
-// record ever held it) have one id and list once.
-export const candidateId = (runId, c) =>
-  `${runId}.c-${createHash("sha256").update(`${c.pack ?? ""}\u0000${c.origin ?? "agent"}\u0000${c.poc ?? ""}`).digest("hex").slice(0, 12)}`
-
-// The candidates of one stored run: its own `result.candidates` (the agent's,
-// and the measured ones a newer run recorded), then the measured candidates
-// its older finding rows read as (derived at each read). One per id.
-function runCandidates(raw, runId) {
-  const r = raw.result || {}
-  const own = (Array.isArray(r.candidates) ? r.candidates : []).map((c) => makeCandidate(c ?? {}))
-  const derived = measuredOfRecord(runId, r, Math.max(0, ...own.map((c) => Number(c.n) || 0))).candidates
-  const out = new Map()
-  for (const c of [...own, ...derived]) {
-    const id = candidateId(runId, c)
-    if (!out.has(id)) out.set(id, { ...c, id, runId })
-  }
-  return [...out.values()]
-}
-
-const moduleOf = (pack) => (pack === "contracts" ? "Contracts" : pack ? (PACKS[pack]?.title ?? pack) : "Unknown")
-
-// Every candidate of every stored run, with the fields a list row needs. A
-// candidate is never proven and has no report or bundle in this pass.
-export async function listCandidates() {
-  let entries = []
-  try {
-    entries = await readdir(resultsDir())
-  } catch {
-    return []
-  }
-  const out = []
-  for (const file of entries.filter((f) => f.startsWith("run-") && f.endsWith(".json")).sort()) {
-    try {
-      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
-      const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
-      const r = raw.result || {}
-      const at = await runStartedAt(runId)
-      for (const c of runCandidates(raw, runId)) {
-        const pack = c.pack || r.pack || null
-        out.push({
-          id: c.id,
-          runId,
-          kind: "candidate",
-          title: readableTitle(c.title, c.measured?.check, c.measured?.rule) || null,
-          severity: c.severity,
-          module: moduleOf(pack),
-          pack,
-          target: r.target?.title || "Unknown",
-          scope: r.target && typeof r.target === "object" ? (r.target.title ?? null) : null,
-          at,
-          // The candidate's poc: the run view finds the candidate by it (N3, M2).
-          poc: c.poc,
-          origin: c.origin,
-          measured: c.measured ? { reason: c.measured.reason, words: c.measured.words, count: c.measured.count, check: c.measured.check, rule: c.measured.rule } : null,
-          proven: false,
-        })
-      }
-    } catch {
-      // A malformed or partial file is skipped, never shown as a fake candidate.
-    }
-  }
-  return out
 }
 
 export async function listFindings() {
@@ -591,28 +500,4 @@ export async function dismissFinding(id, dismissed) {
   }
   await writeFile(file, JSON.stringify(raw, null, 2))
   return { id, dismissed: Boolean(dismissed) }
-}
-
-// For an id that is not a finding (getFinding gave null): if it names an
-// older record's row that is now a measured candidate, say so, with its run
-// and the candidate's id. Null for any other id. Used by the 404 answers, so
-// an old link reads "This item is now a candidate" instead of a bare not found.
-export const NOW_CANDIDATE = "This item is now a candidate: its replay only repeated a measurement, so it is not proven. It has no report."
-export async function nowCandidate(id) {
-  const m = /^([\w.-]+?)(?:\.(\d+))?$/.exec(String(id ?? ""))
-  if (!m) return null
-  for (const runId of m[2] ? [m[1]] : [m[1], String(id)]) {
-    let raw
-    try {
-      raw = JSON.parse(await readFile(path.join(resultsDir(), `run-${runId}.json`), "utf8"))
-    } catch {
-      continue
-    }
-    const rows = measuredOfRecord(runId, raw.result || {})
-    if (!rows.ids.has(String(id))) continue
-    const row = recordRowOf(runId, raw.result || {}, String(id))
-    const c = rows.candidates.find((x) => (x.evidence?.items ?? []).some((i) => i.poc === row?.poc)) ?? null
-    return { error: NOW_CANDIDATE, candidate: true, runId, candidateId: c ? candidateId(runId, c) : null, poc: c?.poc ?? null }
-  }
-  return null
 }

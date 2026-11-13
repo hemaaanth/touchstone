@@ -180,9 +180,7 @@ test("gate(): a passing replay with no harm verdict, or a failed one, is not a p
 
 test("isProven: a forge record with a failed harm verdict is not proven, even if pocProved says so", () => {
   const base = { severity: "high", poc: "X", forgePassed: true, pocProved: true };
-  assert.equal(isProven({ ...base, proof: { kind: "forge", status: "pass", pass: true, harm: { ok: true, kind: "funds" } } }), true);
-  // N3: a harm verdict of no known kind is not harm (fail closed).
-  assert.equal(isProven({ ...base, proof: { kind: "forge", status: "pass", pass: true, harm: { ok: true } } }), false);
+  assert.equal(isProven({ ...base, proof: { kind: "forge", status: "pass", pass: true, harm: { ok: true } } }), true);
   assert.equal(isProven({ ...base, proof: { kind: "forge", status: "pass", pass: true, harm: { ok: false } } }), false);
   assert.equal(isProven({ ...base, proof: { kind: "forge", status: "fail", pass: false } }), false);
 });

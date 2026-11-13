@@ -8,8 +8,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PACKS } from "../packs/index.mjs"
 import { proofKind, isProven, proofView, cell, withProven } from "../lib/proof-view.mjs"
-import { HARM_CHECKS } from "../lib/proof-class.mjs"
-import { getFinding, listCandidates, listFindings } from "../../app/server/findings.mjs"
+import { getFinding, listFindings } from "../../app/server/findings.mjs"
 
 const RESULTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../results/agent")
 
@@ -18,7 +17,7 @@ const http = {
   proven: true,
   proof: {
     kind: "http", status: "pass",
-    oracle: { name: "bola-wallet-idor", detail: "user B's response held user A's email", passed: true },
+    oracle: { name: "cross-user-read", detail: "user B's response held user A's email", passed: true },
     log: [{ label: "B reads A's order", request: { method: "GET", url: "/api/orders/1", headers: { authorization: "Bearer abc123", accept: "json" } }, response: { status: 200, headers: { "content-type": "json" }, body: '{"email":"a@x.test"}' } }],
   },
 }
@@ -29,12 +28,11 @@ const evidence = {
 }
 const forgeOld = { title: "Reentrancy", severity: "high", poc: "Exploit", pocProved: true, proof: { tool: "Foundry", pass: true, transfers: [], logs: [] } }
 
-test("proofKind defaults to forge; isProven reads each kind's own pass, and harm", () => {
+test("proofKind defaults to forge; isProven reads each kind's own pass", () => {
   assert.equal(proofKind(forgeOld), "forge")
   assert.equal(proofKind(http), "http")
   assert.equal(proofKind({ proof: { kind: "weird" } }), "forge")
-  // N3 (B7): an old forge record has no harm verdict, so harm was not judged.
-  assert.equal(isProven(forgeOld), false)
+  assert.equal(isProven(forgeOld), true)
   assert.equal(isProven({ pocProved: false }), false)
   assert.equal(isProven(http), true)
   assert.equal(isProven({ ...http, proof: { ...http.proof, status: "fail" } }), false)
@@ -76,10 +74,7 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
   writeFileSync(file, JSON.stringify({ result: { pack: "fakeweb", target: { title: "Fake lab", pack: "fakeweb" }, prepass, findings: [http, evidence, forgeOld], recorded: true, decision: "approved", approveMode: "auto", calls: [] }, transcript: {} }))
   try {
     const list = await listFindings()
-    // N3: the evidence row and the old forge row (no harm verdict) are
-    // candidates now; only the http finding is a finding.
-    assert.equal(list.filter((f) => f.runId === stamp).length, 1)
-    assert.deepEqual((await listCandidates()).filter((c) => c.runId === stamp).map((c) => c.measured.reason), ["repeated", "harm-not-judged"])
+    assert.equal(list.filter((f) => f.runId === stamp).length, 3)
     const h = await getFinding(`${stamp}.1`)
     assert.equal(h.proofKind, "http")
     assert.equal(h.pack, "fakeweb")
@@ -88,44 +83,31 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
     assert.deepEqual(h.prepass, prepass)
     assert.equal(h.proof.exchanges.length, 1)
     assert.equal(h.staticScan, null)
-    // N3: an evidence replay repeats a measurement; it is not proof of harm,
-    // so it is no finding (and has no finding view). Nor is the old forge row.
-    assert.equal(await getFinding(`${stamp}.2`), null)
-    assert.equal(await getFinding(`${stamp}.3`), null)
-    assert.ok(!JSON.stringify(await listCandidates()).includes("sk-live-123"))
-    // With its check counted as harm (the owner's B1, flipped for this test
-    // only), the evidence finding has a view again, and the view never holds
-    // the secret whole.
-    HARM_CHECKS.add("secret-in-file")
-    try {
-      const e = await getFinding(`${stamp}.2`)
-      assert.equal(e.proofKind, "evidence")
-      assert.equal(e.stages.proven, true)
-      assert.ok(!JSON.stringify(e).includes("sk-live-123"))
-    } finally {
-      HARM_CHECKS.delete("secret-in-file")
-    }
+    const e = await getFinding(`${stamp}.2`)
+    assert.equal(e.proofKind, "evidence")
+    assert.equal(e.stages.proven, true)
+    assert.ok(!JSON.stringify(e).includes("sk-live-123"))
+    const f = await getFinding(`${stamp}.3`)
+    assert.equal(f.proofKind, "forge")
+    assert.equal(f.proof.tool, "Foundry")
   } finally {
     delete PACKS.fakeweb
     rmSync(file, { force: true })
   }
 })
 
-test("one rule: a finding is proven when its proof passed and shows harm, for every kind", () => {
+test("one rule: a finding is proven when its proof passed, for every kind", () => {
   const [h, e, hFail] = withProven([http, evidence, { ...http, proof: { ...http.proof, status: "fail" } }])
   assert.equal(h.pocProved, true)
   assert.equal(e.pocProved, true)
   assert.equal(hFail.pocProved, false)
   assert.equal(isProven(h), true)
-  // N3: the evidence replay passed (the measurement repeated), but it shows no harm.
-  assert.equal(isProven(e), false)
   // A finding that already has pocProved (Contracts) is returned as is, same object.
   const contracts = { ...forgeOld, pocProved: false }
   const [c] = withProven([contracts])
   assert.equal(c, contracts)
   assert.equal(c.pocProved, false)
   assert.deepEqual(withProven(undefined), [])
-  // N3: an old record with a passing evidence proof is not proven, whatever pocProved says.
-  assert.equal(isProven({ ...evidence, pocProved: false }), false)
-  assert.equal(isProven({ ...evidence, pocProved: true }), false)
+  // An old record saved with pocProved:false still reads proven for a passing evidence proof.
+  assert.equal(isProven({ ...evidence, pocProved: false }), true)
 })

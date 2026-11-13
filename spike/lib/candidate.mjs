@@ -20,8 +20,6 @@ import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
 import { isProven } from "./proof-view.mjs";
-import { MEASURED_WORDS, proofClass, proofClassOf } from "./proof-class.mjs";
-import { readableTitle } from "./check-titles.mjs";
 import { LangEn } from "ethers";
 
 export const CANDIDATE_CAP = 3;
@@ -236,13 +234,7 @@ export function capEvidence(value, depth = 0) {
 }
 
 // The one way to build a candidate. The fixed fields come last.
-// `origin` is "agent" (submit_candidate) or "measured" (the engine: a replay
-// that only repeated a measurement, splitMeasured). Who asserted it follows
-// from the origin; no input sets it.
-// `derived`: a measured candidate an older record's finding reads as, made at
-// read time. It is shown, never written into a record.
-export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null, origin = "agent", measured = null, derived = false }) {
-  const engine = origin === "measured";
+export function makeCandidate({ n, pack, title, severity, poc, evidence, explanation, cites = [], rootCause = null, evidenceHash = null }) {
   return {
     n: Number(n) || 1,
     pack: String(pack ?? ""),
@@ -254,130 +246,12 @@ export function makeCandidate({ n, pack, title, severity, poc, evidence, explana
     cites: Array.isArray(cites) ? cites.map(String) : [],
     rootCause: rootCause == null ? null : String(rootCause),
     evidenceHash: evidenceHash == null ? null : String(evidenceHash),
-    origin: engine ? "measured" : "agent",
-    measured: engine ? measuredBlock(measured) : null,
-    ...(engine && derived === true ? { derived: true } : {}),
     kind: "candidate",
-    assertedBy: engine ? "engine" : "agent",
+    assertedBy: "agent",
     proven: false,
     candidate: true,
     provedBy: null,
   };
-}
-
-// The "measurement repeated" fact a measured candidate carries: why it is not
-// proven, the words for it, and the pins a reviewer can check.
-function measuredBlock(m) {
-  const reason = Object.hasOwn(MEASURED_WORDS, m?.reason) ? m.reason : "unknown";
-  const str = (v) => (v == null ? null : String(v).slice(0, 200));
-  return {
-    reason,
-    words: MEASURED_WORDS[reason],
-    repeated: m?.repeated === true,
-    check: str(m?.check),
-    rule: str(m?.rule),
-    proofKind: str(m?.proofKind),
-    snapshotHash: str(m?.snapshotHash),
-    oracle: str(m?.oracle),
-    count: Math.max(1, Number(m?.count) || 1),
-  };
-}
-
-const RANK = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
-// The replay passed. A forge proof whose harm gate failed did not, as gate()
-// reads it (lib/record.mjs): such a finding stays an unproven finding.
-const replayPassed = (f) => {
-  const p = f?.proof;
-  if (!p || typeof p !== "object") return false; // no replay record: nothing was measured again
-  if (p.harm && p.harm.ok !== true) return false;
-  return p?.status === "pass" || p?.pass === true || (f?.pocProved === true && p?.status !== "fail" && p?.pass !== false);
-};
-
-// A finding whose replay passed but only repeated a measurement: it is read
-// and recorded as a measured candidate, never as a finding. An old record's
-// row reads the same way at load (nothing rewrites the record).
-export const isMeasured = (f) => Boolean(f) && typeof f === "object" && !isCandidate(f) && !isProven(f) && replayPassed(f) && proofClass(f) !== "harm";
-
-// The rule a scanner's evidence names: a scanner rule (zizmor/unpinned-uses),
-// an advisory id, or the identity of one secret or package. Rows of one check
-// with different rules are different issues and never fold.
-// Each identity field a pack puts in `where`: a scanner rule, a Scorecard
-// check (`check`), one secret (`fingerprint`, infra-cloud `secretHash`), a
-// package, an advisory. All that are present make the rule.
-const RULE_FIELDS = ["rule", "check", "fingerprint", "secretHash", "package", "advisory"];
-export const measuredRule = (f) => {
-  const w = f?.evidence?.where;
-  if (!w || typeof w !== "object") return "";
-  return RULE_FIELDS.filter((k) => w[k] != null && w[k] !== "").map((k) => (typeof w[k] === "string" ? w[k] : JSON.stringify(w[k]))).join(" ");
-};
-
-// Checks whose identity is not in `where` (known-vulnerable-js names its
-// library only in its prose): never folded, so two libraries stay two items.
-const NEVER_FOLD = new Set(["known-vulnerable-js"]);
-
-// The fold key. Only evidence rows fold, and only with the same pack, the
-// exact check and the exact rule: the same issue at several places (one
-// weak-csp on three hosts). A forge or http row is its own root cause (each
-// is its own exploit or script), so it never folds: its key is its poc.
-function foldKey(f, c) {
-  if (f.proof?.kind !== "evidence" || NEVER_FOLD.has(c.check)) return `poc\u0000${f.poc ?? ""}\u0000${f.n ?? ""}`;
-  return `ev\u0000${f.pack ?? ""}\u0000${c.check}\u0000${measuredRule(f)}`;
-}
-
-// After the final proof: a finding whose replay passed but only repeated a
-// measurement (lib/proof-class.mjs) is not a finding. It becomes a measured
-// candidate. Evidence findings of one pack, one check and one rule fold into
-// one candidate that lists each of them (evidence.items); nothing else folds.
-// A proven finding, and a finding whose replay failed, stay findings. Every
-// input finding ends in exactly one place: `findings`, or one candidate's
-// evidence.items. A candidate's poc is its first item's own poc, which is
-// unique per finding, so a later fold (a follow-up) never takes its place.
-// `from` numbers the candidates after the ones the run already has.
-export function splitMeasured(list, { from = 0 } = {}) {
-  const findings = [];
-  const groups = new Map();
-  for (const f of list ?? []) {
-    if (!f || typeof f !== "object") continue;
-    if (!isMeasured(f)) {
-      findings.push(f);
-      continue;
-    }
-    const c = proofClassOf(f);
-    const key = foldKey(f, c);
-    if (!groups.has(key)) groups.set(key, { c, items: [] });
-    groups.get(key).items.push(f);
-  }
-  const candidates = [...groups.values()].map(({ c, items }, k) => {
-    const first = items[0];
-    const rule = first.proof?.kind === "evidence" ? measuredRule(first) : "";
-    const worst = items.reduce((w, f) => ((RANK[f.severity] ?? 9) < (RANK[w.severity] ?? 9) ? f : w), first);
-    const poc = String(first.poc ?? `measured:${c.check}:${from + k + 1}`);
-    // One item: its own write-up. A fold: the check's own words, never the
-    // first row's (its prose names its own place only).
-    const ownWords = (readableTitle("", c.check, rule) || c.check).replace(/[.\s]+$/, "");
-    const text = items.length > 1 ? `${ownWords}. The same check and rule fired at ${items.length} places; each is listed in the evidence.` : String(first.explanation ?? "");
-    return makeCandidate({
-      n: from + k + 1,
-      pack: first.pack ?? "",
-      title: scrubText(readableTitle(first.title, first.proof?.kind === "evidence" ? c.check : "", rule)),
-      severity: worst.severity,
-      poc,
-      rootCause: first.rootCause ?? null,
-      explanation: scrubText(text),
-      evidence: scrubValue({
-        kind: "measured",
-        check: c.check,
-        items: items.map((f) => ({
-          poc: f.poc ?? null, title: f.title ?? null, severity: f.severity ?? null,
-          file: f.file ?? null, lines: f.lines ?? null, where: f.evidence?.where ?? null,
-          proof: { kind: f.proof?.kind ?? "forge", status: f.proof?.status ?? null, check: f.proof?.check ?? null, snapshotHash: f.proof?.snapshotHash ?? null, commit: f.proof?.commit ?? null, oracle: f.proof?.oracle?.name ?? f.oracleName ?? null, detail: f.proof?.detail ?? null, harm: f.proof?.harm ?? null },
-        })),
-      }),
-      origin: "measured",
-      measured: { reason: c.reason, check: c.check, rule: rule || null, proofKind: first.proof?.kind ?? "forge", snapshotHash: first.proof?.snapshotHash ?? null, oracle: first.proof?.oracle?.name ?? first.oracleName ?? null, repeated: true, count: items.length },
-    });
-  });
-  return { findings, candidates };
 }
 
 // The candidate state a resumed run must get back. The list holds the cap, the
@@ -470,8 +344,7 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     event("candidate-rejected", { poc, reason });
     return { refused: message, reason };
   };
-  // The cap is the agent's: a measured candidate (made by the engine) never counts.
-  if (state.candidates.filter((c) => c.origin !== "measured").length >= CANDIDATE_CAP) {
+  if (state.candidates.length >= CANDIDATE_CAP) {
     return refuse("cap", `Cannot record this candidate: this run already has ${CANDIDATE_CAP} candidates, the most a run may hold. A candidate costs a human's attention. Keep auditing for proven findings, or write the coverage summary.`);
   }
   if (!poc) return refuse("no-attempt", "Cannot record this candidate: name the recorded attempt it comes from.");
@@ -640,7 +513,7 @@ export function evidenceLookup(state, findingPoc = (id) => id) {
       rootCause: lead.rootCause ?? `lead:${lead.id}`,
       poc: findingPoc(id),
       // For a pack that keeps no model prose (supply-chain), as submit_finding.
-      packText: { title: readableTitle(lead.check, evidence?.check ?? lead.check, evidence?.where?.rule), explanation: lead.description },
+      packText: { title: lead.check, explanation: lead.description },
     };
   };
 }

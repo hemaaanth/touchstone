@@ -51,7 +51,7 @@ const records: Record<string, string> = {
             // KNOWN GAP (server/redact.mjs, not this page): a bare value in prose
             // after the word "token" ("returned token tk_…") matches no rule and
             // stays in the Markdown report. Here the value carries its header.
-            oracle: { name: "debug-route-signer-key-leak", detail: `the reply held Authorization: Bearer ${TOKEN}` },
+            oracle: { name: "token-leak", detail: `the reply held Authorization: Bearer ${TOKEN}` },
             log: [
               {
                 label: "1. GET /debug",
@@ -84,14 +84,14 @@ const records: Record<string, string> = {
           severity: "high",
           pocProved: true,
           explanation: `${PEM_BODY} -----END PRIVATE KEY----- came back from the debug route`,
-          proof: { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak" } },
+          proof: { kind: "evidence", status: "pass", check: "key-dump" },
         },
       ],
     },
   }),
   [`run-${LONG}.json`]: JSON.stringify({
     result: {
-      findings: [{ title: "Huge write-up", severity: "low", pocProved: true, explanation: `Key ${TOKEN}. ` + "The vault pays twice. ".repeat(4000), proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } }],
+      findings: [{ title: "Huge write-up", severity: "low", pocProved: true, explanation: `Key ${TOKEN}. ` + "The vault pays twice. ".repeat(4000), proof: { kind: "evidence", status: "pass", check: "big" } }],
     },
   }),
 }
@@ -152,19 +152,13 @@ describe("findings list (server): the fields a row needs", () => {
     const by = (t: string) => rows.find((f) => f.title === t)!
     expect(by("Debug route leaks the session token").pack).toBe("web")
     expect(by("Lookalike domain").pack).toBe("domains")
-    // N3: an evidence replay repeats a measurement, so this row is a candidate
-    // now (listCandidates), with the run's pack, and not in the findings list.
-    expect(rows.some((f) => f.title === "Script without SRI")).toBe(false)
-    // @ts-expect-error — plain .mjs module, no types
-    const { listCandidates } = await import("../server/findings.mjs")
-    const c = (await listCandidates()).find((x: { runId: string }) => x.runId === MULTI)
-    expect([c.title, c.pack, c.origin, c.proven]).toEqual(["Script without SRI", "web", "measured", false])
+    expect(by("Script without SRI").pack).toBe("web")
   })
 
   test("the scope and the run start come from the run", async () => {
     const rows = await listed()
     const multi = rows.filter((f) => f.runId === MULTI)
-    expect(multi).toHaveLength(2)
+    expect(multi).toHaveLength(3)
     for (const f of multi) {
       expect(f.scope).toBe("Synthetic lab")
       expect(f.at).toBe(STARTED)
@@ -198,7 +192,7 @@ describe("copied texts (server): built by the report builder and redacted", () =
     expect(body).toContain("State: Proven by a replay.")
     expect(body).toContain("Where: GET http://lab:8080/debug?token=[REDACTED]")
     expect(body).toMatch(/^What is wrong: The debug route answers with Authorization: Bearer \[REDACTED\]/m)
-    expect(body).toContain('How it was proven: An HTTP replay; the oracle "debug-route-signer-key-leak" fired.')
+    expect(body).toContain('How it was proven: An HTTP replay; the oracle "token-leak" fired.')
     expect(body).toContain("Fix hint: remove the route.")
     // A short form: no chat history, no proof record.
     expect(body.split("\n").length).toBeLessThanOrEqual(8)

@@ -6,7 +6,6 @@
 // The app server uses these to record, announce and serve findings. Every
 // field a pack sends is untrusted: we cap sizes and keep only known fields.
 import { createHash } from "node:crypto";
-import { proofClass } from "./proof-class.mjs";
 
 export const PROOF_KINDS = ["forge", "http", "evidence"];
 
@@ -15,20 +14,13 @@ export function proofKind(finding) {
   return PROOF_KINDS.includes(k) ? k : "forge";
 }
 
-// True only when the pack's own replay passed AND that replay shows harm
-// (lib/proof-class.mjs). This is the one read gate: the run view, the Findings
-// page, the counts, the report and the bundle all read it, for new records and
-// old ones alike. No record is rewritten.
+// True only when the pack's own replay passed.
 // For forge, pocProved is already harm-gated (lib/record.mjs). A proof that says
 // the replay failed or showed no harm is never proven, even if pocProved is set.
-// A record made before the harm gate has no proof.harm: harm was not judged,
-// so it is not proven (it reads as a candidate).
-// A replay that only repeats a measurement (every evidence check, an oracle not
-// in HARM_ORACLES, an unknown proof kind) is not proven.
+// A record made before the harm gate has no proof.harm and reads as recorded.
 export function isProven(finding) {
   if (!finding) return false;
   if (finding.candidate === true || finding.kind === "candidate") return false; // never proven
-  if (proofClass(finding) !== "harm") return false;
   if (proofKind(finding) === "forge") {
     const p = finding.proof;
     if (p && (p.pass === false || p.status === "fail" || (p.harm && p.harm.ok !== true))) return false;
