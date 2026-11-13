@@ -34,6 +34,7 @@ import { randomBytes } from "node:crypto";
 import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 import { fileURLToPath } from "node:url";
 import { netFlows } from "./proof.mjs";
+import { formatAmount } from "../../app/src/lib/amount.mjs"; // the shared amount formatter: no cut harm numbers
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SPIKE = join(HERE, "..");
@@ -222,7 +223,7 @@ export function forkDrainOracle(handle, parsed, contract) {
   }
   const gainers = [...net.entries()].filter(([a, w]) => w > 0n && !targets.has(a)).map(([a]) => a);
   if (gainers.length === 0) return { pass: false, detail: "a lab target lost ETH but no non-target address gained it" };
-  const eth = (w) => `${(w < 0n ? -w : w) / 10n ** 18n}.${(((w < 0n ? -w : w) % 10n ** 18n) / 10n ** 14n).toString().padStart(4, "0")} ETH`;
+  const eth = (w) => formatAmount((w < 0n ? -w : w).toString()).text;
   return { pass: true, detail: `lab target ${victim.addr} lost ${eth(victim.wei)} to ${gainers.join(", ")} in the forked replay`, victim: victim.addr, amountWei: (-victim.wei).toString() };
 }
 

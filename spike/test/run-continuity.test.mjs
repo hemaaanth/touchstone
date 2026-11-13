@@ -81,7 +81,12 @@ mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmS
 // A live run opens a Docker boundary. These tests have no live target, so a live
 // scope gets an inert gate. Every other scope keeps the real one.
 const realReach = await import("../lib/reach.mjs");
-const openReach = (target, opts) => (target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts));
+// One extra: a test can act while the reach opens (a boot that resumes a run waits here).
+let reachHook = null;
+const openReach = async (target, opts) => {
+  await reachHook?.();
+  return target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts);
+};
 mock.module("../lib/reach.mjs", { exports: { ...realReach, openReach } });
 // No DNS: the server's restore of a fetched source asks for github.com's address.
 const realDns = await import("node:dns/promises");
@@ -90,9 +95,13 @@ mock.module("node:dns/promises", { exports: { ...realDns, default: { ...realDns,
 // A fetch with no network: it writes the tree the real one would.
 const realFetch = await import("../lib/fetch.mjs");
 const fetchClones = [];
+// The server's restore of a fetched source, with one extra: a test can stand in
+// front of it (to stop the run, to hang, or to give another commit).
+let restoreHook = null;
 mock.module("../lib/fetch.mjs", {
   exports: {
     ...realFetch,
+    restoreSource: (ws, url) => (restoreHook ? restoreHook(ws, url, realFetch.restoreSource) : realFetch.restoreSource(ws, url)),
     fetchSource: async (ws, url) => {
       fetchClones.push({ ws, url });
       mkdirSync(path.join(ws, "vendor", "acme__lib", "src"), { recursive: true });
@@ -131,7 +140,12 @@ const prepareRunWorkspace = async (...args) => {
   afterBuild?.(ws);
   return ws;
 };
-mock.module("../lib/targets.mjs", { exports: { ...realTargets, prepareRunWorkspace } });
+const prepareMultiWorkspace = async (...args) => {
+  const ws = await realTargets.prepareMultiWorkspace(...args);
+  afterBuild?.(ws);
+  return ws;
+};
+mock.module("../lib/targets.mjs", { exports: { ...realTargets, prepareRunWorkspace, prepareMultiWorkspace } });
 const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-store.mjs");
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
@@ -1552,6 +1566,66 @@ test("A6: when the new workspace cannot take the pins, the follow-up does not st
   });
 });
 
+// A restore that failed before it wrote the pins. The workspace has no sources. The
+// next message must not use it as it is: the server puts the sources back first.
+async function failsBeforePins(name, breakConfig, repairConfig) {
+  const url = `https://github.com/acme/${name}`;
+  const where = `vendor/acme__${name}`;
+  const first = gitCommit(path.join(GIT_REMOTE, "acme", `${name}.git`), { "src/Lib.ts": "export const v = 1\n" });
+  const run = await fetchedAt(url, where, first);
+  rmSync(run.ws, { recursive: true, force: true });
+  let ws = null;
+  let good = null;
+  afterBuild = (built) => {
+    ws = built;
+    made.push(built);
+    good = readFileSync(path.join(built, ".touchstone.json"), "utf8");
+    breakConfig(path.join(built, ".touchstone.json"));
+  };
+  let before = spawns.length;
+  try {
+    steerRun(run.id, "Look again.");
+    const r = await settle(run.id, 1);
+    assert.equal(spawns.length, before, "no worker started");
+    assert.match(r.events.findLast((e) => e.ev === "reply-error").error, /could not be told which code this run read before/);
+  } finally {
+    afterBuild = null;
+  }
+  assert.equal(kept(run.id).ws, ws, "the new workspace is the run's workspace now");
+  assert.ok(!existsSync(path.join(ws, where)), "and it has no sources");
+  assert.equal(kept(run.id).restoring, true, "the record says the sources are not back");
+  // The same fault is still there: the next message starts no worker and says why.
+  steerRun(run.id, "Look again.");
+  let r = await settle(run.id, 2);
+  assert.equal(spawns.length, before, "no worker in a workspace without its sources");
+  assert.match(r.events.findLast((e) => e.ev === "reply-error").error, /^The fetched sources of this run's workspace could not be put back: .* So this follow-up did not start\. Send the message again to retry\.$/);
+  assert.equal(kept(run.id).restoring, true);
+  // The fault is gone: the next message puts the sources back first, and says so.
+  repairConfig(path.join(ws, ".touchstone.json"), good);
+  scripts.push({ act: (call) => (call.code = readFileSync(path.join(call.args[4], where, "src", "Lib.ts"), "utf8")), events: [done] });
+  before = spawns.length;
+  steerRun(run.id, "Look again.");
+  r = await settle(run.id, 3);
+  const call = spawns.at(-1);
+  assert.equal(spawns.length, before + 1);
+  assert.equal(call.args[4], ws);
+  assert.equal(call.code, "export const v = 1\n", "the worker finds the source, at its commit");
+  const told = r.events.findLast((e) => e.ev === "workspace");
+  assert.equal(told.state, "kept");
+  assert.ok(told.message.includes(`${url} (commit ${first.slice(0, 12)}, in ${where})`), told.message);
+  assert.ok(call.env.WORKSPACE_NOTE.includes(told.message));
+  assert.equal(kept(run.id).restoring, undefined);
+}
+
+test("A6: a restore that fails because the new workspace's config cannot be read is not forgotten: the next message puts the sources back first", async () => {
+  await withGit(() => failsBeforePins("torncfg", (file) => writeFileSync(file, '{"links":'), (file, good) => writeFileSync(file, good)));
+});
+
+test("A6: a restore that fails because the pins cannot be written is not forgotten: the next message puts the sources back first", async () => {
+  // The config can be read but not written, as on a full disk.
+  await withGit(() => failsBeforePins("nowrite", (file) => chmodSync(file, 0o400), (file) => chmodSync(file, 0o600)));
+});
+
 test("A6: a joined run gets the restored code in the run's tree and in each module that reads code", async () => {
   await withGit(async () => {
     const url = "https://github.com/acme/joined";
@@ -1566,6 +1640,296 @@ test("A6: a joined run gets the restored code in the run's tree and in each modu
       assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
     }
   });
+});
+
+// ---- A6 minors ------------------------------------------------------------------
+
+test("A6: the pin is found whatever the event's spelling of the URL, and a fetch that gives another commit is not 'the same'", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/spelled";
+    const where = "vendor/acme__spelled";
+    const repo = path.join(GIT_REMOTE, "acme", "spelled.git");
+    const first = gitCommit(repo, { "src/Lib.ts": "export const v = 1\n" });
+    gitCommit(repo, { "src/Lib.ts": "export const v = 2\n" });
+    // The event spells the member with a trailing slash, or with .git.
+    for (const spelled of [`${url}/`, `${url}.git`]) {
+      const scopeOf = addScope({ title: `Scope ${spelled}`, members: [{ kind: "repo", url }] });
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [{ ev: "source-fetch", url: spelled, ok: true, where, files: 1, commit: first }, done] });
+      const { id } = await createRun({ targetId: scopeOf.id, pack: "review", mode: "solo" });
+      await settle(id);
+      const { ws, told } = await lostAndRebuilt({ id, ws: spawns.at(-1).args[4] });
+      assert.deepEqual(pinsOf(ws), { [url]: { commit: first } }, "the pin is under the member's own URL");
+      assert.equal(readFileSync(path.join(ws, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", `${spelled}: the commit this run read, not the head of today`);
+      assert.ok(told.message.includes(`in it again, as this run read them before: ${url} (commit ${first.slice(0, 12)}, in ${where}).`), told.message);
+    }
+    // A fetch that comes back with another commit: the code does not stay, and the event does not call it the same.
+    const run = await fetchedAt(url, where, first);
+    restoreHook = async (ws, u, real) => ({ ...(await real(ws, u)), commit: "f".repeat(40) });
+    try {
+      const { ws, told } = await lostAndRebuilt(run);
+      assert.ok(told.message.includes(`could not be put back, so they are not in it: ${url}: the fetch did not give what this run read before, so its result was taken out again.`), told.message);
+      assert.ok(!told.message.includes("in it again"));
+      assert.ok(!existsSync(path.join(ws, where)));
+    } finally {
+      restoreHook = null;
+    }
+  });
+});
+
+// A finished run whose agent fetched two repos, each at its first commit. The branches moved on since.
+async function twoFetched(api, name, count = 2) {
+  const members = Array.from({ length: count }, (_, k) => k + 1).map((n) => ({ url: `https://github.com/acme/${name}${n}`, where: `vendor/acme__${name}${n}`, repo: path.join(GIT_REMOTE, "acme", `${name}${n}.git`) }));
+  for (const m of members) {
+    m.commit = gitCommit(m.repo, { "src/Lib.ts": "export const v = 1\n" });
+    gitCommit(m.repo, { "src/Lib.ts": "export const v = 2\n" });
+  }
+  const scopeOf = addScope({ title: `Scope ${name}`, members: members.map((m) => ({ kind: "repo", url: m.url })) });
+  scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [...members.map((m) => ({ ev: "source-fetch", url: m.url, ok: true, where: m.where, files: 1, commit: m.commit })), done] });
+  const { id } = await api.createRun({ targetId: scopeOf.id, pack: "review", mode: "solo" });
+  await settle(id, 0, api);
+  return { id, ws: spawns.at(-1).args[4], members };
+}
+const codeOf = (ws, m) => (existsSync(path.join(ws, m.where, "src", "Lib.ts")) ? readFileSync(path.join(ws, m.where, "src", "Lib.ts"), "utf8") : null);
+
+test("A6: the restore says what it does, one event per source, and Stop ends it before the next source; the next follow-up finishes it", async () => {
+  await withGit(async () => {
+    const run = await twoFetched(runs, "prog");
+    const [m1, m2] = run.members;
+    rmSync(run.ws, { recursive: true, force: true });
+    const before = spawns.length;
+    // The operator presses Stop while the first source is fetched.
+    let stop = null;
+    restoreHook = async (ws, u, real) => {
+      stop ??= runs.stopRun(run.id);
+      return real(ws, u);
+    };
+    let r;
+    try {
+      steerRun(run.id, "Look again.");
+      r = await settle(run.id, 1);
+    } finally {
+      restoreHook = null;
+    }
+    assert.deepEqual(stop, { ok: true }, "Stop is taken while the workspace is prepared");
+    assert.equal(spawns.length, before, "no worker started");
+    const said = r.events.filter((e) => e.ev === "workspace");
+    assert.deepEqual(said.map((e) => [e.state, e.message]), [
+      ["restoring", "The fetched sources of this run are put back into its workspace, as this run read them before: 2 to fetch. Each one can take up to 90 seconds."],
+      ["restoring", "Fetching acme/prog1 (1 of 2)."],
+      ["restoring", "The restore stopped after 1 of 2 sources. The next message to this run puts the sources back first."],
+    ], "one event before, one per source, none for the source after the Stop, and one that says it stopped");
+    assert.ok(!said.some((e) => e.message.includes(tmpdir()) || e.message.includes(dir)), "no path of this host");
+    assert.deepEqual(r.events.slice(-4).map((e) => e.ev), ["stop-requested", "workspace", "stopped", "closed"]);
+    const ws = kept(run.id).ws;
+    made.push(ws);
+    assert.deepEqual([codeOf(ws, m1), codeOf(ws, m2)], ["export const v = 1\n", null], "the first source is there, the second is not");
+    assert.equal(kept(run.id).restoring, true, "the record says the restore is not done");
+
+    // The next follow-up works in the same workspace, after the server put the rest back.
+    scripts.push({ act: (call) => (call.code = codeOf(call.args[4], m2)), events: [done] });
+    steerRun(run.id, "Go on.");
+    r = await settle(run.id, 2);
+    const call = spawns.at(-1);
+    assert.equal(call.args[4], ws);
+    assert.equal(call.code, "export const v = 1\n", "the worker finds the second source, at its commit");
+    const told = r.events.findLast((e) => e.ev === "workspace");
+    assert.equal(told.state, "kept");
+    assert.ok(told.message.startsWith("The fetched sources of this workspace were not all put back when its last follow-up ended, so the server did that now. These fetched sources are in it again, as this run read them before: "), told.message);
+    assert.ok(told.message.includes(`${m2.url} (commit ${m2.commit.slice(0, 12)}, in ${m2.where})`));
+    assert.ok(call.env.WORKSPACE_NOTE.includes(told.message), "the agent reads the same text");
+    assert.equal(kept(run.id).restoring, undefined);
+    assert.deepEqual(r.events.filter((e) => e.ev === "workspace" && e.state === "restoring").map((e) => e.message).slice(-2), ["Fetching acme/prog1 (1 of 2).", "Fetching acme/prog2 (2 of 2)."]);
+    // Done: a later follow-up says nothing more and fetches nothing.
+    const events = r.events.filter((e) => e.ev === "workspace").length;
+    scripts.push({ events: [done] });
+    steerRun(run.id, "And again.");
+    r = await settle(run.id, 3);
+    assert.equal(r.events.filter((e) => e.ev === "workspace").length, events);
+  });
+});
+
+test("A6: a server stop while the sources are put back is not hidden: the next follow-up puts them back and names them", async () => {
+  await withGit(async () => {
+    let server = await restart();
+    const run = await twoFetched(server, "half");
+    const [m1, m2] = run.members;
+    rmSync(run.ws, { recursive: true, force: true });
+    // The fetch of the second source never ends, and the server dies.
+    let hung;
+    const waiting = new Promise((res) => (hung = res));
+    restoreHook = (ws, u, real) => (u === m2.url ? (hung(), new Promise(() => {})) : real(ws, u));
+    server.steerRun(run.id, "Look again.");
+    await waiting;
+    restoreHook = null;
+    const ws = kept(run.id).ws;
+    made.push(ws);
+    assert.deepEqual([codeOf(ws, m1), codeOf(ws, m2), kept(run.id).restoring], ["export const v = 1\n", null, true]);
+    lockOf(run.id).close();
+    server = await restart();
+
+    scripts.push({ act: (call) => (call.code = codeOf(call.args[4], m2)), events: [done] });
+    server.steerRun(run.id, "Go on.");
+    const r = await settle(run.id, closes(run.id, server), server);
+    const call = spawns.at(-1);
+    assert.equal(call.args[4], ws, "the same workspace");
+    assert.equal(call.code, "export const v = 1\n", "the source that was missing is there when the worker starts");
+    const told = r.events.findLast((e) => e.ev === "workspace");
+    assert.equal(told.state, "kept");
+    for (const m of [m1, m2]) assert.ok(told.message.includes(`${m.url} (commit ${m.commit.slice(0, 12)}, in ${m.where})`), told.message);
+    assert.ok(call.env.WORKSPACE_NOTE.includes(told.message));
+    assert.ok(!call.env.WORKSPACE_NOTE.includes("the sources you fetched are still there"));
+    assert.equal(kept(run.id).restoring, undefined);
+  });
+});
+
+test("A6: a joined run whose stream has no packs event still gets the restored code in its modules", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/joined2";
+    const where = "vendor/acme__joined2";
+    const first = gitCommit(path.join(GIT_REMOTE, "acme", "joined2.git"), { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, where, first, { pack: undefined, packs: ["review", "contracts"] });
+    assert.deepEqual(kept(run.id).packs, ["review", "contracts"]);
+    // An older stream: the record knows the modules, the stream does not.
+    const stream = path.join(RESULTS, `run-${run.id}.stream.jsonl`);
+    writeFileSync(stream, readFileSync(stream, "utf8").split("\n").filter((l) => !l.includes('"ev":"packs"')).join("\n"));
+    rmSync(run.ws, { recursive: true, force: true });
+    const server = await restart();
+    scripts.push({ events: [done] });
+    server.steerRun(run.id, "Look again.");
+    await settle(run.id, closes(run.id, server), server);
+    const ws = spawns.at(-1).args[4];
+    made.push(ws);
+    for (const at of [".", "modules/review", "modules/contracts"]) {
+      assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
+    }
+  });
+});
+
+// ---- A Stop that was taken starts no worker ---------------------------------------
+
+// The run's lock is free: this process can take it.
+function lockFree(id) {
+  const db = new DatabaseSync(path.join(RESULTS, `run-${id}.owner.sqlite`), { timeout: 0 });
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+// After a Stop that was taken while a follow-up prepared its workspace.
+function stoppedClean(api, id, workersBefore, why) {
+  const r = api.getRun(id);
+  assert.equal(spawns.length, workersBefore, `${why}: no worker started`);
+  assert.ok(r.events.slice(-2).map((e) => e.ev).join() === "stopped,closed", `${why}: the run is stopped (${r.events.slice(-4).map((e) => e.ev)})`);
+  assert.ok(["no-finding", "recorded", "error"].includes(r.status) && r.replying === false, `${why}: the run is idle`);
+  assert.ok(lockFree(id), `${why}: the run's lock is free`);
+  const ws = kept(id).ws;
+  if (ws) {
+    made.push(ws);
+    assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], `${why}: no credential in the kept workspace`);
+  }
+  assert.equal(kept(id).restored, undefined, `${why}: the record does not say a credential is in the files`);
+  return r;
+}
+
+test("a Stop taken during the only source of a restore, or during the last of several, starts no worker", async () => {
+  await withGit(async () => {
+    for (const [name, count] of [["only", 1], ["last", 3]]) {
+      const run = await twoFetched(runs, name, count);
+      rmSync(run.ws, { recursive: true, force: true });
+      const before = spawns.length;
+      const n = closes(run.id);
+      let stop = null;
+      // The operator presses Stop while the last source is fetched.
+      restoreHook = async (ws, u, real) => {
+        if (u === run.members.at(-1).url) stop = runs.stopRun(run.id);
+        return real(ws, u);
+      };
+      try {
+        steerRun(run.id, "Look again.");
+        await settle(run.id, n);
+      } finally {
+        restoreHook = null;
+      }
+      assert.deepEqual(stop, { ok: true }, `${name}: the Stop was taken`);
+      stoppedClean(runs, run.id, before, name);
+      // Every source came back before the stop was seen, so nothing is left to restore.
+      assert.equal(kept(run.id).restoring, undefined);
+    }
+  });
+});
+
+test("a Stop taken while a lost workspace is built, with nothing to restore, starts no worker: one module and a joined run, with a credential", async () => {
+  await withLivePack(async () => {
+    const server = await restart();
+    // One module (ai-mcp), and a joined run (web, ai-mcp). Each has the scope's access token.
+    const one = await liveEnded(server);
+    const pair = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    const joined = await server.createRun({ targetId: pair.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    await settle(joined.id, 0, server);
+    for (const [why, run] of [["one module", one], ["a joined run", { id: joined.id, ws: spawns.at(-1).args[4] }]]) {
+      rmSync(run.ws, { recursive: true, force: true });
+      const before = spawns.length;
+      const n = closes(run.id, server);
+      let stop = null;
+      let built = null;
+      // The operator presses Stop while the new workspace is built. It holds the token at that moment.
+      afterBuild = (ws) => {
+        if (stop) return; // a joined run builds each module through the same step
+        built = ws;
+        stop = server.stopRun(run.id);
+      };
+      try {
+        server.steerRun(run.id, "Look again.");
+        await settle(run.id, n, server);
+      } finally {
+        afterBuild = null;
+      }
+      assert.deepEqual(stop, { ok: true }, `${why}: the Stop was taken`);
+      assert.ok(built);
+      made.push(built);
+      stoppedClean(server, run.id, before, why);
+      if (existsSync(built)) assert.deepEqual(holding(built, [TOKEN, ADMIN]), [], `${why}: the built workspace holds no credential`);
+    }
+  });
+});
+
+test("a Stop taken while the boot resumes a run starts no worker", async () => {
+  // A solo run whose worker is running when the server dies.
+  let server = await restart();
+  scripts.push({ act: work, hang: true });
+  const { id } = await server.createRun({ targetId: scope.id, pack: "review", mode: "solo" });
+  for (let i = 0; i < 300 && server.getRun(id).status !== "running"; i++) await new Promise((res) => setTimeout(res, 10));
+  for (let i = 0; i < 300 && !existsSync(path.join(RESULTS, `run-${id}.state.json`)); i++) await new Promise((res) => setTimeout(res, 10));
+  const ws = spawns.at(-1).args[4];
+  made.push(ws);
+  const before = spawns.length;
+  lockOf(id).close();
+  // The next boot resumes it. The operator presses Stop while the reach opens, before the worker starts.
+  let ready;
+  const booted = new Promise((res) => (ready = res));
+  let stop = null;
+  reachHook = async () => {
+    const api = await booted;
+    reachHook = null;
+    stop = api.stopRun(id);
+  };
+  try {
+    server = await restart();
+    ready(server);
+    await settle(id, 0, server);
+  } finally {
+    reachHook = null;
+  }
+  assert.deepEqual(stop, { ok: true });
+  assert.equal(spawns.length, before, "no worker started");
+  const r = server.getRun(id);
+  assert.deepEqual(r.events.slice(-3).map((e) => e.ev), ["stopped", "status", "closed"]);
+  assert.ok(lockFree(id));
 });
 
 // ---- A workspace record that cannot be read is not a record that is not there --------

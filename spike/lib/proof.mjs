@@ -18,6 +18,10 @@ import { join } from "node:path";
 import { writePoc, forgeTestJson, FORGE_OUTPUT_CAP } from "./sandbox.mjs";
 import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
 import { keccak256 } from "ethers";
+// The one amount formatter the console and the report share, so the engine never
+// shows a harm number cut: exact when it fits six significant decimals, else
+// rounded to nearest and marked "≈", dust in wei (see app/src/lib/amount.mjs).
+import { formatAmount } from "../../app/src/lib/amount.mjs";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -61,7 +65,7 @@ export function netFlows(traces) {
       const addr = (t.address || "").toLowerCase();
       const caller = (t.caller || "").toLowerCase();
       if (label === "Execution" && i === 0 && addr) testContract = addr;
-      if (t.kind === "CREATE" && addr) created.add(addr);
+      if ((t.kind === "CREATE" || t.kind === "CREATE2") && addr) created.add(addr); // CREATE2 too (a salted deploy is still the test's contract)
       // Only CALL and CREATE move fresh ETH. A DELEGATECALL/CALLCODE/STATICCALL
       // node carries the inherited msg.value of the frame it runs in, which was
       // already counted at the parent CALL — counting it again fabricates flow.
@@ -76,12 +80,7 @@ export function netFlows(traces) {
 
 // Render a wei BigInt as a signed ETH figure for the money-moved table.
 function ethStr(wei) {
-  const neg = wei < 0n;
-  const abs = neg ? -wei : wei;
-  const whole = abs / 10n ** 18n;
-  const frac = (abs % 10n ** 18n) / 10n ** 14n; // 4 decimal places
-  const body = frac === 0n ? `${whole}` : `${whole}.${frac.toString().padStart(4, "0").replace(/0+$/, "")}`;
-  return `${neg ? "-" : "+"}${body} ETH`;
+  return formatAmount(wei.toString(), { signed: true }).text;
 }
 
 // Turn the net-flow map into a labelled, signed transfer table: one row per
@@ -957,7 +956,7 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   const notes = [];
   if (unusable) notes.push(unusable);
   if (impersonated.length) notes.push(`the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp().`);
-  if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions (fund a holder through a pranked user's deposit), or use vm.store / vm.mockCall only on contracts outside the scope. A deal() that funds a scope contract's token balance is counted as the test's own, so do not drain that balance from the test side.`);
+  if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions (fund a holder through a pranked user's deposit), or use vm.store / vm.mockCall only on contracts outside the scope. Drain with a pranked attacker address or an attacker contract — what counts is that the victim's funds came from another party. A deal() that funds a scope contract's token balance is counted as the test's own, so do not drain that balance from the test side.`);
   const refuse = (reason) => ({
     ok: false,
     reason: notes.length ? `${notes.join(" ")} Without that target: ${reason}` : reason,
@@ -987,6 +986,6 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   }
   for (const d of netted) returned.push(`${d.victim} (${targets.get(d.victim)}, token ${d.token})`);
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
-  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: fund the victim through a pranked user's deposit, then drain it with a pranked attacker address — not with vm.deal, deal() or a constructor value, whose funds count as the test's own. It took over none of its control slots either`);
+  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: fund the victim through a pranked user's deposit, then drain it with a pranked attacker address or an attacker contract — what counts is that the victim's funds came from another party, not from vm.deal, deal() or a constructor value, whose funds count as the test's own. It took over none of its control slots either`);
   return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }
