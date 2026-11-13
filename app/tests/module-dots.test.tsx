@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { isValidElement, type ReactElement, type ReactNode } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { ModuleDots } from "../src/components/module-dots"
+import { TooltipContent, TooltipTrigger } from "../src/components/ui/tooltip"
 
 // A run's modules as up to three overlapping dots in a fixed box, every
 // module named in the label (and the reveal), in the server's module order.
@@ -49,5 +51,35 @@ describe("ModuleDots", () => {
     const h = html(["new-pack", "web", "web"])
     expect(dots(h)).toEqual(["web", "new-pack"])
     expect(label(h)).toBe("Modules: Web and sign-in, new-pack")
+  })
+})
+
+// What ModuleDots hands its tooltip, read from the element it returns. A probe
+// calls it during its own render (so its hooks run), and keeps the tree.
+function tooltipProps(props: Parameters<typeof ModuleDots>[0]) {
+  let tree: ReactNode = null
+  const Probe = () => {
+    tree = ModuleDots(props)
+    return null
+  }
+  renderToStaticMarkup(<Probe />)
+  const found: { trigger?: Record<string, unknown>; content?: Record<string, unknown> } = {}
+  const walk = (n: ReactNode) => {
+    if (!isValidElement(n)) return
+    const el = n as ReactElement<Record<string, unknown> & { children?: ReactNode }>
+    if (el.type === TooltipTrigger) found.trigger = el.props
+    if (el.type === TooltipContent) found.content = el.props
+    ;([] as ReactNode[]).concat(el.props.children ?? []).forEach(walk)
+  }
+  walk(tree)
+  return found
+}
+
+describe("ModuleDots reveal", () => {
+  test("the side is a prop: top by default, the sidebar's right past the rail", () => {
+    expect(tooltipProps({ ids: ["web"] }).content?.side).toBe("top")
+    const right = tooltipProps({ ids: ["web"], side: "right", sideOffset: 27 }).content
+    expect(right?.side).toBe("right")
+    expect(right?.sideOffset).toBe(27)
   })
 })

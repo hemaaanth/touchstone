@@ -436,7 +436,12 @@ export const ThreadListItem: FC = () => {
       )}
       {run && !isRenaming ? (
         <span className="absolute end-2.5 bottom-[7px] flex">
-          <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} />
+          {/* The names open right, past the rail, level with the dots, so they
+              never cover this title or the rows above. The dots end 19 px
+              inside the rail's edge (measured at 1440: 237 against 256); 8 px
+              more is the usual gap. On a phone the tooltip flips or shifts to
+              fit the screen. */}
+          <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} side="right" sideOffset={27} />
         </span>
       ) : null}
       <ThreadListItemMore

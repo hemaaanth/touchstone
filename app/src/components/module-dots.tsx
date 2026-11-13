@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, type ComponentProps } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { cn } from "cn"
 import { moduleStyle, orderModules } from "@/lib/module-colors"
@@ -24,15 +24,23 @@ const OPEN = 10
 // The box fits three open dots, so the spread stays inside it.
 const WIDTH = DOT + OPEN * (SHOWN - 1)
 
+type Side = ComponentProps<typeof TooltipContent>["side"]
+
 export function ModuleDots({
   ids,
   packs,
+  side = "top",
+  sideOffset,
   className,
 }: {
   // Module (pack) ids. Duplicates show once.
   ids: readonly string[]
   // The server's module list: each module's title, and the order of the dots.
   packs?: readonly { id: string; title: string }[]
+  // Where the names open. Collisions with the viewport flip or shift it.
+  side?: Side
+  // The gap to the dots, in px (the tooltip's default is 8).
+  sideOffset?: number
   className?: string
 }) {
   const reduce = useReducedMotion()
@@ -82,7 +90,7 @@ export function ModuleDots({
           )
         })}
       </TooltipTrigger>
-      <TooltipContent side="top" className="flex-col items-start gap-1">
+      <TooltipContent side={side} sideOffset={sideOffset} className="flex-col items-start gap-1">
         {all.map((id) => (
           <span key={id} className="flex items-center gap-1.5">
             <span aria-hidden className="size-2 shrink-0 rounded-full bg-(--module)" style={moduleStyle(id)} />
