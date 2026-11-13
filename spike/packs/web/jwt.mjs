@@ -27,6 +27,11 @@ import { isTimeout } from "./toolrun.mjs";
 // Built by spike/scripts/build-labs.sh from packs/web/Dockerfile.jwt_tool.
 export const JWT_TOOL_IMAGE = "touchstone/web-jwt-tool:2.3.0";
 
+// jwt_tool exits 1 after its crack branch, whether it cracked the key or missed.
+// A verdict line printed under ANY other exit code means the process did not
+// finish that branch the way jwt_tool does, so the marker cannot be trusted.
+export const JWT_TOOL_CRACK_EXIT = 1;
+
 // The token-capture client. node:20-slim is already local (startLab uses it as
 // the recording proxy), so --pull=never is satisfied without a registry.
 export const FETCH_IMAGE = "node:20-slim";
@@ -146,6 +151,12 @@ export async function scanJwt({
   const verdict = parseJwtCrack(r.stdout);
   if (!verdict.analyzed) {
     return unavailable(`jwt_tool produced no usable verdict (no crack result and no "not in dictionary" line); a gap, not a clean run. exit ${r.code}. ${cap(r.stderr, 120)}`, r.code);
+  }
+  // A verdict is only trustworthy when it comes with the exit code jwt_tool
+  // actually gives after a completed crack (1). A marker line under any other
+  // non-timeout code is an inconsistent run; fail closed rather than read it.
+  if (r.code !== JWT_TOOL_CRACK_EXIT) {
+    return unavailable(`jwt_tool printed a verdict but exited ${r.code}, not the ${JWT_TOOL_CRACK_EXIT} it gives after a completed crack; an inconsistent run is a gap, not a result. ${cap(r.stderr, 100)}`, r.code);
   }
   const leads = jwtLeads(verdict);
   return {

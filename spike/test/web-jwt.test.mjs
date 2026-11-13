@@ -154,6 +154,17 @@ test("scanJwt: a crack with no usable verdict (no markers) is a gap, not a clean
   assert.equal(r.leads.length, 0);
 });
 
+test("scanJwt: a verdict line under the WRONG exit code (not 1) is a gap, never a clean crack", async () => {
+  // jwt_tool prints the CORRECT-key line but exits 0, not the 1 it always gives
+  // after its crack branch. The marker alone is not enough: the run did not
+  // finish the way jwt_tool does, so fail closed rather than mint a High lead.
+  const { run } = recordingRun({ crack: { stdout: CRACK_HIT, code: 0 } });
+  const r = await scanJwt({ net: "lab-net", baseUrl: "http://lab:8080", run });
+  assert.equal(r.coverage[0].status, "unavailable");
+  assert.match(r.coverage[0].reason, /exited 0, not the 1/);
+  assert.equal(r.leads.length, 0, "no lead from an inconsistent exit code");
+});
+
 test("scanJwt: no token captured is unavailable, and the crack never runs", async () => {
   const { run, calls } = recordingRun({ token: "" }); // capture yields nothing
   const r = await scanJwt({ net: "lab-net", baseUrl: "http://lab:8080", run });
