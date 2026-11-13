@@ -95,9 +95,11 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity` |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language` |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish` |
-| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_hv4wbw7qis` (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
-| 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6) |
-| 1f Review of the base commit | K1 | read-only | `thr_xikyvziytr`, read-only |
+| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
+| 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
+| 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
+| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth` |
+| 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
 
@@ -133,12 +135,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | Need | Unblocks | Without it |
 |------|----------|-----------|
-| Yes or no on the protected fleet files | A5, I7 | Both stay blocked |
-| Yes for Daytona use on the owner's account | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| A classic GitHub token, read-only | G3 live path (Scorecard API, Legitify) | G3 ships with the fixture path only |
+| ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
+| ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. New token received 2026-11-13: it reads `hemaaanth/touchstone` (Metadata and Contents: HTTP 200). It lacks read on Actions, Administration (branch protection) and Pull requests (HTTP 403), so those tool checks will report "no access" in the live proof. Optional: add those three read permissions to the token. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
-| A fork RPC URL (the owner can give one) | Stader fork work | Stays blocked |
-| Yes to close PR 3 on GitHub | H1 tidy-up | PR 3 stays open |
+| ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
+| ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
 | An eye on the UI work | B, C, D, E, F | Merges on review + screenshots; the owner checks the morning page |
 
 ---
@@ -151,7 +153,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
 | A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
 | A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
-| A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. **blocked** on the owner. |
+| A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. The owner allowed it for this task (2026-11-13). Starts after thread 1a merges (wave 2, thread 2h). Own reviewer; the gate line is never touched. |
 
 ## B. Run view polish
 
@@ -218,9 +220,10 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
-| H2 | doing | PR 7 (report redaction), `merge/pr-7` 5b75dfb: open redaction rules. Blocks F2. |
+| H2 | review | PR 7 (report redaction), `merge/pr-7` 5265d20: author done (10 commits after the merge with main, 246 app tests pass). Final delta review runs (thread `thr_tjjx45bfz5`). Open by design: JSON escaped three or more times (see H2b). Blocks F2. |
+| H2b | todo | Follow-up to PR 7: redact JSON at every escape level by decoding each level, instead of one regex per depth. Wave 3. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
-| H4 | parked | PR 8: parked until the owner decides. |
+| H4 | parked | PR 8: the owner decided 2026-11-13: it stays parked. No work. |
 
 ## I. Browser and free-roam agents (plan page v5)
 
@@ -232,7 +235,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | I4 | todo | Ask-the-human flow in the fleet, with manual takeover through the sandbox desktop view. |
 | I5 | todo | Wallet and email loadout options. |
 | I6 | todo | Session capture (HAR, shell transcript, screenshots) in the candidate record. Needs G5. |
-| I7 | blocked | Per-agent loadouts. Lives in the protected fleet files: needs the owner's yes. |
+| I7 | todo | Per-agent loadouts. Lives in the protected fleet files. The owner allowed it for this task (2026-11-13). Wave 4. Own reviewer; the gate line is never touched. |
 
 ## J. Daytona baked snapshot (plan page v2, path A)
 
@@ -245,13 +248,29 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| K1 | review | The app work (scope model, console token, page edits, New run dialog, setup script) is on `main` as the new base. It still needs its independent review (thread 1f). |
-| K2 | doing | Rebuild the tool images with `spike/scripts/setup.mjs` and get a green full suite at the tip. Toolkit reviews need the images. |
+| K1 | done | The app work (scope model, console token, page edits, New run dialog, setup script) is on `main` as the new base. It still needs its independent review (thread 1f). **Review result: NOT READY** (`thr_xikyvziytr`, 9 findings, checked by the coordinator). The repairs are section L. |
+| K2 | done | Rebuild the tool images with `spike/scripts/setup.mjs` and get a green full suite at the tip. Toolkit reviews need the images. Result (thread 1e): all 45 manifest images were present; nothing to pull or build. Full spike suite on the candidate: 940 tests, 936 pass, 0 fail, 4 skipped (2 need live Daytona, 2 need the optional garak image). |
 | K3 | blocked | The 22 old run files are removed from the tree at the base commit. They stay in git history and in a local trash folder (ignored by git). Open: rewrite history to drop them, or leave it. |
 | K4 | todo | Remove old worktrees after their branches merge. |
-| K6 | doing | One spike test fails on `main` (also before the base commit): `oz-monitor.test.mjs`, "a monitor run that times out…". The monitor now finishes inside the 1.5 s limit, so the timeout never fires. Fix the test so it does not depend on speed. Goes to thread 1e. |
+| K6 | done | One spike test fails on `main` (also before the base commit): `oz-monitor.test.mjs`, "a monitor run that times out…". The monitor now finishes inside the 1.5 s limit, so the timeout never fires. Fix the test so it does not depend on speed. Goes to thread 1e. Fix `1c378a1` on `fix/green-suite` (the test pauses the lab chain). Reviewer `thr_ry8aamkj9q`. Reviewed READY (thread `thr_ry8aamkj9q`: two mutations fail the test, full suite 940 / 936 pass / 0 fail / 4 skipped). Merged as `afce9fc`. |
 | K5 | todo | Re-check old tester MINOR M1: the proof drawer hides harm numbers. |
+
+## L. Base security repair (from the K1 review)
+
+The review of the base commit found real defects. Most are older than the base commit, but the base makes them matter more. Report: coordinator thread storage, `thr_xikyvziytr/review.md`.
+
+| # | State | Item |
+|---|-------|------|
+| L1 | doing | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. |
+| L2 | doing | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. |
+| L3 | doing | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
+| L4 | doing | Token compare in constant time. Thread 1g. |
+| L5 | doing | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. |
+| L6 | doing | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. |
+| L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
+| L8 | doing | **A tool run can build an image** (Domains). It must fail with "run setup" instead. Thread 1h. |
+| L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
 
 ## Owner decisions (open)
 
-chain-bench and raven · classic GitHub token for Scorecard API and Legitify · PR 3 close · PR 8 · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
+safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
