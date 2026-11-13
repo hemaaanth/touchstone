@@ -1,5 +1,5 @@
-// The setup manifest (scripts/setup.mjs) is the one list a fresh machine builds
-// from. Each pack image the code runs must be on it, with a recipe that exists;
+// The setup manifest (lib/images.mjs, re-exported by scripts/setup.mjs) is the one
+// list a fresh machine builds from. Each pack image the code runs must be on it, with a recipe that exists;
 // a Docker tool missing from it cannot be provisioned, so `--dry-run` would not
 // list it and a fresh machine would silently lack it.
 import { test } from "node:test";
@@ -9,7 +9,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { MANIFEST } from "../scripts/setup.mjs";
+import { MANIFEST } from "../lib/images.mjs";
+import { MANIFEST as CLI_MANIFEST } from "../scripts/setup.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const SETUP = join(ROOT, "spike/scripts/setup.mjs");
@@ -35,6 +36,20 @@ for (const [name, file, recipe] of [
     assert.match(readFileSync(join(ROOT, "spike/packs/contracts/images/build.sh"), "utf8"), new RegExp(`-f ${recipe} -t ${tag.replace(/\./g, "\\.")} \\.`));
   });
 }
+
+// L35b: one source. The manifest is a data-only module the engine reads
+// (lib/daytona.mjs) without loading the CLI; the CLI re-exports the same object.
+test("the manifest is one data-only module; the CLI and the engine read the same object", () => {
+  assert.equal(CLI_MANIFEST, MANIFEST, "scripts/setup.mjs re-exports lib/images.mjs's MANIFEST");
+  const lib = readFileSync(join(ROOT, "spike/lib/images.mjs"), "utf8");
+  assert.doesNotMatch(lib, /^import /m, "lib/images.mjs imports nothing");
+  assert.doesNotMatch(lib, /process\.|console\.|^await /m, "lib/images.mjs has no side effects");
+  const daytona = readFileSync(join(ROOT, "spike/lib/daytona.mjs"), "utf8");
+  assert.match(daytona, /from "\.\/images\.mjs"/);
+  assert.doesNotMatch(daytona, /scripts\/setup\.mjs/, "the engine does not load the CLI script");
+  const setup = readFileSync(SETUP, "utf8");
+  assert.doesNotMatch(setup, /export const MANIFEST = \[/, "the list is not kept twice");
+});
 
 test("setup --list prints both images; importing the manifest runs nothing", () => {
   const out = execFileSync(process.execPath, [SETUP, "--list", "--only=contracts"], { encoding: "utf8" });
@@ -135,7 +150,9 @@ function imagesIn(files) {
   return found;
 }
 const SETUP_FILE = join(ROOT, "spike/scripts/setup.mjs");
-const codeImages = imagesIn([...sources(join(ROOT, "spike")), ...sources(join(ROOT, "app/server"))].filter((f) => f !== SETUP_FILE));
+// The manifest itself is the source the scan checks against, not code that runs an image.
+const MANIFEST_FILE = join(ROOT, "spike/lib/images.mjs");
+const codeImages = imagesIn([...sources(join(ROOT, "spike")), ...sources(join(ROOT, "app/server"))].filter((f) => f !== SETUP_FILE && f !== MANIFEST_FILE));
 // This file names images in its own exception lists; it is the guard, not a user.
 const testImages = imagesIn([...sources(join(ROOT, "spike/test"), { tests: true })].filter((f) => f !== fileURLToPath(import.meta.url)));
 
@@ -154,7 +171,7 @@ test("the scan finds the images the code runs (it is not empty or blind)", () =>
 test("every image the code can run is in the setup manifest", () => {
   const known = new Set(MANIFEST.flatMap((m) => [m.tag, m.ref].filter(Boolean)));
   const missing = [...codeImages].filter(([ref]) => !known.has(ref) && !NOT_RUN_HERE[ref]).map(([ref, at]) => `${ref} (${at})`);
-  assert.deepEqual(missing, [], "add these to spike/scripts/setup.mjs");
+  assert.deepEqual(missing, [], "add these to the manifest, spike/lib/images.mjs");
 });
 
 test("every public image a test runs is in the setup manifest", () => {
@@ -162,7 +179,7 @@ test("every public image a test runs is in the setup manifest", () => {
   const missing = [...testImages]
     .filter(([ref]) => !/^touchstone/.test(ref) && !known.has(ref) && !NOT_RUN_HERE[ref])
     .map(([ref, at]) => `${ref} (${at})`);
-  assert.deepEqual(missing, [], "add these to spike/scripts/setup.mjs");
+  assert.deepEqual(missing, [], "add these to the manifest, spike/lib/images.mjs");
 });
 
 // ---- pins (L9): a run cannot silently use a newer image
