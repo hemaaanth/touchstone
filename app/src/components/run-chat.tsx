@@ -13,6 +13,7 @@ import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
+import { panelLayerClass } from "@/lib/run-layout"
 import { Button } from "@/components/ui/button"
 import { TitleInput } from "@/components/title-input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -513,20 +514,17 @@ export function RunChat({
     </h1>
   )
 
-  // The panel sits in the top bar's right side, over the room the bar keeps
-  // for it, and opens down over the chat. It stops above the composer. Only
-  // the panel itself takes clicks. On a phone it shows only when open, below
-  // the bar, across the width, and it comes right after the bar in the page,
+  // The panel floats in the chat's top-right corner, below the top bar (the
+  // placement of 68f772a), and opens down over the chat. It stops above the
+  // composer. Only the panel itself takes clicks. It comes before the chat in
+  // the page, so Tab goes bar, panel, chat. On a phone it shows only when
+  // open, below the bar, across the width, right after the bar in the page,
   // so Tab goes from its control into it.
   const panelLayer =
     showPanel && (!narrow || panelOpen) ? (
       <div
         inert={drawerOpen && !beside}
-        className={cn(
-          "pointer-events-none absolute bottom-28 flex items-start justify-end",
-          narrow ? "top-[54px] right-3 left-3" : "top-[7px] right-3",
-          beside ? "z-30" : "z-10",
-        )}
+        className={cn("pointer-events-none absolute bottom-28 flex items-start justify-end", panelLayerClass(narrow), beside ? "z-30" : "z-10")}
         style={beside ? { right: drawerWidth + 12 } : undefined}
       >
         <RunPanel
@@ -571,7 +569,6 @@ export function RunChat({
               status={status}
               title={titleNode}
               narrow={narrow}
-              panelWidth={showPanel && !narrow ? panelWidth : null}
               control={
                 showPanel && narrow ? (
                   <PanelControl state={state} mode={mode} open={panelOpen} onOpenChange={setPanelOpen} ref={controlRef} />
@@ -591,6 +588,7 @@ export function RunChat({
           {narrow ? panelLayer : null}
 
           <div className="relative flex min-h-0 flex-1 flex-col">
+            {narrow ? null : panelLayer}
             <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>
                 <Thread
@@ -612,7 +610,6 @@ export function RunChat({
             </div>
           </div>
 
-          {narrow ? null : panelLayer}
 
           {/* The drawer covers the run from the right, over the top bar.
               Nothing under it moves; the chat dims and blurs a little, and a
@@ -702,12 +699,11 @@ export type FocusFinding = { finding: string; at: number }
 // The run's top bar: status dot, title, the status word, and the ⋯ menu.
 // Mode, runtime and spend live in the run panel's Info section. Before the run
 // loads the bar shows the sidebar's status.
-function RunHeader({
+export function RunHeader({
   state,
   status,
   title,
   narrow,
-  panelWidth,
   control,
   actions,
 }: {
@@ -715,8 +711,6 @@ function RunHeader({
   status: RunSummary["status"]
   title: React.ReactNode
   narrow: boolean
-  // The room the folded run panel takes at the bar's right, if it shows.
-  panelWidth: number | null
   // On a phone: the panel's small button, at the bar's right.
   control: React.ReactNode
   actions: React.ReactNode
@@ -749,7 +743,6 @@ function RunHeader({
       {narrow ? null : <span className="ml-auto" />}
       <div className={cn("flex shrink-0", narrow && "ml-auto")}>{actions}</div>
       {control}
-      {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
     </header>
   )
 }
