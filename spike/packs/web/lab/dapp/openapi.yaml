@@ -76,6 +76,30 @@ paths:
                   txCount: { type: integer }
         "404":
           description: No such block.
+  /api/v2/token:
+    get:
+      summary: Issue a guest JWT session token for the v2 API.
+      description: >
+        Public. Returns a signed HS256 JWT carrying a guest role. The v2 admin
+        route below checks this token's signature and role.
+      responses:
+        "200":
+          description: A signed guest JWT.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  tokenType: { type: string }
+  /api/v2/admin/summary:
+    get:
+      summary: Admin-only summary, gated on a v2 JWT with an admin role.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Admin summary. }
+        "401": { description: Missing or invalid JWT. }
+        "403": { description: Valid JWT but not an admin role. }
   /api/me:
     get:
       summary: The caller's own profile.
