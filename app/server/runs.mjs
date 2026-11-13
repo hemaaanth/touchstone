@@ -644,6 +644,16 @@ function coverageGap(run) {
   run.error = info.message
   return true
 }
+// A run that recorded a finding keeps it, but if part of its scope was not read
+// the operator must know: broadcast a coverage note (a warning, not an error).
+// `always` also sends a cleared note (info null), for a follow-up that may have
+// read the rest.
+function noteCoverage(run, { always = false } = {}) {
+  const cov = runCoverage(run)
+  const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
+  const info = coverageFailure(cov, { spentUsd, found: true })
+  if (info || (always && cov)) broadcast(run, { t: Date.now(), ev: "coverage", info })
+}
 
 // Turn a settled-but-nothing-proved run into an honest, operator-readable
 // failure. The engine's `detail` is the real gateway/model error text; we use
@@ -829,6 +839,7 @@ async function recordRun(run, found) {
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
     announceFindings(run, findings, 0)
+    noteCoverage(run)
     run.status = "recorded"
     run.decision = "approve"
     broadcast(run, { ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
@@ -1033,6 +1044,7 @@ async function recordMore(run, found) {
   }
   run.findingIds = [...run.findingIds.slice(0, first), ...findings.map((_, k) => `${run.id}.${first + k + 1}`)]
   announceFindings(run, findings, first)
+  noteCoverage(run, { always: true })
   run.status = "recorded"
   run.decision = "approve"
   broadcast(run, { t: Date.now(), ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })

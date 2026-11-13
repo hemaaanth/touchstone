@@ -40,8 +40,9 @@ export function sourceCoverage(links, events) {
 
 // An error record for a run that would otherwise end clean but did not read its
 // whole scope, or null when the coverage is complete (or there is none).
-// Same shape as the server's failureInfo, kind "coverage".
-export function coverageFailure(cov, { spentUsd = null } = {}) {
+// Same shape as the server's failureInfo, kind "coverage". With `found`, the run
+// recorded a finding: the record is then a warning beside the finding, not an error.
+export function coverageFailure(cov, { spentUsd = null, found = false } = {}) {
   if (!cov || cov.complete) return null;
   const read = cov.members.filter((m) => m.status === "fetched");
   const gaps = cov.members.filter((m) => m.status !== "fetched");
@@ -56,8 +57,10 @@ export function coverageFailure(cov, { spentUsd = null } = {}) {
     reason: "source-not-covered",
     spentUsd,
     title: none ? "The scope was not read" : "Part of the scope was not read",
-    message: `No finding, but ${gaps.length} of ${cov.total} scope member${cov.total === 1 ? " was" : "s were"} not read, so this is not a clean result.`,
+    message: found
+      ? `A finding was recorded, but ${gaps.length} of ${cov.total} scope member${cov.total === 1 ? " was" : "s were"} not read, so the audit did not cover the whole scope.`
+      : `No finding, but ${gaps.length} of ${cov.total} scope member${cov.total === 1 ? " was" : "s were"} not read, so this is not a clean result.`,
     detail,
-    hint: "This is not a clean result. If a repo is over the file cap, edit the scope and replace it with folder URLs (https://github.com/<owner>/<repo>/tree/<branch>/<folder>) that together fit under the cap, then start a new run.",
+    hint: `${found ? "The finding stands, but the members under Technical details were not read." : "This is not a clean result."} If a repo is over the file cap, edit the scope and replace it with folder URLs (https://github.com/<owner>/<repo>/tree/<branch>/<folder>) that together fit under the cap, then start a new run.`,
   };
 }

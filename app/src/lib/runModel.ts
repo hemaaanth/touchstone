@@ -119,6 +119,9 @@ export interface RunState {
   // The structured, classified failure behind `error`. Null unless the run ended
   // in an error state. Drives the error card; `error` stays the plain fallback.
   errorInfo: RunFailure | null
+  // A recorded run that did not read its whole scope: what was not read. A
+  // warning beside the finding, not an error. Null when the scope was covered.
+  coverage: RunFailure | null
   finalText: string | null // the agent's words when it could not prove anything
   // No worker is running. A follow-up message reopens the run (`reply-start`)
   // and a later `closed` ends it again.
@@ -175,6 +178,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let decision: Verdict | null = null
   let error: string | null = null
   let errorInfo: RunFailure | null = null
+  let coverage: RunFailure | null = null
   let finalText: string | null = null
   let closed = false
   let replying = false
@@ -646,6 +650,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "no-finding":
         finalText = str(e.final) || null
         break
+      case "coverage":
+        coverage = e.info && typeof e.info === "object" ? (e.info as RunFailure) : null
+        break
       case "settled": {
         // The streamed prose can end one chunk short. The settled event holds the
         // whole answer, so the last prose step takes it. Old records get the same repair.
@@ -749,6 +756,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     decision,
     error,
     errorInfo,
+    coverage,
     finalText,
     closed,
     replying,

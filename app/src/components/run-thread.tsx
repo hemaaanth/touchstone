@@ -101,12 +101,16 @@ function RunErrorCard({
   onRetry,
   retrying,
   archived,
+  warning = false,
 }: {
   info: RunFailure | null
   fallback: string | null
   onRetry: () => void
   retrying: boolean
   archived: boolean
+  // A warning beside a recorded finding (the coverage note): no spend line and
+  // no "Run again", because the run did not fail.
+  warning?: boolean
 }) {
   const kind = info?.kind ?? "unknown"
   const Icon = ERROR_ICON[kind] ?? TriangleAlert
@@ -123,7 +127,7 @@ function RunErrorCard({
     .find((t): t is string => !!t && !same(t, hint) && !same(t, title))
   const code = info?.reason && info.reason !== "unknown" ? info.reason : null
   const technical = !!raw || !!code
-  const retryable = (info?.retryable ?? true) && !archived
+  const retryable = (info?.retryable ?? true) && !archived && !warning
 
   return (
     <div className={cn(card, "px-4 py-3.5")}>
@@ -132,7 +136,7 @@ function RunErrorCard({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground">{title}</p>
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            {sentence(hint)} {cost}
+            {sentence(hint)} {warning ? null : cost}
           </p>
           {retryable || technical ? (
             <div className="mt-3 flex items-center gap-3">
@@ -179,6 +183,7 @@ export function Thread({
   live = true,
   error,
   errorInfo,
+  coverage = null,
   onRetry,
   retrying,
   archived,
@@ -196,6 +201,8 @@ export function Thread({
   live?: boolean
   error: string | null
   errorInfo: RunFailure | null
+  // A recorded run that did not read its whole scope. Shown as a warning card.
+  coverage?: RunFailure | null
   onRetry: () => void
   retrying: boolean
   archived: boolean
@@ -232,6 +239,8 @@ export function Thread({
               retrying={retrying}
               archived={archived}
             />
+          ) : coverage ? (
+            <RunErrorCard info={coverage} fallback={null} onRetry={onRetry} retrying={retrying} archived={archived} warning />
           ) : null}
         </div>
 

@@ -138,3 +138,26 @@ test("a follow-up that ends without reading the scope keeps the run an error; on
   assert.equal(r.status, "no-finding");
   assert.equal(r.errorInfo ?? null, null);
 });
+
+test("a run that records a finding with part of its scope unread stays recorded but says what was not read", async () => {
+  const BANK = "https://github.com/cosmos/cosmos-sdk/tree/main/x/bank";
+  const two = addScope({ title: "Cosmos SDK, two members", members: [{ kind: "repo", url: REPO }, { kind: "repo", url: BANK }] });
+  const finding = { title: "Unchecked send", severity: "high", poc: "x/bank/keeper/send.go" };
+  const found = { ...done, findings: [finding] };
+  scripts.push({ events: [refused, { ev: "source-fetch", url: BANK, ok: true, where: "vendor/cosmos__cosmos-sdk@main/x/bank", files: 40 }, found] });
+  const { id } = await createRun({ targetId: two.id, pack: "review", mode: "solo" });
+  const r = await settle(id);
+  assert.equal(r.status, "recorded");
+  const note = r.events.find((e) => e.ev === "coverage");
+  assert.ok(note, "a coverage note is broadcast");
+  assert.equal(note.info?.kind, "coverage");
+  assert.equal(note.info?.title, "Part of the scope was not read");
+  assert.match(note.info?.message ?? "", /finding was recorded/i);
+  assert.match(note.info?.detail ?? "", /Not read:\n- https:\/\/github\.com\/cosmos\/cosmos-sdk: .*3053 source files/);
+  assert.ok(r.events.indexOf(note) < r.events.findLastIndex((e) => e.ev === "status"), "the note comes before the recorded status");
+  // A run that read everything gets no note.
+  scripts.push({ events: [fetched, { ...done, findings: [finding] }] });
+  const clean = await settle((await start()).id);
+  assert.equal(clean.status, "recorded");
+  assert.ok(!clean.events.some((e) => e.ev === "coverage"));
+});
