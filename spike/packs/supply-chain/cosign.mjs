@@ -58,9 +58,9 @@ export function parsePolicy(policy) {
 
 // Map cosign's exit and stderr to one result word. Only two exact outcomes count;
 // everything else is "error", which the caller turns into a gap.
-export function classify(r) {
+export function classify(r, image = COSIGN.image) {
   if (r.timedOut) return { result: "error", reason: "cosign timed out", timedOut: true };
-  if (r.code === 125 && /No such image|Unable to find image|pull access denied/i.test(r.stderr)) return { result: "unavailable", reason: `image ${COSIGN.image} is not built` };
+  if (r.code === 125 && /No such image|Unable to find image|pull access denied/i.test(r.stderr)) return { result: "unavailable", reason: `image ${image} is not built` };
   if (r.code === 0 && /^Verified OK$/m.test(r.stderr)) return { result: "verified" };
   if (r.code === 1 && /^Error: failed to verify signature: could not verify message: invalid signature/m.test(r.stderr)) return { result: "invalid-signature" };
   const line = (r.stderr.match(/^Error: (.*)$/m)?.[1] ?? `exit ${r.code}`).replace(/[^\x20-\x7e]/g, "").slice(0, 160);
@@ -76,7 +76,7 @@ export async function verifyBlob({ artifact, bundle, publicKey }, { image = COSI
     writeFileSync(join(dir, "key.pub"), publicKey, { mode: 0o600 });
     const r = await runTool({ image, ws: dir, timeoutMs, env: { HOME: "/tmp" },
       cmd: ["verify-blob", "--key", "/work/key.pub", "--bundle", "/work/bundle.json", "--insecure-ignore-tlog=true", "/work/blob"] });
-    return classify(r);
+    return classify(r, image);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 

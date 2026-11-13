@@ -88,7 +88,8 @@ test("tool failures are gaps, never a pass and never a lead", async () => {
   assert.equal(missing.status, "gap");
   assert.deepEqual(missing.leads.map((l) => l.check), ["artifact-signature-missing"]);
   assert.deepEqual(missing.gaps.map((g) => g.file), ["release/wallet-cli.js", "release/updater.js"]);
-  assert.match(missing.gaps[0].detail, /not built/);
+  assert.match(missing.gaps[0].detail, /^image touchstone-cosign:not-built is not built\./);
+  assert.match(missing.reason, /^image touchstone-cosign:not-built is not built\./);
   // Timeout: the engine is a gap with timedOut, never "ok". The unsigned lead stays.
   const slow = await cosignScan(snapshot, policy, { timeoutMs: 1 });
   assert.equal(slow.status, "gap");
