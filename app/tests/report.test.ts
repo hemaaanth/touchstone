@@ -486,8 +486,9 @@ describe("report: replay bundle", () => {
       writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
       writeFileSync(path.join(ws, "src", "BytecodeVault.runtime.hex"), "0x60a0" + "ab".repeat(40) + "\n")
       writeFileSync(path.join(ws, "abi", "Thing.json"), JSON.stringify({ bytecode: { object: "0x" + "60".repeat(2000) } }))
-      // A JSON artifact over the redactor's 64 KB single-pass cap ships raw.
-      writeFileSync(path.join(ws, "abi", "Big.json"), JSON.stringify({ bytecode: { object: "0x" + "ab".repeat(70000) } }))
+      // A JSON artifact over the redactor's 64 KB single-pass cap ships raw,
+      // but a host path in it is still masked (the cheap line passes run).
+      writeFileSync(path.join(ws, "abi", "Big.json"), JSON.stringify({ metadata: { path: "/home/alice/proj/src/X.sol" }, bytecode: { object: "0x" + "ab".repeat(70000) } }))
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
       // Build output and a secret file never ship.
       writeFileSync(path.join(ws, "out", "ignore.json"), "{}\n")
@@ -506,7 +507,9 @@ describe("report: replay bundle", () => {
         unzip(plan.zip, dir)
         const files = readTree(dir)
         for (const rel of ["abi/Big.json", "abi/Thing.json", "src/BytecodeVault.runtime.hex"]) expect(files.has(rel)).toBe(true)
-        expect(files.get("abi/Big.json")).toBe(JSON.stringify({ bytecode: { object: "0x" + "ab".repeat(70000) } }))
+        expect(files.get("abi/Big.json")).toContain("0x" + "ab".repeat(70000))
+        expect(files.get("abi/Big.json")).not.toContain("/home/alice")
+        expect(files.get("abi/Big.json")).toContain("~/proj/src/X.sol")
         expect(files.has("out/ignore.json")).toBe(false)
         // The big artifact's hex windows do not flood the unjudged count.
         expect(plan.unjudged.find((u: { shape: string }) => u.shape === "hex64")).toBeUndefined()

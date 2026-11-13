@@ -314,8 +314,12 @@ function forgeFileText(path, raw) {
   // the line-wise shape detector (no cap) finds no secret, so no key leaves; it
   // is marked `data` so its many hex windows do not flood the unjudged count.
   if (PROSE_FILE.test(path)) return { reason: OVER_CAP };
-  const shapes = leakShapes(raw);
-  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text: raw, data: true };
+  // The full masker is capped, but host-path and RPC-URL masks are cheap line
+  // passes with no cap, so run them (an artifact's solc metadata can hold a
+  // build path). The shape detector is the fail-closed check on the result.
+  const scrubbed = homeToTilde(urlKeys(String(raw)));
+  const shapes = leakShapes(scrubbed);
+  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text: scrubbed, data: true };
 }
 
 // A path the redactor would mask, in whole or in one part, is not shipped:
