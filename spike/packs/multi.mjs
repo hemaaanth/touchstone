@@ -29,6 +29,21 @@ export const MULTI_DIR = "modules";
 // The workspace of one module of a multi-module run.
 export const memberDir = (ws, id) => path.join(ws, MULTI_DIR, id);
 
+// The modules that read code. A fetched tree lands once in the run's shared
+// vendor/, and each of these modules gets a copy, so its own read tools work on
+// its own paths. The server uses the same step when it puts a member back into
+// a workspace it built again.
+export const CODE_MODULES = ["contracts", "review"];
+export function shareFetched(ws, ids, where) {
+  for (const id of ids.filter((i) => CODE_MODULES.includes(i))) {
+    try {
+      cpSync(path.join(ws, where), path.join(memberDir(ws, id), where), { recursive: true, force: true });
+    } catch {
+      // one module's copy must not fail the fetch
+    }
+  }
+}
+
 // The run's modules, from its workspace config. Null for a run with one module.
 export function multiPacks(cfg = {}) {
   const ids = Array.isArray(cfg.packs) ? [...new Set(cfg.packs.map(String))] : [];
@@ -176,7 +191,7 @@ export function multiPack(members) {
 
   // The modules that read code (and get the fetched tree copied in). A run of
   // capture modules only fetches nothing and the members' own tool is left alone.
-  const codeMembers = members.filter((p) => p.id === "contracts" || p.id === "review");
+  const codeMembers = members.filter((p) => CODE_MODULES.includes(p.id));
   const fetched = new Map(); // url -> report, once the one clone is done
   let queue = Promise.resolve();
 
@@ -207,15 +222,7 @@ export function multiPack(members) {
   // `fetch_source` is emitted by the caller, once per call.
   async function completeFetch(ws, url, report, already) {
     const where = report?.where;
-    if (where) {
-      for (const other of codeMembers) {
-        try {
-          cpSync(path.join(ws, where), path.join(memberDir(ws, other.id), where), { recursive: true, force: true });
-        } catch {
-          // one module's copy must not fail the fetch
-        }
-      }
-    }
+    if (where) shareFetched(ws, ids, where);
     const solid = (report?.files ?? []).map((f) => f.path ?? f).filter((f) => /\.sol$/i.test(String(f)));
     const warmed = [];
     const warms = codeMembers.some((m) => m.id === "contracts");
