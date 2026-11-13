@@ -77,7 +77,7 @@ async function copyFinding(id: string, format: CopyFormat): Promise<{ tooLong: b
 type CopyNote = { id: string; format: CopyFormat; result: "done" | "too-long" | "error" }
 const WHAT: Record<CopyFormat, string> = { md: "the report", agent: "the agent brief" }
 const shortNote = (n: CopyNote) =>
-  n.result === "error" ? "Could not copy." : n.result === "too-long" ? "Copied, with a part left out. Open the finding to see why." : `Copied ${WHAT[n.format]}.`
+  n.result === "error" ? "Could not copy." : n.result === "too-long" ? "Copied, with a part left out." : `Copied ${WHAT[n.format]}.`
 const fullNote = (n: CopyNote) =>
   n.result === "error"
     ? "Could not copy. The server did not answer, or the browser blocked the clipboard."
@@ -85,11 +85,17 @@ const fullNote = (n: CopyNote) =>
       ? `Copied ${WHAT[n.format]}. A part over 64 KB could not be checked for secrets, so it was left out.`
       : `Copied ${WHAT[n.format]}.`
 
-function useCopy() {
+// `onTooLong` opens the finding's sheet: the line that says a part was left
+// out is shown there in full, never cut in the count line.
+function useCopy(onTooLong: (id: string) => void) {
   const [note, setNote] = useState<CopyNote | null>(null)
   const [flash, setFlash] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
+  const tooLong = useRef(onTooLong)
+  useEffect(() => {
+    tooLong.current = onTooLong
+  })
   // Stable, so a memoised row does not render again when the note changes.
   const copy = useCallback((f: FindingSummary, format: CopyFormat) => {
     clearTimeout(timer.current)
@@ -97,6 +103,7 @@ function useCopy() {
     const done = (result: CopyNote["result"]) => {
       setNote({ id: f.id, format, result })
       setFlash(true)
+      if (result === "too-long") tooLong.current(f.id)
       timer.current = setTimeout(() => setFlash(false), 5000)
     }
     copyFinding(f.id, format).then(
@@ -151,7 +158,7 @@ export function FindingsPage({
   const [detail, setDetail] = useState<{ id: string; open: boolean } | null>(null)
   const open = detail ? all.find((f) => f.id === detail.id) : undefined
   const sheet = useRef<HTMLDivElement>(null)
-  const { note, flash, copy, keepOnly } = useCopy()
+  const { note, flash, copy, keepOnly } = useCopy((id) => setDetail({ id, open: true }))
   const openDetail = useCallback(
     (f: FindingSummary) => {
       keepOnly(f.id)
