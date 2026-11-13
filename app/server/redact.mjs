@@ -109,9 +109,14 @@ const CODE_PAIR_ESC = /(?<![\w$"'`\\])([A-Za-z_$][\w$-]{0,63})([ \t]*[:=][ \t]*)
 const HEADER_NAME = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:[ \t]*)`
 const LINE_VALUE = String.raw`((?:=(?:"[^"\\\r\n]*"|\\"[^"\\\r\n]*\\")|\[REDACTED[^\]\r\n]{0,80}\]|[^\r\n\\"'` + "`" + String.raw`()\[\]{}<>]|\\[^rn"\r\n])+)`
 const QUOTE_VALUE = String.raw`((?:=\\"[^"\\\r\n]*\\"|(?!\1)[^\\\r\n]|\\(?![rn]|\1)[^\r\n])+)`
-// The lead may also be a list mark ("- ", "* "), a table bar ("| "), or a
-// tab or ", " inside a log line: "Host: lab, Authorization: Basic …".
-const LINE_HEADER = new RegExp(String.raw`((?<=^|[\r\n]|\\n)[ \t]*(?:[<>*-] |\| )?|(?<=\t|, ))` + HEADER_NAME + LINE_VALUE, "g")
+// The lead may also be a list mark ("- ", "* ", "+ "), an ordered-list mark
+// ("1. ", "2) "), a table bar ("| "), a bold open ("**Authorization:**"), or
+// a tab or ", " inside a log line: "Host: lab, Authorization: Basic …".
+// The bold form closes with "**" right after the colon, so the separator may
+// hold up to two stars (":** ").
+const LINE_LEAD = String.raw`(?<=^|[\r\n]|\\n)[ \t]*(?:[<>*+-] |\d{1,3}[.)] |\| |\*\*)?|(?<=\t|, )`
+const LINE_NAME_SEP = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:\*{0,2}[ \t]*)`
+const LINE_HEADER = new RegExp(String.raw`(${LINE_LEAD})` + LINE_NAME_SEP + LINE_VALUE, "g")
 // A markdown table row: "| Authorization | Basic … |". The value cell
 // stops at the next bar.
 const TABLE_HEADER = /((?<=^|[\r\n]|\\n)[ \t]*\|[ \t]*)([A-Za-z][\w-]{0,63})([ \t]*\|[ \t]*)([^|\r\n\\`]+)/g
@@ -126,7 +131,7 @@ const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})
 // X-Amz-Security-Token), and so do a few short names that are secret only
 // in a URL: key, sig, code (an OAuth code) and auth.
 const QUERY = /([?&#]([A-Za-z][\w.-]{0,63})=)([^&\s#"'`,;()[\]{}<>\\]+)/g
-const QUERY_NAME = /^(?:key|sig|code|auth)$/i
+const QUERY_NAME = /^(?:key|sig|code|auth|jwt|sid)$/i
 
 // An RPC or API key in a URL path on a known provider host:
 // https://eth-mainnet.g.alchemy.com/v2/<key>, https://mainnet.infura.io/v3/<key>,
@@ -151,6 +156,16 @@ function maskRpcUrl(m, host, path) {
 const URL_USERINFO = /(\/\/[^\s/:@"'`]{1,64}:)([^\s/@"'`]{1,256})(?=@)/g
 const CURL_USER = /((?:^|\s)(?:-u|--user)[ =]?["']?[^\s:"'@]{1,64}:)([^\s"']{1,256})/g
 const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s"']+))/g
+// A header set by a bracket index or a method call:
+//   h["X-API-Key"] = "v"   and   headers.set("X-API-Key", "v").
+// The quoted name decides (secretName); the quoted value is masked. Only a
+// quoted value is touched, so a bare variable (res.set("X-Api-Key", tok)) stays.
+const BRACKET_PAIR = /(\[[ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*\][ \t]*=[ \t]*)(["'`])([^"'`\r\n]*)\4/g
+const CALL_PAIR = /(\([ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*,[ \t]*)(["'`])([^"'`\r\n]*)\4/g
+// MySQL joins -p to its value: mysql -psecret. The value is masked only when
+// it looks like a secret (secretish, 8+), so a port (-p3306) or a prompt (-p)
+// stays.
+const MYSQL_PW = /(?<![\w-])(-p)([^\s"'`;&|()<>]+)/g
 // A command-line flag whose name passes secretName: cast send
 // --private-key 0x…, --api-key=…, --token "…".
 const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\r\n]*)\3|([^\s"'`;&|()<>]+))/g
@@ -316,13 +331,30 @@ function maskCodeValue(name, value) {
   return maskPairValue(name, value)
 }
 
+// A bracket-index or call pair: keep the head (name and the quote), mask the value.
+function maskBracketPair(m, head, nq, name, q, value) {
+  const masked = maskCodeValue(name, value)
+  return masked == null ? m : `${head}${q}${masked}${q}`
+}
+
+// mysql -p<value>: mask only a value that looks like a secret.
+function maskMysqlPw(m, flag, value) {
+  return secretish(value, 8) && !keepUnder(value) ? flag + MARK : m
+}
+
 function maskNamed(m, head, name, mid, value) {
   const masked = maskCodeValue(name, value)
   return masked == null ? m : `${head}${name}${mid}${masked}${m.slice(head.length + name.length + mid.length + value.length)}`
 }
 
+// Names that are a secret only under a JSON or code pair, not in prose. A bare
+// "Key:" line or the word "key" in a sentence is common, so these are kept by
+// the header and prose paths (maskHeaderValue); here, under a quoted/assigned
+// name, they are judged by value like a suffix name (maskUnder).
+const PAIR_SECRET = /^(?:key|jwt|passphrase)$/i
+
 function maskPairValue(name, value) {
-  if (!secretName(name) || keepUnder(value)) return null
+  if ((!secretName(name) && !PAIR_SECRET.test(name)) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
   if (/cookie$/i.test(name) && value.includes("=")) return maskCookie(value)
   return maskUnder(name, value) ? MARK : null
@@ -367,7 +399,7 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, BRACKET_PAIR, CALL_PAIR, MYSQL_PW, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -404,6 +436,9 @@ function redactText(text) {
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_COOKIE, maskCookieArg)
+  out = out.replace(BRACKET_PAIR, maskBracketPair)
+  out = out.replace(CALL_PAIR, maskBracketPair)
+  out = out.replace(MYSQL_PW, maskMysqlPw)
   out = out.replace(CLI_FLAG, maskFlag)
   out = out.replace(ENV_ASSIGN, maskEnv)
   for (const re of SHAPES) out = out.replace(re, MARK)

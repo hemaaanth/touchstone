@@ -793,3 +793,48 @@ describe("redact: JSON escaped three or more times (H2b item 3)", () => {
     expect(timeMs("x" + "\\\\".repeat(MB) + '"token":"v"')).toBeLessThan(2000)
   })
 })
+
+describe("redact: cheap Minor 5 shapes (H2b item 4)", () => {
+  const B = "Basic dXNlcjpwYXNzMTIzNA=="
+  const V = "s3cretVALUE9f3a9c2e1"
+  test("a header after a list mark, an ordered mark or a bold wrapper is masked", () => {
+    expect(text(`1. Authorization: ${B}`)).toBe("1. Authorization: Basic [REDACTED]")
+    expect(text(`2) X-Api-Key: ${V}`)).toBe("2) X-Api-Key: [REDACTED]")
+    expect(text(`+ X-Api-Key: ${V}`)).toBe("+ X-Api-Key: [REDACTED]")
+    expect(text(`**Authorization:** ${B}`)).toBe("**Authorization:** Basic [REDACTED]")
+  })
+  test("a header set by a call or a bracket index is masked", () => {
+    expect(text(`headers.set("X-API-Key","${V}")`)).toBe(`headers.set("X-API-Key","[REDACTED]")`)
+    expect(text(`headers.set("X-API-Key", "${V}")`)).toBe(`headers.set("X-API-Key", "[REDACTED]")`)
+    expect(text(`h["X-API-Key"] = "${V}"`)).toBe(`h["X-API-Key"] = "[REDACTED]"`)
+  })
+  test("a secret query name is masked", () => {
+    expect(text(`/cb?jwt=${V}`)).toBe("/cb?jwt=[REDACTED]")
+    expect(text(`/p?sid=${V}`)).toBe("/p?sid=[REDACTED]")
+  })
+  test("the keys key, jwt and passphrase under a JSON name are masked", () => {
+    for (const k of ["key", "jwt", "passphrase"]) expect(text(`{"${k}":"${V}"}`)).toBe(`{"${k}":"[REDACTED]"}`)
+  })
+  test("mysql -p<value> is masked", () => {
+    expect(text(`mysql -p${V} -h db`)).toBe("mysql -p[REDACTED] -h db")
+  })
+  test("evidence and plain shapes stay", () => {
+    for (const s of [
+      "Key: the API key is stored in the vault", // prose, not a header value
+      "**Note:** see the run log for the trace",
+      `{"key":"created_at"}`, // a setting
+      `res.set("X-Api-Key", token)`, // a bare variable, not a literal
+      "psql -p5432 -h db", // a port, not secretish
+      "ps -p1234", // a pid
+      `config["timeout"] = "30"`, // a non-secret bracket index
+      `t("Accept", "application/json")`, // a non-secret call pair
+    ]) expect(text(s)).toBe(s)
+  })
+  test("the new shapes are linear in time with the run in the middle", () => {
+    expect(timeMs(`h["X-API-Key"] = "` + "a".repeat(MB) + `"`)).toBeLessThan(2000)
+    expect(timeMs(`set("X-API-Key","` + "a".repeat(MB) + `")`)).toBeLessThan(2000)
+    expect(timeMs("mysql -p" + "a1".repeat(MB / 2) + " x")).toBeLessThan(2000)
+    expect(timeMs("**Authorization:** Basic " + " ".repeat(MB) + "x")).toBeLessThan(2000)
+    expect(timeMs("1. X-Api-Key: " + "a".repeat(MB))).toBeLessThan(2000)
+  })
+})
