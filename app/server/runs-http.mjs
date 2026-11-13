@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
+import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, namesLocalPath } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive, GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
@@ -228,8 +228,12 @@ export async function handleScopes(req, res) {
     // A live scope also records the operator's permission to reach real hosts,
     // so it needs the console token, like a Settings write. A web page or the
     // agent cannot add one.
+    // This covers the private-lab opt-in (allowPrivate) too: it only acts on
+    // the live path, so it can never skip this token check.
     const body = await readBody(req)
-    if (body?.kind === "live") {
+    // A local folder path makes the server read this machine's disk, so it
+    // needs the token too.
+    if (body?.kind === "live" || namesLocalPath(body)) {
       const refusal = settingsWriteRefusal(req)
       if (refusal) {
         send(res, refusal.status, { error: refusal.error })
@@ -237,7 +241,7 @@ export async function handleScopes(req, res) {
       }
     }
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

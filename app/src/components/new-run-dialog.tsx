@@ -1,7 +1,8 @@
 import { useRef, useState } from "react"
-import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, X } from "lucide-react"
+import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
 import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
-import { attachScope } from "@/lib/api"
+import { attachScope, type ScopeMember } from "@/lib/api"
+import { getConsoleToken, setConsoleToken } from "@/lib/console-token"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
@@ -318,12 +319,27 @@ function githubUrl(raw: string): string | null {
 
 const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 
+// A folder is a path on this machine, read in place by the server (the
+// default), or files uploaded from the browser (the fallback).
 type Source =
   | { kind: "repo"; url: string }
+  | { kind: "folder"; name: string; path: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
   | { kind: "site"; host: string; origin: string }
 
-const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : `folder:${s.name}`)
+const sourceKey = (s: Source) =>
+  s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : "path" in s ? `path:${s.path}` : `folder:${s.name}`
+
+// A folder path the operator typed: "/..." or "~/...". The server expands "~",
+// resolves the path, and reads the folder. The name is its last part, made
+// safe the same way the server does it.
+function localPath(raw: string): { name: string; path: string } | null {
+  const text = raw.trim().replace(/\/+$/, "")
+  if (!(text.startsWith("/") || text === "~" || text.startsWith("~/"))) return null
+  const base = text.split("/").filter(Boolean).pop() ?? ""
+  const name = base === "~" ? "home" : base.replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
+  return { name, path: text }
+}
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
 
 // A website address the operator typed, as the exact origin a run will call.
@@ -340,8 +356,25 @@ function siteOrigin(raw: string): string | null {
     return null
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null
-  if (u.username || u.password || !u.hostname.includes(".")) return null
+  if (u.username || u.password) return null
+  // A bare name like "intranet" is a typo more often than a target. localhost
+  // and IP literals are fine: a local lab is named that way.
+  if (!u.hostname.includes(".") && !labHost(u.hostname) && !u.hostname.startsWith("[")) return null
   return u.origin
+}
+
+// True for a loopback or private host: a local lab, not a public website. The
+// server checks again and refuses such a host unless the operator opts in.
+// A URL hostname keeps IPv6 brackets, so they are stripped first.
+function labHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (h === "localhost" || h.endsWith(".localhost")) return true
+  const v4 = h.match(/^(?:::ffff:)?(\d+)\.(\d+)\.\d+\.\d+$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+  }
+  return h === "::1" || /^f[cd]/.test(h)
 }
 
 // What POST /api/scopes gets for a list of sources: one members array, repos
@@ -350,15 +383,19 @@ function siteOrigin(raw: string): string | null {
 // repos, whose content the server does not know until a run fetches it.
 // Live websites go as { kind: "live", hosts, permission }: the checkbox is the
 // operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string, chat: { path: string; budget: string }): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   const bearer = token.trim()
   // garak runs only with a chat path and a budget. The server checks both.
   const chatPath = chat.path.trim()
   const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
-  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(assistant && pack === "ai-mcp" ? { assistant } : {}) }
-  const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
+  if (sites.length) {
+    return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(assistant && pack === "ai-mcp" ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+  }
+  const members = sources.flatMap((s): ScopeMember[] =>
+    s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
+  )
   return { title, members, ...(pack ? { pack } : {}) }
 }
 
@@ -388,12 +425,22 @@ export function AddScope({
   const [chatPath, setChatPath] = useState("")
   const [chatBudget, setChatBudget] = useState("")
   const [module, setModule] = useState("web")
+  const [allowPrivate, setAllowPrivate] = useState(false)
+  // The console token the server printed at start. A live scope needs it.
+  const [consoleToken, setConsoleTokenState] = useState(getConsoleToken)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const siteModule = pack && pack !== "contracts" ? pack : module
-  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, { path: chatPath, budget: chatBudget }) : null
   const live = sources.some((s) => s.kind === "site")
+  // A local lab: the opt-in shows only when a listed website is loopback or private.
+  const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
+  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate) : null
+  // A folder path makes the server read this machine's disk, so it needs the
+  // console token too, like a live website.
+  const onDisk = sources.some((s) => s.kind === "folder" && "path" in s)
+  const needsToken = live || onDisk
+  const ready = (!live || (permission && (!lab || allowPrivate))) && (!needsToken || !!consoleToken)
   const livePacks = (packs ?? []).filter((p) => p.live)
   // Only the AI/MCP module takes a caller credential. A website does not.
   const wantsToken = live && siteModule === "ai-mcp"
@@ -404,6 +451,7 @@ export function AddScope({
     setName("")
     setSources([])
     setPermission(false)
+    setAllowPrivate(false)
     setToken("")
     setChatPath("")
     setChatBudget("")
@@ -416,11 +464,20 @@ export function AddScope({
     }
     onError(null)
     // The tick covers the websites listed when it was ticked. A new one needs a new tick.
-    if (s.kind === "site") setPermission(false)
+    if (s.kind === "site") {
+      setPermission(false)
+      setAllowPrivate(false)
+    }
     setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
   }
   const addUrl = () => {
     const text = url.trim()
+    const local = localPath(text)
+    if (local) {
+      add({ kind: "folder", ...local })
+      setUrl("")
+      return
+    }
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
     const origin = href ? null : siteOrigin(text)
     const host = origin ? new URL(origin).hostname : null
@@ -429,13 +486,15 @@ export function AddScope({
     if (host === "github.com" || host?.endsWith(".github.com")) {
       return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
     }
-    if (!href && !origin) return onError("Use a GitHub repository URL or a website address.")
+    if (!href && !origin) return onError("Use a GitHub repository URL, a website address, or a folder path like ~/project.")
     add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
     setUrl("")
   }
   const save = () => {
     if (!body || busy) return
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
+    if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
+    if (needsToken && !consoleToken) return onError("Paste the console token. The server prints it when it starts.")
     setBusy(true)
     onError(null)
     attachScope(body)
@@ -503,12 +562,18 @@ export function AddScope({
               else save()
             }
           }}
-          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL") : "GitHub URL or website"}
-          aria-label="GitHub repository URL or website address"
+          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL or folder path") : "GitHub URL, website, or folder path"}
+          aria-label="GitHub repository URL, website address, or local folder path"
           className="h-full min-w-0 flex-1 bg-transparent leading-none outline-none placeholder:text-muted-foreground"
         />
-        <button type="button" className={chip} disabled={busy} onClick={() => folderRef.current?.click()}>
-          <Folder /> Folder
+        <button
+          type="button"
+          className={chip}
+          disabled={busy}
+          title="Upload a folder from the browser instead. Typing its path is better: the server reads it in place."
+          onClick={() => folderRef.current?.click()}
+        >
+          <Upload /> Upload
         </button>
         <button
           type="button"
@@ -537,11 +602,17 @@ export function AddScope({
                   {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.origin : `${s.name}/`}
+                  {s.kind === "repo"
+                    ? s.url.replace(/^https:\/\/github\.com\//, "")
+                    : s.kind === "site"
+                      ? s.origin
+                      : "path" in s
+                        ? s.path
+                        : `${s.name}/`}
                 </span>
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                    {s.files.length} {s.files.length === 1 ? "file" : "files"}
+                    {"path" in s ? "read in place" : `${s.files.length} ${s.files.length === 1 ? "file" : "files"} uploaded`}
                   </span>
                 ) : null}
                 <button
@@ -550,7 +621,10 @@ export function AddScope({
                   title="Remove from scope"
                   disabled={busy}
                   onClick={() => {
-                    if (s.kind === "site") setPermission(false)
+                    if (s.kind === "site") {
+                      setPermission(false)
+                      setAllowPrivate(false)
+                    }
                     setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))
                   }}
                   className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-3.5"
@@ -577,21 +651,64 @@ export function AddScope({
               </span>
             </label>
           ) : null}
-          {live && livePacks.length > 1 ? (
+          {lab ? (
+            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input
+                type="checkbox"
+                checked={allowPrivate}
+                disabled={busy}
+                onChange={(e) => {
+                  setAllowPrivate(e.target.checked)
+                  if (e.target.checked) onError(null)
+                }}
+                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
+              />
+              <span>
+                This is my own local lab. Let runs reach these loopback or private addresses. Every website in this scope must
+                be localhost or a private IP.
+              </span>
+            </label>
+          ) : null}
+          {needsToken ? (
             <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Module</span>
-              <select
+              <span className="shrink-0 text-[11px] text-muted-foreground">Console token</span>
+              <input
+                type="password"
+                value={consoleToken}
+                disabled={busy}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  setConsoleTokenState(v)
+                  setConsoleToken(v)
+                }}
+                placeholder="printed by the server at start"
+                aria-label="Console token"
+                autoComplete="off"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </label>
+          ) : null}
+          {live && livePacks.length > 1 ? (
+            <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span id="add-scope-module" className="shrink-0 text-[11px] text-muted-foreground">Module</span>
+              <Select
+                items={livePacks.map((p) => ({ value: p.id, label: p.title }))}
                 value={siteModule}
                 disabled={busy}
-                onChange={(e) => setModule(e.target.value)}
-                aria-label="Module that tests this website"
-                className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
+                onValueChange={(v) => v && setModule(String(v))}
               >
-                {livePacks.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              </select>
-            </label>
+                <SelectTrigger size="sm" className="min-w-0 flex-1 text-xs" aria-labelledby="add-scope-module">
+                  <SelectValue className="min-w-0 truncate" />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false} className="p-1">
+                  {livePacks.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="text-xs">
+                      <span className="truncate">{p.title}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           ) : null}
           {wantsToken ? (
             <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
@@ -654,7 +771,7 @@ export function AddScope({
                 ? `${sources.length} ${sources.length === 1 ? "website" : "websites"}, tested as one unit`
                 : `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy || (live && !permission)} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy || !ready} onClick={save}>
               Add scope
             </Button>
           </div>

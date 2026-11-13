@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, readGrants, removeGrant } from "./grant-store.mjs";
+import { addGrant, readGrants, removeGrant, privateLabHostError } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -325,7 +325,10 @@ export function validateMembers(members) {
       if (seen.has(`folder:${name}`)) throw new Error(`Two folders are named ${name}. Rename one.`);
       seen.add(`folder:${name}`);
       const { files, dropped } = folderFiles(m.files, budget);
-      return { kind: "folder", name, files, dropped };
+      // A folder read in place keeps its absolute path, so a run can read it
+      // fresh (app/server/runs.mjs). The files above are what the server read there.
+      const at = typeof m.path === "string" && path.isAbsolute(m.path) ? { path: m.path } : {};
+      return { kind: "folder", name, ...at, files, dropped };
     }
     throw new Error("A member is a repo { kind: \"repo\", url } or a folder { kind: \"folder\", name, files }.");
   });
@@ -475,12 +478,26 @@ export function liveAssistant(a) {
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
 // (reach.mjs) lets a run reach exactly these hosts. Removing the scope removes
 // its grant. There is no separate grant step.
-export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant } = {}) {
+//
+// `allowPrivate` is the operator's opt-in for a local lab (127.0.0.1, localhost,
+// a private LAN address). Only the exact value `true` opts in. Without it, a
+// loopback or private host is refused, as before. With it, EVERY host must be a
+// loopback name or a loopback/private IP (privateLabHostError), so an opted-in
+// grant never covers a public host. The HTTP route still requires the console
+// grant token for any live scope (runs-http.mjs).
+export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
   const chat = liveAssistant(assistant);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
+  const priv = allowPrivate === true;
+  if (priv) {
+    for (const h of list) {
+      const err = privateLabHostError(h);
+      if (err) throw new Error(`Refused: ${err}`);
+    }
+  }
   const name = String(title || "").trim();
   if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
   const packId = String(pack || "").trim() || "web";
@@ -493,13 +510,18 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   const origins = github ? GITHUB_HOSTS.map((h) => `https://${h}`) : [...new Set(list.map(siteOrigin).filter(Boolean))];
   if (!origins.length) throw new Error("A live scope needs at least one http(s) website.");
   // The grant checks and normalizes each host (no public-suffix wildcards, no
-  // private addresses). It throws before anything is saved.
+  // private addresses unless opted in). It throws before anything is saved.
   const grant = addGrant({
     hosts: github ? GITHUB_HOSTS : list,
     kind: "authorized",
-    approvedBy: "operator (permission checkbox)",
-    note: github ? `Read-only GitHub capture of ${github.join(", ")}. Confirmed when the live scope was added.` : "Confirmed when the live scope was added.",
+    approvedBy: priv ? "operator (permission checkbox, private lab opt-in)" : "operator (permission checkbox)",
+    note: github
+      ? `Read-only GitHub capture of ${github.join(", ")}. Confirmed when the live scope was added.`
+      : priv
+        ? "Confirmed when the live scope was added. The operator opted into a private/loopback lab."
+        : "Confirmed when the live scope was added.",
     scopeId: id,
+    allowPrivate: priv,
   });
   const t = name || grant.hosts.join(" + ").slice(0, 120);
   // A live AI/MCP target may carry its own bearer token and what that token may
@@ -526,7 +548,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
     ...(mcp ? { mcp } : {}),
-    permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
+    permission: { confirmedAt: grant.approvedAt, grantId: grant.id, ...(priv ? { allowPrivate: true } : {}) },
     proofSurface: {
       kind: "live",
       note: github

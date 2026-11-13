@@ -17,7 +17,8 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
@@ -27,7 +28,7 @@ import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { openReach } from "../../spike/lib/reach.mjs"
-import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope } from "../../spike/lib/scopes-store.mjs"
+import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
@@ -129,17 +130,120 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     if (pack != null && pack !== "" && !Object.hasOwn(PACKS, pack)) throw new Error(`unknown module: ${pack}`)
-    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant })
+    // allowPrivate reaches the store only on this live path, and only `true` opts in.
+    const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined
-    ? addMembersScope({ title, members, pack, blurb })
+    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb })
     : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
   return { ...targetSummary(scope), runnable: true }
+}
+
+// A local folder is read IN PLACE, on this machine: the operator names its path
+// and nothing is uploaded. The walk skips hidden entries, dependency and build
+// folders, and symlinks, and keeps only source files by name, before it reads
+// any content. Then validateMembers (folderFiles) checks every file again:
+// secret names and content, the file and size limits. Returns the folder's
+// real path, a safe folder name, and its source files.
+const MAX_SCAN = 20000
+
+// Is the open file `fd` inside `root`? On Linux, /proc/self/fd/<fd> names the
+// file the descriptor really points at. If this descriptor-anchored proof is
+// unavailable, refuse the read: checking the path again can race a symlink swap.
+export function openedInside(fd, _st, _full, root, readDescriptorPath = readlinkSync) {
+  let where
+  try {
+    where = readDescriptorPath(`/proc/self/fd/${fd}`)
+  } catch {
+    throw new Error("Cannot prove this file is inside the scope root on this platform.")
+  }
+  return where.startsWith(root + path.sep)
+}
+
+// `hooks.beforeOpen(relPath)` runs just before each file is opened. Tests use
+// it to swap a folder at that moment; HTTP callers cannot pass it.
+export function readFolderInPlace(dir, hooks = {}) {
+  let raw = String(dir ?? "").trim()
+  if (raw === "~" || raw.startsWith("~/")) raw = path.join(homedir(), raw.slice(1))
+  if (!raw || !path.isAbsolute(raw)) throw new Error("Use the folder's full path, like /home/me/project or ~/project.")
+  let root
+  try {
+    root = realpathSync(raw)
+  } catch {
+    throw new Error(`No folder at ${raw}.`)
+  }
+  if (!statSync(root).isDirectory()) throw new Error(`${raw} is not a folder.`)
+  const names = []
+  let seen = 0
+  const walk = (rel) => {
+    for (const e of readdirSync(path.join(root, rel), { withFileTypes: true })) {
+      if (++seen > MAX_SCAN) throw new Error(`${raw} has more than ${MAX_SCAN} entries. Pick the project folder itself.`)
+      if (e.name.startsWith(".")) continue
+      const p = rel ? `${rel}/${e.name}` : e.name
+      // A Dirent for a symlink is neither a file nor a folder here: not followed.
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(p)
+      } else if (e.isFile()) names.push(p)
+    }
+  }
+  walk("")
+  const solidity = names.some((n) => n.endsWith(".sol"))
+  const keep = names.filter((n) => safeRelPath(n) && classifyPath(n, { solidity }) === "keep")
+  if (!keep.length) throw new Error(`No source files found in ${raw}.`)
+  if (keep.length > MAX_FILES) throw new Error(`${raw} has ${keep.length} source files. A scope takes up to ${MAX_FILES}.`)
+  let bytes = 0
+  const files = keep.map((n) => {
+    const full = path.join(root, n)
+    hooks.beforeOpen?.(n)
+    // The walk saw a plain file, but any part of its path may have been swapped
+    // for a symlink since. O_NOFOLLOW guards only the last part, so after the
+    // open we check where the open file really is, and read only through that
+    // same descriptor.
+    const fd = openSync(full, fsc.O_RDONLY | fsc.O_NOFOLLOW)
+    try {
+      const st = fstatSync(fd)
+      if (!st.isFile()) throw new Error(`${n} is no longer a file.`)
+      if (!openedInside(fd, st, full, root)) throw new Error(`${n} is no longer inside ${raw}.`)
+      bytes += st.size
+      if (bytes > MAX_BYTES) throw new Error(`${raw} is over 2 MB of source. Pick a smaller folder.`)
+      return { path: n, content: readFileSync(fd, "utf8") }
+    } finally {
+      closeSync(fd)
+    }
+  })
+  const name = path.basename(root).replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
+  return { path: root, name, files }
+}
+
+// Members as POST /api/scopes sends them. A folder with a `path` is read from
+// disk here, and any files sent with it are ignored, so the stored files always
+// match the stored path. A folder with only `files` is the upload fallback.
+function readLocalFolders(members) {
+  if (!Array.isArray(members)) return members
+  return members.map((m) => {
+    if (m?.kind !== "folder" || m.path == null) return m
+    const read = readFolderInPlace(m.path)
+    const name = /^[\w-][\w.-]{0,63}$/.test(String(m.name ?? "")) ? m.name : read.name
+    return { kind: "folder", name, path: read.path, files: read.files }
+  })
+}
+
+// A run reads a local folder fresh from its path, so an edit since the scope
+// was added is what the run sees. A folder that is gone fails the run start.
+export function withFreshFolders(target) {
+  if (target?.kind !== "scope" || !target.members?.some((m) => m.kind === "folder" && m.path)) return target
+  return { ...target, members: validateMembers(readLocalFolders(target.members)) }
+}
+
+// True when a scopes body names a local folder path: the server would read the
+// host's disk, so the HTTP route asks for the console token.
+export function namesLocalPath(body) {
+  return Array.isArray(body?.members) && body.members.some((m) => m?.kind === "folder" && m.path != null)
 }
 
 // Remove an operator scope by id. Returns whether one was removed.
@@ -322,7 +426,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // that belongs to another pack, is refused before anything is spent.
   if (pack != null && pack !== "" && !PACKS[pack]) throw new Error(`unknown module: ${pack}`)
   if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
-  const target = pickTarget({ id: targetId, pack: pack || undefined })
+  const target = withFreshFolders(pickTarget({ id: targetId, pack: pack || undefined }))
   // The reach gate (default-deny by kind). Before anything is spent or any
   // workspace is prepared: an offline kind (lab/local-source/brief/scope) with no
   // host passes inert; EVERY other kind — and any kind that names a host — must
