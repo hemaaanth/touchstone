@@ -28,6 +28,7 @@ import {
   Square,
   Info,
   Loader2,
+  CirclePause,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
@@ -47,8 +48,8 @@ import { AgentHandoff } from "@/components/assistant-ui/elements/agent-handoff"
 import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
-import { agentName, dotClass, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
-import { OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
+import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
+import { agentLook, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -177,6 +178,7 @@ export function Thread({
   error,
   errorInfo,
   coverage = null,
+  note = null,
   onRetry,
   retrying,
   archived,
@@ -194,6 +196,8 @@ export function Thread({
   errorInfo: RunFailure | null
   // A recorded run that did not read its whole scope. Shown as a warning card.
   coverage?: RunFailure | null
+  // A quiet line at the run's end, e.g. agents a restart cut off. Not an error.
+  note?: string | null
   onRetry: () => void
   retrying: boolean
   archived: boolean
@@ -234,6 +238,12 @@ export function Thread({
             />
           ) : coverage ? (
             <RunErrorCard info={coverage} fallback={null} onRetry={onRetry} retrying={retrying} archived={archived} warning />
+          ) : null}
+          {note ? (
+            <p data-slot="run-note" className="flex max-w-160 items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <CirclePause aria-hidden className="mt-[3px] size-3.5 shrink-0" />
+              <span className="min-w-0 break-words">{note}</span>
+            </p>
           ) : null}
         </div>
 
@@ -560,7 +570,7 @@ function SpawnRow({ steps }: { steps: Step[] }) {
                 onClick={() => fleet.openPeek(id)}
                 className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors hover:bg-muted"
               >
-                <span className={cn("size-[7px] shrink-0 rounded-full", dotClass(a?.state ?? "working"))} />
+                <span className={cn("size-[7px] shrink-0 rounded-full", agentLook(fleet.state, a).dot)} />
                 <span className="shrink-0 text-[13px] font-medium">{name(id)}</span>
                 <span className="min-w-0 truncate text-xs text-muted-foreground">{a?.title}</span>
               </button>
@@ -590,7 +600,8 @@ function AgentErrorRow({ step }: { step: Step }) {
   return (
     <ToolError
       data-step-key={step.key}
-      name={`${name} stopped`}
+      name={step.cut ? `${name} interrupted` : `${name} stopped`}
+      paused={step.cut}
       onName={id ? () => fleet.openPeek(id) : undefined}
       target={age || undefined}
       message={sentence(step.label)}
@@ -714,7 +725,8 @@ function SayPart({ step, tail }: { step: Step; tail: boolean }) {
 // A subagent handoff: the lead delegated an angle to a child conversation. Reads
 // as a distinct dashed row with the child's area and live state.
 function HandoffRow({ step }: { step: Step }) {
-  const mark: Mark = step.subState === "failed" ? "fail" : step.subState === "done" ? "done" : "running"
+  // A child a restart cut off neither failed nor runs: its mark is "off".
+  const mark: Mark = step.cut ? "off" : step.subState === "failed" ? "fail" : step.subState === "done" ? "done" : "running"
   return (
     <div className={cn(card, "flex items-center gap-2.5 px-3.5 py-2.5 text-sm")}>
       <GitBranch className="size-4 shrink-0 text-muted-foreground" />

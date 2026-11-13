@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Loader2Icon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { CirclePauseIcon, Loader2Icon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { mono } from "./surfaces";
 
@@ -29,6 +29,7 @@ export function ToolError({
   retryLabel = "Retry",
   skipLabel = "Skip",
   onName,
+  paused = false,
   children,
   className,
   ...props
@@ -49,6 +50,9 @@ export function ToolError({
   skipLabel?: string;
   /** Makes the name a link, e.g. to open the agent's thread. */
   onName?: () => void;
+  /** Not an error: the work was cut off (a server restart). A neutral pause
+   * mark instead of the amber warning, and a status, not an alert. */
+  paused?: boolean;
   /** More under the message, e.g. a fold with the raw output. */
   children?: ReactNode;
   className?: string;
@@ -58,14 +62,18 @@ export function ToolError({
   return (
     <div
       data-slot="tool-error"
-      role="alert"
+      role={paused ? "status" : "alert"}
       className={cn(
         "flex max-w-160 items-start gap-2.5 rounded-[10px] border bg-background px-3 py-2.5 animate-in fade-in duration-200 motion-reduce:animate-none",
         className,
       )}
       {...props}
     >
-      <TriangleAlertIcon aria-hidden className="mt-[3px] size-3.5 shrink-0 text-warn" />
+      {paused ? (
+        <CirclePauseIcon aria-hidden className="mt-[3px] size-3.5 shrink-0 text-muted-foreground" />
+      ) : (
+        <TriangleAlertIcon aria-hidden className="mt-[3px] size-3.5 shrink-0 text-warn" />
+      )}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-baseline gap-2">
           {onName ? (

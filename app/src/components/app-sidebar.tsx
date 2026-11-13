@@ -2,7 +2,8 @@ import { useMemo } from "react"
 import { Boxes, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import type { RunSummary } from "@/lib/types"
-import { ago, DOT, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
+import { ago, DOT, isTerminal, runTitle } from "@/lib/format"
+import { runRowStatus } from "@/components/thread-model"
 import {
   Sidebar,
   SidebarContent,
@@ -167,9 +168,11 @@ function TouchstoneMark() {
 // One run as a thread list item. `custom` carries what the row shows.
 function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
   const done = isTerminal(r.status)
+  // A restart's cut-off reads Interrupted with a neutral dot, not as a failure.
+  const row = runRowStatus(r)
   const custom: RunThreadCustom = {
-    dot: DOT[statusTone(r.status)],
-    label: `${statusLabel(r.status)} · ${ago(r.startedAt)}`,
+    dot: DOT[row.tone],
+    label: `${row.word} · ${ago(r.startedAt)}`,
     at: r.startedAt,
     running: !done,
     canArchive: done,

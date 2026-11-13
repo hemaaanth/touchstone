@@ -1,12 +1,12 @@
 import { createContext } from "react"
 import type { ThreadMessageLike } from "@assistant-ui/react"
-import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
+import type { AgentNode, ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
 import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
 import { packOf } from "@/lib/catalog"
 import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
-import { isTerminal } from "@/lib/format"
-import { agentName } from "@/components/fleet-view"
+import { isTerminal, statusLabel, statusTone, type Tone } from "@/lib/format"
+import { AGENT_WORD, agentName, dotClass } from "@/components/fleet-view"
 import { awaitingReply, turnId, type Sent } from "@/lib/sent"
 
 // The data side of the run thread: steps in, assistant-ui messages out. The
@@ -314,6 +314,7 @@ export type HeadTone = "working" | "proven" | "failed" | "neutral"
 export function runHeadStatus(state: RunState | null, status: RunStatus): { word: string; tone: HeadTone } {
   if (isRunningNow(state, status)) return { word: "Running", tone: "working" }
   if (state?.stopped) return { word: "Stopped", tone: "neutral" }
+  if (runInterruption(state, status)?.ended) return { word: "Interrupted", tone: "neutral" }
   if (status === "error") return { word: "Failed", tone: "failed" }
   if (status === "denied") return { word: "Denied", tone: "failed" }
   if (status === "recorded") return { word: "Proven", tone: "proven" }
@@ -457,4 +458,49 @@ export async function sendCopy(
 // pack. The line takes a list, so a run that holds several shows them all.
 export function runModules(state: RunState): string[] {
   return state.scope ? [packOf(state.scope)] : []
+}
+
+// A run row's word and dot tone in the run list. A run a restart cut off reads
+// "Interrupted" in neutral ink; every other status keeps its word and tone.
+export function runRowStatus(r: { status: RunStatus; errorKind?: string | null }): { word: string; tone: Tone } {
+  if (r.status === "error" && r.errorKind === "cutoff") return { word: "Interrupted", tone: "neutral" }
+  return { word: statusLabel(r.status), tone: statusTone(r.status) }
+}
+
+// How one agent's state reads in a row, a header or a dot. An agent a server
+// restart cut off reads "Interrupted" in neutral ink with a ring dot: it is not
+// working, it is not done, and it did not fail. Red stays for a real failure.
+export function agentLook(
+  state: RunState,
+  a: AgentNode | undefined,
+): { word: string; dot: string; bad: boolean; reason: string | null } {
+  const reason = a ? (state.cutOff[a.id] ?? null) : null
+  if (a && reason != null) return { word: "Interrupted", dot: "border border-muted-foreground", bad: false, reason }
+  const st = a?.state ?? "working"
+  return { word: AGENT_WORD[st], dot: dotClass(st), bad: st === "failed", reason: null }
+}
+
+// A run that a server restart cut off, from what the server wrote:
+// - `ended`: the run itself stopped there. The server ends it as an error of
+//   kind "cutoff" (not a model failure).
+// - otherwise the run ended on its own terms (a fleet whose proof check
+//   recorded its findings), but agents the restart cut off never finished.
+// `note` is the one calm line for that case: what happened and what to do.
+export function runInterruption(
+  state: RunState | null,
+  status: RunStatus,
+): { ended: boolean; agents: string[]; reason: string; note: string | null } | null {
+  if (!state || isRunningNow(state, status) || state.stopped) return null
+  const agents = Object.keys(state.cutOff).map((id) => agentName(state, id))
+  const ended = status === "error" && state.errorInfo?.kind === "cutoff"
+  // A run that ended as another error has its own card; it needs no note.
+  if (!ended && !(isTerminal(status) && status !== "error" && agents.length)) return null
+  const names = agents.length > 1 ? `${agents.slice(0, -1).join(", ")} and ${agents.at(-1)}` : (agents[0] ?? "")
+  const reason = ended
+    ? sentence(state.errorInfo?.message ?? "The server restarted during this run")
+    : `The server restarted while ${names} ${agents.length > 1 ? "were" : "was"} working.`
+  const note = ended
+    ? null
+    : `${reason} ${agents.length > 1 ? "They were" : "It was"} not started again, so ${agents.length > 1 ? "their" : "its"} part of the scope is not finished. Send a message to continue.`
+  return { ended, agents, reason, note }
 }
