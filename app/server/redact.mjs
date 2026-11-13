@@ -358,6 +358,81 @@ function redactText(text) {
   return out
 }
 
+// LONG TEXT. Bun's regex engine (JSC) gives up on one match that spans a few
+// hundred KB. It then returns "no match" with no error, and the rest of that
+// rule's pass is lost too, so a secret would stay. The smallest span measured
+// was 336 KB (a HAR cell value; a header line gave up at 432 KB). So a text
+// longer than PIECE is redacted in pieces of at most PIECE characters, cut
+// just after a line end. 64 KB is a fifth of 336 KB. A text of PIECE or less
+// is redacted in one pass, as before.
+const PIECE = 64 * 1024
+
+// A line that no piece can hold is replaced whole: it is never returned
+// unchecked.
+const tooLong = (n) => `[REDACTED: line of ${n} characters too long to check]`
+
+// Where to cut the piece that starts at `start`: just after a line end, at
+// most PIECE characters on. Some rules read across a line end: a PEM block,
+// a JSON pair or HAR cell over several lines ("name": … ,\n "value": …). So
+// a cut is ranked, and the latest cut of the best rank wins:
+//   0  outside a PEM block, the next line starts at column 0 with a
+//      character that cannot continue the line before (not a space, quote,
+//      backslash, ":", ",", "}" or "]"), and the line before does not end
+//      in ",", ":", "{", "[" or a backslash;
+//   1  outside a PEM block, after a line that closes an object ("}", "},",
+//      "]" or "],");
+//   2  outside a PEM block;
+//   3  any line end.
+// -1 when the line at `start` is longer than PIECE.
+const PEM_EDGE = /-----(BEGIN|END) [A-Z0-9 ]{0,32}PRIVATE KEY-----/g
+function cutAt(text, start) {
+  const limit = start + PIECE
+  const pem = []
+  PEM_EDGE.lastIndex = 0
+  const window = text.slice(start, limit)
+  for (let m; (m = PEM_EDGE.exec(window)); ) pem.push([start + m.index, m[1] === "BEGIN"])
+  let best = -1
+  let bestRank = 4
+  let p = 0
+  let inPem = false
+  for (let i = text.indexOf("\n", start); i !== -1 && i < limit; i = text.indexOf("\n", i + 1)) {
+    while (p < pem.length && pem[p][0] < i) inPem = pem[p++][1]
+    let j = i - 1
+    while (j > start && (text[j] === " " || text[j] === "\t" || text[j] === "\r")) j--
+    const last = text[j]
+    const next = text[i + 1]
+    let rank = 3
+    if (!inPem) {
+      rank = 2
+      if ((last === "}" || last === "]") || (last === "," && (text[j - 1] === "}" || text[j - 1] === "]"))) rank = 1
+      if (next !== undefined && !/[\s"'`\\:,}\]]/.test(next) && !/[,:{[\\]/.test(last)) rank = 0
+    }
+    if (rank <= bestRank) {
+      best = i + 1
+      bestRank = rank
+    }
+  }
+  return best
+}
+
+function redactLong(text) {
+  if (text.length <= PIECE) return redactText(text)
+  let out = ""
+  for (let start = 0; start < text.length; ) {
+    const end = text.length - start <= PIECE ? text.length : cutAt(text, start)
+    if (end === -1) {
+      const nl = text.indexOf("\n", start)
+      const stop = nl === -1 ? text.length : nl
+      out += tooLong(stop - start)
+      start = stop
+      continue
+    }
+    out += redactText(text.slice(start, end))
+    start = end
+  }
+  return out
+}
+
 function copyRedactedCell(value) {
   const copy = {}
   for (const [k, v] of Object.entries(value)) {
@@ -378,7 +453,7 @@ function walk(value, key) {
       if (PLAIN_VALUE.test(value)) return value
       if (maskUnder(key, value)) return MARK
     }
-    return redactText(value)
+    return redactLong(value)
   }
   if (Array.isArray(value)) {
     // A list of [name, value] header tuples: [["x-api-key", "tk_…"]].
