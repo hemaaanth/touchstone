@@ -57,15 +57,17 @@ const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)
 // the same cell escaped one level deeper.
 function namedValue(q, body) {
   const field = String.raw`${q}(?!value${q})[\w-]{1,32}${q}\s*:\s*(?:true|false|null|-?\d{1,20}|${q}[^"\\\r\n]{0,64}${q})`
-  return new RegExp(String.raw`(${q}name${q}\s*:\s*${q})([^"\\\r\n]{1,64})(${q}(?:\s*,\s*${field})*\s*,\s*${q}value${q}\s*:\s*${q})(${body})${q}`, "g")
+  return new RegExp(String.raw`(${q}name${q}\s*:\s*${q})([^"\\\r\n]{1,64})(${q}(?:\s*,\s*${field}){0,8}\s*,\s*${q}value${q}\s*:\s*${q})(${body})${q}`, "g")
 }
 const NAMED_VALUE = namedValue('"', String.raw`(?:\\.|[^"\\])*`)
 const NAMED_VALUE_ESC = namedValue(String.raw`\\"`, String.raw`(?:[^"\\]|\\(?!"))*`)
 
 // A header tuple in text: [["x-api-key","tk_…"]] or [("Authorization",
 // "Basic …")]. The pair sits right inside a bracket and closes it, and that
-// bracket is an item of a list, so ["token", "password"] stays.
-const TUPLE = /(?<=[[,][ \t]*[[(][ \t]*)(["'])([A-Za-z][\w-]{0,63})\1([ \t]*,[ \t]*)(["'])((?:\\[^\r\n]|(?!\4)[^\\\r\n])*)\4(?=[ \t]*[\])])/g
+// bracket is an item of a list, so ["token", "password"] stays. The spaces
+// in the lookbehind are bounded: an unbounded run there is scanned again at
+// every position of a long run of spaces.
+const TUPLE = /(?<=[[,][ \t]{0,8}[[(][ \t]{0,8})(["'])([A-Za-z][\w-]{0,63})\1([ \t]*,[ \t]*)(["'])((?:\\[^\r\n]|(?!\4)[^\\\r\n])*)\4(?=[ \t]*[\])])/g
 
 // The same pair in JS, Python or a config file: the key is unquoted or in
 // ', ` or " quotes, the separator is ":" or "=", and the value is in ', ` or
@@ -125,7 +127,10 @@ const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\
 // separator or the end; so a call such as get_token() and an index such as
 // os.environ["X"] never match. == never matches either. A query pair
 // (?token=…) is left to QUERY.
-const ENV_ASSIGN = /(?<![\w$.?&#/-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|()[\]{}<>=][^\s"'`;&|()[\]{}<>]*)(?![^\s;,&|]))/g
+// The bare value is taken whole, (?=(…))\5, so the regex never scans it
+// again: in "token=token=…" each "token" would start a new scan to the end.
+// maskEnv then checks what follows it.
+const ENV_ASSIGN = /(?<![\w$.?&#/-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"\r\n]*)"|'([^'\r\n]*)'|(?=([^\s"'`;&|()[\]{}<>=][^\s"'`;&|()[\]{}<>]*))\5)/g
 // A code reference such as settings.API_KEY or res.body.token, not a value.
 const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 
@@ -154,10 +159,19 @@ function secretish(tok, min = 8) {
   return tok.length >= 20
 }
 
+// The index where the run of the given characters at the end of s starts.
+// A regex such as /[ ,;]+$/ is quadratic on a long run that is not at the
+// end: it scans the run again from each start. This loop is linear.
+function tailStart(s, chars) {
+  let end = s.length
+  while (end > 0 && chars.includes(s[end - 1])) end--
+  return end
+}
+
 // True when any word of a header value is a credential.
 function credential(value) {
   if (/^\s*</.test(value)) return false
-  return value.split(/[\s,]+/).some((w) => secretish(w.replace(/^["'(]+|["'),;]+$/g, "")))
+  return value.split(/[\s,]+/).some((w) => secretish(w.slice(0, tailStart(w, "\"'),;")).replace(/^["'(]+/, "")))
 }
 
 // Under a header that always holds a credential, one word of 12 or more
@@ -223,7 +237,7 @@ function maskCookie(value) {
 
 function maskHeader(m, lead, name, sep, raw) {
   // In a table row the closing bar stays outside the mask.
-  const value = raw.replace(lead.includes("|") ? /[ \t]*\|[ \t]*$|[ \t,;]+$/ : /[ \t,;]+$/, "")
+  const value = raw.slice(0, tailStart(raw, lead.includes("|") ? " \t,;|" : " \t,;"))
   const masked = value && maskHeaderValue(name, value)
   return masked ? `${lead}${name}${sep}${masked}${raw.slice(value.length)}` : m
 }
@@ -256,7 +270,7 @@ function maskPairValue(name, value) {
 // a short variable name such as ?token=t1 is not a credential.
 function maskQuery(m, head, name, value) {
   if (!secretName(name) && !QUERY_NAME.test(name)) return m
-  const v = value.replace(/[.:!?]+$/, "")
+  const v = value.slice(0, tailStart(value, ".:!?"))
   return secretish(v, 6) ? head + MARK + value.slice(v.length) : m
 }
 
@@ -272,11 +286,21 @@ function maskFlag(m, head, name, q, quoted, bare) {
   return q ? `${head}${q}${MARK}${q}` : head + MARK
 }
 
-function maskEnv(m, name, sep, dq, sq, bare) {
-  const v = dq ?? sq ?? bare
+// A bare value must end at a space, ";", "&", "|" or the end. When a quote
+// or a bracket follows it, the value ends at its last comma instead, or the
+// match is kept as it is.
+function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
+  let v = dq ?? sq ?? bare
+  let rest = ""
+  if (bare != null && offset + m.length < str.length && !/[\s;&|]/.test(str[offset + m.length])) {
+    const cut = bare.lastIndexOf(",")
+    if (cut < 1) return m
+    v = bare.slice(0, cut)
+    rest = bare.slice(cut)
+  }
   if (!secretName(name) || !secretish(v, 6) || (bare != null && MEMBER_PATH.test(v))) return m
   const q = dq != null ? '"' : sq != null ? "'" : ""
-  return `${name}${sep}${q}${MARK}${q}`
+  return `${name}${sep}${q}${MARK}${q}${rest}`
 }
 
 function redactText(text) {

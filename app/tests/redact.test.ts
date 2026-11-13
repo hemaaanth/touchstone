@@ -608,3 +608,29 @@ describe("redact: evidence under a secret header name stays (delta review 4)", (
     expect(text("Token: 0x" + "ab".repeat(32))).toBe("Token: [REDACTED]")
   })
 })
+
+describe("redact: a long run in the middle of the input finishes in linear time (final review B1)", () => {
+  // The run is not at the end, so an end-anchored /X+$/ would scan it again
+  // from each start. Each case runs at 256 KB and at 1 MB. Above about 400 KB
+  // Bun's regex engine gives up on some rules (it returns no match), so the
+  // 256 KB size is the one that proves the rule itself is linear.
+  const cases = (MB: number): [string, string][] => [
+    ["HAR cells", '"name":"a",'.repeat(MB / 11)],
+    ["escaped HAR cells", '\\"name\\":\\"a\\",'.repeat(MB / 17)],
+    ["table row with spaces", "| token | a" + " ".repeat(MB) + "y |"],
+    ["table row with semicolons", "| token | a" + ";".repeat(MB) + "x"],
+    ["header with spaces", "Host: a" + " ".repeat(MB) + "y"],
+    ["header with commas", "X-Api-Key: " + ",".repeat(MB) + "x"],
+    ["query with stops", "?token=" + ".".repeat(MB) + "x"],
+    ["header with semicolons", "X-Api-Key: " + ";".repeat(MB) + "x"],
+    ["tuple with spaces", '[["token","' + " ".repeat(MB) + "x"],
+    ["tuple with tabs", '[["token","' + "\t".repeat(MB) + '"'],
+    ["assignments", "token=".repeat(MB / 6) + '"'],
+    ["assignments with colons", "token=:".repeat(MB / 7) + '"'],
+  ]
+  for (const size of [1 << 18, 1 << 20]) for (const [label, s] of cases(size)) test(`${label}, ${size >> 10} KB`, () => expect(timeMs(s)).toBeLessThan(2000))
+  test("an assignment followed by a quote still ends at its last comma", () => {
+    expect(text(`x("DB_PASSWORD=s3cret12,next")`)).toBe(`x("DB_PASSWORD=[REDACTED],next")`)
+    expect(text(`x("DB_PASSWORD=s3cret12")`)).toBe(`x("DB_PASSWORD=s3cret12")`)
+  })
+})
