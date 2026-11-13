@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -29,6 +29,7 @@ import path from "node:path";
 //   torn     a `settled` event: whole in the engine's events file, cut on stdout
 //   act      (call) => void, runs first; call is { args, env }
 //   stderr, code, signal   how the process ends (default: exit 0)
+//   hang     the process never ends
 const scripts = [];
 const spawns = [];
 function spawn(cmd, args, opts = {}) {
@@ -57,7 +58,7 @@ function spawn(cmd, args, opts = {}) {
       child.stdout.write(`EVENT ${line.slice(0, line.length >> 1)}`); // no newline: the exit cut it
     }
     if (script.stderr) child.stderr.write(script.stderr);
-    setTimeout(() => (script.signal ? exit(null, script.signal) : exit(script.code ?? 0, null)), 20);
+    if (!script.hang) setTimeout(() => (script.signal ? exit(null, script.signal) : exit(script.code ?? 0, null)), 20);
   });
   return child;
 }
@@ -449,7 +450,7 @@ test("safety: a link under the temp folder does not lead a delete outside it", a
   mkdirSync(outside);
   try {
     const a = await finished();
-    // The victim even carries the run's mark. Only the canonical path refuses it.
+    // The victim even carries the run's mark. Its parent is not the temp folder.
     const victim = path.join(outside, "redteam-run-abc123");
     mkdirSync(victim);
     writeFileSync(path.join(victim, "keep.txt"), "outside the temp folder");
@@ -472,6 +473,17 @@ test("safety: a link under the temp folder does not lead a delete outside it", a
     const r = await settle(b.id, 1);
     assert.ok(![link, inside].includes(spawns.at(-1).args[4]), "a link is not reused");
     assert.equal(r.events.filter((e) => e.ev === "workspace").length, 1);
+
+    // The temp folder itself can be named through a link (macOS does this). The
+    // check compares canonical paths, so the workspace is still kept and reused.
+    symlinkSync(path.join(dir, "tmp"), path.join(dir, "tmp-link"));
+    process.env.TMPDIR = path.join(dir, "tmp-link");
+    const c = await finished();
+    assert.equal(kept(c.id).ws, realpathSync(c.call.args[4]), "the record holds the canonical path");
+    scripts.push({ act: look, events: [done] });
+    steerRun(c.id, "Still there?");
+    await settle(c.id, 1);
+    assert.deepEqual(spawns.at(-1).saw, { source: true, note: true });
   } finally {
     if (before === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = before;
@@ -509,26 +521,41 @@ function holding(folder, texts) {
   return hits;
 }
 
-test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets it back from the scope library, or is told it is gone", async () => {
-  // Synthetic values. No real credential is used.
-  const TOKEN = "synthetic-reader-token-0001";
-  const ADMIN = "synthetic-admin-token-0002";
-  const live = addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
+// Synthetic values. No real credential is used.
+const TOKEN = "synthetic-reader-token-0001";
+const ADMIN = "synthetic-admin-token-0002";
+const GONE = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.";
+const liveScope = () => addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
+// What the agent can read when a worker starts.
+const read = (call) => {
+  const ws = call.args[4];
+  call.brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
+  call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
+  call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
+};
+// A new server process: no copy in memory. The old one holds its run locks
+// until a test closes them, as the OS does when a process dies.
+let boots = 0;
+const restart = async () => {
+  delete globalThis.__touchstoneRuns;
+  return import(`../../app/server/runs.mjs?restart-${++boots}`);
+};
+const lockOf = (id) => globalThis.__touchstoneRuns.runs.get(id).owner;
+// The live AI/MCP pack with no pre-pass: there is no live target to scan.
+async function withLivePack(fn) {
   const real = { prepass: PACKS["ai-mcp"].prepass, teardown: PACKS["ai-mcp"].teardown };
-  PACKS["ai-mcp"].prepass = undefined; // no live target to scan
+  PACKS["ai-mcp"].prepass = undefined;
   PACKS["ai-mcp"].teardown = undefined;
-  // What the agent can read when a worker starts.
-  const read = (call) => {
-    const ws = call.args[4];
-    call.brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
-    call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
-    call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
-  };
-  const restart = async () => {
-    delete globalThis.__touchstoneRuns; // a new server process: no copy in memory
-    return import(`../../app/server/runs.mjs?restart-${Date.now()}`);
-  };
   try {
+    await fn();
+  } finally {
+    Object.assign(PACKS["ai-mcp"], real);
+  }
+}
+
+test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets it back from the scope library, or is told it is gone", async () => {
+  const live = liveScope();
+  await withLivePack(async () => {
     scripts.push({
       act: (call) => {
         read(call);
@@ -594,9 +621,150 @@ test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets
     assert.equal(again.length, 2);
     assert.equal(again[1].state, "rebuilt");
     assert.ok(again[1].message.endsWith(told[0].message));
-  } finally {
-    Object.assign(PACKS["ai-mcp"], real);
-  }
+  });
+});
+
+// ---- Safety: a server stop during a follow-up --------------------------------------
+
+// A finished live run on a new server. Its agent wrote the admin token into a note.
+async function liveEnded(server) {
+  const live = liveScope();
+  scripts.push({
+    act: (call) => {
+      writeFileSync(call.args[3], "");
+      writeFileSync(path.join(call.args[4], "notes.md"), `curl -H "Authorization: Bearer ${ADMIN}" works`);
+    },
+    events: [done],
+  });
+  const { id } = await server.createRun({ targetId: live.id, pack: "ai-mcp", mode: "solo" });
+  await settle(id, 0, server);
+  const ws = spawns.at(-1).args[4];
+  made.push(ws); // removed at the end, also when a test fails before the server deletes it
+  assert.deepEqual(holding(ws, [TOKEN, ADMIN]), []);
+  return { id, ws, live };
+}
+// Then a follow-up whose worker never exits. The server "stops" in the middle of
+// the turn: the credential is back in the files, and nothing ended the turn.
+async function stoppedMidTurn(server) {
+  const run = await liveEnded(server);
+  scripts.push({ hang: true });
+  server.steerRun(run.id, "Go on.");
+  assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]).sort(), [".touchstone.json", "BRIEF.md", "notes.md"], "the turn has the credential");
+  assert.equal(kept(run.id).restored, true, "and the record says so");
+  return { ...run, lock: lockOf(run.id) };
+}
+
+test("safety: a server that stops during a follow-up leaves no credential: the next boot scrubs the workspace, or deletes it when the scope is gone", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    const a = await stoppedMidTurn(server);
+    const b = await stoppedMidTurn(server);
+    removeScope(b.live.id);
+    a.lock.close(); // the old server is dead
+    b.lock.close();
+    server = await restart();
+
+    // Run A: its scope still has the credential, so the boot finds every copy.
+    assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), [], "no file holds the token after the boot");
+    assert.ok(existsSync(path.join(a.ws, "notes.md")), "the workspace is kept");
+    assert.equal(kept(a.id).restored, undefined);
+    assert.deepEqual(holding(RESULTS, [TOKEN, ADMIN]), []);
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(a.id, "Go on.");
+    await settle(a.id, closes(a.id, server), server);
+    assert.ok(spawns.at(-1).brief.includes(TOKEN) && spawns.at(-1).note.includes(ADMIN), "the next follow-up has it back");
+    assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), []);
+
+    // Run B: nobody knows the credential now, so the files cannot be trusted.
+    assert.ok(!existsSync(b.ws), "the workspace is deleted");
+    assert.deepEqual([kept(b.id).ws, kept(b.id).restored], [undefined, undefined]);
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(b.id, "Go on.");
+    const r = await settle(b.id, closes(b.id, server), server);
+    const told = r.events.filter((e) => e.ev === "workspace");
+    assert.deepEqual(told.map((e) => e.state), ["rebuilt"]);
+    assert.ok(told[0].message.endsWith(GONE));
+    assert.deepEqual(holding(spawns.at(-1).args[4], [TOKEN, ADMIN]), []);
+  });
+});
+
+test("safety: a follow-up that finds a restored credential does not hand it on: without the scope it gets a new workspace, with the scope the files are scrubbed when it ends", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    const a = await stoppedMidTurn(server);
+    const b = await stoppedMidTurn(server);
+    // The old server still runs at the boot, so the boot leaves both runs alone.
+    server = await restart();
+    assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+    removeScope(a.live.id);
+    assert.throws(() => server.steerRun(a.id, "Go on."), /Another server is already answering this run/);
+    assert.ok(existsSync(a.ws), "a run that another server answers keeps its workspace");
+    a.lock.close(); // now the old server is dead
+    b.lock.close();
+
+    // Run A: no scope, and a folder the server cannot delete. The refusal says so.
+    const locked = path.join(a.ws, "locked");
+    mkdirSync(locked);
+    writeFileSync(path.join(locked, "file"), "x");
+    chmodSync(locked, 0o500);
+    try {
+      assert.throws(() => server.steerRun(a.id, "Go on."), (err) => sentence.test(err.message) && err.message.includes(`could not be removed. Delete the folder ${a.ws},`));
+      assert.equal(kept(a.id).restored, true, "the record still says what the folder holds");
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+    // Now it can be deleted: the follow-up gets a new workspace and the true sentence.
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(a.id, "Go on.");
+    let r = await settle(a.id, closes(a.id, server), server);
+    const fresh = spawns.at(-1);
+    assert.ok(!existsSync(a.ws), "the workspace with the token is gone");
+    assert.notEqual(fresh.args[4], a.ws);
+    assert.ok(![TOKEN, ADMIN].some((t) => fresh.brief.includes(t)) && fresh.note === null, "the agent got no token");
+    const told = r.events.filter((e) => e.ev === "workspace");
+    assert.deepEqual(told.map((e) => e.state), ["rebuilt"]);
+    assert.ok(told[0].message.endsWith(GONE));
+    assert.deepEqual(holding(fresh.args[4], [TOKEN, ADMIN]), []);
+    assert.deepEqual(holding(RESULTS, [TOKEN, ADMIN]), []);
+
+    // Run B: the scope is there. The follow-up has the credential, and it leaves at the end.
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(b.id, "Go on.");
+    r = await settle(b.id, closes(b.id, server), server);
+    assert.equal(spawns.at(-1).args[4], b.ws);
+    assert.ok(spawns.at(-1).brief.includes(TOKEN));
+    assert.ok(!r.events.some((e) => e.ev === "workspace"));
+    assert.deepEqual(holding(b.ws, [TOKEN, ADMIN]), [], "scrubbed with the credential the follow-up put back");
+    assert.ok(existsSync(path.join(b.ws, "notes.md")));
+    assert.equal(kept(b.id).restored, undefined);
+  });
+});
+
+test("safety: a credential that cannot be put back gives one reply error and no worker, and a workspace that cannot be scrubbed is deleted", async () => {
+  await withLivePack(async () => {
+    const server = await restart();
+    const { id, ws } = await liveEnded(server);
+    writeFileSync(path.join(ws, "locked.bin"), "x");
+    chmodSync(path.join(ws, "locked.bin"), 0); // the server cannot read it, so it cannot look for the token in it
+    const before = spawns.length;
+    server.steerRun(id, "Go on.");
+    const r = await settle(id, 1, server);
+    const errors = r.events.filter((e) => e.ev === "reply-error");
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].error, /^The access token could not be put back into the workspace: .* Send the message again to retry\.$/);
+    assert.equal(spawns.length, before, "no worker started");
+    assert.equal(kept(id).restored, true, "the record was marked before the first file was written");
+    assert.ok(!existsSync(ws), "the scrub failed too, so the workspace is deleted");
+  });
+});
+
+test("safety: a workspace whose record says it holds a credential that nobody knows is not kept", async () => {
+  const a = await finished();
+  writeFileSync(record(a.id), JSON.stringify({ ...kept(a.id), restored: true }));
+  scripts.push({ events: [done] });
+  steerRun(a.id, "Go on.");
+  await settle(a.id, 1);
+  assert.ok(!existsSync(a.call.args[4]));
 });
 
 // ---- Messages -------------------------------------------------------------------

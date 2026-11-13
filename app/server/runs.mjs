@@ -1043,7 +1043,18 @@ function checkedWorkspace(ws, id) {
 // Delete the kept workspace of a run. A path that fails the check is left alone.
 function removeKept(id) {
   const ws = checkedWorkspace(readWorkspace(id)?.ws, id)
-  if (ws) rmSync(ws, { recursive: true, force: true })
+  if (!ws) return
+  try {
+    rmSync(ws, { recursive: true, force: true })
+  } catch (err) {
+    // A part stayed. Put the mark back, so a later delete still passes the check.
+    try {
+      writeFileSync(path.join(ws, WS_MARK), id, { mode: 0o600 })
+    } catch {
+      // the folder itself is gone or closed
+    }
+    throw err
+  }
 }
 
 // Take the path out of a run's record. The scope snapshot stays, so a follow-up
@@ -1052,6 +1063,7 @@ function unbindWorkspace(id) {
   const rec = readWorkspace(id)
   if (!rec?.ws) return
   delete rec.ws
+  delete rec.restored
   try {
     writeWorkspace(id, rec)
   } catch {
@@ -1112,6 +1124,40 @@ function restoreSecrets(ws, target) {
   editMcp(ws, (mcp) => Object.assign(mcp, credentialOf(target)))
 }
 const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
+// The run's scope as the library has it now, or null when the scope is gone.
+function libraryTarget(run) {
+  const library = run.scope?.id ? getTarget(run.scope.id) : null
+  return library ? withPack(library, run.scope.pack ?? library.pack) : null
+}
+
+// A follow-up puts the credential back into the kept workspace, and the record
+// says so first (`restored`). A server that stopped before that follow-up ended
+// left the credential there. At boot, take it out: scrub with the library
+// credential, or delete the workspace when the library has none. The mark
+// leaves the record only after that.
+function cleanRestored(run) {
+  if (!run || !idle(run) || run.owner) return
+  let mine = false
+  try {
+    const rec = readWorkspace(run.id)
+    if (!rec?.restored || !(mine = own(run))) return // a live owner still answers: its own ending scrubs
+    const ws = checkedWorkspace(rec.ws, run.id)
+    const secrets = secretsOf(libraryTarget(run))
+    try {
+      if (!ws || !secrets.length) throw new Error("nothing to scrub with")
+      scrubSecrets(ws, secrets)
+    } catch {
+      removeKept(run.id)
+      delete rec.ws
+    }
+    delete rec.restored
+    writeWorkspace(run.id, rec)
+  } catch {
+    // The mark stays, so the next boot tries again and a follow-up does not trust the files.
+  } finally {
+    if (mine) release(run)
+  }
+}
 
 // Keep the workspace of a run that has an agent session: only that run can take
 // a follow-up. Returns false when there is nothing to keep, or when the
@@ -1123,6 +1169,8 @@ function keepWorkspace(run, ws) {
     const old = readWorkspace(run.id)
     const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
     const secrets = secretsOf(target)
+    // A restored credential that is not known here cannot be scrubbed: do not keep.
+    if (old?.restored && !secrets.length) return false
     if (secrets.length) scrubSecrets(real, secrets)
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
@@ -1267,25 +1315,37 @@ export function followUp(run, text, clientId) {
   const kept = readWorkspace(run.id)
   // The record's path is used only when the directory passes the check and
   // carries this run's mark. Otherwise the path leaves the record.
-  const ws = checkedWorkspace(kept?.ws, run.id)
+  let ws = checkedWorkspace(kept?.ws, run.id)
   if (kept?.ws && !ws) unbindWorkspace(run.id)
-  const fromLibrary = () => {
-    const library = run.scope?.id ? getTarget(run.scope.id) : null
-    return library ? withPack(library, run.scope.pack ?? library.pack) : null
-  }
-  let target = run.target ?? kept?.target ?? fromLibrary()
+  let target = run.target ?? kept?.target ?? libraryTarget(run)
   // The credential is not kept with the workspace. It comes back from the scope
   // library, where it already is. Only the credential: the rest stays the run's
   // own snapshot. A scope that is gone from the library gives none.
   let noCredential = ""
   if (target && kept?.credential && !secretsOf(target).length) {
-    const found = credentialOf(fromLibrary())
+    const found = credentialOf(libraryTarget(run))
     if (secretsOf({ mcp: found }).length) target = { ...target, mcp: { ...target.mcp, ...found } }
     else noCredential = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
   }
   if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
   if (target) run.target = target
   if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")
+  // The server stopped during an earlier follow-up, so the workspace still holds
+  // the credential. This follow-up has none, so it must not get those files: the
+  // workspace goes, and a new one is built below.
+  if (ws && kept.restored && noCredential) {
+    try {
+      removeKept(run.id)
+    } catch {
+      // checked just below
+    }
+    if (existsSync(ws)) {
+      release(run)
+      throw new Error(`The earlier workspace of this run still holds the access token, and it could not be removed. Delete the folder ${ws}, then send the message again.`)
+    }
+    unbindWorkspace(run.id)
+    ws = null
+  }
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
   run.error = null
@@ -1367,7 +1427,10 @@ export function followUp(run, text, clientId) {
       return { ok: true, followUp: true }
     }
     try {
-      if (kept?.credential) restoreSecrets(ws, target)
+      if (kept?.credential) {
+        writeWorkspace(run.id, { ...kept, restored: true }) // before the first file gets the credential
+        restoreSecrets(ws, target)
+      }
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: `The access token could not be put back into the workspace: ${String(err?.message ?? err)} Send the message again to retry.` })
       end()
@@ -1847,6 +1910,7 @@ function loadSavedRuns() {
     if (m && !runs.has(m[1])) ids.add(m[1])
   }
   for (const id of ids) loadSavedRun(id)
+  for (const id of ids) cleanRestored(runs.get(id))
 }
 
 // Another process owned these runs at load. Follow their saved streams, and
