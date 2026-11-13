@@ -102,3 +102,11 @@ test('the lab tools refuse a network Docker does not call --internal, whatever i
   const { captureTools } = await import('../packs/domains/tools.mjs');
   await assert.rejects(captureTools('/nonexistent', 'touchstone-domains-no-such-network'), /not found/);
 });
+
+test('script urls stay on the granted scheme and port pairs, not only the granted hosts', () => {
+  const pages = [{ url: 'https://app.example.com/', headers: { 'content-type': 'text/html' }, body: '<script src="/a.js"></script><script src="https://app.example.com:8443/b.js"></script><script src="http://app.example.com/c.js"></script><script src="http://app.example.com:8080/d.js"></script>' }];
+  // The default pairs: https 443 and http 80.
+  assert.deepEqual(scriptUrls(pages, ['example.com']).sort(), ['http://app.example.com/c.js', 'https://app.example.com/a.js']);
+  // A grant on https 8443 only.
+  assert.deepEqual(scriptUrls(pages, ['example.com'], [{ scheme: 'https', port: 8443 }]), ['https://app.example.com:8443/b.js']);
+});

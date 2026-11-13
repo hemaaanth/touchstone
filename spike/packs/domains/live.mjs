@@ -105,13 +105,15 @@ export function httpRows(rows) {
     return { url: new URL(r.url).href, status: r.status_code, headers, body: String(r.body ?? '') };
   });
 }
-// Script URLs a page loads, limited to hosts the grant covers.
-export function scriptUrls(pages, scope) {
+// Script URLs a page loads, limited to hosts the grant covers AND to the
+// granted scheme and port pairs (`ports`, as the probe uses), so a script on
+// another port of a granted host is not fetched.
+export function scriptUrls(pages, scope, ports = PORTS) {
   const urls = new Set(), ok = inside(scope);
   for (const page of pages) {
     if (!(page.headers['content-type'] ?? '').includes('text/html')) continue;
     for (const m of page.body.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) {
-      try { const u = new URL(m[1], page.url); if (/^https?:$/.test(u.protocol) && ok(u.hostname)) urls.add(u.href); } catch {}
+      try { const u = new URL(m[1], page.url); if (/^https?:$/.test(u.protocol) && ok(u.hostname) && portAllowed(u, ports)) urls.add(u.href); } catch {}
     }
   }
   return [...urls];
@@ -345,7 +347,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       return out;
     };
     const pages = probeable.length ? await probe('httpx', probeable.flatMap(h => ports.map(p => originOf(h, p)))) : [];
-    const scripts = scriptUrls(pages, within).filter(u => !pages.some(p => p.url === u));
+    const scripts = scriptUrls(pages, within, ports).filter(u => !pages.some(p => p.url === u));
     const assets = scripts.length ? await probe('httpx-scripts', scripts) : [];
     const http = [...pages, ...assets].sort((a, b) => a.url < b.url ? -1 : 1);
     let crawled = null, js = null;

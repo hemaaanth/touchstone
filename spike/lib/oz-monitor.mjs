@@ -28,12 +28,14 @@
 // proxy or the canary) gives `available: false` with a reason. It never gives a
 // clean result.
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runTool } from "./wrap.mjs";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
+import { removeTempDir, trackTempDir } from "./temp-dirs.mjs";
 
 export const OZ_MONITOR_DEFAULT_IMAGE = "touchstone/oz-monitor:1.7.0";
 // Read at call time, so a test can point it at a missing image.
@@ -250,16 +252,19 @@ function docker(args, { timeoutMs = 30_000 } = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Start the chain-watch lab from the workspace's own lab source on a fresh
-// --internal network. Throws with a reason. The caller must stopWatchLab().
+// --internal network with its own small subnet (lib/lab-net.mjs; no whole default
+// Docker pool). Throws with a reason. The caller must stopWatchLab(). On SIGINT/SIGTERM
+// lab-net removes the network and every container on it, and lib/temp-dirs.mjs the
+// lab workspace.
 // tag (8 hex) names the network and the lab container. A test passes its own.
 export async function startWatchLab(ws, { readyTimeoutMs = 240_000, labImage = OZ_LAB_IMAGE, tag = randomBytes(4).toString("hex") } = {}) {
   if (!/^[0-9a-f]{8}$/.test(tag)) throw new Error("tag must be 8 hex characters");
-  const handle = { net: `touchstone-ozmon-${tag}`, name: `touchstone-ozmon-lab-${tag}`, labWs: mkdtempSync(join(tmpdir(), `ozmon-lab-${tag}-`)), started: false, netMade: false };
+  const handle = { net: `touchstone-ozmon-${tag}`, name: `touchstone-ozmon-lab-${tag}`, labWs: trackTempDir(mkdtempSync(join(tmpdir(), `ozmon-lab-${tag}-`))), started: false, netMade: false };
   try {
     for (const part of ["src", "lib", "foundry.toml"]) {
       if (existsSync(join(ws, part))) cpSync(join(ws, part), join(handle.labWs, part), { recursive: true });
     }
-    const made = await docker(["network", "create", "--internal", "--label", "touchstone=oz-monitor", handle.net]);
+    const made = await createLabNetwork(handle.net, ["--internal", "--label", "touchstone=oz-monitor"], { docker });
     if (made.code !== 0) throw new Error(`network create failed: ${made.stderr.trim().slice(0, 200)}`);
     handle.netMade = true;
     // A network name proves nothing. Ask Docker that it really has no route out.
@@ -297,9 +302,9 @@ export async function stopWatchLab(handle) {
     const left = await docker(["ps", "-aq", "--filter", `network=${handle.net}`]);
     const ids = left.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     if (ids.length) await docker(["rm", "-f", ...ids], { timeoutMs: 30_000 });
-    await docker(["network", "rm", handle.net], { timeoutMs: 30_000 });
+    await removeLabNetwork(handle.net, { docker, timeoutMs: 30_000 });
   }
-  rmSync(handle.labWs, { recursive: true, force: true });
+  removeTempDir(handle.labWs);
 }
 
 // Write the config tree the monitor reads from /work/config.
@@ -325,7 +330,7 @@ export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
   if (!range || !obs.address || !obs.snapshots?.[0]?.owner || !obs.canary?.address) {
     return { available: false, reason: "lab observation has no address, owner, canary or block range", leads: [] };
   }
-  const dir = mkdtempSync(join(tmpdir(), "ozmon-cfg-"));
+  const dir = trackTempDir(mkdtempSync(join(tmpdir(), "ozmon-cfg-")));
   try {
     writeConfig(dir, monitorConfig(obs));
     const t0 = Date.now();
@@ -342,7 +347,7 @@ export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
     return parseOzMonitor(r.stdout, { monitors: MONITORS, ...range },
       { address: obs.address, owner: obs.snapshots[0].owner, baseline: obs.snapshots[0].block, canary: obs.canary.address });
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeTempDir(dir);
   }
 }
 

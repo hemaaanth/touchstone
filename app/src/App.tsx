@@ -7,7 +7,7 @@ import type {
   RunMode,
 } from "@/lib/types"
 import { isOwnScope, type CatalogState } from "@/lib/catalog"
-import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
+import { archiveRun, deleteRun, fetchModels, fetchRuns, fetchStoreErrors, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat, type FocusFinding } from "@/components/run-chat"
@@ -25,6 +25,8 @@ export function App() {
   const [packs, setPacks] = useState<PackChoice[]>([])
   // Whether /api/models has answered, so a page can tell "none" from "unknown".
   const [catalog, setCatalog] = useState<CatalogState>("loading")
+  // A store file that cannot be read lists as empty: these sentences say so.
+  const [storeErrors, setStoreErrors] = useState<string[]>([])
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [view, setView] = useState<View | null>(null)
   // "Open this finding" in the open run (the Findings page's Open in run).
@@ -36,6 +38,7 @@ export function App() {
   const [startError, setStartError] = useState<string | null>(null)
 
   const refreshModels = useCallback(() => {
+    fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
     fetchModels()
       .then(({ models, targets, packs }) => {
         setModels(models)
@@ -233,6 +236,7 @@ export function App() {
             briefs={briefs}
             onOpenRun={openRun}
             onChanged={refreshModels}
+            storeErrors={storeErrors}
           />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
