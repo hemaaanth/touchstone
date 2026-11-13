@@ -347,3 +347,17 @@ test("a refused refetch keeps what an earlier folder member already fetched", as
   assert.deepEqual(walk(path.join(ws, "vendor")), Object.keys(many(4, "cosmos__sdk@main/x/bank")).sort());
   assert.deepEqual(readdirSync(ws).filter((n) => n.startsWith(".fetch")), []);
 });
+
+test("a refused folder member leaves no empty parent folders, but keeps a sibling member", async () => {
+  const deep = "https://github.com/o/r/tree/main/a/b";
+  const ws = scopeWs([deep]);
+  clones.set("https://github.com/o/r.git", many(250, "a/b"));
+  await assert.rejects(fetchSource(ws, deep), /250 source files/);
+  assert.deepEqual(readdirSync(path.join(ws, "vendor")), [], "no empty o__r@main/a/ is left");
+  const keep = "https://github.com/o/r/tree/main/a/c";
+  const ws2 = scopeWs([keep, deep]);
+  clones.set("https://github.com/o/r.git", { ...many(250, "a/b"), ...many(2, "a/c") });
+  await fetchSource(ws2, keep);
+  await assert.rejects(fetchSource(ws2, deep), /252 source files/);
+  assert.deepEqual(walk(path.join(ws2, "vendor")), Object.keys(many(2, "o__r@main/a/c")).sort());
+});

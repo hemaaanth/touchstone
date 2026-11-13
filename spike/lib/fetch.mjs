@@ -29,7 +29,7 @@
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { classifyPath, githubRepoUrl, safeRelPath, secretContent, MAX_BYTES, MAX_FILES, MAX_MEMBERS } from "./scopes-store.mjs";
 import { event } from "./event.mjs";
@@ -451,6 +451,12 @@ async function fetchRepo(ws, gh) {
       enforceCaps(ws, dest, label, (over) => splitAdvice(dest, gh, over));
     } catch (e) {
       if (existsSync(old)) renameSync(old, dest);
+      // A refused new folder member leaves its parent folders empty; remove
+      // them up to vendor/, and stop at the first one that holds something.
+      const top = path.join(ws, "vendor");
+      for (let d = path.dirname(dest); d.startsWith(top + path.sep) && !existsSync(dest); d = path.dirname(d)) {
+        try { if (readdirSync(d).length) break; rmdirSync(d); } catch { break; }
+      }
       throw e;
     }
   } finally {
