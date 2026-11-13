@@ -102,12 +102,12 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | Thread | Items | Owns | Running as |
 |--------|-------|------|------------|
 | 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 with the author |
-| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) |
+| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) **Merged** into main `3538912` (reviewed READY). |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`); `984fc07` reviewed NOT READY (`thr_vw5bjhk5kb`): two Majors; repair round 1 with the author |
-| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
+| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. PR 4 repair round 2 done at `0bc016f`; delta re-review running (`thr_qxi2n9w6dn`). |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
-| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`); reviewed READY (`thr_ck6iq7pe6r`); the author adds two test fixes, then merge |
+| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`); reviewed READY (`thr_ck6iq7pe6r`); the author adds two test fixes, then merge **Merged** into main `9c68b3a` at head `93928f6`. |
 | 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
@@ -181,15 +181,15 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| C1 | review | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. Candidate `99229ec`, reviewer `thr_ahkvy8efbw`. |
-| C2 | review | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
-| C3 | review | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). |
+| C1 | done | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. Candidate `99229ec`, reviewer `thr_ahkvy8efbw`. Merged `3538912`. The map, the pill and the Scopes use are done; Modules, Settings and run Info adopt it in 2a, 2b, 2c. |
+| C2 | done | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
+| C3 | done | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). Merged `3538912`. Usage note: `app/docs/restraint.md` and section 7 of the 1b report. |
 
 ## D. Scopes
 
 | ID | State | Item |
 |----|-------|------|
-| D1 | review | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
+| D1 | done | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
 | D2 | todo | **Scope brief in the scope, not in the repo.** Today Touchstone writes a `BRIEF.md` into the run workspace (the repo does not need one). The owner wants a brief field on each scope, edited in the scope's settings, and applied to every run of that scope. The run view should not show "Read BRIEF.md" as if it were a repo file. |
 | D3 | todo | One multi-module run: ticking several modules builds one run, not one run per module. Needs one paid run to prove it (owner's yes). |
 
@@ -215,9 +215,9 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
-| G2 | review | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. Head `c06344d`: images built, in `setup.mjs`, smoke shows `jwt-tool:ran` and `schemathesis:ran`, no skip. Reviewer `thr_9a9qf8rqq2` (Claude; the codex reviewer `thr_7jsxbcjdk7` was blocked by its provider). |
+| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. Head `c06344d`: images built, in `setup.mjs`, smoke shows `jwt-tool:ran` and `schemathesis:ran`, no skip. Reviewer `thr_9a9qf8rqq2` (Claude; the codex reviewer `thr_7jsxbcjdk7` was blocked by its provider). Review at `c06344d` NOT READY (`thr_9a9qf8rqq2`): Schemathesis calls a partly errored run a clean `ran`. Repair round 1. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
-| G4 | review | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. Head `067c51d`: images built, in `setup.mjs`, `declared()` fixed, no skip. Mutants T2 and T3 survive (reviewer decides if `wrap.test` covers them). Reviewer `thr_yni3ut72br`. Merge after G2: both add `spike/test/setup-manifest.test.mjs`. |
+| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. Head `067c51d`: images built, in `setup.mjs`, `declared()` fixed, no skip. Mutants T2 and T3 survive (reviewer decides if `wrap.test` covers them). Reviewer `thr_yni3ut72br`. Merge after G2: both add `spike/test/setup-manifest.test.mjs`. Review at `067c51d` NOT READY (`thr_yni3ut72br`): strings hide properties; a property imported from outside the suite folder loses its counterexample; a CLI record drops both tool rows. Repair round 1. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
 | G7 | done | Part A merged `d1caa23` (Heimdall comment and licence note). Part B merged `f723d57` (`fix/wave-spend-cap` `51fce60`): Strix cap check reserves budget plus one worst turn; a model with no price is charged at the fallback prices. Review READY after one repair round (`thr_yzqyhqy2tj`). Known gap stays: up to six unrecorded attempts before a response header (comment in `provider.mjs`). |
@@ -229,7 +229,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| H1 | doing | PR 4 (harm gate), `merge/pr-4` `4915bde`: re-review NOT READY (`thr_qxi2n9w6dn`). Three bypasses inside the claim (cheatcode by STATICCALL, prank in a reverted frame, delegate prank as the token) and `mockFunction`. None is a regression: `main` proves all of them, and the candidate already stops 10 forged cases that `main` proves. Repair round 2 with author `thr_sfn46di74u`. PR 3 is its twin; close it when PR 4 merges. |
+| H1 | doing | PR 4 (harm gate), `merge/pr-4` `4915bde`: re-review NOT READY (`thr_qxi2n9w6dn`). Three bypasses inside the claim (cheatcode by STATICCALL, prank in a reverted frame, delegate prank as the token) and `mockFunction`. None is a regression: `main` proves all of them, and the candidate already stops 10 forged cases that `main` proves. Repair round 2 with author `thr_sfn46di74u`. PR 3 is its twin; close it when PR 4 merges. Repair round 2 done at `0bc016f` (81 harm-gate tests); delta re-review running. |
 | H1b | todo | Harm gate, tamper class: `vm.store` and `vm.mockCall` on a scope target forge a drain (also on `main`). Needs a rule that keeps real PoCs that use `vm.store` for fixture. Plus a backstop for unknown cheatcodes (a call whose caller is not its parent frame). Own reviewer. Wave 3. |
 | H1c | todo | A PoC body that calls forge-std `deal(token, …)` makes more than 8 MiB of trace and can never be proven (`sandbox.mjs:237`). Fails closed, but costs true positives. Raise the cap or tell the agent to put `deal` in `setUp`. Wave 3. |
 | H2 | review | PR 7 (report redaction), `merge/pr-7` 5265d20: author done (10 commits after the merge with main, 246 app tests pass). Final delta review runs (thread `thr_tjjx45bfz5`). Open by design: JSON escaped three or more times (see H2b). Blocks F2. |
@@ -273,10 +273,10 @@ The review of the base commit found real defects. Most are older than the base c
 
 | # | State | Item |
 |---|-------|------|
-| L1 | review | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). Review: READY. No write reached a handler without the token; the tunnel gives 401 without a bb sign-in. Two test fixes go in before merge (a test fails where `app/dist` exists; a test to pin the `Host` rule). |
-| L2 | review | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
-| L3 | review | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
-| L4 | review | Token compare in constant time. Thread 1g. |
+| L1 | done | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). Review: READY. No write reached a handler without the token; the tunnel gives 401 without a bb sign-in. Two test fixes go in before merge (a test fails where `app/dist` exists; a test to pin the `Host` rule). Merged `9c68b3a`. The owner's dev server on 5188 runs the guard now. Open check: one write by the owner through the tunnel link. |
+| L2 | done | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
+| L3 | done | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
+| L4 | done | Token compare in constant time. Thread 1g. |
 | L5 | doing | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. |
 | L6 | doing | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. |
 | L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
@@ -284,6 +284,9 @@ The review of the base commit found real defects. Most are older than the base c
 | L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
 | L10 | todo | A refused rename or archive shows no message (`app/src/App.tsx:133`, `:144`): the title goes back and nothing explains it. Show the refusal text in the existing error slot. Can fire after a token change, now that these writes are guarded. Also: the Settings refusal line moves the page 36 px. From the 1g review. Wave 2 (with 2c). |
 | L11 | todo | The console token in `spike/data/console-token` never changes. A leaked token stays valid until the file is removed. Add a rotate action or rotate on a schedule. From the 1g review. Wave 3. |
+| L12 | todo | `TruncatedText` (`app/src/components/page-parts.tsx:323`) cannot take keyboard focus, so a keyboard user cannot open the full-value tooltip. Make an overflowing value focusable; keep fitting text out of the Tab order. From the 1b review. Goes with 2a (Settings URL uses it). |
+| L13 | todo | `AddScope` (`new-run-dialog.tsx`) has no `defaultOpen` / `onClose`; the Scopes page clicks it open and watches the DOM. Give it a controlled open API. From the 1b report and review. Wave 2 with 2d. |
+| L14 | todo | `spike/scripts/setup.mjs`: `--only web,contracts` (space form) is not read, only `--only=a,b`; the `strix` entry points to a missing `tools/strix/Dockerfile`; `node:20-slim` is not in the manifest. From the G4 report and the G2 review. Wave 3. |
 
 ## Owner decisions (open)
 
