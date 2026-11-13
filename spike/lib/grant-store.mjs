@@ -23,7 +23,7 @@
 // real only when its proof replays and shows harm. A grant with no live run is
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
-import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,12 +111,34 @@ export function sameToken(given, token) {
 // old one. Returns the new token, or null when `given` is not the current token.
 // A failed write throws, removes its temp file, and leaves the old token valid.
 // The error never holds a token.
+//
+// Two console processes can rotate at once, so the check and the write run
+// under the store lock of the token file (withStoreLock): the second waits,
+// then finds `given` is no longer current and is refused.
 export function rotateConsoleToken(given) {
   if (process.env.TOUCHSTONE_GRANT_TOKEN) {
     throw new Error("The console token is pinned by TOUCHSTONE_GRANT_TOKEN, so it cannot be rotated. Restart the console without it.");
   }
-  if (!sameToken(given, consoleToken())) return null;
   const file = consoleTokenFile();
+  const done = new Set();
+  try {
+    return withStoreLock(file, "console token", () => {
+      try {
+        return rotateLocked(given, file);
+      } finally {
+        done.add("ran");
+      }
+    });
+  } catch (e) {
+    if (done.has("ran")) throw e; // already a sentence from rotateLocked
+    // The lock could not be taken: busy, or the folder refuses it. No token in the message.
+    const why = /is busy/.test(String(e?.message)) ? "another console process is changing it right now" : `its lock could not be taken (${e?.code || "lock failed"})`;
+    throw new Error(`The console token was not changed: ${why}. The old token still works.`);
+  }
+}
+
+function rotateLocked(given, file) {
+  if (!sameToken(given, consoleToken())) return null;
   const token = randomUUID();
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   try {
@@ -127,12 +149,21 @@ export function rotateConsoleToken(given) {
     } finally {
       closeSync(fd);
     }
+    lockStillOurs(file);
     renameSync(tmp, file);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw new Error(`The console token was not changed: it could not be saved (${e.code || "write failed"}). The old token still works.`);
   }
   fallbackToken = null;
+  // The rename is done and the new token works now. Sync the folder so a power
+  // cut cannot bring the old file back. A failed folder sync is not thrown:
+  // the caller would then keep the old, no longer valid token on the page.
+  try {
+    syncFolder(path.dirname(file));
+  } catch {
+    /* durability across a power cut is weaker; the token is valid */
+  }
   return token;
 }
 
@@ -210,32 +241,40 @@ function syncFolder(dir) {
 // The server and the CLI can both write a store. Each mutation reads the whole
 // file, changes it and writes it back, so two at once could lose one update.
 // withStoreLock runs a mutation while it holds "<file>.lock", made with "wx"
-// (only one process can make it). The lock holds the owner's pid and the time.
+// (only one process can make it). The lock holds the owner's pid, the time and
+// a random token; ownership is the token, never the inode (an inode number can
+// be reused by the next lock).
 //   - The lock path must be a regular file. A link or a folder there is
 //     refused with a sentence and never followed (lstat).
 //   - A lock is STALE when its process is gone, or when it is older than
-//     LOCK_STALE_MS. A stale lock is taken over atomically: it is renamed to a
-//     unique name, and only the process whose rename moved THAT lock (same
-//     inode) goes on to make its own with "wx". A process whose rename moved a
-//     fresh lock by mistake puts it back (link) and waits.
-//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS (default
-//     5 s); then the mutation is refused with a sentence and nothing is written.
-//   - A writer that held its lock longer than LOCK_STALE_MS can lose it to a
-//     takeover. A real write takes milliseconds; only a stopped or hung process
-//     (a suspended machine, a stuck disk) is that slow. So saveStore checks,
-//     just before its rename, that the lock is still its own, and refuses if
-//     not. Release removes the lock only when it is still its own.
+//     LOCK_STALE_MS. Breaking a stale lock is serialized by a second file,
+//     "<file>.lock.break", made with "wx": one breaker at a time. Under it the
+//     breaker reads the lock again and removes it only when it is still the
+//     very lock it judged stale (same content, so same token). A lock made in
+//     the meantime is never removed, so a writer is never refused because
+//     another process broke the lock it had just made.
+//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS, default
+//     LOCK_WAIT_MS (300 ms). The wait is synchronous: store calls are
+//     synchronous, and the console server calls them from its request
+//     handlers. A short bound keeps one stuck lock from freezing the console:
+//     the write is refused with a sentence and the operator tries again.
+//   - A writer that held its lock longer than LOCK_STALE_MS can lose it. A
+//     real write takes milliseconds; only a stopped or hung process is that
+//     slow. saveStore checks, just before its rename, that the lock still holds
+//     its token, and refuses if not. Release removes the lock only then too.
 // Re-entrant in one process: a mutation that calls another on the same store
 // does not wait for itself.
 const LOCK_STALE_MS = 30_000;
-const heldLocks = new Map(); // lock path -> the inode of our lock file
+const LOCK_WAIT_MS = 300;
+const BREAK_STALE_MS = 5_000; // a break takes microseconds
+const heldLocks = new Map(); // lock path -> our token
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-// For tests only: called between judging a lock stale and taking it over, so a
-// test can make two processes judge the same stale lock at once.
-export const lockTestHooks = { afterStaleJudged: null };
+// For tests only: called between judging a lock stale and breaking it, so a
+// test can change the lock in that gap or make two processes meet there.
+export const lockTestHooks = { afterStaleJudged: null, beforeBreakUnlink: null };
 
-// What sits at the lock path: null (nothing), { bad: true } (not a regular
-// file), or { ino, owner, ageMs }.
+// What sits at a lock path: null (nothing), { bad: true } (not a regular
+// file), or { raw, token, owner, ageMs }.
 function lockAt(lock) {
   let st;
   try {
@@ -244,19 +283,25 @@ function lockAt(lock) {
     return null;
   }
   if (!st.isFile()) return { bad: true };
+  let raw = "";
+  try {
+    raw = readFileSync(lock, "utf8");
+  } catch {
+    return null; // removed between the lstat and the read
+  }
   let owner = null;
   try {
-    owner = JSON.parse(readFileSync(lock, "utf8"));
+    owner = JSON.parse(raw);
   } catch {
     /* being written right now, or damaged */
   }
-  return { ino: st.ino, owner, ageMs: Date.now() - st.mtimeMs };
+  return { raw, token: owner?.token ?? null, owner, ageMs: Date.now() - st.mtimeMs };
 }
 
-function lockIsStale(lock, { owner, ageMs }) {
-  if (ageMs > LOCK_STALE_MS) return true;
+function isStale(lock, { owner, ageMs }, maxAgeMs) {
+  if (ageMs > maxAgeMs) return true;
   const pid = Number(owner?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // a lock with no owner yet: give the writer a moment
+  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // no owner written yet: give the writer a moment
   if (pid === process.pid) return !heldLocks.has(lock); // ours but not held: a leftover
   try {
     process.kill(pid, 0);
@@ -266,73 +311,86 @@ function lockIsStale(lock, { owner, ageMs }) {
   }
 }
 
-// Take over the stale lock `seen`. True when this process moved exactly that
-// lock away; then it may try "wx". False when another process got there first.
-function takeOver(lock, seen) {
-  const moved = `${lock}.stale-${process.pid}-${randomUUID().slice(0, 8)}`;
+// Break the stale lock `seen`, one breaker at a time. Removes the lock only
+// when it is still exactly `seen`. Returns the pid of another live breaker
+// when one is at work (the caller waits), else null; the caller tries "wx"
+// again either way.
+//   THE BREAKER FILE "<lock>.break" holds { pid, at, token }. It must be a
+//   regular file: a link or a folder there is refused like one at the lock
+//   path, never followed and never removed. A breaker file is stale when its
+//   process is gone, when it has no owner after 2 s, or when it is older than
+//   BREAK_STALE_MS (a break takes microseconds, so a breaker that old is
+//   stuck); a stale one is removed. A live, young breaker is waited for, inside
+//   the same bound as a live lock.
+function breakStale(what, lock, seen) {
+  const breaker = `${lock}.break`;
   try {
-    renameSync(lock, moved);
+    writeFileSync(breaker, JSON.stringify({ pid: process.pid, at: Date.now(), token: randomUUID() }), { flag: "wx", mode: 0o600 });
   } catch (e) {
-    if (e.code === "ENOENT") return false; // another process took it over first
-    throw e;
-  }
-  let ino = null;
-  try {
-    ino = lstatSync(moved).ino;
-  } catch {
-    /* gone: nothing to put back */
-  }
-  if (ino !== null && ino !== seen.ino) {
-    // We moved a FRESH lock: another process took the stale one over and made
-    // its own in between. Put it back. If a third lock is there already, the
-    // owner of the moved one notices at its save (lockStillOurs) and refuses.
-    try {
-      linkSync(moved, lock);
-    } catch {
-      /* a newer lock is there */
+    if (e.code !== "EEXIST") throw e;
+    // Another process is breaking it now, or crashed while doing so.
+    const b = lockAt(breaker);
+    if (!b) return null; // finished just now
+    if (b.bad) throw notALockFile(what, breaker);
+    if (isStale(breaker, b, BREAK_STALE_MS)) {
+      // Only that very breaker file: the same content it had when judged.
+      if (lockAt(breaker)?.raw === b.raw) rmSync(breaker, { force: true });
+      return null;
     }
-    rmSync(moved, { force: true });
-    return false;
+    return b.owner?.pid ?? "unknown";
   }
-  rmSync(moved, { force: true });
-  return true;
+  try {
+    const now = lockAt(lock);
+    if (now && !now.bad && now.raw === seen.raw && isStale(lock, now, LOCK_STALE_MS)) {
+      lockTestHooks.beforeBreakUnlink?.();
+      unlinkSync(lock);
+    }
+  } finally {
+    rmSync(breaker, { force: true });
+  }
+  return null;
 }
 
 const notALockFile = (what, lock) =>
   new Error(`Refused: the ${what} lock ${lock} is a link or a folder, not a lock file. Touchstone does not follow it. Nothing was changed. Remove it, then try again.`);
 
+// Every pass of the loop ends at one place: the deadline check, then a short
+// pause. No path tries again without both, so the wait bound holds everywhere.
 export function withStoreLock(file, what, fn) {
   const lock = `${file}.lock`;
   if (heldLocks.has(lock)) return fn();
   mkdirSync(path.dirname(file), { recursive: true });
-  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || 5_000;
+  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || LOCK_WAIT_MS;
   const deadline = Date.now() + waitMs;
   for (;;) {
+    const token = randomUUID();
     try {
-      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { flag: "wx", mode: 0o600 });
+      heldLocks.set(lock, token);
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
+    let holder = "unknown";
     const seen = lockAt(lock);
     if (seen?.bad) throw notALockFile(what, lock);
-    if (seen && lockIsStale(lock, seen)) {
+    if (seen && isStale(lock, seen, LOCK_STALE_MS)) {
       lockTestHooks.afterStaleJudged?.();
-      takeOver(lock, seen);
-      continue;
+      holder = breakStale(what, lock, seen) ?? holder;
+    } else if (seen) {
+      holder = seen.owner?.pid ?? holder;
     }
     if (Date.now() > deadline) {
-      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen?.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${holder}) is writing it. Nothing was changed. Try again in a moment.`);
     }
-    pause(20);
+    pause(seen ? 10 : 1);
   }
-  heldLocks.set(lock, lstatSync(lock).ino);
   try {
     return fn();
   } finally {
     const ours = heldLocks.get(lock);
     heldLocks.delete(lock);
-    if (lockAt(lock)?.ino === ours) rmSync(lock, { force: true });
+    if (lockAt(lock)?.token === ours) rmSync(lock, { force: true });
   }
 }
 
@@ -341,8 +399,8 @@ export function withStoreLock(file, what, fn) {
 function lockStillOurs(file) {
   const lock = `${file}.lock`;
   if (!heldLocks.has(lock)) return;
-  if (lockAt(lock)?.ino !== heldLocks.get(lock)) {
-    throw new Error(`Refused: this write held the store lock ${lock} so long that another process took it over. Nothing was changed. Try again.`);
+  if (lockAt(lock)?.token !== heldLocks.get(lock)) {
+    throw new Error(`Refused: another process took over the store lock ${lock} during this write (it was held longer than 30 s). Nothing was changed. Try again.`);
   }
 }
 
@@ -489,6 +547,20 @@ function isLocalName(name) {
 // checked for label count and public suffixes either way — a "*.com" grant is
 // never a real scope.
 function grantEntryError(entry, allowPrivate) {
+  // A user name or password in the entry would be dropped by normalizeHost
+  // without a word. Refuse it, and name the host only, never the secret.
+  const raw = String(entry ?? "").trim();
+  if (raw.includes("@")) {
+    let u = null;
+    try {
+      u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+    } catch {
+      /* not a URL: normalizeHost decides */
+    }
+    if (u && (u.username || u.password)) {
+      return `the host entry for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a host. Remove it, then add the grant again.`;
+    }
+  }
   const e = normalizeHost(entry);
   // An unusable host is not this guard's concern: it is dropped by normalizeHost
   // and caught downstream by the "at least one valid host" check. This guard only

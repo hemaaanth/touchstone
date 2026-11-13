@@ -376,7 +376,15 @@ export async function handleGrants(req, res) {
 
   if (parts.length === 3 && req.method === "DELETE") {
     const id = decodeURIComponent(parts[2])
-    if (!removeGrant(id)) {
+    let removed
+    try {
+      removed = removeGrant(id)
+    } catch (err) {
+      // A store refusal (busy, damaged, a bad lock path): its sentence, as the other store routes give it.
+      send(res, 400, { error: String(err?.message ?? err) })
+      return true
+    }
+    if (!removed) {
       send(res, 404, { error: "no such grant" })
       return true
     }
