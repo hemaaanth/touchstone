@@ -208,6 +208,7 @@ function RowTitle({ title, opens }: { title: string; opens: boolean }) {
 export function ListRow({
   icon,
   title,
+  name,
   badges,
   meta,
   trailing,
@@ -219,6 +220,9 @@ export function ListRow({
   // A lucide icon element. It sits in a neutral tile.
   icon?: React.ReactNode
   title: string
+  // Shown as the name in place of `title`, such as a `ModulePill`. `title`
+  // stays the row button's accessible name. Without `name` the row shows `title`.
+  name?: React.ReactNode
   // Badges after the name: `<Badge variant="outline">Demo</Badge>`.
   badges?: React.ReactNode
   // The one muted line. Items are joined with a dot. A false item is skipped.
@@ -254,7 +258,15 @@ export function ListRow({
       <div className="flex min-w-0 flex-1 flex-col gap-x-4 gap-y-2 @xl:flex-row @xl:items-center">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-2">
-            <RowTitle title={title} opens={!!onOpen} />
+            {name == null ? (
+              <RowTitle title={title} opens={!!onOpen} />
+            ) : onOpen ? (
+              <button type="button" data-row-main aria-haspopup="dialog" aria-label={title} className="flex min-w-0 text-left outline-none">
+                {name}
+              </button>
+            ) : (
+              <span className="flex min-w-0">{name}</span>
+            )}
             {badges ? <span className="flex shrink-0 items-center gap-1.5">{badges}</span> : null}
           </div>
           {line.length ? (

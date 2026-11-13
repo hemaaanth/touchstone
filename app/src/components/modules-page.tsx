@@ -5,7 +5,7 @@ import type { RunBrief } from "@/lib/runModel"
 import { moduleNote, moduleTests, packOf, proofKind, scopedRuns, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { ModuleIcon, ModulePill } from "@/components/module-pill"
+import { ModulePill } from "@/components/module-pill"
 import { ScopeIcon } from "@/components/new-run-dialog"
 import { Label, ListCard, ListEmpty, ListLoading, ListPage, ListRow, RowMenu, RowMenuItem, RunLinks, TruncatedText } from "@/components/page-parts"
 
@@ -56,10 +56,9 @@ export function ModulesPage({
             return (
               <ListRow
                 key={p.id}
-                icon={<ModuleIcon id={p.id} />}
                 title={p.title}
+                name={<ModulePill id={p.id} label={p.title} />}
                 meta={[proofKind(p).label, tests ? <TruncatedText key="tests" text={tests} /> : null]}
-                trailing={<ModulePill id={p.id} label={p.title} compact />}
                 menu={
                   <RowMenu label={`Actions for ${p.title}`}>
                     <RowMenuItem onClick={() => openDetail(p)}>
@@ -111,17 +110,11 @@ function ModuleDetail({
   const runnable = scopes.some((t) => t.runnable)
   return (
     <>
-      <SheetHeader className="flex-row items-start gap-3 pr-12">
-        <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
-          <ModuleIcon id={p.id} />
-        </span>
-        <div className="flex min-w-0 flex-col gap-1">
-          <SheetTitle className="leading-snug wrap-anywhere">{p.title}</SheetTitle>
-          <SheetDescription className="flex flex-wrap items-center gap-1.5 text-xs">
-            <ModulePill id={p.id} label={p.title} compact />
-            {proof.label}
-          </SheetDescription>
-        </div>
+      <SheetHeader className="flex-row flex-wrap items-center gap-x-2 gap-y-1 pr-12">
+        <SheetTitle className="flex min-w-0">
+          <ModulePill id={p.id} label={p.title} />
+        </SheetTitle>
+        <SheetDescription className="text-xs">{proof.label}</SheetDescription>
       </SheetHeader>
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-4 pt-1 pb-6">
