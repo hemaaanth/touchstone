@@ -139,6 +139,13 @@ const MANIFEST = [
     ref: "ghcr.io/mongodb/kingfisher:2.18.1" },
   { tag: "touchstone-cosign:v3.1.4", group: "supply-chain", kind: "build",
     context: "spike/packs/supply-chain/cosign" },
+  // Opt-in networked tools (networked.mjs). Each runs only in capture mode.
+  { tag: "touchstone/scorecard:5.6.0", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/scorecard",
+    note: "OSSF Scorecard. Opt-in: --network-tools scorecard." },
+  { tag: "touchstone/legitify:1.0.11", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/legitify",
+    note: "Legitify. Opt-in; always fails closed (no lead parser)." },
 
   // ---- infra-cloud ----
   { tag: "touchstone/checkov-cli:3.4.3", group: "infra-cloud", kind: "build",
