@@ -8,16 +8,26 @@ const MB = 1 << 20
 const CAP = 64 * 1024
 const text = (s: string): string => redactSecrets({ explanation: s }).explanation
 
-// Time one redaction. It MUST go through redactOnePass, not redactSecrets:
-// redactSecrets replaces any text over the 64 KB cap with a mark before a
-// single rule runs, so a timing test on a large input through redactSecrets
-// would measure the cap (0 ms) and hide a quadratic rule. redactOnePass runs
-// every rule on the whole string with no cap. A linear regex finishes in well
-// under a second; a quadratic one takes minutes.
+// Time one redaction. It MUST run every rule on the whole input: redactSecrets
+// replaces any text over the 64 KB cap with a mark before a single rule runs,
+// so a timing test routed through the cap would measure 0 ms and hide a
+// quadratic rule. The helper guards itself: if its output holds the cap mark,
+// the input was capped (the helper was routed through redactSecrets), and it
+// throws, so a timing case can never pass by being capped. redactOnePass runs
+// every rule with no cap, so its output never holds the mark unless the input
+// literally does.
+const TOO_LONG = "too long to check"
+function redactTimed(input: string): string {
+  // The one redactor a timing test may use. Change this to redactSecrets and
+  // every >cap timing case throws below (the M1 guard; proven by mutation).
+  return redactOnePass(input) as string
+}
 function timeMs(input: string): number {
   const t0 = performance.now()
-  redactOnePass(input)
-  return performance.now() - t0
+  const out = redactTimed(input)
+  const dt = performance.now() - t0
+  if (out.includes(TOO_LONG)) throw new Error("timeMs: the input was capped, so the rules did not run")
+  return dt
 }
 
 describe("redact: big inputs finish in linear time", () => {
@@ -844,62 +854,116 @@ describe("redact: cheap Minor 5 shapes (H2b item 4)", () => {
   })
 })
 
-describe("redact: every rule is linear at 256 KB, run at start, middle and end (H2b repair B1)", () => {
-  const N = 256 * 1024
-  // Neutral filler: no rule triggers, so it frames a rule's run without
-  // masking. One rule's pathological run goes adjacent to its trigger.
-  const PAD = "the lab did not check the caller here. ".repeat(Math.ceil((N / 2) / 39))
-  // For each rule: a string whose long run (size n) sits next to the trigger.
-  const rules: [string, (n: number) => string][] = [
-    ["JSON_PAIR", (n) => `"a":"${"b".repeat(n)}"`],
-    ["JSON_PAIR_ESC", (n) => `\\"a\\":\\"${"b".repeat(n)}\\"`],
-    ["JSON_PAIR_DEEP", (n) => "\\".repeat(n) + '"token":"v"'],
-    ["NAMED_VALUE", (n) => '"name":"a"'.repeat(n / 10)],
-    ["TUPLE", (n) => '["token","' + "\\".repeat(n)],
-    ["CODE_PAIR", (n) => "a:'" + "b:\"c:`".repeat(n / 6)],
-    ["LINE_HEADER", (n) => "X-Api-Key: " + "a".repeat(n)],
-    ["LINE_HEADER ordered", (n) => "1. X-Api-Key: " + "a".repeat(n)],
-    ["LINE_HEADER bold", (n) => "**Authorization:** Basic " + " ".repeat(n) + "x"],
-    ["TABLE_HEADER", (n) => "| a | " + " ".repeat(n) + "y |"],
-    ["QUOTE_HEADER", (n) => `'a: ` + `"b: `.repeat(n / 4)],
-    ["BEARER", (n) => "Bearer " + ".".repeat(n) + "a"],
-    ["QUERY", (n) => "?token=" + ".".repeat(n) + "x"],
-    ["RPC_URL", (n) => "https://rpc.ankr.com/eth/" + "a1".repeat(n / 2) + " x"],
-    ["RPC_URL segments", (n) => "https://x.alchemy.com" + "/seg".repeat(n / 4) + " x"],
-    ["URL_USERINFO", (n) => "//u:" + "a".repeat(n) + "@h"],
-    ["CURL_USER", (n) => "curl -u a:" + "a".repeat(n)],
-    ["CURL_COOKIE", (n) => "curl -b " + "a=b;".repeat(n / 4)],
-    ["BRACKET_PAIR", (n) => `["X-API-Key"] = "` + "a".repeat(n) + `"`],
-    ["CALL_PAIR", (n) => `.set("X-API-Key","` + "a".repeat(n) + `")`],
-    ["MYSQL_PW", (n) => "mysql " + "x ".repeat(n / 2) + "-pSecretPass1"],
-    ["CLI_FLAG", (n) => "--token " + " ".repeat(n)],
-    ["ENV_ASSIGN", (n) => "token=" + "token=".repeat(n / 6)],
-    ["SHAPES lab token", (n) => "tk_live_" + "9".repeat(n) + " t"],
-    ["SHAPES ghp", (n) => "ghp_" + "a".repeat(n) + " t"],
-    ["SHAPES pem", (n) => "-----BEGIN PRIVATE KEY-----\n".repeat(n / 28)],
+describe("redact: every rule in the table is linear (generated, H2b repair item 3)", () => {
+  // One generated test over the rule table (server/redact.mjs TEXT_RULES), so a
+  // new rule is covered without a new hand case. A rule with no trigger here
+  // fails. For each rule the test times redactOnePass (via timeMs, which throws
+  // if the input is capped) on: the trigger repeated; its first half repeated;
+  // and the trigger followed by a long run of each character the rule can loop
+  // on. Each is built at 64 KB and 256 KB, placed at the start, the middle and
+  // the end of the buffer, and as ONE line with no line end (the shape that
+  // hid the quadratic MYSQL_PW). The bound is linear growth: 256 KB under
+  // 4.5x the 64 KB time plus 40 ms, and under an absolute 1200 ms.
+  // A short trigger text per rule, each a string the rule matches.
+  const TRIGGERS: Record<string, string> = {
+    JSON_PAIR: '"token":"vv"',
+    JSON_PAIR_ESC: '\\"token\\":\\"vv\\"',
+    JSON_PAIR_DEEP: '\\\\\\"token\\\\\\":\\\\\\"vv\\\\\\"',
+    NAMED_VALUE: '{"name":"x-api-key","value":"vv"}',
+    NAMED_VALUE_ESC: '{\\"name\\":\\"x-api-key\\",\\"value\\":\\"vv\\"}',
+    TUPLE: '[["x-api-key","vv"]]',
+    CODE_PAIR: `token: "vv"`,
+    CODE_PAIR_ESC: `token: \\"vv\\"`,
+    LINE_HEADER: "X-Api-Key: vv\n",
+    TABLE_HEADER: "| token | vv |\n",
+    QUOTE_HEADER: `"X-Api-Key: vv"`,
+    BEARER: "Bearer abcdefghij",
+    QUERY: "?token=vvvvvvvv",
+    RPC_URL: "https://rpc.ankr.com/eth/vvvvvvvvvvvvvvvv",
+    URL_USERINFO: "//user:password@h",
+    CURL_USER: "curl -u user:password",
+    CURL_COOKIE: "curl -b sid=vvvvvvvv",
+    BRACKET_PAIR: `h["X-API-Key"] = "vv"`,
+    CALL_PAIR: `.set("X-API-Key", "vv")`,
+    DASH_P: "mysql -pvvvvvvvv",
+    CLI_FLAG: "--token vvvvvvvv",
+    ENV_ASSIGN: "TOKEN=vvvvvvvv",
+    SHAPE_PEM: "-----BEGIN PRIVATE KEY-----\nvvvv\n-----END PRIVATE KEY-----",
+    SHAPE_AWS: "AKIAFAKEFAKEFAKE1234",
+    SHAPE_GH: "ghp_" + "a".repeat(36),
+    SHAPE_GHPAT: "github_pat_" + "a".repeat(22),
+    SHAPE_GLPAT: "glpat-" + "a".repeat(20),
+    SHAPE_SLACK: "xoxb-1-2-" + "a".repeat(10),
+    SHAPE_STRIPE: "sk_live_" + "a".repeat(12),
+    SHAPE_OPENAI: "sk-" + "a".repeat(22),
+    SHAPE_JWT: "eyJhbGci.eyJzdWIi.c2ln" + "a".repeat(4),
+    SHAPE_NPM: "npm_" + "a".repeat(36),
+    SHAPE_LAB: "tk_live_9f1c4a2e",
+  }
+  // The characters a rule's pattern may loop on. A long run of ONE of these
+  // goes after a SINGLE trigger; that is the input shape that caught the
+  // earlier quadratics (a long backslash run for JSON_PAIR_DEEP).
+  const LOOP = [" ", "\t", "\\", '"', "'", ".", "-", ":", "=", ";", ",", "/", "`"]
+  // One pathological run for a rule: `prefix` then `unit` repeated to `n`.
+  // Cases: the trigger repeated (prefix empty); its first half repeated; each
+  // space-separated word repeated (so a command word such as "mysql" with no
+  // "-p" after it reproduces the quadratic MYSQL case); and one trigger then a
+  // long run of each loop character.
+  const cases = (trigger: string): [string, string][] => [
+    ["", trigger],
+    ["", trigger.slice(0, Math.max(1, trigger.length >> 1))],
+    ...trigger.split(" ").filter(Boolean).map((w) => ["", w + " "] as [string, string]),
+    ...LOOP.map((c) => [trigger, c] as [string, string]),
   ]
-  for (const [label, mk] of rules) {
-    // middle: the run is adjacent to the trigger. start: the run is before a
-    // small trigger. end: a small trigger then the run.
-    const small = mk(64)
-    test(`${label}`, () => {
-      expect(timeMs(mk(N))).toBeLessThan(2000) // run adjacent (middle of buffer)
-      expect(timeMs(PAD + small)).toBeLessThan(2000) // long neutral run at the start
-      expect(timeMs(small + PAD)).toBeLessThan(2000) // long neutral run at the end
+  // prefix + unit repeated so the whole is about n characters, as ONE line
+  // (no line end), framed with neutral pad at start / middle / end.
+  const PAD = (n: number): string => "the lab did not check the caller here. ".repeat(Math.ceil((n / 4) / 39))
+  const oneLine = (prefix: string, unit: string, n: number): string =>
+    prefix + unit.repeat(Math.max(1, Math.ceil((n - prefix.length) / unit.length)))
+  const framed = (prefix: string, unit: string, n: number): string[] => {
+    const core = oneLine(prefix, unit, n)
+    const pad = PAD(n)
+    return [core, pad + core, core + pad] // end-of-buffer, start-of-buffer, mid
+  }
+
+  test("the rule table is covered", async () => {
+    const mod = await import("../server/redact.mjs")
+    const names = Object.keys((mod as { TEXT_RULES: Record<string, unknown> }).TEXT_RULES)
+    for (const name of names) expect(TRIGGERS[name], `rule ${name} needs a timing trigger`).toBeDefined()
+    expect(names.length).toBeGreaterThanOrEqual(30)
+  })
+
+  for (const [name, trigger] of Object.entries(TRIGGERS)) {
+    test(`${name} is linear`, () => {
+      for (const [prefix, unit] of cases(trigger)) {
+        for (const s of framed(prefix, unit, 256 * 1024)) expect(timeMs(s)).toBeLessThan(1200)
+        // Linear growth: the one-line run at 64 KB vs 256 KB.
+        const t64 = timeMs(oneLine(prefix, unit, 64 * 1024))
+        const t256 = timeMs(oneLine(prefix, unit, 256 * 1024))
+        expect(t256).toBeLessThan(4.5 * t64 + 40)
+      }
     })
   }
 })
 
 describe("redact: a timing input over the cap must go through one pass (H2b repair B1 guard)", () => {
-  test("redactSecrets caps a large text, so timeMs must not use it", () => {
-    // If timeMs ran redactSecrets, a >cap input would hit the cap and measure
-    // nothing. This guards the method: the cap fires, and one pass does not.
+  // The guard that `timeMs` carries: it mirrors the helper's own check, so a
+  // reviewer who routes `redactTimed` through `redactSecrets` makes timeMs
+  // throw on every >cap case. Proven by mutation: changing redactTimed to
+  // `redactSecrets({ x: input }).x` makes these and the whole timing suite fail.
+  const guard = (out: string): number => {
+    if (out.includes(TOO_LONG)) throw new Error("capped")
+    return 0
+  }
+  test("the cap fires on a large input, so a capped timing run would throw", () => {
     const big = "X-Api-Key: " + "a".repeat(CAP)
     expect(big.length).toBeGreaterThan(CAP)
-    expect(redactSecrets({ x: big }).x).toContain("too long to check")
-    expect(redactOnePass(big)).not.toContain("too long to check")
-    // The timing helper runs the rule, so a quadratic rule shows up: a 256 KB
-    // backslash run is masked by one pass and is still fast.
+    // redactSecrets caps it (what a mis-routed timeMs would see) -> guard throws.
+    expect(() => guard(redactSecrets({ x: big }).x)).toThrow()
+    // redactOnePass runs the rules (what timeMs actually uses) -> guard passes.
+    expect(() => guard(redactOnePass(big))).not.toThrow()
+  })
+  test("timeMs runs the rule on a 256 KB input and stays fast", () => {
     expect(timeMs("\\".repeat(256 * 1024) + '"token":"v"')).toBeLessThan(2000)
   })
 })
@@ -947,5 +1011,39 @@ describe("redact: false positives from real PoC and tool-output shapes (H2b repa
   })
   test("a CSS-like lab identifier stays (SHAPES, Minor 3)", () => {
     for (const s of [`class="tk_btn_ff00aa"`, `--tk_gap_12: 4px;`]) expect(text(s)).toBe(s)
+  })
+})
+
+describe("redact: each RPC and CALL fix has a break-once test (H2b repair Minor 2)", () => {
+  const K = "FAKE0fake1FAKE2fake3FAKE4fake5fa" // 32, mixed, no dash
+  const uuid = "3f5c2f7a-1b2c-4d5e-8f90-a1b2c3d4e5f6"
+  const hex64 = "0x" + "a".repeat(64)
+  test("provider name as a substring is not an RPC host (bankrate)", () => {
+    // Fails if RPC_HOSTS matched the provider name anywhere in the host.
+    expect(text(`https://www.bankrate.com/mortgages/rates2024abcdefgh12`)).toBe(`https://www.bankrate.com/mortgages/rates2024abcdefgh12`)
+  })
+  test("a dashboard host is not an RPC host; the gateway host is (tenderly)", () => {
+    // Fails if the dashboard host were treated as RPC.
+    expect(text(`https://dashboard.tenderly.co/tx/mainnet/${hex64}`)).toBe(`https://dashboard.tenderly.co/tx/mainnet/${hex64}`)
+    expect(text(`https://mainnet.gateway.tenderly.co/${K}`)).toBe("https://mainnet.gateway.tenderly.co/[REDACTED]")
+  })
+  test("a 0x segment on an RPC host stays (0x exclusion)", () => {
+    expect(text(`https://rpc.ankr.com/eth/${hex64}`)).toBe(`https://rpc.ankr.com/eth/${hex64}`)
+  })
+  test("a uuid key masks on an RPC host, stays off it (Minor 1)", () => {
+    expect(text(`https://eth-mainnet.blastapi.io/${uuid}`)).toBe("https://eth-mainnet.blastapi.io/[REDACTED]")
+    expect(text(`https://dashboard.tenderly.co/x/simulator/${uuid}`)).toBe(`https://dashboard.tenderly.co/x/simulator/${uuid}`)
+    // an Alchemy key with a dash masks on its RPC host
+    expect(text(`https://eth-mainnet.g.alchemy.com/v2/Ab3dEf-Gh5jKlMn0pQrSt7uVwXyZ12`)).toBe("https://eth-mainnet.g.alchemy.com/v2/[REDACTED]")
+  })
+  test("CALL_PAIR masks only a header setter, even with a credential value", () => {
+    // A credential-shaped value that no SHAPES rule matches, so only the pair
+    // rule could mask it. A non-setter call stays; a setter masks. Fails if
+    // CALL_PAIR matched any call.
+    const v = "S3cretPasswordXY"
+    expect(text(`console.log("token", "${v}")`)).toBe(`console.log("token", "${v}")`)
+    expect(text(`emit log_named_string("token", "${v}")`)).toBe(`emit log_named_string("token", "${v}")`)
+    expect(text(`tokens.set("token", "${v}")`)).toBe(`tokens.set("token", "[REDACTED]")`)
+    expect(text(`res.setHeader("Authorization", "Bearer ${v}")`)).toBe(`res.setHeader("Authorization", "Bearer [REDACTED]")`)
   })
 })

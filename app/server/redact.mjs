@@ -140,27 +140,30 @@ const QUERY_NAME = /^(?:key|sig|code|auth|jwt|sid)$/i
 // https://rpc.ankr.com/eth/<key>. The host and the fixed path parts (/v2/) stay;
 // a path segment that looks like a key becomes the mark. The Goldsky form
 // (…?key=<key>) is a query, so QUERY already masks it.
-const RPC_NAMES = "alchemy|infura|ankr|quiknode|quicknode|blastapi|chainstack|getblock|nodereal|drpc|tenderly|moralis|blockpi|pokt"
 const RPC_URL = new RegExp(String.raw`(https?:\/\/([a-zA-Z0-9.-]+))((?:\/[^\s"'\`\\?#]*)+)`, "gi")
-// A provider name must be a WHOLE host label (bounded by "." or "-" or an
-// edge), so "bankrate.com" (ankr inside a word) is not a provider. Dashboard,
-// docs and blog hosts are not RPC hosts, so a tx link or a blog slug stays.
-const RPC_LABEL = new RegExp(String.raw`(?:^|[.-])(?:${RPC_NAMES})(?:[.-]|$)`, "i")
+// The host must be one of the providers' real RPC host names, matched as a
+// whole domain suffix. A marketing or docs apex (moralis.io, ankr.com), a
+// dashboard (dashboard.tenderly.co, only gateway.tenderly.co is RPC) and a
+// word that merely contains a provider name (bankrate.com) are not RPC hosts,
+// so a tx link, a blog slug and a doc path stay. NON_RPC_SUB drops a www/docs
+// subdomain of a listed domain too.
+const RPC_HOSTS = /(?:^|\.)(?:g\.alchemy\.com|alchemyapi\.io|infura\.io|rpc\.ankr\.com|qui(?:k|ck)node\.pro|blastapi\.io|core\.chainstack\.com|getblock\.io|nodereal\.io|drpc\.org|gateway\.tenderly\.co|moralis-nodes\.com|blockpi\.network|pokt\.network)$/i
 const NON_RPC_SUB = /^(?:dashboard|docs|www|blog|app|support|status|explorer)\./i
-const isRpcHost = (h) => RPC_LABEL.test(h) && !NON_RPC_SUB.test(h)
+const isRpcHost = (h) => RPC_HOSTS.test(h) && !NON_RPC_SUB.test(h)
 // A URL path segment is a key when it is long and mixes letters and digits.
-// A 0x hash, a uuid and a slug (word-dash-word) are evidence, not a key, and
-// stay. A placeholder (${RPC_KEY}) or an already-redacted part stays.
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// This runs ONLY on a real RPC host (isRpcHost), where a key may hold a "-"
+// (an Alchemy key) or be a uuid (a Blast project id), so those are masked. A
+// 0x value is a hash or an address (evidence) and stays. The host-label and
+// non-RPC-subdomain gates in isRpcHost are what keep a tx link, a blog slug
+// and bankrate.com; keySegment does not repeat them. A placeholder
+// (${RPC_KEY}) or an already-redacted part stays.
 const keySegment = (seg) =>
   seg.length >= 16 &&
   /[0-9]/.test(seg) &&
   /[A-Za-z]/.test(seg) &&
   !seg.startsWith("${") &&
   !seg.startsWith("[REDACTED") &&
-  !/^0x[0-9a-fA-F]+$/.test(seg) &&
-  !UUID.test(seg) &&
-  !/[A-Za-z0-9]-[A-Za-z0-9]/.test(seg)
+  !/^0x[0-9a-fA-F]+$/.test(seg)
 function maskRpcUrl(m, host, hostname, path) {
   if (!isRpcHost(hostname)) return m
   let hit = false
@@ -186,11 +189,14 @@ const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s
 // tok)) stays.
 const BRACKET_PAIR = /(\[[ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*\][ \t]*=[ \t]*)(["'`])([^"'`\r\n]*)\4/g
 const CALL_PAIR = /(\.(?:set|append|setHeader|setRequestHeader|addHeader|header)[ \t]*\([ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*,[ \t]*)(["'`])([^"'`\r\n]*)\4/g
-// MySQL joins -p to its value: mysql -psecret. A mysql-family command must
-// come earlier on the same line, so gcc -pedantic, docker run -p127.0.0.1:…,
-// -port=8080 and -pretty-print all stay. The value is masked only when it
-// looks like a secret (secretish, 8+), so a port (-p3306) stays too.
-const MYSQL_PW = /\b(?:mysql|mysqldump|mysqladmin|mariadb)\b[^\r\n]*?(?<![\w-])(-p)([^\s"'`;&|()<>]+)/g
+// MySQL joins -p to its value: mysql -psecret. A mysql-family command must be
+// on the SAME line, so gcc -pedantic, docker run -p127.0.0.1:…, -port=8080 and
+// -pretty-print all stay. The value is masked only when it looks like a secret
+// (secretish, 8+), so a port (-p3306) stays too. The line test runs once per
+// line (maskMysql), not once per "mysql" word, so the rule is linear: an
+// earlier version scanned to the end of the line from every "mysql".
+const MYSQL_CMD = /\b(?:mysql|mysqldump|mysqladmin|mariadb)\b/
+const DASH_P = /(?<![\w-])(-p)([^\s"'`;&|()<>]+)/g
 // A command-line flag whose name passes secretName: cast send
 // --private-key 0x…, --api-key=…, --token "…".
 const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\r\n]*)\3|([^\s"'`;&|()<>]+))/g
@@ -365,10 +371,21 @@ function maskBracketPair(m, head, nq, name, q, value) {
   return masked == null ? m : `${head}${q}${masked}${q}`
 }
 
-// mysql -p<value>: mask only a value that looks like a secret. The match holds
-// the command prefix, so only the trailing value is replaced.
-function maskMysqlPw(m, flag, value) {
-  return secretish(value, 8) && !keepUnder(value) ? m.slice(0, m.length - value.length) + MARK : m
+// -p<value> after a mysql-family command: mask only a value that looks like a
+// secret. Called only on a line that holds a mysql-family word.
+function maskDashP(m, flag, value) {
+  return secretish(value, 8) && !keepUnder(value) ? flag + MARK : m
+}
+
+// Mask mysql -p<value> on each line that holds a mysql-family command. The
+// check runs once per line, so the pass is linear. A text with no such word
+// returns at once. Splitting and joining on "\n" preserves the text exactly.
+function maskMysql(text) {
+  if (!MYSQL_CMD.test(text)) return text
+  return text
+    .split("\n")
+    .map((line) => (MYSQL_CMD.test(line) ? line.replace(DASH_P, maskDashP) : line))
+    .join("\n")
 }
 
 function maskNamed(m, head, name, mid, value) {
@@ -430,9 +447,23 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
   return `${name}${sep}${q}${MARK}${q}${rest}`
 }
 
+// Every global regex a text pass uses, named. This is the single list: the
+// reset loop below and the generated timing test both read it, so a new rule
+// added here is reset and timed automatically (the timing test fails until it
+// has a trigger). maskMysql is driven by DASH_P, which is in the list.
+export const TEXT_RULES = {
+  JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC,
+  TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER,
+  BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, BRACKET_PAIR,
+  CALL_PAIR, DASH_P, CLI_FLAG, ENV_ASSIGN,
+  SHAPE_PEM: SHAPES[0], SHAPE_AWS: SHAPES[1], SHAPE_GH: SHAPES[2], SHAPE_GHPAT: SHAPES[3],
+  SHAPE_GLPAT: SHAPES[4], SHAPE_SLACK: SHAPES[5], SHAPE_STRIPE: SHAPES[6], SHAPE_OPENAI: SHAPES[7],
+  SHAPE_JWT: SHAPES[8], SHAPE_NPM: SHAPES[9], SHAPE_LAB: SHAPES[10],
+}
+
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, BRACKET_PAIR, CALL_PAIR, MYSQL_PW, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of Object.values(TEXT_RULES)) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -471,7 +502,7 @@ function redactText(text) {
   out = out.replace(CURL_COOKIE, maskCookieArg)
   out = out.replace(BRACKET_PAIR, maskBracketPair)
   out = out.replace(CALL_PAIR, maskBracketPair)
-  out = out.replace(MYSQL_PW, maskMysqlPw)
+  out = maskMysql(out)
   out = out.replace(CLI_FLAG, maskFlag)
   out = out.replace(ENV_ASSIGN, maskEnv)
   for (const re of SHAPES) out = out.replace(re, MARK)
