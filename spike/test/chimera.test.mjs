@@ -127,6 +127,9 @@ test("a client-side timeout reports timedOut for both engines, returns near the 
     assert.deepEqual(scan.engines.map((e) => [e.engine, e.timedOut]), [["Echidna", true], ["Medusa", true]]);
     assert.deepEqual(scan.leads, []);
     assert.equal(scan.gaps.length, 1);
+    // The daemon can create the container after the client is gone, so wait
+    // before the first look.
+    await new Promise((r) => setTimeout(r, 5000));
     let left = "";
     for (let i = 0; i < 10; i++) {
       left = execFileSync("docker", ["ps", "-aq", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim();

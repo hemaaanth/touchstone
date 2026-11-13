@@ -156,6 +156,9 @@ test("a client-side timeout reports timedOut, returns near the limit and leaves 
     assert.equal(scan.timedOut, true);
     assert.equal(scan.reason, "timed out after 1s");
     assert.deepEqual(scan.leads, []);
+    // The daemon can create the container after the client is gone, so wait
+    // before the first look.
+    await new Promise((r) => setTimeout(r, 5000));
     let left = "";
     for (let i = 0; i < 10; i++) {
       left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/halmos:0.3.3", "--filter", `volume=${ws}`]).toString().trim();
