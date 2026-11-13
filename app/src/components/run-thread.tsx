@@ -26,6 +26,7 @@ import {
   Scissors,
   FolderX,
   Square,
+  Info,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
@@ -35,7 +36,7 @@ import { RunStart } from "@/components/assistant-ui/elements/start-progress"
 import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 import { ToolError } from "@/components/assistant-ui/elements/tool-error"
 import { ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import type { RunFailure, Step } from "@/lib/runModel"
+import { splitRaw, type RunFailure, type Step } from "@/lib/runModel"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
@@ -111,11 +112,18 @@ function RunErrorCard({
   const spent = Math.max(info?.spentUsd ?? 0, fleet ? fleetSpend(fleet.state) : 0)
   const cost = spent > 0 ? `About $${spent.toFixed(4)} was spent on the work that did run.` : "Nothing was spent on this run."
   // The raw error, unless it is the line the card already shows.
-  const raw = [info?.detail, info ? null : fallback]
+  const detail = [info?.detail, info ? null : fallback]
     .map((t) => t?.trim())
     .find((t): t is string => !!t && !same(t, hint) && !same(t, title))
+  // The detail can be a sentence, a blank line, then raw output. The sentence
+  // reads as text; the raw output stays preformatted.
+  // Without a blank line the detail stays preformatted, as it was.
+  const parts = detail ? splitRaw(detail) : null
+  const split = !!parts?.raw
+  const said = split && parts.text && !same(parts.text, hint) && !same(parts.text, title) ? sentence(parts.text) : null
+  const raw = split ? parts.raw : (detail ?? null)
   const code = info?.reason && info.reason !== "unknown" ? info.reason : null
-  const technical = !!raw || !!code
+  const technical = !!said || !!raw || !!code
   const retryable = (info?.retryable ?? true) && !archived && !warning
 
   return (
@@ -148,6 +156,7 @@ function RunErrorCard({
                   Code <span className="font-mono text-foreground/80">{code}</span>
                 </p>
               ) : null}
+              {said ? <p className="leading-relaxed">{said}</p> : null}
               {raw ? (
                 <pre className="max-h-40 overflow-auto font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
                   {raw}
@@ -427,6 +436,8 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   if (step.kind === "subagent") return <HandoffRow step={step} />
   if (step.kind === "message") return <MessageCard step={step} />
   if (step.kind === "agent-error") return <AgentErrorRow step={step} />
+  if (step.kind === "reply-error") return <ReplyErrorRow step={step} />
+  if (step.kind === "system") return <SystemLine step={step} />
   if (step.kind === "poc")
     return <AttemptCard step={step} file={a.artifact ?? null} version={a.version ?? null} vIndex={a.vIndex ?? 1} />
   if (step.kind === "decided")
@@ -574,6 +585,44 @@ function AgentErrorRow({ step }: { step: Step }) {
       onSkip={() => send(task ? `Reassign ${name}'s task: ${task}` : `Reassign ${name}'s task.`)}
       skipLabel="Reassign"
     />
+  )
+}
+
+// A follow-up that stopped. The reason reads as a sentence. The raw output
+// (a process's last lines) is in a fold, closed by default. No Retry button:
+// the composer keeps the message, and sending it again is the retry.
+function ReplyErrorRow({ step }: { step: Step }) {
+  return (
+    <ToolError
+      data-step-key={step.key}
+      name="The follow-up stopped"
+      message={sentence(step.label) || "No reason was given."}
+    >
+      {step.detail ? (
+        <Collapsible className="mt-1">
+          <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRight className="size-3 transition-transform group-data-[panel-open]:rotate-90 motion-reduce:transition-none" />
+            Output
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-1.5 max-h-40 overflow-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words text-muted-foreground">
+              {step.detail}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
+    </ToolError>
+  )
+}
+
+// A quiet line from the system, such as "the workspace was rebuilt". It is
+// news, not an error: muted text with no card and no colour.
+function SystemLine({ step }: { step: Step }) {
+  return (
+    <p data-slot="system-line" data-step-key={step.key} className="flex max-w-160 items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+      <Info aria-hidden className="mt-[3px] size-3.5 shrink-0" />
+      <span className="min-w-0 break-words">{step.label}</span>
+    </p>
   )
 }
 

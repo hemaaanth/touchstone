@@ -29,6 +29,7 @@ export function ToolError({
   retryLabel = "Retry",
   skipLabel = "Skip",
   onName,
+  children,
   className,
   ...props
 }: {
@@ -48,6 +49,8 @@ export function ToolError({
   skipLabel?: string;
   /** Makes the name a link, e.g. to open the agent's thread. */
   onName?: () => void;
+  /** More under the message, e.g. a fold with the raw output. */
+  children?: ReactNode;
   className?: string;
   "data-step-key"?: string;
 }) {
@@ -84,6 +87,7 @@ export function ToolError({
           ) : null}
         </div>
         <p className="text-xs leading-relaxed text-muted-foreground break-words">{message}</p>
+        {children}
       </div>
       {onRetry || onSkip ? (
         <div className="flex shrink-0 items-center gap-1.5 self-center">
