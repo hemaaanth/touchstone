@@ -72,7 +72,7 @@ const kickoff = (ws, env) => {
   if (!hasWorld(ws, "chain-watch")) return sourceKickoff("chain-watch", env.CHAIN_BRIEF);
   const base = "Review the watched block range for this proxy. Call watch_leads and chain_state, read the lab source, list every suspect change worst first, then prove each one you can with its own passing Foundry test that replays the change and moves ETH out of the proxy. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, source checks, Slither and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the full list. Some leads come from source checks, Slither and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
@@ -91,6 +91,6 @@ export default {
   }),
   kickoff,
   nudge: (state) => chainNudge(state, "suspect"),
-  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "chain-watch", analyze: watchLeads }),
+  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "chain-watch", analyze: watchLeads, slither: true }),
   prove: proveWithHarm,
 };

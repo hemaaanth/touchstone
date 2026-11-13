@@ -17,7 +17,8 @@ Docker.
 ## Inputs
 
 - A lab: `src/ChainWatchLab.sol` has an upgradeable proxy, a benign
-  implementation, and a drain implementation.
+  implementation, and a drain implementation. `src/VaultImplementationV2.sol` is a
+  second implementation that holds ETH. Its `initialized` flag is never set.
 - A chain observation. The pre-pass writes `chain-observation.json` into the
   workspace. The agent reads it through `chain_state`.
 
@@ -54,8 +55,9 @@ misses it. The lead says so.
 
 The pre-pass also reads `src/**/*.sol` with our own text checks. They need no lab world.
 A real Foundry folder gets them too. Each lead names the contract, function, file and
-line. A lead is never a finding. Aderyn runs on the same source. A lead both return is
-`corroborated`.
+line. A lead is never a finding. Slither and Aderyn run on the same source, in Docker with
+no network. A lead two engines return is `corroborated`. Slither leads (for example
+`uninitialized-state`) and Aderyn leads reach the agent in the brief.
 
 | Check | Impact | What it means |
 |-------|--------|---------------|
