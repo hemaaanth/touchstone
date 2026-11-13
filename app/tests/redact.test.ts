@@ -2,16 +2,21 @@ import { describe, expect, test } from "bun:test"
 // Unit tests for the report redaction. Every secret here is synthetic. It has
 // the same shape as a value seen in a real record, never the real value.
 // @ts-expect-error — plain .mjs module, no types
-import { redactSecrets } from "../server/redact.mjs"
+import { redactSecrets, redactOnePass } from "../server/redact.mjs"
 
 const MB = 1 << 20
+const CAP = 64 * 1024
 const text = (s: string): string => redactSecrets({ explanation: s }).explanation
 
-// Time one redaction of a 1 MB string. A linear regex finishes in well under
-// a second; a quadratic one takes minutes.
+// Time one redaction. It MUST go through redactOnePass, not redactSecrets:
+// redactSecrets replaces any text over the 64 KB cap with a mark before a
+// single rule runs, so a timing test on a large input through redactSecrets
+// would measure the cap (0 ms) and hide a quadratic rule. redactOnePass runs
+// every rule on the whole string with no cap. A linear regex finishes in well
+// under a second; a quadratic one takes minutes.
 function timeMs(input: string): number {
   const t0 = performance.now()
-  redactSecrets({ explanation: input })
+  redactOnePass(input)
   return performance.now() - t0
 }
 
@@ -836,5 +841,111 @@ describe("redact: cheap Minor 5 shapes (H2b item 4)", () => {
     expect(timeMs("mysql -p" + "a1".repeat(MB / 2) + " x")).toBeLessThan(2000)
     expect(timeMs("**Authorization:** Basic " + " ".repeat(MB) + "x")).toBeLessThan(2000)
     expect(timeMs("1. X-Api-Key: " + "a".repeat(MB))).toBeLessThan(2000)
+  })
+})
+
+describe("redact: every rule is linear at 256 KB, run at start, middle and end (H2b repair B1)", () => {
+  const N = 256 * 1024
+  // Neutral filler: no rule triggers, so it frames a rule's run without
+  // masking. One rule's pathological run goes adjacent to its trigger.
+  const PAD = "the lab did not check the caller here. ".repeat(Math.ceil((N / 2) / 39))
+  // For each rule: a string whose long run (size n) sits next to the trigger.
+  const rules: [string, (n: number) => string][] = [
+    ["JSON_PAIR", (n) => `"a":"${"b".repeat(n)}"`],
+    ["JSON_PAIR_ESC", (n) => `\\"a\\":\\"${"b".repeat(n)}\\"`],
+    ["JSON_PAIR_DEEP", (n) => "\\".repeat(n) + '"token":"v"'],
+    ["NAMED_VALUE", (n) => '"name":"a"'.repeat(n / 10)],
+    ["TUPLE", (n) => '["token","' + "\\".repeat(n)],
+    ["CODE_PAIR", (n) => "a:'" + "b:\"c:`".repeat(n / 6)],
+    ["LINE_HEADER", (n) => "X-Api-Key: " + "a".repeat(n)],
+    ["LINE_HEADER ordered", (n) => "1. X-Api-Key: " + "a".repeat(n)],
+    ["LINE_HEADER bold", (n) => "**Authorization:** Basic " + " ".repeat(n) + "x"],
+    ["TABLE_HEADER", (n) => "| a | " + " ".repeat(n) + "y |"],
+    ["QUOTE_HEADER", (n) => `'a: ` + `"b: `.repeat(n / 4)],
+    ["BEARER", (n) => "Bearer " + ".".repeat(n) + "a"],
+    ["QUERY", (n) => "?token=" + ".".repeat(n) + "x"],
+    ["RPC_URL", (n) => "https://rpc.ankr.com/eth/" + "a1".repeat(n / 2) + " x"],
+    ["RPC_URL segments", (n) => "https://x.alchemy.com" + "/seg".repeat(n / 4) + " x"],
+    ["URL_USERINFO", (n) => "//u:" + "a".repeat(n) + "@h"],
+    ["CURL_USER", (n) => "curl -u a:" + "a".repeat(n)],
+    ["CURL_COOKIE", (n) => "curl -b " + "a=b;".repeat(n / 4)],
+    ["BRACKET_PAIR", (n) => `["X-API-Key"] = "` + "a".repeat(n) + `"`],
+    ["CALL_PAIR", (n) => `.set("X-API-Key","` + "a".repeat(n) + `")`],
+    ["MYSQL_PW", (n) => "mysql " + "x ".repeat(n / 2) + "-pSecretPass1"],
+    ["CLI_FLAG", (n) => "--token " + " ".repeat(n)],
+    ["ENV_ASSIGN", (n) => "token=" + "token=".repeat(n / 6)],
+    ["SHAPES lab token", (n) => "tk_live_" + "9".repeat(n) + " t"],
+    ["SHAPES ghp", (n) => "ghp_" + "a".repeat(n) + " t"],
+    ["SHAPES pem", (n) => "-----BEGIN PRIVATE KEY-----\n".repeat(n / 28)],
+  ]
+  for (const [label, mk] of rules) {
+    // middle: the run is adjacent to the trigger. start: the run is before a
+    // small trigger. end: a small trigger then the run.
+    const small = mk(64)
+    test(`${label}`, () => {
+      expect(timeMs(mk(N))).toBeLessThan(2000) // run adjacent (middle of buffer)
+      expect(timeMs(PAD + small)).toBeLessThan(2000) // long neutral run at the start
+      expect(timeMs(small + PAD)).toBeLessThan(2000) // long neutral run at the end
+    })
+  }
+})
+
+describe("redact: a timing input over the cap must go through one pass (H2b repair B1 guard)", () => {
+  test("redactSecrets caps a large text, so timeMs must not use it", () => {
+    // If timeMs ran redactSecrets, a >cap input would hit the cap and measure
+    // nothing. This guards the method: the cap fires, and one pass does not.
+    const big = "X-Api-Key: " + "a".repeat(CAP)
+    expect(big.length).toBeGreaterThan(CAP)
+    expect(redactSecrets({ x: big }).x).toContain("too long to check")
+    expect(redactOnePass(big)).not.toContain("too long to check")
+    // The timing helper runs the rule, so a quadratic rule shows up: a 256 KB
+    // backslash run is masked by one pass and is still fast.
+    expect(timeMs("\\".repeat(256 * 1024) + '"token":"v"')).toBeLessThan(2000)
+  })
+})
+
+describe("redact: false positives from real PoC and tool-output shapes (H2b repair)", () => {
+  // Secret-free samples modelled on lines in the real records (read-only) that
+  // hold each changed rule's trigger word. Each must stay byte-identical.
+  test("Solidity and JS call shapes stay (CALL_PAIR, B2)", () => {
+    for (const s of [
+      `new MockERC20("Token", "TKN", 18);`,
+      `new ERC20("Mock USDC", "USDC");`,
+      `emit log_named_string("token", "transferred");`,
+      `console.log("token", "balance after");`,
+      `keccak256(abi.encodePacked("token", "USDC"))`,
+      `vm.label(address(token), "Token");`,
+      `map.set("session", "active");`,
+      `headers.set("Accept", "application/json");`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("provider-name mentions and non-RPC URLs stay (RPC_URL, B3)", () => {
+    for (const s of [
+      "https://dashboard.tenderly.co/tx/mainnet/0x" + "a".repeat(64),
+      "https://www.bankrate.com/mortgages/rates2024abcdefgh12",
+      "https://moralis.io/blog/how-to-get-erc20-balances-2024",
+      "The lab uses an Alchemy RPC in the fork config.",
+      "see docs.alchemy.com/reference/eth-getbalance for the method",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("command lines with -p that are not mysql stay (MYSQL_PW, B4)", () => {
+    for (const s of [
+      "gcc -Wall -pedantic-errors main.c",
+      "docker run -p127.0.0.1:8545:8545 foundry",
+      "forge test -vvv --match-path test/Exploit.t.sol",
+      "anvil --port 8545 --fork-url $RPC",
+      "psql -p5432 -h db -U readonly",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("storage keys and proofs stay (PAIR_SECRET 0x, Minor 1)", () => {
+    const slot = "0x" + "0".repeat(63) + "2"
+    for (const s of [
+      `{"key":"${slot}","value":"0x01"}`,
+      `{"jwt":"${slot}"}`,
+      `"storageProof":[{"key":"${slot}","value":"0x0"}]`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a CSS-like lab identifier stays (SHAPES, Minor 3)", () => {
+    for (const s of [`class="tk_btn_ff00aa"`, `--tk_gap_12: 4px;`]) expect(text(s)).toBe(s)
   })
 })
