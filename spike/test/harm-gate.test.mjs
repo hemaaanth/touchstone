@@ -19,10 +19,30 @@ import { judgeHarm } from "../lib/proof.mjs";
 import { extractControlTrace, word, HANDLED, TRUSTED_ACCOUNT, BACKSTOP_CLASSES, CHEAT_TABLE } from "../lib/control-trace.mjs";
 import { gate, proveFindings } from "../lib/record.mjs";
 import { isProven } from "../lib/proof-view.mjs";
+import { formatAmount } from "../../app/src/lib/amount.mjs";
 import { makeWorkspace, forgeTestJson } from "../lib/sandbox.mjs";
 import contracts from "../packs/contracts/pack.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+// H1g: the engine shows harm amounts by the one shared rule (app/src/lib/amount.mjs),
+// never cut. ethStr (proof.mjs), the txreplay and fork-proof detail formatters all
+// route through formatAmount, and the exact wei is stored next to the text.
+test("harm amounts use the shared formatter and are never cut (H1g)", () => {
+  // the rule itself, on values the old 4-decimal cut would have mangled.
+  assert.equal(formatAmount("10000000000000000000").text, "10 ETH");
+  assert.equal(formatAmount("9945000000000000123").text, "≈9.945 ETH", "a non-round loss is marked, not cut");
+  assert.equal(formatAmount("4200").text, "4,200 wei", "dust reads in wei, never 0 ETH");
+  assert.equal(formatAmount("-1234500000000000000", { signed: true }).text, "-1.2345 ETH");
+  // the engine sites import the shared formatter and keep no cutting formatter.
+  for (const rel of ["lib/proof.mjs", "lib/txreplay-proof.mjs", "lib/fork-proof.mjs"]) {
+    const src = readFileSync(path.join(HERE, "..", rel), "utf8");
+    assert.match(src, /from "\.\.\/\.\.\/app\/src\/lib\/amount\.mjs"/, `${rel} imports the shared formatter`);
+    assert.doesNotMatch(src, /10n \*\* 14n/, `${rel} still has a 4-decimal cut`);
+  }
+});
+
+
 const LAB = path.resolve(HERE, "../../lab/vault-reentrancy");
 
 // ---- synthetic traces -------------------------------------------------------

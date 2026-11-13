@@ -18,6 +18,10 @@ import { join } from "node:path";
 import { writePoc, forgeTestJson, FORGE_OUTPUT_CAP } from "./sandbox.mjs";
 import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
 import { keccak256 } from "ethers";
+// The one amount formatter the console and the report share, so the engine never
+// shows a harm number cut: exact when it fits six significant decimals, else
+// rounded to nearest and marked "≈", dust in wei (see app/src/lib/amount.mjs).
+import { formatAmount } from "../../app/src/lib/amount.mjs";
 
 // Foundry's fixed framework addresses. These are not economic actors in the
 // exploit: the cheatcode VM never holds ETH, so its flows are noise. We keep the
@@ -76,12 +80,7 @@ export function netFlows(traces) {
 
 // Render a wei BigInt as a signed ETH figure for the money-moved table.
 function ethStr(wei) {
-  const neg = wei < 0n;
-  const abs = neg ? -wei : wei;
-  const whole = abs / 10n ** 18n;
-  const frac = (abs % 10n ** 18n) / 10n ** 14n; // 4 decimal places
-  const body = frac === 0n ? `${whole}` : `${whole}.${frac.toString().padStart(4, "0").replace(/0+$/, "")}`;
-  return `${neg ? "-" : "+"}${body} ETH`;
+  return formatAmount(wei.toString(), { signed: true }).text;
 }
 
 // Turn the net-flow map into a labelled, signed transfer table: one row per
