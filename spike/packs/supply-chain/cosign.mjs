@@ -59,7 +59,7 @@ export function parsePolicy(policy) {
 // Map cosign's exit and stderr to one result word. Only two exact outcomes count;
 // everything else is "error", which the caller turns into a gap.
 export function classify(r) {
-  if (r.timedOut) return { result: "error", reason: "cosign timed out" };
+  if (r.timedOut) return { result: "error", reason: "cosign timed out", timedOut: true };
   if (r.code === 125 && /No such image|Unable to find image|pull access denied/i.test(r.stderr)) return { result: "unavailable", reason: `image ${COSIGN.image} is not built` };
   if (r.code === 0 && /^Verified OK$/m.test(r.stderr)) return { result: "verified" };
   if (r.code === 1 && /^Error: failed to verify signature: could not verify message: invalid signature/m.test(r.stderr)) return { result: "invalid-signature" };
@@ -98,7 +98,7 @@ export async function cosignScan(snapshot, rawPolicy, opts = {}) {
   }
   const skipped = new Set((snapshot.skipped ?? []).map((s) => s.file));
   const leads = [], gaps = [], tally = { verified: 0, invalid: 0, unsigned: 0, gap: 0 };
-  let unavailable = null;
+  let unavailable = null, timedOut = false;
   const gap = (a, detail) => { tally.gap++; gaps.push({ kind: "artifact-signature-unchecked", file: a.path, detail }); };
   for (const art of policy.artifacts) {
     if (!Object.hasOwn(snapshot.files, art.path)) { gap(art, skipped.has(art.path) ? "Artifact was skipped by the snapshot (binary, too large or over budget). Its signature was not checked." : "Artifact named in the signing policy is not in the snapshot."); continue; }
@@ -122,11 +122,15 @@ export async function cosignScan(snapshot, rawPolicy, opts = {}) {
         "cosign verify-blob rejected the signature with the pinned key. The artifact was changed after signing, or a different key signed it. This is an offline lead, not a claim about who signed it."));
       continue;
     }
+    if (r.timedOut) timedOut = true;
     gap(a, r.reason);
   }
   const reason = `${policy.artifacts.length} artifacts: ${tally.verified} verified, ${tally.invalid} invalid signature, ${tally.unsigned} unsigned, ${tally.gap} unchecked. Key sha256 ${policy.keySha256.slice(0, 12)}`;
   // A missing image is a gap for the engine. The unsigned leads need no tool and stay.
   if (unavailable) return { engine, status: "gap", reason: `${unavailable.reason}. ${reason}`, leads, gaps };
+  // Any unchecked artifact makes the engine a gap, so the run view never shows
+  // "ran" when cosign did not decide. The leads it did find stay.
+  if (tally.gap) return { engine, status: "gap", timedOut, reason: `${tally.gap} of ${policy.artifacts.length} artifact signatures unchecked (${gaps[0].detail.replace(/\.$/, "")}). ${reason}`, leads, gaps };
   return { engine, status: "ok", code: 0, timedOut: false, reason, leads, gaps };
 }
 

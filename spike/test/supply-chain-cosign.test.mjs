@@ -14,6 +14,7 @@ import { captureSnapshot } from "../packs/supply-chain/snapshot.mjs";
 import { makeLabWorkspace } from "../packs/supply-chain/lab.mjs";
 import pack from "../packs/supply-chain/pack.mjs";
 import { replayEvidence } from "../lib/proof-evidence.mjs";
+import { prepassView } from "../lib/prepass-view.mjs";
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 const temp = () => mkdtempSync(join(tmpdir(), "cosign-test-"));
@@ -88,14 +89,33 @@ test("tool failures are gaps, never a pass and never a lead", async () => {
   assert.deepEqual(missing.leads.map((l) => l.check), ["artifact-signature-missing"]);
   assert.deepEqual(missing.gaps.map((g) => g.file), ["release/wallet-cli.js", "release/updater.js"]);
   assert.match(missing.gaps[0].detail, /not built/);
-  // Timeout.
+  // Timeout: the engine is a gap with timedOut, never "ok". The unsigned lead stays.
   const slow = await cosignScan(snapshot, policy, { timeoutMs: 1 });
-  assert.equal(slow.leads.filter((l) => l.engine === "cosign").length, 0);
+  assert.equal(slow.status, "gap");
+  assert.equal(slow.timedOut, true);
+  assert.match(slow.reason, /^2 of 3 artifact signatures unchecked \(cosign timed out\)/);
+  assert.deepEqual(slow.leads.map((l) => l.check), ["artifact-signature-missing"]);
   assert.equal(slow.gaps.length, 2);
   assert.match(slow.gaps[0].detail, /timed out/);
+  // No docker on PATH at all: also a gap, not a clean run.
+  const empty = temp(), path = process.env.PATH;
+  let nodocker;
+  try { process.env.PATH = empty; nodocker = await cosignScan(snapshot, policy); }
+  finally { process.env.PATH = path; remove(empty); }
+  assert.equal(nodocker.status, "gap");
+  assert.equal(nodocker.timedOut, false);
+  assert.match(nodocker.reason, /^2 of 3 artifact signatures unchecked \(cosign could not decide: exit 1\)/);
+  assert.deepEqual(nodocker.leads.map((l) => l.check), ["artifact-signature-missing"]);
+  // The run view shows both as not run, with the reason, never as "ran".
+  for (const r of [slow, nodocker, missing]) {
+    const view = prepassView({ coverage: [{ engine: r.engine, status: r.status, code: r.code, timedOut: r.timedOut, reason: r.reason, leads: r.leads.length }], leads: [] });
+    assert.equal(view.tools[0].status, "unavailable");
+    assert.match(view.tools[0].reason, /unchecked|not built/);
+  }
   // A bundle cosign cannot parse is not a signature verdict.
   const broken = { ...snapshot, files: { ...snapshot.files, "release/updater.js.sigstore.json": "{\"x\":1}\n" } };
   const unparsable = await cosignScan(broken, policy);
+  assert.equal(unparsable.status, "gap");
   assert.deepEqual(unparsable.leads.map((l) => l.check), ["artifact-signature-missing"]);
   assert.equal(unparsable.gaps.length, 1);
   assert.match(unparsable.gaps[0].detail, /^cosign could not decide: /);
@@ -118,6 +138,8 @@ test("policy problems are explicit: a bad policy is an error, no policy leaves b
   assert.equal(none.gaps[0].kind, "signatures-not-verified");
   const big = { ...snapshot, files: { ...snapshot.files }, skipped: [{ file: "release/app.tar.gz", reason: "binary-or-not-utf8" }] };
   const r = await cosignScan(big, { ...policy, artifacts: ["release/app.tar.gz", "release/gone.js"] });
+  assert.equal(r.status, "gap");
+  assert.match(r.reason, /^2 of 2 artifact signatures unchecked/);
   assert.deepEqual(r.leads, []);
   assert.deepEqual(r.gaps.map((g) => g.detail.split(".")[0]), ["Artifact was skipped by the snapshot (binary, too large or over budget)", "Artifact named in the signing policy is not in the snapshot"]);
 });
