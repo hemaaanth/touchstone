@@ -21,23 +21,30 @@ const PLAIN_VALUE = /^(?:|0x[0-9a-fA-F]{40})$/
 const keepUnder = (v) => MARKER.test(v) || PLAIN_VALUE.test(v)
 
 // Object keys and header-cell names whose value is a credential.
-const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
+const SECRET_KEY = /^(?:token|bearer|password|passwd|pwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
 // Any other name that ends in a secret word: x-goog-api-key, x-csrf-token,
 // PRIVATE-TOKEN, DB_PASSWORD, signerPrivateKey. A bare "key" or "signature"
 // is not enough; prose says "Key:" and a SIWE body carries its signature.
 const SECRET_SUFFIX = /[-_](?:token|key|secret|signature|password|passwd)$/i
 const SECRET_CAMEL = /[a-z0-9](?:Token|Key|Secret|Password)$/
 const PUBLIC_KEY = /public[-_]?key$/i
+// Short words that name a credential only sometimes: { auth: "tk_…" } is a
+// secret, credentials: "include" (fetch) and auth: "none" are not. They are
+// judged like a suffix name (maskUnder).
+const WEAK_KEY = /^(?:auth|credentials?)$/i
 
 function secretName(name) {
-  if (SECRET_KEY.test(name)) return true
+  if (SECRET_KEY.test(name) || WEAK_KEY.test(name)) return true
   return (SECRET_SUFFIX.test(name) || SECRET_CAMEL.test(name)) && !PUBLIC_KEY.test(name)
 }
 
-// A name that is secret only by its ending is often a plain setting:
+// A name that is secret only by its ending, or a WEAK_KEY, is often a plain setting:
 // baseToken: "USDC", primaryKey: "id". Under such a name a value is masked
-// only when it looks like a secret. Under a SECRET_KEY name every value is.
-const maskUnder = (name, value) => SECRET_KEY.test(name) || secretish(value)
+// only when it looks like a secret; lowercase words joined by "-" or "_"
+// (same-origin, created_at) are a setting. Under a SECRET_KEY name every
+// value is masked.
+const SETTING = /^[a-z]+(?:[-_][a-z]+)*$/
+const maskUnder = (name, value) => SECRET_KEY.test(name) || (secretish(value) && !SETTING.test(value))
 
 // A "key":"value" pair inside a JSON string, such as a recorded HTTP body
 // or tool output. The second form is the same pair escaped one level deeper,

@@ -566,7 +566,7 @@ describe("redact: header tuples (delta review 4)", () => {
 
 describe("redact: a name secret only by its ending keeps a plain value (delta review 4)", () => {
   test("plain settings stay in objects and text", () => {
-    const plain = { baseToken: "USDC", quoteToken: "WETH", rewardToken: "NEAR", sort_key: "name", cache_key: "user:42", primaryKey: "id", nextToken: "", tokenKey: "sub", storageKey: "theme", tags: { authToken: undefined } }
+    const plain = { baseToken: "USDC", quoteToken: "WETH", rewardToken: "NEAR", sort_key: "created_at", storageKey: "auth-state", cache_key: "user:42", primaryKey: "id", nextToken: "", tokenKey: "sub", storageKey: "theme", tags: { authToken: undefined } }
     expect(redactSecrets(plain)).toEqual(plain)
     for (const s of [`{"baseToken":"USDC","primaryKey":"id"}`, `const q = { quoteToken: 'WETH', sort_key: "name" }`]) expect(text(s)).toBe(s)
   })
@@ -574,5 +574,19 @@ describe("redact: a name secret only by its ending keeps a plain value (delta re
     const out = redactSecrets({ signerPrivateKey: "0x" + "ab12".repeat(16), dbPassword: "hunter22pass", "x-goog-api-key": "AIzaFAKEkey123", token: "short", password: "letmein" })
     expect(out).toEqual({ signerPrivateKey: "[REDACTED]", dbPassword: "[REDACTED]", "x-goog-api-key": "[REDACTED]", token: "[REDACTED]", password: "[REDACTED]" })
     expect(text(`{"nextToken":"eyJwYWdlIjoyfQ=="}`)).toBe(`{"nextToken":"[REDACTED]"}`)
+  })
+})
+
+describe("redact: the keys auth, credentials and pwd (delta review 4)", () => {
+  const tk = "tk_live9fakeZ"
+  test("a secret value under them is masked", () => {
+    expect(redactSecrets({ auth: tk, credentials: tk, pwd: "hunter2" })).toEqual({ auth: "[REDACTED]", credentials: "[REDACTED]", pwd: "[REDACTED]" })
+    expect(text(`{"auth":"${tk}","pwd":"hunter2"}`)).toBe(`{"auth":"[REDACTED]","pwd":"[REDACTED]"}`)
+    expect(text(`const c = { credentials: '${tk}' }`)).toBe(`const c = { credentials: '[REDACTED]' }`)
+  })
+  test("a plain setting under auth or credentials stays", () => {
+    for (const s of [`fetch(u, { credentials: "include" })`, `{"auth":"none"}`, "PWD=/home/lab/run", `- auth: required on /api/me`]) expect(text(s)).toBe(s)
+    const plain = { auth: "basic", credentials: "same-origin" }
+    expect(redactSecrets(plain)).toEqual(plain)
   })
 })
