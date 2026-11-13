@@ -200,11 +200,12 @@ export function multiPack(members) {
     return run;
   }
 
-  // A small duplicate of the part of a module's fetch that the shared clone skips:
-  // that module's two events, its own text, and (for contracts) the solc warm the
-  // offline proof needs. The clone, the tree and `source-fetch` stay the run's one.
-  async function completeFetch(p, ws, url, report, already) {
-    event("fetch_source", { url });
+  // What a module's fetch does around the shared clone: the module's text, and,
+  // when the run has a Contracts member, the solc warm and the Solidity list that
+  // the module with `run_poc` needs (whichever member's tool was called). The warm
+  // runs once per fetch, not once per caller. `source-fetch` stays the run's one;
+  // `fetch_source` is emitted by the caller, once per call.
+  async function completeFetch(ws, url, report, already) {
     const where = report?.where;
     if (where) {
       for (const other of codeMembers) {
@@ -217,7 +218,8 @@ export function multiPack(members) {
     }
     const solid = (report?.files ?? []).map((f) => f.path ?? f).filter((f) => /\.sol$/i.test(String(f)));
     const warmed = [];
-    if (p.id === "contracts") {
+    const warms = codeMembers.some((m) => m.id === "contracts");
+    if (warms && !already) {
       const versions = new Set();
       for (const f of report?.files ?? []) for (const pragma of f.pragmas ?? []) { const v = concreteSolc(pragma); if (v) versions.add(v); }
       for (const v of versions) { const w = await warmSolc(v); warmed.push(`${w.version}${w.ok ? "" : " (warm failed)"}`); }
@@ -274,7 +276,7 @@ export function multiPack(members) {
           // that reads code its own copy: a scope is read, not re-cloned.
           execute: async (...args) => {
             if (t.name !== "fetch_source" || !codeMembers.length) return renameResult(await t.execute(...args), rename);
-            const url = String(args?.[0]?.url ?? "").trim();
+            const url = String(args?.[0]?.url ?? "").trim().replace(/\/+$/, "");
             const again = fetched.has(url);
             event("fetch_source", { url });
             let report;
@@ -286,7 +288,7 @@ export function multiPack(members) {
               return { output: [{ type: "text", text: rename(`Could not fetch ${url}: ${why}`) }], isError: true };
             }
             // The primary caller's own work is done here too, identically.
-            return renameResult(await completeFetch(p, ws, url, report, again), rename);
+            return renameResult(await completeFetch(ws, url, report, again), rename);
           },
         }));
       });

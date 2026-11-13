@@ -557,14 +557,42 @@ test("the contracts fetch still warms the compiler and lists the Solidity files"
   assert.match(text, /Solidity files now available/);
   assert.match(text, /A\.sol/);
   assert.match(text, /Compiler versions prepared: 0\.8\.20/);
-  // And the same work runs when the other module fetched first (a duplicate call).
+  // A later caller of the same link does not warm again and does not clone.
   warmed.length = 0;
   fetchCalls.length = 0;
   await tools.get("fetch_source_review").execute({ url: LINK });
   const dup = await tools.get("fetch_source_contracts").execute({ url: LINK });
-  assert.ok(warmed.includes("0.8.20"), "still warmed on a later call");
+  assert.deepEqual(warmed, [], "the warm is once per fetch");
   assert.equal(fetchCalls.length, 0, "no second clone for the run");
   assert.match(outText(dup), /Already fetched/);
+});
+
+test("a review-only fetch warms for the contracts member, once, with one event per call", async () => {
+  warmed.length = 0;
+  fetchCalls.length = 0;
+  const eventsFile = path.join(dir, "ev-fetch.jsonl");
+  process.env.EVENTS_FILE = eventsFile;
+  try {
+    const ws = await build2(scopeTarget(), ["review", "contracts"]);
+    const tools = new Map(packFor(cfgOf(ws)).tools(ws, scratch()).map((t) => [t.name, t]));
+    // The review tool alone: no contracts call at all.
+    const r = await tools.get("fetch_source_review").execute({ url: LINK });
+    assert.equal(r.isError, undefined);
+    assert.ok(warmed.includes("0.8.20"), "the contracts module's warm ran for the run");
+    assert.match(outText(r), /Solidity files now available/);
+    assert.match(outText(r), /Compiler versions prepared: 0\.8\.20/);
+    // A later call does not warm again, and every call emits exactly one
+    // `fetch_source` (the `source-fetch` stays the run's one).
+    const again = await tools.get("fetch_source_review").execute({ url: LINK + "/" });
+    assert.equal(again.isError, undefined, "a trailing slash is the same link");
+    assert.deepEqual(warmed, ["0.8.20"], "warmed once per fetch");
+    assert.equal(fetchCalls.length, 1, "the trailing slash is the same link");
+    const evs = readFileSync(eventsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(evs.filter((e) => e.ev === "fetch_source").length, 2, "one per call");
+    assert.equal(evs.filter((e) => e.ev === "fetch_source-done").length, 2);
+  } finally {
+    delete process.env.EVENTS_FILE;
+  }
 });
 
 test("no code module, no fetch: a capture-only run is unchanged", async () => {
