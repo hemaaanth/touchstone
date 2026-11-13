@@ -51,6 +51,15 @@ test("inside one turn a snapshot that changes still updates in place", () => {
   assert.deepEqual(rows([say(0, "draft"), say(0, "final")]), ["say:final"])
 })
 
+test("a server restart shows which step started again, and its new steps stay separate", () => {
+  const out = rows([say(0, "Before the restart"), ev("phase-restarted", { phase: "agent" }), say(0, "After it")])
+  assert.deepEqual(out, ["say:Before the restart", "note:The server restarted, so the agent turn started again", "say:After it"])
+  assert.deepEqual(rows([ev("phase-restarted", { phase: "prepass" })]), ["note:The server restarted, so the tool scan started again"])
+})
+
+test("a stop request shows before the run stops", () => {
+  assert.deepEqual(rows([ev("stop-requested"), ev("stopped")]), ["note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+})
 
 class FakeEventSource {
   static sources: FakeEventSource[] = []

@@ -2,8 +2,7 @@ import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
 import type { ModelChoice, PackChoice, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope, type ScopeMember } from "@/lib/api"
-import { getConsoleToken, setConsoleToken } from "@/lib/console-token"
-import { DEFAULT_PACK, packOf } from "@/lib/catalog"
+import { DEFAULT_PACK, packOf, plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -18,10 +17,12 @@ const MODES: { value: RunMode; label: string; hint: string }[] = [
 ]
 const MODE_KEY = "ts.runMode"
 
-// The New Run window picks the scope, Fleet or Solo, and budget.
-// The model is the server's default (the first in the list),
-// so there is no model picker. "Random" omits targetId, so the server picks
-// and repeat runs do not re-break one bug. Scopes are added on the Scopes page.
+// The New Run window picks the scope, its modules, Fleet or Solo, and budget.
+// A scope allows one or more modules. Nothing is assumed: the operator ticks the
+// modules to run, and each ticked module is its own run. The model is the
+// server's default (the first in the list), so there is no model picker.
+// "Random" omits targetId, so the server picks and repeat runs do not re-break
+// one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
   open,
   onOpenChange,
@@ -39,11 +40,15 @@ export function NewRunDialog({
   packs: PackChoice[]
   busy: boolean
   error: string | null
-  onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => void
+  // One run per module in `modules`.
+  onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => void
 }) {
   const alias = models[0]?.alias ?? ""
-  const runnable = targets.filter((t) => t.runnable && packs.some((p) => p.id === packOf(t)))
+  // The modules a scope allows that the server also lists.
+  const allowed = (t: TargetChoice) => (t.packs ?? [packOf(t)]).flatMap((id) => packs.find((p) => p.id === id) ?? [])
+  const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0)
   const [scopeId, setScopeId] = useState(RANDOM)
+  const [ticked, setTicked] = useState<string[]>([])
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
@@ -53,14 +58,16 @@ export function NewRunDialog({
   }
 
   const scope = runnable.find((t) => t.id === scopeId) ?? null
-  const pack = scope ? packOf(scope) : DEFAULT_PACK
+  const eligible = scope ? allowed(scope) : []
+  // A scope with one module needs no tick. A random scope runs the default module.
+  const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk
+  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk && modules.length > 0
 
   const submit = () => {
     if (!canStart) return
-    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack, mode)
+    onStart(alias, scope?.id, budgetN, modules, mode)
   }
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
@@ -72,6 +79,8 @@ export function NewRunDialog({
       : runnable.length === 0
         ? "No runnable scopes are available right now."
         : error
+  // Not an error: the Start button waits for a tick.
+  const hint = !notice && scope && modules.length === 0 ? "Tick the modules to run." : null
 
   const label = "text-[11px] leading-[15px] font-semibold tracking-[0.06em] text-muted-foreground"
   const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
@@ -98,7 +107,15 @@ export function NewRunDialog({
         >
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-scope">SCOPE</span>
-            <Select items={scopeItems} value={scopeId} onValueChange={(v) => v && setScopeId(String(v))}>
+            <Select
+              items={scopeItems}
+              value={scopeId}
+              onValueChange={(v) => {
+                if (!v) return
+                setScopeId(String(v))
+                setTicked([])
+              }}
+            >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
                 <SelectValue className="min-w-0 truncate" />
               </SelectTrigger>
@@ -111,6 +128,29 @@ export function NewRunDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {scope ? (
+            <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-run-modules">
+              <span className={label} id="new-run-modules">MODULES</span>
+              <div className="flex flex-col rounded-lg border border-input bg-background py-1">
+                {eligible.map((p) => (
+                  <label key={p.id} className={cn("flex h-8 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
+                    <input
+                      type="checkbox"
+                      checked={modules.includes(p.id)}
+                      disabled={busy || eligible.length === 1}
+                      onChange={(e) => setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                      className="size-3.5 shrink-0 accent-foreground"
+                    />
+                    {p.title}
+                  </label>
+                ))}
+              </div>
+              {modules.length > 1 ? (
+                <span className="text-xs text-muted-foreground">Starts {modules.length} runs, one per module.</span>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-mode">AGENTS</span>
@@ -156,18 +196,19 @@ export function NewRunDialog({
                 onChange={(e) => setBudget(e.target.value)}
                 aria-label="Budget for this run in USD"
               />
-              <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
+              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "Each run stops at this limit" : "Run stops at this limit"}</span>
             </span>
           </label>
 
           {notice ? <p className="text-xs text-bad">{notice}</p> : null}
+          {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
         </form>
 
         <div className="flex items-center justify-end gap-2 border-t px-5 py-3.5">
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
           <Button onClick={submit} disabled={!canStart}>
             {busy ? <Loader2 className="animate-spin" /> : null}
-            Start run
+            {modules.length > 1 ? `Start ${modules.length} runs` : "Start run"}
           </Button>
         </div>
       </DialogContent>
@@ -338,12 +379,12 @@ function labHost(hostname: string): boolean {
 }
 
 // What POST /api/scopes gets for a list of sources: one members array, repos
-// and folders mixed, in any language. The server picks the pack from the
-// content. `pack` is the module the scope was added under; it counts only for
-// repos, whose content the server does not know until a run fetches it.
-// Live websites go as { kind: "live", hosts, permission }: the checkbox is the
-// operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
+// and folders mixed, in any language. The server works out the modules of a
+// code scope from its content.
+// Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
+// list of modules the operator ticked, and the checkbox is the operator saying
+// they may test the websites. The server records it as a grant.
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   const bearer = token.trim()
@@ -351,27 +392,33 @@ function scopeBody(sources: Source[], name: string, pack: string | undefined, pe
   const chatPath = chat.path.trim()
   const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
   if (sites.length) {
-    return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(assistant && pack === "ai-mcp" ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+    const mcp = modules.includes("ai-mcp")
+    return { kind: "live", title, hosts: sites, permission, pack: modules, ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
   }
   const members = sources.flatMap((s): ScopeMember[] =>
     s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
   )
-  return { title, members, ...(pack ? { pack } : {}) }
+  return { title, members }
 }
 
-// The add row under a scope list. Closed, it is one quiet row. Open, the same
+// A module every website scope allows, with nothing to tick. Same rule as
+// alwaysOn in spike/lib/targets.mjs: it can test a live site, it sends no
+// attack request, and it needs no input but the host names.
+const alwaysOn = (p: PackChoice) => p.live === true && p.proof !== "http" && !p.grants
+// A module the operator ticks for a website scope.
+const tickable = (p: PackChoice) => p.live === true && p.proof === "http" && !p.grants
+
+// The add row over the scope list. Closed, it is one quiet row. Open, the same
 // row becomes the input in place: same height, padding, and text start, so
-// nothing moves. A scope holds one or more GitHub repos or local folders; each
-// one added shows in a list under the row, and the scope is saved as one unit.
+// nothing moves. A scope holds GitHub repos and local folders, or websites.
+// Each one added shows in a list under the row, and the scope is saved as one
+// unit. Under the list: its name, then the modules it allows.
 export function AddScope({
-  pack,
   packs,
   onAttached,
   onError,
 }: {
-  pack?: string
-  // The modules that can attack a live host; a live scope must name one.
-  packs?: PackChoice[]
+  packs: PackChoice[]
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
 }) {
@@ -384,32 +431,31 @@ export function AddScope({
   const [token, setToken] = useState("")
   const [chatPath, setChatPath] = useState("")
   const [chatBudget, setChatBudget] = useState("")
-  const [module, setModule] = useState("web")
+  // The modules ticked for a website scope. A run picks from them at start.
+  const [modules, setModules] = useState<string[]>(["web"])
   const [allowPrivate, setAllowPrivate] = useState(false)
-  // The console token the server printed at start. A live scope needs it.
-  const [consoleToken, setConsoleTokenState] = useState(getConsoleToken)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const siteModule = pack && pack !== "contracts" ? pack : module
   const live = sources.some((s) => s.kind === "site")
   // A local lab: the opt-in shows only when a listed website is loopback or private.
   const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
-  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate) : null
-  // A folder path makes the server read this machine's disk, so it needs the
-  // console token too, like a live website.
-  const onDisk = sources.some((s) => s.kind === "folder" && "path" in s)
-  const needsToken = live || onDisk
-  const ready = (!live || (permission && (!lab || allowPrivate))) && (!needsToken || !!consoleToken)
-  const livePacks = (packs ?? []).filter((p) => p.live)
+  const choices = packs.filter(tickable)
+  const included = packs.filter(alwaysOn)
+  // In the server's module order, so the first ticked one is the scope's default.
+  // With nothing ticked the scope still allows the always-included modules.
+  const ticked = choices.filter((p) => modules.includes(p.id)).map((p) => p.id)
+  const siteModules = ticked.length ? ticked : included.map((p) => p.id)
   // Only the AI/MCP module takes a caller credential. A website does not.
-  const wantsToken = live && siteModule === "ai-mcp"
+  const wantsToken = live && ticked.includes("ai-mcp")
+  const title = (id: string, fallback: string) => packs.find((p) => p.id === id)?.title ?? fallback
 
   const close = () => {
     setOpen(false)
     setUrl("")
     setName("")
     setSources([])
+    setModules(["web"])
     setPermission(false)
     setAllowPrivate(false)
     setToken("")
@@ -450,20 +496,21 @@ export function AddScope({
     add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
     setUrl("")
   }
-  const save = () => {
-    if (!body || busy) return
+  // The Add button stays clickable. A click with something missing says what.
+  const save = async () => {
+    if (!sources.length || busy) return
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
-    if (needsToken && !consoleToken) return onError("Paste the console token. The server prints it when it starts.")
     setBusy(true)
     onError(null)
-    attachScope(body)
-      .then((scope) => {
-        close()
-        onAttached(scope)
-      })
-      .catch((e: Error) => onError(e.message))
-      .finally(() => setBusy(false))
+    try {
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate)))
+      close()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -496,6 +543,9 @@ export function AddScope({
     )
   }
 
+  // One form row: a fixed label column, then the field.
+  const formRow = "flex items-center gap-3 border-t border-border/60 py-1.5 pr-2 pl-2.5"
+  const formLabel = "w-[72px] shrink-0 text-[11px] text-muted-foreground"
   const chip =
     "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-3.5"
   return (
@@ -594,6 +644,94 @@ export function AddScope({
               </li>
             ))}
           </ul>
+          {/* Name, then modules. A ticked module shows the fields it needs under
+              it. The confirmations sit last, next to the Add button. */}
+          <label className={formRow}>
+            <span className={formLabel}>Name</span>
+            <input
+              value={name}
+              disabled={busy}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.stopPropagation()
+                  close()
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  save()
+                }
+              }}
+              maxLength={120}
+              placeholder={sources.map(sourceLabel).join(" + ")}
+              className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+          <div role="group" aria-labelledby="add-scope-modules" className={cn(formRow, "items-start py-2")}>
+            <span id="add-scope-modules" className={cn(formLabel, "leading-5")}>Modules</span>
+            {live ? (
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                  {choices.map((p) => (
+                    <label key={p.id} className="flex h-5 cursor-pointer items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={modules.includes(p.id)}
+                        disabled={busy}
+                        onChange={(e) => setModules((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                        className="size-3.5 shrink-0 accent-foreground"
+                      />
+                      {p.title}
+                    </label>
+                  ))}
+                </div>
+                {included.length ? (
+                  <span className="text-[11px] leading-relaxed text-muted-foreground">
+                    Always included: {included.map((p) => p.title).join(", ")}.
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
+                Set by the code. {title("review", "Code review")} always. {title("contracts", "Contracts")} too, for Solidity or a GitHub repo.
+              </span>
+            )}
+          </div>
+          {wantsToken ? (
+            <label className={formRow}>
+              <span className={formLabel}>Bearer token</span>
+              <input
+                value={token}
+                disabled={busy}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="Optional. The caller token an AI and MCP run tests with."
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </label>
+          ) : null}
+          {wantsToken ? (
+            <div className={formRow}>
+              <span className={formLabel}>Chat path</span>
+              <input
+                value={chatPath}
+                disabled={busy}
+                onChange={(e) => setChatPath(e.target.value)}
+                placeholder="Optional. The assistant's chat path, like /agent/chat."
+                aria-label="Assistant chat path the prompt probe may call"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+              <input
+                value={chatBudget}
+                disabled={busy}
+                inputMode="numeric"
+                onChange={(e) => setChatBudget(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                placeholder="Requests"
+                aria-label="Most requests the prompt probe may send (8 to 200)"
+                className="h-7 w-20 shrink-0 bg-transparent text-right font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </div>
+          ) : null}
           {live ? (
             <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
               <input
@@ -629,109 +767,11 @@ export function AddScope({
               </span>
             </label>
           ) : null}
-          {needsToken ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Console token</span>
-              <input
-                type="password"
-                value={consoleToken}
-                disabled={busy}
-                onChange={(e) => {
-                  const v = e.target.value.trim()
-                  setConsoleTokenState(v)
-                  setConsoleToken(v)
-                }}
-                placeholder="printed by the server at start"
-                aria-label="Console token"
-                autoComplete="off"
-                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
-              />
-            </label>
-          ) : null}
-          {live && livePacks.length > 1 ? (
-            <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span id="add-scope-module" className="shrink-0 text-[11px] text-muted-foreground">Module</span>
-              <Select
-                items={livePacks.map((p) => ({ value: p.id, label: p.title }))}
-                value={siteModule}
-                disabled={busy}
-                onValueChange={(v) => v && setModule(String(v))}
-              >
-                <SelectTrigger size="sm" className="min-w-0 flex-1 text-xs" aria-labelledby="add-scope-module">
-                  <SelectValue className="min-w-0 truncate" />
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false} className="p-1">
-                  {livePacks.map((p) => (
-                    <SelectItem key={p.id} value={p.id} className="text-xs">
-                      <span className="truncate">{p.title}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
-          {wantsToken ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Bearer token</span>
-              <input
-                value={token}
-                disabled={busy}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="optional; the caller token to audit with"
-                aria-label="Bearer token the run may use"
-                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
-              />
-            </label>
-          ) : null}
-          {wantsToken ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">garak</span>
-              <input
-                value={chatPath}
-                disabled={busy}
-                onChange={(e) => setChatPath(e.target.value)}
-                placeholder="optional; assistant chat path, e.g. /agent/chat"
-                aria-label="Assistant chat path garak may probe"
-                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
-              />
-              <input
-                value={chatBudget}
-                disabled={busy}
-                inputMode="numeric"
-                onChange={(e) => setChatBudget(e.target.value.replace(/\D/g, "").slice(0, 3))}
-                placeholder="requests"
-                aria-label="Most requests garak may send (8 to 200)"
-                className="h-7 w-16 shrink-0 bg-transparent text-right font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
-              />
-            </label>
-          ) : null}
-          <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
-            <input
-              value={name}
-              disabled={busy}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.stopPropagation()
-                  close()
-                }
-                if (e.key === "Enter") {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  save()
-                }
-              }}
-              maxLength={120}
-              placeholder={sources.map(sourceLabel).join(" + ")}
-              aria-label="Scope name"
-              className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-            />
-            <span className="shrink-0 text-[11px] text-muted-foreground">
-              {live
-                ? `${sources.length} ${sources.length === 1 ? "website" : "websites"}, tested as one unit`
-                : `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
+          <div className="flex items-center justify-end gap-3 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
+            <span className="text-[11px] text-muted-foreground">
+              {plural(sources.length, live ? "website" : "source")}, tested as one unit
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy || !ready} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
               Add scope
             </Button>
           </div>

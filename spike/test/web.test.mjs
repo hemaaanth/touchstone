@@ -511,9 +511,9 @@ test("web smoke: run_request_script finds all four planted bugs and prove() repl
     const prep = await web.prepass(ws, { emit: (e) => events.push(e) });
     assert.equal(events[0].ev, "web-lab-started");
 
-    // The prepass ran all three tools and found the planted leads. It must NOT
+    // The prepass ran all five tools and found the planted leads. It must NOT
     // find the two bugs that need a signed-in session: a clean scan misses them.
-    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["dalfox:ran", "nuclei:ran", "zap:ran"]);
+    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["arjun:ran", "dalfox:ran", "ffuf:ran", "nuclei:ran", "zap:ran"]);
     const checks = prep.record.leads.map((l) => l.check);
     assert.ok(checks.includes("reflected-xss"), checks.join(","));
     assert.ok(checks.includes("debug-config-exposed"), checks.join(","));
