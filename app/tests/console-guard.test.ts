@@ -1,3 +1,4 @@
+import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import crypto from "node:crypto"
@@ -14,10 +15,10 @@ import path from "node:path"
 const dir = mkdtempSync(path.join(tmpdir(), "console-guard-test-"))
 const SCOPES = path.join(dir, "scopes.json")
 const GRANTS = path.join(dir, "grants.json")
-process.env.TOUCHSTONE_SCOPES_FILE = SCOPES
-process.env.TOUCHSTONE_GRANTS_FILE = GRANTS
+useEnv({ TOUCHSTONE_SCOPES_FILE: SCOPES })
+useEnv({ TOUCHSTONE_GRANTS_FILE: GRANTS })
 const TOKEN = "test-grant-token"
-process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
+useEnv({ TOUCHSTONE_GRANT_TOKEN: TOKEN })
 
 // @ts-expect-error — plain .mjs module, no types
 const { handleRuns, handleFindings, handleScopes, handleGrants, handleSettings } = await import("../server/runs-http.mjs")
