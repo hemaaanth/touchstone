@@ -609,7 +609,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         const c = candidateFrom(e)
         if (!c || candidates.some((x) => x.poc === c.poc)) break
         candidates.push(c)
-        steps.push({ key, kind: "note", phase, label: `Recorded a candidate (unproven, needs review): ${c.title}` })
+        // Always a run-phase note: the chat drops notes from the decide pass.
+        steps.push({ key, kind: "note", phase: "run", label: `Recorded a candidate (unproven, needs review): ${c.title}` })
         break
       }
       case "submit-rejected":

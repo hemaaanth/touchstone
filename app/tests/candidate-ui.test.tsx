@@ -74,6 +74,14 @@ test("reduceEvents drops a candidate once it is superseded or proven", () => {
   expect(s.submitted.map((f) => f.poc)).toEqual(["b"])
 })
 
+// Review Minor 8: the chat drops note steps in phase "decide", so a candidate
+// note is always a run-phase note.
+test("a candidate sent during the decide pass keeps its chat note", () => {
+  const s = reduceEvents([{ t: 0, ev: "opened", mode: "decide" }, ev(cand("a"))])
+  const note = s.steps.find((x) => x.label.startsWith("Recorded a candidate"))
+  expect(note?.phase).toBe("run")
+})
+
 describe("the Candidates group", () => {
   const c = candidateFrom(ev(cand("a")))!
 
