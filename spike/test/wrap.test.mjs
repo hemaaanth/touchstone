@@ -67,6 +67,7 @@ test("runTool passes --pull=never directly after run --rm", async () => {
   try {
     const args = readFileSync(record, "utf8").trim().split("\n");
     assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    assert.match(args[args.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -75,7 +76,36 @@ test("runTool passes --pull=never directly after run --rm", async () => {
 test("a missing image fails without a registry pull", { skip: !hasDocker && "no docker" }, async () => {
   const result = await runTool({ image: "touchstone-missing@sha256:" + "1".repeat(64), cmd: ["true"] });
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Unable to find image|No such image|not found/i);
+  // A failed pull also says "not found", so match the no-pull error exactly.
+  assert.match(result.stderr, /No such image: touchstone-missing@sha256:1{64}/);
+  assert.doesNotMatch(result.stderr, /Pulling|pull access denied/);
+});
+
+// The tool's PID 1 ignores SIGTERM. A timeout must still stop it and say so.
+test("a timeout removes the container and returns near timeoutMs", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout-" + process.pid;
+  const started = Date.now();
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 2000 });
+  const took = Date.now() - started;
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  // Without the fix this took 25 s. A loaded host has taken 6 s with it.
+  assert(took < 20000, "returned after " + took + " ms");
+  const left = execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Command}}"], { encoding: "utf8" });
+  assert.equal(left.includes(mark), false, "the container is still there");
+});
+
+// A timeout can fire before Docker created the container. No "Created"
+// container may stay behind. The mark is in the command, so ps -a shows it.
+test("a 50 ms timeout leaves no container behind", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout50-" + process.pid;
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 50 });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  const left = () => execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Names}} {{.Status}} {{.Command}}"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(mark));
+  assert.deepEqual(left(), [], "a container is left at return");
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.deepEqual(left(), [], "a container appeared after return");
 });
 
 test("runTool mounts the workspace and has no network", { skip: !hasDocker && "no docker" }, async () => {

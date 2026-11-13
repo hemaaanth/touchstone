@@ -31,8 +31,9 @@ function fetches(target) {
 
 // Compute the plan. `requested`, when given, is the set of toggleable module ids
 // the operator wants on; omit it to default every available module on. Fixed
-// modules (agent, replay) ignore it.
-export function planModules(target, requested) {
+// modules (agent, replay) ignore it. `pack` is the run's pack manifest, when the
+// caller has it. A pack with `proof: "none"` gets its replay step off.
+export function planModules(target, requested, pack) {
   const want = (id, def) => (Array.isArray(requested) ? requested.includes(id) : def);
   const local = hasLocalSource(target);
   const mods = [];
@@ -52,6 +53,10 @@ export function planModules(target, requested) {
   }
 
   if (target.pack && target.pack !== "contracts") {
+    if (pack?.proof === "none") {
+      mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "This module has no replay oracle, so no finding can be proven. The run reports leads only." });
+      return mods;
+    }
     mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The pack's proof step is the only thing that makes a finding real." });
     return mods;
   }

@@ -221,6 +221,7 @@ test("local run argv (real runTool, PATH docker shim): --network none, the exact
   assert.deepEqual(args.slice(args.indexOf("touchstone/scorecard:5.6.0") + 1), SCORECARD.local);
   assert.ok(!args.join(" ").includes(FAKE_TOKEN), "the local run never gets the token");
   assert.ok(!args.some((a) => /TOKEN/.test(a)), "no token variable is passed to the local run");
+  assert.match(args[args.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/, "named, so a timeout can remove it");
 });
 
 // --pull=never on the local run comes from runTool's shared argv (from main).

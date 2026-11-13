@@ -3,7 +3,9 @@
 // Every pack's prepass hook returns a `record` the run keeps as `prepass`. The
 // shapes differ:
 //   Contracts      { static: { tool, engines, suspects, top[] },
-//                    fuzz:   { tool, engines, applicable, suspects, top[] } }
+//                    fuzz:   { tool, engines, applicable, suspects, top[] },
+//                    mythril, heimdall: { tool, engines, status, reason, suspects, top[] }
+//                    (the last two only for a bytecode-only target) }
 //   supply chain   { coverage: [{ engine, status, code, timedOut, leads }],
 //                    leads: [{ check, impact, where, file, lines, description, engine }] }
 //   Keys, Chain watch { mode, block, suspects, corroborated, top: [{ check, impact, where }] }
@@ -87,11 +89,11 @@ function lead(l, toolNames) {
   };
 }
 
-// A Contracts record: the static and fuzz phases, each with a ranked top list.
+// A Contracts record: the static, fuzz and bytecode phases, each with a ranked top list.
 function contracts(rec) {
   const tools = [];
   const leads = [];
-  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"]]) {
+  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"], ["mythril", "Mythril"], ["heimdall", "Heimdall"]]) {
     const p = rec[key];
     if (!p || typeof p !== "object") continue;
     const engines = arr(p.engines).map((e) => str(e, 40)).filter(Boolean);
@@ -108,7 +110,7 @@ export function prepassView(record) {
 
   let tools;
   let leads;
-  if (rec.static || rec.fuzz) {
+  if (rec.static || rec.fuzz || rec.mythril || rec.heimdall) {
     ({ tools, leads } = contracts(rec));
   } else if (Array.isArray(rec.top) && !rec.leads && !rec.coverage && !rec.tools) {
     // One world scan with a ranked top list (the chain packs).
@@ -149,7 +151,7 @@ export function prepassView(record) {
 export function prepassFromResult(r) {
   const res = obj(r);
   if (res.prepass) return res.prepass;
-  if (res.static || res.fuzz) return { static: res.static, fuzz: res.fuzz };
+  if (res.static || res.fuzz || res.mythril || res.heimdall) return { static: res.static, fuzz: res.fuzz, mythril: res.mythril, heimdall: res.heimdall };
   const out = {};
   for (const k of ["coverage", "tools", "leads", "mode", "pack", "suspects", "top"]) if (res[k] != null) out[k] = res[k];
   // `top` alone is the chain packs' shape; a result with only `pack` is not a prepass.

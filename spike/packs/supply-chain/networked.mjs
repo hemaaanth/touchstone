@@ -138,7 +138,7 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
 
 // Load the pin, or build the base snapshot, add the networked captures, and pin
 // it. A pinned snapshot is never recaptured: replay reads the saved bytes.
-export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree = false, token = process.env.GITHUB_TOKEN, run = runTool, base = null } = {}) {
+export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree = false, signingPolicy = null, token = process.env.GITHUB_TOKEN, run = runTool, base = null } = {}) {
   try { return loadSnapshot(ws); }
   catch (err) { if (err.code !== "ENOENT" && !String(err.message).includes("Missing snapshot SHA-256 pin")) throw err; }
   const tools = cfg.networkTools ?? [];
@@ -152,7 +152,7 @@ export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree 
   if (tools.includes("scorecard")) captures.scorecard = await captureScorecard(snapshot, { target, reach: cfg.reach, token, run });
   for (const t of tools) if (t !== "scorecard") captures[t] = await captureBlocked(t, { target, reach: cfg.reach, token, run });
   if (named.length > 1) captures.notes = [`networked tools read only ${target ? `${target.owner}/${target.repo}` : "no repo"}; ${named.length - 1} other targets were not captured`];
-  const out = { ...snapshot, captures };
+  const out = { ...snapshot, ...(signingPolicy ? { signingPolicy } : {}), captures };
   return { snapshot: out, snapshotHash: pinSnapshot(ws, out) };
 }
 
