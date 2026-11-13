@@ -10,7 +10,7 @@ import { PLAN_STEP } from "@/lib/catalog"
 import { ModulePills } from "@/components/module-pill"
 import { ProviderLogo } from "@/components/provider-logo"
 import { TruncatedText } from "@/components/page-parts"
-import { agentLook, cardFor, runInterruption, runModules, type CardState } from "@/components/thread-model"
+import { agentLook, cardFor, inRunOrder, runInterruption, runModules, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
 import { ResizeHandle } from "@/components/resize-handle"
@@ -516,7 +516,7 @@ function RunInfo({
         </span>
       ) : null,
     ],
-    [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={packs} compact /> : null],
+    [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={inRunOrder(packs, modules)} compact /> : null],
     ["Steps", steps.length ? steps.join(" · ") : null],
   ]
   return (
