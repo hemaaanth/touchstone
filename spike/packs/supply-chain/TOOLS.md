@@ -131,7 +131,7 @@ Honest limits of the boundary:
 
 - The proxy limits hosts, not paths. The token can read anything it can read on `api.github.com` while the capture runs. The tools are read-only; the token is the real limit.
 - `codeload.github.com` is allowed for capture only. The host-process GitHub path (`githubGet()`) still allows only `api.github.com` and `raw.githubusercontent.com`.
-- The token is visible to anyone who can run `docker inspect` on the short-lived capture container.
+- The token is visible to anyone who can run `docker inspect` on the short-lived capture container (it is in Config.Env). It is not in argv or the host `ps`.
 - The proxy log counts TLS tunnels, not API requests. Request counts below come from GitHub's `/rate_limit` (it does not count against the limit).
 - Capture runs on local Docker only, never on a Daytona machine.
 
@@ -164,7 +164,7 @@ Target and token, observed 2026-11-12: the target is `hemaaanth/touchstone` (pri
 ### chain-bench
 
 - Not wired. The pack never runs it.
-- Why: chain-bench v0.1.10 takes the token only as the argv flag `-t`. In the v0.1.10 source, `internal/commands/scan.go` passes the cobra flag value `accessToken` straight to `clients.FetchClientData`. The config file's token is not used for that call. Env vars do not work (tried: `ACCESS_TOKEN`, `CHAIN_BENCH_ACCESS_TOKEN`, `CHAINBENCH_ACCESS_TOKEN`, `GITHUB_TOKEN`, `SCM_TOKEN`). A token in argv shows in `docker inspect` and in the host `ps`, so the token rule forbids it. A wrapper inside the container that moves an env var into argv would still show in `ps`, so the pack does not use one.
+- Why: chain-bench v0.1.10 takes the token only as the argv flag `-t`. In the v0.1.10 source, `internal/commands/scan.go` passes the cobra flag value `accessToken` straight to `clients.FetchClientData`. The config file's token is not used for that call. Env vars do not work (tried: `ACCESS_TOKEN`, `CHAIN_BENCH_ACCESS_TOKEN`, `CHAINBENCH_ACCESS_TOKEN`, `GITHUB_TOKEN`, `SCM_TOKEN`). A token in argv shows in the host `ps` to any local user, so the token rule forbids it. (`docker inspect` shows an env token too, in Config.Env; the rule allows env.) A wrapper inside the container that moves an env var into argv would still show in `ps`, so the pack does not use one.
 - Seen with no token: it calls `GET /user`, then `GET /repos/...`, and stops with "Failed to fetch client data". Those were unauthenticated calls, not counted against the token. No tokened request was ever made.
 - At run time: `--network-tools chain-bench` gives coverage `unavailable` and a `not-covered-token-in-argv` gap. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
 - Image, kept for the record: `touchstone/chain-bench:0.1.10`, the release tarball by `ADD --checksum=sha256:03c73a9d…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Programs: the `chain-bench` binary (Apache-2.0) and the same unchanged Alpine 3.20 base packages as the Scorecard image.

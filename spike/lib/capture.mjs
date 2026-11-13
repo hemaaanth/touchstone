@@ -15,8 +15,11 @@
 // The argv always has `--pull=never` (the image is built locally and pinned).
 // A secret (the GitHub token) goes into the container by NAME only: the argv
 // holds `-e GITHUB_TOKEN`, and the value rides in the docker CLI's own
-// environment. So it is never in argv, `ps`, or a log line. Any copy of a secret
-// value in the tool's stdout or stderr is replaced before the result returns.
+// environment. So it is never in argv, the host `ps`, or a log line. It IS in
+// the container's Config.Env while the container lives, so anyone who can run
+// `docker inspect` on it can read it (the owner rule allows env). Any copy of a
+// secret value in the tool's stdout or stderr is replaced before the result
+// returns, and output that still holds part of it is dropped.
 //
 // Capture runs on local Docker only, never on a Daytona machine: the secret
 // would have to cross to the remote host, and the boundary is built locally.

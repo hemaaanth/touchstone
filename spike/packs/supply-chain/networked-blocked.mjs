@@ -29,8 +29,10 @@ export const LEGITIFY = {
 // chain-bench v0.1.10 (images/chain-bench/Dockerfile) takes the token only as
 // the argv flag `-t`: `scan` passes the cobra flag value straight to
 // FetchClientData (internal/commands/scan.go). No env var or config key feeds
-// it. The token rule forbids a token in argv (docker inspect and ps show it),
-// so the pack never runs chain-bench. An opt-in is an honest gap, no docker call.
+// it. The token rule forbids a token in argv: the host `ps` would show it to any
+// local user. (`docker inspect` shows an env token too, in Config.Env. The rule
+// allows env, so that is not the reason.) So the pack never runs chain-bench.
+// An opt-in is an honest gap, no docker call.
 export const CHAIN_BENCH = {
   image: "touchstone/chain-bench:0.1.10",
   version: "0.1.10",
