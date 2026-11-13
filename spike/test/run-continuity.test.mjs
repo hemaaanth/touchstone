@@ -90,9 +90,13 @@ mock.module("node:dns/promises", { exports: { ...realDns, default: { ...realDns,
 // A fetch with no network: it writes the tree the real one would.
 const realFetch = await import("../lib/fetch.mjs");
 const fetchClones = [];
+// The server's restore of a fetched source, with one extra: a test can stand in
+// front of it (to stop the run, to hang, or to give another commit).
+let restoreHook = null;
 mock.module("../lib/fetch.mjs", {
   exports: {
     ...realFetch,
+    restoreSource: (ws, url) => (restoreHook ? restoreHook(ws, url, realFetch.restoreSource) : realFetch.restoreSource(ws, url)),
     fetchSource: async (ws, url) => {
       fetchClones.push({ ws, url });
       mkdirSync(path.join(ws, "vendor", "acme__lib", "src"), { recursive: true });
@@ -1562,6 +1566,168 @@ test("A6: a joined run gets the restored code in the run's tree and in each modu
     gitCommit(repo, { "src/Lib.ts": "export const v = 2\n" });
     const { ws, told } = await lostAndRebuilt(run);
     assert.ok(told.message.includes(`(commit ${first.slice(0, 12)}, in ${where})`), told.message);
+    for (const at of [".", "modules/review", "modules/contracts"]) {
+      assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
+    }
+  });
+});
+
+// ---- A6 minors ------------------------------------------------------------------
+
+test("A6: the pin is found whatever the event's spelling of the URL, and a fetch that gives another commit is not 'the same'", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/spelled";
+    const where = "vendor/acme__spelled";
+    const repo = path.join(GIT_REMOTE, "acme", "spelled.git");
+    const first = gitCommit(repo, { "src/Lib.ts": "export const v = 1\n" });
+    gitCommit(repo, { "src/Lib.ts": "export const v = 2\n" });
+    // The event spells the member with a trailing slash, or with .git.
+    for (const spelled of [`${url}/`, `${url}.git`]) {
+      const scopeOf = addScope({ title: `Scope ${spelled}`, members: [{ kind: "repo", url }] });
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [{ ev: "source-fetch", url: spelled, ok: true, where, files: 1, commit: first }, done] });
+      const { id } = await createRun({ targetId: scopeOf.id, pack: "review", mode: "solo" });
+      await settle(id);
+      const { ws, told } = await lostAndRebuilt({ id, ws: spawns.at(-1).args[4] });
+      assert.deepEqual(pinsOf(ws), { [url]: { commit: first } }, "the pin is under the member's own URL");
+      assert.equal(readFileSync(path.join(ws, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", `${spelled}: the commit this run read, not the head of today`);
+      assert.ok(told.message.includes(`in it again, as this run read them before: ${url} (commit ${first.slice(0, 12)}, in ${where}).`), told.message);
+    }
+    // A fetch that comes back with another commit: the code does not stay, and the event does not call it the same.
+    const run = await fetchedAt(url, where, first);
+    restoreHook = async (ws, u, real) => ({ ...(await real(ws, u)), commit: "f".repeat(40) });
+    try {
+      const { ws, told } = await lostAndRebuilt(run);
+      assert.ok(told.message.includes(`could not be put back, so they are not in it: ${url}: the fetch did not give what this run read before, so its result was taken out again.`), told.message);
+      assert.ok(!told.message.includes("in it again"));
+      assert.ok(!existsSync(path.join(ws, where)));
+    } finally {
+      restoreHook = null;
+    }
+  });
+});
+
+// A finished run whose agent fetched two repos, each at its first commit. The branches moved on since.
+async function twoFetched(api, name) {
+  const members = [1, 2].map((n) => ({ url: `https://github.com/acme/${name}${n}`, where: `vendor/acme__${name}${n}`, repo: path.join(GIT_REMOTE, "acme", `${name}${n}.git`) }));
+  for (const m of members) {
+    m.commit = gitCommit(m.repo, { "src/Lib.ts": "export const v = 1\n" });
+    gitCommit(m.repo, { "src/Lib.ts": "export const v = 2\n" });
+  }
+  const scopeOf = addScope({ title: `Scope ${name}`, members: members.map((m) => ({ kind: "repo", url: m.url })) });
+  scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [...members.map((m) => ({ ev: "source-fetch", url: m.url, ok: true, where: m.where, files: 1, commit: m.commit })), done] });
+  const { id } = await api.createRun({ targetId: scopeOf.id, pack: "review", mode: "solo" });
+  await settle(id, 0, api);
+  return { id, ws: spawns.at(-1).args[4], members };
+}
+const codeOf = (ws, m) => (existsSync(path.join(ws, m.where, "src", "Lib.ts")) ? readFileSync(path.join(ws, m.where, "src", "Lib.ts"), "utf8") : null);
+
+test("A6: the restore says what it does, one event per source, and Stop ends it before the next source; the next follow-up finishes it", async () => {
+  await withGit(async () => {
+    const run = await twoFetched(runs, "prog");
+    const [m1, m2] = run.members;
+    rmSync(run.ws, { recursive: true, force: true });
+    const before = spawns.length;
+    // The operator presses Stop while the first source is fetched.
+    let stop = null;
+    restoreHook = async (ws, u, real) => {
+      stop ??= runs.stopRun(run.id);
+      return real(ws, u);
+    };
+    let r;
+    try {
+      steerRun(run.id, "Look again.");
+      r = await settle(run.id, 1);
+    } finally {
+      restoreHook = null;
+    }
+    assert.deepEqual(stop, { ok: true }, "Stop is taken while the workspace is prepared");
+    assert.equal(spawns.length, before, "no worker started");
+    const said = r.events.filter((e) => e.ev === "workspace");
+    assert.deepEqual(said.map((e) => [e.state, e.message]), [
+      ["restoring", "The fetched sources of this run are put back into its workspace, as this run read them before: 2 to fetch. Each one can take up to 90 seconds."],
+      ["restoring", "Fetching acme/prog1 (1 of 2)."],
+    ], "one event before, one per source, and none for the source after the Stop");
+    assert.ok(!said.some((e) => e.message.includes(tmpdir()) || e.message.includes(dir)), "no path of this host");
+    assert.deepEqual(r.events.slice(-3).map((e) => e.ev), ["stop-requested", "stopped", "closed"]);
+    const ws = kept(run.id).ws;
+    made.push(ws);
+    assert.deepEqual([codeOf(ws, m1), codeOf(ws, m2)], ["export const v = 1\n", null], "the first source is there, the second is not");
+    assert.equal(kept(run.id).restoring, true, "the record says the restore is not done");
+
+    // The next follow-up works in the same workspace, after the server put the rest back.
+    scripts.push({ act: (call) => (call.code = codeOf(call.args[4], m2)), events: [done] });
+    steerRun(run.id, "Go on.");
+    r = await settle(run.id, 2);
+    const call = spawns.at(-1);
+    assert.equal(call.args[4], ws);
+    assert.equal(call.code, "export const v = 1\n", "the worker finds the second source, at its commit");
+    const told = r.events.findLast((e) => e.ev === "workspace");
+    assert.equal(told.state, "kept");
+    assert.ok(told.message.startsWith("The fetched sources of this workspace were not all put back when its last follow-up ended, so the server did that now. These fetched sources are in it again, as this run read them before: "), told.message);
+    assert.ok(told.message.includes(`${m2.url} (commit ${m2.commit.slice(0, 12)}, in ${m2.where})`));
+    assert.ok(call.env.WORKSPACE_NOTE.includes(told.message), "the agent reads the same text");
+    assert.equal(kept(run.id).restoring, undefined);
+    assert.deepEqual(r.events.filter((e) => e.ev === "workspace" && e.state === "restoring").map((e) => e.message).slice(-2), ["Fetching acme/prog1 (1 of 2).", "Fetching acme/prog2 (2 of 2)."]);
+    // Done: a later follow-up says nothing more and fetches nothing.
+    const events = r.events.filter((e) => e.ev === "workspace").length;
+    scripts.push({ events: [done] });
+    steerRun(run.id, "And again.");
+    r = await settle(run.id, 3);
+    assert.equal(r.events.filter((e) => e.ev === "workspace").length, events);
+  });
+});
+
+test("A6: a server stop while the sources are put back is not hidden: the next follow-up puts them back and names them", async () => {
+  await withGit(async () => {
+    let server = await restart();
+    const run = await twoFetched(server, "half");
+    const [m1, m2] = run.members;
+    rmSync(run.ws, { recursive: true, force: true });
+    // The fetch of the second source never ends, and the server dies.
+    let hung;
+    const waiting = new Promise((res) => (hung = res));
+    restoreHook = (ws, u, real) => (u === m2.url ? (hung(), new Promise(() => {})) : real(ws, u));
+    server.steerRun(run.id, "Look again.");
+    await waiting;
+    restoreHook = null;
+    const ws = kept(run.id).ws;
+    made.push(ws);
+    assert.deepEqual([codeOf(ws, m1), codeOf(ws, m2), kept(run.id).restoring], ["export const v = 1\n", null, true]);
+    lockOf(run.id).close();
+    server = await restart();
+
+    scripts.push({ act: (call) => (call.code = codeOf(call.args[4], m2)), events: [done] });
+    server.steerRun(run.id, "Go on.");
+    const r = await settle(run.id, closes(run.id, server), server);
+    const call = spawns.at(-1);
+    assert.equal(call.args[4], ws, "the same workspace");
+    assert.equal(call.code, "export const v = 1\n", "the source that was missing is there when the worker starts");
+    const told = r.events.findLast((e) => e.ev === "workspace");
+    assert.equal(told.state, "kept");
+    for (const m of [m1, m2]) assert.ok(told.message.includes(`${m.url} (commit ${m.commit.slice(0, 12)}, in ${m.where})`), told.message);
+    assert.ok(call.env.WORKSPACE_NOTE.includes(told.message));
+    assert.ok(!call.env.WORKSPACE_NOTE.includes("the sources you fetched are still there"));
+    assert.equal(kept(run.id).restoring, undefined);
+  });
+});
+
+test("A6: a joined run whose stream has no packs event still gets the restored code in its modules", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/joined2";
+    const where = "vendor/acme__joined2";
+    const first = gitCommit(path.join(GIT_REMOTE, "acme", "joined2.git"), { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, where, first, { pack: undefined, packs: ["review", "contracts"] });
+    assert.deepEqual(kept(run.id).packs, ["review", "contracts"]);
+    // An older stream: the record knows the modules, the stream does not.
+    const stream = path.join(RESULTS, `run-${run.id}.stream.jsonl`);
+    writeFileSync(stream, readFileSync(stream, "utf8").split("\n").filter((l) => !l.includes('"ev":"packs"')).join("\n"));
+    rmSync(run.ws, { recursive: true, force: true });
+    const server = await restart();
+    scripts.push({ events: [done] });
+    server.steerRun(run.id, "Look again.");
+    await settle(run.id, closes(run.id, server), server);
+    const ws = spawns.at(-1).args[4];
+    made.push(ws);
     for (const at of [".", "modules/review", "modules/contracts"]) {
       assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
     }
