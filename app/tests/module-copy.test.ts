@@ -14,6 +14,7 @@ const NOTE: Record<string, string | null> = {
   "supply-chain": "A live run reads a GitHub repo or org you've granted, through the read-only GitHub API.",
   "domains": "It can reach a host you've granted. Its scanners run on an open network.",
   "surface": "It can reach a host you've granted. Its scanners run on an open network.",
+  "phishing": "It can reach a host you've granted. Its scanners run on an open network.",
   "web": "It can reach a host you've granted. Its scanners run on an open network.",
   "ai-mcp": "It can reach a host you've granted. Its scanners run on an open network. Its lab target is a rule-based stand-in.",
   "keys": "It runs only in our own offline sandbox.",

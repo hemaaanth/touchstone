@@ -351,6 +351,11 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     if (PACKS[pack]?.live !== true) {
       throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
     }
+    // The phishing pack must know the client's own defensive registrations, or it
+    // reports them as lookalikes. The list is required. An explicit [] means none.
+    if (pack === "phishing" && !Array.isArray(target.owned)) {
+      throw new Error(`live phishing target ${target.id} needs an owned list of the client's own lookalike domains. Use [] for none.`)
+    }
     const baseUrl = origins[0]
     // A live AI/MCP target can carry its own credential. It rides in the config
     // (the tool reads it) and in the brief (the agent reads it).
@@ -381,6 +386,14 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       })
       live.domain = hosts[0]
       live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+    }
+    // The phishing pack captures the lookalikes of one root domain the same way.
+    // `owned` lists the client's own defensive registrations; they raise no lead.
+    // The pack asserts the grant against `scope` before dnstwist runs.
+    if (pack === "phishing") {
+      live.domain = hosts[0]
+      live.reach = { network: "bridge", granted: true, scope: hosts }
+      live.owned = target.owned.map(String)
     }
     // The supply-chain pack reads GitHub repos or orgs through the read-only
     // API. `github` is what to read; `reach.scope` is what the grant covers.
