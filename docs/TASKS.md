@@ -135,12 +135,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | Need | Unblocks | Without it |
 |------|----------|-----------|
-| Yes or no on the protected fleet files | A5, I7 | Both stay blocked |
-| ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The key in the form counts as the yes for wave 4 use. | J1, I1 to I6 | Waves 1 to 3 are not affected |
+| ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
+| ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
 | ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
 | ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
-| Yes to close PR 3 on GitHub | H1 tidy-up | PR 3 stays open |
+| ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
 | An eye on the UI work | B, C, D, E, F | Merges on review + screenshots; the owner checks the morning page |
 
 ---
@@ -153,7 +153,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
 | A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
 | A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
-| A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. **blocked** on the owner. |
+| A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. The owner allowed it for this task (2026-11-13). Starts after thread 1a merges (wave 2, thread 2h). Own reviewer; the gate line is never touched. |
 
 ## B. Run view polish
 
@@ -222,7 +222,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
 | H2 | doing | PR 7 (report redaction), `merge/pr-7` 5b75dfb: open redaction rules. Blocks F2. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
-| H4 | parked | PR 8: parked until the owner decides. |
+| H4 | parked | PR 8: the owner decided 2026-11-13: it stays parked. No work. |
 
 ## I. Browser and free-roam agents (plan page v5)
 
@@ -234,7 +234,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | I4 | todo | Ask-the-human flow in the fleet, with manual takeover through the sandbox desktop view. |
 | I5 | todo | Wallet and email loadout options. |
 | I6 | todo | Session capture (HAR, shell transcript, screenshots) in the candidate record. Needs G5. |
-| I7 | blocked | Per-agent loadouts. Lives in the protected fleet files: needs the owner's yes. |
+| I7 | todo | Per-agent loadouts. Lives in the protected fleet files. The owner allowed it for this task (2026-11-13). Wave 4. Own reviewer; the gate line is never touched. |
 
 ## J. Daytona baked snapshot (plan page v2, path A)
 
@@ -272,4 +272,4 @@ The review of the base commit found real defects. Most are older than the base c
 
 ## Owner decisions (open)
 
-chain-bench and raven · classic GitHub token for Scorecard API and Legitify · PR 3 close · PR 8 · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
+a public repo as the live target for the GitHub tools (the token reads public repos only) · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
