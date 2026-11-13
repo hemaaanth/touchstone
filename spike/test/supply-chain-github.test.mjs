@@ -19,7 +19,7 @@ const { githubGet } = await import("../lib/fetch.mjs");
 const { addLiveScope, removeScope } = await import("../lib/scopes-store.mjs");
 const { readGrants } = await import("../lib/grant-store.mjs");
 const { enforceReach } = await import("../lib/reach.mjs");
-const { listTargets, prepareWorkspace, getTarget } = await import("../lib/targets.mjs");
+const { listTargets, prepareWorkspace, getTarget, scopeEnv } = await import("../lib/targets.mjs");
 const { cryptoLeads } = await import("../packs/supply-chain/crypto.mjs");
 const { scanSnapshot } = await import("../packs/supply-chain/scanners.mjs");
 const pack = (await import("../packs/supply-chain/pack.mjs")).default;
@@ -202,7 +202,7 @@ test("a supply-chain live scope grants only the GitHub API hosts and binds the r
     assert.deepEqual(cfg.github, [REPO, "octokit/core.js@main"]);
     assert.deepEqual(cfg.reach.scope, [REPO, "octokit/core.js"]);
     assert.equal(cfg.reach.granted, true);
-    assert.match(readFileSync(path.join(w, "BRIEF.md"), "utf8"), /octokit\/request-error\.js/);
+    assert.match(scopeEnv(getTarget(scope.id)).SCOPE_NOTES, /octokit\/request-error\.js/);
     rmSync(w, { recursive: true, force: true });
   } finally { removeScope(scope.id); }
   assert.equal(readGrants().length, 0, "removing the scope removes its grant");

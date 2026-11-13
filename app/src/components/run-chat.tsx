@@ -19,15 +19,13 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { buildMessages, OpenArtifact, runHeadStatus, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
+import { agentLook, buildMessages, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
-  AGENT_WORD,
   FleetContext,
   ThreadOwner,
   agentName,
-  dotClass,
   isLiveAgent,
   runEnd,
   runMode,
@@ -546,6 +544,7 @@ export function RunChat({
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
                   coverage={status === "recorded" ? state?.coverage ?? null : null}
+                  note={runInterruption(state, status)?.note ?? null}
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
@@ -731,14 +730,15 @@ function PeekHeader({
   const a = state.agents.find((n) => n.id === id)
   const from = a?.startedAt ?? runStart(state)
   const to = a?.endedAt ?? runEnd(state)
+  const look = agentLook(state, a)
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
       {back}
-      <span className={cn("size-[7px] shrink-0 rounded-full", dotClass(a?.state ?? "working"))} />
+      <span className={cn("size-[7px] shrink-0 rounded-full", look.dot)} />
       <span className="min-w-0 truncate text-sm font-medium">{agentName(state, id)}</span>
       {a ? (
-        <span className={cn("shrink-0 text-xs tabular-nums", a.state === "failed" ? "text-bad" : "text-muted-foreground")}>
-          {AGENT_WORD[a.state]}
+        <span className={cn("shrink-0 text-xs tabular-nums", look.bad ? "text-bad" : "text-muted-foreground")} title={look.reason ?? undefined}>
+          {look.word}
           {from != null && to != null ? ` · ${span(to - from)}` : ""}
         </span>
       ) : null}

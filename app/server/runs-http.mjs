@@ -8,6 +8,7 @@ import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun,
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
+import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
 
 function send(res, status, json) {
@@ -230,6 +231,8 @@ export async function handleFindings(req, res) {
 //                                folders, mixed), or a legacy { title, files },
 //                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
+//   POST   /api/scopes/:id/brief — set or clear its brief ({ brief }); text for
+//                                the model only, it changes no reach or grant
 export async function handleScopes(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","scopes",...]
@@ -249,6 +252,19 @@ export async function handleScopes(req, res) {
     const body = await readBody(req)
     try {
       send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 4 && parts[3] === "brief" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      // A body that did not parse reads as {}. It must not clear the brief.
+      if (typeof body.brief !== "string") throw new Error("Send the brief as text: { brief }. An empty text clears it.")
+      const scope = setScopeBrief(decodeURIComponent(parts[2]), body.brief)
+      send(res, 200, { id: scope.id, brief: scope.brief ?? "" })
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

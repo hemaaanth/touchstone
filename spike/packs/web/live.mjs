@@ -1,12 +1,12 @@
 // The Web pack's live scan. The request runner, transcript and proof replay are
 // shared and live in lib/live.mjs; this file only aims the scanners at the real
 // site and records their leads.
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { requireImage } from "../../lib/proof-http.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { SCAN_NETWORK, bindLive } from "../../lib/live.mjs";
-import { scanWeb, docQueryUrls, mergeLeads } from "./scan.mjs";
+import { scanWeb, mergeLeads } from "./scan.mjs";
 import { DEFAULT_BUDGET_USD as STRIX_BUDGET_USD, runStrix } from "../../lib/strix.mjs";
 import { FALLBACK_PRICE, activeProvider, providerKey, readConfig } from "../../lib/providers.mjs";
 import { capGuard, ledgerCharge } from "../../lib/inference.mjs";
@@ -48,8 +48,9 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
   let scan = { coverage: [], leads: [] };
   try {
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"], target: baseUrl });
-    const docs = ["BRIEF.md"].map((f) => { try { return readFileSync(join(ws, f), "utf8"); } catch { return ""; } }).join("\n");
-    scan = await scanWeb({ net: SCAN_NETWORK, baseUrl, urls: docQueryUrls(docs, baseUrl) });
+    // A live scope has no documents in its workspace. Its brief is operator
+    // text for the model only, so it seeds no scanner URL.
+    scan = await scanWeb({ net: SCAN_NETWORK, baseUrl, urls: [] });
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   }

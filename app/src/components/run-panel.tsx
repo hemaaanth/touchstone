@@ -1,23 +1,22 @@
 import { useEffect, useRef, useState } from "react"
 import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck } from "lucide-react"
-import type { AgentNode, ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
+import type { ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
 import { ModulePills } from "@/components/module-pill"
 import { ProviderLogo } from "@/components/provider-logo"
 import { TruncatedText } from "@/components/page-parts"
-import { cardFor, runModules, type CardState } from "@/components/thread-model"
+import { agentLook, cardFor, runInterruption, runModules, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
 import { ResizeHandle } from "@/components/resize-handle"
 import { Hint, ProofIcon, ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import {
-  AGENT_WORD,
   agentName,
-  dotClass,
   fleetSpend,
   isLiveAgent,
   runBudget,
@@ -104,8 +103,10 @@ export function RunPanel({
   const showAgents = mode === "fleet" || agents.length > 0
 
   const active = agents.filter(isLiveAgent).length
-  const failed = agents.filter((a) => a.state === "failed").length
-  const agentStatus = failed ? `${failed} failed` : active ? `${active} active` : null
+  // A restart's cut-off is not a failure: it counts on its own, in muted ink.
+  const cut = agents.filter((a) => a.id in state.cutOff).length
+  const failed = agents.filter((a) => a.state === "failed" && !(a.id in state.cutOff)).length
+  const agentStatus = failed ? `${failed} failed` : active ? `${active} active` : cut ? `${cut} interrupted` : null
   const held = notes.filter((n) => n.lane === "evidence").length
   const leads = notes.filter((n) => n.lane !== "evidence" && n.kind === "lead").length
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
@@ -483,8 +484,20 @@ function RunInfo({
   const t1 = live ? now : runEnd(state)
   const budget = runBudget(state)
   const modules = runModules(state)
+  const cut = runInterruption(state, state.status)
   const steps = (state.modules ?? []).filter((m) => m.on).map((m) => PLAN_STEP[m.id] ?? m.id)
   const rows: [string, React.ReactNode][] = [
+    // A run a restart cut off, or one whose agents it cut off: a neutral word
+    // and the plain reason. Not red: nothing failed.
+    [
+      "State",
+      cut ? (
+        <span key="state" className="flex flex-col gap-0.5">
+          <span>{cut.ended ? "Interrupted" : `${cut.agents.length} ${cut.agents.length === 1 ? "agent" : "agents"} interrupted`}</span>
+          <span className="text-muted-foreground">{cut.reason}</span>
+        </span>
+      ) : null,
+    ],
     ["Mode", mode === "fleet" ? "Fleet" : "Solo"],
     ["Runtime", t0 != null && t1 != null ? span(t1 - t0) : null],
     ["Spend", <Spend key="spend" usd={fleetSpend(state)} budget={budget} />],
@@ -494,7 +507,15 @@ function RunInfo({
         <ModelLine key="model" provider={state.provider?.id ?? null} id={state.provider?.model ?? model} agents={mode === "fleet" ? state.agents.length : null} />
       ) : null,
     ],
-    ["Scope", state.scope?.title ?? null],
+    [
+      "Scope",
+      state.scope?.title || state.brief ? (
+        <span key="scope" className="flex flex-col gap-0.5">
+          {state.scope?.title ? <span>{state.scope.title}</span> : null}
+          {state.brief ? <ScopeBrief text={state.brief} /> : null}
+        </span>
+      ) : null,
+    ],
     [modules.length === 1 ? "Module" : "Modules", modules.length ? <ModulePills key="modules" ids={modules} packs={packs} compact /> : null],
     ["Steps", steps.length ? steps.join(" · ") : null],
   ]
@@ -509,6 +530,21 @@ function RunInfo({
           </div>
         ))}
     </dl>
+  )
+}
+
+// The scope brief the agent got: one quiet line, the text one click away.
+function ScopeBrief({ text }: { text: string }) {
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="group -mx-1 flex items-center gap-1 rounded-sm px-1 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+        <ChevronRight className="size-3 shrink-0 transition-transform group-data-[panel-open]:rotate-90" />
+        Scope brief applied
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <p className="mt-1 max-h-48 overflow-y-auto rounded-md bg-muted/50 px-2 py-1.5 leading-relaxed whitespace-pre-wrap text-muted-foreground">{text}</p>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -575,9 +611,8 @@ function AgentList({
       {agents.map((a) => (
         <Row
           key={a.id}
-          dot={a.state}
+          look={agentLook(state, a)}
           name={a.name || a.title}
-          word={AGENT_WORD[a.state]}
           sub={a.title && a.name ? a.title : null}
           t2={a.tier === "T2"}
           selected={a.id === selected}
@@ -594,17 +629,15 @@ function AgentList({
 }
 
 function Row({
-  dot,
+  look,
   name,
-  word,
   sub,
   t2 = false,
   selected,
   onClick,
 }: {
-  dot: AgentNode["state"]
+  look: ReturnType<typeof agentLook>
   name: string
-  word: string
   sub: string | null
   t2?: boolean
   selected: boolean
@@ -620,16 +653,17 @@ function Row({
         selected && "bg-foreground/5 hover:bg-foreground/5",
       )}
     >
-      <span className={cn("mt-1 size-[7px] shrink-0 rounded-full", dotClass(dot))} />
+      <span className={cn("mt-1 size-[7px] shrink-0 rounded-full", look.dot)} />
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{name}</span>
-          <span className={cn("shrink-0 text-[11px] leading-[14px]", dot === "failed" ? "text-bad" : "text-muted-foreground")}>
-            {word}
+          <span className={cn("shrink-0 text-[11px] leading-[14px]", look.bad ? "text-bad" : "text-muted-foreground")}>
+            {look.word}
           </span>
           {t2 ? <TierTag /> : null}
         </span>
         {sub ? <span className="truncate text-xs leading-4 text-muted-foreground">{sub}</span> : null}
+        {look.reason ? <span className="text-xs leading-4 text-muted-foreground">{look.reason}</span> : null}
       </span>
     </button>
   )

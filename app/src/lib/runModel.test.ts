@@ -464,3 +464,55 @@ test("a follow-up whose answer equals the run's first final: both show, in order
   // The second final extends this turn's own stream, never the first answer.
   assert.deepEqual(rows(es), ["say:No path drains the vault.", "operator:Sure?", "say:No path drains the vault. Checked twice."])
 })
+
+// B10: the server ends a child that a restart cut off as `subagent-done` with
+// status "failed" and `interrupted: true`. That is not a failure.
+const CUT = "The server restarted while this agent was working. It was not started again."
+const spawn = (id: string) => ev("subagent-spawned", { id, name: id, conv: id })
+
+test("a child a restart cut off is interrupted, not failed; a real failure stays failed", () => {
+  const state = reduceEvents([
+    spawn("a-1"),
+    spawn("a-2"),
+    ev("subagent-done", { id: "a-1", status: "failed", interrupted: true, error: CUT }),
+    ev("subagent-done", { id: "a-2", status: "failed", error: "The model call failed." }),
+  ])
+  assert.deepEqual(state.cutOff, { "a-1": CUT })
+  const errors = state.steps.filter((s) => s.kind === "agent-error").map((s) => [s.subId, !!s.cut])
+  assert.deepEqual(errors, [["a-1", true], ["a-2", false]])
+  assert.deepEqual(state.steps.filter((s) => s.kind === "subagent").map((s) => [s.subId, !!s.cut]), [["a-1", true], ["a-2", false]])
+})
+
+test("an agent that works again leaves the cut-off list", () => {
+  const cut = [spawn("a-1"), ev("subagent-done", { id: "a-1", status: "failed", interrupted: true, error: CUT })]
+  assert.deepEqual(reduceEvents([...cut, ev("agent-status", { id: "a-1", state: "working" })]).cutOff, {})
+  assert.deepEqual(reduceEvents([...cut, ev("subagent-done", { id: "a-1", status: "done" })]).cutOff, {})
+  // An idle report is not work: the agent stays cut off.
+  assert.deepEqual(Object.keys(reduceEvents([...cut, ev("agent-status", { id: "a-1", state: "idle" })]).cutOff), ["a-1"])
+})
+
+test("the scope brief: Run Info gets the last one, a follow-up can remove it, and it is no step", () => {
+  const base: RunEvent[] = [{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }, { t: 2, ev: "brief", text: "Look at auth first." }]
+  let s = reduceEvents(base)
+  assert.equal(s.brief, "Look at auth first.")
+  assert.ok(!s.steps.some((st) => /brief/i.test(st.label ?? "")))
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "Second." }])
+  assert.equal(s.brief, "Second.")
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "" }])
+  assert.equal(s.brief, null)
+  assert.equal(reduceEvents([{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }]).brief, null)
+})
+
+test("an older run's read of the Touchstone BRIEF.md is not shown as a repo file", () => {
+  const reads = (kind: string | null) =>
+    reduceEvents([
+      ...(kind ? [{ t: 0, ev: "scope", scope: { id: "s", title: "svc", kind } }] : []),
+      { t: 1, ev: "read_source", file: "BRIEF.md" },
+      { t: 2, ev: "read_source", file: "src/Vault.sol" },
+    ]).steps.filter((st) => st.kind === "read").map((st) => st.label)
+  // A scope run got its text in that file.
+  for (const kind of ["scope", "brief", "live"]) assert.deepEqual(reads(kind), ["Read the scope brief", "Read src/Vault.sol"])
+  // A lab never had a scope brief: the agent only looked for the file.
+  assert.deepEqual(reads("lab"), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
+  assert.deepEqual(reads(null), ["Looked for a BRIEF.md file", "Read src/Vault.sol"])
+})
