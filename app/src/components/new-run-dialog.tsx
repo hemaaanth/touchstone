@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
-import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
+import type { ModelChoice, PackChoice, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope, type ScopeMember } from "@/lib/api"
 import { getConsoleToken, setConsoleToken } from "@/lib/console-token"
 import { DEFAULT_PACK, packOf } from "@/lib/catalog"
@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 const RANDOM = "random"
-const NONE = "none"
 const DEFAULT_BUDGET = "5.00"
 
 const MODES: { value: RunMode; label: string; hint: string }[] = [
@@ -19,8 +18,8 @@ const MODES: { value: RunMode; label: string; hint: string }[] = [
 ]
 const MODE_KEY = "ts.runMode"
 
-// The New Run window. It has four fields: the scope, an optional playbook,
-// Fleet or Solo, and the budget. The model is the server's default (the first in the list),
+// The New Run window picks the scope, Fleet or Solo, and budget.
+// The model is the server's default (the first in the list),
 // so there is no model picker. "Random" omits targetId, so the server picks
 // and repeat runs do not re-break one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
@@ -29,7 +28,6 @@ export function NewRunDialog({
   models,
   targets,
   packs,
-  playbooks = [],
   busy,
   error,
   onStart,
@@ -39,9 +37,6 @@ export function NewRunDialog({
   models: ModelChoice[]
   targets: TargetChoice[]
   packs: PackChoice[]
-  // Saved run recipes. There is no playbook store on the server yet, so this
-  // is empty and the field shows "None".
-  playbooks?: Playbook[]
   busy: boolean
   error: string | null
   onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => void
@@ -49,7 +44,6 @@ export function NewRunDialog({
   const alias = models[0]?.alias ?? ""
   const runnable = targets.filter((t) => t.runnable && packs.some((p) => p.id === packOf(t)))
   const [scopeId, setScopeId] = useState(RANDOM)
-  const [playbookId, setPlaybookId] = useState(NONE)
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
@@ -58,21 +52,11 @@ export function NewRunDialog({
     localStorage.setItem(MODE_KEY, m)
   }
 
-  const playbook = playbooks.find((p) => p.id === playbookId) ?? null
   const scope = runnable.find((t) => t.id === scopeId) ?? null
-  const pack = playbook?.pack ?? (scope ? packOf(scope) : DEFAULT_PACK)
+  const pack = scope ? packOf(scope) : DEFAULT_PACK
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
   const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk
-
-  // A playbook brings its own scope and budget. The operator can still change them.
-  const onPlaybook = (id: string) => {
-    setPlaybookId(id)
-    const p = playbooks.find((x) => x.id === id)
-    if (!p) return
-    if (runnable.some((t) => t.id === p.targetId)) setScopeId(p.targetId)
-    if (p.budgetUsd != null) setBudget(p.budgetUsd.toFixed(2))
-  }
 
   const submit = () => {
     if (!canStart) return
@@ -80,7 +64,6 @@ export function NewRunDialog({
   }
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
-  const playbookItems = [{ value: NONE, label: "None" }, ...playbooks.map((p) => ({ value: p.id, label: p.title }))]
 
   const notice = !budgetOk
     ? "The budget must be between $0.01 and $1,000."
@@ -123,29 +106,6 @@ export function NewRunDialog({
                 {scopeItems.map((s) => (
                   <SelectItem key={s.value} value={s.value} className="text-[13px]">
                     <span className="truncate">{s.label}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <span className={label} id="new-run-playbook">
-              PLAYBOOK <span className="font-normal tracking-normal text-muted-foreground/60">· optional</span>
-            </span>
-            <Select items={playbookItems} value={playbookId} onValueChange={(v) => v && onPlaybook(String(v))}>
-              <SelectTrigger
-                className={field}
-                aria-labelledby="new-run-playbook"
-                disabled={!playbooks.length}
-                title={playbooks.length ? undefined : "No saved playbooks yet."}
-              >
-                <SelectValue className="min-w-0 truncate" />
-              </SelectTrigger>
-              <SelectContent alignItemWithTrigger={false} className="p-1">
-                {playbookItems.map((p) => (
-                  <SelectItem key={p.value} value={p.value} className="text-[13px]">
-                    <span className="truncate">{p.label}</span>
                   </SelectItem>
                 ))}
               </SelectContent>

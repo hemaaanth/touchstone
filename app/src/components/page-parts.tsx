@@ -4,7 +4,7 @@ import { ago, DOT, runTitle, statusLabel, statusTone } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 
-// Shared parts for the single-item nav pages (Modules, Scopes, Playbooks).
+// Shared parts for the single-item nav pages (Modules, Scopes).
 
 // The top bar. On mobile the sidebar is a Sheet with no always-visible rail,
 // so each page carries its own trigger back to the nav.

@@ -34,12 +34,9 @@ export function ModulesPage({
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader icon={Boxes} title="Modules" />
       <PageBody>
-        <div className="mb-4">
-          <h2 className="text-sm font-semibold">Packs</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Each pack brings its own tools and its own replay. A finding is real only when that replay passes.
-          </p>
-        </div>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Each module brings its own tools and replay. A finding is real only when that replay passes.
+        </p>
         {catalog === "loading" ? (
           <Empty>Loading…</Empty>
         ) : catalog === "error" && packs.length === 0 ? (
