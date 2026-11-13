@@ -83,3 +83,18 @@ test('checkdmarc runs pinned on the granted network, and a non-zero exit is a ga
   assert.deepEqual(emailLeads(failed).map(l => l.check), ['email-auth-evidence-missing']);
   assert.match(emailLeads(failed)[0].description, /Exited with code 1/);
 });
+
+test('testssl.sh runs pinned on the granted network, and no https page is an unavailable row', async () => {
+  const { snapshot, calls } = await capture({ SHIM_HTTPS: '1' });
+  pinned(calls, TESTSSL, null, NETWORK);
+  assert.equal(row(snapshot, 'testssl:example.com:443').status, 'ran');
+  assert.equal(snapshot.tls[0].output, fixture('testssl-example.com.json'));
+  assert.equal(snapshot.tls[0].raw, sha256(snapshot.tls[0].output));
+  // Nothing was measured, so the row says so. A missing row would read as clean.
+  const none = await capture({ SHIM_HTTPS: '0' });
+  assert.equal(callOf(none.calls, TESTSSL).length, 0);
+  const tls = row(none.snapshot, 'testssl');
+  assert.equal(tls?.status, 'unavailable');
+  assert.match(tls.reason, /no https endpoint/);
+  assert.match(tlsLeads(none.snapshot)[0].description, /no https endpoint/);
+});

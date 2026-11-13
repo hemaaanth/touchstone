@@ -192,6 +192,9 @@ missing image is reported as unavailable coverage with the Docker reason.
   receiver filter is tested.
 - testssl.sh measures at most two HTTPS origins per capture. CRL and OCSP are
   not fetched, so revocation is unscanned.
+- When a deep capture finds no https endpoint, testssl.sh does not run. The
+  `testssl` coverage row then reads `unavailable` with the reason "no https
+  endpoint was found to measure", so the TLS gap is never read as clean.
 - DNSViz measures chain state. It does not prove a resolver can be reached or
   spoofed.
 - Several SPF or DMARC records at one name are read as `unread`, so they raise

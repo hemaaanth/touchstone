@@ -304,7 +304,10 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     }
     // TLS is measured only where the capture already found an https endpoint.
     // The A record is passed as --ip, so the lab needs no resolver in the container.
-    const tlsCheck = deep ? await captureTls(run, ws, testsslTargets(http.map(r => r.url)), host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]) : null;
+    const tlsTargets = deep ? testsslTargets(http.map(r => r.url)) : [];
+    const tlsCheck = deep ? await captureTls(run, ws, tlsTargets, host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]) : null;
+    // Nothing to measure is still a gap row, never a missing row that reads as clean.
+    if (deep && !tlsTargets.length) coverage.push({ engine: 'testssl', status: 'unavailable', reason: 'no https endpoint was found to measure', leads: 0 });
     for (const check of tlsCheck?.runs ?? []) {
       const row = coverage.find(c => c.engine === check.engine);
       if (check.entry) row.leads = tlsLeads({ root: domain, tls: [check.entry] }).length;
