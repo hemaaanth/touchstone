@@ -90,25 +90,11 @@ test("the guard sees the stores: it is not blind", () => {
   assert.equal(violation(fake, 'process.env.TOUCHSTONE_GRANT_TOKEN = "t";\nprocess.env.TOUCHSTONE_GRANTS_FILE = "g";\nprocess.env.TOUCHSTONE_SCOPES_FILE = "s";\nconst m = await import("../lib/grant-store.mjs");\n'), null);
 });
 
-// Files of open cloud PRs: closed to this branch (RULES.md). Each needs the
-// same one-line fix; until its PR lands it is named here, not hidden.
-const CLOSED = {
-  "spike/test/harm-gate.test.mjs": "open cloud PR file; needs import \"./helpers/isolated-env.mjs\" first",
-  "app/tests/report.test.ts": "open cloud PR file; needs import \"./helpers/isolated-env\" first",
-};
-
 test("every test that loads the grant or scope store isolates them first", () => {
   const bad = [];
-  for (const f of testFiles().filter((x) => !CLOSED[x.slice(ROOT.length + 1)])) {
+  for (const f of testFiles()) {
     const why = violation(f, readFileSync(f, "utf8"));
     if (why) bad.push(`${f.slice(ROOT.length + 1)}: ${why}`);
   }
   assert.deepEqual(bad, [], "make the helper the first import (spike: import \"./helpers/isolated-env.mjs\"; app: import \"./helpers/isolated-env\")");
-});
-
-test("each closed exception still needs it (remove the entry once its PR adds the helper)", () => {
-  for (const rel of Object.keys(CLOSED)) {
-    const f = join(ROOT, rel);
-    assert.ok(violation(f, readFileSync(f, "utf8")), `${rel} is isolated now: remove it from CLOSED`);
-  }
 });

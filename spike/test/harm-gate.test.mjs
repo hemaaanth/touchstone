@@ -7,6 +7,7 @@
 // The first tests are pure: synthetic traces in, verdict out. The last ones run
 // real forge in Docker against the vault-reentrancy lab, and skip when the
 // Foundry image is not present.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
