@@ -11,7 +11,10 @@ test('a real target needs a grant that covers the domain', () => {
   assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['other.com'] }, 'example.com'), /grant/);
   assert.throws(() => assertReach(null, 'example.com'), /reach\.network/);
   assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, '-oX.example'), /Invalid domain/);
-  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'app.example.com'), ['example.com']);
+  // A live grant covers the exact name. Only a "*." entry covers a subdomain.
+  assert.throws(() => assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'app.example.com'), /grant/);
+  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['*.example.com'] }, 'app.example.com'), ['*.example.com']);
+  assert.deepEqual(assertReach({ network: 'bridge', granted: true, scope: ['example.com'] }, 'example.com'), ['example.com']);
 });
 
 test('a lab-looking network name is not a grant', () => {
