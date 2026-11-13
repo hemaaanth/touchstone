@@ -35,7 +35,7 @@ test('registry transfer locks and missing evidence are not treated as DNSSEC or 
   changed.rdap={status:['clientTransferProhibited']};
   assert(has(changed,'registry-lock-evidence-missing'));
   changed.rdap.status.push('server transfer prohibited');
-  changed.dnssec={validatedChain:true};
+  changed.dnssec={complete:true,delegation:'SECURE',signed:true,validatedChain:true,errors:[],warnings:[]};
   changed.contenthash={name:'touchstone.eth',value:'ipfs://bafy-lab-content',pinnedCid:'bafy-lab-content'};
   assert.equal(has(changed,'registry-lock-evidence-missing'),false);
   assert.equal(has(changed,'dnssec-evidence-missing'),false);

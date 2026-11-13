@@ -9,6 +9,7 @@ import { detectorsFor } from '../packs/domains/checks.mjs';
 import { captureDnssec, dnssecLeads, parseDnssec, DNSVIZ } from '../packs/domains/dnssec.mjs';
 const secure = readFileSync(new URL('../packs/domains/fixtures/dnsviz-example.com.json', import.meta.url), 'utf8');
 const insecure = readFileSync(new URL('../packs/domains/fixtures/dnsviz-unsigned.json', import.meta.url), 'utf8');
+const bogus = readFileSync(new URL('../packs/domains/fixtures/dnsviz-bogus.json', import.meta.url), 'utf8');
 const root = 'example.com';
 const evidence = () => parseDnssec(secure, root);
 
@@ -16,6 +17,7 @@ test('a secure chain is read as validated and raises no lead', () => {
   const dnssec = evidence();
   assert.equal(dnssec.delegation, 'SECURE');
   assert.equal(dnssec.signed, true);
+  assert.equal(dnssec.complete, true);
   assert.equal(dnssec.validatedChain, true);
   assert.deepEqual(dnssecLeads({ root, dnssec }), []);
 });
@@ -30,15 +32,42 @@ test('an unsigned zone is read as insecure, not as unread', () => {
   assert.match(lead.description, /not signed/);
 });
 
-test('a bogus chain is high and cites the first error', () => {
-  const dnssec = evidence();
-  dnssec.delegation = 'BOGUS';
-  dnssec.validatedChain = false;
-  dnssec.errors = [{ code: 'RRSIG_EXPIRED', description: 'RRSIG expired 2 hours ago' }];
-  const [lead] = dnssecLeads({ root, dnssec });
+test('the recorded signed-then-broken answer is a high broken-chain lead', () => {
+  const dnssec = parseDnssec(bogus, 'touchstone.test');
+  assert.equal(dnssec.complete, true);
+  assert.equal(dnssec.delegation, 'SECURE');
+  assert.equal(dnssec.validatedChain, false);
+  assert(dnssec.errors.some(e => e.code === 'SIGNATURE_INVALID'));
+  const [lead] = dnssecLeads({ root: 'touchstone.test', dnssec });
   assert.equal(lead.check, 'dnssec-broken-chain');
   assert.equal(lead.severity, 'high');
-  assert.match(lead.description, /RRSIG expired/);
+  assert.match(lead.description, /signature/);
+});
+
+test('a bogus delegation is broken even with no DNSKEY and no error text', () => {
+  const dnssec = parseDnssec(JSON.stringify({ 'example.com.': { status: 'NOERROR', delegation: { status: 'BOGUS' }, queries: {} } }), root);
+  assert.equal(dnssec.complete, true);
+  assert.equal(dnssec.signed, false);
+  assert.equal(dnssecLeads({ root, dnssec })[0].check, 'dnssec-broken-chain');
+});
+
+test('an incomplete assessment is missing evidence, not a verdict', () => {
+  const incomplete = [
+    { 'example.com.': {} },
+    { 'example.com.': { dnskey: [{}], delegation: { status: 'SECURE' } } },
+    { 'example.com.': { delegation: { status: 'SECURE' } } },
+    { 'example.com.': { delegation: { status: 'INSECURE' } } },
+  ];
+  for (const doc of incomplete) {
+    const dnssec = parseDnssec(JSON.stringify(doc), root);
+    assert.equal(dnssec.complete, false, JSON.stringify(doc));
+    const [lead] = dnssecLeads({ root, dnssec });
+    assert.equal(lead.check, 'dnssec-evidence-missing', JSON.stringify(doc));
+    assert.match(lead.description, /incomplete/);
+  }
+  const unsigned = parseDnssec(JSON.stringify({ 'example.com.': { delegation: { status: 'INSECURE' }, queries: { 'example.com./IN/DNSKEY': { nodata: [{}] } } } }), root);
+  assert.equal(unsigned.complete, true);
+  assert.equal(dnssecLeads({ root, dnssec: unsigned })[0].check, 'dnssec-unsigned');
 });
 
 test('a warning on a secure chain is a low lead', () => {
@@ -69,10 +98,23 @@ test('a probe error and an unreadable assessment both come back as an error', as
   const ws = mkdtempSync(join(tmpdir(), 'dnssec-bad-'));
   mkdirSync(join(ws, '.live'));
   try {
-    const grokFails = async engine => engine === 'dnsviz-probe' ? { code: 0, stderr: '', timedOut: false } : { code: 0, stderr: '', timedOut: false };
-    const unreadable = await captureDnssec(grokFails, ws, root, null);
+    const grokSilent = async () => ({ code: 0, stderr: '', timedOut: false });
+    const unreadable = await captureDnssec(grokSilent, ws, root, null);
     assert.equal(unreadable.evidence, null);
     assert.match(unreadable.error, /ENOENT|no such file/);
+    // grok can write a readable file and still fail; the exit status decides.
+    const grokFailed = async engine => {
+      if (engine === 'dnsviz-probe') return { code: 0, stderr: '', timedOut: false };
+      writeFileSync(join(ws, '.live', 'dnssec.json'), secure.replaceAll('example.com.', 'example.com.'));
+      return { code: 3, stderr: 'dnsviz: assessment crashed', timedOut: false };
+    };
+    const failedGrok = await captureDnssec(grokFailed, ws, root, null);
+    assert.equal(failedGrok.evidence, null);
+    assert.match(failedGrok.error, /assessment crashed/);
+    const grokTimeout = async engine => engine === 'dnsviz-probe'
+      ? { code: 0, stderr: '', timedOut: false }
+      : { code: 0, stderr: '', timedOut: true };
+    assert.match((await captureDnssec(grokTimeout, ws, root, null)).error, /timed out/);
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
@@ -90,7 +132,7 @@ test('dnssec checks replay from the pinned snapshot', async () => {
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test('the pinned image validates example.com through runTool', { timeout: 300000 }, async () => {
+test('the pinned image validates example.com through runTool (TOUCHSTONE_LIVE=1)', { skip: process.env.TOUCHSTONE_LIVE ? false : 'set TOUCHSTONE_LIVE=1 to scan example.com', timeout: 300000 }, async () => {
   const ws = mkdtempSync(join(tmpdir(), 'dnssec-live-'));
   mkdirSync(join(ws, '.live'));
   const ran = [];
