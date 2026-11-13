@@ -1800,6 +1800,80 @@ contract DeployAtkTest is Test {
   assert.equal(f.proof.harm.lostWei, "1000000000000000000");
   assert.equal(isProven(f), true);
 });
+// ---- Major: CREATE2 is a creation everywhere CREATE is (repair round 1) ----------
+// forge rewrites `new X{salt: s}()` to a salted deployCode (a CREATE2). A constructor
+// that runs under CREATE2 must be skipped and attributed like one under CREATE, or an
+// owned contract's own `owner = msg.sender` reads as a takeover. Honest shapes only.
+const OWNED_C2 = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Owned {
+  address public owner; // slot 0
+  constructor() { owner = msg.sender; }
+  function hello() external view returns (address) { return owner; }
+  function setOwner(address o) external { owner = o; } // BUG: no access check (for the TP)
+}
+contract Factory { function make(bytes32 s) external returns (Owned) { return new Owned{salt: s}(); } }
+`;
+// (1) a salted deploy of an owned scope contract in the body is NOT a takeover.
+test("forge: new Owned{salt: …}() of a scope contract in the body is NOT proven (CREATE2 creation)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Owned.sol": OWNED_C2 }, "SaltTest", `import "../src/Owned.sol";
+contract SaltTest is Test {
+  function test_x() public { Owned o = new Owned{salt: bytes32(uint256(1))}(); assertEq(o.hello(), address(this)); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// (2) a scope factory that deploys a child with CREATE2 in the body is NOT a takeover.
+test("forge: a scope factory deploying an owned child with CREATE2 is NOT proven (CREATE2 creation)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Owned.sol": OWNED_C2 }, "FactoryTest", `import "../src/Owned.sol";
+contract FactoryTest is Test {
+  Factory fac;
+  function setUp() public { fac = new Factory(); }
+  function test_x() public { Owned o = fac.make(bytes32(uint256(7))); assertEq(o.hello(), address(fac)); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// (3) a CREATE2 with value credits the value to its creator, as for CREATE: a test-side
+// take of it is not proven.
+test("forge: a CREATE2 with value credits the value to its creator (CREATE2 creation)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Pay.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Pay { constructor() payable {} function take(address payable to) external { to.transfer(address(this).balance); } }
+` }, "C2ValTest", `import "../src/Pay.sol";
+contract Sink { receive() external payable {} }
+contract C2ValTest is Test {
+  Pay p; Sink s;
+  function setUp() public { vm.deal(address(this), 1 ether); p = new Pay{value: 1 ether, salt: bytes32(uint256(3))}(); s = new Sink(); }
+  function test_x() public { p.take(payable(address(s))); assertEq(address(s).balance, 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// (4) a real takeover of a CREATE2-deployed scope contract stays proven (no TP lost).
+test("forge: a real takeover of a CREATE2-deployed scope contract IS proven (CREATE2 creation TP)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Owned.sol": OWNED_C2 }, "SaltTakeoverTest", `import "../src/Owned.sol";
+contract SaltTakeoverTest is Test {
+  Owned o;
+  function setUp() public { o = new Owned{salt: bytes32(uint256(9))}(); }
+  function test_x() public { vm.prank(address(0xBEEF)); o.setOwner(address(0xBEEF)); assertEq(o.owner(), address(0xBEEF)); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});
+
 
 // Minor 4 and the guard's depth limit, on real forge (the reviewer's probes 2 and 3;
 // honest shapes: a constructor that rejects 0, a function that reverts).

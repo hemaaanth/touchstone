@@ -197,8 +197,9 @@ test("the table matches the vendored Vm.sol, function for function", () => {
     assert.equal(sig, entry.signature, `extra ${entry.signature} (${entry.selector}) is not a forge 1.9.0 cheatcode`);
   }
 
-  // Completeness to the binary: every cheatcode the pinned forge binary has is in
-  // the table. A forge upgrade that adds one fails here until someone classifies it.
+  // Completeness to the binary: every NON-INTERNAL cheatcode the pinned forge binary has is in
+  // the table (the three internal `_expectCheatcodeRevert` forms are excluded; at
+  // runtime they are unknown and refused, so fail closed). A forge upgrade that adds one fails here until someone classifies it.
   for (const [selector, signature] of FORGE_BY_SELECTOR) {
     assert.ok(bySelector.get(selector), `the pinned forge binary has ${signature} (${selector}); the table lacks it`);
   }
@@ -211,6 +212,17 @@ test("the vendored forge cheatcode spec is the pinned one", () => {
   const sha = createHash("sha256").update(readFileSync(file)).digest("hex");
   const src = readFileSync(join(ROOT, "spike/lib/control-trace.mjs"), "utf8");
   assert.ok(src.includes(sha), `control-trace.mjs records the sha256 of the vendored forge spec (${sha})`);
+});
+
+// Minor 3: the vendored spec is tied to the pinned forge image. If sandbox.mjs's
+// IMG digest changes, the spec may no longer be the binary's own, so this fails
+// until the spec (and the digest beside it) are re-vendored.
+test("the vendored forge spec is tied to the pinned forge image digest", () => {
+  const sandbox = readFileSync(join(ROOT, "spike/lib/sandbox.mjs"), "utf8");
+  const imgDigest = /IMG\s*=\s*"[^"]*@(sha256:[0-9a-f]{64})"/.exec(sandbox)?.[1];
+  assert.ok(imgDigest, "could not read the pinned image digest from sandbox.mjs IMG");
+  const readme = readFileSync(join(ROOT, "spike/vendor/foundry/README.md"), "utf8");
+  assert.ok(readme.includes(imgDigest), `the vendored spec README must record the pinned image digest ${imgDigest}; a changed IMG means re-vendor the spec`);
 });
 
 // (b) a known class, and a signature that really produces the selector.

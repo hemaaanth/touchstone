@@ -197,6 +197,11 @@ function loadCheatTable() {
 }
 export const CHEAT_TABLE = loadCheatTable();
 const SAFE_SETUP = "0xb63e800d";
+// A contract creation: CREATE and CREATE2 both run a constructor and make a new
+// account. Everywhere the gate skips, credits or attributes a constructor it must
+// treat the two alike — forge rewrites `new X{salt: s}()` to a salted deployCode,
+// whose child frame is a CREATE2 (H1h major: a salted deploy was judged as a write).
+const isCreation = (kind) => kind === "CREATE" || kind === "CREATE2";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
 export const isAddressWord = (w) => /^0x0{24}[0-9a-f]{40}$/.test(w) && !/^0x0{64}$/.test(w);
@@ -221,8 +226,8 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
       const t = node.trace ?? {};
       const address = lc(t.address), caller = lc(t.caller), selector = lc(String(t.data ?? "").slice(0, 10));
       if (label === "Execution" && i === 0 && address) out.testContract = address;
-      if (t.kind === "CREATE" && address) created.add(address);
-      if (address && t.kind !== "CREATE") (out.selectors[address] ??= new Set()).add(selector);
+      if (isCreation(t.kind) && address) created.add(address);
+      if (address && !isCreation(t.kind)) (out.selectors[address] ??= new Set()).add(selector);
       const execution = label === "Execution";
       const context = t.kind === "DELEGATECALL" || t.kind === "CALLCODE" ? caller : address;
       // msg.sender: a DELEGATECALL keeps the sender of the frame that made it.
@@ -252,7 +257,7 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
         // target even when it was set in setUp — see lib/proof.mjs. We snapshot here, then
         // record this write's own effect below, so the snapshot is the pre-write state.
         const heldSnap = { ...(addrHeld[context] ?? {}) };
-        if (execution && !under(i, (x) => x.kind === "CREATE")) {
+        if (execution && !under(i, (x) => isCreation(x.kind))) {
           const setup = under(i, (x) => lc(String(x.data ?? "").slice(0, 10)) === SAFE_SETUP);
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
           out.writeMeta.push({ caller, authority, held: heldSnap });
@@ -271,7 +276,7 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
         // - the first write to an empty slot by the test contract (its own initialization).
         // An outsider's takeover is NOT adopted, so it cannot hide the writes that follow it.
         let building = null;
-        for (let n = arena[i]; n && !building; n = arena[n.parent]) if (n.trace?.kind === "CREATE") building = lc(n.trace.address);
+        for (let n = arena[i]; n && !building; n = arena[n.parent]) if (isCreation(n.trace?.kind)) building = lc(n.trace.address);
         const first = word(change.had_value) === word("0x0") && caller === out.testContract;
         const entitled = building !== null ? building === context : !execution || authority.includes(caller) || first;
         if (entitled) (held[context] ??= {})[key] = word(change.value);

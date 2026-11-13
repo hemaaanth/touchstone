@@ -207,8 +207,8 @@ So these honest shapes still read as a drain: a router or zap that forwards the 
 and never paid it). `main` proves these too, at a larger value.
 
 For tokens, a funding `deal()` of a scope token's balance drops the test party's whole take from that
-holder, where the ETH rule credits only the dealt amount; so a test-side take beyond a token `deal()`
-is still not proven (ETH is stricter here, by design).
+holder, where the ETH rule credits only the dealt amount; so for tokens even a test-side take beyond a
+`deal()` is not proven (tokens are the stricter channel here, by design).
 
 ## Harm gate: cheatcodes (the backstop)
 

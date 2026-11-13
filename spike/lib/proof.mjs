@@ -65,7 +65,7 @@ export function netFlows(traces) {
       const addr = (t.address || "").toLowerCase();
       const caller = (t.caller || "").toLowerCase();
       if (label === "Execution" && i === 0 && addr) testContract = addr;
-      if (t.kind === "CREATE" && addr) created.add(addr);
+      if ((t.kind === "CREATE" || t.kind === "CREATE2") && addr) created.add(addr); // CREATE2 too (a salted deploy is still the test's contract)
       // Only CALL and CREATE move fresh ETH. A DELEGATECALL/CALLCODE/STATICCALL
       // node carries the inherited msg.value of the frame it runs in, which was
       // already counted at the parent CALL — counting it again fabricates flow.
