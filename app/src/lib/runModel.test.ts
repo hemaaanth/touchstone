@@ -65,9 +65,51 @@ test("a rebuilt workspace shows its message once, as a quiet system line", () =>
   const message = "The earlier workspace of this run is gone. Files the agent wrote before are not in it."
   const events = [ev("reply-start"), ev("workspace", { state: "rebuilt", message }), say(0, "Looking again")]
   assert.deepEqual(rows(events), [`system:${message}`, "say:Looking again"])
-  // Not grouped with tool rows, not an error, and nothing for another state.
+  // Not grouped with tool rows, and not an error.
   assert.equal(reduceEvents(events).error, null)
-  assert.deepEqual(rows([ev("workspace", { state: "kept", message })]), [])
+})
+
+test("a kept workspace with something to tell shows its message as the same quiet line", () => {
+  const message = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
+  assert.deepEqual(rows([ev("reply-start"), ev("workspace", { state: "kept", message }), say(0, "Going on")]), [`system:${message}`, "say:Going on"])
+})
+
+test("the events of a source restore are one status line that changes, and the result takes its place", () => {
+  const first = "The fetched sources of this run are put back into its workspace, as this run read them before: 20 to fetch. Each one can take up to 90 seconds."
+  const fetching = Array.from({ length: 20 }, (_, k) => ev("workspace", { state: "restoring", message: `Fetching acme/repo${k + 1} (${k + 1} of 20).` }))
+  const progress = [ev("reply-start"), ev("workspace", { state: "restoring", message: first }), ...fetching]
+  // While it runs: the latest line only, however many sources.
+  assert.deepEqual(rows(progress.slice(0, 2)), [`system:${first}`])
+  assert.deepEqual(rows(progress.slice(0, 5)), ["system:Fetching acme/repo3 (3 of 20)."])
+  assert.deepEqual(rows(progress), ["system:Fetching acme/repo20 (20 of 20)."])
+  // The line keeps its place and its key, so nothing moves while it changes.
+  assert.equal(reduceEvents(progress).steps[0].key, reduceEvents(progress.slice(0, 2)).steps[0].key)
+  // The result is the one line that stays.
+  const result = "The earlier workspace of this run is gone, so this is a new workspace built from the same scope. These fetched sources could not be put back, so they are not in it: https://github.com/acme/repo2: could not fetch commit 0123456789ab of acme/repo2."
+  assert.deepEqual(rows([...progress, ev("workspace", { state: "rebuilt", message: result }), say(0, "Looking again")]), [`system:${result}`, "say:Looking again"])
+  // A restore that the operator stopped: its last line stays, then the stop.
+  assert.deepEqual(rows([...progress.slice(0, 3), ev("stop-requested"), ev("stopped")]), ["system:Fetching acme/repo1 (1 of 20).", "note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+  // A later restore, after other steps, is a new line: the old one is history.
+  const again = [...progress.slice(0, 3), ev("stopped"), ev("reply-start"), ev("workspace", { state: "restoring", message: "Fetching acme/repo1 (1 of 20)." }), ev("workspace", { state: "kept", message: "The server did that now." })]
+  assert.deepEqual(rows(again), ["system:Fetching acme/repo1 (1 of 20).", "note:You stopped the run. Send a message to continue.", "system:The server did that now."])
+})
+
+test("a workspace event with no message, or with a state this code does not know, shows nothing and does not throw", () => {
+  const message = "Something about the workspace."
+  const odd = [
+    ev("workspace", { state: "rebuilt" }),
+    ev("workspace", { state: "restoring", message: "   " }),
+    ev("workspace", { state: "kept", message: 7 }),
+    ev("workspace", { state: "rebuilt", message: null }),
+    ev("workspace", { state: "moved", message }),
+    ev("workspace", { message }),
+    ev("workspace", { state: 3, message }),
+    ev("workspace", { state: ["rebuilt"], message }),
+    ev("workspace"),
+  ]
+  assert.deepEqual(rows(odd), [])
+  // An odd event in the middle of a restore does not break the line either.
+  assert.deepEqual(rows([ev("workspace", { state: "restoring", message: "Fetching a/b (1 of 2)." }), ...odd, ev("workspace", { state: "restoring", message: "Fetching a/c (2 of 2)." })]), ["system:Fetching a/c (2 of 2)."])
 })
 
 test("a follow-up error keeps its sentence apart from the raw output", () => {
