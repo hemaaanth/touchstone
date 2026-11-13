@@ -349,6 +349,59 @@ test("harm gate: a Transfer log from a scope token the test cloned over is not a
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
+// ---- prank-as-victim (M4) --------------------------------------------------
+//
+// vm.prank / vm.startPrank let the test impersonate any address. A test that
+// pranks AS a scope target and then moves that target's funds is the test acting
+// as the victim, not an exploit. The gate drops a target the test pranked as from
+// the drain-victim set. A real PoC pranks the attacker or an EOA, never the
+// victim, so a genuine drain while pranking the attacker is still proven.
+
+const prankNode = (who) => node(0, {
+  kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST,
+  data: "0xca669fa7" + word(who).slice(2),
+});
+
+test("harm gate: an ETH loss where the test pranks AS the victim is not proven (M4)", () => {
+  const traces = [setup(), exec(
+    prankNode(VAULT),
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(1, { kind: "CALL", address: ATTACKER, caller: VAULT, value: ONE }),
+  )];
+  const h = verdict(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: a token drain where the test pranks AS the victim is not proven (M4)", () => {
+  const log = transferLog(VAULT, ATTACKER, ONE);
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    prankNode(VAULT),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: a token drain while pranking AS the attacker is still proven (M4 guard)", () => {
+  // The prank impersonates the attacker (0xBEEF), not the victim, so the drain
+  // of VAULT stays proven. This guards against the M4 rule over-firing.
+  const log = transferLog(VAULT, ATTACKER, ONE);
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    prankNode(ATTACKER),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, true);
+  assert.equal(h.kind, "funds");
+  assert.equal(h.victim, VAULT);
+});
+
 // ---- real forge, in Docker --------------------------------------------------
 
 const hasForge = (() => {

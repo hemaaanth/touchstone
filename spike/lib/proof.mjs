@@ -704,7 +704,13 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
   if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
   if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
-  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  // A target the test pranked AS cannot be a drain victim: the move is the test
+  // impersonating that target, not an exploit (vm.prank / vm.startPrank). A
+  // legitimate PoC pranks the attacker or an EOA, never the scope victim, so this
+  // drops only forged drains. Control takeovers are unaffected — a takeover's
+  // victim is the contract whose slot changed, not the pranked sender.
+  const pranked = new Set((controlTrace?.pranks ?? []).map(lc));
+  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n && !pranked.has(a)).sort((a, b) => (a[1] < b[1] ? -1 : 1));
   const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
   if (losses.length) {
     const [victim, wei] = losses[0];
@@ -713,9 +719,11 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   // Prefer the ground-truth storage read. Fall back to Transfer logs only for a
   // token the layout does not cover (a real external ERC-20, or a balance under
   // a name we don't track). The fallback still requires the balance slot to have
-  // moved in that token — a log on its own is not a drain.
-  const storageDrains = balanceDrains(controlTrace, targets, balances);
-  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances);
+  // moved in that token — a log on its own is not a drain. A target pranked AS is
+  // dropped here too, for the same reason it is dropped from the ETH losses.
+  const noPrank = (ds) => ds.filter((d) => !pranked.has(lc(d.victim)));
+  const storageDrains = noPrank(balanceDrains(controlTrace, targets, balances));
+  const drains = storageDrains.length ? storageDrains : noPrank(tokenDrains(traces, targets, controlTrace, balances));
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
