@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ProofIcon, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { StatusMark } from "@/components/assistant-ui/elements/surfaces"
 import { ModulePill } from "@/components/module-pill"
+import { ModuleDots } from "@/components/module-dots"
 import { ReplayProof } from "@/components/replay-proof"
 import { Label, ListCard, ListEmpty, ListPage, RowMenu, RowMenuItem, RowMenuSeparator, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
 import { LIST_CARD_CLASS, rowClass } from "@/components/page-parts-style"
@@ -487,6 +488,12 @@ export function FindingsLoading() {
   )
 }
 
+// The module dot's ring takes the row's own fill: the card, or the card under
+// muted/50 when the row is hovered, open or has keyboard focus.
+// (Tailwind reads class names as written, so each one is spelled out.)
+const DOTS_RING =
+  "[--module-dots-ring:var(--card)] hover:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))] data-active:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))] has-[[data-row-main]:focus-visible]:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))]"
+
 export const FindingListRow = memo(function FindingListRow({
   finding: f,
   moduleTitle,
@@ -513,7 +520,7 @@ export const FindingListRow = memo(function FindingListRow({
       data-slot="finding-row"
       data-active={active || undefined}
       onClick={open}
-      className={cn(FINDING_ROW_COLS, rowClass(true), f.dismissed && "[&_[data-row-main]]:text-muted-foreground")}
+      className={cn(FINDING_ROW_COLS, rowClass(true), DOTS_RING, f.dismissed && "[&_[data-row-main]]:text-muted-foreground")}
     >
       <span aria-hidden className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
         <ProofIcon state={f.proven ? "proven" : "unproven"} className="size-4" />
@@ -537,15 +544,10 @@ export const FindingListRow = memo(function FindingListRow({
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={f.proven} />
       </span>
-      {/* The module in a fixed 28 px box. Until the sidebar's module dots land
-          here, the compact pill shows its icon only; the name stays for a
-          screen reader and in the pill's title. */}
-      <span data-col="module" className="flex min-w-0 justify-end overflow-hidden">
-        {moduleOf(f) ? (
-          <span title={moduleTitle} className="flex max-w-full">
-            <ModulePill id={moduleOf(f)} label={moduleTitle} compact className="[&>span:last-child]:sr-only" />
-          </span>
-        ) : null}
+      {/* The module as one dot in the fixed 28 px box the sidebar uses. Its
+          name is in the tooltip and the label. No module keeps the empty box. */}
+      <span data-col="module" className="flex justify-end">
+        <ModuleDots ids={[moduleOf(f)]} packs={[{ id: moduleOf(f), title: moduleTitle }]} />
       </span>
       <RowMenu label={`Actions for ${f.title}`}>
         <RowMenuItem onClick={open}>

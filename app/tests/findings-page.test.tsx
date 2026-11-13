@@ -484,6 +484,31 @@ describe("still columns: every row has the same tracks, whatever its title, modu
     expect(cells).toEqual(rows.map(() => ["severity", "module"]))
   })
 
+  test("the module cell is the sidebar's module dots: one dot in the module's colour, in a fixed 28 px box", () => {
+    const four = ["web", "domains", "surface", "phishing"].map((pack, i) => ({ ...many[10 + i], pack }))
+    const out = renderToStaticMarkup(
+      <ul>
+        {[...four, { ...many[14], pack: "" }].map((f) => (
+          <FindingListRow key={f.id} finding={f} moduleTitle={f.pack ? `${f.pack} title` : "Unknown"} run={undefined} active={false} onOpen={() => {}} onCopy={() => {}} onOpenRun={() => {}} />
+        ))}
+      </ul>,
+    )
+    const cells = out.split('data-col="module"').slice(1).map((c) => c.slice(0, c.indexOf("</li>")))
+    expect(cells).toHaveLength(5)
+    four.forEach((f, i) => {
+      const dots = [...cells[i].matchAll(/data-slot="module-dot" data-module="([\w-]+)"/g)].map((m) => m[1])
+      expect(dots).toEqual([f.pack])
+      expect(cells[i]).toContain(`aria-label="Module: ${f.pack} title"`)
+      expect(cells[i]).toMatch(/data-slot="module-dots"[^>]*style="width:28px"/)
+      expect(cells[i]).not.toContain('data-slot="module-pill"')
+    })
+    // No module: the same empty box, so the column does not move.
+    expect(cells[4]).toMatch(/data-slot="module-dots" aria-hidden="true"[^>]*style="width:28px"/)
+    expect(cells[4]).not.toContain("module-dot\"")
+    // The dot's ring takes the row's fill: the card at rest.
+    expect(out).toContain("[--module-dots-ring:var(--card)]")
+  })
+
   test("the loading rows use the same tracks, so the list does not move when the findings arrive", () => {
     const loading = renderToStaticMarkup(<FindingsLoading />)
     const tracks = [...loading.matchAll(/data-slot="finding-row" class="([^"]*)"/g)].map((m) => m[1])
