@@ -1912,17 +1912,20 @@ function cutOffEvents(events) {
 
 // The error card of a fleet run that a restart cut off: who was mid-turn, that
 // nothing was started again, and the one next step.
-function fleetCutOff(id, events) {
+function fleetCutOff(id, events, saved) {
   const names = fleetChildren(events).cut.map((c) => events.find((e) => e.ev === "subagent-spawned" && e.id === c)?.name || c)
   const who = names.length > 1 ? `, and ${names.slice(0, -1).join(", ")} and ${names.at(-1)} were cut off mid-turn` : names.length ? `, and ${names[0]} was cut off mid-turn` : ""
   // Without a saved agent session there is nothing a message could continue.
   const session = existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+  // The files are there when a follow-up would reuse the workspace: the kept one
+  // of this run, or the one the run worked in at the stop (it is kept just after).
+  const files = checkedWorkspace(readWorkspace(id)?.ws, id) ?? checkedWorkspace(saved?.ws)
   return {
     kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
     spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
     title: "This fleet run stopped at the server restart",
     hint: session
-      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history, its agents and its files.`
+      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history${files ? ", its agents and its files" : " and its agents"}.`
       : "The server restarted before the agents of this fleet started. Start a new run on the same scope.",
     message: "this fleet run stopped at the server restart; its agents were not started again",
   }
@@ -1944,7 +1947,10 @@ function submittedFindings(id) {
 // proven: no record, an unreadable record, or a replay that did not pass. This
 // only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
 // (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
-// with one finding.
+// with one finding. The copy must also be the record's finding, not only carry
+// its number: a line that keeps the id of a proven finding but names another
+// title, severity or test is not proven.
+const sameFinding = (e, f) => ["poc", "title", "severity"].every((k) => (e[k] ?? null) === (f?.[k] ?? null))
 function provenByRecord(id, events) {
   const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
   if (!claims.length) return
@@ -1957,8 +1963,9 @@ function provenByRecord(id, events) {
   const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
   for (const e of claims) {
     const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
-    const stored = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id && r.finding ? { pocProved: r.pocProved, proof: r.proof } : null
-    if (!isProven(stored)) e.proven = false
+    const entry = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id ? r.finding : null
+    const stored = list || !entry ? entry : { pocProved: r.pocProved, proof: r.proof }
+    if (!isProven(stored) || !sameFinding(e, entry)) e.proven = false
   }
 }
 
@@ -2037,7 +2044,7 @@ function savedRun(id, events, mtime) {
     status = "error"
     // Every restart ending is a cut-off (kind "cutoff"), not a failure.
     const session = saved !== false && existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
-    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events) : {
+    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events, saved) : {
       kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
       spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
       title: "This run stopped at the server restart",
@@ -2217,7 +2224,9 @@ function loadSavedRuns() {
 // Another process owned these runs at load. Follow their saved streams, and
 // take a run over once its owner exits.
 function adoptOrphans() {
-  for (const [id, old] of runs) {
+  // A copy: the loop takes a run out and puts it back, and a Map visits a key
+  // that is put back again, so the loop would never end.
+  for (const [id, old] of [...runs]) {
     if (old.owner || !old.interrupted || TERMINAL.includes(old.status)) continue
     runs.delete(id)
     loadSavedRun(id)
