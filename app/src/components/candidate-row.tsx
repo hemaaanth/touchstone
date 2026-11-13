@@ -5,7 +5,7 @@ import { candidateShortState, candidateState, scopeOf } from "@/lib/findings-vie
 import { cn } from "@/lib/utils"
 import { SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { ModuleDots } from "@/components/module-dots"
-import { RowMenu, RowMenuItem, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
+import { RowMenu, RowMenuItem, RowTitle, TruncatedText } from "@/components/page-parts"
 import { rowClass } from "@/components/page-parts-style"
 import { CANDIDATE_FOCUS } from "@/lib/candidate"
 
@@ -44,22 +44,28 @@ export const CandidateListRow = memo(function CandidateListRow({
       </span>
       <div className="flex min-w-0 flex-col gap-0.5">
         <RowTitle title={f.title || "Candidate"} opens={Boolean(run)} popup={false} />
-        <RowMeta
-          items={[
-            // On a phone (below sm) the state is one short word that never
-            // shrinks, and the date is left out: the row keeps its words and
-            // never runs under the severity bars. From sm up, the full words.
-            <span key="state" data-slot="candidate-state" className="flex min-w-0 shrink-0 sm:shrink" title={candidateState(c)}>
-              <span className="whitespace-nowrap sm:hidden">{candidateShortState(c)}</span>
-              <span className="hidden min-w-0 truncate sm:inline">{candidateState(c)}</span>
-            </span>,
-            c.measured && c.measured.count > 1 ? <span key="count" data-slot="candidate-count" className="shrink-0 whitespace-nowrap tabular-nums max-sm:hidden">{c.measured.count} places</span> : null,
-            <TruncatedText key="scope" text={scopeOf(f)} />,
-            <span key="at" data-slot="candidate-date" className="shrink-0 whitespace-nowrap tabular-nums max-sm:hidden" title="When the run started">
-              {f.at != null && when ? when(f.at) : "Date not recorded"}
-            </span>,
-          ]}
-        />
+        {/* The row's one muted line, as RowMeta draws it, but each part that
+            is left out on a phone (below sm) carries its own dot, so no dot
+            is left behind. On a phone the state is one short word that never
+            shrinks; from sm up, the full words, the places count and the date. */}
+        <div data-slot="candidate-meta" className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-muted-foreground">
+          <span data-slot="candidate-state" className="flex min-w-0 shrink-0 sm:shrink" title={candidateState(c)}>
+            <span className="whitespace-nowrap sm:hidden">{candidateShortState(c)}</span>
+            <span className="hidden min-w-0 truncate sm:inline">{candidateState(c)}</span>
+          </span>
+          {c.measured && c.measured.count > 1 ? (
+            <span data-slot="candidate-count" className="flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums max-sm:hidden">
+              <Dot />
+              {c.measured.count} places
+            </span>
+          ) : null}
+          <Dot />
+          <TruncatedText text={scopeOf(f)} />
+          <span data-slot="candidate-date" className="flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums max-sm:hidden" title="When the run started">
+            <Dot />
+            {f.at != null && when ? when(f.at) : "Date not recorded"}
+          </span>
+        </div>
       </div>
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={false} />
@@ -77,3 +83,12 @@ export const CandidateListRow = memo(function CandidateListRow({
     </li>
   )
 })
+
+// The separator dot RowMeta draws between its parts.
+function Dot() {
+  return (
+    <span aria-hidden className="shrink-0 opacity-60">
+      ·
+    </span>
+  )
+}

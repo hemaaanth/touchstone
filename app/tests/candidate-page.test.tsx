@@ -117,6 +117,16 @@ describe("the candidate row on a phone", () => {
     expect(out).toMatch(/<span class="hidden min-w-0 truncate sm:inline">Candidate · measurement repeated<\/span>/)
     expect(candidateShortState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate")
   })
+  test("a part hidden below sm takes its dot with it: no stray dot on a phone", () => {
+    const row = renderToStaticMarkup(<CandidateListRow finding={candidateRow(cand("x", { at: 5 }))} cols={FINDING_ROW_COLS} moduleTitle="Domains" run={undefined} onOpenRun={() => {}} when={() => "13 Nov, 12:00"} />)
+    for (const slot of ["candidate-count", "candidate-date"]) {
+      expect(row).toMatch(new RegExp(`data-slot="${slot}" class="[^"]*max-sm:hidden[^"]*"[^>]*><span aria-hidden="true" class="shrink-0 opacity-60">·</span>`))
+    }
+    // Three dots in all, two of them inside the parts a phone hides: one shows.
+    const meta = row.slice(row.indexOf('data-slot="candidate-meta"'), row.indexOf('data-col="severity"'))
+    expect((meta.match(/opacity-60">·</g) ?? []).length).toBe(3)
+  })
+
   test("the date and the places count are hidden below sm", () => {
     expect(out).toMatch(/data-slot="candidate-date" class="[^"]*\bmax-sm:hidden\b/)
     expect(out).toMatch(/data-slot="candidate-count" class="[^"]*\bmax-sm:hidden\b/)
