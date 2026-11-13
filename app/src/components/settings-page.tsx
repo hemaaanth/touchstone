@@ -31,6 +31,10 @@ interface ExecutionSetting {
   // in use or held.
   key: { set: boolean; source: "settings" | "env" | null; envName: string | null; last4: string | null; held?: string | null; saved?: boolean }
   apiUrl: string
+  // The server cut a user name, password, query or #part from apiUrl.
+  apiUrlHidden?: boolean
+  // The host DAYTONA_API_KEY is bound to, or null with no env key.
+  envKeyHost?: string | null
   target: string
   envNames: { apiUrl: string | null; target: string | null }
   defaults: { apiUrl: string; target: string }
@@ -249,6 +253,17 @@ function UrlField({ value, onChange, placeholder, disabled }: { value: string; o
   )
 }
 
+// The scheme, host and port of an http(s) URL, as the server compares them
+// (redact-url.mjs originOf). "" when it is not one.
+function originOf(url: string) {
+  try {
+    const u = new URL(url)
+    return u.protocol === "http:" || u.protocol === "https:" ? u.origin : ""
+  } catch {
+    return ""
+  }
+}
+
 // The host and port of a URL, lower case, as the server compares them.
 function hostOf(url: string) {
   try {
@@ -433,6 +448,8 @@ function ProviderEditor({
   const [manual, setManual] = useState("")
   const [busy, setBusy] = useState<"fetch" | "save" | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Why the provider's key was not sent with Fetch models (another host).
+  const [fetchNote, setFetchNote] = useState<string | null>(null)
 
   const rows = useMemo(() => {
     const ids = new Set(chosen.map((m) => m.id))
@@ -455,9 +472,11 @@ function ProviderEditor({
   const fetchList = async () => {
     setBusy("fetch")
     setError(null)
+    setFetchNote(null)
     try {
       const r = await discoverModels({ id: provider?.id, baseUrl, apiKey: apiKey || undefined })
       setFound(r.models)
+      setFetchNote(r.keyNote ?? null)
       // Refresh prices the gateway publishes for models already chosen.
       setChosen((cur) =>
         cur.map((m) => {
@@ -491,6 +510,20 @@ function ProviderEditor({
       : `Leave blank to keep …${provider.key.last4 ?? "····"}`
     : "Paste the API key"
   const canSave = Boolean(label.trim() && baseUrl.trim() && chosen.length > 0 && busy === null)
+  // A key goes only to its own server (scheme, host and port): a save to
+  // another server drops a saved key (settings.mjs saveProvider), and an env
+  // key goes only to the built-in base URL (providers.mjs providerKey).
+  const typedOrigin = originOf(baseUrl.trim())
+  const savedOrigin = originOf(provider?.baseUrl ?? "")
+  const k = provider?.key
+  const serverLine =
+    !k || apiKey.trim() || typedOrigin === ""
+      ? null
+      : k.source === "settings" && typedOrigin !== savedOrigin
+        ? "Changing the server removes the saved key."
+        : (k.source === "env" || k.held) && k.envName && k.envHome && typedOrigin !== k.envHome
+          ? `The key from ${k.envName} is only sent to ${k.envHome}.`
+          : null
 
   const fields = (
     <>
@@ -503,6 +536,8 @@ function ProviderEditor({
       <label className="flex flex-col gap-2">
         <Label>Base URL</Label>
         <UrlField value={baseUrl} onChange={setBaseUrl} placeholder="https://api.example.com/v1" />
+        {provider?.baseUrlHidden ? <span className="text-xs text-muted-foreground">This URL holds parts that are not shown. They stay unless you edit it.</span> : null}
+        {serverLine ? <span className="text-xs text-muted-foreground">{serverLine}</span> : null}
       </label>
       <label className="flex flex-col gap-2">
         <Label>API key</Label>
@@ -516,6 +551,7 @@ function ProviderEditor({
             {busy === "fetch" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Fetch models
           </Button>
         </div>
+        {fetchNote ? <span className="text-xs text-muted-foreground">{fetchNote}</span> : null}
         {(found?.length ?? 0) > 8 ? <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter, e.g. abliterated" aria-label="Filter models" /> : null}
         {rows.length > 0 ? (
           <ul className="max-h-80 divide-y overflow-y-auto rounded-lg border">
@@ -822,18 +858,25 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
   const [error, setError] = useState<string | null>(null)
   // Daytona in use, or about to be, needs a key: the server refuses it without one.
   const inUse = use || ex.saved === "daytona"
-  const needKey = inUse && !ex.key.set && !apiKey.trim()
   // A key goes only to the host it is bound to: a new host drops a saved key
   // (settings.mjs) and holds back DAYTONA_API_KEY (daytona.mjs execConfig).
-  const typedHost = hostOf(apiUrl.trim() || ex.defaults.apiUrl)
-  const losesKey = ex.key.set && !ex.envNames.apiUrl && !apiKey.trim() && typedHost !== "" && typedHost !== hostOf(ex.apiUrl)
-  const keyLine = !losesKey
-    ? null
-    : inUse
-      ? "Daytona is in use: enter the key for the new server."
-      : ex.key.source === "settings"
-        ? "Changing the server removes the saved key."
-        : "The key from DAYTONA_API_KEY is not sent to another server."
+  // A URL that is not valid counts as no move: the server says what is wrong.
+  const typedHost = ex.envNames.apiUrl ? hostOf(ex.apiUrl) : hostOf(apiUrl.trim() || ex.defaults.apiUrl)
+  const moved = typedHost !== "" && typedHost !== hostOf(ex.apiUrl)
+  // Is there a key for the server after this save? A typed key, the key in
+  // use if the host stays, or DAYTONA_API_KEY if it is bound to the new host.
+  const keyAfter = Boolean(apiKey.trim()) || (ex.key.set && !moved) || (moved && ex.envKeyHost === typedHost)
+  const blocked = inUse && !keyAfter
+  const keyLine =
+    !moved || apiKey.trim()
+      ? null
+      : blocked
+        ? "Daytona is in use: enter the key for the new server."
+        : ex.key.source === "settings"
+          ? "Changing the server removes the saved key."
+          : ex.key.source === "env"
+            ? "The key from DAYTONA_API_KEY is not sent to another server."
+            : null
 
   const send = async (kind: "save" | "clear", body: Parameters<typeof setExecution>[0]) => {
     setBusy(kind)
@@ -865,7 +908,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
       className="flex min-h-0 flex-1 flex-col"
       onSubmit={(e) => {
         e.preventDefault()
-        if (!busy && !needKey && !(inUse && losesKey)) save()
+        if (!busy && !blocked) save()
       }}
     >
       <SheetHeader className="flex-row items-start gap-3 pr-12">
@@ -886,6 +929,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
           <Label>Server URL</Label>
           <UrlField value={ex.envNames.apiUrl ? ex.apiUrl : apiUrl} onChange={setApiUrl} placeholder={ex.defaults.apiUrl} disabled={Boolean(ex.envNames.apiUrl)} />
           {ex.envNames.apiUrl ? <span className="text-xs text-muted-foreground">Set by {ex.envNames.apiUrl} on the server.</span> : null}
+          {ex.apiUrlHidden ? <span className="text-xs text-muted-foreground">This URL holds parts that are not shown.</span> : null}
           {keyLine ? <span className="text-xs text-muted-foreground">{keyLine}</span> : null}
         </label>
         <label className="flex flex-col gap-2">
@@ -908,7 +952,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
         ) : null}
       </div>
       <SheetFooter className="flex-row flex-wrap items-center border-t">
-        <Button type="submit" size="sm" disabled={busy !== null || needKey || (inUse && losesKey)}>
+        <Button type="submit" size="sm" disabled={busy !== null || blocked}>
           {busy === "save" ? <Loader2 className="animate-spin" /> : <Check />} {use ? "Save and use" : "Save"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={onCancel}>
