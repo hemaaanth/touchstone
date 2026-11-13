@@ -290,7 +290,7 @@ export function forgePrepareCommand({ solc } = {}) {
 export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {}) {
   const cmd = forgeTestCmd({ matchContract, solc: pinnedSolc(ws) });
   const args = [
-    "run", "--rm", "--pull", "never", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,

@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { runTool } from "../../../lib/wrap.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
+const IMAGE = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
 // One fixed seed for every run: healthy A, healthy B, known bug, each mutant.
 const SEED = "0x7661637569747921";

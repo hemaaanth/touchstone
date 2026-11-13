@@ -10,7 +10,7 @@ import { describe, it } from "node:test";
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const project = path.join(dir, "fixtures/property-spike");
 const overlays = path.join(dir, "fixtures/overlays");
-const image = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
+const image = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const available = spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" }).status === 0 &&
   ["foundry-svm", "touchstone_svm_cache"].some((v) => spawnSync("docker", ["volume", "inspect", v], { stdio: "ignore" }).status === 0);
 const skip = !available && "pinned offline Forge image and solc cache required";
