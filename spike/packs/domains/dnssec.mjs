@@ -43,7 +43,7 @@ export function parseDnssec(text_, domain) {
   const missing = [];
   if (!VERDICTS.has(delegation)) missing.push(delegation === 'UNKNOWN' ? 'no chain verdict' : 'unknown chain verdict ' + delegation);
   if (delegation === 'SECURE') { if (!signed) missing.push('no DNSKEY'); if (!dsOk) missing.push('no valid DS'); }
-  // INSECURE is complete when the zone is signed with no DS at the parent, or
+  // INSECURE is complete when the zone is signed but not anchored, or
   // when the DNSKEY query definitely answered empty.
   if (delegation === 'INSECURE' && !signed && !((query?.nodata?.length) || (query?.nxdomain?.length))) missing.push('no DNSKEY answer');
   const errors = errorsOf(entry);
@@ -102,7 +102,7 @@ export function dnssecLeads(snapshot) {
   const damaged = ![...errors, ...warnings].every(e => e && typeof e === 'object' && typeof e.code === 'string' && typeof e.description === 'string');
   // A verdict and its error list must be stored, and the tool output hashed.
   if (dnssec.complete !== true || !Array.isArray(dnssec.errors) || !hash || damaged || !['SECURE','INSECURE','BOGUS'].includes(dnssec.delegation)) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The stored DNSViz assessment is incomplete (' + (dnssec.reason ?? (dnssec.complete !== true ? 'no complete verdict' : !hash ? 'no tool output hash' : damaged ? 'a damaged error or warning entry' : 'unknown chain verdict')) + '), so this run does not prove the chain state.' + hash + ' This does not prove DNSSEC is disabled.' }];
-  if (dnssec.delegation === 'INSECURE' && dnssec.signed) return [{ check: 'dnssec-no-ds', where: root, severity: 'low', description: 'The zone is signed but its parent publishes no DS record, so validators treat the zone as insecure. The signatures are not anchored to the root trust chain.' + hash }];
+  if (dnssec.delegation === 'INSECURE' && dnssec.signed) return [{ check: 'dnssec-no-ds', where: root, severity: 'low', description: 'The zone is signed, but the chain is not anchored: DNSViz rates the delegation INSECURE, so validators treat the zone as insecure. This happens when the parent is unsigned, or when the DS record is missing or unusable (for example an unsupported algorithm). This run does not tell these cases apart.' + hash }];
   // A bogus verdict or an invalid signature is broken, whatever the signing state.
   if (dnssec.delegation === 'BOGUS' || dnssec.errors.length || (dnssec.signed && !dnssec.validatedChain)) return [{ check: 'dnssec-broken-chain', where: root, severity: 'high', description: (dnssec.signed ? 'The zone is signed but the chain does not validate' : 'The chain is bogus') + ' (' + dnssec.delegation + '). ' + (errors[0]?.description ?? 'DNSViz reported no usable chain.') + ' A resolver that validates may treat the zone as bogus.' + hash }];
   if (!dnssec.signed) return [{ check: 'dnssec-unsigned', where: root, severity: 'low', description: 'The zone is not signed. No DNSKEY is published and the parent has no usable DS, so resolvers cannot validate the answers. The chain was measured once and says the zone is insecure, which is different from an unread chain.' + hash }];

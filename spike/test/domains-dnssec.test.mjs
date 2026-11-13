@@ -75,7 +75,14 @@ test('an incomplete assessment is missing evidence, not a verdict', () => {
 test('a signed zone whose parent has no DS is a distinct no-DS lead', () => {
   const dnssec = parseDnssec(JSON.stringify({ 'example.com.': { status: 'NOERROR', delegation: { status: 'INSECURE' }, dnskey: [{ key_tag: 1, algorithm: 13 }], queries: { 'example.com./IN/DNSKEY': { answer: [{}] } } } }), root);
   assert.equal(dnssec.complete, true);
-  assert.equal(dnssecLeads({ root, dnssec })[0].check, 'dnssec-no-ds');
+  const [lead] = dnssecLeads({ root, dnssec });
+  assert.equal(lead.check, 'dnssec-no-ds');
+  // m1: DNSViz says INSECURE also when the parent is unsigned or the DS is
+  // unusable. The text claims only what the verdict proves.
+  assert.doesNotMatch(lead.description, /parent publishes no DS/);
+  assert.match(lead.description, /not anchored/);
+  assert.match(lead.description, /parent is unsigned/);
+  assert.match(lead.description, /DS record is missing or unusable/);
   assert.equal(assessmentCoverage(dnssec), null);
 });
 

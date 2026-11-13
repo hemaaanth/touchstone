@@ -171,8 +171,10 @@ missing image is reported as unavailable coverage with the Docker reason.
   only `email-auth-evidence-missing`, not a misconfiguration lead.
 - A lowercase DNSSEC verdict (for example `secure`) is treated as incomplete,
   with a reason naming the verdict. Only the exact upper-case words are known.
-- A signed zone whose parent has no DS raises `dnssec-no-ds`; it is not the
-  same as an unsigned zone, but it is also not a validated chain.
+- A signed zone that DNSViz rates `INSECURE` raises `dnssec-no-ds`. The text
+  says only that the chain is not anchored. DNSViz gives `INSECURE` when the
+  parent is unsigned, or the DS is missing, or the DS is unusable. The stored
+  assessment does not tell these apart, so the lead does not name one.
 
 `fixtures/dnsviz-bogus.json` came from the lab on 2026-11-12. The lab zone was
 signed with a throwaway ECDSAP256 key and a DS was added to the `test` zone.
