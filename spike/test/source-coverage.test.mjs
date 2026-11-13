@@ -43,3 +43,14 @@ test("a gap becomes a coverage error that lists what was read and what was not",
   assert.equal(coverageFailure(sourceCoverage([A], [])).title, "The scope was not read");
   assert.equal(coverageFailure(sourceCoverage([B], [ok(B, "v", 1)])), null);
 });
+
+test("links past the 20-member limit count as not read, so the brief never ends clean", () => {
+  const links = Array.from({ length: 22 }, (_, i) => `https://github.com/o/r${i}`);
+  const cov = sourceCoverage(links, links.slice(0, 20).map((u, i) => ok(u, `vendor/o__r${i}`, 1)));
+  assert.deepEqual([cov.fetched, cov.total, cov.complete], [20, 22, false]);
+  assert.deepEqual(cov.members.slice(20).map((m) => [m.url, m.status, m.reason]), [
+    ["https://github.com/o/r20", "not-fetched", "over the 20-member limit"],
+    ["https://github.com/o/r21", "not-fetched", "over the 20-member limit"],
+  ]);
+  assert.match(coverageFailure(cov).message, /2 of 22 scope members were not read/);
+});
