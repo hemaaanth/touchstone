@@ -80,3 +80,19 @@ describe("redact: secret header names by suffix", () => {
     expect(redactSecrets({ name: "Content-Type", redacted: false, value: "application/json" }).value).toBe("application/json")
   })
 })
+
+describe("redact: a quoted header line", () => {
+  const basic = "dXNlcjpodW50ZXIy" // base64 of a made-up user:pass
+  test("Authorization: Basic inside double quotes, single quotes and an array", () => {
+    for (const s of [
+      `curl -H "Authorization: Basic ${basic}" https://x`,
+      `curl -H 'Authorization: Basic ${basic}' https://x`,
+      `fetch(u, {headers: ["Authorization: Basic ${basic}"]})`,
+      `curl -H "Proxy-Authorization: Basic ${basic}" https://x`,
+    ]) expect(text(s)).not.toContain(basic)
+  })
+  test("a quoted Cookie and X-Api-Key header", () => {
+    expect(text(`curl -H "Cookie: sid=s3ssionFAKEvalue9" https://x`)).not.toContain("s3ssionFAKEvalue9")
+    expect(text(`curl -H "X-Api-Key: AIzaSyFAKEfake1234" https://x`)).not.toContain("AIzaSyFAKEfake1234")
+  })
+})

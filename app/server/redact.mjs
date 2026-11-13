@@ -33,9 +33,10 @@ const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
 
 // One or two words: "Bearer <token>" and "Basic <blob>" are both the secret.
-const AUTH_HEADER = /(?<!["'])\b(authorization|proxy-authorization)\s*:\s*\S+(?:\s+\S+)?/gi
-const APIKEY_HEADER = /(?<!["'])\b(x-api-key|x-apikey|api-key|x-auth-token|x-access-token)\s*:\s*[^\s,;"]+/gi
-const COOKIE_HEADER = /(?<!["'])\b(cookie|set-cookie)\s*:\s*[^\s;"]+(?:;\s*[^\s;"]+)*/gi
+// A quote before the name is allowed: curl -H "Authorization: Basic …".
+const AUTH_HEADER = /\b(authorization|proxy-authorization)\s*:\s*\S+(?:\s+\S+)?/gi
+const APIKEY_HEADER = /\b(x-api-key|x-apikey|api-key|x-auth-token|x-access-token)\s*:\s*[^\s,;"]+/gi
+const COOKIE_HEADER = /\b(cookie|set-cookie)\s*:\s*[^\s;"]+(?:;\s*[^\s;"]+)*/gi
 
 // Each optional part has one way to match a run of spaces. Two adjacent
 // \s* / \s+ that can split the same run made this quadratic (ReDoS).
