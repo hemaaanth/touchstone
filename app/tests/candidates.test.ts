@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -103,6 +103,17 @@ describe("the run record", () => {
     expect(result.candidates.length).toBe(1)
     expect(result.candidates[0].evidence).toEqual(EVIDENCE)
     expect(result.candidates[0].proven).toBe(false)
+  })
+
+  // Review Minor 5: a crash mid-write must not leave half a record.
+  test("writeCandidates replaces the record whole, through a temp file and a rename", () => {
+    const file = path.join(dir, "run-atomic.json")
+    writeFileSync(file, JSON.stringify({ result: { findings: [] } }))
+    const before = statSync(file).ino
+    expect(writeCandidates(file, { candidates: [candidate("a")] })).toBe(true)
+    expect(statSync(file).ino).not.toBe(before)
+    expect(existsSync(`${file}.tmp`)).toBe(false)
+    expect(JSON.parse(readFileSync(file, "utf8")).result.candidates.length).toBe(1)
   })
 
   test("writeCandidates does nothing when there is no record yet", () => {

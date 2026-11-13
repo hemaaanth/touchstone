@@ -7,7 +7,7 @@
 // run record as `result.candidates`, and reads them back from the saved event
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { makeCandidate, priorCandidate } from "../../spike/lib/candidate.mjs"
 
 // The one shape the server stores and sends. makeCandidate sets the fixed
@@ -59,12 +59,15 @@ export function priorCandidatesEnv(run) {
 export const recordCandidates = (run) => (run.candidates ?? []).map(normalizeCandidate)
 
 // Write the run's candidates into an existing run record, leaving every
-// other field as it is. Returns false if there is no record yet.
+// other field as it is. Returns false if there is no record yet. The write
+// goes to a temp file, then a rename, so a crash never leaves half a record
+// (the same pattern as bug/run-durability's persistRun).
 export function writeCandidates(file, run) {
   if (!existsSync(file)) return false
   const rec = JSON.parse(readFileSync(file, "utf8"))
   rec.result = { ...(rec.result ?? {}), candidates: recordCandidates(run) }
-  writeFileSync(file, JSON.stringify(rec, null, 2))
+  writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2))
+  renameSync(`${file}.tmp`, file)
   return true
 }
 
