@@ -244,7 +244,7 @@ describe("report: replay bundle", () => {
         expect(readme).not.toContain("forge test")
         expect(files.has("check-harm.mjs")).toBe(false)
         expect(files.has("harm.json")).toBe(false)
-        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on 2026-01-15 (harm: an ETH drain). This folder holds the proof's source files for reading; it has no re-run command.")
+        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on 2026-01-15 (harm: an ETH drain). This proof forked a chain, which an offline re-run cannot, so it has no re-run command.")
         // The hashes of every shipped file, and nothing about a command in proof.json.
         const sums = files.get("SHA256SUMS") || ""
         expect(sums).toContain("  test/AgentPoc.t.sol\n")
@@ -681,6 +681,80 @@ describe("report: replay bundle", () => {
       expect((files.get("README.md") || "").split("\n")[0]).toContain("This bundle cannot be re-run from this folder: the request script is over 64 KB, so the redactor cannot check it, so it is left out.")
     } finally {
       rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  test("a proof that reads a file through a cheatcode gets no command and the README names the cheatcode", () => {
+    const bundleReadme = (poc: string) => {
+      const ws = mkdtempSync(path.join(tmpdir(), "replay-cheat-"))
+      try {
+        mkdirSync(path.join(ws, "src")); mkdirSync(path.join(ws, "test"))
+        writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+        writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), poc)
+        const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "t()" })
+        const proof = { kind: "forge", pass: true, test: "t()" }
+        const dir = mkdtempSync(path.join(tmpdir(), "replay-cheat-zip-"))
+        try {
+          unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+          return readTree(dir).get("README.md") || ""
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      } finally {
+        rmSync(ws, { recursive: true, force: true })
+      }
+    }
+    // The keys lab shape: vm.getCode on a .json path. No command; names vm.getCode.
+    const keys = bundleReadme('interface Vm { function getCode(string calldata) external returns (bytes memory); }\ncontract PocTest {\n  Vm vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function t() public { bytes memory c = vm.getCode("lib/safe-artifacts/Safe.json"); c; }\n}\n')
+    expect(commands(keys)).toEqual([])
+    expect(keys).toContain("reads a file that is not in the bundle (vm.getCode)")
+    // A readFile proof: no command, names vm.readFile.
+    const rf = bundleReadme('interface Vm { function readFile(string calldata) external view returns (string memory); }\ncontract PocTest {\n  Vm vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function t() public view { vm.readFile("data/x.txt"); }\n}\n')
+    expect(commands(rf)).toEqual([])
+    expect(rf).toContain("reads a file that is not in the bundle (vm.readFile)")
+    // The bytecode lab shape: getCode on an X.sol:Name artifact is NOT a file; command stays.
+    const art = bundleReadme('interface Vm { function getCode(string calldata) external returns (bytes memory); }\ncontract PocTest {\n  Vm vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function t() public { bytes memory c = vm.getCode("Vault.sol:Vault"); c; }\n}\n')
+    expect(commands(art).length).toBeGreaterThanOrEqual(1)
+    expect(art).not.toContain("reads a file that is not in the bundle")
+    // A plain proof with no file cheatcode: command stays.
+    const plain = bundleReadme("contract PocTest { function t() public {} }\n")
+    expect(commands(plain).length).toBeGreaterThanOrEqual(1)
+  })
+
+  test("README wording: the source line matches the source of the list, and names the test only when the command does", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-words-"))
+    try {
+      mkdirSync(path.join(ws, "src")); mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      const bundleReadme = (replay: unknown) => {
+        const dir = mkdtempSync(path.join(tmpdir(), "replay-words-zip-"))
+        try {
+          unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof: { kind: "forge", pass: true } }, recorded: { replay, proof: { kind: "forge", pass: true } } }), dir)
+          return readTree(dir).get("README.md") || ""
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+      // No forge run here, so sources come from the allSol fallback: the README
+      // must not claim "the compiled sources the proof read".
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "t()" })
+      expect(snap.fromBuildInfo).toBe(false)
+      const fb = bundleReadme(snap)
+      expect(fb).toContain("every .sol source in the workspace")
+      expect(fb).not.toContain("the compiled sources the proof read")
+      // A record that came from a build-info reads "the compiled sources".
+      const bi = bundleReadme({ ...snap, fromBuildInfo: true })
+      expect(bi).toContain("the compiled sources the proof read")
+      // With a named contract the command's pass line names the test; without, not.
+      expect(fb).toContain("A pass means the named test compiled and passed")
+      const noContract = bundleReadme({ ...snap, contract: null })
+      expect(noContract).toContain("A pass means the bundle compiled and its tests passed")
+      expect(noContract).not.toContain("the named test")
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
     }
   })
 
