@@ -55,8 +55,10 @@ const REACH_FIELDS = ["labTarget", "offline", "fetches", "scanNet", "grants", "e
 // What the New run dialog needs to list the modules.
 export function packList() {
   return Object.values(PACKS).map((pack) => {
-    const { id, title, tier, proof, live } = pack;
-    const row = { id, title: title ?? id, tier, proof, live: live === true };
+    const { id, title, description, tier, proof, live } = pack;
+    // `description`: what the module tests, in one plain sentence. The Modules
+    // page shows it.
+    const row = { id, title: title ?? id, ...(description ? { description } : {}), tier, proof, live: live === true };
     // Only a pack that sets a field carries it. An absent field stays absent,
     // so the console does not invent a fact for every module.
     for (const k of REACH_FIELDS) if (pack[k] !== undefined) row[k] = pack[k];

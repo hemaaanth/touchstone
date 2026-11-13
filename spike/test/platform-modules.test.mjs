@@ -49,7 +49,8 @@ const REACH = {
 }
 
 test("packList sends each pack's proof and reach fields", () => {
-  const byId = Object.fromEntries(packList().map(({ id, title, tier, ...rest }) => [id, rest]))
+  // `description` is the Modules page sentence; app/tests/module-tests.test.ts checks it.
+  const byId = Object.fromEntries(packList().map(({ id, title, tier, description, ...rest }) => [id, rest]))
   assert.deepEqual(Object.keys(byId).sort(), Object.keys(REACH).sort())
   for (const [id, want] of Object.entries(REACH)) assert.deepEqual(byId[id], want, id)
 })

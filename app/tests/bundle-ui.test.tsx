@@ -24,7 +24,7 @@ const { handleFindings, readmeHead } = await import("../server/runs-http.mjs")
 const { getFinding } = await import("../server/findings.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { zipStore } = await import("../../spike/lib/replay-bundle.mjs")
-const { BundleResult } = await import("../src/components/findings-page")
+const { BundleResult } = await import("../src/components/proof-parts")
 const { sizeText } = await import("../src/lib/findings-view")
 const { joinedModules } = await import("../src/lib/catalog")
 

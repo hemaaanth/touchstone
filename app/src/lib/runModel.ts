@@ -13,6 +13,7 @@ import type {
   ModulePlanEntry,
   PendingApproval,
   PrepassTool,
+  ProofKind,
   PrepassView,
   RunEvent,
   RunLead,
@@ -663,6 +664,10 @@ export function reduceEvents(events: RunEvent[]): RunState {
             dismissed: false,
             ms: num(e.ms),
             poc: str(e.poc) || undefined,
+            // The finding's own module and proof kind: in a joined run they
+            // differ from the scope's.
+            pack: str(e.pack) || undefined,
+            proofKind: isProofKind(e.proofKind) ? e.proofKind : undefined,
             stages:
               stages ?? {
                 hypothesis: true,
@@ -701,6 +706,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
           severity: (str(e.severity) || "medium") as Severity,
           poc,
           n,
+          ...(str(e.pack) ? { pack: str(e.pack) } : {}),
         }
         submitted.push(f)
         steps.push({ key, kind: "submitted", phase, label: f.title, finding: f })
@@ -1197,3 +1203,5 @@ export function onRunSettled(cb: (id: string) => void): () => void {
 export function isRunningNow(state: RunState | null, status: RunStatus): boolean {
   return state ? !state.closed && (!isTerminal(state.status) || state.replying) : status === "running"
 }
+
+const isProofKind = (x: unknown): x is ProofKind => x === "forge" || x === "http" || x === "evidence"

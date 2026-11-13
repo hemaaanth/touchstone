@@ -23,6 +23,7 @@
 
 import { FONT_MONO, FONT_SANS, brandCss, markSvg } from "./brand.mjs"
 import { redactSecrets } from "./redact.mjs"
+import { formatAmount } from "../src/lib/amount.mjs"
 
 // Pull the fix and the harm narrative out of the engine's prose explanation.
 // The engine writes free prose; by convention a remediation sits under a "Fix:"
@@ -57,6 +58,16 @@ export function splitExplanation(explanation) {
 // (before/after rows), `transfers` (signed ETH deltas), and `gas`; an http proof
 // (proof-view.mjs) carries an `oracle` and request/response `exchanges`; an
 // evidence proof carries a `check` against a pinned snapshot.
+// One transfer's amount for the report. With the record's exact wei it reads
+// by the console's own rule (src/lib/amount.mjs): exact when it fits, else
+// rounded to the nearest, marked "≈" and followed by the exact wei, since a
+// report has no tooltip. Without it, the record's own text, as before.
+function moved(t) {
+  if (typeof t.netWei !== "string") return t.net ?? "?";
+  const a = formatAmount(t.netWei, { signed: true });
+  return a.approx ? `${a.text} (exactly ${a.exact})` : a.text;
+}
+
 function harmOf(finding) {
   const kind = finding.proofKind;
   const proof = finding.proof || {};
@@ -68,7 +79,7 @@ function harmOf(finding) {
       if (b.before !== b.after) lines.push(`${b.label}: ${b.before} → ${b.after}.`);
     }
     for (const t of Array.isArray(proof.transfers) ? proof.transfers : []) {
-      lines.push(`${t.label || t.address || "an account"} ${t.gained ? "gained" : "lost"} ${t.net ?? "?"}.`);
+      lines.push(`${t.label || t.address || "an account"} ${t.gained ? "gained" : "lost"} ${moved(t)}.`);
     }
     if (proof.gas != null) lines.push(`Gas used in the replay: ${proof.gas}.`);
   } else if (kind === "http") {

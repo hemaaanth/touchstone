@@ -3,7 +3,7 @@
 // Runs with `bun test`.
 import { describe, test } from "node:test"
 import assert from "node:assert/strict"
-import { moduleAside, moduleNote, moduleTests, planStepState, proofKind, REACH_SENTENCE as S, scopeMeta, siteEntry } from "./catalog"
+import { moduleAside, moduleNote, planStepState, proofKind, REACH_SENTENCE as S, scopeMeta, siteEntry } from "./catalog"
 import type { PackChoice, TargetScope } from "./types"
 
 const pack = (over: Partial<PackChoice> & Pick<PackChoice, "id" | "proof">): PackChoice => ({
@@ -113,18 +113,6 @@ describe("pipeline step words", () => {
   test("a step is on or off, including one the run could not toggle", () => {
     assert.equal(planStepState({ on: true }), "on")
     assert.equal(planStepState({ on: false }), "off")
-  })
-})
-
-describe("what a module tests", () => {
-  test("a known pack has its sentence", () => {
-    assert.equal(moduleTests("keys"), "Safe multisig wallets you own, for setups that let funds move without enough owners signing.")
-  })
-
-  test("a pack the console does not know has none, even one named like an object key", () => {
-    assert.equal(moduleTests("new-pack"), null)
-    assert.equal(moduleTests("constructor"), null)
-    assert.equal(moduleTests("__proto__"), null)
   })
 })
 
