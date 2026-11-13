@@ -49,7 +49,7 @@ import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
-import { agentLook, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
+import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -526,15 +526,25 @@ const MARK = "ring-2 ring-foreground/15"
 // chevron lists them all.
 function SpawnRow({ steps }: { steps: Step[] }) {
   const fleet = useContext(FleetContext)
+  const marked = useContext(MarkedStep)
+  const finding = useContext(FindingNote)
   const [open, setOpen] = useState(false)
   if (!fleet) return null
   const ids = steps.map((s) => s.subId).filter((id): id is string => !!id)
+  // The row stands for every spawn in it, so a jump to any of them lands here.
+  const keys = steps.map((s) => s.key)
+  const note = finding && ids.includes(finding.agent) ? finding : null
   const shown = ids.slice(0, 2)
   const rest = ids.length - shown.length
   const name = (id: string) => agentName(fleet.state, id)
   const link = "rounded-sm outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-foreground/20"
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="max-w-160 rounded-[10px] border bg-background">
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      data-step-key={keys.join(" ")}
+      className={cn("max-w-160 rounded-[10px] border bg-background", marked && keys.includes(marked) && MARK)}
+    >
       <div className="flex items-center gap-2.5 px-3 py-2.5">
         <Network className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0 text-[13px] font-medium">
@@ -584,6 +594,19 @@ function SpawnRow({ steps }: { steps: Step[] }) {
           })}
         </div>
       </CollapsibleContent>
+      {/* A finding this row's child submitted, opened from the Findings page on a
+          phone: its card is in the child's thread, one tap away. */}
+      {note ? (
+        <button
+          type="button"
+          onClick={note.open}
+          className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-xs text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:text-foreground"
+        >
+          <Info aria-hidden className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">This finding is in {note.name}'s thread</span>
+          <ChevronRight aria-hidden className="size-3.5 shrink-0" />
+        </button>
+      ) : null}
     </Collapsible>
   )
 }
