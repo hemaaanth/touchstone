@@ -101,14 +101,14 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Owns | Running as |
 |--------|-------|------|------------|
-| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 with the author |
+| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 with the author Repair round 1 done at `0fcb174`; delta re-review running (`thr_itmcnmnnku`). |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) **Merged** into main `3538912` (reviewed READY). |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`); `984fc07` reviewed NOT READY (`thr_vw5bjhk5kb`): two Majors; repair round 1 with the author |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. PR 4 repair round 2 done at `0bc016f`; delta re-review running (`thr_qxi2n9w6dn`). |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
 | 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`); reviewed READY (`thr_ck6iq7pe6r`); the author adds two test fixes, then merge **Merged** into main `9c68b3a` at head `93928f6`. |
-| 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
+| 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` Candidate `a2c1c3e`; review running (`thr_eghjjuyhm4`, Claude). |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
 
@@ -263,7 +263,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | K1 | done | The app work (scope model, console token, page edits, New run dialog, setup script) is on `main` as the new base. It still needs its independent review (thread 1f). **Review result: NOT READY** (`thr_xikyvziytr`, 9 findings, checked by the coordinator). The repairs are section L. |
 | K2 | done | Rebuild the tool images with `spike/scripts/setup.mjs` and get a green full suite at the tip. Toolkit reviews need the images. Result (thread 1e): all 45 manifest images were present; nothing to pull or build. Full spike suite on the candidate: 940 tests, 936 pass, 0 fail, 4 skipped (2 need live Daytona, 2 need the optional garak image). |
 | K3 | blocked | The 22 old run files are removed from the tree at the base commit. They stay in git history and in a local trash folder (ignored by git). Open: rewrite history to drop them, or leave it. |
-| K4 | todo | Remove old worktrees after their branches merge. |
+| K4 | todo | Remove old worktrees after their branches merge. Also: a kept workspace with a missing or wrong mark file stays in the temp folder as an orphan (from 1a repair round 1); 193 old `redteam-run-*` / `touchstone-supply-*` folders are in the temp folder. |
 | K6 | done | One spike test fails on `main` (also before the base commit): `oz-monitor.test.mjs`, "a monitor run that times out…". The monitor now finishes inside the 1.5 s limit, so the timeout never fires. Fix the test so it does not depend on speed. Goes to thread 1e. Fix `1c378a1` on `fix/green-suite` (the test pauses the lab chain). Reviewer `thr_ry8aamkj9q`. Reviewed READY (thread `thr_ry8aamkj9q`: two mutations fail the test, full suite 940 / 936 pass / 0 fail / 4 skipped). Merged as `afce9fc`. |
 | K5 | todo | Re-check old tester MINOR M1: the proof drawer hides harm numbers. |
 
@@ -277,10 +277,10 @@ The review of the base commit found real defects. Most are older than the base c
 | L2 | done | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
 | L3 | done | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
 | L4 | done | Token compare in constant time. Thread 1g. |
-| L5 | doing | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. |
-| L6 | doing | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. |
-| L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
-| L8 | doing | **A tool run can build an image** (Domains). It must fail with "run setup" instead. Thread 1h. |
+| L5 | review | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. Candidate `a2c1c3e` in review. Limits from the author: katana has no private-address stop of its own; subdomain discovery now needs a `*.` grant entry. |
+| L6 | review | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. Candidate `a2c1c3e` in review. |
+| L7 | review | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. Candidate `a2c1c3e` in review. |
+| L8 | review | **A tool run can build an image** (Domains). It must fail with "run setup" instead. Thread 1h. Candidate `a2c1c3e` in review. |
 | L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
 | L10 | todo | A refused rename or archive shows no message (`app/src/App.tsx:133`, `:144`): the title goes back and nothing explains it. Show the refusal text in the existing error slot. Can fire after a token change, now that these writes are guarded. Also: the Settings refusal line moves the page 36 px. From the 1g review. Wave 2 (with 2c). |
 | L11 | todo | The console token in `spike/data/console-token` never changes. A leaked token stays valid until the file is removed. Add a rotate action or rotate on a schedule. From the 1g review. Wave 3. |
