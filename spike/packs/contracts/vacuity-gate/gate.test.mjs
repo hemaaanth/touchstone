@@ -64,6 +64,8 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     it(`${fixture} cannot pass`, { skip }, async () => {
       const { status, verdict } = await gate(fixture, args);
       rejected(status, verdict, reason);
+      // The verdict says that --known-bug changes nothing; no flag, no note.
+      assert.deepEqual(verdict.notes, args.includes("--known-bug") ? ["--known-bug is always on; the flag is accepted and has no effect"] : []);
       if (["ReviewGreen", "ReviewSkip", "ReviewSample", "ReviewSetup"].includes(fixture)) assert.equal(verdict.killRate, 0);
       if (fixture === "ReviewSetup") assert.equal(verdict.knownBug.detected, false);
       if (fixture === "FeeVaultInvariants") assert.deepEqual(verdict.liveness.deadSelectors, ["deposit()"]);
@@ -229,6 +231,10 @@ describe("vacuity gate", { concurrency: 4 }, () => {
 
   // Every forge call goes through runTool: pinned digest, --pull=never,
   // --network none, forge-std read-only. A fake docker records each argv.
+  // Limit: the fake `docker run` exits 1, so the gate stops after its FIRST
+  // forge call and only that argv is checked. Every forge call is built by
+  // the one forge() helper, so that is enough today; a fake that succeeds
+  // would be needed to check every call.
   it("every forge call is an offline runTool call on the pinned image", async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-docker-"));
     const record = path.join(temp, "calls");
@@ -241,6 +247,7 @@ describe("vacuity gate", { concurrency: 4 }, () => {
         (error, stdout) => resolve({ status: error ? error.code : 0, verdict: JSON.parse(stdout) })));
       assert.equal(status, 1);
       assert.equal(verdict.pass, false);
+      assert.deepEqual(verdict.notes, []);
       const calls = fs.readFileSync(record, "utf8").split("--end--\n").filter(Boolean).map((c) => c.trim().split("\n"));
       assert.ok(!calls.some((c) => c[0] === "pull" || c.includes("--pull=always")));
       const runs = calls.filter((c) => c[0] === "run");
@@ -253,6 +260,30 @@ describe("vacuity gate", { concurrency: 4 }, () => {
         assert.ok(c.some((a) => a.endsWith(":/forge-std/src:ro")));
         assert.match(c[c.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/);
       }
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  // forge-std comes from the lab copy. A copy of gate.mjs sits in a temp tree
+  // with the same layout, next to an edited forge-std: the tree hash must refuse it.
+  it("an edited forge-std source fails the pinned tree hash", async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "vacuity-std-"));
+    try {
+      const spike = path.join(dir, "..", "..", "..");
+      const std = path.join(temp, "lab/vault-reentrancy/lib/forge-std/src");
+      fs.cpSync(path.join(spike, "..", "lab/vault-reentrancy/lib/forge-std/src"), std, { recursive: true });
+      fs.appendFileSync(path.join(std, "Test.sol"), "\n// edited\n");
+      const gateDir = path.join(temp, "spike/packs/contracts/vacuity-gate");
+      fs.mkdirSync(gateDir, { recursive: true });
+      fs.copyFileSync(path.join(dir, "gate.mjs"), path.join(gateDir, "gate.mjs"));
+      fs.symlinkSync(path.join(spike, "lib"), path.join(temp, "spike/lib"));
+      fs.writeFileSync(path.join(temp, "docker"), '#!/bin/sh\ncase "$1" in image|volume) exit 0;; esac\nexit 1\n', { mode: 0o755 });
+      const { status, verdict } = await new Promise((resolve) => execFile(process.execPath,
+        [path.join(gateDir, "gate.mjs"), "--project", project, "--test", "test/ReviewProof.t.sol"],
+        { encoding: "utf8", env: { ...process.env, PATH: `${temp}:${process.env.PATH}` } },
+        (error, stdout) => resolve({ status: error ? error.code : 0, verdict: JSON.parse(stdout) })));
+      rejected(status, verdict, /environment: forge-std tree [0-9a-f]{64} .* is not the pinned/);
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }

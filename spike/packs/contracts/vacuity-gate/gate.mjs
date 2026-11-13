@@ -46,7 +46,9 @@ const CAMPAIGN = {
 // The gate's own forge-std. The project's lib/forge-std is never copied or compiled.
 const FORGE_STD = {
   version: "1.9.4",
-  dir: path.join(HERE, "vendor", "forge-std", "src"),
+  // The lab's forge-std, the same pinned tree. If that copy changes, the hash
+  // check below fails closed. Only src/ is read and hashed.
+  dir: path.join(HERE, "..", "..", "..", "..", "lab", "vault-reentrancy", "lib", "forge-std", "src"),
   // sha256 over sorted lines "<relative path>\0<sha256 of file>\n" for every file in src/.
   treeSha256: "bc3cf851aeea54c57710b26436641a985a599ba4d1eaa98fba7317773c3194ca",
   mount: "/forge-std/src",
@@ -130,7 +132,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--project") out.project = argv[++i];
     else if (a === "--test") out.test = argv[++i];
-    else if (a === "--known-bug") continue; // always on; kept for old command lines
+    else if (a === "--known-bug") out.knownBugFlag = true; // always on; kept for old command lines
     else if (a === "--min-kill-rate") {
       const v = argv[++i];
       out.minKillRate = /^(0(\.\d+)?|1(\.0+)?)$/.test(v ?? "") ? Number(v) : NaN;
@@ -287,7 +289,10 @@ async function forge(ws, argv, { runs = CAMPAIGN.score.runs, depth = CAMPAIGN.sc
   return runTool({
     image: IMAGE, entrypoint: "forge", cmd: argv, ws, network: "none", timeoutMs,
     env: { FOUNDRY_INVARIANT_RUNS: runs, FOUNDRY_INVARIANT_DEPTH: depth },
-    mounts: [[forgeStdMount, FORGE_STD.mount, "ro"], ...(volume ? [[volume, "/home/foundry/.svm"]] : [])],
+    // forge-std: read-only, under the gate's own temp base. The solc cache: a named
+    // volume on runTool's rw allow-list, as for every forge proof (sandbox.mjs).
+    mounts: [[forgeStdMount, FORGE_STD.mount], ...(volume ? [[volume, "/home/foundry/.svm", "rw"]] : [])],
+    mountRoots: [path.dirname(forgeStdMount)],
   });
 }
 
@@ -927,6 +932,7 @@ async function main() {
     survivingMutants: [],
     unscoredMutants: [],
     knownBug: { planted: "rescue() without onlyOwner", detected: false, failingInvariants: [] },
+    notes: opts.knownBugFlag ? ["--known-bug is always on; the flag is accepted and has no effect"] : [],
     reasons: [],
   };
   const fail = (reason) => {
@@ -940,7 +946,7 @@ async function main() {
     fs.cpSync(FORGE_STD.dir, forgeStdMount, { recursive: true });
     const stdHash = treeHash(forgeStdMount);
     verdict.environment.forgeStd.treeSha256 = stdHash;
-    if (stdHash !== FORGE_STD.treeSha256) return fail(`environment: vendored forge-std tree ${stdHash} is not the pinned ${FORGE_STD.treeSha256}`);
+    if (stdHash !== FORGE_STD.treeSha256) return fail(`environment: forge-std tree ${stdHash} (${FORGE_STD.dir}) is not the pinned ${FORGE_STD.treeSha256}`);
 
     // 2. Target: src/FeeVault.sol with the pinned hash.
     const original = path.join(opts.project, TARGET.path);

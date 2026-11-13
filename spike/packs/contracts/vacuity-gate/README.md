@@ -19,7 +19,7 @@ The input project is never edited. The gate rejects symlinks, copies the project
 to a temp directory, and writes only inside that copy. `--keep` retains the
 copies for inspection. It emits one JSON verdict; exit 0 means `pass: true`.
 `--known-bug` is still accepted for old command lines; the known-bug check
-always runs.
+always runs. When the flag is given, the verdict's `notes` say so.
 
 The Forge image is pinned to
 `ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39`.
@@ -41,7 +41,8 @@ a Daytona run on this host. A missing image or cache is an offline prerequisite 
   `dynamic_test_linking`) are read back from that written file, and the gate
   fails closed unless `ffi = false`, `fs_permissions = []` and `offline = true`.
 - `forge-std/` resolves only to the pinned, read-only copy in
-  `vendor/forge-std/src` (forge-std 1.9.4, tree sha256
+  `lab/vault-reentrancy/lib/forge-std/src` (the lab copy, forge-std 1.9.4; no
+  second copy is kept in the pack; tree sha256
   `bc3cf851aeea54c57710b26436641a985a599ba4d1eaa98fba7317773c3194ca`). The gate
   checks that hash before each run and mounts the copy read-only. An import of a
   file that is not in that copy fails the build.
