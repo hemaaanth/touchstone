@@ -22,6 +22,7 @@ import type {
   Verdict,
 } from "./types"
 import { COORDINATOR } from "./types"
+import { candidateFrom, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -145,6 +146,9 @@ export interface RunState {
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
+  // Unproven, agent-asserted records waiting for human review, in submit
+  // order, one per poc. Never findings: no count or verdict reads them.
+  candidates: Candidate[]
   // Operator steers across their two-phase life (pending chip → admitted msg).
   steers: SteerEntry[]
   // Workspace documents the agent wrote (the PoC it drafts, the proof it runs),
@@ -187,6 +191,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
   const findings: FindingSummary[] = []
+  const candidates: Candidate[] = []
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
   let latestArtifact: { fileId: string; versionId: string } | null = null
@@ -591,6 +596,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.ev === "approval-pending") status = "awaiting-approval"
         break
       }
+      case "candidate-submitted": {
+        const c = candidateFrom(e)
+        if (!c || candidates.some((x) => x.poc === c.poc)) break
+        candidates.push(c)
+        steps.push({ key, kind: "note", phase, label: `Recorded a candidate (unproven, needs review): ${c.title}` })
+        break
+      }
       case "submit-rejected":
         steps.push({
           key,
@@ -760,6 +772,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     agents,
     bulletin,
     findings,
+    candidates,
     steers,
     artifacts,
     latestArtifact,
