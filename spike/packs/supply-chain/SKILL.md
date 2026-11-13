@@ -1,6 +1,7 @@
 # Supply chain and Secrets
 
 Audit a small, authorized Git repository without running its code.
+The repository is a local folder, or a GitHub repo or org read through the read-only API.
 The `supply-chain` pack covers Touchstone M13 and M14.
 A scanner result is a lead. Only a replayed static fact becomes a finding.
 
@@ -69,6 +70,29 @@ A file deleted in the working tree is still read from its commit.
 Add `--worktree` to read untracked and ignored files too. That mode has no commit pin.
 A plain folder is read as it is.
 
+## Scan a GitHub repo or org (live)
+
+```sh
+node spike/packs/supply-chain/scan.mjs --github <owner/repo[@ref]|owner|github.com URL>[,...] --authorized "<who authorized this test>" [--json]
+```
+
+Read only repos you are allowed to test, such as a bug-bounty scope.
+`--authorized` is required. It is stored in the run config.
+The scan reads committed files at one pinned commit through the GitHub API. It does not clone, install or run anything.
+Then the same tools run offline on that capture. Each blob must match its Git object ID.
+
+Public repos need no token. The no-token limit is 60 API requests an hour. File bytes come from `raw.githubusercontent.com`, so one repo uses three API requests.
+`GITHUB_TOKEN` (fine-grained, read-only: `contents:read` and `actions:read`) lifts the limit and opens private repos.
+Source the env file in a shell. Never read or print it:
+
+```sh
+(set -a; . /path/to/spike/.env.local; set +a; node spike/packs/supply-chain/scan.mjs --github owner/repo --authorized "...")
+```
+
+The token is sent only as a request header. It never goes to a tool, the snapshot or the record. The output says whether a token was used.
+An org reads up to 10 repos (no forks, no archived repos). Caps: 400 files, 120 s. Each cap that is hit is a coverage gap in the output.
+A supply-chain live scope does the same in a run. It holds `github: ["owner/repo@ref", ...]`. Its grant covers only `api.github.com` and `raw.githubusercontent.com`. See TOOLS.md "Live GitHub path" for the tool list and limits.
+
 **Skipped files.** Binary, oversized and over-budget files are skipped.
 The output prints counts per reason and per top-level folder.
 The full list is written to a file (`--skipped-out`, default under `~/.cache/touchstone/scans/`).
@@ -135,9 +159,10 @@ A snapshot's optional `commit` is included in a passing proof.
 DNS and HTTP packs must inspect their captured records. They must not make a fresh network request during replay.
 
 The supply-chain snapshot contains `{ version, commit, files, npmAdvisories }`.
+A GitHub capture adds `scope: "github-commit"`, `github: { repos, commits, authenticated }` and `gaps`. With several repos, `commit` is absent and each path starts with `owner/repo/`.
 `files` maps source paths to source text.
 `npmAdvisories` is the base64 local OSV zip.
-The prepass checks every source file against the real Git commit before pinning it.
+The prepass checks every source file against the real Git commit before pinning it. A GitHub capture checks each blob against its tree object ID.
 Each lead and finding includes the commit, file, and one-based line.
 Replays use the pinned bytes, not a later working-tree edit.
 Never expose `snapshot.json` as a public artifact. It contains raw source secrets by design and is written with mode 0600.
@@ -159,9 +184,9 @@ Raw scanner stdout and stderr exist only in memory and are discarded after parsi
 The `evm-private-key` check reads the statement that holds the hex. The key word must come before it, joined by `=`, `:`, `(`, `,`, `+`, `=>`, `||`, `??` or `return`. A `bytes32`, `_ROLE` or `keccak256` skips only its own statement, not the whole line.
 Semgrep sinks name the HTTP methods of `axios` and `got` (`post`, `get`, `put`, `patch`, `request`, `delete`, `head`, and `stream` for `got`). Config calls such as `axios.create` and `got.extend` are not sinks.
 
-The target is a Git root (committed bytes are pinned) or a plain folder.
+The target is a Git root (committed bytes are pinned), a plain folder, or a GitHub API capture at one commit.
 A Git scan reads committed files only. Untracked and ignored files are counted, not read. Use `--worktree` to read them.
-Only regular text files are read. A source file is at most 512 KiB. Source text totals at most 8 MiB.
+Only regular text files are read. A source file is at most 512 KiB. A project lockfile is at most 2 MiB. Source text totals at most 8 MiB.
 Other files are skipped. The record keeps counts per reason and per folder, and the full list goes to a file next to the run. It never lives only in memory.
 This pack audits the pinned HEAD tree, not deleted Git history.
 
@@ -177,8 +202,8 @@ Known evasions. The dependency checks are static and heuristic. They miss:
 A clean result is never proof of a clean dependency tree. OSV and Grype cover known advisories. Semgrep covers our own rules.
 
 Network and host exceptions. Every scanner runs in Docker with `--network none` and no host execution.
-Two steps are different. `refresh-db.mjs` uses the network, and an operator runs it. `snapshot.mjs` runs host `git` to read the repository (`ls-files`, `cat-file`). It never runs target code.
-It has no source-fetching tool, package install tool, credential verification, chain access, or GitHub API mode.
+Three steps are different. `refresh-db.mjs` uses the network, and an operator runs it. `snapshot.mjs` runs host `git` to read the repository (`ls-files`, `cat-file`). It never runs target code. `github.mjs` reads a granted GitHub repo through `api.github.com` and `raw.githubusercontent.com` only.
+It has no package install tool, credential verification, or chain access. It does not read GitHub settings, history, pull requests, run logs or releases.
 EVM scalar checks require key/account context. Mnemonics are single-line English phrases. Encrypted keystores must use the V3 AES-128-CTR shape.
 The OSV npm slice contains only the lab's Lodash advisory. Do not treat it as a full registry scan.
 Scanner failures are reported as coverage gaps. They never mean the repository is safe.
@@ -186,6 +211,8 @@ Scanner failures are reported as coverage gaps. They never mean the repository i
 ## Verification recorded
 
 - The focused supply-chain tests pass: 36 tests (14 first delivery, 10 repair 1, 2 repair 2, 7 deep review, 3 re-review).
+- The GitHub path tests pass: 12 tests in `test/supply-chain-github.test.mjs`, on a real recorded capture.
+- `scan.mjs --github actions/hello-world-javascript-action@main` ran with no token and with `GITHUB_TOKEN`. Both read commit `79ac0da1`. Both gave 28 leads, and all 28 replays passed. The token was not in the output.
 - The full `bun run test` in `spike/` passes (count in the repair report).
 - The no-spend smoke runs all seven tools through `runTool()` and replays 12 root causes. It checks that source secrets are absent from public output. Spend: $0.
 - One live lab run used NEAR `qwen-abl` with `RUN_BUDGET_USD=1`. It submitted 11 findings. All passed final evidence replay. Finding 1 is `malicious-dependency:ethres`, the planted package that OSV and Grype do not know. Spend: $0.032.

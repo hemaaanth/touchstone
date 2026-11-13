@@ -7,13 +7,18 @@ import { loadSnapshot, pinSnapshot } from "../../lib/proof-evidence.mjs";
 
 // A snapshot holds small UTF-8 text files. Anything else is skipped and listed.
 // A skipped file is a coverage gap. It is never silent and it never aborts the scan.
-export const LIMITS = { totalBytes: 8 * 1024 * 1024, fileBytes: 512 * 1024, files: 20_000 };
+// A lockfile is the main input of the dependency checks and is often larger than
+// a source file, so a project lockfile (not one under node_modules) may be up to
+// lockfileBytes. This matches the 2 MiB single-file cap in lib/fetch.mjs.
+export const LIMITS = { totalBytes: 8 * 1024 * 1024, fileBytes: 512 * 1024, lockfileBytes: 2 * 1024 * 1024, files: 20_000 };
+const LOCKFILE = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|composer\.lock|gradle\.lockfile|packages\.lock\.json)$/;
+export const fileCap = (file) => (LOCKFILE.test(file) && !/(^|\/)node_modules\//.test(file) ? LIMITS.lockfileBytes : LIMITS.fileBytes);
 const RESERVED = /^(?:\.scanner-(?:db|rules)\/|\.scanner-sbom\.json$|\.semgrepignore$)/;
 const inNodeModules = (file) => /(^|\/)node_modules\//.test(file);
 
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 const git = (root, args, opts = {}) => execFileSync("git", ["--no-replace-objects", "-C", root, ...args], { maxBuffer: 64 * 1024 * 1024, env, ...opts });
-const blobOid = (raw) => createHash("sha1").update(`blob ${raw.length}\0`).update(raw).digest("hex");
+export const blobOid = (raw) => createHash("sha1").update(`blob ${raw.length}\0`).update(raw).digest("hex");
 
 function gitRoot(dir) {
   try { return realpathSync(git(dir, ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()) === realpathSync(dir); }
@@ -93,7 +98,7 @@ export function captureSnapshot(source, { worktree = false } = {}) {
     if (isGit && (raw === null || blobOid(raw) !== oid)) {
       try { raw = git(root, ["cat-file", "blob", oid]); } catch { skip("unreadable"); continue; }
     }
-    if (raw.length > LIMITS.fileBytes) { skip("too-large"); continue; }
+    if (raw.length > fileCap(file)) { skip("too-large"); continue; }
     if (raw.includes(0) || !isUtf8(raw)) { skip("binary-or-not-utf8"); continue; }
     if (bytes + raw.length > LIMITS.totalBytes || count >= LIMITS.files) { skip("over-budget"); continue; }
     bytes += raw.length; count++;

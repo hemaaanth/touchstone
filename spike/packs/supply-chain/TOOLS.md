@@ -5,7 +5,8 @@ Sizes below use decimal MB. Selected images use Docker's installed size.
 Unselected images use the amd64 compressed layer size from their manifest.
 The image digest in `scanners.mjs` pins every selected tool.
 All scans and replays use `runTool()` with `--network none`.
-No scanner receives the model key, Docker socket, host home, or other host secrets.
+This is also true for a live GitHub target. Only the capture step uses the network (see "Live GitHub path" below). The tools then read the pinned capture offline.
+No scanner receives the model key, Docker socket, host home, `GITHUB_TOKEN`, or other host secrets.
 
 Research starts at M13 and M14 in `03-capabilities.md`, the supply-chain and secrets rows in `04-crypto-coverage.md`, and `07-gap-5.md` / `07-gap-6.md` in the main checkout's research folder.
 That research folder is not tracked in this worktree.
@@ -29,23 +30,25 @@ That research folder is not tracked in this worktree.
 The table above lists what this pack runs plus the three it compared and rejected
 (Gato-X, GuardDog, Kingfisher). The M13/M14 research and the coverage audit name
 more OSS tools. Each gets a verdict so a deliberate skip and an un-examined gap
-differ. The driving facts: this pack audits a **pinned offline snapshot** and
-never touches live GitHub settings or an SCM API. Workflow security is carried by
-the zizmor + poutine ensemble; Gato-X is the read-only reference for the
-remote-enumeration class. `spike/lib/targets.mjs:341-342` refuses a live target
-for any pack without `live: true`, and this pack has none. Every tool that needs
-an SCM token is blocked on that missing live path. Each reason still names the
-token it needs and the gap it would close.
+differ. The driving facts: every tool audits a **pinned offline snapshot**.
+The pack now has a live GitHub path (`live: true`, see "Live GitHub path" below).
+It reads committed files through the GitHub API and pins them. It does not read
+repo or org settings, and no tool gets the network or the token. Workflow
+security is carried by the zizmor + poutine ensemble; Gato-X is the read-only
+reference for the remote-enumeration class. A tool that must call the GitHub API
+itself is still blocked: it needs its own networked `runTool()` run with the
+token, and that is not wired. Each reason names what it needs and the gap it
+would close.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
-| OSSF Scorecard | Repo posture scored via GitHub API | blocked — no supply-chain live path | Needs a read-only SCM token plus a live SCM scope, and the pack has no live path. It would close branch protection, review and release settings that a snapshot cannot show. |
+| OSSF Scorecard | Repo posture scored via GitHub API | blocked — needs a networked tool run | The live scope and grant now exist. Scorecard calls the API itself, so it needs network and `GITHUB_TOKEN` inside its container. `runTool()` gives neither today. Some of its checks also need more than `contents:read` and `actions:read`. It would close branch protection, review and release settings that a snapshot cannot show. |
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
-| Legitify | GitHub/GitLab org + repo misconfig via API | blocked — no supply-chain live path | Needs an SCM API token plus the missing live path. Same remote class as Gato-X, which stays the read-only reference. It would close org and repo settings enumeration. |
-| chain-bench | CIS supply-chain benchmark against an SCM | blocked — no supply-chain live path | Needs SCM API access plus the missing live path. It would close live org settings; a snapshot scan cannot reach them. |
-| cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing and verification tool, not a scanner. It can verify offline: `--offline` with a local image, a saved signature or bundle, and trust material. The work is the image, a verifier adapter, a trust policy from the operator, and tests. Fetching signatures from a remote registry or log is the only part that needs the missing live path. |
+| Legitify | GitHub/GitLab org + repo misconfig via API | blocked — needs a networked tool run and admin-read scopes | Reads org and repo settings through the API from inside the tool, so it needs a networked `runTool()` run with the token. Most settings also need admin-read scopes that the read-only token does not have. Same remote class as Gato-X, which stays the read-only reference. It would close org and repo settings enumeration. |
+| chain-bench | CIS supply-chain benchmark against an SCM | blocked — needs a networked tool run and admin-read scopes | Same need as Legitify: API calls from inside the tool, and settings scopes beyond the read-only token. It would close live org settings; a snapshot scan cannot reach them. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing and verification tool, not a scanner. It can verify offline: `--offline` with a local image, a saved signature or bundle, and trust material. The work is the image, a verifier adapter, a trust policy from the operator, and tests. The GitHub path reads source files, not release artifacts or signatures, so it does not close this. Fetching signatures from a registry or a transparency log needs its own live path. |
 | octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
-| raven | CI/CD pipeline graph scanner | blocked — no supply-chain live path | Ingests workflows from the GitHub API into a graph DB, so it needs an SCM token and the missing live path. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
+| raven | CI/CD pipeline graph scanner | blocked — needs a networked tool run | Ingests workflows from the GitHub API into a graph DB from inside the tool, so it needs a networked `runTool()` run with the token. The pack's own capture already reads workflows across an org (up to 10 repos) for zizmor and poutine, so part of its value is covered. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
 
 ## Comparison observed
@@ -75,10 +78,43 @@ Gato-X's README documents a Python package and GitHub API modes, not an offline 
 
 Offline support: [zizmor CLI](https://docs.zizmor.sh/usage/), [poutine README](https://github.com/boostsecurityio/poutine), [OSV offline mode](https://google.github.io/osv-scanner/usage/offline-mode/), [GuardDog README](https://github.com/DataDog/guarddog), [Syft README](https://github.com/anchore/syft), [Grype configuration](https://oss.anchore.com/docs/reference/grype/configuration/), [TruffleHog README](https://github.com/trufflesecurity/trufflehog), [Gitleaks CLI](https://github.com/gitleaks/gitleaks), [Kingfisher usage](https://github.com/mongodb/kingfisher/blob/v2.18.1/docs/USAGE.md).
 
+## Live GitHub path
+
+`scan.mjs --github <owner/repo[@ref]|owner>[,...] --authorized "<who>"` and a supply-chain live scope read a real GitHub repo or org. Code: `github.mjs`, `githubGet()` in `lib/fetch.mjs`.
+
+- The capture runs in the host process, not in a tool. It reads `/repos/{o}/{r}`, the ref's commit SHA, and the recursive tree. Then it reads each file blob at that commit.
+- With no token it reads public repos: file bytes come from `raw.githubusercontent.com/{o}/{r}/{commit}/{path}`. With `GITHUB_TOKEN` it reads blobs from `api.github.com/.../git/blobs/{sha}`. The token lifts the rate limit and opens private repos it can read.
+- Each blob must match its Git object ID from the tree. A mismatch stops the capture.
+- Only `api.github.com` and `raw.githubusercontent.com`. No redirects, no credentials or ports in a URL. 20 s per request, 120 s per capture, 400 files, 10 repos. The byte caps match a local scan.
+- The grant must name the repo or its owner. This is checked in code before the first request. The token is only a request header. It is never written to the snapshot, the record, the workspace, or tool input.
+- The same tools then run offline on the pinned capture. Every lead replays from it.
+
+What each tool does on a live capture:
+
+| Tool | On a live capture |
+|---|---|
+| zizmor | Runs. Real workflows from the repo. |
+| poutine | Runs once per repo when a capture holds several repos. |
+| Gitleaks, TruffleHog | Run on the committed files. No credential verification. |
+| Semgrep | Runs our three rules. Vendored `node_modules/` is read only when the repo commits it. |
+| Syft + Grype | Run on the real manifests and lockfiles, with the full Grype database. This is the real advisory check. |
+| OSV-Scanner | Runs on `package-lock.json` only, against the one-record lab slice. On a real repo this is a narrow check, not an advisory scan. Grype carries the real one. |
+| Touchstone crypto checks | Run on the same files a local scan would read. |
+
+Observed on `actions/hello-world-javascript-action@main` (commit `79ac0da1`): zizmor 41 leads, poutine 2, Gitleaks 0, TruffleHog 0, Semgrep 0, Grype 19, OSV 0. 28 grouped leads, all replays pass. One file (`dist/index.js`) was skipped as too large. The run with no token and the run with `GITHUB_TOKEN` gave the same commit and the same results. The token was in neither output. The test fixture is a real no-token capture of `octokit/request-error.js`.
+
+Live path limits:
+
+- Org mode lists up to 10 repos from the first page of 100, without forks or archived repos. Each limit is a coverage gap in the record. Org mode has no recorded fixture.
+- A truncated tree and the 400-file cap are coverage gaps. Workflows and manifests are read first.
+- It reads one commit. It does not read history, pull requests, Actions run logs, releases, packages, or any setting.
+- The app form cannot make a supply-chain live scope. It turns a GitHub URL into a code scope, and its text says "websites". The server route takes one: `{ kind: "live", pack: "supply-chain", hosts: ["owner/repo"], permission: true }` (`app/server/runs.mjs`). That route was not run end to end. The app was not changed.
+- The capture runs in the run's own process. It does not go through the confine gate. The grant check at run start, the check in code, and the two-host allowlist in `githubGet()` hold it. The web pack's live scan stage is the same: it runs on the plain bridge network (`lib/live.mjs`).
+
 ## Limits
 
-This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), or a plain folder. Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings, package registries, installed dependency payloads, or container image layers.
-Tools run offline and read a pinned snapshot. `scan.mjs <folder>` runs them on a real repo or folder. There is no credential verification, chain query, transaction, exploit workflow, or network fallback.
+This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), a plain folder, or a GitHub API capture at one commit (see "Live GitHub path"). Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings, package registries, installed dependency payloads, or container image layers.
+Tools run offline and read a pinned snapshot. `scan.mjs <folder>` runs them on a real repo or folder. `scan.mjs --github` captures a real GitHub repo first. There is no credential verification, chain query, transaction, exploit workflow, or network fallback.
 A tool error remains an explicit coverage error. A missing advisory database is not a clean result.
 The bundled advisory record is narrow by design. Other dependencies need a separately supplied and pinned database.
 

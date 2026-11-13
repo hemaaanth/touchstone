@@ -263,6 +263,46 @@ export function githubRepoUrl(repo) {
   return u.href;
 }
 
+// A GitHub live-scope entry for the supply-chain pack: `owner`, `owner/repo`,
+// `owner/repo@ref`, or a github.com URL (`/owner`, `/owner/repo`,
+// `/owner/repo/tree/<ref>`). Returns { owner, repo, ref }. repo and ref may be null.
+const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const GITHUB_REPO = /^[A-Za-z0-9_.-]{1,100}$/;
+export const GITHUB_REF = /^(?!.*\.\.)(?!\/)[A-Za-z0-9_.\/-]{1,200}$/;
+export function githubTarget(raw) {
+  const text = String(raw ?? "").trim();
+  let owner, repo = null, ref = null;
+  if (/^https?:\/\//i.test(text)) {
+    let u;
+    try { u = new URL(text); } catch { throw new Error(`not a GitHub URL: ${text.slice(0, 100)}`); }
+    if (u.protocol !== "https:" || u.hostname !== "github.com" || u.username || u.password || u.port) throw new Error("Use an HTTPS github.com repo or org URL.");
+    const seg = u.pathname.split("/").filter(Boolean);
+    [owner, repo = null] = seg;
+    if (repo) repo = repo.replace(/\.git$/, "");
+    if (seg.length > 2) {
+      if (seg[2] !== "tree" || seg.length < 4) throw new Error("Use a repo URL, an org URL, or a /tree/<ref> URL.");
+      ref = seg.slice(3).join("/");
+    }
+  } else {
+    const at = text.indexOf("@");
+    const name = at >= 0 ? text.slice(0, at) : text;
+    if (at >= 0) ref = text.slice(at + 1);
+    [owner, repo = null] = name.split("/");
+    if (name.split("/").length > 2) throw new Error(`not owner/repo: ${text.slice(0, 100)}`);
+  }
+  if (!GITHUB_OWNER.test(owner ?? "")) throw new Error(`not a GitHub owner: ${String(owner).slice(0, 60)}`);
+  if (repo !== null && (!GITHUB_REPO.test(repo) || repo === "." || repo === "..")) throw new Error(`not a GitHub repo name: ${String(repo).slice(0, 60)}`);
+  if (ref !== null && (!repo || !GITHUB_REF.test(ref))) throw new Error(`not a usable ref: ${String(ref).slice(0, 60)}`);
+  return { owner, repo, ref };
+}
+
+// The grant's word for a target: "owner/repo" or "owner", lowercase.
+export const githubScopeKey = (t) => (t.repo ? `${t.owner}/${t.repo}` : t.owner).toLowerCase();
+// The stored form of one entry: "owner", "owner/repo" or "owner/repo@ref".
+export const githubEntry = (t) => `${t.repo ? `${t.owner}/${t.repo}` : t.owner}${t.ref ? `@${t.ref}` : ""}`;
+// The only hosts a GitHub live scope may reach. Both are read-only here.
+export const GITHUB_HOSTS = ["api.github.com", "raw.githubusercontent.com"];
+
 const FOLDER_NAME = /^[\w-][\w.-]{0,63}$/;
 
 // Validate a members array. Returns the normalized members.
@@ -446,15 +486,19 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   const packId = String(pack || "").trim() || "web";
   if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
-  const origins = [...new Set(list.map(siteOrigin).filter(Boolean))];
+  // A supply-chain live scope names GitHub repos or orgs, not websites. Its grant
+  // covers only the two read-only GitHub hosts. The pack checks each repo
+  // against `github` in code before it reads anything (packs/supply-chain/github.mjs).
+  const github = packId === "supply-chain" ? [...new Set(list.map((h) => githubEntry(githubTarget(h))))] : null;
+  const origins = github ? GITHUB_HOSTS.map((h) => `https://${h}`) : [...new Set(list.map(siteOrigin).filter(Boolean))];
   if (!origins.length) throw new Error("A live scope needs at least one http(s) website.");
   // The grant checks and normalizes each host (no public-suffix wildcards, no
   // private addresses). It throws before anything is saved.
   const grant = addGrant({
-    hosts: list,
+    hosts: github ? GITHUB_HOSTS : list,
     kind: "authorized",
     approvedBy: "operator (permission checkbox)",
-    note: "Confirmed when the live scope was added.",
+    note: github ? `Read-only GitHub capture of ${github.join(", ")}. Confirmed when the live scope was added.` : "Confirmed when the live scope was added.",
     scopeId: id,
   });
   const t = name || grant.hosts.join(" + ").slice(0, 120);
@@ -474,9 +518,10 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,
-    entry: grant.hosts[0],
+    entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
+    ...(github ? { github } : {}),
     // Where a run actually sends its requests, in the operator's own scheme and
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
@@ -484,7 +529,9 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
     proofSurface: {
       kind: "live",
-      note: "Real requests to the websites listed here. You confirmed you have permission to test them.",
+      note: github
+        ? "Read-only GitHub API reads of the repos listed here. Nothing is cloned or run. You confirmed you have permission to test them."
+        : "Real requests to the websites listed here. You confirmed you have permission to test them.",
     },
     createdAt: Date.now(),
   };

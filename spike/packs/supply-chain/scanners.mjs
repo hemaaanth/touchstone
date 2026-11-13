@@ -86,11 +86,19 @@ export async function scanSnapshot(snapshot, engine) {
       if (!locks.length) return { engine, status: "ok", code: 0, timedOut: false, reason: "no package-lock.json in snapshot", leads: [] };
       cmd = [...cmd, ...locks.flatMap((f) => ["--lockfile", f])];
     }
-    const r = await runTool({ ...spec, cmd, ws: dir, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp", OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: "/work/.scanner-db", POUTINE_DISABLE_VERSION_CHECK: "1", GRYPE_DB_CACHE_DIR: "/work/.scanner-db/grype", GRYPE_DB_AUTO_UPDATE: "false", GRYPE_DB_VALIDATE_AGE: "false", GRYPE_CHECK_FOR_APP_UPDATE: "false", GITLEAKS_CONFIG_TOML: readFileSync(new URL("./gitleaks.toml", import.meta.url), "utf8") }, timeoutMs: 120_000 });
-    if (r.timedOut || ![0, ...(engine === "osv" ? [1] : [])].includes(r.code)) return { engine, status: "error", code: r.code, timedOut: r.timedOut, leads: [] };
+    // Poutine reads only the workflows of the folder it is given. A GitHub capture
+    // of several repos keeps each under "<owner>/<repo>/", so poutine runs once per repo.
+    const roots = engine === "poutine" && (snapshot.github?.repos?.length ?? 0) > 1 ? snapshot.github.repos.map((x) => x.repo) : [null];
+    const runs = [];
+    for (const root of roots) {
+      const r = await runTool({ ...spec, cmd: root ? cmd.map((c) => (c === "." ? root : c)) : cmd, ws: dir, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp", OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: "/work/.scanner-db", POUTINE_DISABLE_VERSION_CHECK: "1", GRYPE_DB_CACHE_DIR: "/work/.scanner-db/grype", GRYPE_DB_AUTO_UPDATE: "false", GRYPE_DB_VALIDATE_AGE: "false", GRYPE_CHECK_FOR_APP_UPDATE: "false", GITLEAKS_CONFIG_TOML: readFileSync(new URL("./gitleaks.toml", import.meta.url), "utf8") }, timeoutMs: 120_000 });
+      if (r.timedOut || ![0, ...(engine === "osv" ? [1] : [])].includes(r.code)) return { engine, status: "error", code: r.code, timedOut: r.timedOut, leads: [] };
+      runs.push({ r, root });
+    }
+    const { r } = runs[0];
     let leads;
     if (engine === "zizmor" || engine === "poutine") {
-      leads = sarifLeads(r.stdout, engine).map((l) => lead(engine, l.check, safeFile(l.file, snapshot.files), l.lines[0], snapshot, { impact: l.impact }));
+      leads = runs.flatMap(({ r, root }) => sarifLeads(r.stdout, engine).map((l) => lead(engine, l.check, safeFile(l.file, snapshot.files) ?? (root ? safeFile(`${root}/${l.file}`, snapshot.files) : null), l.lines[0], snapshot, { impact: l.impact })));
     } else if (engine === "gitleaks") {
       leads = JSON.parse(r.stdout).map((l) => lead(engine, l.RuleID, safeFile(l.File, snapshot.files), l.StartLine, snapshot, { secret: l.Secret, impact: "High" }));
     } else if (engine === "trufflehog") {

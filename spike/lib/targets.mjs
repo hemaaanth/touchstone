@@ -356,6 +356,7 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       `Base URL for every request: ${baseUrl}`,
     ]
     if (mcp?.token) lines.push("", `Bearer token: ${mcp.token}`)
+    if (pack === "supply-chain" && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
     if (target.blurb) lines.push("", String(target.blurb))
     writeFileSync(path.join(ws, "BRIEF.md"), lines.join("\n") + "\n")
     const live = { kind: "live", pack, modules, hosts, origins, baseUrl, ...(mcp ? { mcp } : {}) }
@@ -370,6 +371,15 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       })
       live.domain = hosts[0]
       live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+    }
+    // The supply-chain pack reads GitHub repos or orgs through the read-only
+    // API. `github` is what to read; `reach.scope` is what the grant covers.
+    // The pack asserts both in code before its first request.
+    if (pack === "supply-chain") {
+      const github = Array.isArray(target.github) ? target.github.map(String) : []
+      if (!github.length) throw new Error(`live target ${target.id} names no GitHub repo or org`)
+      live.github = github
+      live.reach = { granted: true, scope: github.map((g) => g.split("@")[0]), hosts }
     }
     writeTouchstone(ws, live)
     return ws
