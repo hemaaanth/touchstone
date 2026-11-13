@@ -252,7 +252,9 @@ test("arjun real run: the full prepass finds the hidden ?debug= param on /health
     const onDisk = JSON.parse(readFileSync(join(ws, ".web-leads.json"), "utf8"));
     assert.ok(onDisk.leads.some((l) => l.check === "hidden-parameter" && l.param === "debug"));
   } finally {
-    cleanupWorkspace(ws);
+    // prepass() starts a persisted lab; stop it (lab, proxy, networks) before
+    // the workspace that holds its handle is removed.
+    try { await web.teardown(ws); } finally { cleanupWorkspace(ws); }
   }
 });
 
