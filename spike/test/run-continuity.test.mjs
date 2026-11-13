@@ -785,7 +785,7 @@ test("safety: a scope store that cannot be read is not a scope that is gone: the
     writeFileSync(store, "{ this is not a list");
     try {
       server = await restart();
-      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3, "the boot leaves the workspace alone");
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2, "the boot leaves the workspace alone") // .touchstone.json and notes.md;
       assert.equal(kept(a.id).restored, true, "and the mark stays for the next boot");
       const before = spawns.length;
       const refused = (run) => {
@@ -797,7 +797,7 @@ test("safety: a scope store that cannot be read is not a scope that is gone: the
       };
       refused(a);
       refused(c);
-      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2);
       assert.ok(existsSync(path.join(c.ws, "notes.md")), "no workspace is deleted");
       rmSync(c.ws, { recursive: true, force: true });
       refused(c); // also when the record names a path that fails the check
