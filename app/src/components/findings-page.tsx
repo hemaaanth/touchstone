@@ -127,7 +127,7 @@ export function FindingsPage({
 }: {
   packs: PackChoice[]
   runs: RunSummary[]
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const [load, setLoad] = useState<Load>({ state: "loading" })
   const [attempt, setAttempt] = useState(0)
@@ -411,7 +411,7 @@ export const FindingListRow = memo(function FindingListRow({
   active: boolean
   onOpen: (f: FindingSummary) => void
   onCopy: (f: FindingSummary, format: CopyFormat) => void
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const open = () => onOpen(f)
   return (
@@ -440,7 +440,7 @@ export const FindingListRow = memo(function FindingListRow({
           <RowMenuItem onClick={open}>
             <PanelRight /> View details
           </RowMenuItem>
-          <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id)}>
+          <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id, f.id)}>
             <ChevronRight /> Open in run
           </RowMenuItem>
           <RowMenuSeparator />
@@ -491,7 +491,7 @@ function FindingDetail({
   run: RunSummary | undefined
   note: CopyNote | null
   onCopy: (format: CopyFormat) => void
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const full = useFullFinding(f.id)
   return (
@@ -528,7 +528,7 @@ function FindingDetail({
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {run ? (
-              <Button size="sm" onClick={() => onOpenRun(run.id)}>
+              <Button size="sm" onClick={() => onOpenRun(run.id, f.id)}>
                 Open in run <ChevronRight />
               </Button>
             ) : null}
