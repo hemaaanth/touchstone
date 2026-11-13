@@ -84,12 +84,20 @@ export function ledgerState() {
 // sees a half-written file, and no charge is lost.
 //
 // The lock file holds its holder's pid. It is made whole in a temp file and
-// hard-linked into place, so it is never seen empty. A lock whose holder is dead
-// is stale. A lock with no pid (an older one) is stale once it is older than
-// staleMs. Only the holder of `${lock}.break` removes a stale lock, and it checks
-// the lock again under that hold, so two processes cannot both remove it and
-// then each take a lock. waitMs is longer than staleMs, so a waiter outlasts a
-// dead lock and still writes its charge. Tests shorten both.
+// hard-linked into place, so it is never seen empty. A lock is stale when its
+// holder is dead, or when it is older than staleMs whatever its pid: a pid can
+// be reused (or be pid 1 in a container), and a charge holds the lock for well
+// under a millisecond, so a lock that old is stuck. Age is the inode's ctime,
+// which the link sets and which a touch cannot set back. Only the holder of
+// `${lock}.break` removes a stale lock, and it checks the lock again under
+// that hold, so two processes cannot both remove it and then each take a lock.
+// A `.break` older than staleMs was left by a process that died while it held
+// it, and is removed. Two waiters that both see that old `.break` can both
+// remove it and both hold a new one; the re-check then shields the lock except
+// in the few microseconds between its read and its unlink. waitMs is longer
+// than staleMs, so a waiter outlasts a stuck lock and still writes its charge.
+// A holder that stalls longer than staleMs can lose its lock. Tests shorten
+// both.
 export const LEDGER_LOCK_MS = { waitMs: 45_000, staleMs: 30_000 };
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // Take `path` by linking the pid file to it. False when someone else has it.
@@ -109,16 +117,24 @@ function alive(pid) {
   if (pid === process.pid) return false;
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === "EPERM"; }
 }
+// Milliseconds since the file at `path` was linked; -1 when it is gone.
+function ageMs(path) {
+  try { return Date.now() - statSync(path).ctimeMs; } catch { return -1; }
+}
 function stale(lock, pid) {
   if (pid === undefined) return false;
-  if (pid !== null) return !alive(pid);
-  try { return Date.now() - statSync(lock).mtimeMs > LEDGER_LOCK_MS.staleMs; } catch { return false; }
+  if (ageMs(lock) > LEDGER_LOCK_MS.staleMs) return true;
+  return pid !== null && !alive(pid);
 }
 function breakStale(lock, pidFile) {
   const pid = holderOf(lock);
   if (!stale(lock, pid)) return;
   const brk = `${lock}.break`;
-  if (!take(pidFile, brk)) return; // another process is removing it
+  if (!take(pidFile, brk)) {
+    // Another process is removing it, or died while it did.
+    if (ageMs(brk) > LEDGER_LOCK_MS.staleMs) try { unlinkSync(brk); } catch { /* already removed */ }
+    return;
+  }
   try {
     // Still the same stale lock? A new holder's lock has a live pid.
     const again = holderOf(lock);
@@ -135,7 +151,7 @@ function withLedgerLock(file, fn) {
   try {
     while (!take(pidFile, lock)) {
       breakStale(lock, pidFile);
-      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${LEDGER_LOCKED} If no run is active, remove the lock file and any ${lock}.break file.`);
+      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${LEDGER_LOCKED} If no run is active, remove ${lock} and ${lock}.break.`);
       sleepMs(2 + Math.random() * 8);
     }
   } finally {
