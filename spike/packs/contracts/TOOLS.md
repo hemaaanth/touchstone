@@ -39,8 +39,9 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   itself, not the actor, so every deposit reverted inside a `try/catch` and
   the vault stayed empty. Every invariant held vacuously.
 - **Fails closed.** These are a gap, never a clean result: a missing image; a
-  timeout (an in-container kill at the limit minus 5 s, and the named
-  container is removed if the docker client times out); a kill by signal 9
+  timeout (an in-container kill at the limit minus 5 s; if the docker client
+  times out first, the shared runTool fix 6526bbe, not yet merged here,
+  removes the container); a kill by signal 9
   (exit 137 is the time limit or the 2 GB memory limit; we cannot tell which,
   and say so); any non-zero container exit, even with a valid report; a build
   error; no report; an empty or unreadable report; a failed `setUp` (Halmos

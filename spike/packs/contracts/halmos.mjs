@@ -17,7 +17,6 @@
 //     (suite-trust.mjs). Today the gate is not merged, so no pass is trusted.
 //   - A timeout, a failed setUp, a build error, a missing image or output we
 //     cannot read is a GAP, never a clean result.
-import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
@@ -33,8 +32,7 @@ const KILLED = "HALMOS_KILLED";
 // Forge 1.9 links test contracts dynamically and rewrites `new X()` into a
 // deployCode cheat code Halmos does not support, so turn that off.
 // When the docker client times out, the container keeps running. The inner
-// `timeout` kills Halmos first, so the container never outlives the limit, and
-// runTool removes the named container if the client times out anyway.
+// `timeout` kills Halmos first, so the container never outlives the limit.
 // --function check_: Halmos 0.3.3 also runs invariant_ functions by default.
 // We list and bind only check_ suites, so run only those.
 // The sh wrapper exits 0 on a normal run. Any other code is a failed run.
@@ -135,10 +133,10 @@ export async function halmosScan(ws, { timeoutMs = 300_000 } = {}) {
     return { tool, available: true, applicable: false, reason: "no check_ functions in test/", suites, trust: null, results: [], gaps: [], leads: [] };
   }
   const secs = Math.max(1, Math.floor(timeoutMs / 1000) - 5);
-  const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", scanCmd(secs)], ws, timeoutMs, env: { FOUNDRY_DYNAMIC_TEST_LINKING: "false" }, name: `touchstone-halmos-${randomUUID().slice(0, 12)}` });
+  const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", scanCmd(secs)], ws, timeoutMs, env: { FOUNDRY_DYNAMIC_TEST_LINKING: "false" } });
   const down = (reason) => ({
     tool, available: false, applicable: true, reason, suites, trust: null, results: [],
-    gaps: suites.map((suite) => ({ suite, reason })), leads: [],
+    gaps: suites.map((suite) => ({ suite, reason })), leads: [], timedOut: r.timedOut,
   });
   if (r.timedOut) return down(`timed out after ${Math.round(timeoutMs / 1000)}s`);
   // SIGKILL (137) is our time limit or the 2g memory limit; we cannot tell which.

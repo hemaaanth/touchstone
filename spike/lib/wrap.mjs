@@ -15,26 +15,21 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 //   network  "none" unless the pack's TOOLS.md says the tool needs more
 //   user     runs as the host user by default, so it can read the workspace
 //            with no capabilities and its output files stay ours
-//   name     optional container name. When the call times out, the container
-//            is removed by name, because a killed docker client can leave it
-//            behind (running, or still "Created").
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
 //
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, name = null }) {
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const args = [
-    "run", "--rm", "--pull=never", ...(name ? ["--name", name] : []), "--network", network,
+    "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
-  const r = await runDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
-  if (r.timedOut && name) await new Promise((done) => execFile("docker", ["rm", "-f", name], { timeout: 30_000 }, () => done()));
-  return r;
+  return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
 }
 
 // Run one `docker run` argv on the chosen backend: a Daytona machine when

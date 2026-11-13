@@ -142,6 +142,30 @@ test("Halmos reports unavailable on a timeout and leaves no container, running o
   } finally { await cleanupWorkspace(ws); }
 });
 
+// The docker client hits its limit before the in-container kill. runTool must
+// report timedOut and remove the container. This needs the shared wrap.mjs
+// timeout commit (6526bbe on pack/domains): without it a container can stay
+// behind in the "Created" state.
+test("a client-side timeout reports timedOut, returns near the limit and leaves no container", { skip: !hasHalmos && "image not built" }, async () => {
+  const ws = makeWorkspace(LAB);
+  try {
+    const t0 = Date.now();
+    const scan = await halmosScan(ws, { timeoutMs: 1000 });
+    assert.ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`);
+    assert.equal(scan.available, false);
+    assert.equal(scan.timedOut, true);
+    assert.equal(scan.reason, "timed out after 1s");
+    assert.deepEqual(scan.leads, []);
+    let left = "";
+    for (let i = 0; i < 10; i++) {
+      left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/halmos:0.3.3", "--filter", `volume=${ws}`]).toString().trim();
+      if (!left) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    assert.equal(left, "");
+  } finally { await cleanupWorkspace(ws); }
+});
+
 test("Halmos is not applicable and starts no container when the project has no check_ function", async () => {
   process.env.HALMOS_IMAGE = "touchstone/halmos:does-not-exist";
   const ws = makeWorkspace(new URL("../../lab/vault-reentrancy", import.meta.url).pathname);
@@ -218,7 +242,6 @@ test("the Halmos argv is pinned: --pull=never, --network none, the exact image, 
     assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
     assert.equal(args[args.indexOf("--network") + 1], "none");
     assert.equal(args.filter((a) => a === "--network").length, 1);
-    assert.match(args[args.indexOf("--name") + 1], /^touchstone-halmos-[0-9a-f-]{12}$/);
     const img = args.indexOf("touchstone/halmos:0.3.3");
     assert.ok(img > 0, args.join(" "));
     assert.deepEqual(args.slice(img + 1, img + 3), ["sh", "-c"]);
