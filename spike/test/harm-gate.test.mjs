@@ -978,6 +978,25 @@ contract EthMockFnTest is Test {
 `);
 });
 
+// m4: the ETH side of the impersonation rule, on real forge. The test pranks AS
+// the vault and sends the vault's ETH away. The reason must name the vault.
+test("forge: an ETH send AS the pranked victim is NOT proven (review 2 m4, ethprank)", { skip, timeout: 300_000 }, async () => {
+  const f = await forged("EthPrankTest", { "Vault.sol": LAB_VAULT }, `import "../src/Vault.sol";
+contract EthPrankTest is Test {
+  Vault v;
+  function setUp() public { v = new Vault(); vm.deal(address(this), 5 ether); v.deposit{value: 5 ether}(); }
+  function test_x() public {
+    v.totalAssets();
+    vm.prank(address(v));
+    (bool ok,) = address(0xBEEF).call{value: 1 ether}("");
+    require(ok, "send");
+    require(address(0xBEEF).balance == 1 ether, "sent");
+  }
+}
+`);
+  assert.match(f.proof.harm.reason, /the test impersonated scope target 0x[0-9a-f]{40} \(Vault\).*cannot be the victim/);
+});
+
 // A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
 // balance storage is identical to TOKENS; only the advisory logs are gone. The
 // ground-truth storage channel must prove a drain of it, and must NOT over-fire on
