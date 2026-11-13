@@ -103,7 +103,9 @@ export function AppSidebar({
       </SidebarHeader>
 
       {/* Runs own the scrolling body. Archived runs fold up below them. */}
-      <SidebarContent className="px-2">
+      {/* pt-1.5: the space under the header's rule matches the 6px between New
+          run, the search box and the list, so the sheet keeps one rhythm. */}
+      <SidebarContent className="px-2 pt-1.5">
         <AssistantRuntimeProvider runtime={runtime}>
           <ThreadList />
         </AssistantRuntimeProvider>

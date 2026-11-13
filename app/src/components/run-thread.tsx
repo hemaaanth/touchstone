@@ -215,7 +215,7 @@ export function Thread({
 }) {
   return (
     <ThreadPrimitive.Root
-      className="flex min-h-0 flex-1 flex-col bg-background [--composer-bg:color-mix(in_oklab,var(--color-muted)_30%,transparent)] [--composer-padding:8px] [--composer-radius:1rem]"
+      className="flex min-h-0 flex-1 flex-col bg-background [--composer-padding:8px] [--composer-radius:1rem]"
       style={{ ["--thread-max-width" as string]: "48rem" }}
     >
       <ThreadPrimitive.Viewport className="relative flex min-h-0 flex-1 flex-col overflow-y-auto scroll-smooth">
@@ -292,8 +292,10 @@ function Composer({
       <div className="mx-auto max-w-(--thread-max-width)">
         <ComposerPrimitive.Root
           className={cn(
-            "flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border border-foreground/10 bg-(--composer-bg) p-(--composer-padding)",
-            "transition-[border-color] focus-within:border-foreground/25",
+            // A field at a glance: the input edge, and in dark the control step of
+            // the surface ladder (--muted) above the chat. Focus moves the edge only.
+            "flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border border-input bg-transparent p-(--composer-padding) dark:bg-muted",
+            "transition-[border-color] focus-within:border-ring",
             archived && "opacity-70",
           )}
         >
@@ -305,7 +307,7 @@ function Composer({
             submitOnEnter
             enterKeyHint="send"
             placeholder={archived ? "This run is archived." : `Message ${to}…`}
-            className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 caret-primary outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed md:text-sm"
+            className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 caret-primary outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed md:text-sm"
           />
           <div className="relative flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-center gap-1">
