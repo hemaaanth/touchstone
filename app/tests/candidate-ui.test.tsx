@@ -8,7 +8,7 @@ import { CandidateDetail, CandidateList } from "../src/components/candidates"
 import { RunPanel } from "../src/components/run-panel"
 import type { RunEvent } from "../src/lib/types"
 
-// Candidates in the run view: their own amber group, never mixed into the
+// Candidates in the run view: their own neutral group, never mixed into the
 // findings, and never shown as proven whatever the event says.
 const EVIDENCE = { kind: "transcript", transcript: [{ method: "GET", path: "/admin/export/1", status: 200 }] }
 const cand = (poc: string, extra: Record<string, unknown> = {}) => ({
@@ -170,4 +170,89 @@ test("a run of measured candidates only reads as No finding, neutral", () => {
   expect(head.tone).toBe("neutral")
   expect(statusLabel("no-finding")).not.toBe("Proven")
   expect(statusTone("no-finding")).toBe("neutral")
+})
+
+// N3: a measured candidate (the engine's replay only repeated a measurement).
+const HASH = "ab".repeat(32)
+const measured = (extra: Record<string, unknown> = {}) => cand("measured:web:weak-csp", {
+  title: "The Content-Security-Policy allows unsafe sources", severity: "low", origin: "measured", assertedBy: "engine",
+  measured: { reason: "repeated", words: "made-up words from the event", repeated: true, check: "weak-csp", snapshotHash: HASH, count: 2 },
+  evidence: { kind: "measured", check: "weak-csp", items: [{ poc: "l1", title: "weak-csp", where: { host: "a.test" } }, { poc: "l2", title: "weak-csp", where: { host: "b.test" } }] },
+  explanation: "The snapshot shows weak-csp.", cites: [], ...extra,
+})
+const submittedEv = (poc: string, n: number): RunEvent => ({ t: 1, ev: "finding-submitted", n, title: "weak-csp", severity: "low", poc })
+
+describe("a measured candidate in the run view (N3)", () => {
+  const panel = (events: RunEvent[]) =>
+    renderToStaticMarkup(
+      <RunPanel
+        state={reduceEvents(events)}
+        live={false}
+        mode="solo"
+        model="m"
+        open
+        onOpenChange={() => {}}
+        section="candidates"
+        onSection={() => {}}
+        selectedAgent={null}
+        onAgent={() => {}}
+        openDoc={null}
+        openVersion={null}
+        onFile={() => {}}
+        width={360}
+        onWidth={() => {}}
+        initialWidth={360}
+      />,
+    )
+
+  test("candidateFrom reads its origin; its words come from the reason, never from the event", () => {
+    const c = candidateFrom(ev(measured({ proven: true, provedBy: "oracle" })))!
+    expect(c).toMatchObject({ origin: "measured", assertedBy: "engine", proven: false, provedBy: null })
+    expect(c.measured).toMatchObject({ reason: "repeated", repeated: true, check: "weak-csp", snapshotHash: HASH, count: 2 })
+    expect(c.measured!.words).toBe("Measurement repeated: the replay found the same fact again. It shows no harm.")
+    expect(candidateFrom(ev(measured({ measured: { reason: "made-up" } })))!.measured!.reason).toBe("unknown")
+    // An agent candidate stays the agent's, whatever it says.
+    expect(candidateFrom(ev(cand("a", { assertedBy: "engine" })))).toMatchObject({ origin: "agent", assertedBy: "agent", measured: null })
+  })
+
+  test("the findings it folds leave the submitted list; their chat cards become neutral notes", () => {
+    const s = reduceEvents([submittedEv("l1", 1), submittedEv("l2", 2), submittedEv("real", 3), ev(measured())])
+    expect(s.submitted.map((f) => f.poc)).toEqual(["real"])
+    expect(s.pending?.poc).toBe("real")
+    expect(s.candidates.map((c) => c.origin)).toEqual(["measured"])
+    expect(s.steps.filter((x) => x.kind === "submitted").map((x) => x.finding?.poc)).toEqual(["real"])
+    expect(s.steps.filter((x) => x.kind === "note").map((x) => x.label)).toEqual([
+      "Recorded as a candidate (measurement repeated): weak-csp",
+      "Recorded as a candidate (measurement repeated): weak-csp",
+    ])
+    expect(candidateGroupLabel(s.steps.filter((x) => x.kind === "note").map((x) => x.label))).toBe("Recorded 2 candidates (unproven, needs review)")
+    // With no submitted card to replace (an older run), one note says it.
+    const alone = reduceEvents([ev(measured())])
+    expect(alone.steps.map((x) => x.label)).toEqual(["Recorded as a candidate (measurement repeated): The Content-Security-Policy allows unsafe sources"])
+  })
+
+  test("its row says why it is not proven, neutral; its fold shows the places and the pin", () => {
+    const c = candidateFrom(ev(measured()))!
+    const row = renderToStaticMarkup(<CandidateList items={[c]} />)
+    expect(row).toContain("Measurement repeated")
+    expect(row).toContain("2 places")
+    expect(row).toContain("unproven / measured")
+    expect(row).not.toContain("Needs review")
+    for (const tone of ["text-ok", "text-bad", "text-warn", "bg-ok", "bg-bad", "bg-warn"]) expect([tone, row.includes(tone)]).toEqual([tone, false])
+    const fold = renderToStaticMarkup(<CandidateDetail candidate={c} />)
+    expect(fold).toContain("Measurement repeated: the replay found the same fact again. It shows no harm.")
+    expect(fold).toContain("Fired at 2 places")
+    expect(fold).toContain("a.test")
+    expect(fold).toContain(`sha256 ${HASH.slice(0, 16)}`)
+    expect(fold).not.toContain("Why this isn")
+    expect(fold).not.toContain(">PoC<")
+    const old = candidateFrom(ev(measured({ measured: { reason: "harm-not-judged", count: 1 } })))!
+    expect(renderToStaticMarkup(<CandidateList items={[old]} />)).toContain("Harm not judged")
+  })
+
+  test("the panel counts no finding for it: Findings & Proofs 0, Candidates 1", () => {
+    const html = panel([submittedEv("l1", 1), submittedEv("l2", 2), ev(measured()), { t: 2, ev: "status", status: "no-finding" }])
+    expect(html).toContain("0</span> findings")
+    expect(html).toContain("1</span> candidate")
+  })
 })
