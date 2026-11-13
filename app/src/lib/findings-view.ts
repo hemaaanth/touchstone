@@ -193,8 +193,10 @@ export const CANDIDATE_STATE: Record<string, string> = {
   "harm-not-judged": "Candidate · harm not judged",
   unknown: "Candidate · not proof of harm",
 }
-// The one short word a phone row shows (below sm): never truncated.
-export const candidateShortState = (c: CandidateSummary) => (c.measured ? "Measured" : "Candidate")
+// The one short word a phone row shows (below sm): never truncated. It is
+// "Candidate" for both kinds: a repeated measurement is a candidate, not a
+// tier of its own. The full state stays in the row's title at every width.
+export const candidateShortState = (_c: CandidateSummary) => "Candidate"
 export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · needs review")
 
 // The count line's words, before "· N proven" (N3). Candidates are counted

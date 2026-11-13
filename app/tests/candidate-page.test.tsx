@@ -113,7 +113,10 @@ describe("the candidate row on a phone", () => {
   const out = renderToStaticMarkup(<CandidateListRow finding={candidateRow(cand("x", { at: 5 }))} cols={FINDING_ROW_COLS} moduleTitle="Domains" run={undefined} onOpenRun={() => {}} when={() => "13 Nov, 12:00"} />)
   test("the state is one short word that never shrinks below sm; the full words from sm up", () => {
     expect(out).toMatch(/data-slot="candidate-state" class="[^"]*\bshrink-0\b[^"]*\bsm:shrink\b/)
-    expect(out).toMatch(/<span class="whitespace-nowrap sm:hidden">Measured<\/span>/)
+    // Both kinds read "Candidate" on a phone: no word suggests a fourth tier.
+    expect(out).toMatch(/<span class="whitespace-nowrap sm:hidden">Candidate<\/span>/)
+    expect(out).not.toContain(">Measured<")
+    expect(out).toContain('title="Candidate · measurement repeated"')
     expect(out).toMatch(/<span class="hidden min-w-0 truncate sm:inline">Candidate · measurement repeated<\/span>/)
     expect(candidateShortState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate")
   })
