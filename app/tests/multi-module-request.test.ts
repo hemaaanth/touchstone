@@ -38,12 +38,20 @@ test("one module goes as `pack`, the old shape", async () => {
 })
 
 test("three modules go in ONE request as `packs`", async () => {
+  sent.length = 0
   await api.startRun("alias", "scope", 2, ["web", "domains", "surface"], "fleet")
-  expect(sent).toHaveLength(0 + sent.length)
   // One request for the whole list, not one per module.
+  expect(sent).toHaveLength(1)
   const body = last()
   expect(body.packs).toEqual(["web", "domains", "surface"])
   expect(body.pack).toBeUndefined()
+})
+
+test("the body builder makes one body: `packs` for many, `pack` for one", () => {
+  // The shape `App.onStart` sends is this function's output, once per start.
+  expect(api.runStartBody("a", "s", 2, ["web", "domains"], "solo")).toMatchObject({ packs: ["web", "domains"] })
+  expect(api.runStartBody("a", "s", 2, ["web"], "solo")).toMatchObject({ pack: "web" })
+  expect("packs" in api.runStartBody("a", "s", 2, ["web"], "solo")).toBe(false)
 })
 
 test("a repeated module is sent once, and a list of one falls back to `pack`", async () => {

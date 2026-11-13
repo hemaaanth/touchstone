@@ -27,7 +27,7 @@ import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, eligiblePacks, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
@@ -294,7 +294,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, packs: run.packs ?? null, grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -497,7 +497,17 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   // module. The run's target keeps it, so the scrub, the restore and the build
   // all see the token whatever the module order.
   const target = withFreshFolders(pickTarget({ id: targetId, pack: multi ? picked[0] : one || undefined }))
-  if (multi && !target.mcp) {
+  // Every module must be one the scope allows. `pickTarget` checks only the
+  // first, and the engine checks again at the build; this refuses before the run
+  // row exists and before the reach is opened.
+  if (multi) {
+    const allowed = eligiblePacks(target)
+    const denied = picked.filter((id) => !allowed.includes(id))
+    if (denied.length) throw new Error(`target ${target.id} belongs to pack "${allowed.join('", "')}", not "${denied.join('", "')}"`)
+  }
+  // A joined run keeps the credential of an AI/MCP scope, but only when it has
+  // that module: otherwise the token would sit in the state file for nothing.
+  if (multi && picked.includes("ai-mcp") && !target.mcp) {
     const held = getTarget(target.id)?.mcp
     if (held) target.mcp = held
   }
@@ -538,6 +548,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
     ...(multi ? { packs: picked } : {}),
     grantIds,
     modules: plan,
+    mode,
     budget,
     model: provider.models[alias].id,
     status: "starting",
@@ -1284,7 +1295,7 @@ function keepWorkspace(run, ws) {
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
     writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
-    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), packs: run.packs ?? null, modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), ...(run.packs ? { packs: run.packs } : {}), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1698,7 +1709,7 @@ function persistRun(run, findings) {
     target: scopeOf(run),
     pack: scopeOf(run)?.pack ?? "contracts",
     // Every module of a joined run, so history says what the one run covered.
-    packs: run.packs ?? null,
+    ...(run.packs ? { packs: run.packs } : {}),
     // The module plan this run used — which parts of the pipeline were on, and the
     // reason for any that were off — so history shows the honest configuration.
     modules: run.modules ?? null,

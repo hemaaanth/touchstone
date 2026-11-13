@@ -216,7 +216,12 @@ test("an old record with only the final text shows it once, before a later turn"
   assert.deepEqual(out, ["Nothing to prove.", "and the router?", "The router is fine."])
 })
 
-test("Run Info's module line is a list: today one entry, the scope's pack", () => {
+test("Run Info's module line names every module of a joined run, in order", () => {
+  const state = reduceEvents([{ ev: "packs", packs: ["web", "domains", "surface"] }])
+  assert.deepEqual(runModules(state), ["web", "domains", "surface"])
+})
+
+test("Run Info's module line on an old record is the scope's one pack", () => {
   const scope = { id: "s", title: "S", kind: "lab", blurb: "", entry: "" }
   assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope: { ...scope, pack: "web" } }])), ["web"])
   // A scope saved before modules is a Contracts scope.
