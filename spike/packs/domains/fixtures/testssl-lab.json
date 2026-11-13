@@ -1,0 +1,131 @@
+{
+          "clientProblem1" : [
+                            {
+                                "id"           : "engine_problem",
+                                "severity"     : "WARN",
+                                "finding"      : "No engine or GOST support via engine with your /home/testssl/bin/openssl.Linux.x86_64"
+                           }
+          ],
+          "Invocation"  : "testssl.sh --jsonfile-pretty /work/tls.json --severity LOW --quiet --warnings off --color 0 --connect-timeout 10 --openssl-timeout 10 --ip 172.30.44.20 www.touchstone.test:8443",
+          "at"          : "08f20cf4f772:/home/testssl/bin/openssl.Linux.x86_64",
+          "version"     : "3.2.5 ",
+          "openssl"     : "OpenSSL 1.0.2-bad from Fri Mar 28 16:54:51 2025",
+          "startTime"   : "1794526160",
+          "scanResult"  : [
+          {
+                    "targetHost"      : "www.touchstone.test",
+                    "ip"              : "172.30.44.20",
+                    "port"            : "8443",
+                    "rDNS"            : "touchstone-domains-3285493-web.touchstone-domains-3285493.",
+                    "service"         : "HTTP",
+                    "pretest"           : [
+
+                    ],
+                    "protocols"         : [
+
+                    ],
+                    "grease"            : [
+
+                    ],
+                    "ciphers"           : [
+                            {
+                                "id"           : "cipherlist_OBSOLETED",
+                                "severity"     : "LOW",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "offered"
+                           }
+                    ],
+                    "serverPreferences" : [
+                            {
+                                "id"           : "cipher-tls1_2_xc027",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc027   ECDHE-RSA-AES128-SHA256           ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_xc028",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc028   ECDHE-RSA-AES256-SHA384           ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+                           },{
+                                "id"           : "cipher-tls1_2_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc014   ECDHE-RSA-AES256-SHA              ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc013   ECDHE-RSA-AES128-SHA              ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x3d",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3d     AES256-SHA256                     RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_x3c",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3c     AES128-SHA256                     RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           }
+                    ],
+                    "fs"                : [
+
+                    ],
+                    "serverDefaults"    : [
+                            {
+                                "id"           : "cert_chain_of_trust",
+                                "severity"     : "CRITICAL",
+                                "finding"      : "failed (self signed)."
+                           },{
+                                "id"           : "cert_extlifeSpan",
+                                "severity"     : "HIGH",
+                                "finding"      : "3650 days"
+                           },{
+                                "id"           : "cert_revocation",
+                                "severity"     : "HIGH",
+                                "finding"      : "Neither CRL nor OCSP URI provided"
+                           },{
+                                "id"           : "DNS_CAArecord",
+                                "severity"     : "LOW",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "headerResponse"    : [
+                            {
+                                "id"           : "HSTS",
+                                "severity"     : "LOW",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "security_headers",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "vulnerabilities"   : [
+                            {
+                                "id"           : "LUCKY13",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2013-0169",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "potentially vulnerable, uses obsolete TLS CBC ciphers"
+                           }
+                    ],
+                    "cipherTests"       : [
+
+                    ],
+                    "browserSimulations": [
+
+                    ],
+                    "rating"            : [
+                            {
+                                "id"           : "overall_grade",
+                                "severity"     : "CRITICAL",
+                                "finding"      : "T"
+                           }
+                    ]
+          }
+          ],
+                    "scanTime"  : 67
+}

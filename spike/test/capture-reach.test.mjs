@@ -47,7 +47,12 @@ const answers = {
   nuclei: () => '',
   jsluice: () => '',
 };
+// The Domains deep tools (checkdmarc, testssl.sh, DNSViz). Each call is recorded with its
+// argv, network and env, and answered as a failed run, so no evidence is built from it.
+const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...realWrap, runTool: async opts => {
+  const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
+  if (deep) { calls.push({ name: deep, cmd: opts.cmd, network: opts.network, env: opts.env, addHosts: opts.addHosts, input: [] }); return { code: 1, stdout: '', stderr: 'not run in this test', timedOut: false }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   // No real tool may run in this file.
   if (!name) throw new Error('unexpected tool image ' + opts.image);
@@ -70,10 +75,12 @@ const { prepareWorkspace } = await import('../lib/targets.mjs');
 ensureImage(() => {});
 
 const live = (scope, more = {}) => ({ network: 'bridge', granted: true, scope, ...more });
+// The run's reach boundary, as lib/reach-confine.mjs hands it over. Nothing runs here: only the names are read.
+const CONFINE = { netClient: 'touchstone-reach-client-test', gateUrl: 'http://scope-gate:8080' };
 async function capture(domain, reach, options = {}) {
   ws = mkdtempSync(join(tmpdir(), 'capture-reach-ws-'));
   workspaces.push(ws);
-  const snapshot = await captureDomain({ ws, domain, reach, ...options });
+  const snapshot = await captureDomain({ ws, domain, reach, confine: CONFINE, ...options });
   assert.equal(existsSync(join(ws, '.live')), false, 'the capture removes its input files');
   return snapshot;
 }
@@ -157,7 +164,8 @@ test('a covered host is probed, with the stops inside each tool', async () => {
   assert.deepEqual(snapshot.discovery.hosts, ['example.com', 'shop.example.com', 'www.example.com']);
   assert.equal(snapshot.discovery.refused, undefined);
   assert.equal(snapshot.discovery.coverage.some(c => c.engine === 'address-check'), false);
-  for (const c of calls) if (c.name !== 'jsluice') assert.equal(c.network, 'bridge');
+  for (const c of calls) if (!['jsluice', 'katana'].includes(c.name)) assert.equal(c.network, 'bridge');
+  assert.equal(call('katana').network, CONFINE.netClient, 'katana runs on the confined network');
   // httpx and nuclei refuse a private address by themselves. katana takes exact hosts and follows no redirect.
   const httpx = call('httpx').cmd, at = httpx.indexOf('-e');
   assert.equal(httpx[at + 1], 'private-ips');
@@ -278,4 +286,159 @@ test('the capture reach takes allowPrivate from the scope\'s own grant only', ()
   assert.equal(allowsPrivate(lab), false);
   // A direct target with no saved permission gets none.
   assert.equal(allowsPrivate({ kind: 'live', hosts: ['app.example.com'] }), false);
+});
+
+// F1. katana looks each name up again by itself. A live crawl must go through the scope proxy,
+// which checks the address and connects to that same address.
+test('a live crawl goes through the run\'s scope proxy, on its confined network', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }), { crawl: true });
+  for (const k of calls.filter(c => c.name === 'katana')) {
+    assert.equal(k.network, CONFINE.netClient);
+    assert.equal(k.cmd[k.cmd.indexOf('-proxy') + 1], CONFINE.gateUrl);
+    // The proxy resolves the name. katana's own resolver would be unreachable on the confined network.
+    assert.equal(k.cmd.includes('-r'), false);
+    assert(k.cmd.includes('-dr'));
+  }
+  assert.equal(call('katana').cmd.includes('-proxy'), true);
+});
+
+test('a live crawl with no scope proxy does not run katana, and says why', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  web = { 'https://example.com': { body: '<script src="/app.js"></script>' } };
+  const snapshot = await capture('example.com', live(['example.com']), { crawl: true, confine: null });
+  assert.equal(call('katana'), undefined, 'katana did not run');
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'katana');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^Not run: this run has no scope proxy\. katana looks each name up again/);
+  assert.equal(snapshot.discovery.crawl, undefined, 'no crawl is stored, so none reads as clean');
+  // httpx still probed the checked name.
+  assert.deepEqual(contacted(), ['example.com']);
+  // A half-built boundary is no boundary.
+  calls = [];
+  await capture('example.com', live(['example.com']), { crawl: true, confine: { netClient: CONFINE.netClient } });
+  assert.equal(call('katana'), undefined);
+});
+
+test('the lab crawl needs no scope proxy: its network has no route out', async () => {
+  zone = { 'touchstone.test': { a: ['10.89.0.2'] } };
+  await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] }, { crawl: true, confine: null });
+  assert.equal(call('katana').network, 'touchstone-domains-test');
+  assert.equal(call('katana').cmd.includes('-proxy'), false);
+});
+
+// Item 1. The three Domains tools get only what passed the same checks.
+test('checkdmarc gets the granted domain and the checked resolver, and makes no HTTP fetch', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  const c = call('checkdmarc');
+  assert.deepEqual(c.cmd.slice(0, 3), ['example.com', '-n', '1.1.1.1']);
+  assert.equal(c.cmd.includes('--check-mx-tls'), false, 'no SMTP connection to an MX host');
+  // MTA-STS and BIMI fetches go to a proxy address where nothing listens.
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) assert.equal(c.env[key], 'http://127.0.0.1:9', key);
+  assert.equal(c.env.NO_PROXY, '');
+  assert.equal(c.network, 'bridge');
+});
+
+test('no Domains tool runs for a domain the grant does not cover, or through a private resolver', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await assert.rejects(capture('example.com', live(['www.example.com'])), /grant that covers example\.com/);
+  await assert.rejects(capture('example.com', live(['*.example.com'])), /grant that covers example\.com/);
+  await assert.rejects(capture('example.com', live(['example.com'], { resolver: '10.0.0.53' })), /public resolver address/);
+  await assert.rejects(capture('example.com', live(['example.com'], { resolver: '169.254.169.254' })), /public resolver address/);
+  assert.deepEqual(calls, [], 'no tool ran');
+  // The grant's opt-in lets the private resolver through to DNSViz and checkdmarc.
+  await capture('lab.example.com', live(['lab.example.com'], { resolver: '10.0.0.53', allowPrivate: true }));
+  assert.deepEqual(call('dnsviz').cmd.slice(0, 3), ['probe', '-s', '10.0.0.53']);
+  assert.deepEqual(call('checkdmarc').cmd.slice(0, 3), ['lab.example.com', '-n', '10.0.0.53']);
+});
+
+test('DNSViz probes the granted domain through the resolver only, never a name server directly', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  const probe = calls.filter(c => c.name === 'dnsviz');
+  assert.equal(probe.length, 1, 'the stub fails the probe, so grok does not run');
+  assert.deepEqual(probe[0].cmd, ['probe', '-s', '1.1.1.1', '-o', '/work/.live/dnssec-probe.json', 'example.com']);
+  // -A, -x and -N would make the probe contact name servers whose addresses nobody checked.
+  for (const flag of ['-A', '-x', '-N', '-u']) assert.equal(probe[0].cmd.includes(flag), false, flag);
+});
+
+test('testssl.sh gets only checked hosts, each with the address the capture checked', async () => {
+  zone = { 'example.com': { a: [PUBLIC], aaaa: ['2606:2800:220:1::'] }, 'example.org': { a: ['93.184.216.35'] }, 'intranet.example.com': { a: ['10.0.0.1'] } };
+  web = { 'https://example.com': { body: '<script src="https://example.org/a.js"></script><script src="https://intranet.example.com/b.js"></script>' } };
+  const snapshot = await capture('example.com', live(['example.com', 'example.org', 'intranet.example.com']));
+  const runs = calls.filter(c => c.name === 'testssl');
+  const target = c => c.cmd.at(-1), ip = c => c.cmd[c.cmd.indexOf('--ip') + 1];
+  assert.deepEqual(runs.map(target), ['example.com:443', 'example.org:443']);
+  // Each endpoint gets its checked IPv4 address, so testssl.sh never looks the name up again.
+  assert.deepEqual(runs.map(ip), [PUBLIC, '93.184.216.35']);
+  assert.equal(snapshot.discovery.refused[0].host, 'intranet.example.com');
+});
+
+test('testssl.sh does not run for an endpoint with no checked address', async () => {
+  // allowPrivate lifts the address rule, so a name with no address of its own is probed.
+  zone = { 'example.com': { cname: ['gone.example.net'] } };
+  const snapshot = await capture('example.com', live(['example.com'], { allowPrivate: true }));
+  assert.equal(calls.some(c => c.name === 'testssl'), false, 'testssl.sh would look the name up itself');
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'testssl:example.com:443');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^Not run: no checked address for example\.com\./);
+  assert.match(snapshot.tls[0].error, /no checked address/);
+});
+
+test('a host with several checked addresses gets one testssl.sh run, pinned to one of them', async () => {
+  zone = { 'example.com': { a: [PUBLIC, '93.184.216.36'], aaaa: ['2606:2800:220:1::'] }, 'v6.example.com': { aaaa: ['2606:2800:220:1::9'] } };
+  await capture('example.com', live(['example.com', 'v6.example.com']));
+  const runs = calls.filter(c => c.name === 'testssl');
+  assert.deepEqual(runs.map(c => c.cmd.at(-1)), ['example.com:443', 'v6.example.com:443']);
+  // The first checked IPv4 address, for --ip and for the name inside the container.
+  assert.equal(runs[0].cmd[runs[0].cmd.indexOf('--ip') + 1], PUBLIC);
+  assert.deepEqual(runs[0].addHosts, [['example.com', PUBLIC]]);
+  // An IPv6-only host is pinned to its checked IPv6 address.
+  assert.equal(runs[1].cmd[runs[1].cmd.indexOf('--ip') + 1], '2606:2800:220:1::9');
+  assert.deepEqual(runs[1].addHosts, [['v6.example.com', '2606:2800:220:1::9']]);
+  for (const r of runs) { assert.deepEqual(r.env, { PHONE_OUT: 'false' }); assert(r.cmd.includes('--nodns')); }
+});
+
+test('a live run with no resolver does not run checkdmarc or DNSViz, and says why', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  const snapshot = await capture('example.com', live(['example.com']));
+  // The two DNS tools did not run.
+  assert.equal(call('checkdmarc'), undefined);
+  assert.equal(call('dnsviz'), undefined);
+  // Each shows a gap row with the reason, so the run view names the missing resolver.
+  for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok']) {
+    const row = snapshot.discovery.coverage.find(c => c.engine === engine);
+    assert.equal(row.status, 'unavailable', engine);
+    assert.match(row.reason, /^Not run: a live run needs a resolver the grant names/);
+  }
+  // With a resolver, both run (the stub answers them as failed, so each is a gap with its own reason).
+  calls = [];
+  const withR = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(call('checkdmarc').cmd.slice(0, 3), ['example.com', '-n', '1.1.1.1']);
+  assert.deepEqual(call('dnsviz').cmd.slice(0, 3), ['probe', '-s', '1.1.1.1']);
+  assert.doesNotMatch(withR.discovery.coverage.find(c => c.engine === 'checkdmarc').reason ?? '', /needs a resolver the grant names/);
+  // A lab with no resolver still runs them: its network has its own internal resolver.
+  calls = [];
+  await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] });
+  assert(call('checkdmarc'), 'the lab runs checkdmarc');
+  assert(call('dnsviz'), 'the lab runs DNSViz');
+});
+
+// F2. An exact-host grant skips subdomain discovery. The run view says so.
+test('an exact-host grant says that subdomain discovery was skipped, and names the "*." entry', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  const snapshot = await capture('example.com', live(['example.com']));
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'subdomain-discovery');
+  assert.equal(row.status, 'skipped');
+  assert.match(row.reason, /has no \*\.example\.com entry/);
+  const shown = prepassView({ pack: 'domains', leads: [], coverage: coverageOf(snapshot, []) }).tools.find(t => t.name === 'subdomain-discovery');
+  assert.equal(shown.status, 'unavailable');
+  assert.match(shown.reason, /Add \*\.example\.com to the grant/);
+  // A "*." entry covers the subdomains, and the lab has its own rule: no row.
+  calls = [];
+  const wide = await capture('example.com', live(['example.com', '*.example.com']));
+  assert.equal(wide.discovery.coverage.some(c => c.engine === 'subdomain-discovery'), false);
+  const lab = await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] });
+  assert.equal(lab.discovery.coverage.some(c => c.engine === 'subdomain-discovery'), false);
 });

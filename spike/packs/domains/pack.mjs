@@ -26,6 +26,7 @@ export function evidenceTools(ws,state,id) {
 }
 // The scope can name a domain: `.touchstone.json` has `domain` and `reach`. The platform fills `reach`.
 // With no pinned snapshot yet, the prepass captures the domain once and pins the result. A pinned lab skips this.
+// `reach` is the run's reach (lib/reach.mjs openReach). Its `confine` boundary carries the live crawl.
 function scopeConfig(ws) { try { return JSON.parse(readFileSync(join(ws,'.touchstone.json'),'utf8')); } catch { return {}; } }
 // Which engines ran. Capture tools come first, then the engines that read the snapshot.
 export function coverageOf(snapshot,leads) {
@@ -33,11 +34,11 @@ export function coverageOf(snapshot,leads) {
   const reads = ['dns-zonefile','csp-evaluator','jsdom-replay','retire.js','touchstone'].map(engine=>({engine,status:'ran',leads:leads.filter(l=>(l.engines ?? [l.engine]).includes(engine)).length}));
   return [...capture.map(({engine,status,leads,reason})=>({engine,status,leads,...(reason ? {reason} : {})})),...reads];
 }
-export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
+export function prepassFor(id) { return async(ws,{emit=()=>{},reach}={})=>{
   const cfg = scopeConfig(ws);
   if(cfg.domain && !cfg.evidenceSnapshot) {
     emit({ev:id+'-capture-start',domain:cfg.domain});
-    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface'});
+    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface',deep:id==='domains',confine:reach?.confine ?? null});
   }
   const scan = await scanSnapshot(ws,id);
   const {snapshot} = loadSnapshot(ws);
@@ -48,7 +49,8 @@ export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
 export default {
   id:'domains',title:'Domains and front end',tier:'P',proof:'evidence',
   // It captures a real domain into a pinned snapshot, so it can take a live one.
-  // The capture runs on the open bridge network (lib/targets.mjs prepareWorkspace).
+  // The capture filters each tool's input against the scope's own grant, and stops a
+  // name that resolves to a private address unless that grant allows it (live.mjs).
   live:true,scanNet:'open',
   system:()=> 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.',
   tools:(ws,state)=>evidenceTools(ws,state,'domains'),
