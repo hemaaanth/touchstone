@@ -194,14 +194,20 @@ export async function startLab({
   // Proxy: start on the inner network (so it can reach the lab), then also
   // connect it to the outer network as `alias` (what the script calls). It is
   // the only container on both networks, and the only bridge between them.
-  proxyDir = mkdtempSync(join(tmpdir(), "touchstone-proxy-"));
-  onStart?.({ netInner, netOuter, labName, proxyName, proxyDir });
-  writeFileSync(join(proxyDir, "recorder.mjs"), RECORDER);
-  // mkdtemp makes the dir 0700. The proxy runs node:20-slim as root, and
-  // --cap-drop ALL removes CAP_DAC_OVERRIDE, so that root cannot read a dir
-  // owned by the host user unless it is world-readable. (The script container
-  // avoids this only because the lab image happens to run as uid 1000.)
-  chmodSync(proxyDir, 0o755);
+  // The lab and both networks exist now. A throw here goes through fail(), so
+  // they and the proxy folder are removed (stopLab, by their recorded names).
+  try {
+    proxyDir = mkdtempSync(join(tmpdir(), "touchstone-proxy-"));
+    onStart?.({ netInner, netOuter, labName, proxyName, proxyDir });
+    writeFileSync(join(proxyDir, "recorder.mjs"), RECORDER);
+    // mkdtemp makes the dir 0700. The proxy runs node:20-slim as root, and
+    // --cap-drop ALL removes CAP_DAC_OVERRIDE, so that root cannot read a dir
+    // owned by the host user unless it is world-readable. (The script container
+    // avoids this only because the lab image happens to run as uid 1000.)
+    chmodSync(proxyDir, 0o755);
+  } catch (e) {
+    return fail(`proxy folder setup failed: ${String(e?.message ?? e).slice(0, 300)}`);
+  }
   const proxyArgs = [
     "run", "-d", "--name", proxyName,
     "--network", netInner,

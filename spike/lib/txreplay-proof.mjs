@@ -189,11 +189,19 @@ export async function startTxLab({ image = KEYS_IMAGE, mode = "keys", readyTimeo
   const labName = `touchstone-txlab-${tag}`;
   const netName = `${labName}-net`;
   const labWs = mkdtempSync(join(tmpdir(), `txlab-${tag}-`));
-  // Seed the Foundry sources observe.mjs compiles + deploys (src + lib + foundry.toml).
-  cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
-  cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
-  cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
-  const observeHash = createHash("sha256").update(readFileSync(OBSERVE_SRC)).digest("hex");
+  // The try below starts after the seed; a throw while seeding removes the
+  // folder made above, by its exact path.
+  let observeHash;
+  try {
+    // Seed the Foundry sources observe.mjs compiles + deploys (src + lib + foundry.toml).
+    cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
+    cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
+    cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
+    observeHash = createHash("sha256").update(readFileSync(OBSERVE_SRC)).digest("hex");
+  } catch (e) {
+    rmSync(labWs, { recursive: true, force: true });
+    throw e;
+  }
   const handle = { labName, netName, labWs, image, mode, rpcUrl: null, obs: null, block: null, targets: [], imageId: null, observeHash };
   try {
     // Record the image id so the proof can attest exactly what served the chain.
