@@ -216,7 +216,7 @@ export function App() {
         onRename={onRename}
       />
 
-      <main className="flex h-svh min-w-0 flex-1 flex-col">
+      <main className="relative flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
           <RunChat
             key={activeRun.id}
@@ -250,13 +250,12 @@ export function App() {
             <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
           </div>
         )}
+        {stalePage ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-50 flex justify-center px-4">
+            <ErrorState className="pointer-events-auto w-full max-w-md" title={stalePage} onRetry={() => window.location.reload()} retryLabel="Reload" />
+          </div>
+        ) : null}
       </main>
-
-      {stalePage ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
-          <ErrorState className="pointer-events-auto w-full max-w-md" title={stalePage} onRetry={() => window.location.reload()} retryLabel="Reload" />
-        </div>
-      ) : null}
 
       <NewRunDialog
         key={dialogOpen ? "open" : "closed"}

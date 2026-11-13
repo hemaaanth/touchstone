@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Cloud, Container, Info, KeyRound, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
-import { deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
+import { StalePageError, deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -67,7 +67,8 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
       apply(await fn())
       return true
     } catch (e) {
-      setError(String((e as Error).message))
+      // A stale page is said once, by the app's notice (with Reload).
+      if (!(e instanceof StalePageError)) setError(String((e as Error).message))
       return false
     }
   }

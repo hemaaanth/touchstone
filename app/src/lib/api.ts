@@ -38,13 +38,21 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return writeResult<T>(url, res)
 }
 
+// A write refused because this page's console token is old. The app shows it
+// once (the stale-page notice, with Reload); a page's own error line can skip it.
+export class StalePageError extends Error {}
+
 // The answer to a write. A 403 means this page's console token is old: the app
-// is told (reportStalePage), and the caller still gets the server's sentence.
+// is told (reportStalePage), and the caller gets the server's sentence as a
+// StalePageError.
 async function writeResult<T>(url: string, res: Response): Promise<T> {
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
     const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
-    if (res.status === 403) reportStalePage(error)
+    if (res.status === 403) {
+      reportStalePage(error)
+      throw new StalePageError(error)
+    }
     throw new Error(error)
   }
   return json as T

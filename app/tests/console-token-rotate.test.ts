@@ -210,6 +210,9 @@ describe("client: the page that rotates keeps working; a stale page is told", ()
       await expect(api.renameRun("run", "name")).rejects.toThrow(settings.STALE_PAGE)
       await expect(api.deleteRun("run")).rejects.toThrow(settings.STALE_PAGE)
       expect(heard).toEqual([settings.STALE_PAGE, settings.STALE_PAGE])
+      // Typed, so a page's own error line can leave it to the notice.
+      const err = await api.setRunBudget(1).catch((e: unknown) => e)
+      expect(err instanceof api.StalePageError).toBe(true)
     } finally {
       off()
       restore()
@@ -224,6 +227,8 @@ describe("client: the page that rotates keeps working; a stale page is told", ()
     try {
       await expect(api.stopRun("run")).rejects.toThrow("the run is not working")
       expect(heard).toEqual([])
+      const err = await api.stopRun("run").catch((e: unknown) => e)
+      expect(err instanceof api.StalePageError).toBe(false)
     } finally {
       off()
       restore()
