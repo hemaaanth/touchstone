@@ -13,7 +13,7 @@ import { buildReport, buildReplayBundle, renderReportHtml, renderReportMarkdown,
 // @ts-expect-error — plain .mjs module, no types
 import { loadRecordedReplay } from "../server/replay-bundle.mjs"
 // @ts-expect-error — plain .mjs module, no types
-import { bundleRefusal, bundleText, evidenceReplay, leakShapes, loadReplayFiles, NOT_PROVEN_REFUSAL, planReplayBundle, replayStoreDir, snapshotForgeReplay, storeReplayFiles, vendoredLibs } from "../../spike/lib/replay-bundle.mjs"
+import { bundleRefusal, bundleText, evidenceReplay, leakShapes, loadReplayFiles, NOT_PROVEN_REFUSAL, planReplayBundle, provenDate, replayStoreDir, snapshotForgeReplay, storeReplayFiles, vendoredLibs } from "../../spike/lib/replay-bundle.mjs"
 // @ts-expect-error — resolved from spike/node_modules; the app does not depend on ethers
 import { Mnemonic } from "../../spike/node_modules/ethers/lib.esm/index.js"
 
@@ -575,6 +575,34 @@ describe("report: replay bundle", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  test("the README date uses a real time only, never the run's ms duration", () => {
+    // ms is a duration (findings.mjs normalize: `ms: r.ms || null`), not a date.
+    expect(provenDate({ finding: { ms: 42000 } })).toBeNull()
+    expect(provenDate({ finding: { ms: 42000 }, recorded: { ms: 42000 } })).toBeNull()
+    // A real start time on the finding (getFinding sends it as `at`) is the date.
+    expect(provenDate({ finding: { at: Date.UTC(2026, 1, 20) } })).toBe("2026-02-20")
+    // The proof's own time wins when a record holds one.
+    expect(provenDate({ recorded: { proof: { at: Date.UTC(2025, 5, 1) } }, finding: { at: Date.UTC(2026, 1, 20) } })).toBe("2025-06-01")
+    // Out-of-range times are dropped: a 1970 epoch (a duration misread) and a future date.
+    expect(provenDate({ finding: { at: 42000 } })).toBeNull()
+    expect(provenDate({ finding: { at: Date.now() + 86400000 * 30 } })).toBeNull()
+    // In a README: ms alone yields no date clause; a real at yields one.
+    const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+    const replay = { version: 1, kind: "forge", contract: "PocTest", test: "testDrain", fork: { rpc: "${RPC_URL}", block: null, forked: false }, files: [{ path: "foundry.toml", text: "[profile.default]\n" }, { path: "test/AgentPoc.t.sol", text: "contract PocTest {}\n" }], omitted: [] }
+    const line1 = (finding: Record<string, unknown>) => {
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-date-"))
+      try {
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof, ...finding }, recorded: { replay, proof } }), dir)
+        return (readTree(dir).get("README.md") || "").split("\n")[0]
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    expect(line1({ ms: 42000 })).not.toContain(" on ")
+    expect(line1({ ms: 42000 })).not.toContain("1970")
+    expect(line1({ at: Date.UTC(2026, 1, 20) })).toContain("by its own replay on 2026-02-20 (harm: an ETH drain)")
   })
 
   test("a normalized proof's rerunCommand never reaches proof.json", () => {

@@ -45,6 +45,19 @@ function readBody(req) {
   })
 }
 
+// What the bundle is, in its own words: the first paragraph of its README.md.
+// The zip is stored, not compressed (replay-bundle.mjs zipStore), and README.md
+// is its first entry, so the text is read straight from the first local header.
+// Null when the zip does not start that way.
+export function readmeHead(zip) {
+  if (!Buffer.isBuffer(zip) || zip.length < 30 || zip.readUInt32LE(0) !== 0x04034b50 || zip.readUInt16LE(8) !== 0) return null
+  const nameLen = zip.readUInt16LE(26)
+  const start = 30 + nameLen + zip.readUInt16LE(28)
+  if (zip.toString("utf8", 30, 30 + nameLen) !== "README.md") return null
+  const text = zip.toString("utf8", start, Math.min(start + zip.readUInt32LE(18), start + 4096))
+  return text.split(/\n\s*\n/)[0].trim() || null
+}
+
 export async function handleRuns(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","runs",...]
@@ -228,7 +241,7 @@ export async function handleFindings(req, res) {
         }
         const { zip, unjudged } = plan
         if (format === "bundle-check") {
-          send(res, 200, { bundle: true, bytes: zip.length, unjudged, note: unjudged.length ? UNJUDGED_NOTE : null })
+          send(res, 200, { bundle: true, bytes: zip.length, unjudged, note: unjudged.length ? UNJUDGED_NOTE : null, about: readmeHead(zip) })
           return true
         }
         res.statusCode = 200
