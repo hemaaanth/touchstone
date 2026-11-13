@@ -91,13 +91,28 @@ test('targets are https origins only, once each, capped', () => {
   assert.deepEqual(testsslTargets([]), []);
 });
 
+test('testssl.sh always gets the checked address, and does not run without one', async () => {
+  const seen = [];
+  const run = async (engine, opts) => { seen.push(opts.cmd); return { code: 1, stdout: '', stderr: 'stub', timedOut: false }; };
+  await captureTls(run, null, [endpoint], () => '93.184.216.34');
+  assert.deepEqual(seen[0].slice(-3), ['--ip', '93.184.216.34', endpoint.host + ':' + endpoint.port]);
+  // No checked address: testssl.sh would look the name up itself, so it is not run.
+  seen.length = 0;
+  const none = await captureTls(run, null, [endpoint], () => null);
+  assert.deepEqual(seen, []);
+  assert.match(none.errors[0], /^Not run: no checked address for /);
+  assert.deepEqual(none.runs.map(r => r.engine), ['testssl:' + endpoint.host + ':' + endpoint.port]);
+  assert.equal(none.entries[0].error, none.errors[0]);
+});
+
 test('a tool error and an unparsable answer are collected per endpoint', async () => {
   const failed = async () => ({ code: 125, stdout: '', stderr: 'docker: manifest unknown', timedOut: false });
   const empty = async () => ({ code: 0, stderr: '', timedOut: false });
-  const result = await captureTls(failed, null, [endpoint], () => null);
+  const ip = () => '93.184.216.34';
+  const result = await captureTls(failed, null, [endpoint], ip);
   assert.deepEqual(result.evidence, []);
   assert.match(result.errors[0], /manifest unknown/);
-  const unparsable = await captureTls(async () => ({ code: 0, stderr: '', timedOut: false }), null, [{ ...endpoint }], () => null);
+  const unparsable = await captureTls(async () => ({ code: 0, stderr: '', timedOut: false }), null, [{ ...endpoint }], ip);
   assert.equal(unparsable.errors.length, 1);
   assert.doesNotMatch(unparsable.errors[0], /\/tmp|\/home/);
   assert.match(unparsable.errors[0], /output file missing/);
@@ -109,13 +124,13 @@ test('a tool error and an unparsable answer are collected per endpoint', async (
   mkdirSync(join(ws, '.live'));
   try {
     const wrote = async () => { writeFileSync(join(ws, '.live', 'tls-0.json'), real); return { code: 0, stderr: '', timedOut: false }; };
-    const ok = await captureTls(wrote, ws, [{ ...endpoint }], () => null);
+    const ok = await captureTls(wrote, ws, [{ ...endpoint }], ip);
     assert.deepEqual(ok.entries, [stored(real)]);
     assert.equal(ok.entries[0].raw, sha256(readFileSync(join(ws, '.live', 'tls-0.json'))));
     assert.equal(ok.evidence[0].grade, 'B');
     // Bytes that are not exact UTF-8 cannot be stored as text, so they are an error.
     const bad = async () => { writeFileSync(join(ws, '.live', 'tls-0.json'), Buffer.concat([Buffer.from(real), Buffer.from([0xff])])); return { code: 0, stderr: '', timedOut: false }; };
-    assert.match((await captureTls(bad, ws, [{ ...endpoint }], () => null)).errors[0], /not UTF-8/);
+    assert.match((await captureTls(bad, ws, [{ ...endpoint }], ip)).errors[0], /not UTF-8/);
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
@@ -175,7 +190,9 @@ test('the pinned image scans example.com through runTool (TOUCHSTONE_LIVE=1)', {
     return result;
   };
   try {
-    const { evidence, errors } = await captureTls(run, ws, [{ ...endpoint }], () => null);
+    // The capture passes the address it checked. Here a plain lookup stands in for that check.
+    const { address } = await (await import('node:dns/promises')).lookup(endpoint.host, { family: 4 });
+    const { evidence, errors } = await captureTls(run, ws, [{ ...endpoint }], () => address);
     assert.deepEqual(errors, []);
     assert.equal(coverage[0].code, 0, coverage[0].reason);
     assert.equal(evidence[0].url, 'https://example.com');

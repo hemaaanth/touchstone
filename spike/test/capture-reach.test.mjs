@@ -326,3 +326,62 @@ test('the lab crawl needs no scope proxy: its network has no route out', async (
   assert.equal(call('katana').network, 'touchstone-domains-test');
   assert.equal(call('katana').cmd.includes('-proxy'), false);
 });
+
+// Item 1. The three Domains tools get only what passed the same checks.
+test('checkdmarc gets the granted domain and the checked resolver, and makes no HTTP fetch', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  const c = call('checkdmarc');
+  assert.deepEqual(c.cmd.slice(0, 3), ['example.com', '-n', '1.1.1.1']);
+  assert.equal(c.cmd.includes('--check-mx-tls'), false, 'no SMTP connection to an MX host');
+  // MTA-STS and BIMI fetches go to a proxy address where nothing listens.
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) assert.equal(c.env[key], 'http://127.0.0.1:9', key);
+  assert.equal(c.env.NO_PROXY, '');
+  assert.equal(c.network, 'bridge');
+});
+
+test('no Domains tool runs for a domain the grant does not cover, or through a private resolver', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await assert.rejects(capture('example.com', live(['www.example.com'])), /grant that covers example\.com/);
+  await assert.rejects(capture('example.com', live(['*.example.com'])), /grant that covers example\.com/);
+  await assert.rejects(capture('example.com', live(['example.com'], { resolver: '10.0.0.53' })), /public resolver address/);
+  await assert.rejects(capture('example.com', live(['example.com'], { resolver: '169.254.169.254' })), /public resolver address/);
+  assert.deepEqual(calls, [], 'no tool ran');
+  // The grant's opt-in lets the private resolver through to DNSViz and checkdmarc.
+  await capture('lab.example.com', live(['lab.example.com'], { resolver: '10.0.0.53', allowPrivate: true }));
+  assert.deepEqual(call('dnsviz').cmd.slice(0, 3), ['probe', '-s', '10.0.0.53']);
+  assert.deepEqual(call('checkdmarc').cmd.slice(0, 3), ['lab.example.com', '-n', '10.0.0.53']);
+});
+
+test('DNSViz probes the granted domain through the resolver only, never a name server directly', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  const probe = calls.filter(c => c.name === 'dnsviz');
+  assert.equal(probe.length, 1, 'the stub fails the probe, so grok does not run');
+  assert.deepEqual(probe[0].cmd, ['probe', '-s', '1.1.1.1', '-o', '/work/.live/dnssec-probe.json', 'example.com']);
+  // -A, -x and -N would make the probe contact name servers whose addresses nobody checked.
+  for (const flag of ['-A', '-x', '-N', '-u']) assert.equal(probe[0].cmd.includes(flag), false, flag);
+});
+
+test('testssl.sh gets only checked hosts, each with the address the capture checked', async () => {
+  zone = { 'example.com': { a: [PUBLIC], aaaa: ['2606:2800:220:1::'] }, 'example.org': { a: ['93.184.216.35'] }, 'intranet.example.com': { a: ['10.0.0.1'] } };
+  web = { 'https://example.com': { body: '<script src="https://example.org/a.js"></script><script src="https://intranet.example.com/b.js"></script>' } };
+  const snapshot = await capture('example.com', live(['example.com', 'example.org', 'intranet.example.com']));
+  const runs = calls.filter(c => c.name === 'testssl');
+  const target = c => c.cmd.at(-1), ip = c => c.cmd[c.cmd.indexOf('--ip') + 1];
+  assert.deepEqual(runs.map(target), ['example.com:443', 'example.org:443']);
+  // Each endpoint gets its checked IPv4 address, so testssl.sh never looks the name up again.
+  assert.deepEqual(runs.map(ip), [PUBLIC, '93.184.216.35']);
+  assert.equal(snapshot.discovery.refused[0].host, 'intranet.example.com');
+});
+
+test('testssl.sh does not run for an endpoint with no checked address', async () => {
+  // allowPrivate lifts the address rule, so a name with no address of its own is probed.
+  zone = { 'example.com': { cname: ['gone.example.net'] } };
+  const snapshot = await capture('example.com', live(['example.com'], { allowPrivate: true }));
+  assert.equal(calls.some(c => c.name === 'testssl'), false, 'testssl.sh would look the name up itself');
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'testssl:example.com:443');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^Not run: no checked address for example\.com\./);
+  assert.match(snapshot.tls[0].error, /no checked address/);
+});

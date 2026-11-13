@@ -56,6 +56,8 @@ export function parseTestssl(text, endpoint) {
 
 // `run` is the caller's coverage-wrapped runTool. Each endpoint gets one file.
 // A failed endpoint and an unparsable answer both come back as an error.
+// ipOf(host) is the address the caller checked. testssl.sh always gets it (--ip),
+// so it never looks the name up itself. With no address the endpoint is not run.
 // `entries` is what the snapshot stores: the endpoint plus the file text and
 // its sha256, or the endpoint plus the error. `evidence` holds the parsed reports.
 export async function captureTls(run, ws, targets, ipOf) {
@@ -64,8 +66,9 @@ export async function captureTls(run, ws, targets, ipOf) {
     const file = '/work/.live/tls-' + i + '.json';
     const ip = ipOf(endpoint.host);
     const engine = 'testssl:' + endpoint.host + ':' + endpoint.port;
-    const result = await run(engine, { image: TESTSSL, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', ...(ip ? ['--ip', ip] : []), endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
     const gap = error => { runs.push({ engine, error }); entries.push({ url: endpoint.origin, host: endpoint.host, port: Number(endpoint.port), error }); errors.push(error); };
+    if (!ip) { gap('Not run: no checked address for ' + endpoint.host + '. testssl.sh would look the name up again by itself.'); continue; }
+    const result = await run(engine, { image: TESTSSL, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
     if (result.code || result.timedOut) { gap(result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code)); continue; }
     let text;
     try { text = readOutputFile(join(ws, '.live', 'tls-' + i + '.json')); }

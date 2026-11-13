@@ -8,12 +8,15 @@
 // A live capture runs on an open network, so the tool inputs are the boundary:
 //   - `scope` holds the grant's hosts. A name is covered by its exact entry or by a "*." entry.
 //   - dnsx gets covered names only. A generated name the grant does not cover is not resolved.
-//   - httpx, katana and nuclei get only names whose every address is public.
+//   - httpx, katana, nuclei and testssl.sh get only names whose every address is public.
 //     `allowPrivate: true` (from the grant) lifts the address rule, not the cover rule.
 //   - katana does not follow redirects. A redirect could name any host.
 //   - katana looks each name up again by itself. So a live crawl runs on the run's
 //     confined network and goes through its scope proxy (`confine`), which checks the
 //     address and connects to that same address. With no proxy, katana does not run.
+//   - testssl.sh gets the checked address (--ip), so it does not look the name up again.
+//   - checkdmarc and DNSViz get the granted domain. They send DNS questions to the
+//     resolver only. checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
 // The lab keeps its own rule (a listed name or a subdomain of one): its network has no route out.
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -369,12 +372,20 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     }
     // TLS is measured only where the capture already found an https endpoint.
     // The A record is passed as --ip, so the lab needs no resolver in the container.
-    const tlsTargets = deep ? testsslTargets(http.map(r => r.url)) : [];
-    const tlsCheck = deep ? await captureTls(run, ws, tlsTargets, host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]) : null;
+    const tlsTargets = deep ? testsslTargets(http.map(r => r.url).filter(u => within(new URL(u).hostname))) : [];
+    // testssl.sh gets an address the capture checked, so it never looks the name up again.
+    // IPv4 first. Outside an open reach, only a public address. None: the endpoint is a gap.
+    const tlsAddress = host => {
+      if (ipKind(host)) return open || ipKind(host) === 'public' ? host : null;
+      const ips = addresses(host).filter(ip => open || ipKind(ip) === 'public');
+      return ips.find(ip => !ip.includes(':')) ?? ips[0] ?? null;
+    };
+    const tlsCheck = deep ? await captureTls(run, ws, tlsTargets, tlsAddress) : null;
     // Nothing to measure is still a gap row, never a missing row that reads as clean.
     if (deep && !tlsTargets.length) coverage.push({ engine: 'testssl', status: 'unavailable', reason: 'no https endpoint was found to measure', leads: 0 });
     for (const check of tlsCheck?.runs ?? []) {
-      const row = coverage.find(c => c.engine === check.engine);
+      // An endpoint with no checked address did not run, so it has no row yet.
+      const row = coverage.find(c => c.engine === check.engine) ?? coverage[coverage.push({ engine: check.engine, status: 'unavailable', leads: 0 }) - 1];
       if (check.entry) row.leads = tlsLeads({ root: domain, tls: [check.entry] }).length;
       else { row.status = 'unavailable'; row.reason = row.reason || check.error || 'the handshake was not measured'; }
     }

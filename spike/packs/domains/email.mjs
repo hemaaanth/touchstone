@@ -49,11 +49,19 @@ export function parseCheckdmarc(stdout, domain) {
   };
 }
 
+// checkdmarc also fetches over HTTP: the MTA-STS policy at mta-sts.<domain> and
+// the BIMI logo and certificate URLs, which the domain's own records name. Those
+// hosts were never checked against the grant. No lead reads them, so every HTTP
+// fetch goes to a proxy address where nothing listens and fails before any lookup.
+// Checked in the pinned image: requests honours these variables. checkdmarc then
+// sends DNS questions only. It tests no MX host (--check-mx-tls is off).
+export const NO_HTTP = { HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9', http_proxy: 'http://127.0.0.1:9', https_proxy: 'http://127.0.0.1:9', NO_PROXY: '', no_proxy: '' };
+
 // `run` is the caller's coverage-wrapped runTool. A tool error and an unparsable
 // answer both come back as `error`, so the caller records a coverage gap.
 // `record` is what the snapshot stores: the domain, the stdout and its sha256.
 export async function checkEmail(run, domain, resolver) {
-  const result = await run('checkdmarc', { image: CHECKDMARC, cmd: [domain, ...(resolver ? ['-n', resolver] : []), '-t', '5', '--retries', '1'], timeoutMs: 60000 });
+  const result = await run('checkdmarc', { image: CHECKDMARC, env: NO_HTTP, cmd: [domain, ...(resolver ? ['-n', resolver] : []), '-t', '5', '--retries', '1'], timeoutMs: 60000 });
   if (result.code || result.timedOut) return { evidence: null, error: result.stderr.trim().slice(-200) || (result.timedOut ? 'timed out' : 'exit code ' + result.code) };
   try {
     const evidence = parseCheckdmarc(result.stdout, domain);
