@@ -68,6 +68,16 @@ test("parseHeimdallAbi fails closed on junk and a non-list", () => {
   assert.match(parseHeimdallAbi("{}", UNIT).reason, /not a list/);
 });
 
+test("parseHeimdallAbi treats an ABI with no function as a gap, not a clean empty result", () => {
+  // A valid JSON list that recovers no function: empty, or only non-function
+  // entries. Heimdall gave us no interface, so it must fail closed.
+  assert.equal(parseHeimdallAbi("[]", UNIT).ok, false);
+  assert.match(parseHeimdallAbi("[]", UNIT).reason, /recovered no functions/);
+  const eventsOnly = JSON.stringify([{ type: "event", name: "Deposit" }, { type: "constructor" }]);
+  assert.equal(parseHeimdallAbi(eventsOnly, UNIT).ok, false);
+  assert.match(parseHeimdallAbi(eventsOnly, UNIT).reason, /recovered no functions/);
+});
+
 test("signatureOf renders a callable signature with selector and mutability", () => {
   const [sweep] = parseHeimdallAbi(goodAbi(), UNIT).functions;
   assert.equal(signatureOf(sweep), "fn_01681a62(address)  [0x01681a62, nonpayable]");
@@ -117,6 +127,51 @@ test("heimdallScan returns the recovered functions when the unit decompiles", as
   assert.equal(scan.reason, null);
   assert.equal(scan.functions.length, 3);
   assert.ok(scan.functions.every((f) => f.unit === "BytecodeVault"));
+  assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
+});
+
+test("heimdallScan treats an empty ABI as a gap, not a clean run with zero functions", async () => {
+  const ws = mkdir();
+  const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ code: 0 }, "[]") });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /recovered no functions/);
+  assert.equal(scan.units[0].status, "unavailable");
+  assert.deepEqual(scan.functions, []);
+  assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
+});
+
+test("heimdallScan runs the pinned image offline and passes no network flag", async () => {
+  let seen = null;
+  const ws = mkdir();
+  const run = async (opts) => {
+    seen = opts;
+    const i = opts.cmd.indexOf("-o");
+    writeFileSync(join(ws, String(opts.cmd[i + 1]).replace(/^\/work\//, ""), "unit-abi.json"), goodAbi());
+    return { code: 0, stdout: "", stderr: "", timedOut: false };
+  };
+  await heimdallScan(ws, [UNIT], { run });
+  assert.equal(seen.image, HEIMDALL_IMAGE);
+  // runTool defaults to --pull=never and --network none; the call must not
+  // override the network (no bridge). The mutation network:"bridge" fails here.
+  assert.ok(!("network" in seen), "the call must not override --network none");
+  assert.equal(seen.cmd[0], "decompile");
+  assert.ok(seen.cmd.includes("--skip-resolving"), "offline: --skip-resolving must be passed");
+  assert.ok(seen.cmd.includes("--timeout"), "a per-function timeout must be passed");
+});
+
+test("a runTool timeout gives unavailable with a reason, never an empty-clean ABI", async () => {
+  // The tool code owns the fail-closed mapping: timedOut:true -> available:false,
+  // reason "timed out", no functions. Whether the timeout actually STOPS the
+  // container is a shared runDocker() fault in spike/lib/wrap.mjs, fixed by shared
+  // commit 6526bbe (named container + `docker rm -f`); it is not fixed on this
+  // branch and must not be wrapped per-tool, so the "container is gone" check
+  // belongs with that commit. See the report.
+  const ws = mkdir();
+  const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ timedOut: true, code: 137 }) });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /timed out/);
+  assert.equal(scan.units[0].status, "unavailable");
+  assert.deepEqual(scan.functions, []);
   assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
 });
 

@@ -49,6 +49,10 @@ export function parseHeimdallAbi(text, _unit) {
         stateMutability: String(e.stateMutability ?? "nonpayable").slice(0, 20),
       };
     });
+  // An ABI that parses but recovers no function is an empty success, not a
+  // clean result: Heimdall gave us no interface. Fail closed so it shows as a
+  // gap, never as "ran, 0 functions".
+  if (functions.length === 0) return { ok: false, reason: "ABI recovered no functions" };
   return { ok: true, functions };
 }
 
