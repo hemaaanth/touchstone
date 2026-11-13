@@ -20,6 +20,7 @@ import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
 import { isProven } from "./proof-view.mjs";
+import { readableTitle } from "./check-titles.mjs";
 import { LangEn } from "ethers";
 
 export const CANDIDATE_CAP = 3;
@@ -513,7 +514,7 @@ export function evidenceLookup(state, findingPoc = (id) => id) {
       rootCause: lead.rootCause ?? `lead:${lead.id}`,
       poc: findingPoc(id),
       // For a pack that keeps no model prose (supply-chain), as submit_finding.
-      packText: { title: lead.check, explanation: lead.description },
+      packText: { title: readableTitle(lead.check, evidence?.check ?? lead.check), explanation: lead.description },
     };
   };
 }

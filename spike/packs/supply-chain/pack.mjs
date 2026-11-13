@@ -4,6 +4,7 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
 import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, withCandidateLine, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
+import { readableTitle } from "../../lib/check-titles.mjs";
 import { replayEvidence, proveFindings, sha256 } from "../../lib/proof-evidence.mjs";
 import { prepareSnapshot, skipSummary } from "./snapshot.mjs";
 import { prepareGithubSnapshot } from "./github.mjs";
@@ -112,7 +113,7 @@ function tools(ws, state) {
       const proof = await replayEvidence(ws, lead.evidence, { detectors: allowed });
       if (proof.status !== "pass") return output("Evidence no longer passes", true);
       // Do not retain model prose: it could invent or repeat secret values.
-      const finding = { n: state.found.length + 1, title: lead.check, severity: args.severity,
+      const finding = { n: state.found.length + 1, title: readableTitle(lead.check, lead.evidence?.check ?? lead.check), severity: args.severity,
         poc: `evidence-${lead.id}`, explanation: lead.description, rootCause: lead.rootCause,
         file: lead.file, lines: lead.lines, commit: lead.commit, evidence: lead.evidence,
         ...(lead.address ? { address: lead.address } : {}), ...(lead.secret ? { secret: lead.secret } : {}), proof };
