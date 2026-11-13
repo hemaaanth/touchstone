@@ -84,15 +84,22 @@ export async function startForkLab({ image = KEYS_IMAGE, mode = "keys", readyTim
   const net = `touchstone-fork-${tag}`;
   const labName = `touchstone-forklab-${tag}`;
   const labWs = mkdtempSync(join(tmpdir(), `forklab-${tag}-`));
-  // Seed the lab's Foundry sources so observe.mjs's `forge build` can compile the
-  // KeysLab/OpenModule artifacts it deploys (same inputs the real keys prepass uses:
-  // src + lib + foundry.toml; out/cache/oracle are excluded and rebuilt in-container).
-  cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
-  cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
-  cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
-  // Container runs as the host uid so it can write the observation into the mount.
-  const netRun = await createLabNetwork(net, ["--internal"], { docker });
-  if (netRun.code !== 0) throw new Error(`startForkLab: network create failed: ${netRun.stderr.trim().slice(0, 300)}`);
+  // Until the handle exists, stopForkLab cannot run: a throw while seeding or
+  // making the network removes the folder made above, by its exact path.
+  try {
+    // Seed the lab's Foundry sources so observe.mjs's `forge build` can compile the
+    // KeysLab/OpenModule artifacts it deploys (same inputs the real keys prepass uses:
+    // src + lib + foundry.toml; out/cache/oracle are excluded and rebuilt in-container).
+    cpSync(join(KEYS_LAB, "src"), join(labWs, "src"), { recursive: true });
+    cpSync(join(KEYS_LAB, "lib"), join(labWs, "lib"), { recursive: true });
+    cpSync(join(KEYS_LAB, "foundry.toml"), join(labWs, "foundry.toml"));
+    // Container runs as the host uid so it can write the observation into the mount.
+    const netRun = await createLabNetwork(net, ["--internal"], { docker });
+    if (netRun.code !== 0) throw new Error(`startForkLab: network create failed: ${netRun.stderr.trim().slice(0, 300)}`);
+  } catch (e) {
+    rmSync(labWs, { recursive: true, force: true });
+    throw e;
+  }
   const handle = { net, labName, labWs, image, mode, obs: null, block: null, targets: [] };
   try {
     const labArgs = [
@@ -145,6 +152,16 @@ export async function stopForkLab(handle) {
 // Seed a minimal Foundry workspace that can compile a PoC against vendored forge-std.
 function seedPocWorkspace(source) {
   const ws = mkdtempSync(join(tmpdir(), "forkpoc-"));
+  try {
+    seedPoc(ws, source);
+  } catch (e) {
+    rmSync(ws, { recursive: true, force: true });
+    throw e;
+  }
+  return ws;
+}
+
+function seedPoc(ws, source) {
   mkdirSync(join(ws, "lib"), { recursive: true });
   mkdirSync(join(ws, "test"), { recursive: true });
   mkdirSync(join(ws, "src"), { recursive: true });
@@ -156,7 +173,6 @@ function seedPocWorkspace(source) {
   if (HOST_CA) copyFileSync(HOST_CA, join(ws, CA_IN_WS));
   writeFileSync(join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = ["lib"]\n`);
   writeFileSync(join(ws, "test", "AgentPoc.t.sol"), source);
-  return ws;
 }
 
 // Run the attacker PoC as a forge test FORKED against the live lab chain, pinned to

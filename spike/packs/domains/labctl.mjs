@@ -70,8 +70,14 @@ export const LAB_SCOPE = ['touchstone.test'];
 // run's. It is removed by removeLabCopy, or on SIGINT/SIGTERM/exit (lib/temp-dirs.mjs).
 export function makeLabCopy(lab, ips, canon = CANON, prefix = 'touchstone-domains-lab-') {
   const copy = trackTempDir(mkdtempSync(join(tmpdir(), prefix)));
-  cpSync(lab, copy, { recursive: true });
-  rewriteLabDir(copy, ips, canon);
+  // The caller gets no path to remove if this throws, so remove it here.
+  try {
+    cpSync(lab, copy, { recursive: true });
+    rewriteLabDir(copy, ips, canon);
+  } catch (e) {
+    removeTempDir(copy);
+    throw e;
+  }
   return copy;
 }
 export const removeLabCopy = removeTempDir;
