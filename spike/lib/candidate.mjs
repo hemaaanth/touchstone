@@ -18,6 +18,7 @@ import { event } from "./event.mjs";
 import { redactSecret, sha256 } from "./proof-evidence.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
+import { LangEn } from "ethers";
 
 export const CANDIDATE_CAP = 3;
 export const WHY_UNPROVEN = "No check covers this class yet.";
@@ -29,19 +30,63 @@ export const CANDIDATE_HINT = `If you are confident this is a real, serious vuln
 // ---------------------------------------------------------------- scrub
 
 const SECRET_NAME = /secret|private|token|passw|api[-_]?key|credential|authorization|cookie|session|mnemonic|seed/i;
+// The name in NAME=value that marks the value as a secret.
+const SECRET_VAR = /secret|token|passw|private|credential|api_?key|access_?key|(?:^|_)key(?:$|_)|^pwd$/i;
+const BIP39 = new Set(LangEn.wordlist().getWord ? Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().getWord(i)) : []);
+
+// Each regex is linear: every start sits at the start of a token run, and no
+// quantifier can backtrack over text another quantifier also takes. The test
+// runs each one on a 1 MB line. A `keep` group stays readable; `name` must
+// pass SECRET_VAR or the match is left alone.
 const SHAPES = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  // A PEM private key, to its END line or to the end of its base64 body.
+  /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g,
   /(?:0x)?[0-9a-fA-F]{64}/g, // a hex signing key
-  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
   /\bsk-[A-Za-z0-9_-]{16,}/g, // API keys shaped sk-...
+  /(?<keep>\b(?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/=-]{6,}/g, // an Authorization value
+  // NAME=value, where NAME says secret: env lines, query strings, form bodies.
+  /(?<keep>(?<![A-Za-z0-9_])(?=(?<name>[A-Za-z_][A-Za-z0-9_]*))\k<name>=["']?)(?!\[REDACTED)[^\s"'&;,<>]{3,}/g,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, // an AWS access key id
+  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, // a GitHub token
+  /(?<keep>:\/\/[^/\s:@]{1,128}:)[^@\s/]{1,256}(?=@)/g, // user:password@ in a URL
 ];
+// A run of 12 or more lowercase words. Only its BIP-39 stretches are redacted.
+const WORD_RUN = /(?<![A-Za-z])[a-z]{3,8}(?:[ \t]+[a-z]{3,8}){11,}(?![A-Za-z])/g;
+
 const fp = (v) => `[REDACTED sha256:${redactSecret(v).sha256.slice(0, 12)}]`;
 const globalOf = (re) => (re.global ? re : new RegExp(re.source, `${re.flags}g`));
 
+function redact(m, ...rest) {
+  if (!m) return m;
+  const groups = typeof rest.at(-1) === "object" ? rest.at(-1) : null;
+  if (groups?.name !== undefined && !SECRET_VAR.test(groups.name)) return m;
+  const keep = groups?.keep ?? "";
+  return keep + fp(m.slice(keep.length));
+}
+
+// A seed phrase: 12 or more words in a row, each from the BIP-39 list.
+function redactSeed(run) {
+  const parts = run.split(/([ \t]+)/);
+  let out = "";
+  for (let i = 0; i < parts.length; ) {
+    let j = i;
+    while (j < parts.length && BIP39.has(parts[j])) j += 2;
+    if ((j - i) / 2 >= 12) {
+      out += fp(parts.slice(i, j - 1).join("")) + (parts[j - 1] ?? "");
+      i = j;
+    } else {
+      out += parts[i] + (parts[i + 1] ?? "");
+      i += 2;
+    }
+  }
+  return out;
+}
+
 export function scrubText(text, extra = []) {
   let out = String(text ?? "");
-  for (const re of [...SHAPES, ...extra.map(globalOf)]) out = out.replace(re, (m) => (m ? fp(m) : m));
-  return out;
+  for (const re of [...SHAPES, ...extra.map(globalOf)]) out = out.replace(re, redact);
+  return out.replace(WORD_RUN, redactSeed);
 }
 
 export function scrubValue(value, name = "", extra = []) {

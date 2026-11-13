@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubValue } from "../lib/candidate.mjs";
+import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubText, scrubValue } from "../lib/candidate.mjs";
 import { isProven } from "../lib/proof-view.mjs";
 
 process.env.EVENTS_FILE = join(mkdtempSync(join(tmpdir(), "cand-")), "events.jsonl");
@@ -165,4 +165,62 @@ test("the tool records through the same checks and says the record is unproven",
   const no = await tool.execute(args("never"));
   assert.equal(no.isError, true);
   assert.match(CANDIDATE_HINT, /submit_candidate/);
+});
+
+// Review Major 1: the common secret shapes inside free text.
+const SEED = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+const SHAPED = {
+  bearer: ["Authorization: Bearer abcDEF1234567890ghiJKL", "abcDEF1234567890ghiJKL", "Bearer "],
+  env: ["DATABASE_PASSWORD=hunter2-correct-horse", "hunter2-correct-horse", "DATABASE_PASSWORD="],
+  awsSecret: ["AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "AWS_SECRET_ACCESS_KEY="],
+  akia: ["key id AKIAIOSFODNN7EXAMPLE in the log", "AKIAIOSFODNN7EXAMPLE", "key id "],
+  github: [`token ghp_${"a1B2c3D4e5".repeat(4)} leaked`, `ghp_${"a1B2c3D4e5".repeat(4)}`, "token "],
+  urlCreds: ["postgres://admin:s3cretpass@db.internal:5432/app", "s3cretpass", "db.internal:5432/app"],
+  query: ["GET /v1/data?api_key=abcd1234efgh5678&page=2", "abcd1234efgh5678", "&page=2"],
+  seed: [`wallet seed: ${SEED}`, SEED, "wallet seed: "],
+};
+
+test("each common secret shape is scrubbed from the write-up, cites and evidence", async () => {
+  for (const [shape, [line, secret, kept]] of Object.entries(SHAPED)) {
+    const state = fresh();
+    const r = await checkCandidate({
+      pack: "web", state,
+      lookup: () => ({ evidence: { body: `response: ${line}`, list: [line] }, text: `1. GET / -> 200 ${line}` }),
+      args: args(shape, { title: `Leak: ${line}`, evidence_lines: [line], explanation: `It printed ${line}.\nFix: stop.` }),
+    });
+    assert.ok(r.candidate, `${shape}: recorded`);
+    const json = JSON.stringify(r.candidate);
+    assert.ok(!json.includes(secret), `${shape}: the secret is gone`);
+    assert.match(json, /REDACTED sha256:/, `${shape}: a fingerprint is left`);
+    assert.ok(r.candidate.explanation.includes(kept), `${shape}: the text around the secret stays`);
+    assert.equal(scrubText(r.candidate.explanation), r.candidate.explanation, `${shape}: a second scrub changes nothing`);
+    assert.equal(r.candidate.explanation.match(/REDACTED/g).length, 1, `${shape}: one fingerprint per secret`);
+    const ev = events().filter((e) => e.ev === "candidate-submitted").at(-1);
+    assert.ok(!JSON.stringify(ev).includes(secret), `${shape}: the event has no secret`);
+  }
+});
+
+test("plain prose and ordinary values are not redacted", () => {
+  const prose = "the admin export route returns every customer row without a session check, so any visitor can read them";
+  assert.equal(scrubText(prose), prose);
+  assert.equal(scrubText("GET /items?page=2&sort=asc -> 200"), "GET /items?page=2&sort=asc -> 200");
+  assert.equal(scrubText("https://example.com/a/b"), "https://example.com/a/b");
+});
+
+test("no scrub regex is slow on a 1 MB line", () => {
+  const MB = 1 << 20;
+  const fill = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB);
+  const lines = [
+    fill("a"), fill("A"), fill("KEY"), fill("KEY_"), fill("a KEY"), fill("x=KEY"),
+    fill("Bearer "), fill("bearer"), fill("://a:"), fill("://aaaa:bbbb"), fill("ghp_"), fill("AKIA"),
+    fill("-eyJ"), fill("eyJabcdefghij."), fill("-----BEGIN RSA PRIVATE KEY-----"), fill("sk-"),
+    fill("abandon "), fill("abandon "), fill("abc ").slice(0, MB - 1) + "Z", fill("0123456789abcdef"), fill("0x"),
+    fill("a=b&"), fill("PASSWORD="),
+  ];
+  for (const line of lines) {
+    const t0 = performance.now();
+    scrubText(line);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 2000, `scrub took ${Math.round(ms)} ms on a 1 MB line of ${JSON.stringify(line.slice(0, 16))}`);
+  }
 });
