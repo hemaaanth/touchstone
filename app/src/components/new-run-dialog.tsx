@@ -518,7 +518,7 @@ export function AddScope({
     // spelling as it is, and refuse every other one with a sentence.
     if (/\*|%2a/i.test(text)) {
       // A name with letters outside plain ASCII: say the punycode form, as the server does.
-      if (/[^\x00-\x7f]/.test(text)) {
+      if ([...text].some((c) => c.charCodeAt(0) > 127)) {
         let ascii = ""
         try {
           ascii = text.trim().startsWith("*.") ? new URL(`http://${text.trim().slice(2)}`).hostname : ""

@@ -85,7 +85,7 @@ export function liveHostsRefusal(hosts) {
   for (const h of list) {
     if (tooBroad(h)) return tooBroadSentence(h);
     // A name with letters outside plain ASCII: say the punycode form.
-    if (looksWild(h) && /[^\x00-\x7f]/.test(h)) {
+    if (looksWild(h) && [...h].some((c) => c.charCodeAt(0) > 127)) {
       const ascii = h.trim().startsWith("*.") ? domainToASCII(h.trim().slice(2).toLowerCase()) : "";
       return `"${h.slice(0, 200)}" has letters outside plain ASCII. Write the punycode form${ascii ? `: *.${ascii}` : ", for example *.xn--bcher-kva.de for *.bücher.de"}.`;
     }
