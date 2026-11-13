@@ -1,6 +1,7 @@
 import { defineTool } from '@earendil-works/pi-durable';
 import { obj, str } from '@earendil-works/pi-schema';
 import { event } from '../../lib/event.mjs';
+import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, withCandidateLine, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
 import { scanSnapshot, detectorsFor } from './checks.mjs';
 import { replayEvidence, proveFindings, loadSnapshot } from '../../lib/proof-evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -17,12 +18,14 @@ export function evidenceTools(ws,state,id) {
       if(!lead || lead.reviewOnly || state.found.some(f=>f.poc===lead.id)) return {...text('Unknown, duplicate, or review-only lead. A pattern alone cannot prove a drainer.'),isError:true};
       const evidence = {check:lead.check,where:lead.where,snapshotHash:scan.snapshotHash};
       const proof = await replayEvidence(ws,evidence,{detectors:detectorsFor(id)});
-      if(proof.status !== 'pass') return {...text(proof),isError:true};
+      if(proof.status !== 'pass') { recordEvidence(state,lead.id,{lead,evidence,proof}); return {...text({...proof,candidate:CANDIDATE_HINT}),isError:true}; }
       const finding={n:state.found.length+1,title:lead.check,severity:lead.severity,poc:lead.id,explanation:args.explanation,evidence};
       state.found.push(finding);
       event('finding-submitted',{pack:id,n:finding.n,title:finding.title,severity:finding.severity,poc:finding.poc});
       return text({recorded:finding.n,proof});
-    }})];
+    }}),
+    // Surface shares these tools but is leads only, so it gets no candidates.
+    ...(id === 'domains' ? [candidateTool({pack:'domains',state,lookup:evidenceLookup(state),poc:EVIDENCE_POC})] : [])];
 }
 // The scope can name a domain: `.touchstone.json` has `domain` and `reach`. The platform fills `reach`.
 // With no pinned snapshot yet, the prepass captures the domain once and pins the result. A pinned lab skips this.
@@ -55,7 +58,7 @@ export default {
   // The capture filters each tool's input against the scope's own grant, and stops a
   // name that resolves to a private address unless that grant allows it (live.mjs).
   live:true,scanNet:'open',
-  system:()=> 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.',
+  system: withCandidateLine(() => 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.'),
   tools:(ws,state)=>evidenceTools(ws,state,'domains'),
   kickoff:(ws,env)=>'Review every lead, worst first. Submit supported evidence with its exact lead id, then continue. Summarize coverage. Leads: '+(env.LEADS ?? 'Call snapshot_leads.'),
   nudge:()=>null,prepass:prepassFor('domains'),

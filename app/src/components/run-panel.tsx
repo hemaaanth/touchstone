@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck } from "lucide-react"
+import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, ShieldCheck, ShieldQuestionMark } from "lucide-react"
 import type { ArtifactDoc, BulletinNote, PackChoice, RunLead, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
@@ -15,6 +15,7 @@ import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
 import { ResizeHandle } from "@/components/resize-handle"
 import { Hint, ProofIcon, ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
+import { CandidateList } from "@/components/candidates"
 import {
   agentName,
   fleetSpend,
@@ -38,7 +39,7 @@ import {
 // Leads holds what the agents recorded with record_lead: each lead's file, line
 // and reason. A lead is never proven, so it never shows in Findings & Proofs.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "leads" | "findings" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "leads" | "findings" | "candidates" | "files"
 
 export function RunPanel({
   state,
@@ -235,6 +236,18 @@ export function RunPanel({
               onFile={onFile}
             />
           </Section>
+          {state.candidates.length ? (
+            <Section
+              icon={ShieldQuestionMark}
+              label="Candidates"
+              count={state.candidates.length}
+              status="Needs review"
+              expanded={section === "candidates"}
+              onToggle={() => toggle("candidates")}
+            >
+              <CandidateList items={state.candidates} />
+            </Section>
+          ) : null}
           <Section
             icon={Files}
             label="Files"
@@ -308,7 +321,8 @@ function statePills(items: PanelFinding[]): Pill[] {
     .map(({ card, n }) => ({ key: card, n, state: card, title: `${n} ${CARD_WORD[card].toLowerCase()}`, ok: card === "proven" }))
 }
 
-// The folded line's counts: agents (or Solo), notes, leads, findings, files.
+// The folded line's counts: agents (or Solo), notes, leads, findings,
+// candidates (only when the run has one), files.
 function panelSummary(state: RunState, mode: RunMode) {
   const notes = state.bulletin
   const showAgents = mode === "fleet" || state.agents.length > 0
@@ -319,6 +333,7 @@ function panelSummary(state: RunState, mode: RunMode) {
     showBulletin ? counted(notes.length, "note") : null,
     showLeads ? counted(state.leads.length, "lead") : null,
     counted(panelFindings(state).length, "finding"),
+    state.candidates.length ? counted(state.candidates.length, "candidate") : null,
     counted(state.artifacts.filter((d) => d.kind !== "proof").length, "file"),
   ].filter((p) => p != null)
 }

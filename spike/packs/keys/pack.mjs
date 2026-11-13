@@ -8,6 +8,7 @@
 import { chainNudge, chainPrepass, chainTools, keysLeads, proveWithHarm, hasWorld, sourceKickoff, sourceSystem } from "./common.mjs";
 import { SAFE_HASH_ENGINE, safeHashLeads } from "./safe-hash.mjs";
 import { SAFE_TX_HASHES_ENGINE } from "./safe-tx-hashes.mjs";
+import { withCandidateLine } from "../../lib/candidate.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a pair of Safe multisig wallets that the operator owns. Each Safe
@@ -99,7 +100,7 @@ export default {
   proof: "forge",
   // No tool reaches a network. The Modules page reads this.
   offline: true,
-  system: (ws) => (hasWorld(ws, "keys") ? SYSTEM : sourceSystem("keys")),
+  system: withCandidateLine((ws) => (hasWorld(ws, "keys") ? SYSTEM : sourceSystem("keys"))),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "keys",
     stateTool: { name: "safe_state", description: "Read what the lab recorded from each Safe: owners, threshold, nonce, modules, guard, fallback handler and singleton, read by plain ethers and by Safe's protocol-kit, plus the code held by each owner and module address." },

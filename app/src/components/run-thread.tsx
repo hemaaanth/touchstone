@@ -39,6 +39,7 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 import { ToolError } from "@/components/assistant-ui/elements/tool-error"
 import { ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { splitRaw, type RunFailure, type Step } from "@/lib/runModel"
+import { candidateGroupLabel } from "@/lib/candidate"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
@@ -704,7 +705,7 @@ function ToolGroupPart({ group }: { group: Step[] }) {
     target: s.detail ? `${s.label} — ${s.detail}` : s.label,
     state: s.state === "fail" ? "failed" : "done",
   }))
-  const label = group.length === 1 ? group[0].label : "Recon & static analysis"
+  const label = group.length === 1 ? group[0].label : (candidateGroupLabel(group.map((s) => s.label)) ?? "Recon & static analysis")
   return (
     <ToolGroup
       className="max-w-none"

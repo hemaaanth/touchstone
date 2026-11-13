@@ -34,6 +34,7 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { supersededBy } from "./lib/candidate.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 import { leadsFrom } from "./lib/leads.mjs";
 import { afterNudge } from "./lib/nudge.mjs";
@@ -201,6 +202,9 @@ async function chat({ harness, root, reports, state, fleet }) {
   if (!text) throw new Error("FOLLOWUP is empty");
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
   const prior = state.found.length;
+  for (const c of JSON.parse(process.env.PRIOR_CANDIDATES || "[]")) state.candidates.push(c);
+  // By poc, not by count: a finding this turn may supersede a prior candidate.
+  const priorCandidates = new Set(state.candidates.map((c) => c.poc));
   const before = (await harness.usage(ctx)).models ?? {};
   await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
   readSteers(root);
@@ -215,7 +219,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.filter((c) => !priorCandidates.has(c.poc)), usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.
@@ -259,7 +263,7 @@ async function child([, , , mode, db, ws]) {
   flushFinal(s);
   if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
   const usage = await chargeUsage(harness);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
   await fleet?.close();
   await harness.close(ctx);
   exitAfterEvents(0);
@@ -384,6 +388,9 @@ async function main() {
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.
     findings,
+    // Unproven, agent-asserted results. Never findings, never counted as one.
+    // A candidate a proven finding took the place of is left out.
+    candidates: (settled?.candidates ?? []).filter((c) => !supersededBy([c], findings).length),
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,

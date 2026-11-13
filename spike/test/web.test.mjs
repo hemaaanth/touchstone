@@ -322,7 +322,7 @@ test("the web pack is registered and has a stable tool set", () => {
   assert.equal(typeof web.prove, "function");
   const state = { poc: 0, passed: new Map(), found: [] };
   const names = web.tools("/nonexistent", state).map((t) => t.name);
-  assert.deepEqual(names, ["web_leads", "run_request_script", "submit_finding"]);
+  assert.deepEqual(names, ["web_leads", "run_request_script", "submit_finding", "submit_candidate"]);
   assert.equal(web.nudge({ poc: 0, passed: new Map(), found: [] }), null);
 });
 

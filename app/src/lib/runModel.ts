@@ -24,6 +24,7 @@ import type {
   Verdict,
 } from "./types"
 import { COORDINATOR } from "./types"
+import { CANDIDATE_NOTE, candidateFrom, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -188,6 +189,9 @@ export interface RunState {
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
+  // Unproven, agent-asserted records waiting for human review, in submit
+  // order, one per poc. Never findings: no count or verdict reads them.
+  candidates: Candidate[]
   // Operator steers across their two-phase life (pending chip → admitted msg).
   steers: SteerEntry[]
   // Workspace documents the agent wrote (the PoC it drafts, the proof it runs),
@@ -245,6 +249,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const bulletin: BulletinNote[] = []
   const leads: RunLead[] = []
   const findings: FindingSummary[] = []
+  const candidates: Candidate[] = []
+  const dropCandidate = (poc: string) => {
+    const i = poc ? candidates.findIndex((c) => c.poc === poc) : -1
+    if (i >= 0) candidates.splice(i, 1)
+  }
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
   let latestArtifact: { fileId: string; versionId: string } | null = null
@@ -700,6 +709,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // (`approval-pending`, then a decide phase). Either way the card sits
         // here in the transcript, and `pending` tracks the worst one so far.
         const poc = str(e.poc)
+        // A submitted finding does not end a candidate: only a proven one does,
+        // and the engine or the server then sends candidate-superseded.
         if (submitted.some((f) => f.poc && f.poc === poc)) break
         const n = num(e.n) ?? submitted.length + 1
         const f: PendingApproval = {
@@ -714,6 +725,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "submitted", phase, label: f.title, finding: f })
         pending = submitted.reduce((w, x) => (severityRank(x.severity) < severityRank(w.severity) ? x : w))
         if (e.ev === "approval-pending") status = "awaiting-approval"
+        break
+      }
+      case "candidate-superseded":
+        dropCandidate(str(e.poc))
+        break
+      case "candidate-submitted": {
+        const c = candidateFrom(e)
+        if (!c || candidates.some((x) => x.poc === c.poc)) break
+        candidates.push(c)
+        // Always a run-phase note: the chat drops notes from the decide pass.
+        steps.push({ key, kind: "note", phase: "run", label: `${CANDIDATE_NOTE}: ${c.title}` })
         break
       }
       case "submit-rejected":
@@ -947,6 +969,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     // Worst first; the sort is stable, so equal severities keep arrival order.
     leads: leads.toSorted((a, b) => severityRank(a.severity ?? undefined) - severityRank(b.severity ?? undefined)),
     findings,
+    candidates,
     steers,
     artifacts,
     latestArtifact,

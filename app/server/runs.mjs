@@ -42,6 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
+import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -390,6 +391,8 @@ function view(run) {
     decision: run.decision,
     findingId: run.status === "recorded" ? (run.findingIds?.[0] ?? null) : null,
     findingIds: run.findingIds ?? [],
+    // Unproven, agent-asserted records for human review. Never findings.
+    candidates: run.candidates ?? [],
     error: run.error,
     // Structured failure for the error card: kind, retryable, real detail, spend
     // and a next step. Null unless the run ended in error.
@@ -714,6 +717,7 @@ function engineEvents(run) {
         calls: (e.summary?.calls ?? []).length,
         summary: e.summary ?? {},
         findings: e.findings ?? [],
+        candidates: e.candidates ?? [],
         usage: e.usage ?? null,
         reports: e.reports ?? [],
       }
@@ -724,6 +728,7 @@ function engineEvents(run) {
       return
     }
     broadcast(run, e)
+    trackCandidate(run, e)
     if (e.ev === "finding-submitted") {
       // The agent proved one more bug and keeps going. Track it, and keep the
       // worst one as the run's headline for the sidebar.
@@ -1045,6 +1050,7 @@ async function recordRun(run, found) {
     const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
+    supersedeProven(run, findings, (e) => broadcast(run, e))
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
@@ -1765,6 +1771,7 @@ export function followUp(run, text, clientId) {
         ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
         ...(note ? { WORKSPACE_NOTE: note } : {}),
         PRIOR_FOUND: JSON.stringify(prior),
+        PRIOR_CANDIDATES: priorCandidatesEnv(run),
         ATTEMPT_BASE: attemptBase(run),
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -1796,8 +1803,11 @@ export function followUp(run, text, clientId) {
           setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
           finalize(run)
         }
+        // A reply that added candidates, or proved a finding that superseded
+        // one, writes the run's candidates into its record.
+        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && s?.candidates?.length) persistRun(run, [])
       } catch (err) {
-        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved: ${String(err?.message ?? err)} Send the message again to retry.` })
+        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved:${String(err?.message ?? err)} Send the message again to retry.` })
       } finally {
         await end()
       }
@@ -1894,6 +1904,7 @@ async function recordMore(run, found) {
   const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
   }))
+  supersedeProven(run, findings, (e) => broadcast(run, e))
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {
@@ -2052,6 +2063,9 @@ function persistRun(run, findings) {
     // reason) and the agent that found it. Saved as events the moment each lead
     // was made, so a run that failed later still keeps them. Never proven.
     leads: leadsFrom(evs),
+    // Unproven, agent-asserted records with their captured evidence. Kept
+    // apart from findings: they never count toward any finding total.
+    candidates: recordCandidates(run),
     decision: recorded ? "approved" : null,
     recorded,
     calls: (summary.calls ?? []).map((c) => c.name),
@@ -2137,6 +2151,7 @@ function rebuildEvents(id, record, engineEvents) {
     evs.push({ t: e.t, ev: "artifact-delta", id: artId, text: call.args.test_source })
     evs.push({ t: e.t, ev: "artifact-done", id: artId })
   }
+  evs.push(...candidateEvents(r, evs, tN))
   evs.push({ t: tN, ev: "status", status: "deciding" })
   // New records list every finding (ids `<runId>.<k>`); an older record has
   // one finding whose id is the run id (see splitRun in findings.mjs).
@@ -2380,6 +2395,7 @@ function savedRun(id, events, mtime) {
     pending: sortFindings(submitted)[0] ?? null,
     submitted,
     findingIds,
+    candidates: candidatesOf(events),
     decision,
     error,
     errorInfo: errorInfo ?? streamInfo,
