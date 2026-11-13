@@ -2,11 +2,15 @@
 // runTool is mocked to fail the way Docker fails when the image is missing (--pull=never, exit 125).
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+// prepareWorkspace reads the scope and grant stores. Point them at a temp dir.
+const STORE = mkdtempSync(join(tmpdir(), 'phishing-store-'));
+process.env.TOUCHSTONE_SCOPES_FILE = join(STORE, 'scopes.json');
+process.env.TOUCHSTONE_GRANTS_FILE = join(STORE, 'grants.json');
 const LAB = fileURLToPath(new URL('../packs/phishing/lab/', import.meta.url));
 const STDERR = "Unable to find image 'touchstone-phishing-dnstwist:20250130' locally\ndocker: Error response from daemon: No such image.";
 // Keep the real helpers other packs import. Replace only runTool and runDocker.
@@ -21,7 +25,8 @@ mock.module('../lib/wrap.mjs', { exports: {
 const { scanSnapshot, detectors } = await import('../packs/phishing/checks.mjs');
 const { captureLookalikes, assertReach } = await import('../packs/phishing/live.mjs');
 const { replayEvidence } = await import('../lib/proof-evidence.mjs');
-const { coverageOf } = await import('../packs/phishing/pack.mjs');
+const { coverageOf, default: pack } = await import('../packs/phishing/pack.mjs');
+const { prepareWorkspace } = await import('../lib/targets.mjs');
 
 test('dnstwist failure marks coverage unavailable with the stderr reason and raises lookalike-evidence-missing', async () => {
   const scan = await scanSnapshot(LAB);
@@ -66,4 +71,21 @@ test('live capture refuses to run without a grant that covers the domain', async
   assert.throws(() => assertReach(undefined, 'tidekeep.test'), /reach.network/);
   await assert.rejects(captureLookalikes({ ws: LAB, domain: 'tidekeep.test', reach: { network: 'bridge', granted: false, scope: [] } }), /grant/);
   assert.equal(calls.length, 0, 'no tool ran');
+});
+
+test('M3: a live phishing target gets domain, reach and owned, and its prepass pins instead of throwing', async () => {
+  const ws = prepareWorkspace({ id: 'live-phishing', title: 't', kind: 'live', pack: 'phishing', hosts: ['brand.example'], origins: ['https://brand.example'], owned: ['brand-app.example'] }, { modules: [] });
+  try {
+    calls.length = 0;
+    // On 9969ab3 this threw "Missing snapshot SHA-256 pin": the config had no domain.
+    const out = await pack.prepass(ws);
+    const cfg = JSON.parse(readFileSync(join(ws, '.touchstone.json'), 'utf8'));
+    assert.equal(cfg.domain, 'brand.example');
+    assert.deepEqual(cfg.reach, { network: 'bridge', granted: true, scope: ['brand.example'] });
+    assert.deepEqual(cfg.owned, ['brand-app.example']);
+    assert.equal(calls[0].network, 'bridge', 'capture used the granted network');
+    assert.deepEqual(calls[0].cmd, ['--format', 'json', 'brand.example']);
+    assert.ok(out.record.leads.some(l => l.check === 'lookalike-evidence-missing' && l.where === 'dnstwist-capture'));
+    assert.ok(out.record.coverage.some(c => c.engine === 'dnstwist-capture' && c.status === 'unavailable'));
+  } finally { rmSync(ws, { recursive: true, force: true }); rmSync(STORE, { recursive: true, force: true }); }
 });

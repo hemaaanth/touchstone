@@ -372,6 +372,14 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       live.domain = hosts[0]
       live.reach = { network: "bridge", granted: true, scope: hosts, ports }
     }
+    // The phishing pack captures the lookalikes of one root domain the same way.
+    // `owned` lists the client's own defensive registrations; they raise no lead.
+    // The pack asserts the grant against `scope` before dnstwist runs.
+    if (pack === "phishing") {
+      live.domain = hosts[0]
+      live.reach = { network: "bridge", granted: true, scope: hosts }
+      if (Array.isArray(target.owned)) live.owned = target.owned.map(String)
+    }
     // The supply-chain pack reads GitHub repos or orgs through the read-only
     // API. `github` is what to read; `reach.scope` is what the grant covers.
     // The pack asserts both in code before its first request.

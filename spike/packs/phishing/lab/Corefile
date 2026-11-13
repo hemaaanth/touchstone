@@ -20,3 +20,9 @@ test:53 {
   errors
   file /lab/test.db test
 }
+# dnstwist also makes two .com names (tidekeep-test.com, tidekeeptest.com).
+# This empty com zone answers NXDOMAIN for them, so nothing leaves the lab.
+com:53 {
+  errors
+  file /lab/com.db com
+}

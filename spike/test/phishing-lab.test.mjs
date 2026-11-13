@@ -20,7 +20,7 @@ mock.module('../lib/wrap.mjs', { exports: {
   runTool: async (opts) => {
     calls.push(opts);
     if (opts.network !== 'none' || opts.cmd[0] !== '--format' || opts.cmd[1] !== 'list') throw new Error('Test path must stay offline: ' + JSON.stringify(opts.cmd));
-    return { code: 0, stdout: recorded(opts.cmd[2]), stderr: '', timedOut: false };
+    return { code: 0, stdout: recorded(opts.cmd.at(-1)), stderr: '', timedOut: false };
   },
   runDocker: async () => { throw new Error('runDocker is not allowed in tests'); },
 } });
@@ -31,7 +31,7 @@ for (const fn of ['lookup', 'resolve', 'resolve4', 'resolve6', 'resolveMx', 'res
   mock.method(dns.promises, fn, async (...args) => { dnsCalls.push([fn, args[0]]); throw new Error('DNS is not allowed in tests'); });
 }
 
-const { scanSnapshot, phishingLeads, detectors, METAMASK } = await import('../packs/phishing/checks.mjs');
+const { scanSnapshot, phishingLeads, detectors, METAMASK, regenerate, fingerprint } = await import('../packs/phishing/checks.mjs');
 const { replayEvidence, pinSnapshot } = await import('../lib/proof-evidence.mjs');
 const { default: pack } = await import('../packs/phishing/pack.mjs');
 const { PACKS, packList } = await import('../packs/index.mjs');
@@ -100,7 +100,7 @@ test('the real MetaMask slice confirms a real metamask.io lookalike at its upstr
   try {
     const text = readFileSync(join(PACK, METAMASK.file), 'utf8');
     writeFileSync(join(ws, '.touchstone.json'), JSON.stringify({ pack: 'phishing' }));
-    const hash = pinSnapshot(ws, { schema: 1, kind: 'phishing', official: ['metamask.io'], owned: [], dnstwist: { code: 0, rows: [] }, blocklists: [{ ...METAMASK, text }] });
+    const hash = pinSnapshot(ws, { schema: 1, kind: 'phishing', official: ['metamask.io'], owned: [], dnstwist: { code: 0, rows: [], controls: [], generator: fingerprint((await regenerate(['metamask.io'])).names) }, blocklists: [{ ...METAMASK, text }] });
     const s = await scanSnapshot(ws);
     const l = s.leads.find(x => x.check === 'known-scam-lookalike' && x.where.domain === 'metamcsk.io');
     assert.deepEqual(l.where, { domain: 'metamcsk.io', list: 'metamask-eth-phishing-detect', line: '96', pin: '82d3512c593b6d85d24e885bfb19afa7f5e452fa' });

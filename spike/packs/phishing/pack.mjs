@@ -49,7 +49,7 @@ export default {
   id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'evidence',
   // It captures DNS for permutations of a granted domain, so it can take a live one.
   live: true,
-  system: () => 'Audit only the pinned offline lookalike snapshot. Call snapshot_leads. Review all leads. Submit each confirmed lookalike with submit_finding. Never submit reviewOnly leads. A generated name with no DNS record is not a finding. A resolving lookalike is not proof of a phishing page; say only what the records show. A known-scam claim cites the list, line and pin. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never access the internet.',
+  system: () => 'Audit only the pinned offline lookalike snapshot. Call snapshot_leads. Review all leads. Submit each confirmed lookalike with submit_finding. Never submit reviewOnly leads. A generated name with no DNS record is not a finding. An answer the resolver also gives for a random control name is a wildcard, not a registration. Name every *-evidence-missing lead in the summary. A resolving lookalike is not proof of a phishing page; say only what the records show. A known-scam claim cites the list, line and pin. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never access the internet.',
   tools,
   kickoff: (ws, env) => 'Review every lead, worst first. Submit supported evidence with its exact lead id, then continue. Summarize coverage, including any evidence-missing lead. Leads: ' + (env.LEADS ?? 'Call snapshot_leads.'),
   nudge: () => null, prepass,

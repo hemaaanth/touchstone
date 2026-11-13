@@ -15,20 +15,39 @@ with CoreDNS. The live mode (`live.mjs`) takes its network from `reach`, which
 the platform grant fills. Live capture refuses a domain the grant scope does
 not cover. dnstwist resolves DNS over UDP, so it cannot use the HTTP gate. The
 grant is enforced in code, and later steps read only the pinned snapshot.
+`prepareWorkspace` in `lib/targets.mjs` writes `domain`, `reach` and `owned`
+for a live phishing target.
 
 ## Proof model
 
 A lead is confirmed in only two ways.
 
 1. `registered-lookalike`: dnstwist generates the name again, offline, from the
-   official domain, and the pinned DNS row has A, AAAA or MX.
+   official domain, and the pinned DNS row has a routable A or AAAA, or an MX.
+   The zone's control row must be quiet, and no value may equal a control
+   answer.
 2. `known-scam-lookalike`: dnstwist generates the name again, offline, and it is
    an exact entry in a pinned blocklist. The evidence names the list, the
    upstream line and the commit.
 
-A bare permutation, an NS-only name, or a brand word on a list stays a review
-lead. A tool failure or a bad list is `unavailable` in coverage and raises a
-`*-evidence-missing` lead. It is never a pass.
+A bare permutation, an NS-only name, a wildcard or non-routable answer, or a
+brand word on a list stays a review lead. A tool failure or a bad list is
+`unavailable` in coverage and raises a `*-evidence-missing` lead. It is never a
+pass. A partial capture (`!ServFail` rows, or generated names with no row) is
+`partial` in coverage and raises a `lookalike-evidence-missing` lead with both
+counts.
+
+Two checks guard the capture itself:
+
+- Control rows. After the main run, capture asks the same resolver about one
+  random name per zone (`ts-ctl-<12 hex>.<zone>`). That name cannot exist. If
+  it answers, the resolver wildcards, and rows in that zone are review-only. A
+  snapshot with no control rows confirms no `registered-lookalike`.
+- Generator fingerprint. Capture stores the sha256 and count of the offline
+  `--format list` name set. Replay makes the set again and compares. A
+  different set (for example a rebuilt image under the same tag) fails closed.
+  This checks the output, not the Docker image ID, so it also holds on a
+  remote Docker backend.
 
 ## Wrapped and vendored
 
@@ -86,13 +105,22 @@ Real holes (work nobody has done yet):
 4. No drainer linkage. A lookalike is not tied to a drainer kit, a spender
    address or a wallet request. The domains pack does that for the client's
    own site only.
-5. The vendored MetaMask copy is a 450-entry slice. Real coverage needs the
+5. dnstwist drops DNS timeouts without a mark. A slow or rate-limiting
+   resolver can make a registered name look bare. `!ServFail` and missing rows
+   are counted; timeouts cannot be.
+6. One control per zone misses two cases: a wildcard in a zone below the one
+   the control asks about (for example `*.co.za` when the control asks under
+   `za`), and a resolver that rewrites only some names and not the control. A
+   sinkhole that answers with routable addresses is not caught either.
+7. The vendored MetaMask copy is a 450-entry slice. Real coverage needs the
    operator to pin the full 3.5 MB `config.json` at a commit.
-6. No refresh schedule per source. Lists go stale. Nothing re-pins them.
-7. No domain age or registrar data, so a new registration and an old one look
+8. No refresh schedule per source. Lists go stale. Nothing re-pins them.
+9. No domain age or registrar data, so a new registration and an old one look
    the same.
-8. Lookalikes under other TLDs depend on dnstwist's built-in TLD swaps only.
-   No custom TLD list is pinned.
+10. Lookalikes under other TLDs depend on dnstwist's built-in TLD swaps only.
+    No custom TLD list is pinned.
+11. A live target has no UI field for `owned`. Without it, the client's own
+    defensive registrations are reported as lookalikes.
 
 ## Runtime notes
 

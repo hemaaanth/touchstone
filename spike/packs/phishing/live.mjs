@@ -4,12 +4,12 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { inScope, failReason } from '../domains/live.mjs';
 import { assertInternal } from '../domains/labctl.mjs';
-import { IMAGE, METAMASK } from './checks.mjs';
+import { IMAGE, METAMASK, name, zoneOf, regenerate, fingerprint } from './checks.mjs';
 
 const PACK = fileURLToPath(new URL('.', import.meta.url));
 const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
@@ -41,19 +41,43 @@ export function readBlocklists(ws, extra = []) {
   return lists;
 }
 
-// Capture one scope. Returns a snapshot. The coverage row says if the capture ran.
-export async function captureLookalikes({ ws, domain, owned = [], reach, blocklists = [], lab = false }) {
-  assertReach(reach, domain);
-  const cmd = ['--format', 'json', ...(reach.resolver ? ['--nameservers', reach.resolver] : []), domain];
-  const started = new Date().toISOString();
-  const result = await runTool({ image: IMAGE, cmd, network: reach.network, timeoutMs: 600000 });
+// One dnstwist JSON run. Returns { code, reason, rows, stderr }.
+async function dnstwistJson(cmd, network, timeoutMs) {
+  const result = await runTool({ image: IMAGE, cmd, network, timeoutMs });
   let rows = [];
   let reason = result.code === 0 && !result.timedOut ? null : failReason(result, IMAGE);
   if (!reason) { try { rows = JSON.parse(result.stdout); if (!Array.isArray(rows)) throw new Error(); } catch { rows = []; reason = 'dnstwist output is not a JSON array.'; } }
+  return { code: reason ? (result.code || 1) : 0, reason, rows, stderr: String(result.stderr ?? '').slice(-2000) };
+}
+
+// Capture one scope. Returns a snapshot. The coverage row says if the capture ran.
+// After the main run it asks the same resolver about one random name per zone (the
+// control). That name cannot exist, so an answer means the resolver wildcards.
+// Then it runs dnstwist offline once more and stores the fingerprint of the name set.
+export async function captureLookalikes({ ws, domain, owned = [], reach, blocklists = [], lab = false }) {
+  assertReach(reach, domain);
+  const ns = reach.resolver ? ['--nameservers', reach.resolver] : [];
+  const cmd = ['--format', 'json', ...ns, domain];
+  const started = new Date().toISOString();
+  const main = await dnstwistJson(cmd, reach.network, 600000);
+  const { rows, reason } = main;
+  const controls = [];
+  let generator = null;
+  if (!reason) {
+    const zones = [...new Set(rows.map(r => name(r.domain)).filter(Boolean).map(d => zoneOf(d, [domain])))].sort();
+    for (const zone of zones) {
+      const probe = 'ts-ctl-' + randomBytes(6).toString('hex') + '.' + zone;
+      const ctlCmd = ['--format', 'json', '--fuzzers', '*original', ...ns, probe];
+      const out = await dnstwistJson(ctlCmd, reach.network, 120000);
+      controls.push({ zone, domain: probe, cmd: ctlCmd, code: out.code, rows: out.rows, ...(out.reason ? { reason: out.reason } : {}) });
+    }
+    const gen = await regenerate([domain], { fresh: true });
+    if (gen.ok) generator = { ...fingerprint(gen.names), cmd: ['--format', 'list', domain], network: 'none' };
+  }
   return {
     schema: 1, kind: 'phishing', ...(lab ? { lab: true } : {}), official: [domain], owned,
     dnstwist: { image: IMAGE, version: '20250130', cmd, network: reach.network, resolver: reach.resolver ?? 'container default', capturedAt: started,
-      code: reason ? (result.code || 1) : 0, stderr: String(result.stderr ?? '').slice(-2000), rows },
+      code: main.code, stderr: main.stderr, rows, controls, generator },
     blocklists: readBlocklists(ws, blocklists),
     coverage: [{ engine: 'dnstwist-capture', status: reason ? 'unavailable' : 'ran', leads: rows.length, ...(reason ? { reason } : {}) }],
   };

@@ -19,8 +19,8 @@ fetch a page, a banner, WHOIS or a screenshot. Never file a takedown.
 1. Call snapshot_leads. Rank the leads by severity.
 2. Read each lead's exact check, where and description.
 3. Submit each supported lead once, with its exact lead id.
-4. Skip reviewOnly leads. A bare permutation, a parked name or a brand word
-   on a list is not proof.
+4. Skip reviewOnly leads. A bare permutation, a parked name, a wildcard
+   answer or a brand word on a list is not proof.
 5. Continue after each submission. End with coverage and limits. Name every
    `*-evidence-missing` lead.
 
@@ -34,16 +34,25 @@ checks can be confirmed: `registered-lookalike` and `known-scam-lookalike`.
 `registered-lookalike` (medium). dnstwist generated the name from the official
 domain, and the captured DNS row has an A, AAAA or MX record. The where cells
 are the domain, the fuzzer and the records. Replay runs dnstwist again offline
-(`--format list`, `--network none`). The name must be in that fresh list, and
-the records must match the pin exactly. A resolving name can host a page or
-take mail. It does not prove a phishing page exists. Say only what the records
-show.
+(`--format list`, `--network none`). The fresh name set must have the same
+sha256 as the generator fingerprint stored at capture. The name must be in it,
+and the records must match the pin exactly. Only routable addresses count.
+The zone's control name (below) must be quiet, and no record value may equal a
+control answer. An A or AAAA record means the name can serve a page. An MX
+record means it can receive mail. Neither proves a phishing page exists. Say
+only what the records show.
 
 `known-scam-lookalike` (high). dnstwist generated the name, and it is an exact
 entry in a pinned blocklist. The where cells are the domain, the list name, the
 1-based line in the upstream file, and the pin. The pin is the upstream git
 commit. For the synthetic lab list it is `sha256:` and the list hash. Cite the
 list, the line and the pin.
+
+`unverified-lookalike` (low, reviewOnly). The name answers, but the answer is
+not proof of a registration. The `reason` cell says why: `wildcard` (the
+zone's control name also answers, or the value equals a control answer),
+`no-control` (the zone has no usable control row), or `non-routable` (only
+0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is often a sinkhole).
 
 `parked-lookalike` (low, reviewOnly). The name has NS records but no A, AAAA or
 MX. It is registered but not live. Watch it.
@@ -52,14 +61,38 @@ MX. It is registered but not live. Watch it.
 (4 characters or more), but dnstwist did not generate it. Examples are
 `brand-airdrop.xyz` or `claim-brand.app`. A person must review it.
 
+`own-host-on-blocklist` (low, reviewOnly). A list entry is an official or
+owned name, or a host under one. It is not a lookalike. Check why the list
+flags it.
+
+`lookalike-host-on-blocklist` (low, reviewOnly). A list entry is a host under a
+generated lookalike, for example `www.tidekep.test`. The list names the host,
+not the lookalike itself.
+
 `lookalike-evidence-missing` and `blocklist-evidence-missing` (informational,
 reviewOnly). A tool failed, the capture is empty, the resolver gave no answer
-for the official domain, or a list is empty, a stub, changed, or not pinned.
+for the official domain, the generator fingerprint is missing or different,
+the capture has no control rows, a control answers (resolver wildcards), or a
+list is empty, a stub, changed, or not pinned. A partial capture also raises
+one: rows that answered `!ServFail` or generated names with no row. Its where
+cell holds both counts, and the `dnstwist-capture` coverage row is `partial`.
+dnstwist drops DNS timeouts without a mark, so a slow resolver can still hide
+names.
 Report it as missing evidence. Never call it a pass and never say "no
 lookalikes exist".
 
 Names in `owned` are the client's own defensive registrations. They never
-raise a lead. A `!ServFail` answer is not a record.
+raise a lead. Names are compared in ASCII form (`url.domainToASCII`), so a
+Unicode owned name matches its `xn--` row. A `!ServFail` answer is not a
+record.
+
+## Control rows
+
+After the main run, capture asks the same resolver about one random name per
+zone, `ts-ctl-<12 hex>.<zone>`. That name cannot exist. If it answers, the
+resolver wildcards (a wildcard TLD, or an ISP that rewrites NXDOMAIN), and
+every row in that zone is review-only. Capture then runs dnstwist offline once
+more and stores the sha256 and count of the name set as `generator`.
 
 Write short sentences. Explain the captured risk, not an imagined attack.
 End each supported explanation with Fix: and the next step, for example a
@@ -88,12 +121,15 @@ The lab is an `--internal` Docker network with CoreDNS. The official domain is
 `tidekeep.test`. `tldekeep.test` is a registered homoglyph (A and MX).
 `tidekep.test` is on the synthetic lab blocklist at line 12. `tide-keep.test`
 is owned. `tidekeeep.test` is parked (NS only). `tidekeap.test` is a bare
-permutation and the negative case.
+permutation and the negative case. An empty `com` zone answers NXDOMAIN for the
+two `.com` permutations, so the lab capture has no `!ServFail` row.
 
 ## Real domains
 
 A scope names a domain. `.touchstone.json` holds `domain`, and optionally
-`owned` and `blocklists`. The platform grant fills `reach`: `network`,
+`owned` and `blocklists`. For a live target, `prepareWorkspace` in
+`lib/targets.mjs` writes `domain` (the first host), `owned` (from the target)
+and `reach`. The platform grant fills `reach`: `network`,
 `granted`, `scope`, and optionally `resolver`. The prepass runs dnstwist once
 through `runTool()` with `--format json`, pins the snapshot, and the checks run
 on the pin. Live capture refuses a domain that `reach.scope` does not cover.
@@ -107,3 +143,9 @@ them.
 Each operator blocklist is a file in the workspace with `name`, `format`
 (`metamask-config`, `metamask-blacklist-slice` or `json-array`), `source`,
 `commit` (40 hex) and `license`. The vendored MetaMask slice is always added.
+The pack checks its commit, sha256 and first line against constants. The name
+`metamask-eth-phishing-detect` and the format `metamask-blacklist-slice` are
+reserved for it. An operator list must use another name, even at the same
+upstream commit. The
+pack checks only an operator list's sha256 against its bytes; the lead text
+calls its commit "operator-stated".
