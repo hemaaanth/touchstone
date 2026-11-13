@@ -134,6 +134,13 @@ test('M-A: one field-less control, or a timed-out control, does not make a zone 
   assert.equal(registered(same, 'tldekeep.test'), undefined);
 });
 
+test('Minor 5: a control that answers !ServFail is unknown, not quiet', async () => {
+  const servfail = ctl('test', { dns_ns: ['!ServFail'], dns_a: ['!ServFail'] }, 2);
+  const scan = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('test', {}, 1), servfail, ...ctl3('com')] }));
+  assert.equal(registered(scan, 'tldekeep.test'), undefined);
+  assert.ok(gap(scan, { controls: 'missing', zones: 'test' }));
+});
+
 test('M2: every row but the official one is !ServFail: coverage partial and a gap lead with both counts', async () => {
   const fail = Object.fromEntries(NAMES.filter(d => d !== 'tidekeep.test').map(d => [d, { dns_ns: ['!ServFail'], dns_a: ['!ServFail'], dns_aaaa: ['!ServFail'] }]));
   const scan = await phishingLeads(snap({ rows: fail }));
@@ -223,6 +230,14 @@ test('m2: a changed MetaMask slice with a recomputed sha256 is refused; other co
   const same = sameCommit.leads.find(x => x.check === 'known-scam-lookalike' && x.where.domain === 'tidekep.test');
   assert.match(same.description, /operator-stated/);
   assert.equal(same.where.pin, 'operator:' + METAMASK.commit, 'Minor 3: the MetaMask commit on an operator list is not shown as the checked pin');
+});
+
+test('Minor 5: a list that only takes the MetaMask name, in another format, is refused', async () => {
+  const squat = await phishingLeads(snap({ blocklists: [{ ...LAB_LIST, name: METAMASK.name, synthetic: false, commit: 'a'.repeat(40) }] }));
+  const row = squat.coverage.find(c => c.engine === 'blocklist:' + METAMASK.name);
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /claims to be the vendored MetaMask slice/);
+  assert.equal(squat.leads.filter(l => l.check === 'known-scam-lookalike').length, 0);
 });
 
 test('m3: the brand\'s own subdomain on a list is not called a lookalike', async () => {
