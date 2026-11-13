@@ -316,7 +316,13 @@ function normalize(raw, { id, runId, finding }) {
         address: x.address,
         net: x.net,
         gained: Boolean(x.gained),
+        // The exact signed wei, when the record has it: a dust move does not
+        // read as "+0 ETH". An older record has none and sends none.
+        ...(typeof x.netWei === "string" ? { netWei: x.netWei } : {}),
       })) : [],
+      // What the proof gate says was lost (spike/lib/proof.mjs): an ETH or
+      // token drain, or a control takeover. Null on a record from before it.
+      harm: engineProof?.harm ?? null,
       // The real runtime log lines the proving test emitted (decoded by forge),
       // verbatim machine output — empty for older runs.
       logs: engineProof && Array.isArray(engineProof.logs) ? engineProof.logs : [],

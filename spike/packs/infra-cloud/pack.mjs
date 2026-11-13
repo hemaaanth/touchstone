@@ -98,6 +98,9 @@ function tools(ws, state) {
 
 export default {
   id: "infra-cloud", title: "Infra and cloud", tier: "P", proof: "evidence",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "An infrastructure-as-code snapshot: paths to signer keys, RPC admin methods and front-end publishing.",
   // Moto runs on an --internal network (cloud.mjs). The LIVE_CHECK replay runs
   // through lib/proof-http.mjs on a private network with no internet.
   offline: true,

@@ -182,7 +182,7 @@ export function Thread({
   onRetry,
   retrying,
   archived,
-  sendError,
+  notice,
   sending = false,
   context = null,
   to = "the agent",
@@ -201,7 +201,8 @@ export function Thread({
   onRetry: () => void
   retrying: boolean
   archived: boolean
-  sendError: string | null
+  // The line under the composer: a refused send, rename or archive.
+  notice: { title: string; detail: string } | null
   // A message is on its way to the server. It shows in the composer only.
   sending?: boolean
   // How full the main thread's context is, when the engine reported it.
@@ -258,7 +259,7 @@ export function Thread({
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.Viewport>
 
-      {readOnly ? null : <Composer to={to} archived={archived} error={sendError} sending={sending} context={context} />}
+      {readOnly ? null : <Composer to={to} archived={archived} notice={notice} sending={sending} context={context} />}
     </ThreadPrimitive.Root>
   )
 }
@@ -275,13 +276,13 @@ export function Thread({
 function Composer({
   to,
   archived,
-  error,
+  notice,
   sending,
   context,
 }: {
   to: string
   archived: boolean
-  error: string | null
+  notice: { title: string; detail: string } | null
   sending: boolean
   context: ContextUse | null
 }) {
@@ -308,7 +309,7 @@ function Composer({
           <div className="relative flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-center gap-1">
               {context ? <ContextRing use={context} /> : null}
-              {error ? <ErrorState compact title="Message not sent" detail={sentence(error)} /> : null}
+              {notice ? <ErrorState compact title={notice.title} detail={notice.detail} /> : null}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <AuiIf condition={(s) => s.thread.isRunning}>

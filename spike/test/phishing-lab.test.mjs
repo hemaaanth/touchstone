@@ -146,7 +146,7 @@ test('a captured row dnstwist did not generate is not confirmed', async () => {
 
 test('the pack is registered, live-capable, leads only, and its prepass reports coverage', async () => {
   assert.equal(PACKS.phishing, pack);
-  assert.deepEqual(packList().find(p => p.id === 'phishing'), { id: 'phishing', title: pack.title, tier: 'P', proof: 'none', live: true, scanNet: 'open' });
+  assert.deepEqual(packList().find(p => p.id === 'phishing'), { id: 'phishing', title: pack.title, description: pack.description, tier: 'P', proof: 'none', live: true, scanNet: 'open' });
   const { record } = await pack.prepass(LAB);
   assert.equal(record.snapshotHash, scan.snapshotHash);
   const engines = Object.fromEntries(record.coverage.map(c => [c.engine, c]));

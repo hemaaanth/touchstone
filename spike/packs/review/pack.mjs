@@ -264,6 +264,9 @@ export function tools(ws, state = {}) {
 export default {
   id: "review",
   title: "Code review",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "Code with no Solidity in it, such as Rust, Go, TypeScript or Python.",
   tier: "P",
   proof: "none",
   // fetch_source clones the scope's GitHub repos on the host. The other tools

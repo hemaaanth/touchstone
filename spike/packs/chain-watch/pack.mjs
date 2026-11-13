@@ -81,6 +81,9 @@ const kickoff = (ws, env) => {
 export default {
   id: "chain-watch",
   title: "Chain watch",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "Admin changes on a chain between two blocks: a proxy upgrade, an owner change, a role grant.",
   tier: "P", // passive: Anvil runs only in our offline sandbox
   proof: "forge",
   // No tool reaches a network. The Modules page reads this.
