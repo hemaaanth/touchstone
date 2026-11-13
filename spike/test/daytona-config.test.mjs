@@ -4,6 +4,9 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const TOKEN = "e2-test-token";
 process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN;
@@ -15,7 +18,7 @@ const writeConfig = (cfg) => {
   store = structuredClone(cfg);
 };
 mock.module(providersUrl, { exports: { ...realProviders, readConfig, writeConfig } });
-const { DEFAULT_API_URL, DEFAULT_TARGET, daytonaOn, execConfig } = await import("../lib/daytona.mjs");
+const { DEFAULT_API_URL, DEFAULT_TARGET, closeRun, daytonaOn, execConfig } = await import("../lib/daytona.mjs");
 const { getSettings, setExecution } = await import("../../app/server/settings.mjs");
 
 test("execConfig: server URL and region come from env, then Settings, then the default", () => {
@@ -84,21 +87,30 @@ test("a bad server URL through the guarded settings write gets 400 with the mess
   assert.match(res.body, /must start with https:\/\//);
 });
 
-// Run fn with these env vars (undefined deletes one), then put them back.
+// Run fn with these env vars (undefined deletes one), then put them back. An
+// async fn gets them back when its promise settles.
 function withEnv(vars, fn) {
   const keep = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const restore = () => {
+    for (const [k, v] of Object.entries(keep)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  let r;
   try {
     for (const [k, v] of Object.entries(vars)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
-    return fn();
-  } finally {
-    for (const [k, v] of Object.entries(keep)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
+    r = fn();
+  } catch (e) {
+    restore();
+    throw e;
   }
+  if (r && typeof r.then === "function") return r.finally(restore);
+  restore();
+  return r;
 }
 const NO_ENV = { DAYTONA_API_KEY: undefined, DAYTONA_API_URL: undefined, DAYTONA_TARGET: undefined, TOUCHSTONE_EXEC: undefined };
 const KEY = "dtn_saved_key_value_9z9z";
@@ -155,5 +167,88 @@ test("a server URL from the env on another host gets no saved key, with a reason
   withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://app.daytona.io/other" }, () => {
     store = { execution: { backend: "local", apiKey: KEY, keyHost: "app.daytona.io" } };
     assert.equal(execConfig().apiKey, KEY, "the same host keeps the key");
+  });
+});
+
+test("DAYTONA_API_KEY goes only to DAYTONA_API_URL, else the default server, with a reason", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_KEY: KEY }, () => {
+    store = { execution: { backend: "local", apiUrl: "https://evil.example/api" } };
+    const c = execConfig();
+    assert.equal(c.apiKey, "", "the env key must not follow a Settings URL");
+    assert.equal(c.keyHeld, "The key from DAYTONA_API_KEY is only sent to app.daytona.io, not evil.example.");
+    const s = getSettings();
+    assert.equal(s.execution.key.set, false);
+    assert.equal(s.execution.key.held, c.keyHeld);
+    assert.ok(!JSON.stringify(s).includes(KEY), "the key must not leave the server");
+    store = {};
+    assert.equal(execConfig().apiKey, KEY, "the default server gets the env key");
+  });
+  withEnv({ ...NO_ENV, DAYTONA_API_KEY: KEY, DAYTONA_API_URL: "https://env.example/api" }, () => {
+    store = { execution: { apiUrl: "https://saved.example/api" } };
+    assert.equal(execConfig().apiKey, KEY, "DAYTONA_API_URL gets the env key");
+  });
+});
+
+test("an env server URL that is not https, or has a user name, query or #part, gets no key", () => {
+  for (const url of ["http://app.daytona.io/api", "https://u:p@app.daytona.io/api", "https://app.daytona.io/api?x=1", "https://app.daytona.io/api#x"]) {
+    withEnv({ ...NO_ENV, DAYTONA_API_KEY: NEW_KEY, DAYTONA_API_URL: url }, () => {
+      store = { execution: { backend: "local", apiKey: KEY, keyHost: "app.daytona.io" } };
+      const c = execConfig();
+      assert.equal(c.apiKey, "", url);
+      assert.match(c.keyHeld, /must be https, with no user name, query or #part/, url);
+      assert.ok(!c.keyHeld.includes("u:p"), "the reason never shows a user name or password");
+      assert.equal(getSettings().execution.key.set, false, url);
+    });
+  }
+});
+
+test("the REST client calls the configured server, with the key bound to it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "daytona-config-"));
+  const realFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await withEnv({ ...NO_ENV, DAYTONA_PENDING: join(dir, "pending.json") }, async () => {
+      writeFileSync(join(dir, "pending.json"), JSON.stringify(["sb-test-1"]));
+      store = { execution: { backend: "local", apiUrl: "https://saved.example/api", apiKey: KEY, keyHost: "saved.example" } };
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init.method, auth: init.headers.Authorization });
+        return new Response("", { status: 404 });
+      };
+      await closeRun(join(dir, "ws"));
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(calls, [{ url: "https://saved.example/api/sandbox/sb-test-1", method: "DELETE", auth: `Bearer ${KEY}` }]);
+});
+
+test("a new key is bound to DAYTONA_API_URL's host while it is set", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://env.example/api" }, () => {
+    store = { execution: { backend: "local", apiUrl: "https://saved.example/api" } };
+    setExecution({ backend: "local", apiKey: NEW_KEY });
+    assert.equal(store.execution.keyHost, "env.example");
+    assert.equal(execConfig().apiKey, NEW_KEY, "the key is used right after the save");
+  });
+});
+
+test("a kept key keeps the host it is bound to", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://env.example/api" }, () => {
+    store = { execution: { backend: "local", apiKey: KEY, keyHost: "env.example" } };
+    setExecution({ backend: "local", target: "eu-1" });
+    assert.equal(store.execution.keyHost, "env.example");
+    assert.equal(execConfig().apiKey, KEY);
+  });
+});
+
+test("a held saved key is marked saved, so it can be removed", () => {
+  withEnv({ ...NO_ENV, DAYTONA_API_URL: "https://elsewhere.example/api" }, () => {
+    store = { execution: { backend: "local", apiKey: KEY, keyHost: "app.daytona.io" } };
+    const held = getSettings().execution.key;
+    assert.equal(held.set, false);
+    assert.equal(held.saved, true);
+    const res = setExecution({ backend: "local", clearKey: true });
+    assert.equal(store.execution.apiKey, undefined);
+    assert.equal(res.execution.key.saved, false);
   });
 });
