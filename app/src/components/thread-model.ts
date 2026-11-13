@@ -580,6 +580,42 @@ export function runRowStatus(r: { status: RunStatus; errorKind?: string | null }
   return { word: statusLabel(r.status), tone: statusTone(r.status) }
 }
 
+// The one status mark (RunStatusMark) a run shows, in the sidebar and in the
+// run's top bar. One kind per run state; the mark keeps one size in all.
+export type RunMarkKind = "starting" | "working" | "replaying" | "paused" | "proven" | "done" | "failed"
+
+// A run in the list: its status, and how an error ended. A restart's cut-off
+// reads as paused, not failed.
+export function runMarkKind(r: { status: RunStatus; errorKind?: string | null }): RunMarkKind {
+  switch (r.status) {
+    case "starting":
+      return "starting"
+    case "running":
+      return "working"
+    case "awaiting-approval":
+    case "deciding":
+      return "replaying"
+    case "recorded":
+      return "proven"
+    case "no-finding":
+      return "done"
+    case "denied":
+      return "failed"
+    case "error":
+      return r.errorKind === "cutoff" ? "paused" : "failed"
+    default:
+      return "done"
+  }
+}
+
+// The run's top bar (runHeadStatus): the same marks.
+export function headMarkKind(head: { word: string; tone: HeadTone }): RunMarkKind {
+  if (head.tone === "working") return "working"
+  if (head.tone === "proven") return "proven"
+  if (head.tone === "failed") return "failed"
+  return head.word === "Stopped" || head.word === "Interrupted" ? "paused" : "done"
+}
+
 // How one agent's state reads in a row, a header or a dot. An agent a server
 // restart cut off reads "Interrupted" in neutral ink with a ring dot: it is not
 // working, it is not done, and it did not fail. Red stays for a real failure.

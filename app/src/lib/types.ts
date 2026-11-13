@@ -624,6 +624,8 @@ export interface RunSummary {
   name?: string | null
   // The title of the scope the run attacks, for runs with no name or finding.
   scopeTitle?: string | null
+  // The run's target headline (the list sends the scope's title, else none).
+  target?: string | null
   // Every module the run covers, so a list row can name them all.
   packs?: string[]
   // How an error run ended (the server's errorInfo.kind). "cutoff" is a server
