@@ -185,8 +185,15 @@ function lowerKeys(obj) {
 //   1. the test made a successful call into a scope target, and
 //   2. an effect on a scope target the gate accepts as harm, by ANY channel:
 //      - funds (ETH):   a target's net native ETH went DOWN during the test body;
-//      - funds (token): a target was a net LOSER of an ERC-20 token in the body,
-//        read from the real `Transfer` logs the EVM emitted (see tokenDrains); or
+//      - funds (token): a target was a net LOSER of an ERC-20 token in the body.
+//        The loss is the balance-slot decrease when the compiled layout names that
+//        slot (see balanceDrains). A `Transfer` log is only a fallback, and only
+//        when it is authenticated (see tokenDrains): the emitter is a scope
+//        token (the replay is offline, so no real external ERC-20 can exist —
+//        any non-scope emitter was placed by the test) and that token's storage
+//        shows the victim's balance slot decreased. A log the test contract
+//        emits, or that a contract the test created, etched or cloned emits,
+//        proves nothing; or
 //      - control: the test body re-pointed one of a target's CONTROL slots to a
 //        new address, by a caller that did not already hold that authority (a
 //        takeover, not an ordinary write). Which slots are control pointers comes
@@ -219,7 +226,12 @@ function lowerKeys(obj) {
 // - A test that funds the target itself in setUp() and withdraws only its own
 //   balance in the body is accepted as funds. Setup funding is left out of the net
 //   on purpose: that exclusion is what keeps victim-funded drains provable, so do
-//   not "fix" it by netting setUp flows in.
+//   not "fix" it by netting setUp flows in. The same holds for a token: a balance
+//   minted in setUp and moved out in the body still counts, because the body's
+//   SSTORE carries the funded balance as its old value.
+// - The Transfer-log fallback, used when the layout does not name the balance,
+//   only searches mapping bases 0..31. A namespaced (ERC-7201) or higher base on
+//   an external token is missed rather than trusting an unverified log.
 
 const lc = (v) => String(v ?? "").toLowerCase();
 const hex = (v) => lc(v).replace(/^0x/, "");
@@ -433,14 +445,101 @@ function scanTargets(traces, scope) {
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const topicAddr = (t) => { const h = hex(t); return h.length >= 40 ? "0x" + h.slice(-40) : null; };
 
+// Solidity `mapping(address => uint)` slot: keccak256(abi.encode(holder, base)).
+function mappingSlot(holder, base) {
+  return word(keccak256(word(holder) + String(base).slice(2)));
+}
+
+// The test contract and every contract this replay deployed. The test contract is
+// the root call of the Execution trace. It is not always itself a CREATE in the
+// trace the gate sees, so "was it created?" is not a substitute for this.
+function replayParties(traces) {
+  let testContract = null;
+  const created = new Set();
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const label = Array.isArray(entry) ? entry[0] : null;
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    arena.forEach((node, i) => {
+      const t = node?.trace ?? {};
+      const addr = lc(t.address);
+      if (label === "Execution" && i === 0 && addr) testContract = addr;
+      // CREATE2 as well as CREATE. A fake token deployed with a salt is still
+      // the test's contract; controlTrace.created only records CREATE.
+      if ((t.kind === "CREATE" || t.kind === "CREATE2") && addr) created.add(addr);
+    });
+  }
+  return { testContract, created };
+}
+
+// A Transfer log proves a token movement only when its emitter IS the token.
+// The test contract can log whatever it likes. So can a contract it deployed
+// that is not a scope target (CREATE or CREATE2), and so can an address whose
+// code it etched. A scope target is the audited token, including one the test
+// deployed in setUp — that is the ONLY emitter we trust.
+//
+// The replay runs offline, in a fresh sandbox with no fork: no real external
+// ERC-20 can exist there. So any emitter that is NOT a scope target was put on
+// the chain by the test itself — as the test contract, a CREATE/CREATE2, an
+// `etch`, or a `cloneAccount`/7702 delegation that lands code at a "pre-existing"
+// address. None of those is the audited token, so none authenticates a drain.
+// We therefore trust only a scope target and reject every other emitter. An
+// etched or cloned target is no scope target: judgeHarm removes it from
+// `targets` before any channel runs, so it fails `targets.has` below.
+function realTokenEmitter(token, targets, testContract, created) {
+  if (!token || token === testContract) return false;
+  if (targets.has(token)) return true;
+  if (created.has(token)) return false;
+  return false;
+}
+
+// Where an address-keyed balance can live. The compiled layout is authoritative
+// when it names one for this token: a write to a different base is not that
+// balance, and trusting it would let the token point at a slot it never uses.
+// With no layout (an external token, or a balance under a name we don't track)
+// the ordinary ERC-20 slots are the low ones. Namespaced and high bases are a
+// miss, not a reason to trust the log. See the known limit above.
+const LOW_BALANCE_BASES = Array.from({ length: 32 }, (_, i) => word("0x" + i.toString(16)));
+function balanceBases(token, targets, balances) {
+  const known = balances?.get(targets.get(token) ?? "");
+  return known?.length ? known : LOW_BALANCE_BASES;
+}
+
+// Units of `token` that `holder` lost in the test body, from the balance slots.
+// 0 when none decreased. `writes` is controlTrace.writes: body only, success
+// gated, constructors excluded. A setUp mint is therefore absent, but the body's
+// SSTORE still has the funded balance as `before`, so the decrease counts.
+function storedBalanceLoss(writes, token, holder, bases) {
+  let loss = 0n;
+  for (const base of bases) {
+    const slot = mappingSlot(holder, base);
+    let net = 0n;
+    let saw = false;
+    for (const w of writes) {
+      if (lc(w.context) !== token || word(w.slot) !== slot) continue;
+      saw = true;
+      try { net += BigInt(w.after) - BigInt(w.before); } catch { /* malformed word */ }
+    }
+    if (saw && -net > loss) loss = -net;
+  }
+  return loss;
+}
+
 // The token-drain channel. The native-ETH funds channel sees `t.value` only, so a
 // drain of ERC-20 balances — the most common DeFi harm — is invisible to it. Here
-// we read the real `Transfer` logs the EVM emitted in the test body and net them
-// per (token, holder). A scope target that is a net LOSER of a token it does not
-// itself issue was drained. Body only, success-gated — the same rules the ETH
-// channel uses, so setUp funding is fixture and a rolled-back transfer does not
-// count. Returns [{ token, victim, lostUnits }], biggest loss first.
-function tokenDrains(traces, targets) {
+// we read Transfer logs the EVM emitted in the test body and net them per
+// (token, holder). A log is not itself the harm. It counts only when
+// `realTokenEmitter` accepts the emitter AND that token's storage shows the
+// victim's balance slot decreased by a real SSTORE in the body. The reported
+// loss is the smaller of the two, so a log cannot inflate a one-unit write and
+// a write cannot inflate a one-unit log. A scope target that is then a net LOSER
+// of a token it does not itself issue was drained. Body only, success-gated —
+// the same rules the ETH channel uses, so setUp funding is fixture and a
+// rolled-back transfer does not count. Returns [{ token, victim, lostUnits }],
+// biggest loss first.
+function tokenDrains(traces, targets, controlTrace, balances) {
+  const { testContract, created } = replayParties(traces);
+  const writes = controlTrace?.writes ?? [];
   const net = new Map(); // token -> Map(holder -> signed units)
   const bump = (token, holder, delta) => {
     if (!holder) return;
@@ -455,8 +554,12 @@ function tokenDrains(traces, targets) {
     const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
     arena.forEach((node, i) => {
       if (!ok(i)) return;
-      const token = lc(node?.trace?.address);
-      if (!token) return;
+      const t = node?.trace ?? {};
+      // LOG's address is the account whose code is executing. A DELEGATECALL
+      // runs the callee's code in the caller's account, which is also where
+      // extractControlTrace records the SSTORE (the storage context).
+      const token = (t.kind === "DELEGATECALL" || t.kind === "CALLCODE") ? lc(t.caller) : lc(t.address);
+      if (!token || !realTokenEmitter(token, targets, testContract, created)) return;
       for (const log of node?.logs ?? []) {
         const raw = log?.raw_log ?? log;
         const topics = raw?.topics;
@@ -471,9 +574,13 @@ function tokenDrains(traces, targets) {
   }
   const drains = [];
   for (const [token, holders] of net.entries()) {
+    const bases = balanceBases(token, targets, balances);
     for (const [holder, delta] of holders.entries()) {
       if (delta >= 0n || holder === token || !targets.has(holder)) continue;
-      drains.push({ token, victim: holder, lostUnits: (-delta).toString() });
+      const stored = storedBalanceLoss(writes, token, holder, bases);
+      if (stored <= 0n) continue;
+      const logged = -delta;
+      drains.push({ token, victim: holder, lostUnits: (stored < logged ? stored : logged).toString() });
     }
   }
   drains.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : 1));
@@ -481,8 +588,9 @@ function tokenDrains(traces, targets) {
 }
 
 // The storage token-drain channel — ground truth, event-independent. The event
-// channel above trusts the token to emit a `Transfer` log; a hostile or sloppy
-// in-scope token need not, and a harm gate must not depend on an advisory event.
+// channel above will not take a Transfer log as proof unless the balance slot
+// moved; a hostile or sloppy in-scope token need not emit one at all, and a harm
+// gate must not depend on an advisory event.
 // Here we read the drain from the balance mappings themselves. For each scope
 // target token K with a balance mapping at base slot p (from scopeBalances), and
 // each scope-target holder H, the live balance sits at keccak256(pad32(H).pad32(p)).
@@ -502,7 +610,7 @@ function balanceDrains(controlTrace, targets, balances) {
     if (!bases) continue; // this target issues no scope-tracked balance
     for (const base of bases) {
       for (const holder of targets.keys()) {
-        const slot = word(keccak256(word(holder) + base.slice(2)));
+        const slot = mappingSlot(holder, base);
         index.set(`${addr}:${slot}`, holder);
       }
     }
@@ -547,8 +655,9 @@ function balanceDrains(controlTrace, targets, balances) {
 //     a named control slot of the proxy, so a takeover through the proxy is missed.
 //   - Control roles under non-standard names (controller/manager/minter/keeper) and
 //     balances under non-standard names (_rOwned, struct-wrapped amounts) are not in
-//     CONTROL_NAMES / BALANCE_NAMES; those token drains fall back to Transfer logs,
-//     which an event-less token defeats.
+//     CONTROL_NAMES / BALANCE_NAMES; those token drains fall back to Transfer logs
+//     authenticated by a balance-slot decrease. An event-less token, or a log whose
+//     emitter is not the token, defeats that fallback on purpose.
 //
 // The layout-aware control channel. A storage write is a TAKEOVER only when it
 // re-points a control pointer the writer was not entitled to set. Which slots are
@@ -592,24 +701,46 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null, balances = null } = {}) {
   const { targets, invoked, net } = scanTargets(traces, scope);
   for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
+  // A target the test impersonated is no target at all: not a victim, not a token,
+  // not a takeover context. A prank (or broadcast) AS a target lets the test move
+  // that target's funds as the target itself, and with the delegateCall bool, run
+  // its own code in that target's storage — the token's balances or an owner slot.
+  // A legitimate PoC pranks the attacker or an outside address, never a scope
+  // contract. A prank in setUp() counts too: the gate cannot tell a fixture prank
+  // from one that approves the attacker, so it fails closed.
+  const impersonated = [];
+  for (const p of controlTrace?.pranks ?? []) {
+    const a = lc(p);
+    if (targets.has(a)) { impersonated.push(`${a} (${targets.get(a)})`); targets.delete(a); }
+  }
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
-  if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
-  if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
+  // Not proven. When the test impersonated a target, that is the true reason: say
+  // it, so the agent can repair its PoC.
+  const refuse = (reason) => ({
+    ok: false,
+    reason: impersonated.length
+      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp()`
+      : reason,
+    targets: names,
+  });
+  if (!targets.size) return refuse("the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target");
+  if (!invoked) return refuse("the test never made a successful call into a scope target");
   const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
   const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
   if (losses.length) {
     const [victim, wei] = losses[0];
     return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
   }
-  // Prefer the ground-truth storage read; fall back to the Transfer-log channel
-  // for tokens outside scope (a real external ERC-20 whose balance layout we do
-  // not have, but whose standard event we can still net).
+  // Prefer the ground-truth storage read. Fall back to Transfer logs only for a
+  // token the layout does not cover (a real external ERC-20, or a balance under
+  // a name we don't track). The fallback still requires the balance slot to have
+  // moved in that token — a log on its own is not a drain.
   const storageDrains = balanceDrains(controlTrace, targets, balances);
-  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets);
+  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
-  return { ok: false, reason: "the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)", targets: names };
+  return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }

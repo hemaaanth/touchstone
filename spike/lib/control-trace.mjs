@@ -5,15 +5,29 @@
 // does not decide what counts as harm. Packs read the result (see packs/keys/control.mjs).
 //
 // What we keep:
-// - etches: calls to the cheatcode `etch(address,bytes)` that stayed in the trace, read
-//   from EVERY trace, `Setup` included. A setUp() etch swaps a target's code before the
-//   test body runs, so the harm gate must still exclude the address; the record is not
-//   itself harm. `index` is the out.calls offset the etch applies to.
+// - etches: calls to the cheatcode `etch(address,bytes)`, plus `cloneAccount(source,target)`
+//   recorded as an etch of its target and `mockFunction(callee,target,data)` recorded as an
+//   etch of its callee, read from EVERY trace, `Setup` included, and for
+//   any call kind (a cheatcode declared `view` is reached by STATICCALL). A setUp() etch
+//   swaps a target's code before the test body runs, so the harm gate must still exclude
+//   the address; the record is not itself harm. A plain etch counts only when its call and
+//   every ancestor frame succeeded (code is journaled, a revert undoes it); a cloneAccount
+//   or mockFunction counts always (it can only drop a target). `index` is the out.calls offset the etch
+//   applies to.
 // - writes (from the "Execution" trace only): a real SSTORE (value changed) in a call
 //   that did not revert and outside any contract constructor. A write made under a Safe
 //   `setup` call carries `setup: true`. A setUp write is fixture, not an exploit step.
 //   The storage owner is the address that ran the code: the caller for DELEGATECALL,
 //   the callee for CALL.
+// - pranks: the impersonated msg.sender (first address argument), and for the origin
+//   overloads also the pranked tx.origin (second), of every cheatcode in
+//   the trace that sets msg.sender or tx.origin — the whole vm.prank / vm.startPrank
+//   family (including the two-arg origin and the delegateCall `bool` overloads) and
+//   vm.broadcast / vm.startBroadcast with an explicit address. Recorded for any call kind
+//   and even in a frame that reverted: forge keeps prank state in its inspector, so a
+//   revert does not undo it. A target the test impersonated is no target at all (not a
+//   victim, token or takeover context): the move is the test acting as that target, not
+//   an exploit (see lib/proof.mjs).
 // - calls (from the "Execution" trace only): successful CALL nodes, in order, to see
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
@@ -27,6 +41,44 @@
 import { keccak256, toUtf8Bytes } from "ethers";
 const VM = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
 const ETCH = "0xb4d6c782";
+// vm.cloneAccount(address source, address target) copies source's code (and
+// storage, balance, nonce) onto target. For the harm gate that is an etch of
+// the SECOND argument: target is no longer the scope's compiled code, so it
+// must stop being a scope target, exactly as a plain etch does.
+const CLONE_ACCOUNT = "0x533d61c9";
+// vm.mockFunction(address callee, address target, bytes data) makes a call to
+// callee with matching data run target's code in callee's storage. For the harm
+// gate that is an etch of the FIRST argument: callee no longer runs only the
+// scope's compiled code, so it must stop being a scope target.
+const MOCK_FUNCTION = "0xadf84d21";
+// Cheatcodes that set msg.sender (and sometimes tx.origin) for the following
+// call(s). If a test impersonates a scope target and then moves that target's
+// funds, the "drain" is the test acting as the victim, not an exploit — the harm
+// gate drops such a victim. We derive the 4-byte selectors from the known list of
+// impersonation signatures below rather than hard-coding hex: a new overload is
+// one line, and no enumerated-by-hand selector can be silently missed. The whole
+// prank/startPrank family is covered — the two-arg (sender, origin) and the
+// delegateCall `bool` overloads included — plus vm.broadcast / vm.startBroadcast
+// with an explicit address. The impersonated sender is the FIRST address argument
+// in every one of these, so a single extraction (data.slice(24, 64)) reads them all.
+const selector4 = (sig) => keccak256(toUtf8Bytes(sig)).slice(0, 10);
+const IMPERSONATION_SIGS = [
+  "prank(address)",
+  "prank(address,address)",
+  "prank(address,bool)",
+  "prank(address,address,bool)",
+  "startPrank(address)",
+  "startPrank(address,address)",
+  "startPrank(address,bool)",
+  "startPrank(address,address,bool)",
+  "broadcast(address)",
+  "startBroadcast(address)",
+];
+const IMPERSONATE = new Set(IMPERSONATION_SIGS.map(selector4));
+// The overloads whose SECOND address argument is the pranked tx.origin. A scope
+// contract can never be a real tx.origin, so an origin prank AS a target is the
+// test acting as that target too: record it as well (fail closed).
+const WITH_ORIGIN = new Set(IMPERSONATION_SIGS.filter((s) => s.includes("(address,address")).map(selector4));
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -38,7 +90,7 @@ const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces) {
-  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], calls: [] };
+  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
   const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
@@ -107,13 +159,42 @@ export function extractControlTrace(traces) {
         const entitled = building !== null ? building === context : !execution || authority.includes(caller) || first;
         if (entitled) (held[context] ??= {})[key] = word(change.value);
       }
-      if (t.kind !== "CALL" || !t.success || !ok(i)) return;
-      if (address === VM && selector === ETCH) {
+      if (address === VM) {
+        // A cheatcode is recorded for ANY call kind. A test can declare a cheatcode
+        // `view`; Solidity then reaches the VM by STATICCALL, and forge still runs it.
         const data = String(t.data).slice(10);
-        const target = "0x" + data.slice(24, 64);
-        const length = parseInt(data.slice(128, 192) || "0", 16);
-        out.etches.push({ index: out.calls.length, target, code: "0x" + data.slice(192, 192 + length * 2) });
-      } else if (execution && address !== VM) out.calls.push({ address, caller });
+        // `kept`: the call succeeded and no ancestor frame reverted.
+        const kept = t.success && ok(i);
+        if (selector === ETCH) {
+          // Code is journaled EVM state: a revert undoes an etch. packs/keys/control.mjs
+          // reads `etches` as code that really landed, so a plain etch counts only when kept.
+          if (!kept) return;
+          const target = "0x" + data.slice(24, 64);
+          const length = parseInt(data.slice(128, 192) || "0", 16);
+          out.etches.push({ index: out.calls.length, target, code: "0x" + data.slice(192, 192 + length * 2) });
+        } else if (selector === CLONE_ACCOUNT) {
+          // cloneAccount(source, target): the SECOND word is the target whose code
+          // was replaced. The cloned bytes come from source's live code, not the
+          // calldata, so we record no code — the harm gate reads only `target`.
+          // Recorded even when not kept: it can only drop a target (fail closed),
+          // and the empty code is never a 7702 designator for packs/keys/control.mjs.
+          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(88, 128), code: "0x" });
+        } else if (selector === MOCK_FUNCTION) {
+          // mockFunction(callee, target, data): the FIRST word is the callee whose
+          // code is replaced. No code is recorded, as for cloneAccount. Forge keeps
+          // the mock in its inspector, so a revert does not undo it: always record.
+          out.etches.push({ index: out.calls.length, target: "0x" + data.slice(24, 64), code: "0x" });
+        } else if (IMPERSONATE.has(selector)) {
+          // The impersonated msg.sender is the first address argument. Forge keeps
+          // prank state in its inspector, not in EVM state, so a revert does NOT
+          // undo it: record it whether or not the frame was kept.
+          out.pranks.push("0x" + data.slice(24, 64));
+          if (WITH_ORIGIN.has(selector)) out.pranks.push("0x" + data.slice(88, 128));
+        }
+        return;
+      }
+      if (t.kind !== "CALL" || !t.success || !ok(i)) return;
+      if (execution) out.calls.push({ address, caller });
     });
   }
   out.created = [...created];
