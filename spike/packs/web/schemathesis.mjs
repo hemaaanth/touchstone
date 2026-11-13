@@ -99,6 +99,30 @@ export function parseSchemathesis(report) {
   return [...byPath.values()];
 }
 
+// Why a completed run is NOT a clean pass, or "" when it is one. Each part
+// says only what the report shows:
+//   - "7 of 8 operations errored"  operations.errored > 0
+//   - "1 run error in the report"  the errors list is non-empty but no
+//                                  operation is counted as errored
+//   - "1 of 8 operations tested"   fewer operations were tested than the
+//                                  schema has, and errored does not account
+//                                  for the rest (skipped, or no errored
+//                                  field at all -- a missing count is
+//                                  unknown, never read as 0)
+// The denominator is the largest of total, selected and tested+errored, so a
+// short `selected` never hides an untested operation.
+export function partialReason(report, errored, errorsLen) {
+  const ops = report?.operations ?? {};
+  const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== "" ? Number(v) : 0);
+  const tested = num(ops.tested);
+  const total = Math.max(num(ops.total), num(ops.selected), tested + errored);
+  const parts = [];
+  if (errored > 0) parts.push(`${errored} of ${total} operations errored`);
+  else if (errorsLen > 0) parts.push(`${errorsLen} run error${errorsLen === 1 ? "" : "s"} in the report`);
+  if (tested + errored < total) parts.push(`${tested} of ${total} operations tested`);
+  return parts.join("; ");
+}
+
 // ---- runner
 
 const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
@@ -113,11 +137,12 @@ const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 //     (exit 0 with no failures and no errors; exit 1 with failures or errors).
 //     Any other pair -- exit 0 while failures/errors are present, or exit 1
 //     with neither -- is an inconsistent run we cannot read, so it is a gap.
-//   - a run where some operations errored is NOT a clean pass. The un-run
-//     operations were never exercised, so the absence of a lead on them proves
-//     nothing. Such a run still "ran" and keeps the leads from the operations
-//     that did run, but the coverage row carries a reason ("N of M operations
-//     errored") so it never reads as a clean pass.
+//   - a run where some operations errored, the report lists run errors, or
+//     fewer operations were tested than the schema has, is NOT a clean pass.
+//     The un-run operations were never exercised, so the absence of a lead on
+//     them proves nothing. Such a run still "ran" and keeps the leads from the
+//     operations that did run, but the coverage row carries a reason (see
+//     partialReason) so it never reads as a clean pass.
 // Returns { coverage, leads }.
 export async function scanSchemathesis({
   net,
@@ -178,16 +203,8 @@ export async function scanSchemathesis({
     }
     const leads = parseSchemathesis(report);
     const row = { engine: "schemathesis", status: "ran", code: r.code, timedOut: false, leads: leads.length };
-    if (hasErrors) {
-      // Partial run: some operations errored and were never exercised. Keep the
-      // leads we did get, but flag the row so it never reads as a clean pass.
-      const totalRaw = Number(report?.operations?.total);
-      const testedRaw = Number(report?.operations?.tested);
-      const total = Number.isFinite(totalRaw) && totalRaw > 0
-        ? totalRaw
-        : (Number.isFinite(testedRaw) ? testedRaw : 0) + errored;
-      row.reason = cap(`${errored} of ${total} operations errored; coverage is partial, not a clean pass. ${cap(r.stderr, 80)}`, 220);
-    }
+    const caveat = partialReason(report, errored, errorsLen);
+    if (caveat) row.reason = cap(`${caveat}; coverage is partial, not a clean pass. ${cap(r.stderr, 80)}`, 220);
     return { coverage: [row], leads };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

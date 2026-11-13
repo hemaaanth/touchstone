@@ -135,6 +135,7 @@ test("scanSchemathesis: a clean run (exit 0, no failures) is ran with zero leads
   assert.equal(r.coverage[0].status, "ran");
   assert.equal(r.coverage[0].leads, 0);
   assert.equal(r.leads.length, 0);
+  assert.equal(r.coverage[0].reason, undefined, "a clean run carries no caveat");
 });
 
 test("scanSchemathesis: a partly errored run (exit 1, tested 1, errored 7, no failures) is NOT a clean ran -- it carries a reason and keeps its leads", async () => {
@@ -159,6 +160,38 @@ test("scanSchemathesis: a partly errored run keeps the leads from the operations
   assert.match(r.coverage[0].reason, /7 of 8 operations errored/);
   assert.equal(r.coverage[0].leads, 1);
   assert.ok(r.leads.some((l) => l.path === "/api/block/{height}"));
+});
+
+// A report shaped by hand, for fields the `report()` helper always fills in.
+const rawReport = (operations, { failures = [], errors = [] } = {}) =>
+  JSON.stringify({ complete: true, operations, failures, errors });
+
+test("scanSchemathesis: no errored field and tested < total is NOT a clean pass (1 of 8 operations tested)", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(rawReport({ total: 8, tested: 1 }), 0),
+  });
+  assert.equal(r.coverage[0].status, "ran");
+  assert.match(r.coverage[0].reason, /1 of 8 operations tested/);
+});
+
+test("scanSchemathesis: a skipped operation (tested 7 of 8, errored 0) is NOT a clean pass", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(rawReport({ total: 8, selected: 8, tested: 7, errored: 0, skipped: 1 }), 0),
+  });
+  assert.equal(r.coverage[0].status, "ran");
+  assert.match(r.coverage[0].reason, /7 of 8 operations tested/);
+});
+
+test("scanSchemathesis: an errors-only report (errored 0, one run error) says so, never '0 of 8 operations errored'", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(rawReport({ total: 8, selected: 8, tested: 8, errored: 0 }, { errors: [{ title: "schema load error" }] }), 1),
+  });
+  assert.equal(r.coverage[0].status, "ran");
+  assert.match(r.coverage[0].reason, /1 run error in the report/);
+  assert.doesNotMatch(r.coverage[0].reason, /0 of \d+ operations errored/);
 });
 
 test("scanSchemathesis: a mismatched pair (exit 0 while failures are present) is a gap, never a clean ran", async () => {
