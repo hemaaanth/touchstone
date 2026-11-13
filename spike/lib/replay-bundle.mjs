@@ -17,15 +17,18 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { Mnemonic, wordlists } from "ethers";
+import { pinnedSolc, forgeTest, forgeReplayCommand, forgePrepareCommand, FOUNDRY_IMAGE } from "./sandbox.mjs";
 
-const MAX_FILE = 1_500_000;
-const MAX_TOTAL = 8_000_000;
+const MAX_FILE = 1_500_000;   // per file, checked by stat before any read
+const MAX_TOTAL = 8_000_000;  // bytes across the bundle
+const MAX_FILES = 5_000;      // file-count cap; past it the bundle makes no re-run claim
+const MAX_BUILDINFO = 64 * 1024 * 1024; // the build-info is agent-written; stat before reading
 const SKIP_DIRS = new Set(["node_modules", "out", "cache", "broadcast", "artifacts", "oracle", "coverage", "dist", "target"]);
 // A file that is a key, not a source file that mentions one. Dropped whole.
 const SECRET_CONTENT = [
@@ -34,6 +37,25 @@ const SECRET_CONTENT = [
   /\bgh[pousr]_[A-Za-z0-9]{36,}\b/,
   /\bgithub_pat_[A-Za-z0-9_]{60,}\b/,
 ];
+// A file whose name says it is a secret, re-added after PR 6 removed it as dead
+// code: now that an allow-list of sources ships, a `.key`/keystore/`.env` that
+// sneaks in by name is left out. (Hidden names are already dropped.)
+const SECRET_NAME = /(?:\.(?:key|pem|p12|pfx|keystore|jks|asc|gpg|ovpn|env)$|^UTC--|wallet|password|passwd|secret|credential|mnemonic|\bid_(?:rsa|dsa|ecdsa|ed25519)\b)/i;
+// A JSON web3 keystore (an encrypted key that can be cracked offline).
+const KEYSTORE = /"crypto"\s*:\s*\{[\s\S]*?"ciphertext"/;
+// A file whose whole body is one bare 64-hex value (a raw private key).
+const BARE_HEX = /^\s*(?:0x)?[0-9a-fA-F]{64}\s*$/;
+// The reason a file is left out by name or body, or null.
+function secretFile(rel, raw) {
+  const base = rel.split("/").pop() || "";
+  if (SECRET_NAME.test(base)) return "a secret-shaped name";
+  if (typeof raw === "string") {
+    if (BARE_HEX.test(raw)) return "a bare 64-hex value";
+    if (KEYSTORE.test(raw)) return "a keystore";
+    if (SECRET_CONTENT.some((re) => re.test(raw))) return "a secret body";
+  }
+  return null;
+}
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const RPC_PLACEHOLDER = "${RPC_URL}";
@@ -268,9 +290,6 @@ export class BundleRefused extends Error {
   }
 }
 
-function secretBody(text) {
-  return SECRET_CONTENT.some((re) => re.test(text));
-}
 
 // foundry.toml may name an RPC and an explorer key. Keep the block number;
 // replace every endpoint value so a provider key in the URL cannot leave with
@@ -299,9 +318,14 @@ function scrubFoundryToml(text) {
 // came back as the mark is not code any more, so it is left out.
 const CAP_MARK = /\[REDACTED: text of \d+ characters too long to check\]/;
 export const OVER_CAP = "over 64 KB, so the redactor cannot check it";
+// A shipped file is a source or config text: redact it, and leave it out on a
+// secret name/body or when it is over the redactor's 64 KB single-pass cap (it
+// cannot be masked in one pass). This runs at snapshot time on the allow-list
+// and again at bundle time on an old record's inline files, so both are filtered.
 function forgeFileText(path, raw) {
+  const secret = secretFile(path, raw);
+  if (secret) return { reason: secret };
   const text = path === "foundry.toml" ? scrubFoundryToml(raw) : bundleText(raw, { forge: true });
-  // An old record can hold the mark as its text: that is never code either.
   if (CAP_MARK.test(text)) return { reason: OVER_CAP };
   const shapes = leakShapes(text);
   return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
@@ -410,23 +434,37 @@ function rank(path) {
   return 4;
 }
 
-function keepPath(rel) {
-  const base = rel.split("/").pop();
-  if (!base || base.startsWith(".")) return false;
-  if (base === "foundry.toml" || base === "remappings.txt") return !rel.includes("/");
-  return base.endsWith(".sol");
+// The files a Foundry bundle ships are an ALLOW-list, not a walk of the
+// agent-writable folder: the sources the compiler actually read for this proof
+// (forge writes them to out/build-info/<hash>.json as source_id_to_path), plus
+// foundry.toml and remappings.txt. Data files a test reads through cheatcodes
+// (a .hex, a Safe artifact JSON) are NOT shipped: that would be a deny-list over
+// untrusted content, and a proof that needs one makes no re-run claim instead.
+// If build-info is missing, fall back to every .sol under the workspace (still
+// sources only). Each candidate then passes fileGuard and the redactor.
+function compiledSources(ws) {
+  const dir = join(ws, "out", "build-info");
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { return null; }
+  if (!files.length) return null;
+  // The newest build-info is this proof's compile.
+  const newest = files
+    .map((f) => { try { const st = statSync(join(dir, f)); return { f, at: st.mtimeMs, size: st.size }; } catch { return null; } })
+    .filter(Boolean)
+    .sort((x, y) => y.at - x.at)[0];
+  if (!newest) return null;
+  // The build-info is agent-written: stat its size before any read (M3).
+  if (newest.size > MAX_BUILDINFO) return "too-large";
+  try {
+    const j = JSON.parse(readFileSync(join(dir, newest.f), "utf8"));
+    // Only .sol paths: a forged build-info cannot name a .json to ship (Minor 3).
+    const paths = Object.values(j.source_id_to_path || {}).filter((p) => typeof p === "string" && p.endsWith(".sol"));
+    return paths.length ? [...new Set(paths)] : null;
+  } catch {
+    return null;
+  }
 }
-
-// Walk the workspace for the files a forge test needs. Dependency tests under
-// lib/ are skipped: they are not imported by the proof, and forge-std's own
-// tests ship sample provider keys.
-// Every .sol source and the top foundry.toml / remappings.txt, worst-rank
-// first. A symbolic link, a hidden name, a skipped folder (SKIP_DIRS) and a
-// library's own test/ are not taken; the bundle makes no re-run claim, so a
-// file the walk does not take is not a defect here. Read errors, binary
-// content, the size limits, a masked path, a secret and the cap mark are left
-// out by snapshotForgeReplay and listed under "Left out".
-function collectFiles(root) {
+function allSol(root) {
   const found = [];
   const walk = (dir, parts) => {
     let entries = [];
@@ -439,44 +477,73 @@ function collectFiles(root) {
         walk(join(dir, e.name), [...parts, e.name]);
         continue;
       }
-      if (!e.isFile()) continue;
-      const rel = [...parts, e.name].join("/");
-      if (keepPath(rel)) found.push(rel);
+      if (e.isFile() && e.name.endsWith(".sol")) found.push([...parts, e.name].join("/"));
     }
   };
   walk(root, []);
-  found.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
   return found;
+}
+function collectForgeFiles(ws) {
+  const config = ["foundry.toml", "remappings.txt"].filter((f) => existsSync(join(ws, f)));
+  const compiled = compiledSources(ws);
+  if (compiled === "too-large") {
+    // The compiled-source list cannot be read safely: ship no sources, say why.
+    return { paths: [...config], note: `the build-info is larger than ${Math.round(MAX_BUILDINFO / (1024 * 1024))} MB, so the compiled-source list was not read and the sources are not in this bundle` };
+  }
+  const sources = compiled ?? allSol(ws);
+  const all = [...new Set([...config, ...sources])];
+  all.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+  return { paths: all, note: null };
+}
+
+// The filesystem checks a candidate must pass before it is read, so an
+// untrusted workspace cannot leak a file the allow-list named by mistake:
+// a regular file, not a hard link (nlink 1), inside the workspace after
+// realpath, not hidden, under the per-file size cap. Returns { size } or
+// { reason }. The read never happens for a file that fails.
+function fileGuard(ws, rel) {
+  const base = rel.split("/").pop() || "";
+  if (!base || base.startsWith(".")) return { reason: "a hidden file" };
+  const abs = join(ws, rel);
+  let st;
+  try { st = lstatSync(abs); } catch { return { reason: "a file that could not be read" }; }
+  if (st.isSymbolicLink() || !st.isFile()) return { reason: "not a regular file" };
+  if (st.nlink > 1) return { reason: "a hard link" };
+  let real;
+  try { real = realpathSync(abs); } catch { return { reason: "a file that could not be read" }; }
+  let wsReal;
+  try { wsReal = realpathSync(ws); } catch { wsReal = ws; }
+  if (real !== wsReal && !real.startsWith(wsReal + sep)) return { reason: "outside the workspace" };
+  if (st.size > MAX_FILE) return { reason: "larger than 1.5 MB" };
+  return { size: st.size };
 }
 
 // Snapshot the workspace that just proved a forge finding. Call this before
 // the workspace is deleted. The result is JSON-safe and is stored on the proof.
 export function snapshotForgeReplay(ws, { contract, test } = {}) {
-  const paths = collectFiles(ws);
+  const { paths, note: collectNote } = collectForgeFiles(ws);
   const files = [];
   const omitted = [];
   let total = 0;
   let capped = 0;
-  for (const rel of paths) {
+  // Past the file-count cap the bundle cannot be complete, so it makes no claim.
+  const tooMany = paths.length > MAX_FILES;
+  for (const rel of (tooMany ? [] : paths)) {
     if (pathMasked(rel)) {
       omitted.push({ path: MASKED_PATH, reason: "its path holds a value the redactor masks" });
       continue;
     }
-    let buf;
-    try {
-      buf = readFileSync(join(ws, rel));
-    } catch {
-      omitted.push({ path: rel, reason: "a file that could not be read" });
+    const g = fileGuard(ws, rel);
+    if (g.reason) {
+      omitted.push({ path: rel, reason: g.reason });
       continue;
     }
+    let buf;
+    try { buf = readFileSync(join(ws, rel)); } catch { omitted.push({ path: rel, reason: "a file that could not be read" }); continue; }
     const lib = vendoredFile(rel, buf);
     if (lib) {
       total += buf.length;
       files.push({ path: rel, vendored: lib });
-      continue;
-    }
-    if (buf.length > MAX_FILE) {
-      omitted.push({ path: rel, reason: "larger than 1.5 MB" });
       continue;
     }
     if (buf.includes(0)) {
@@ -484,10 +551,6 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
       continue;
     }
     const raw = buf.toString("utf8");
-    if (secretBody(raw)) {
-      omitted.push({ path: rel, reason: "secret file" });
-      continue;
-    }
     if (total + raw.length > MAX_TOTAL) {
       capped++;
       continue;
@@ -497,6 +560,8 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
     else files.push({ path: rel, text: out.text });
   }
+  if (collectNote) omitted.push({ path: "", reason: collectNote });
+  if (tooMany) omitted.push({ path: "", reason: `the workspace has ${paths.length} files, over the ${MAX_FILES} cap, so the bundle is not complete` });
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
   let toml = "";
   try {
@@ -515,6 +580,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     kind: "forge",
     contract: testIdent(contract),
     test: testIdent(test),
+    solc: pinnedSolc(ws),
     fork,
     files,
     omitted,
@@ -817,21 +883,20 @@ function vendoredNote(libs) {
 // claim: closing the "claims a re-run it cannot do" class needs every
 // workspace file, which is a later task. The README says what the folder is
 // and what it is not.
-function forgeReadme({ title, replay, fork, libs = [] }) {
+function forgeReadme({ title, replay, fork, libs = [], haveCommand }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   const forkNote = fork?.forked
-    ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder.`
+    ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder, and the offline re-run cannot fork, so it is not re-run-checked.`
     : `The proof did not fork a chain; \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.`;
+  const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract }) : "";
   return `# Proof source for this finding
 
 **${title || "Finding"}** · Foundry
 
-This folder holds the proof's source files for reading: the proof test, the scope sources, and the Foundry config. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
+This folder holds the proof's source files: the compiled sources the proof read, the proof test, and the Foundry config. A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked. \`proof.json\` is the recorded verdict, and \`SHA256SUMS\` is the hash of every file here. ${forkNote}
 
-Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.${vendoredNote(libs)} No provider key and no bearer token from the run is in this folder.
-
-This bundle has no re-run command yet: it is the proof's source to read, not a folder you run. Touchstone proved the finding by its own replay when it was recorded (see line 1 and \`proof.json\`).
-${omittedList(replay?.omitted)}`;
+A library's own test suite under \`lib/\` is not included: the proof does not import it, and some ship sample provider keys.${vendoredNote(libs)} No provider key and no bearer token from the run is in this folder.
+${section}${omittedList(replay?.omitted)}`;
 }
 
 // An http proof against a pack lab can run again: the lab image is built
@@ -912,14 +977,16 @@ The lab networks have no internet route. \`rerun.mjs\` writes the new transcript
 `;
 }
 
-function pushFile(entries, name, text, { own = false } = {}) {
+function pushFile(entries, name, text, { own = false, data = false } = {}) {
   const path = zipPath(name);
   if (!path || entries.some((e) => e.name === path)) return;
   if (!own) {
     const shapes = leakShapes(text);
     if (shapes.length) throw new BundleRefused(`No replay bundle: ${path} holds ${shapes.join(" and ")} that the redactor cannot mask, so the zip would leak it.`);
   }
-  entries.push({ name: path, data: Buffer.from(String(text), "utf8"), own });
+  // `dataFile` marks a shipped artifact (bytecode/ABI): leak-checked, but not
+  // window-counted for unjudged values, so its hex does not flood the list.
+  entries.push({ name: path, data: Buffer.from(String(text), "utf8"), own, dataFile: data });
 }
 
 // The README goes first, with the list of values the bundle could not judge.
@@ -928,7 +995,7 @@ function pushFile(entries, name, text, { own = false } = {}) {
 function finish(entries, head) {
   const counts = {};
   unjudgedCounts(head, counts);
-  for (const e of entries) if (!e.own) unjudgedCounts(e.data.toString("utf8"), counts);
+  for (const e of entries) if (!e.own && !e.dataFile) unjudgedCounts(e.data.toString("utf8"), counts);
   const unjudged = unjudgedList(counts);
   const section = unjudged.length
     ? `\n## ${UNJUDGED_NOTE}\n\nThe redactor could not judge these values. Each one may be a secret, or it may be evidence (a transaction hash, a storage slot, an id). They are counted here, not shown:\n\n${unjudged.map((u) => `- ${u.text}`).join("\n")}\n`
@@ -969,17 +1036,49 @@ export function provenDate({ finding, recorded } = {}) {
 // Line 1 of a Foundry bundle README. bundleRefusal lets only a proven finding
 // reach here, so it states the proof plainly, with the date and harm kind from
 // the record, and says the folder is source to read, not a folder to re-run.
-function forgeLine1({ finding, recorded, harm }) {
+function forgeLine1({ finding, recorded, harm, haveCommand }) {
   const date = provenDate({ finding, recorded });
   const noun = harmNoun(harm);
-  return `PROVEN: Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}. This folder holds the proof's source files for reading; it has no re-run command yet.\n\n`;
+  const head = `Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}`;
+  // An automatic re-run check does not ship yet, so the bundle makes no re-run
+  // claim: it carries the exact command for you to run by hand.
+  if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked (an automatic re-run check does not ship yet); the re-run command is in this README for you to run.\n\n`;
+  return `PROVEN: ${head}. This folder holds the proof's source files for reading; it has no re-run command.\n\n`;
 }
 
-function forgeBundle({ finding, recorded, replay, proof }) {
-  const title = bundleText(finding?.title || "Finding");
-  // Records are redacted when written; the bundle redacts and checks again, so
-  // a record written by an older scrubber gets today's rules. A vendored
-  // library file is shipped as the engine's bytes, after a hash check.
+// The README's re-run section: the exact offline command, a prepare step for a
+// fresh machine, and whether Touchstone's own re-run of these files passed.
+function forgeReplaySection({ solc, matchContract }) {
+  const command = forgeReplayCommand({ matchContract, solc });
+  const prepare = forgePrepareCommand({ solc });
+  const prep = prepare ? `\n## Prepare (once, online)\n\nOn a fresh machine, create and warm the pinned image's solc cache:\n\n\`\`\`sh\n${prepare}\n\`\`\`\n` : "";
+  return `\n## Re-run (offline)\n\nTouchstone does not run an automatic re-run check yet, so this bundle is not re-run-checked. Run the proof yourself from this folder:\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). A pass means the named test compiled and passed from these files alone.\n${prep}`;
+}
+
+// The final text files a bundle ships (vendored resolved, redacted), including
+// the proof test source written as test/AgentPoc.t.sol. Both the verifier and
+// the zip compute the claim hash over exactly this set.
+function shippedFiles(tree) {
+  const out = tree.files.filter((f) => typeof f.text === "string").map((f) => ({ path: f.path, text: f.text }));
+  if (tree.testSource && !tree.files.some((f) => f.path.startsWith("test/"))) out.push({ path: "test/AgentPoc.t.sol", text: tree.testSource });
+  return out;
+}
+// A hash over the checked file set: each path and the hash of its bytes, sorted
+// by path. The re-run claim is bound to this, so a pass stored for one set of
+// files is not shown for a different set (a lost store file, a changed file).
+function treeHash(files) {
+  const h = createHash("sha256");
+  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    h.update(f.path).update("\0").update(createHash("sha256").update(String(f.text)).digest("hex")).update("\n");
+  }
+  return h.digest("hex");
+}
+
+// The redacted file tree a Foundry bundle ships: the shipped files (vendored
+// resolved to the engine's bytes, every other text re-redacted), the libraries
+// used, what was left out, the proof test source, and the fork. Both the zip
+// and the re-run verifier build from this, so they ship the same bytes.
+function forgeFileTree({ finding, recorded, replay, proof }) {
   const omitted = [...(Array.isArray(replay?.omitted) ? replay.omitted : [])].map((o) => (o?.path && pathMasked(o.path) ? { ...o, path: MASKED_PATH } : o));
   const files = [];
   const libs = [];
@@ -1008,7 +1107,7 @@ function forgeBundle({ finding, recorded, replay, proof }) {
     }
     const out = forgeFileText(f.path, raw);
     if (out.reason) omitted.push({ path: f.path, reason: out.reason });
-    else files.push({ path: f.path, text: out.text });
+    else files.push({ path: f.path, text: out.text, ...(out.data || f.data ? { data: true } : {}) });
   }
   let testSource = proof?.testSource || finding?.proof?.testSource || null;
   if (testSource && !files.some((f) => f.path.startsWith("test/"))) {
@@ -1016,11 +1115,26 @@ function forgeBundle({ finding, recorded, replay, proof }) {
     if (out.reason) omitted.push({ path: "test/AgentPoc.t.sol", reason: out.reason });
     testSource = out.text ?? null;
   }
-  replay = replay && { ...replay, omitted };
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
+  const haveProject = files.some((f) => f.path === "foundry.toml") && (files.some((f) => f.path.startsWith("test/")) || Boolean(testSource));
+  return { files, libs, omitted, testSource, fork, haveProject };
+}
+
+function forgeBundle({ finding, recorded, replay, proof }) {
+  const title = bundleText(finding?.title || "Finding");
+  const tree = forgeFileTree({ finding, recorded, replay, proof });
+  const { files, libs, testSource, fork, haveProject } = tree;
+  const omitted = tree.omitted;
+  replay = replay && { ...replay, omitted };
   const harm = proof?.harm ?? null;
+  // The re-run verdict was recorded once (record.mjs), never in this request.
+  // The re-run command is offered for a proof that can run offline: it needs
+  // foundry.toml and a test, and must not fork a chain (an offline re-run
+  // cannot fork). The bundle makes no automatic re-run claim (that check does
+  // not ship yet); the reader runs the command by hand.
+  const haveCommand = haveProject && !fork.forked;
   const readme = files.length
-    ? forgeReadme({ title, replay, fork, libs })
+    ? forgeReadme({ title, replay, fork, libs, haveCommand })
     : `# Proof source for this finding
 
 **${title}** · Foundry
@@ -1034,11 +1148,67 @@ ${omittedList(omitted)}`;
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   // A vendored file is the public library as the engine ships it: not
   // checked for leaks and not counted, like the engine's own files.
-  for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true });
+  for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true, data: f.data === true });
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   // The hashes of every file the bundle ships, so a reader can check the folder.
   if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
-  return finish(entries, forgeLine1({ finding, recorded, harm }) + readme);
+  return finish(entries, forgeLine1({ finding, recorded, harm, haveCommand }) + readme);
+}
+
+// Re-run the Foundry proof from the bundle's own files, offline, and say
+// whether it passed. This is the ONLY authority for the "re-run checked" claim:
+// a static rule over which files a proof reads could not close the class (three
+// review rounds). record.mjs calls this once when the finding is recorded, with
+// Docker available and the workspace still warm, and stores the verdict on the
+// replay; the download request never runs Docker. `run` is injected for tests.
+// Returns { checked, pass, command, prepare, image, matchContract, solc, ms?, reason? }.
+export async function verifyForgeReplay({ replay, proof, finding, recorded } = {}, { run } = {}) {
+  const matchContract = replay?.contract || null;
+  const solc = replay?.solc ?? null;
+  const base = {
+    checked: true,
+    command: forgeReplayCommand({ matchContract, solc }),
+    prepare: forgePrepareCommand({ solc }),
+    image: FOUNDRY_IMAGE,
+    matchContract,
+    solc,
+  };
+  if (replay?.fork?.forked) return { ...base, pass: false, reason: "the proof forked a chain, which the offline re-run cannot" };
+  let tree;
+  try {
+    tree = forgeFileTree({ finding: finding ?? {}, recorded: recorded ?? { replay, proof }, replay, proof });
+  } catch (err) {
+    return { ...base, pass: false, reason: `the bundle could not be built (${String(err?.message || err).slice(0, 80)})` };
+  }
+  if (!tree.haveProject) return { ...base, pass: false, reason: "the bundle has no foundry.toml and proof test" };
+  const sf = shippedFiles(tree);
+  const tree_ = treeHash(sf);
+  const dir = mkdtempSync(join(tmpdir(), "replay-verify-"));
+  try {
+    for (const f of sf) {
+      const abs = join(dir, f.path);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, f.text);
+    }
+    const runner = run ?? forgeTest;
+    const t0 = Date.now();
+    const r = await runner(dir, { matchContract });
+    const ms = Date.now() - t0;
+    const rerunPass = r?.passed === true && r?.failed !== true;
+    const recordedPass = proof?.pass !== false;
+    const pass = rerunPass && recordedPass;
+    // Docker (or forge) could not run at all: that is "could not check", not a
+    // failing proof. The claim still needs a pass, so there is none either way.
+    const couldNotRun = !r?.passed && !r?.failed && (r?.code === "ENOENT" || /docker: .*not found|Cannot connect to the Docker daemon|command not found|executable file not found/i.test(String(r?.output ?? "")));
+    const reason = pass ? undefined
+      : couldNotRun ? "the check could not run (Docker is not available)"
+      : r?.timedOut ? "the re-run timed out"
+      : rerunPass ? "the recorded proof is not a pass"
+      : "the proof test did not pass from the bundle folder";
+    return { ...base, pass, ms, tree: tree_, ...(reason ? { reason } : {}) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function httpBundle({ finding, recorded, proof }) {

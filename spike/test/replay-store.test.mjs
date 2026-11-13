@@ -29,9 +29,12 @@ test("proveFindings stores the replay files under replay/ and the proof keeps th
   writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault { function withdraw() external {} }\n");
   writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest { function testDrain() public {} }\n");
   const events = [{ ev: "run_poc-done", passed: true, contract: "PocTest" }];
+  // proveFindings stores the files and the pointer only; no re-run verdict is
+  // written on a record (the automatic re-run check does not ship yet).
   const [f] = await proveFindings(ws, [{ n: 1, title: "drain", severity: "high", poc: "PocTest", source: "contract PocTest {}" }], events);
   assert.equal(f.pocProved, true);
   const replay = f.proof.replay;
+  assert.equal(replay.rerun, undefined);
   assert.equal(replay.files, undefined);
   assert.equal(replay.version, 3);
   assert.deepEqual([...replay.paths].sort(), ["foundry.toml", "src/Vault.sol", "test/AgentPoc.t.sol"]);
@@ -85,3 +88,4 @@ test("pruneReplayStore removes the replay files and blobs no record names, and n
     rmSync(dir, { recursive: true, force: true });
   }
 });
+

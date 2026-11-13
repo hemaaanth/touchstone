@@ -58,6 +58,10 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
         if (delta) {
           let replay = null;
           try {
+            // Snapshot the proof's sources and store them. The offline re-run
+            // check (verifyForgeReplay) is NOT run here: it must not delay
+            // recording. recordReplayReruns runs it after the record is written
+            // and patches rerun onto the replay (see agent-run.mjs / runs.mjs).
             replay = storeReplayFiles(snapshotForgeReplay(ws, { contract: f.poc, test: delta.test }));
             if (replay?.filesLost) log(`replay snapshot for ${f.poc}: ${replay.filesLost}`);
           } catch (err) {
