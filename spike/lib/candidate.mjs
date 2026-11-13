@@ -60,8 +60,12 @@ const SHAPES = [
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, // a GitHub token
   /(?<keep>:\/\/[^/\s:@]{1,128}:)[^@\s/]{1,256}(?=@)/g, // user:password@ in a URL
 ];
-// A run of 12 or more lowercase words. Only its BIP-39 stretches are redacted.
-const WORD_RUN = /(?<![A-Za-z])[a-z]{3,8}(?:[ \t]+[a-z]{3,8}){11,}(?![A-Za-z])/g;
+// A run of 12 or more words in any case. Words are split by spaces, line
+// breaks or commas, and may carry a list number ("2." or "2)"). Only its
+// BIP-39 stretches are redacted.
+const WORD_SEP = String.raw`[\s,]+(?:\d{1,2}[.)][ \t]*)?`;
+const WORD_RUN = new RegExp(String.raw`(?<![A-Za-z])[A-Za-z]{3,8}(?:${WORD_SEP}[A-Za-z]{3,8}){11,}(?![A-Za-z])`, "g");
+const WORD_SPLIT = new RegExp(`(${WORD_SEP})`);
 
 const fp = (v) => `[REDACTED sha256:${redactSecret(v).sha256.slice(0, 12)}]`;
 const globalOf = (re) => (re.global ? re : new RegExp(re.source, `${re.flags}g`));
@@ -76,11 +80,11 @@ function redact(m, ...rest) {
 
 // A seed phrase: 12 or more words in a row, each from the BIP-39 list.
 function redactSeed(run) {
-  const parts = run.split(/([ \t]+)/);
+  const parts = run.split(WORD_SPLIT);
   let out = "";
   for (let i = 0; i < parts.length; ) {
     let j = i;
-    while (j < parts.length && BIP39.has(parts[j])) j += 2;
+    while (j < parts.length && BIP39.has(parts[j].toLowerCase())) j += 2;
     if ((j - i) / 2 >= 12) {
       out += fp(parts.slice(i, j - 1).join("")) + (parts[j - 1] ?? "");
       i = j;
@@ -303,7 +307,8 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     n, pack, poc: recordPoc, severity, rootCause, evidenceHash,
     title: line(own ? own.title : args.title),
     explanation: line(explanation),
-    cites: cites.map(line),
+    // Scrubbed as one text, so a seed split over several cites is caught too.
+    cites: line(cites.join("\n")).split("\n"),
     evidence: scrubValue(scrub(attempt.evidence)),
   });
   state.candidates.push(candidate);

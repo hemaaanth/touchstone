@@ -211,24 +211,41 @@ const SHAPED = {
   k8sApiKey: [K8S, V.k8sKey, "stringData:"],
 };
 
-for (const [shape, [line, secret, kept]] of Object.entries(SHAPED)) {
+// Delta review Major A, part 2: a seed phrase that is not all lowercase on
+// spaces. The secret is every word in its written form; the fourth item is
+// the cite list when the default (each line of the input) does not fit.
+const cap = (w) => w[0].toUpperCase() + w.slice(1);
+const seedShape = (words, sep, label = "phrase: ") => [label + words.join(sep), words, label.trim()];
+Object.assign(SHAPED, {
+  seedTitle: seedShape(SEED_WORDS.map(cap), " "),
+  seedUpper: seedShape(SEED_WORDS.map((w) => w.toUpperCase()), " "),
+  seedMixed: seedShape(SEED_WORDS.map((w, i) => (i % 2 ? w.toUpperCase() : w)), " "),
+  seedCapFirst: seedShape([cap(SEED_WORDS[0]), ...SEED_WORDS.slice(1)], " ", ""),
+  seedComma: seedShape(SEED_WORDS, ", "),
+  seedPerLine: [...seedShape(SEED_WORDS, "\n", "the words are:\n"), ["the words are:"]],
+  seedNumbered: ["the words are:\n" + SEED_WORDS.map((w, i) => `${i + 1}. ${w}`).join("\n"), SEED_WORDS, "the words are:", ["the words are:"]],
+  // Two words a line, all six lines cited: the cites together hold the seed.
+  seedAcrossCites: [SEED_WORDS.map((w, i) => w + (i % 2 ? "\n" : " ")).join("").trim(), SEED_WORDS, "It printed"],
+});
+
+for (const [shape, [line, secret, kept, cited]] of Object.entries(SHAPED)) {
   test(`a secret shape is scrubbed from the write-up, cites and evidence: ${shape}`, async () => {
     const state = fresh();
     const r = await checkCandidate({
       pack: "web", state,
       lookup: () => ({ evidence: { body: `response: ${line}`, list: [line] }, text: `1. GET / -> 200 ${line}` }),
-      args: args(shape, { title: `Leak: ${line}`, evidence_lines: line.split("\n"), explanation: `It printed ${line}.\nFix: stop.` }),
+      args: args(shape, { title: `Leak: ${line}`, evidence_lines: cited ?? line.split("\n"), explanation: `It printed ${line}.\nFix: stop.` }),
     });
     assert.ok(r.candidate, `${shape}: recorded`);
     const json = JSON.stringify(r.candidate);
-    assert.ok(!json.includes(secret), `${shape}: the secret is gone`);
+    for (const part of [secret].flat()) assert.ok(!json.includes(part), `${shape}: the secret is gone`);
     assert.match(json, /REDACTED sha256:/, `${shape}: a fingerprint is left`);
     assert.ok(r.candidate.explanation.includes(kept), `${shape}: the text around the secret stays`);
     assert.equal(scrubText(r.candidate.explanation), r.candidate.explanation, `${shape}: a second scrub changes nothing`);
     const secrets = shape.startsWith("k8s") ? 2 : 1;
     assert.equal(r.candidate.explanation.match(/REDACTED/g).length, secrets, `${shape}: one fingerprint per secret`);
     const ev = events().filter((e) => e.ev === "candidate-submitted").at(-1);
-    assert.ok(!JSON.stringify(ev).includes(secret), `${shape}: the event has no secret`);
+    for (const part of [secret].flat()) assert.ok(!JSON.stringify(ev).includes(part), `${shape}: the event has no secret`);
   });
 }
 
@@ -248,6 +265,7 @@ test("no scrub regex is slow on a 1 MB line", () => {
     fill("-eyJ"), fill("eyJabcdefghij."), fill("-----BEGIN RSA PRIVATE KEY-----"), fill("sk-"),
     fill("abandon "), fill("abandon "), fill("abc ").slice(0, MB - 1) + "Z", fill("0123456789abcdef"), fill("0x"),
     fill("a=b&"), fill("PASSWORD="), fill("password: "), fill('"password":"'), fill('\\"token\\": '), fill("apiKey:"),
+    fill("Abandon "), fill("ABANDON, "), fill("abandon\n"), fill("1. abandon\n"), fill("1) "), fill("Abcdefghi "),
   ];
   for (const line of lines) {
     const t0 = performance.now();
