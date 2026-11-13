@@ -143,6 +143,20 @@ test('Delta 3 Minor 1: an MX-only wildcard with field-less controls gives a gap 
   assert.ok(gap(scan, { wildcard: 'ratio', zones: 'test' }), 'ratio gap lead names the zone');
 });
 
+test('Delta 3 Minor 2: the ratio guard trips at 25% answers and not at 15% (WILDCARD_RATIO is 20%)', async () => {
+  const zone = [...new Set(NAMES)].filter(d => d.endsWith('.test') && d !== 'tidekeep.test');
+  const answering = share => Object.fromEntries(zone.slice(0, Math.ceil(zone.length * share)).map((d, i) => [d, { dns_a: ['203.0.' + (i >> 8) + '.' + (i & 255)] }]));
+  // 25%: above the ratio, so the zone is a wildcard and nothing is confirmed.
+  const high = await phishingLeads(snap({ rows: answering(0.25) }));
+  assert.equal(confirmed(high).length, 0, '25% answers is a wildcard');
+  assert.ok(gap(high, { wildcard: 'ratio', zones: 'test' }));
+  // 15%: below the ratio, so with quiet controls every answering name is confirmed.
+  const low = answering(0.15);
+  const scan = await phishingLeads(snap({ rows: low }));
+  assert.equal(scan.leads.some(l => l.where?.wildcard === 'ratio'), false, '15% answers is not a wildcard');
+  assert.equal(confirmed(scan).length, Object.keys(low).length);
+});
+
 test('Minor 5: a control that answers !ServFail is unknown, not quiet', async () => {
   const servfail = ctl('test', { dns_ns: ['!ServFail'], dns_a: ['!ServFail'] }, 2);
   const scan = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('test', {}, 1), servfail, ...ctl3('com')] }));
