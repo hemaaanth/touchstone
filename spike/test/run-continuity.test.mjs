@@ -1566,6 +1566,66 @@ test("A6: when the new workspace cannot take the pins, the follow-up does not st
   });
 });
 
+// A restore that failed before it wrote the pins. The workspace has no sources. The
+// next message must not use it as it is: the server puts the sources back first.
+async function failsBeforePins(name, breakConfig, repairConfig) {
+  const url = `https://github.com/acme/${name}`;
+  const where = `vendor/acme__${name}`;
+  const first = gitCommit(path.join(GIT_REMOTE, "acme", `${name}.git`), { "src/Lib.ts": "export const v = 1\n" });
+  const run = await fetchedAt(url, where, first);
+  rmSync(run.ws, { recursive: true, force: true });
+  let ws = null;
+  let good = null;
+  afterBuild = (built) => {
+    ws = built;
+    made.push(built);
+    good = readFileSync(path.join(built, ".touchstone.json"), "utf8");
+    breakConfig(path.join(built, ".touchstone.json"));
+  };
+  let before = spawns.length;
+  try {
+    steerRun(run.id, "Look again.");
+    const r = await settle(run.id, 1);
+    assert.equal(spawns.length, before, "no worker started");
+    assert.match(r.events.findLast((e) => e.ev === "reply-error").error, /could not be told which code this run read before/);
+  } finally {
+    afterBuild = null;
+  }
+  assert.equal(kept(run.id).ws, ws, "the new workspace is the run's workspace now");
+  assert.ok(!existsSync(path.join(ws, where)), "and it has no sources");
+  assert.equal(kept(run.id).restoring, true, "the record says the sources are not back");
+  // The same fault is still there: the next message starts no worker and says why.
+  steerRun(run.id, "Look again.");
+  let r = await settle(run.id, 2);
+  assert.equal(spawns.length, before, "no worker in a workspace without its sources");
+  assert.match(r.events.findLast((e) => e.ev === "reply-error").error, /^The fetched sources of this run's workspace could not be put back: .* So this follow-up did not start\. Send the message again to retry\.$/);
+  assert.equal(kept(run.id).restoring, true);
+  // The fault is gone: the next message puts the sources back first, and says so.
+  repairConfig(path.join(ws, ".touchstone.json"), good);
+  scripts.push({ act: (call) => (call.code = readFileSync(path.join(call.args[4], where, "src", "Lib.ts"), "utf8")), events: [done] });
+  before = spawns.length;
+  steerRun(run.id, "Look again.");
+  r = await settle(run.id, 3);
+  const call = spawns.at(-1);
+  assert.equal(spawns.length, before + 1);
+  assert.equal(call.args[4], ws);
+  assert.equal(call.code, "export const v = 1\n", "the worker finds the source, at its commit");
+  const told = r.events.findLast((e) => e.ev === "workspace");
+  assert.equal(told.state, "kept");
+  assert.ok(told.message.includes(`${url} (commit ${first.slice(0, 12)}, in ${where})`), told.message);
+  assert.ok(call.env.WORKSPACE_NOTE.includes(told.message));
+  assert.equal(kept(run.id).restoring, undefined);
+}
+
+test("A6: a restore that fails because the new workspace's config cannot be read is not forgotten: the next message puts the sources back first", async () => {
+  await withGit(() => failsBeforePins("torncfg", (file) => writeFileSync(file, '{"links":'), (file, good) => writeFileSync(file, good)));
+});
+
+test("A6: a restore that fails because the pins cannot be written is not forgotten: the next message puts the sources back first", async () => {
+  // The config can be read but not written, as on a full disk.
+  await withGit(() => failsBeforePins("nowrite", (file) => chmodSync(file, 0o400), (file) => chmodSync(file, 0o600)));
+});
+
 test("A6: a joined run gets the restored code in the run's tree and in each module that reads code", async () => {
   await withGit(async () => {
     const url = "https://github.com/acme/joined";
