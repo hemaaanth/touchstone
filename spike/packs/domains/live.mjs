@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot, sha256 } from '../../lib/proof-evidence.mjs';
-import { IMAGE, ensureImage } from './checks.mjs';
+import { IMAGE, ensureImage, missingImage } from './checks.mjs';
 import { assertInternal } from './labctl.mjs';
 
 const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec';
@@ -20,7 +20,6 @@ const SUBFINDER = 'projectdiscovery/subfinder:v2.6.8@sha256:bf8f25e6dfb8806afa91
 export const KATANA = 'projectdiscovery/katana:v1.2.2@sha256:5dc4db5bea876732f2e393a460c2145de1e7385c1884b5d9129beb34acd4e45b';
 // jsluice has no official image. We build it from one pinned commit. See ../surface/jsluice/Dockerfile.
 export const JSLUICE = 'touchstone-jsluice:0ddfab1';
-const JSLUICE_DIR = fileURLToPath(new URL('../surface/jsluice/', import.meta.url));
 const TEMPLATE = fileURLToPath(new URL('./templates/github-takeover.yaml', import.meta.url));
 // A short list of names that real projects use. subfinder adds the names that public sources know.
 export const WORDLIST = ['www', 'app', 'api', 'cdn', 'docs', 'staging', 'stage', 'dev', 'test', 'beta', 'old', 'static', 'assets', 'blog', 'status', 'admin', 'portal', 'rpc', 'wallet', 'bridge', 'swap', 'claim', 'airdrop', 'mint', 'stake', 'dashboard', 'mail', 'ns'];
@@ -172,16 +171,13 @@ export function parseJsluiceSecrets(stdout, scripts) {
   }
   return [...out.values()].sort((a, b) => (a.source + a.kind + a.fingerprint) < (b.source + b.kind + b.fingerprint) ? -1 : 1).slice(0, MAX_CRAWL);
 }
-// Build the jsluice image when it is missing. This builds our own Dockerfile. It runs no jsluice code.
+// Check that the jsluice image is there. A run never builds it: setup does.
 // Returns null when the image is ready, or the reason it is not.
 let jsluiceReady;
 export function ensureJsluice(exec = execFileSync) {
   if (jsluiceReady && exec === execFileSync) return null;
   try { exec('docker', ['image', 'inspect', JSLUICE], { stdio: 'ignore' }); }
-  catch {
-    try { exec('docker', ['build', '-t', JSLUICE, JSLUICE_DIR], { stdio: 'ignore', timeout: 600000 }); }
-    catch (e) { return 'Could not build the image ' + JSLUICE + ' from ' + JSLUICE_DIR + '. ' + String(e.message ?? e).slice(-200); }
-  }
+  catch { return missingImage(JSLUICE); }
   if (exec === execFileSync) jsluiceReady = true;
   return null;
 }
