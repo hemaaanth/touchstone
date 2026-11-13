@@ -701,16 +701,31 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = null, balances = null } = {}) {
   const { targets, invoked, net } = scanTargets(traces, scope);
   for (const e of controlTrace?.etches ?? []) targets.delete(lc(e.target));
+  // A target the test impersonated is no target at all: not a victim, not a token,
+  // not a takeover context. A prank (or broadcast) AS a target lets the test move
+  // that target's funds as the target itself, and with the delegateCall bool, run
+  // its own code in that target's storage — the token's balances or an owner slot.
+  // A legitimate PoC pranks the attacker or an outside address, never a scope
+  // contract. A prank in setUp() counts too: the gate cannot tell a fixture prank
+  // from one that approves the attacker, so it fails closed.
+  const impersonated = [];
+  for (const p of controlTrace?.pranks ?? []) {
+    const a = lc(p);
+    if (targets.has(a)) { impersonated.push(`${a} (${targets.get(a)})`); targets.delete(a); }
+  }
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
-  if (!targets.size) return { ok: false, reason: "the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target", targets: names };
-  if (!invoked) return { ok: false, reason: "the test never made a successful call into a scope target", targets: names };
-  // A target the test pranked AS cannot be a drain victim: the move is the test
-  // impersonating that target, not an exploit (vm.prank / vm.startPrank). A
-  // legitimate PoC pranks the attacker or an EOA, never the scope victim, so this
-  // drops only forged drains. Control takeovers are unaffected — a takeover's
-  // victim is the contract whose slot changed, not the pranked sender.
-  const pranked = new Set((controlTrace?.pranks ?? []).map(lc));
-  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n && !pranked.has(a)).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  // Not proven. When the test impersonated a target, that is the true reason: say
+  // it, so the agent can repair its PoC.
+  const refuse = (reason) => ({
+    ok: false,
+    reason: impersonated.length
+      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp()`
+      : reason,
+    targets: names,
+  });
+  if (!targets.size) return refuse("the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target");
+  if (!invoked) return refuse("the test never made a successful call into a scope target");
+  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
   const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
   if (losses.length) {
     const [victim, wei] = losses[0];
@@ -719,15 +734,13 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   // Prefer the ground-truth storage read. Fall back to Transfer logs only for a
   // token the layout does not cover (a real external ERC-20, or a balance under
   // a name we don't track). The fallback still requires the balance slot to have
-  // moved in that token — a log on its own is not a drain. A target pranked AS is
-  // dropped here too, for the same reason it is dropped from the ETH losses.
-  const noPrank = (ds) => ds.filter((d) => !pranked.has(lc(d.victim)));
-  const storageDrains = noPrank(balanceDrains(controlTrace, targets, balances));
-  const drains = storageDrains.length ? storageDrains : noPrank(tokenDrains(traces, targets, controlTrace, balances));
+  // moved in that token — a log on its own is not a drain.
+  const storageDrains = balanceDrains(controlTrace, targets, balances);
+  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
-  return { ok: false, reason: "the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)", targets: names };
+  return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }

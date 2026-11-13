@@ -396,6 +396,10 @@ test("harm gate: a Transfer log from a scope token the test cloned over is not a
 // the drain-victim set. A real PoC pranks the attacker or an EOA, never the
 // victim, so a genuine drain while pranking the attacker is still proven.
 
+// The refusal names the impersonated target, so the agent can repair its PoC
+// (review 2, m1). It is the true reason: VAULT is dropped as a target.
+const impersonatedVault = new RegExp(`the test impersonated scope target ${VAULT.toLowerCase()} \\(\\w+\\).*cannot be the victim`);
+
 const prankNode = (who, selector = "0xca669fa7") => node(0, {
   kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST,
   data: selector + word(who).slice(2),
@@ -409,7 +413,7 @@ test("harm gate: an ETH loss where the test pranks AS the victim is not proven (
   )];
   const h = verdict(traces);
   assert.equal(h.ok, false);
-  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+  assert.match(h.reason, impersonatedVault);
 });
 
 test("harm gate: a token drain where the test pranks AS the victim is not proven (M4)", () => {
@@ -422,7 +426,7 @@ test("harm gate: a token drain where the test pranks AS the victim is not proven
   ] }]];
   const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
   assert.equal(h.ok, false);
-  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+  assert.match(h.reason, impersonatedVault);
 });
 
 test("harm gate: a token drain while pranking AS the attacker is still proven (M4 guard)", () => {
@@ -470,7 +474,7 @@ for (const sig of IMPERSONATION_SIGS) {
     ] }]];
     const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
     assert.equal(h.ok, false, `${sig} impersonation must not be a proof`);
-    assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+    assert.match(h.reason, impersonatedVault);
   });
 }
 
@@ -869,6 +873,55 @@ test("forge: a prank AS the victim armed in a reverted frame is NOT proven (revi
 
 test("forge: a startPrank AS the victim armed in a reverted frame is NOT proven (review 2 B2, revstart)", { skip, timeout: 300_000 }, async () => {
   await forged("RevStartTest", { "Tokens.sol": TOKENS }, REV_PRANK("RevStartTest", "vm.startPrank(address(vault))"));
+});
+
+// B3: prank(address,bool) with `true` makes the next DELEGATECALL run the test's
+// code in the pranked address's storage. Pranked AS the scope token, the fake code
+// zeroes the vault's balance in the real token; the vault itself was never
+// pranked. Pranked AS an owned target, the fake code re-points its owner. A target
+// the test impersonated is no target at all: not a victim, not a token, not a
+// takeover context.
+const DELEG_PRANK = (who) => `(bool ok,) = address(vm).call(abi.encodeWithSignature("prank(address,bool)", ${who}, true)); require(ok, "prank");`;
+test("forge: a delegate prank AS the scope token is NOT proven (review 2 B3, delegtok)", { skip, timeout: 300_000 }, async () => {
+  const f = await forged("DelegTokTest", { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+contract DelegTokTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function test_x() public {
+    vault.tok();
+    ${DELEG_PRANK("address(tok)")}
+    (bool done,) = address(fake).delegatecall(abi.encodeCall(FakeTok.drain, (address(vault), address(0xBEEF))));
+    require(done, "drain");
+  }
+}
+`);
+  assert.match(f.proof.harm.reason, /impersonated scope target 0x[0-9a-f]{40} \(Tok\)/);
+});
+
+test("forge: a delegate prank AS an owned scope target is NOT proven (review 2 B3, delegctl)", { skip, timeout: 300_000 }, async () => {
+  const f = await forged("DelegCtlTest", { "Owned.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Owned {
+  address public owner;
+  constructor() { owner = msg.sender; }
+  function hello() external pure returns (uint256) { return 1; }
+}
+` }, `import "../src/Owned.sol";
+contract Writer { address public owner; function take(address a) external { owner = a; } }
+contract DelegCtlTest is Test {
+  Owned o; Writer w;
+  function setUp() public { o = new Owned(); w = new Writer(); }
+  function test_x() public {
+    o.hello();
+    ${DELEG_PRANK("address(o)")}
+    (bool done,) = address(w).delegatecall(abi.encodeCall(Writer.take, (address(0xBEEF))));
+    require(done, "take");
+    require(o.owner() == address(0xBEEF), "owner");
+  }
+}
+`);
+  assert.match(f.proof.harm.reason, /impersonated scope target 0x[0-9a-f]{40} \(Owned\)/);
 });
 
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
