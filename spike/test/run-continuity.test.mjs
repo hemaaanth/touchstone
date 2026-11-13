@@ -540,12 +540,15 @@ const TOKEN = "synthetic-reader-token-0001";
 const ADMIN = "synthetic-admin-token-0002";
 const GONE = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.";
 const liveScope = () => addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
-// What the agent can read when a worker starts. The scope text is in its
-// instructions (SCOPE_NOTES), not in a workspace file.
+// What the agent can read when a worker starts. The scope text is in the
+// instructions of every agent (SCOPE_NOTES), never a workspace file, and never
+// holds a token. The token reaches the root agent only, in the pack's first
+// message, which reads it from the config (as BRIEF.md did before).
 const read = (call) => {
   const ws = call.args[4];
   assert.ok(!existsSync(path.join(ws, "BRIEF.md")));
-  call.brief = call.env.SCOPE_NOTES ?? "";
+  assert.ok(![TOKEN, ADMIN].some((t) => Object.values(call.env).some((v) => String(v).includes(t))), "no worker env value holds a token");
+  call.brief = PACKS["ai-mcp"].kickoff(ws, {});
   call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
   call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
 };

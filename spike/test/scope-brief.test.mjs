@@ -6,7 +6,7 @@
 // network, no docker, no model.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -144,8 +144,19 @@ test("a kept workspace loses an old Touchstone BRIEF.md; a lab keeps its own", (
   assert.ok(existsSync(path.join(ws, "BRIEF.md")));
   dropOldBriefFile(ws, { kind: "scope" });
   assert.ok(!existsSync(path.join(ws, "BRIEF.md")));
-  dropOldBriefFile(ws, { kind: "live" }); // nothing there: no throw
-  dropOldBriefFile(null, { kind: "live" });
+  assert.equal(dropOldBriefFile(ws, { kind: "live" }), false); // nothing there: no throw
+  assert.equal(dropOldBriefFile(null, { kind: "live" }), false);
+  // A directory named BRIEF.md is not Touchstone's file: left alone, no throw.
+  mkdirSync(path.join(ws, "BRIEF.md"));
+  assert.equal(dropOldBriefFile(ws, { kind: "scope" }), false);
+  assert.ok(existsSync(path.join(ws, "BRIEF.md")));
+  rmSync(path.join(ws, "BRIEF.md"), { recursive: true });
+  // A link is removed itself; what it points at stays.
+  const outside = path.join(ws, "outside.txt");
+  writeFileSync(outside, "keep");
+  symlinkSync(outside, path.join(ws, "BRIEF.md"));
+  assert.equal(dropOldBriefFile(ws, { kind: "brief" }), true);
+  assert.ok(!existsSync(path.join(ws, "BRIEF.md")) && readFileSync(outside, "utf8") === "keep");
 });
 
 // ---- the brief never widens a run ----------------------------------------------------
@@ -186,4 +197,39 @@ test("a brief that names another repo adds no fetchable link", () => {
   assert.deepEqual(planModules(now), planModules(before));
   assert.deepEqual(eligiblePacks(now), eligiblePacks(before));
   assert.deepEqual(enforceReach(now), enforceReach(before));
+});
+
+// ---- who sees a live token -------------------------------------------------------------
+
+test("a live token reaches only the root agent's first message, never the instructions every fleet child gets", () => {
+  const TOKEN = "synthetic-live-token-0003";
+  for (const pack of ["ai-mcp", "web"]) {
+    const target = { id: `live-tok-${pack}`, kind: "live", title: "t", pack, hosts: ["mcp.example.com"], origins: ["https://mcp.example.com"], mcp: { token: TOKEN }, brief: "Look at the tools first." };
+    const ws = build(target);
+    const env = scopeEnv(target);
+    assert.ok(!Object.values(env).some((v) => v.includes(TOKEN)), `${pack}: no scope env value holds the token`);
+    const p = packFor(readTouchstone(ws));
+    // agent-run.mjs: the root's instructions and every fleet child's are this string.
+    const instructions = p.system(ws) + scopeInstructions(env);
+    assert.ok(!instructions.includes(TOKEN), `${pack}: the shared instructions hold no token`);
+    assert.match(instructions, /Look at the tools first\./, `${pack}: the brief goes to every agent`);
+    // The root's first message (only the root gets it) holds the token, as on main.
+    assert.ok(p.kickoff(ws, {}).includes(TOKEN), `${pack}: the root's first message holds the token`);
+  }
+});
+
+test("a *. entry reads as every subdomain in the scope notes, and the first website stays the base URL", () => {
+  const target = { id: "live-wild", kind: "live", title: "t", pack: "domains", hosts: ["example.com", "*.example.com"], origins: ["https://example.com", "https://*.example.com"] };
+  const notes = scopeEnv(target).SCOPE_NOTES;
+  assert.match(notes, /- https:\/\/example\.com \(host example\.com\)/);
+  assert.match(notes, /- every subdomain of example\.com \(the grant entry \*\.example\.com; not one website to call\)/);
+  assert.match(notes, /Base URL for every request: https:\/\/example\.com$/m);
+});
+
+test("the older brief-scope create route keeps the same 8,000 limit", () => {
+  const before = readScopes().length;
+  assert.throws(() => store.addBriefScope({ title: "big", brief: "y".repeat(BRIEF_MAX + 1) }), /^Error: A scope brief holds at most 8,000 characters\. This one has 8,001\. Shorten it and save again\.$/);
+  assert.equal(readScopes().length, before, "nothing saved");
+  const ok = store.addBriefScope({ title: "fits", brief: `See ${REPO}\n` + "y".repeat(100) });
+  assert.equal(getUserScope(ok.id).brief.length, `See ${REPO}\n`.length + 100);
 });

@@ -92,7 +92,8 @@ export function extractLinks(md) {
 // what the operator actually wrote.
 export function addBriefScope({ title, brief, blurb } = {}) {
   const t = String(title || "").trim();
-  const body = String(brief || "").trim();
+  // The pasted markdown is the scope brief, so the same limit holds here.
+  const body = checkBrief(brief == null ? "" : String(brief));
   if (!t) throw new Error("a brief needs a title");
   if (!body) throw new Error("a brief needs some markdown");
   const links = extractLinks(body);

@@ -490,6 +490,10 @@ function kickoff(ws, env = {}) {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
   if (brief) parts.push(`BRIEF.md:\n${brief}`);
+  // A live scope's bearer token goes only into this first message, the root
+  // agent's, as it did when the brief file held it. Fleet children never get it.
+  const token = isLive(ws) ? readTouchstone(ws).mcp?.token : null;
+  if (typeof token === "string" && token) parts.push(`Bearer token for this site: ${token}`);
   if (openapi) parts.push(`openapi.yaml (the documented routes — there may be more):\n${openapi}`);
   return parts.join("\n\n");
 }

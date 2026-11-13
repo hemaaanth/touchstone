@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -157,4 +157,19 @@ test("a kept workspace from before this change loses its old BRIEF.md before the
   const next = await followUp(id);
   assert.equal(next.args[4], call.args[4]);
   assert.equal(next.briefFile, false);
+});
+
+test("a BRIEF.md that is a directory does not stop a follow-up: it ends, and the run is not left replying", async () => {
+  const s = scope("dir brief");
+  const { id, call } = await finished(s);
+  mkdirSync(path.join(call.args[4], "BRIEF.md"));
+  const next = await followUp(id);
+  assert.equal(next.args[4], call.args[4], "the kept workspace");
+  const r = getRun(id);
+  assert.ok(!r.replying, "not left replying");
+  assert.ok(!r.events.some((e) => e.ev === "reply-error"));
+  assert.ok(existsSync(path.join(call.args[4], "BRIEF.md")), "a directory is not Touchstone's file, so it stays");
+  // The lock is free again: one more follow-up starts.
+  const again = await followUp(id);
+  assert.equal(again.args[2], "chat");
 });
