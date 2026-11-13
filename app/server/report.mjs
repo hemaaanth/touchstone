@@ -119,6 +119,8 @@ export function buildReport(finding) {
     // kept no events, so the report says the date was not recorded.
     runAt: Number.isFinite(finding.events?.[0]?.t) ? finding.events[0].t : null,
     proofKind: finding.proofKind || null,
+    // Where the bug is: a file, a URL, a line (whereOf).
+    where: whereOf(finding),
     proven,
     // The verdict ladder, as findings.mjs recorded it. Each stage is true only
     // because the data shows it.
@@ -151,6 +153,26 @@ export function buildReport(finding) {
       generatedAt: Date.now(),
     },
   });
+}
+
+// Where the bug is, read from the record: the file and line or the URL the
+// evidence cites, the URL the last replayed request hit, or the scope's entry
+// file. Null when the record names none of these.
+function whereOf(finding) {
+  const p = finding.proof || {}
+  if (finding.proofKind === "evidence") {
+    const cells = Array.isArray(p.cited) ? p.cited : []
+    const val = (name) => cells.find((c) => c?.name === name && !c.redacted)?.value
+    const file = val("file")
+    if (file) return val("line") ? `${file}:${val("line")}` : String(file)
+    if (val("where")) return String(val("where"))
+  }
+  if (finding.proofKind === "http") {
+    const ex = Array.isArray(p.exchanges) ? p.exchanges : []
+    const req = ex[ex.length - 1]?.request
+    if (req?.url) return `${req.method || "GET"} ${req.url}`
+  }
+  return finding.scope?.entry || null
 }
 
 // A preview of a long text: the head, with a clear marker when it was cut, so a
@@ -480,4 +502,52 @@ export function renderReportMarkdown(report) {
   out.push("", "## The proof", "", "```json", JSON.stringify(r.proof ?? null, null, 2), "```");
   out.push("", `---`, `Touchstone report · run ${r.runId || ""} · finding ${r.id || ""} · generated ${new Date(r.meta.generatedAt).toISOString()}`);
   return out.join("\n");
+}
+
+// The few sentences that say what is wrong: the narrative's prose without its
+// code blocks and headings, cut to three sentences.
+function firstSentences(text, n = 3) {
+  const prose = String(text || "")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+  // A sentence ends at ".", "!" or "?" before a space, so `msg.sender` stays whole.
+  const out = prose.split(/(?<=[.!?])\s+/).slice(0, n).join(" ")
+  return out.length > 700 ? `${out.slice(0, 700).trimEnd()}…` : out
+}
+
+// A short brief to paste to a coding agent: what, where, how it was proven and
+// the fix hint, with no chat history. Built from the redacted report, then
+// redacted again as one text, so a secret split across fields cannot pass.
+export function renderReportAgent(report) {
+  const r = report
+  const p = r.proof || {}
+  const how =
+    r.proofKind === "http"
+      ? p.oracle?.name
+        ? `An HTTP replay; the oracle "${p.oracle.name}" ${p.oracle.passed ? "fired" : "did not fire"}.`
+        : "An HTTP replay of the recorded requests."
+      : r.proofKind === "evidence"
+        ? p.check
+          ? `The evidence check "${p.check}" against a pinned snapshot${p.commit ? ` at commit ${p.commit}` : ""}.`
+          : "A pinned evidence check."
+        : p.rerunCommand
+          ? `Run \`${p.rerunCommand}\`${p.contract ? ` (test contract ${p.contract})` : ""}.`
+          : p.test
+            ? `The Foundry test ${p.test}${p.contract ? ` in ${p.contract}` : ""}.`
+            : "The record names no replay command."
+  const lines = [
+    `Finding: ${r.title}`,
+    `Severity: ${r.severity || "unrated"}`,
+    `State: ${r.proven ? "Proven by a replay." : "Not proven. A lead, not a replayed proof."}${r.dismissed ? " Dismissed by the operator." : ""}`,
+    `Where: ${r.where || r.target || "not recorded"}`,
+    `What is wrong: ${firstSentences(r.narrative) || "The run gave no explanation."}`,
+    `How it was proven: ${r.proven ? how : `Not proven. ${how}`}`,
+  ]
+  if (r.fixStated) lines.push(`Fix hint: ${firstSentences(r.fix)}`)
+  lines.push(`Touchstone finding ${r.id || ""}, run ${r.runId || ""}.`)
+  return redactSecrets({ text: lines.join("\n") }).text
 }
