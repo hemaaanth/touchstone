@@ -9,6 +9,7 @@
 //     never takes the place of another module's candidate;
 //   - the joined proof step gets findings only, and a candidate is never proven.
 // No docker, no model call. The modules are stubs with the real candidate tool.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

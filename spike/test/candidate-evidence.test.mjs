@@ -1,6 +1,7 @@
 // submit_candidate in the evidence-replay packs (supply-chain, infra-cloud,
 // domains). The replay and the domains scan are mocked, so no snapshot,
 // scanner or Docker runs.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

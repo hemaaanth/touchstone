@@ -2,6 +2,7 @@
 // file, one older run with only its record, and one the server lost mid-way.
 // Each must load back with its candidates and their evidence, and no candidate
 // may count as a finding.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

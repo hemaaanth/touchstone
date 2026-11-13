@@ -1,6 +1,7 @@
 // submit_candidate in the harm-execution packs (contracts, keys, chain-watch).
 // forge is mocked: run_poc and the replay return fixed results, so no
 // compiler or EVM runs.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
