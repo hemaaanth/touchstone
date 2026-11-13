@@ -75,6 +75,15 @@ Minor findings do not block a merge. They go to a minors list in this file and a
 - A dependency upgrade. A scan of a target outside the authorized scope. Mainnet.
 - A third-party tool that would run outside Docker `runTool()` offline mode (the four approved network tools excepted).
 
+**hstack skills** (owner, 2026-11-13: use them when they help; optional)
+
+- Every thread may use the hstack skills. They are a starting point, not a rule. A thread that finds one unhelpful works without it.
+- Authors: `map` (callers and blast radius before a change), `investigate` and `trace` (unclear symptom, root cause), `plan`, `build`, `prove` (evidence before a claim in the report), `exercise` (hands-on UI check), `trim` (simplify own code), `handoff` (at a stop condition).
+- Reviewers: `review` and `prove`.
+- Coordinator: `delegate` (already the policy above), `babysit` for the open cloud PRs, `handoff` at wave ends.
+- Children do not use `ship`, `land`, `yolo`, `babysit` or `delegate`: those push, open or merge PRs, or spawn threads. The rules above and the assignment file win over a skill's default steps.
+- The short form for children is in the shared rules file (`wave/RULES.md` in the coordinator's thread storage).
+
 **Reporting**
 
 - This file changes state at every merge. The progress page is republished at the end of each wave.
@@ -92,13 +101,13 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Owns | Running as |
 |--------|-------|------|------------|
-| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity` |
+| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; candidate `6a95a1e` in review (`thr_itmcnmnnku`) |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language` |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish` |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
-| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth` |
+| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`) |
 | 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
@@ -111,7 +120,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | 2d Scope brief | D2 | 1a, 1b |
 | 2e One multi-module run (code + tests) | D3 | 1a |
 | 2f Cloud PR 6 | H3 | PR 7 |
-| 2g Toolkit branches, three at a time | G1 to G7 | 1e |
+| 2g Toolkit branches, three at a time | G1 to G7 | 1e. Started 2026-11-13: G4, G2, G7. G1 and G3 wait for 1h. G5 waits for 1a and 1c. |
 
 **Wave 3. New surface and old debts.**
 
@@ -137,7 +146,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 |------|----------|-----------|
 | ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
 | ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. New token received 2026-11-13: it reads `hemaaanth/touchstone` (Metadata and Contents: HTTP 200). It lacks read on Actions, Administration (branch protection) and Pull requests (HTTP 403), so those tool checks will report "no access" in the live proof. Optional: add those three read permissions to the token. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. Second new token received 2026-11-13: it reads `hemaaanth/touchstone` (repo, contents, pull requests, Actions workflows: HTTP 200). Branch protection answers HTTP 403 with "Upgrade to GitHub Pro or make this repository public": a GitHub plan limit for private repos, not a token gap. The token is complete. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
 | ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
 | ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
@@ -149,10 +158,11 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| A1 | doing | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. |
-| A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
-| A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
-| A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
+| A1 | review | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. Cause found: the worker called `process.exit` before the long `settled` line left the pipe. Candidate `fix/run-continuity` `6a95a1e`; reviewer `thr_itmcnmnnku`. |
+| A2 | review | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). Partly met in the candidate: the workspace is kept; a lost one is rebuilt and said in one `workspace` event. Same-commit restore needs `fetch.mjs` to record commits (new task A6). |
+| A3 | review | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
+| A4 | review | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
+| A6 | todo | Same-commit restore of a lost workspace: `spike/lib/fetch.mjs` records the commit of each fetch; a rebuild checks out the same commits. Also decide: reach on a follow-up of a live-target run (owner question). Wave 3. |
 | A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. The owner allowed it for this task (2026-11-13). Starts after thread 1a merges (wave 2, thread 2h). Own reviewer; the gate line is never touched. |
 
 ## B. Run view polish
@@ -205,12 +215,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
-| G2 | todo | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. |
+| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
-| G4 | todo | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. |
+| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
-| G7 | todo | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). |
+| G7 | doing | Part A merged `d1caa23` (Heimdall comment and licence note). Part B `fix/wave-spend-cap`: review of `b31b23c` NOT READY (`thr_yzqyhqy2tj`): a model with no price is charged $0 for its Strix scan. Repair round 1 with author `thr_xjgfmpmrg3`. |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
 | G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
@@ -261,10 +271,10 @@ The review of the base commit found real defects. Most are older than the base c
 
 | # | State | Item |
 |---|-------|------|
-| L1 | doing | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. |
-| L2 | doing | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. |
-| L3 | doing | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
-| L4 | doing | Token compare in constant time. Thread 1g. |
+| L1 | review | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). |
+| L2 | review | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
+| L3 | review | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
+| L4 | review | Token compare in constant time. Thread 1g. |
 | L5 | doing | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. |
 | L6 | doing | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. |
 | L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
