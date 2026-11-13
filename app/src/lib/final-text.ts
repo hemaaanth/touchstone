@@ -21,7 +21,8 @@ export const CUT_MARK = " …cut"
 
 // True when a prose step already holds the closing text: its label starts
 // with that text. A cut copy is a prefix of the whole text, so it matches the
-// step that streamed the whole text.
+// step that streamed the whole text. Pass only the steps that can hold it:
+// the ending agent's prose of the turn that ended (runModel's turnProse).
 export function closingHeld(steps: { kind: string; label: string }[], finalText: string): boolean {
   const text = finalText.endsWith(CUT_MARK) ? finalText.slice(0, -CUT_MARK.length) : finalText
   if (!text.trim()) return true

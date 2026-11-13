@@ -2,7 +2,7 @@
 // Runs with `bun test src/lib`.
 import { mock, test } from "node:test"
 import assert from "node:assert/strict"
-import { getRunState, isRunningNow, loadRun, reduceEvents } from "./runModel"
+import { getRunState, isRunningNow, loadRun, reduceEvents, threadSteps } from "./runModel"
 import type { RunEvent } from "./types"
 
 const ev = (ev: string, extra: Record<string, unknown> = {}): RunEvent => ({ ev, ...extra })
@@ -395,4 +395,72 @@ test("the provider event gives the run its provider and model id; an old run has
   assert.deepEqual(state.provider, { id: "lyber", model: "deepseek-v4.1-flash" })
   assert.deepEqual(state.steps, [])
   assert.equal(reduceEvents([ev("status", { status: "running" })]).provider, null)
+})
+
+// The closing check looks only at the turn that ended and at the main agent.
+// The first two are the reviewer's boundary tests, as written.
+test("each old-record turn gets its own equal closing answer", () => {
+  const es = [
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { text: "Please check again." }),
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ]
+  assert.deepEqual(
+    reduceEvents(es).steps.map((s) => [s.kind, s.label]),
+    [
+      ["say", "Nothing to report."],
+      ["operator", "Please check again."],
+      ["say", "Nothing to report."],
+    ],
+  )
+})
+
+test("a child answer cannot stand in for the coordinator closing", () => {
+  const state = reduceEvents([
+    ev("subagent-spawned", { id: "a-1", name: "Worker", conv: "child" }),
+    ev("assistant-delta", { agent: "a-1", conv: "child", attempt: 1, text: "Nothing to report." }),
+    ev("no-finding", { final: "Nothing to report." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ])
+  assert.deepEqual(threadSteps(state.steps, null).filter((s) => s.kind === "say").map((s) => s.label), ["Nothing to report."])
+})
+
+test("a fleet child's last text equal to the coordinator's final: both show, each in its thread", () => {
+  const state = reduceEvents([
+    ev("subagent-spawned", { id: "a-1", name: "Worker", conv: "child" }),
+    ev("assistant-delta", { agent: "a-1", conv: "child", attempt: 1, text: "The vault is safe." }),
+    ev("assistant-delta", { conv: "root", attempt: 2, text: "The vault is safe." }),
+    ev("settled", { summary: { final: { text: "The vault is safe." } } }),
+    ev("no-finding", { final: "The vault is safe." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ])
+  const says = (id: string | null) => threadSteps(state.steps, id).filter((s) => s.kind === "say").map((s) => s.label)
+  assert.deepEqual(says(null), ["The vault is safe."])
+  assert.deepEqual(says("a-1"), ["The vault is safe."])
+  assert.equal(state.steps.filter((s) => s.closing).length, 0, "the coordinator's own stream holds its final")
+})
+
+test("a follow-up whose answer equals the run's first final: both show, in order", () => {
+  const es = [
+    say(1, "No path drains the vault."),
+    ev("no-finding", { final: "No path drains the vault." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+    ev("reply-start"),
+    ev("operator-message", { id: "m1", text: "Sure?" }),
+    say(1, "No path drains the vault."),
+    ev("settled", { summary: { final: { text: "No path drains the vault. Checked twice." } } }),
+    ev("no-finding", { final: "No path drains the vault. Checked twice." }),
+    ev("status", { status: "no-finding" }),
+    ev("closed"),
+  ]
+  // The second final extends this turn's own stream, never the first answer.
+  assert.deepEqual(rows(es), ["say:No path drains the vault.", "operator:Sure?", "say:No path drains the vault. Checked twice."])
 })

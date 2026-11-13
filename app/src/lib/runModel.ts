@@ -244,10 +244,16 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // answer itself: its text still starts with what that step shows.
   const stream = new Map<string, Step>()
   let turnKeys = new Set<string>()
+  // Where the current turn starts in `steps`. The closing words are checked
+  // and repaired only against the main agent's prose of this turn: an earlier
+  // turn's answer or a child's words are other texts, and stay as they are.
+  let turnStart = 0
   const newTurn = () => {
     turnKeys = new Set()
     closing = null
+    turnStart = steps.length
   }
+  const turnProse = () => steps.slice(turnStart).filter((s) => !s.agent)
   const streamStep = (kind: "reasoning" | "say", conv: string, attempt: number | null, text: string, i: number) => {
     const k = `${kind}:${conv}:${attempt ?? 0}`
     const prev = stream.get(k)
@@ -710,7 +716,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // become a prose step here, at the run's end, so a later turn shows
         // below them.
         finalText = str(e.final) || null
-        if (finalText && !closingHeld(steps, finalText) && !repairFinalSay(steps, finalText)) {
+        if (finalText && !closingHeld(turnProse(), finalText) && !repairFinalSay(turnProse(), finalText)) {
           closing = { key, kind: "say", phase, conv: "root", label: finalText, closing: true }
           steps.push(closing)
         }
@@ -723,7 +729,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // The streamed prose can end one chunk short. The settled event holds the
         // whole answer, so the last prose step takes it. Old records get the same repair.
         const summary = e.summary as { final?: { text?: unknown } } | undefined
-        repairFinalSay(steps, summary?.final?.text)
+        repairFinalSay(turnProse(), summary?.final?.text)
         break
       }
       case "run-complete":
