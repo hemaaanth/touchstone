@@ -460,6 +460,7 @@ export function RunChat({
                   live={live}
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
+                  coverage={status === "recorded" ? state?.coverage ?? null : null}
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
