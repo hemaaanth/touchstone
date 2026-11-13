@@ -8,12 +8,15 @@
 // subnet. The last one runs real Docker and skips with a reason without it.
 //
 //   node --test spike/test/phishing-lab-net.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { labAddresses } from '../packs/domains/labctl.mjs';
-import { CANON, startLab } from '../packs/phishing/labctl.mjs';
+import { CANON, LAB, startLab, toCanonSnapshot } from '../packs/phishing/labctl.mjs';
 
 function mockDocker({ fail = false } = {}) {
   const calls = [];
@@ -76,6 +79,25 @@ test('stop() and a failed start leave no container, network or copy', async () =
   assert.equal(f.subnets.size, 0);
 });
 
+// The operator capture pins the canonical resolver, not the run's own (review of
+// m4): the stored dnstwist arguments must be the same on every run.
+const PINNED = JSON.parse(readFileSync(join(LAB, 'snapshot.json'), 'utf8'));
+const nameservers = (snap) => [snap.dnstwist.cmd, ...(snap.dnstwist.controls ?? []).map((c) => c.cmd)]
+  .map((cmd) => cmd[cmd.indexOf('--nameservers') + 1]);
+
+test('toCanonSnapshot stores the canonical resolver, the same for two runs on different subnets', () => {
+  const asRun = (resolver) => JSON.parse(JSON.stringify(PINNED).replaceAll(CANON.dns, resolver));
+  const [a, b] = [{ resolver: '10.208.3.19' }, { resolver: '10.219.77.35' }];
+  const [sa, sb] = [toCanonSnapshot(asRun(a.resolver), a), toCanonSnapshot(asRun(b.resolver), b)];
+  assert.deepEqual(sa.dnstwist.cmd, PINNED.dnstwist.cmd);
+  assert.deepEqual(sa.dnstwist.cmd, sb.dnstwist.cmd);
+  assert.equal(sa.dnstwist.resolver, CANON.dns);
+  assert.ok(nameservers(sa).every((n) => n === CANON.dns), JSON.stringify(nameservers(sa)));
+  assert.ok(!JSON.stringify(sa).includes(a.resolver), 'the run address is gone');
+  // The address is matched whole: a longer address that starts the same stays.
+  assert.equal(toCanonSnapshot({ x: '10.208.3.190' }, a).x, '10.208.3.190');
+});
+
 // ---- real Docker
 
 const IMAGES = [
@@ -103,5 +125,30 @@ test('real Docker: two Phishing labs at once both run, each DNS answers with its
     assert.equal(sh(['network', 'inspect', lab.network]), null, `${lab.network} left behind`);
     assert.equal(sh(['ps', '-aq', '--filter', `name=^${lab.network}-`]), '');
     assert.equal(existsSync(lab.dir), false);
+  }
+});
+
+const hasDnstwist = sh(['image', 'inspect', 'touchstone-phishing-dnstwist:20250130']) !== null;
+test('real Docker: two operator captures on two labs store the same --nameservers argument, the pinned one', { skip: (noDocker || (!hasDnstwist && 'dnstwist image not built')), timeout: 900_000 }, async () => {
+  const { captureLookalikes } = await import('../packs/phishing/live.mjs');
+  const cfg = JSON.parse(readFileSync(join(LAB, '.touchstone.json'), 'utf8'));
+  const stored = [];
+  for (let i = 0; i < 2; i++) {
+    const ws = mkdtempSync(join(tmpdir(), 'phishing-capture-'));
+    cpSync(LAB, ws, { recursive: true });
+    const lab = await startLab();
+    try {
+      await new Promise((r) => setTimeout(r, 1500));
+      const snap = await captureLookalikes({ ws, domain: cfg.domain, owned: cfg.owned, reach: lab, blocklists: cfg.blocklists, lab: true });
+      assert.equal(snap.coverage[0].status, 'ran', snap.coverage[0].reason);
+      assert.ok(nameservers(snap).every((n) => n === lab.resolver), 'the capture asked this run\'s own resolver');
+      stored.push({ resolver: lab.resolver, snap: toCanonSnapshot(snap, lab) });
+    } finally { await lab.stop(); rmSync(ws, { recursive: true, force: true }); }
+  }
+  assert.notEqual(stored[0].resolver, stored[1].resolver, 'the two runs had different resolvers');
+  for (const { snap } of stored) {
+    assert.deepEqual(snap.dnstwist.cmd, PINNED.dnstwist.cmd);
+    assert.ok(nameservers(snap).every((n) => n === CANON.dns), JSON.stringify(nameservers(snap)));
+    assert.equal(snap.dnstwist.resolver, CANON.dns);
   }
 });
