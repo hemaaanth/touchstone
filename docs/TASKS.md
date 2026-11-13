@@ -137,7 +137,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 |------|----------|-----------|
 | ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
 | ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. The owner will give a new token that can read `hemaaanth/touchstone` (secure form open, 2026-11-13). Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
 | ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
 | ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
@@ -220,7 +220,8 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
-| H2 | doing | PR 7 (report redaction), `merge/pr-7` 5b75dfb: open redaction rules. Blocks F2. |
+| H2 | review | PR 7 (report redaction), `merge/pr-7` 5265d20: author done (10 commits after the merge with main, 246 app tests pass). Final delta review runs (thread `thr_tjjx45bfz5`). Open by design: JSON escaped three or more times (see H2b). Blocks F2. |
+| H2b | todo | Follow-up to PR 7: redact JSON at every escape level by decoding each level, instead of one regex per depth. Wave 3. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
 | H4 | parked | PR 8: the owner decided 2026-11-13: it stays parked. No work. |
 
@@ -272,4 +273,4 @@ The review of the base commit found real defects. Most are older than the base c
 
 ## Owner decisions (open)
 
-a public repo as the live target for the GitHub tools (the token reads public repos only) · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
+safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
