@@ -632,11 +632,12 @@ const ACCOUNT_ERR = /quota|billing|insufficient|payment|credit|usage[_ ]?limit|i
 // Did this run read every GitHub member of its scope? A refused or skipped
 // fetch is a gap, never a clean result: if there is one, set the run's error
 // (kind "coverage") and return true, so the caller ends it as an error instead
-// of no-finding. See spike/lib/source-coverage.mjs.
+// of no-finding. See spike/lib/source-coverage.mjs. Exported so every end path
+// that could end a run no-finding (for example a restart) can gate on it.
 function runCoverage(run) {
   return sourceCoverage(run.target?.links ?? scopeOf(run)?.links ?? [], run.events)
 }
-function coverageGap(run) {
+export function coverageGap(run) {
   const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
   const info = coverageFailure(runCoverage(run), { spentUsd })
   if (!info) return false

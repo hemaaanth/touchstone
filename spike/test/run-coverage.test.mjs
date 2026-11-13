@@ -178,3 +178,14 @@ test("a follow-up that retries a failed run and still leaves a gap broadcasts th
   assert.equal(last.status, "error");
   assert.equal(last.errorInfo?.kind, "coverage", "the UI and a replay see the coverage error");
 });
+
+test("coverageGap is exported, so another end path (for example a restart) can gate on it", async () => {
+  const { coverageGap } = await import("../../app/server/runs.mjs");
+  assert.equal(typeof coverageGap, "function", "app/server/runs.mjs exports coverageGap");
+  const gap = { target: { links: [REPO] }, events: [refused] };
+  assert.equal(coverageGap(gap), true);
+  assert.equal(gap.errorInfo.kind, "coverage");
+  const read = { target: { links: [REPO] }, events: [fetched] };
+  assert.equal(coverageGap(read), false);
+  assert.equal(read.errorInfo, undefined);
+});
