@@ -230,6 +230,10 @@ test("child responses charge the run budget and block later model calls", { time
 
 // ---- A changed scope brief reaches a child that a later worker reopens (L26) ----
 
+// The change text, as the engine's briefChange gives it (targets.mjs): "" for no
+// change. The fleet takes the function as a parameter, so these tests need no store.
+const briefChange = (before, now) => ((before ?? "") === now ? "" : now ? `The operator changed the scope brief. Follow this one instead of the earlier one.\n\n${now}` : "The operator removed the scope brief. Do not follow the earlier one any more.");
+
 // One worker over a shared store: the first run, or a follow-up that reopens it.
 // The coordinator spawns or messages children as `plan(operator text)` says; every
 // child answers "ok". `seen` gets what each child was asked, and its instructions.
@@ -269,7 +273,6 @@ async function worker(t, storage, { brief, changed = "", briefChange }, seen) {
 }
 
 test("a child reopened after the scope brief changed gets the new brief once; no change gives nothing extra; a new child has it in its instructions", { timeout: 20000 }, async (t) => {
-  const { briefChange } = await import("../lib/targets.mjs");
   const dir = mkdtempSync(join(tmpdir(), "fleet-brief-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");
@@ -325,7 +328,6 @@ test("a child reopened after the scope brief changed gets the new brief once; no
 });
 
 test("a child from before the roster kept briefs gets the change this worker was told about, or nothing", { timeout: 20000 }, async (t) => {
-  const { briefChange } = await import("../lib/targets.mjs");
   const dir = mkdtempSync(join(tmpdir(), "fleet-brief-old-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { openNodeSqliteStorage } = await import("@earendil-works/pi-durable/storage/sqlite/node");

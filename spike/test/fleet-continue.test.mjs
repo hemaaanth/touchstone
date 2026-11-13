@@ -106,8 +106,10 @@ test("a follow-up puts a cut-off child back to work in the saved session; it end
   assert.ok(view.messages.some((m) => m.role === "assistant" && /Calls mapped/.test(text(m))));
 });
 
+// The change text, in the form of the engine's briefChange (targets.mjs).
+const briefChange = (before, now) => ((before ?? "") === now ? "" : `The operator changed the scope brief. Follow this one instead of the earlier one.\n\n${now}`);
+
 test("a child that a restart cut off, reopened after the scope brief changed, reads the change in the turn it goes back to; with no change it reads nothing extra", { timeout: 90000 }, async (t) => {
-  const { briefChange } = await import("../lib/targets.mjs");
   // The first worker has the first brief. It dies while the child is mid-turn. Then a follow-up reopens the session.
   async function cutOffThenReopen(now) {
     const dir = mkdtempSync(join(tmpdir(), "fleet-continue-brief-"));
