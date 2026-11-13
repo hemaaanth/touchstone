@@ -614,6 +614,57 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("a record's vendored flag is checked against the engine's index; a forged one is redacted like any file", () => {
+    // Made up. A forged record marks a secret-holding file as vendored, with its own hash.
+    const secret = "Zq7Xv9KpR2mN4tW8yB3cL6Hd"
+    const text = `// X-Api-Key: ${secret}\ncontract Evil {}\n`
+    const sha256 = createHash("sha256").update(text).digest("hex")
+    const replay = {
+      version: 1, kind: "forge", contract: "PocTest", test: "testDrain",
+      files: [
+        { path: "foundry.toml", text: "[profile.default]\n" },
+        { path: "src/Evil.sol", text, vendored: { lib: "forge-std", sha256 } },
+        { path: "lib/forge-std/src/Evil.sol", text, vendored: { lib: "forge-std", sha256 } },
+        { path: "test/AgentPoc.t.sol", text: "contract PocTest {}\n" },
+      ],
+      omitted: [],
+    }
+    const proof = { kind: "forge", pass: true, test: "testDrain()" }
+    const zip = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } })
+    expect(zip.includes(secret)).toBe(false)
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-forged-"))
+    try {
+      unzip(zip, dir)
+      const files = readTree(dir)
+      expect(files.get("src/Evil.sol")).toContain("// X-Api-Key: [REDACTED]")
+      expect(files.get("lib/forge-std/src/Evil.sol")).toContain("// X-Api-Key: [REDACTED]")
+      expect(files.get("README.md")).not.toContain("Vendored library files")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a library file whose bytes differ from the engine's copy is not vendored, and is redacted", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    try {
+      // Made up.
+      const bearer = "Zq7Xv9KpR2mN4tW8yB3cL6Hd"
+      const f = path.join(ws, "lib/forge-std/src/StdChains.sol")
+      writeFileSync(f, `// Authorization: Bearer ${bearer}\n${readFileSync(f, "utf8")}`)
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const chains = snap.files.find((x: { path: string }) => x.path === "lib/forge-std/src/StdChains.sol")
+      expect(chains.vendored).toBeUndefined()
+      expect(chains.text).toContain("// Authorization: Bearer [REDACTED]\n")
+      expect(JSON.stringify(snap).includes(bearer)).toBe(false)
+      // The untouched files of the same library are still vendored.
+      expect(snap.files.find((x: { path: string }) => x.path === "lib/forge-std/src/Vm.sol").vendored.lib).toBe("forge-std")
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
   test("a source file over the redactor's cap, or one left out for a secret, leaves the bundle with no command", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-overcap-"))
     try {

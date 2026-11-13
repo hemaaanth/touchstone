@@ -1206,17 +1206,25 @@ function forgeBundle({ finding, recorded, replay, proof }) {
       omitted.push({ path: MASKED_PATH, reason: "its path holds a value the redactor masks" });
       continue;
     }
-    if (f.vendored) {
-      const text = typeof f.text === "string" ? f.text : vendoredText(f);
-      if (text == null || createHash("sha256").update(text).digest("hex") !== f.vendored.sha256) {
-        omitted.push({ path: f.path, reason: `a ${f.vendored.lib} file that neither the record nor the engine holds any more` });
+    // A record's word that a file is vendored is not proof: the engine's own
+    // index must hold this path with this hash. Else it is a normal file.
+    const engineKnows = f.vendored && vendored().get(f.path)?.has(f.vendored.sha256);
+    if (engineKnows) {
+      const bytes = engineVendored(f.path, f.vendored.sha256);
+      if (!bytes) {
+        omitted.push({ path: f.path, reason: `a ${f.vendored.lib} file that the engine no longer holds` });
         continue;
       }
-      files.push({ path: f.path, text, vendored: true });
+      files.push({ path: f.path, text: bytes.toString("utf8"), vendored: true });
       if (!libs.includes(f.vendored.lib)) libs.push(f.vendored.lib);
       continue;
     }
-    const out = forgeFileText(f.path, f.text);
+    const raw = f.vendored ? (typeof f.text === "string" ? f.text : vendoredText(f)) : f.text;
+    if (typeof raw !== "string") {
+      omitted.push({ path: f.path, reason: f.vendored ? `a ${f.vendored.lib} file that neither the record nor the engine holds any more` : "a file with no text in the record" });
+      continue;
+    }
+    const out = forgeFileText(f.path, raw);
     if (out.reason) omitted.push({ path: f.path, reason: out.reason });
     else files.push({ path: f.path, text: out.text });
   }
