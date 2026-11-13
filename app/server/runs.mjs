@@ -41,7 +41,7 @@ import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
-import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
+import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -2076,6 +2076,10 @@ function persistRun(run, findings) {
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   writeFileSync(`${file}.tmp`, JSON.stringify({ result, transcript: summary }, null, 2))
   renameSync(`${file}.tmp`, file)
+  // After the record is on disk: re-run each proven Foundry proof from its
+  // bundle files, offline, in the background. It writes side files only
+  // (replay/rerun/<hash>.json); it never rewrites this record.
+  if (findings.length) void checkRecordedReplays(findings, { storeDir: path.join(RESULTS_DIR, "replay") }).catch(() => {})
 }
 
 // Write the record of a run that ends with no finding to record: a clean
