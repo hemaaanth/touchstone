@@ -111,8 +111,8 @@ describe("a *. entry through POST /api/scopes", () => {
     }
   })
 
-  test("too broad: *.com is refused at the route, a public suffix by the grant store", async () => {
-    for (const [bad, why] of [["*.com", /^"\*\.com" is too broad: a wildcard needs a domain name of at least two labels after "\*\.", so \*\.example\.com, never \*\.com\.$/], ["*.co.uk", /public suffix/]] as const) {
+  test("too broad: *.com and *.co.uk are refused at the route, a listed public suffix by the grant store", async () => {
+    for (const [bad, why] of [["*.com", /^"\*\.com" is too broad: a wildcard needs a domain name of at least two labels after "\*\.", so \*\.example\.com, never \*\.com\.$/], ["*.co.uk", /co\.uk is a country's second-level domain/], ["*.ltd.uk", /public suffix/]] as const) {
       const r = await create(["https://example.com", bad])
       expect(r.status).toBe(400)
       expect(r.json.error).toMatch(why)
@@ -125,5 +125,47 @@ describe("a *. entry through POST /api/scopes", () => {
     expect(r.status).toBe(400)
     expect(r.json.error).toBe("List a plain website before a wildcard entry, for example example.com, then *.example.com. A run sends its requests to the first website.")
     expect(grants()).toEqual([])
+  })
+
+  test("a wildcard over names that belong to other people is refused with a sentence, and nothing is saved", async () => {
+    const cases: [string, RegExp][] = [
+      // resolves any name to any address, at any depth
+      ["*.nip.io", /^"\*\.nip\.io" covers hosts that belong to other people: names under nip\.io are shared or resolve to any address\./],
+      ["*.1.2.3.4.nip.io", /names under nip\.io/],
+      ["*.sslip.io", /names under sslip\.io/],
+      ["*.lvh.me", /names under lvh\.me/],
+      // a provider namespace, at any depth
+      ["*.amazonaws.com", /names under amazonaws\.com/],
+      ["*.eu-west-1.amazonaws.com", /names under amazonaws\.com/],
+      ["*.blob.core.windows.net", /names under windows\.net/],
+      // a shared platform itself
+      ["*.vercel.app", /^"\*\.vercel\.app" covers hosts that belong to other people: every customer of vercel\.app gets a name under it\. Use your own name, for example \*\.yourapp\.vercel\.app\.$/],
+      ["*.blogspot.com", /every customer of blogspot\.com/],
+      ["*.up.railway.app", /every customer of up\.railway\.app/],
+      ["*.ngrok-free.app", /every customer of ngrok-free\.app/],
+      // a country's second-level domain
+      ["*.com.de", /^"\*\.com\.de" covers hosts that belong to other people: com\.de is a country's second-level domain\./],
+      ["*.co.nz", /co\.nz is a country's second-level domain/],
+      ["*.gov.br", /gov\.br is a country's second-level domain/],
+      // letters outside ASCII: the punycode form is named
+      ["*.bücher.de", /^"\*\.bücher\.de" has letters outside plain ASCII\. Write the punycode form: \*\.xn--bcher-kva\.de\.$/],
+    ]
+    for (const [bad, why] of cases) {
+      const r = await create(["https://example.com", bad])
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(why)
+      expect(scopes()).toEqual([])
+      expect(grants()).toEqual([])
+    }
+  })
+
+  test("a wildcard under one tenant's own name on a platform, and an ordinary domain, are still accepted", async () => {
+    for (const ok of ["*.example.com", "*.app.example.co.uk", "*.myapp.vercel.app", "*.shop.myshopify.com", "*.x.up.railway.app", "*.example.com.de"]) {
+      rmSync(SCOPES, { force: true })
+      rmSync(GRANTS, { force: true })
+      const r = await create(["https://example.com", ok])
+      expect(r.status).toBe(201)
+      expect(grants()[0].hosts).toContain(ok)
+    }
   })
 })

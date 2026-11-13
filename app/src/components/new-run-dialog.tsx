@@ -517,6 +517,16 @@ export function AddScope({
     // server would drop the entry from the grant. Keep the one accepted
     // spelling as it is, and refuse every other one with a sentence.
     if (/\*|%2a/i.test(text)) {
+      // A name with letters outside plain ASCII: say the punycode form, as the server does.
+      if (/[^\x00-\x7f]/.test(text)) {
+        let ascii = ""
+        try {
+          ascii = text.trim().startsWith("*.") ? new URL(`http://${text.trim().slice(2)}`).hostname : ""
+        } catch {
+          // no ASCII form: the general hint below
+        }
+        return onError(`"${text}" has letters outside plain ASCII. Write the punycode form${ascii ? `: *.${ascii}` : ", for example *.xn--bcher-kva.de for *.bücher.de"}.`)
+      }
       if (/^\*\.[a-z0-9-]+\.?$/i.test(text)) return onError(`"${text}" is too broad: a wildcard needs a domain name of at least two labels after "*.", so *.example.com, never *.com.`)
       const base = wildcardBase(text)
       if (!base) return onError(`"${text}" is not a wildcard entry Touchstone accepts. Write it as *.example.com: a star, a dot and a domain name, with no scheme, port or path.`)

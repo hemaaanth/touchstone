@@ -3,7 +3,7 @@ import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2 } from "lu
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
 import { removeScope, saveScopeBrief } from "@/lib/api"
-import { isOwnScope, packOf, plural, SCOPE_KIND, scopedRuns, scopeMeta, type CatalogState, type ScopedRun } from "@/lib/catalog"
+import { isOwnScope, packOf, plural, SCOPE_KIND, scopedRuns, scopeMeta, siteEntry, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -26,7 +26,12 @@ type Item = { kind: "site" | "repo" | "folder" | "file"; text: string; href?: st
 const short = (url: string) => url.replace(/^https?:\/\/(www\.)?(github\.com\/)?/, "")
 function contents(t: TargetChoice): Item[] {
   const sites = t.origins?.length ? t.origins : (t.hosts ?? [])
-  if (sites.length) return sites.map((text) => ({ kind: "site", text }))
+  if (sites.length) {
+    return sites.map((origin) => {
+      const e = siteEntry(origin)
+      return e.wildcard ? { kind: "site", text: e.text, note: "all subdomains" } : { kind: "site", text: e.text }
+    })
+  }
   if (t.members?.length) {
     return t.members.map((m) =>
       m.kind === "repo"
@@ -121,7 +126,7 @@ export function ScopesPage({
                 }
                 meta={[
                   items.length ? (
-                    <TruncatedText key="contents" mono middle={items.length === 1} text={items.map((i) => i.text).join(", ")} />
+                    <TruncatedText key="contents" mono middle={items.length === 1} text={items.map((i) => (i.kind === "site" && i.note ? `${i.text} · ${i.note}` : i.text)).join(", ")} />
                   ) : null,
                   plural(mine.length, "run"),
                   proven > 0 ? <span key="proven" className="shrink-0 whitespace-nowrap text-ok tabular-nums">{proven} proven</span> : null,
