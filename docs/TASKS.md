@@ -101,8 +101,8 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Owns | Running as |
 |--------|-------|------|------------|
-| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; candidate `6a95a1e` in review (`thr_itmcnmnnku`) |
-| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language` |
+| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; `6a95a1e` reviewed NOT READY (`thr_itmcnmnnku`): two Majors; repair round 1 with the author |
+| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language`; candidate `99229ec` in review (`thr_ahkvy8efbw`) |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish`; candidate `984fc07` in review (`thr_vw5bjhk5kb`) |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
@@ -158,10 +158,10 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| A1 | review | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. Cause found: the worker called `process.exit` before the long `settled` line left the pipe. Candidate `fix/run-continuity` `6a95a1e`; reviewer `thr_itmcnmnnku`. |
-| A2 | review | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). Partly met in the candidate: the workspace is kept; a lost one is rebuilt and said in one `workspace` event. Same-commit restore needs `fetch.mjs` to record commits (new task A6). |
-| A3 | review | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
-| A4 | review | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
+| A1 | doing | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. Cause found: the worker called `process.exit` before the long `settled` line left the pipe. Candidate `fix/run-continuity` `6a95a1e`; reviewer `thr_itmcnmnnku`. Review of `6a95a1e`: A1, A3, A4 met, A2 partly met (as accepted). NOT READY for two Majors: (1) the kept-workspace delete and reuse trust the path in the record (`runs.mjs:1025`); (2) a kept live AI/MCP workspace keeps the credential after the run. Repair round 1 sent. |
+| A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). Partly met in the candidate: the workspace is kept; a lost one is rebuilt and said in one `workspace` event. Same-commit restore needs `fetch.mjs` to record commits (new task A6). |
+| A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
+| A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
 | A6 | todo | Same-commit restore of a lost workspace: `spike/lib/fetch.mjs` records the commit of each fetch; a rebuild checks out the same commits. Also decide: reach on a follow-up of a live-target run (owner question). Wave 3. |
 | A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. The owner allowed it for this task (2026-11-13). Starts after thread 1a merges (wave 2, thread 2h). Own reviewer; the gate line is never touched. |
 
@@ -181,15 +181,15 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| C1 | doing | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. |
-| C2 | doing | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
-| C3 | doing | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). |
+| C1 | review | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. Candidate `99229ec`, reviewer `thr_ahkvy8efbw`. |
+| C2 | review | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
+| C3 | review | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). |
 
 ## D. Scopes
 
 | ID | State | Item |
 |----|-------|------|
-| D1 | doing | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
+| D1 | review | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
 | D2 | todo | **Scope brief in the scope, not in the repo.** Today Touchstone writes a `BRIEF.md` into the run workspace (the repo does not need one). The owner wants a brief field on each scope, edited in the scope's settings, and applied to every run of that scope. The run view should not show "Read BRIEF.md" as if it were a repo file. |
 | D3 | todo | One multi-module run: ticking several modules builds one run, not one run per module. Needs one paid run to prove it (owner's yes). |
 
@@ -215,9 +215,9 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
-| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. |
+| G2 | review | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. Head `c06344d`: images built, in `setup.mjs`, smoke shows `jwt-tool:ran` and `schemathesis:ran`, no skip. Reviewer `thr_7jsxbcjdk7`. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
-| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. |
+| G4 | review | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. Head `067c51d`: images built, in `setup.mjs`, `declared()` fixed, no skip. Mutants T2 and T3 survive (reviewer decides if `wrap.test` covers them). Reviewer `thr_yni3ut72br`. Merge after G2: both add `spike/test/setup-manifest.test.mjs`. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
 | G7 | done | Part A merged `d1caa23` (Heimdall comment and licence note). Part B merged `f723d57` (`fix/wave-spend-cap` `51fce60`): Strix cap check reserves budget plus one worst turn; a model with no price is charged at the fallback prices. Review READY after one repair round (`thr_yzqyhqy2tj`). Known gap stays: up to six unrecorded attempts before a response header (comment in `provider.mjs`). |
