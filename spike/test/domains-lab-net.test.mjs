@@ -141,19 +141,21 @@ test('real Docker: two labs at once both run, each answers DNS with its own addr
   assert.ok(gone(b.network), `${b.network} left behind`);
 });
 
-test('real Docker: a process killed by SIGTERM (a runner timeout) leaves no lab network or container', { skip: noDocker, timeout: 120_000 }, async () => {
+test('real Docker: a process killed by SIGTERM (a runner timeout) leaves no lab network, container or lab copy', { skip: noDocker, timeout: 120_000 }, async () => {
   const labctl = fileURLToPath(new URL('../packs/domains/labctl.mjs', import.meta.url));
   const child = spawn(process.execPath, ['--input-type=module', '-e',
-    `const { startLab } = await import(${JSON.stringify(labctl)}); const lab = await startLab(); console.log(lab.network); setInterval(() => {}, 1000);`],
+    `const { startLab } = await import(${JSON.stringify(labctl)}); const lab = await startLab(); console.log(lab.network + ' ' + lab.dir); setInterval(() => {}, 1000);`],
   { stdio: ['ignore', 'pipe', 'inherit'] });
-  const network = await new Promise((resolve, reject) => {
+  const [network, dir] = await new Promise((resolve, reject) => {
     let out = '';
-    child.stdout.on('data', (d) => { out += d; if (out.includes('\n')) resolve(out.trim()); });
+    child.stdout.on('data', (d) => { out += d; if (out.includes('\n')) resolve(out.trim().split(' ')); });
     child.on('exit', (code) => reject(new Error(`child exited ${code} before the lab started`)));
   });
   assert.ok(sh(['network', 'inspect', network]) !== null, 'the lab started');
+  assert.ok(existsSync(dir), 'the lab copy exists while the lab runs');
   const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve(signal ?? code)));
   child.kill('SIGTERM');
   assert.equal(await exited, 'SIGTERM', 'the process still dies by the signal');
   assert.ok(gone(network), `${network} or its containers left behind`);
+  assert.equal(existsSync(dir), false, `the lab copy ${dir} was left behind`);
 });

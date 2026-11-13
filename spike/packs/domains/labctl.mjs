@@ -8,7 +8,7 @@
 //
 // Cleanup: stop() removes the containers, the network and the copy. createLabNetwork
 // tracks the network, so a SIGINT/SIGTERM (a test runner's kill on timeout) also removes
-// the network and every container on it.
+// the network and every container on it; this file's own handler removes the copy.
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -60,8 +60,31 @@ export function assertInternal(network) {
   if (internal !== 'true') throw new Error('Lab network ' + network + ' is not --internal');
 }
 export const LAB_SCOPE = ['touchstone.test'];
+// The per-run copies of lab/ this process made. On SIGINT/SIGTERM they are removed too
+// (lab-net's handler removes the network and containers, not the copy). The process
+// still dies by the signal: whichever of the two handlers runs last, with no other
+// listener left, raises it again. A crash (the 'exit' event) removes them as well.
+const copies = new Set();
+const SIGNALS = ['SIGINT', 'SIGTERM'];
+const removeCopies = () => { for (const c of copies) { try { rmSync(c, { recursive: true, force: true }); } catch {} } copies.clear(); };
+function onSignal(sig) {
+  removeCopies();
+  for (const s of SIGNALS) process.removeListener(s, onSignal);
+  process.removeListener('exit', removeCopies);
+  if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+}
+function trackCopy(dir) {
+  if (copies.size === 0) { for (const s of SIGNALS) process.on(s, onSignal); process.on('exit', removeCopies); }
+  copies.add(dir);
+}
+function untrackCopy(dir) {
+  if (!copies.delete(dir) || copies.size) return;
+  for (const s of SIGNALS) process.removeListener(s, onSignal);
+  process.removeListener('exit', removeCopies);
+}
 // Start the lab on its own --internal network with a free subnet. Resolves to
-// { network, subnet, resolver, web, granted, scope, stop }; stop() is async and safe to call twice.
+// { network, subnet, resolver, web, dir (the lab copy), granted, scope, stop }; stop() is async
+// and safe to call twice.
 export async function startLab(lab = LAB, { docker: run = dockerAsync } = {}) {
   const network = 'touchstone-domains-' + process.pid + '-' + randomBytes(3).toString('hex');
   const names = [];
@@ -70,7 +93,7 @@ export async function startLab(lab = LAB, { docker: run = dockerAsync } = {}) {
   const stop = async () => {
     for (const name of names.splice(0).reverse()) await run(['rm', '-f', name]);
     if (created) { created = false; await removeLabNetwork(network, { docker: run }); }
-    if (copy) { rmSync(copy, { recursive: true, force: true }); copy = null; }
+    if (copy) { rmSync(copy, { recursive: true, force: true }); untrackCopy(copy); copy = null; }
   };
   try {
     const net = await createLabNetwork(network, ['--internal'], { docker: run });
@@ -78,6 +101,7 @@ export async function startLab(lab = LAB, { docker: run = dockerAsync } = {}) {
     created = true;
     const ips = labAddresses(net.subnet);
     copy = mkdtempSync(join(tmpdir(), 'touchstone-domains-lab-'));
+    trackCopy(copy);
     cpSync(lab, copy, { recursive: true });
     rewriteLabDir(copy, ips);
     for (const [suffix, role, image, cmd, caps] of SERVICES) {
@@ -87,6 +111,6 @@ export async function startLab(lab = LAB, { docker: run = dockerAsync } = {}) {
       if (r.code !== 0) throw new Error('Lab ' + suffix + ' did not start: ' + r.stderr);
     }
     // The lab is ours, so its reach carries its own grant for the lab domain.
-    return { network, subnet: net.subnet, resolver: ips.dns, web: ips.web, granted: true, scope: LAB_SCOPE, stop };
+    return { network, subnet: net.subnet, resolver: ips.dns, web: ips.web, dir: copy, granted: true, scope: LAB_SCOPE, stop };
   } catch (error) { await stop(); throw error; }
 }
