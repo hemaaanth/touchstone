@@ -45,7 +45,12 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
       }
     }
     const pocProved = forgePassed && proof?.pass === true && proof?.harm?.ok === true;
-    out.push({ n: f.n, title: f.title, severity: f.severity, poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof });
+    // Keep the submitted test on the record. This replay runs while the workspace
+    // still exists; cleanup removes the file afterwards. A fleet child's run_poc
+    // never reaches the root transcript — summarize() walks only the root
+    // conversation — so the report cannot recover the source from there.
+    const testSource = typeof f.source === "string" && f.source ? f.source : undefined;
+    out.push({ n: f.n, title: f.title, severity: f.severity, poc: f.poc, explanation: f.explanation, forgePassed, pocProved, proof, ...(testSource ? { testSource } : {}) });
   }
   return out;
 }

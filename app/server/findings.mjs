@@ -116,6 +116,16 @@ function splitRun(raw, runId) {
   return []
 }
 
+// A forge finding whose own replay passed and whose harm gate accepted it.
+// pocProved is recorded from that same replay. The root transcript is not
+// required: a child runs the PoC in its own conversation, and summarize() never
+// copies that call up. A record from before the harm gate has no proof.harm,
+// so it is not attested and still needs its transcript run_poc.
+function attestedForge(finding) {
+  const p = finding?.proof
+  return finding?.pocProved === true && p?.pass === true && p?.status !== "fail" && p?.harm?.ok === true
+}
+
 function normalize(raw, { id, runId, finding }) {
   const r = raw.result || {}
   const t = raw.transcript || {}
@@ -129,16 +139,19 @@ function normalize(raw, { id, runId, finding }) {
     contract: pocCalls[i]?.args?.contract_name || null,
   }))
 
-  // The proving run is the submitted test passing its OWN replay. A throwaway
-  // diagnostic that happens to pass never counts — if the submitted contract
-  // never passed, the run is simply not proven. (finding.poc is the contract
-  // name the agent submitted; the engine's submit gate already refused an
-  // unproven submission, so this re-derivation only mirrors that on read.)
+  // The proving run is the submitted test passing its OWN replay in the root
+  // transcript. A throwaway diagnostic that happens to pass never counts.
+  // (finding.poc is the contract name the agent submitted; the engine's submit
+  // gate already refused an unproven submission, so this re-derivation mirrors
+  // that on read.) A child PoC is absent from that transcript. When the finding
+  // carries a passing harm-gated proof, that replay is the proof. A pre-harm
+  // record has no proof.harm and still needs the transcript match.
   const submittedContract = finding.poc || null
   const provingIndex = submittedContract
     ? runs.findIndex((x) => x.pass && x.contract === submittedContract)
     : -1
   const proving = provingIndex >= 0 ? runs[provingIndex] : null
+  const attested = attestedForge(finding)
 
   // The engine's structured proof delta, present only on runs recorded after the
   // engine began emitting it and only when something proved. We require a parsable
@@ -147,8 +160,12 @@ function normalize(raw, { id, runId, finding }) {
 
   // The exploit source shown and parsed is the proving run's own test — or, if
   // nothing proved, the last attempt, so the report still shows what was tried.
+  // When the root transcript has no run_poc, the source saved with a harm-gated
+  // proof is that test.
   const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
-  const testSource = sourceCall ? sourceCall.args.test_source : null
+  const transcriptSource = sourceCall?.args?.test_source || null
+  const storedSource = typeof finding.testSource === "string" && finding.testSource ? finding.testSource : null
+  const testSource = (proving && transcriptSource) || (attested ? storedSource : null) || transcriptSource
   // The write-up is this finding's own submit_finding call. A run can submit
   // several findings, so match on the test contract it names.
   const submits = (t.calls || []).filter((x) => x.name === "submit_finding")
@@ -245,8 +262,8 @@ function normalize(raw, { id, runId, finding }) {
     // so `proven` stays true and only the final stage reads "dismissed".
     stages: {
       hypothesis: other ? true : Boolean(readSrc),
-      reproduced: other ? true : runs.length > 0,
-      proven: other ? isProven(finding) : Boolean(finding.pocProved && proving && proving.pass),
+      reproduced: other ? true : runs.length > 0 || attested,
+      proven: other ? isProven(finding) : Boolean((finding.pocProved && proving && proving.pass) || attested),
       accepted: finding.dismissed
         ? "dismissed"
         : r.decision === "approved"
@@ -262,7 +279,7 @@ function normalize(raw, { id, runId, finding }) {
       test: engineProof ? engineProof.test : proving ? proving.test : finding.poc,
       contract: finding.poc || null,
       gas: proving ? proving.gas : engineProof ? engineProof.gasUsed : null,
-      pass: Boolean(proving && proving.pass),
+      pass: Boolean((proving && proving.pass) || attested),
       runs,
       // The money the exploit actually moved. Preferred source is the engine's
       // structured proof delta: real signed ETH deltas per address, read from the

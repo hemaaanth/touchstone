@@ -1,0 +1,91 @@
+{
+  "result": {
+    "pack": "contracts",
+    "alias": "fleet-child",
+    "target": { "title": "Vault", "pack": "contracts" },
+    "recorded": true,
+    "decision": "approved",
+    "approveMode": "auto",
+    "findings": [
+      {
+        "n": 1,
+        "title": "Reentrancy drains the vault",
+        "severity": "critical",
+        "poc": "VaultDrainTest",
+        "explanation": "The vault sends ETH before it updates the balance.\n\nFix: update the balance first.",
+        "forgePassed": true,
+        "pocProved": true,
+        "testSource": "contract VaultDrainTest is Test {\n  function test_drain() public {\n    assertEq(address(vault).balance, 0);\n  }\n}\n",
+        "proof": {
+          "kind": "forge",
+          "tool": "Foundry",
+          "source": "engine-replay",
+          "contract": "VaultDrainTest",
+          "test": "test_drain()",
+          "status": "pass",
+          "pass": true,
+          "gasUsed": 120000,
+          "logs": [],
+          "transfers": [
+            { "label": "Vault", "address": "0x0000000000000000000000000000000000000001", "net": "-1 ETH", "netWei": "-1000000000000000000", "gained": false }
+          ],
+          "harm": { "ok": true, "kind": "funds" }
+        }
+      },
+      {
+        "n": 2,
+        "title": "Old record with no harm gate",
+        "severity": "high",
+        "poc": "OldTest",
+        "explanation": "Recorded before the harm gate.",
+        "forgePassed": true,
+        "pocProved": true,
+        "testSource": "contract OldTest is Test { function test_old() public { assertTrue(true); } }\n",
+        "proof": {
+          "kind": "forge",
+          "tool": "Foundry",
+          "pass": true,
+          "status": "pass",
+          "test": "test_old()",
+          "transfers": [],
+          "logs": []
+        }
+      },
+      {
+        "n": 3,
+        "title": "Passing test that showed no harm",
+        "severity": "medium",
+        "poc": "TautologyTest",
+        "explanation": "assertTrue(true) is not a drain.",
+        "forgePassed": true,
+        "pocProved": true,
+        "testSource": "contract TautologyTest is Test { function test_pwned() public { assertTrue(true); } }\n",
+        "proof": {
+          "kind": "forge",
+          "tool": "Foundry",
+          "source": "engine-replay",
+          "contract": "TautologyTest",
+          "test": "test_pwned()",
+          "status": "fail",
+          "pass": false,
+          "reason": "the replay showed no harm",
+          "transfers": [],
+          "logs": [],
+          "harm": { "ok": false, "reason": "the replay showed no harm" }
+        }
+      }
+    ]
+  },
+  "transcript": {
+    "calls": [
+      { "name": "list_sources", "args": {} },
+      { "name": "read_source", "args": { "path": "src/Vault.sol" } },
+      { "name": "spawn_agent", "args": { "name": "reentrancy", "task": "prove the vault drain", "area": "Vault.sol" } }
+    ],
+    "results": [
+      { "name": "list_sources", "text": "src/Vault.sol" },
+      { "name": "read_source", "text": "contract Vault { function withdraw() external { ... } }" }
+    ],
+    "assistants": []
+  }
+}
