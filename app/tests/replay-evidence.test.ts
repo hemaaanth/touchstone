@@ -162,6 +162,23 @@ describe("evidence replay keeps no snapshot text", () => {
     expect(zip.headers["x-touchstone-unjudged"].includes(txHash.slice(2))).toBe(false)
   })
 
+  test("the bundle route answers 409 for a finding its replay did not prove", async () => {
+    const proof = {
+      kind: "http",
+      status: "fail",
+      oracle: { name: "debug-route-signer-key-leak", detail: "no response returned a signerPrivateKey field", passed: false },
+      log: [{ label: "1", request: { method: "GET", url: "http://origin:8080/healthz" }, response: { status: 200, body: "ok" } }],
+    }
+    const row = { title: "a lead", severity: "high", pocProved: false, script: 'await request("GET", "/healthz");\n', proof }
+    writeFileSync(path.join(results, "run-http-lead.json"), JSON.stringify({ result: { findingSubmitted: true, recorded: true, decision: "approved", pack: "web", findings: [row] } }))
+    for (const format of ["bundle", "zip", "bundle-check"]) {
+      const r = await call(`/api/findings/http-lead.1/report?format=${format}`)
+      expect([format, r.status]).toEqual([format, 409])
+      expect(JSON.parse(r.body).error).toBe("This finding is not proven by its replay, so it has no replay bundle: a bundle of a lead could be shared as if it were proof.")
+    }
+    expect((await call("/api/findings/http-lead.1/report?format=json")).status).toBe(200)
+  })
+
   test("an unknown report format is refused, not answered with json", async () => {
     const r = await call("/api/findings/ev-1.1/report?format=bogus")
     expect(r.status).toBe(400)

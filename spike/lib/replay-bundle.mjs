@@ -17,8 +17,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
@@ -28,16 +28,6 @@ import { pinnedSolc, warmFor } from "./sandbox.mjs";
 const MAX_FILE = 1_500_000;
 const MAX_TOTAL = 8_000_000;
 const SKIP_DIRS = new Set(["node_modules", "out", "cache", "broadcast", "artifacts", "oracle", "coverage", "dist", "target"]);
-const SECRET_NAME = [
-  /^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
-  /\.(pem|key|p12|pfx|jks|keystore|kdbx|ovpn|gpg|asc|crt|cer|der)$/i,
-  /^(secrets?|credentials?|service[-_]?account)(\.[\w-]+)?\.(json|ya?ml|toml|txt|ini)$/i,
-  /^(secrets?|credentials?)$/i,
-  /^wallet\.dat$/i,
-  /^(keystore|mnemonic|seed)(\.[\w-]+)?\.(json|txt)$/i,
-  /^env$/i,
-  /\.env$/i,
-];
 // A file that is a key, not a source file that mentions one. Dropped whole.
 const SECRET_CONTENT = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/,
@@ -180,13 +170,22 @@ export function leakShapes(text) {
     }
     for (const m of line.matchAll(NAMED)) {
       const v = m[2].trim();
-      if (SECRET_NAME_END.test(m[1]) && !PLAIN.test(v) && words(v).some((w) => secretish(w, 8))) found.add("a named secret");
+      if (SECRET_NAME_END.test(m[1]) && !PLAIN.test(v) && redactorMasks(`${m[1]} = "${v}"`)) found.add("a named secret");
     }
+    // The text was redacted already. The redactor judges the same name and
+    // value again on a bare line: if it masks something there, the context in
+    // the file hid a secret from it. Code like `"Bearer " + a.d.token` stays.
     const h = HEADER_IN_TEXT.exec(line);
-    if (h && words(h[2]).some((w) => secretish(w, 8))) found.add("a header in text");
+    if (h && redactorMasks(`${h[1]}: ${h[2]}`)) found.add("a header in text");
   }
   if (hasMnemonic(text)) found.add("a mnemonic");
   return [...found];
+}
+
+// The redactor's own value judgement on a bare line (redact.mjs). The bundle
+// writes no third secret detector for names and headers.
+function redactorMasks(line) {
+  return redactSecrets(line) !== line;
 }
 
 // A BIP39 phrase can be named without a keyword: its last word carries a
@@ -268,11 +267,6 @@ export class BundleRefused extends Error {
   }
 }
 
-function secretFile(name) {
-  const base = name.split("/").pop();
-  return SECRET_NAME.some((re) => re.test(base));
-}
-
 function secretBody(text) {
   return SECRET_CONTENT.some((re) => re.test(text));
 }
@@ -300,10 +294,89 @@ function scrubFoundryToml(text) {
 
 // A forge file as it goes into the record and the zip: redacted, then checked.
 // Returns { text } or { reason } when the file has to be left out.
+// redact.mjs replaces a text over 64 KB whole with this mark. A file that
+// came back as the mark is not code any more, so it is left out.
+const CAP_MARK = /\[REDACTED: text of \d+ characters too long to check\]/;
+export const OVER_CAP = "over 64 KB, so the redactor cannot check it";
 function forgeFileText(path, raw) {
   const text = path === "foundry.toml" ? scrubFoundryToml(raw) : bundleText(raw, { forge: true });
+  // An old record can hold the mark as its text: that is never code either.
+  if (CAP_MARK.test(text)) return { reason: OVER_CAP };
   const shapes = leakShapes(text);
   return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
+}
+
+// A path the redactor would mask, in whole or in one part, is not shipped:
+// not as a zip entry name, not in a list, not in the record. Lists show this.
+export const MASKED_PATH = "[REDACTED]";
+export function pathMasked(rel) {
+  const s = String(rel ?? "");
+  return redactSecrets(s) !== s || s.split("/").some((part) => redactSecrets(part) !== part) || leakShapes(s).length > 0;
+}
+
+// Libraries the engine itself puts into a workspace: sandbox.mjs copies a lab's
+// lib/ (or lab/vault-reentrancy's forge-std into a brief workspace), and the
+// keys proofs copy the keys lab's lib/. Today these are forge-std (every lab)
+// and chimera (lab/vault-shares). A workspace file that is byte-identical to
+// the engine's copy at the same path is that public library: it is kept as it
+// is, without redaction, and the record keeps only its SHA-256.
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+let vendoredIndex = null;
+function engineLibRoots() {
+  const roots = [];
+  for (const [base, sub] of [[join(REPO_ROOT, "lab"), []], [join(REPO_ROOT, "spike", "packs"), ["lab"]]]) {
+    let dirs = [];
+    try { dirs = readdirSync(base, { withFileTypes: true }); } catch { continue; }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const lib = join(base, d.name, ...sub, "lib");
+      if (existsSync(lib)) roots.push(lib);
+    }
+  }
+  return roots;
+}
+function vendored() {
+  if (vendoredIndex) return vendoredIndex;
+  const index = new Map();
+  for (const root of engineLibRoots()) {
+    const walk = (dir, parts) => {
+      let entries = [];
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const abs = join(dir, e.name);
+        if (e.isDirectory()) { walk(abs, [...parts, e.name]); continue; }
+        if (!e.isFile() || !parts.length) continue;
+        const rel = ["lib", ...parts, e.name].join("/");
+        const sha256 = createHash("sha256").update(readFileSync(abs)).digest("hex");
+        if (!index.has(rel)) index.set(rel, new Map());
+        index.get(rel).set(sha256, { lib: parts[0], abs });
+      }
+    };
+    walk(root, []);
+  }
+  vendoredIndex = index;
+  return index;
+}
+// { lib, sha256 } when these bytes are the engine's copy of that path.
+export function vendoredFile(rel, buf) {
+  const byHash = vendored().get(rel);
+  if (!byHash) return null;
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+  const hit = byHash.get(sha256);
+  return hit ? { lib: hit.lib, sha256 } : null;
+}
+// The engine's bytes for a vendored file, or null when it no longer ships them.
+function engineVendored(rel, sha256) {
+  const hit = vendored().get(rel)?.get(sha256);
+  try {
+    return hit ? readFileSync(hit.abs) : null;
+  } catch {
+    return null;
+  }
+}
+export function vendoredLibs() {
+  return [...new Set([...vendored().values()].flatMap((m) => [...m.values()].map((v) => v.lib)))].sort();
 }
 
 function testIdent(raw) {
@@ -444,12 +517,18 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   let total = 0;
   let capped = 0;
   for (const rel of paths) {
-    if (secretFile(rel)) {
-      omitted.push({ path: rel, reason: "secret file" });
+    if (pathMasked(rel)) {
+      omitted.push({ path: MASKED_PATH, reason: "its path holds a value the redactor masks" });
       continue;
     }
     let buf;
     try { buf = readFileSync(join(ws, rel)); } catch { continue; }
+    const lib = vendoredFile(rel, buf);
+    if (lib) {
+      total += buf.length;
+      files.push({ path: rel, vendored: lib });
+      continue;
+    }
     if (buf.length > MAX_FILE) {
       omitted.push({ path: rel, reason: "larger than 1.5 MB" });
       continue;
@@ -479,7 +558,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   } catch {
     toml = "";
   }
-  const sources = files.filter((f) => f.path.endsWith(".sol")).map((f) => f.text).join("\n");
+  const sources = files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string").map((f) => f.text).join("\n");
   // Fork detection reads the original toml (endpoints still present) and the
   // scrubbed sources (block numbers are not secrets). The URL itself is not kept.
   const fork = forkFrom(toml, sources);
@@ -495,7 +574,8 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     omitted,
   };
   replay.prepare = prepareCommand(replay);
-  replay.command = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
+  // A file left out may be one the proof needs, so the record has no command.
+  replay.command = !omitted.length && files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
     ? forgeCommand(replay)
     : null;
   return replay;
@@ -508,21 +588,50 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
 // is the redacted text from snapshotForgeReplay; the bundle redacts it again.
 export const REPLAY_FILES_VERSION = 3;
 const STORE_HASH = /^[a-f0-9]{64}$/;
+// A test that sets no results folder must not write the real one: under
+// `node --test` (NODE_TEST_CONTEXT) or `bun test` (NODE_ENV=test) the store
+// goes to a folder of its own in the temp folder, removed when the process ends.
+let testStore = null;
+function underTest() {
+  return Boolean(process.env.NODE_TEST_CONTEXT) || (Boolean(process.versions.bun) && process.env.NODE_ENV === "test");
+}
 export function replayStoreDir() {
-  const results = process.env.TOUCHSTONE_RESULTS_DIR || process.env.AGENT_RESULTS_DIR || fileURLToPath(new URL("../results/agent/", import.meta.url));
-  return join(results, "replay");
+  const results = process.env.TOUCHSTONE_RESULTS_DIR || process.env.AGENT_RESULTS_DIR;
+  if (results) return join(results, "replay");
+  if (underTest()) {
+    if (!testStore) {
+      testStore = join(tmpdir(), `touchstone-replay-test-${process.pid}`);
+      const dir = testStore;
+      process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+    }
+    return testStore;
+  }
+  return join(fileURLToPath(new URL("../results/agent/", import.meta.url)), "replay");
 }
 
 // The replay as the run record keeps it: no file text. A store that fails is
 // named on the replay, and the bundle says the files are gone.
+// A vendored library file is kept as { path, vendored: { lib, sha256 } } in
+// the replay file, and its bytes once in replay/lib/<sha256>, shared by every
+// record. So a record stays replayable when the engine's own copy changes.
 export function storeReplayFiles(replay, dir = replayStoreDir()) {
   if (!replay || !Array.isArray(replay.files)) return replay;
   const { files, ...rest } = replay;
-  const body = JSON.stringify({ version: 1, files: files.map((f) => ({ path: f.path, text: f.text })) });
+  const body = JSON.stringify({ version: 1, files: files.map((f) => (f.vendored ? { path: f.path, vendored: f.vendored } : { path: f.path, text: f.text })) });
   const sha256 = createHash("sha256").update(body).digest("hex");
   const kept = { ...rest, version: REPLAY_FILES_VERSION, paths: files.map((f) => f.path) };
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const f of files) {
+      if (!f.vendored) continue;
+      const blob = join(dir, "lib", f.vendored.sha256);
+      if (existsSync(blob)) continue;
+      const bytes = engineVendored(f.path, f.vendored.sha256);
+      if (!bytes) throw Object.assign(new Error("vendored"), { code: "the engine no longer ships a vendored file" });
+      mkdirSync(join(dir, "lib"), { recursive: true, mode: 0o700 });
+      writeFileSync(`${blob}.tmp`, bytes, { mode: 0o600 });
+      renameSync(`${blob}.tmp`, blob);
+    }
     const file = join(dir, `${sha256}.json`);
     if (!existsSync(file)) {
       writeFileSync(`${file}.tmp`, body, { mode: 0o600 });
@@ -551,11 +660,24 @@ export function loadReplayFiles(replay, dir = replayStoreDir()) {
   if (createHash("sha256").update(bytes).digest("hex") !== sha256) return { ...replay, files: [], filesLost: "the replay file does not match the hash in the record" };
   try {
     const files = JSON.parse(bytes.toString("utf8")).files;
-    if (!Array.isArray(files) || !files.every((f) => typeof f?.path === "string" && typeof f?.text === "string")) throw new Error("bad shape");
-    return { ...replay, files };
+    const ok = (f) => typeof f?.path === "string" && (typeof f?.text === "string" || (typeof f?.vendored?.lib === "string" && STORE_HASH.test(String(f?.vendored?.sha256))));
+    if (!Array.isArray(files) || !files.every(ok)) throw new Error("bad shape");
+    return { ...replay, files: files.map((f) => (f.vendored ? { ...f, text: vendoredText(f, dir) } : f)) };
   } catch {
     return { ...replay, files: [], filesLost: "the replay file is not readable" };
   }
+}
+
+// The text of a vendored file: the store's copy, else the engine's, each
+// checked against the hash. Null when neither holds those bytes.
+function vendoredText(f, dir = null) {
+  const sha256 = f?.vendored?.sha256;
+  if (!STORE_HASH.test(String(sha256))) return null;
+  const same = (b) => b && createHash("sha256").update(b).digest("hex") === sha256;
+  let bytes = null;
+  try { if (dir) bytes = readFileSync(join(dir, "lib", sha256)); } catch { bytes = null; }
+  if (!same(bytes)) bytes = engineVendored(f.path, sha256);
+  return same(bytes) ? bytes.toString("utf8") : null;
 }
 
 // What an evidence proof keeps for a later export: the pin and the names of
@@ -571,7 +693,7 @@ export function evidenceReplay(pinned) {
     version: 2,
     kind: "evidence",
     snapshotHash: pinned?.snapshotHash ?? null,
-    snapshotFiles: names.slice(0, MAX_LISTED),
+    snapshotFiles: names.slice(0, MAX_LISTED).map((n) => (pathMasked(n) ? MASKED_PATH : n)),
     snapshotFileCount: names.length,
   };
 }
@@ -579,11 +701,17 @@ export function evidenceReplay(pinned) {
 export const EVIDENCE_REFUSAL = "An evidence finding has no replay bundle yet. Its pinned snapshot holds raw files from the target, and no redaction layer strips secrets from them. The report's snapshotHash is the proof.";
 
 // Why this finding gets no zip, or null when it gets one.
+export const NOT_PROVEN_REFUSAL = "This finding is not proven by its replay, so it has no replay bundle: a bundle of a lead could be shared as if it were proof.";
+// Proven: the normalized finding's stages.proven; a raw record's pocProved.
+export function provenFinding({ finding, recorded } = {}) {
+  return typeof finding?.stages?.proven === "boolean" ? finding.stages.proven : recorded?.pocProved === true;
+}
 export function bundleRefusal({ finding, recorded } = {}) {
   const proof = recorded?.proof || finding?.proof || null;
   const replay = recorded?.replay || proof?.replay || null;
   const kind = replay?.kind || proof?.kind || finding?.proofKind || "forge";
-  return kind === "evidence" ? EVIDENCE_REFUSAL : null;
+  if (kind === "evidence") return EVIDENCE_REFUSAL;
+  return provenFinding({ finding, recorded }) ? null : NOT_PROVEN_REFUSAL;
 }
 
 function proofJson(proof, replay) {
@@ -700,16 +828,21 @@ function sha256Sums(entries) {
     .join("\n") + "\n";
 }
 
-function forgeReadme({ title, replay, command, prepare, fork, harm }) {
+function vendoredNote(libs) {
+  if (!libs?.length) return "";
+  return ` Vendored library files (${libs.map((l) => `\`lib/${l}\``).join(", ")}) are included unchanged: each one is byte-identical (SHA-256) to the copy the engine installs, so it is public library code and is not redacted. A library's own public sample values stay as the library ships them, such as the sample RPC keys in forge-std's \`StdChains.sol\`.`;
+}
+
+function forgeReadme({ title, replay, command, prepare, fork, harm, libs = [], noRerun = null }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   if (!command) {
     return `# Replay this finding
 
 **${title || "Finding"}** · Foundry
 
-This snapshot does not include both \`foundry.toml\` and a proof test, so there is no command that can rerun the proof from this folder. \`proof.json\` is the recorded verdict. \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.
+There is no command that can rerun the proof from this folder: ${noRerun || "the snapshot is not complete"}. The files that are here are the recorded ones. \`proof.json\` is the recorded verdict. \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as ${block}.${vendoredNote(libs)}
 
-No provider key and no bearer token is included.
+No provider key and no bearer token from the run is included.
 ${omittedList(replay?.omitted)}`;
   }
   const forkNote = fork?.forked
@@ -726,9 +859,9 @@ ${omittedList(replay?.omitted)}`;
 
 **${title || "Finding"}** · Foundry
 
-The proof test, the scope sources, and the Foundry config are in this folder. \`proof.json\` is the recorded verdict. Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.
+The proof test, the scope sources, and the Foundry config are in this folder. \`proof.json\` is the recorded verdict. Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.${vendoredNote(libs)}
 
-${forkNote} ${solc} ${image} No provider key and no bearer token is in this folder.
+${forkNote} ${solc} ${image} No provider key and no bearer token from the run is in this folder.
 
 The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in this folder, the proof test included, differs from what was recorded. Forge then reruns the named test and writes its JSON trace to \`replay.json\`. \`node check-harm.mjs\` (Node 18 or later) reads that trace and checks it against \`harm.json\`, the harm the engine recorded. It exits 0 when the test passed and the victim lost the recorded wei, 1 when not, and 2 when it cannot check. ${harmCheck(harm).long}
 ${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedList(replay?.omitted)}`;
@@ -769,10 +902,12 @@ function labRerun({ pack, proof, script }) {
   return { pack, image, oracle };
 }
 
-function httpReadme({ title, hasScript, rerun }) {
+function httpReadme({ title, hasScript, scriptOverCap = false, rerun }) {
   const script = hasScript
     ? "The request script is `script.mjs`. A secret value in it was replaced with `[REDACTED]`."
-    : "The request script was not on the recorded finding, so it is not in this folder.";
+    : scriptOverCap
+      ? `The request script is ${OVER_CAP}, so it is left out of this folder.`
+      : "The request script was not on the recorded finding, so it is not in this folder.";
   const head = `# Replay this finding
 
 **${title || "Finding"}** · HTTP oracle
@@ -854,20 +989,35 @@ function harmCheck(harm) {
 
 // Line 1 of every README. The normalized finding's stages.proven is the app's
 // verdict; a raw record falls back to pocProved. Anything else is not proven.
-function verdictLine({ finding, recorded }) {
-  const proven = typeof finding?.stages?.proven === "boolean" ? finding.stages.proven : recorded?.pocProved === true;
-  return proven
-    ? "PROVEN: the engine's proof gate passed this finding when it was recorded.\n\n"
-    : "NOT PROVEN: the engine did not prove this finding. These files are a lead, not a proof, and a passing replay here does not make it one.\n\n";
+// bundleRefusal lets only a proven finding through, so line 1 starts PROVEN.
+// It goes on to say whether this folder can rerun the proof.
+function verdictLine(rest = "") {
+  return `PROVEN: the engine's proof gate passed this finding when it was recorded.${rest ? ` ${rest}` : ""}\n\n`;
 }
 
 function forgeBundle({ finding, recorded, replay, proof }) {
   const title = bundleText(finding?.title || "Finding");
   // Records are redacted when written; the bundle redacts and checks again, so
-  // a record written by an older scrubber gets today's rules.
-  const omitted = [...(Array.isArray(replay?.omitted) ? replay.omitted : [])];
+  // a record written by an older scrubber gets today's rules. A vendored
+  // library file is shipped as the engine's bytes, after a hash check.
+  const omitted = [...(Array.isArray(replay?.omitted) ? replay.omitted : [])].map((o) => (o?.path && pathMasked(o.path) ? { ...o, path: MASKED_PATH } : o));
   const files = [];
+  const libs = [];
   for (const f of Array.isArray(replay?.files) ? replay.files : []) {
+    if (pathMasked(f.path)) {
+      omitted.push({ path: MASKED_PATH, reason: "its path holds a value the redactor masks" });
+      continue;
+    }
+    if (f.vendored) {
+      const text = typeof f.text === "string" ? f.text : vendoredText(f);
+      if (text == null || createHash("sha256").update(text).digest("hex") !== f.vendored.sha256) {
+        omitted.push({ path: f.path, reason: `a ${f.vendored.lib} file that neither the record nor the engine holds any more` });
+        continue;
+      }
+      files.push({ path: f.path, text, vendored: true });
+      if (!libs.includes(f.vendored.lib)) libs.push(f.vendored.lib);
+      continue;
+    }
     const out = forgeFileText(f.path, f.text);
     if (out.reason) omitted.push({ path: f.path, reason: out.reason });
     else files.push({ path: f.path, text: out.text });
@@ -880,14 +1030,23 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   }
   replay = replay && { ...replay, omitted };
   const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
+  // A file the proof may need is not here: the replay would not compile, so
+  // the bundle has no command and says why on line 1.
+  const noRerun = !haveProject
+    ? replay?.filesLost
+      ? `the replay files of this run are gone (${replay.filesLost})`
+      : "it does not hold both foundry.toml and a proof test"
+    : omitted.length
+      ? `${omitted.length} ${omitted.length === 1 ? "file was" : "files were"} left out (see "Left out")`
+      : null;
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
   // Rebuild the command from the recorded fields, so a record written before
   // the offline command still gets one.
-  const command = haveProject ? forgeCommand({ ...replay, fork }) : null;
-  const prepare = haveProject ? prepareCommand(replay) : null;
+  const command = noRerun ? null : forgeCommand({ ...replay, fork });
+  const prepare = noRerun ? null : prepareCommand(replay);
   const harm = proof?.harm ?? null;
-  const readme = haveProject || files.length
-    ? forgeReadme({ title, replay, command, prepare, fork, harm })
+  const readme = files.length
+    ? forgeReadme({ title, replay, command, prepare, fork, harm, libs, noRerun })
     : `# Replay this finding
 
 **${title}** · Foundry
@@ -899,7 +1058,9 @@ ${omittedList(omitted)}`;
   const entries = [];
   pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command: command && replaySteps(command), prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
-  for (const f of files) pushFile(entries, f.path, f.text);
+  // A vendored file is the public library as the engine ships it: not
+  // checked for leaks and not counted, like the engine's own files.
+  for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true });
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   if (command) {
     const harm = { contract: replay?.contract || null, test: replay?.test || null, harm: bundleValue(proof?.harm ?? null), transfers: bundleValue(proof?.transfers ?? []) };
@@ -907,16 +1068,22 @@ ${omittedList(omitted)}`;
     pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
-  // Line 1 also says what the folder re-checks, so a reader of one line is not misled.
-  const line1 = command ? verdictLine({ finding, recorded }).replace(/\n\n$/, ` ${harmCheck(harm).short}\n\n`) : verdictLine({ finding, recorded });
+  // Line 1 also says what the folder re-checks, or that it cannot rerun the
+  // proof at all, so a reader of one line is not misled.
+  const line1 = verdictLine(command ? harmCheck(harm).short : `This bundle cannot be re-run from this folder: ${noRerun}.`);
   return finish(entries, line1 + readme);
 }
 
 function httpBundle({ finding, recorded, proof }) {
   const raw = recorded?.script ?? finding?.script ?? null;
-  const text = raw ? bundleText(raw) : null;
+  let text = raw ? bundleText(raw) : null;
+  // A script over the redactor's cap comes back as the mark: it is not shipped.
+  const scriptOverCap = Boolean(text && CAP_MARK.test(text));
+  if (scriptOverCap) text = null;
   const transcript = bundleValue(Array.isArray(proof?.log) ? proof.log : Array.isArray(proof?.exchanges) ? proof.exchanges : []);
-  const rerun = labRerun({ pack: recorded?.pack ?? finding?.pack ?? null, proof, script: text });
+  const rerun = scriptOverCap
+    ? { why: `the request script is ${OVER_CAP}, so it is left out` }
+    : labRerun({ pack: recorded?.pack ?? finding?.pack ?? null, proof, script: text });
   const entries = [];
   pushFile(entries, "proof.json", proofJson(proof, null));
   pushFile(entries, "transcript.json", JSON.stringify(transcript, null, 2) + "\n");
@@ -926,7 +1093,8 @@ function httpBundle({ finding, recorded, proof }) {
     pushFile(entries, "rerun.mjs", readFileSync(RERUN, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
-  return finish(entries, verdictLine({ finding, recorded }) + httpReadme({ title: bundleText(finding?.title || "Finding"), hasScript: Boolean(text), rerun }));
+  const line1 = verdictLine(rerun.pack ? "The oracle is re-checked by `rerun.mjs` against the pack's lab." : `This bundle cannot be re-run from this folder: ${rerun.why}.`);
+  return finish(entries, line1 + httpReadme({ title: bundleText(finding?.title || "Finding"), hasScript: Boolean(text), scriptOverCap, rerun }));
 }
 
 // Zip bytes for one finding. `recorded` is the raw run row (replay snapshot,

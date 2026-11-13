@@ -41,3 +41,19 @@ test("proveFindings stores the replay files under replay/ and the proof keeps th
   const stored = JSON.parse(readFileSync(path.join(results, "replay", `${replay.store.sha256}.json`), "utf8"));
   assert.equal(stored.files.find((x) => x.path === "src/Vault.sol").text, "contract Vault { function withdraw() external {} }\n");
 });
+
+test("under node --test with no results folder set, the store goes to a temp folder, not the checkout", async () => {
+  const { replayStoreDir } = await import("../lib/replay-bundle.mjs");
+  const keep = { t: process.env.TOUCHSTONE_RESULTS_DIR, a: process.env.AGENT_RESULTS_DIR };
+  delete process.env.TOUCHSTONE_RESULTS_DIR;
+  delete process.env.AGENT_RESULTS_DIR;
+  try {
+    assert.ok(process.env.NODE_TEST_CONTEXT, "node --test sets NODE_TEST_CONTEXT");
+    const dir = replayStoreDir();
+    assert.equal(dir, path.join(tmpdir(), `touchstone-replay-test-${process.pid}`));
+    assert.equal(dir.includes(path.join("spike", "results")), false);
+  } finally {
+    process.env.TOUCHSTONE_RESULTS_DIR = keep.t;
+    if (keep.a !== undefined) process.env.AGENT_RESULTS_DIR = keep.a;
+  }
+});

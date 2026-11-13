@@ -13,7 +13,7 @@ import { buildReport, buildReplayBundle, renderReportHtml, renderReportMarkdown,
 // @ts-expect-error — plain .mjs module, no types
 import { loadRecordedReplay } from "../server/replay-bundle.mjs"
 // @ts-expect-error — plain .mjs module, no types
-import { planReplayBundle, replayStoreDir, snapshotForgeReplay, storeReplayFiles } from "../../spike/lib/replay-bundle.mjs"
+import { bundleRefusal, bundleText, evidenceReplay, leakShapes, loadReplayFiles, NOT_PROVEN_REFUSAL, planReplayBundle, replayStoreDir, snapshotForgeReplay, storeReplayFiles, vendoredLibs } from "../../spike/lib/replay-bundle.mjs"
 // @ts-expect-error — resolved from spike/node_modules; the app does not depend on ethers
 import { Mnemonic } from "../../spike/node_modules/ethers/lib.esm/index.js"
 
@@ -208,13 +208,12 @@ describe("report: replay bundle", () => {
       mkdirSync(path.join(ws, "lib", "forge-std", "test"), { recursive: true })
       writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\nlibs = ["lib"]\neth_rpc_url = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_KEY}"\nfork_block_number = 18000000\n\n[rpc_endpoints]\nmainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_KEY}"\n`)
       writeFileSync(path.join(ws, "src", "Vault.sol"), `// Authorization: Bearer ${BEARER}\ncontract Vault {}\n`)
-      writeFileSync(path.join(ws, "src", "Key.sol"), `// ${PEM}\ncontract Key {}\n`)
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
       writeFileSync(path.join(ws, "lib", "forge-std", "src", "HasKey.sol"), `// https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_KEY}\ncontract HasKey { uint256 privateKey = uint256(1); }\n`)
       writeFileSync(path.join(ws, "lib", "forge-std", "test", "Leak.t.sol"), `// ${ALCHEMY_KEY}\ncontract Leak {}\n`)
       const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       const zip = buildReplayBundle({
-        finding: { title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        finding: { stages: { proven: true }, title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
         recorded: { replay, proof: { kind: "forge", pass: true, test: "testDrain()" } },
       })
       expect(Buffer.isBuffer(zip)).toBe(true)
@@ -233,7 +232,6 @@ describe("report: replay bundle", () => {
         expect(files.has("lib/forge-std/src/HasKey.sol")).toBe(true)
         expect(files.get("lib/forge-std/src/HasKey.sol")).toContain("uint256 privateKey = uint256(1)")
         expect(files.has("lib/forge-std/test/Leak.t.sol")).toBe(false)
-        expect(files.has("src/Key.sol")).toBe(false)
         expect(files.get("foundry.toml")).toContain('"${RPC_URL}"')
         expect(files.get("foundry.toml")).not.toContain(ALCHEMY_KEY)
         expect(files.get("src/Vault.sol")).toContain("// Authorization: Bearer [REDACTED]\n")
@@ -356,7 +354,7 @@ describe("report: replay bundle", () => {
         ],
       }
       const zip = buildReplayBundle({
-        finding: { title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        finding: { stages: { proven: true }, title: "Reentrancy drains the vault", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
         recorded: { replay: old, proof: { kind: "forge", pass: true, test: "testDrain()" } },
       })
       for (const [name, v] of Object.entries(V)) expect([name, zip.includes(v)]).toEqual([name, false])
@@ -414,6 +412,170 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("vendored forge-std ships byte for byte, the record keeps its hash, and no file in the zip is the cap mark", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    const store = mkdtempSync(path.join(tmpdir(), "replay-vendored-store-"))
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-vendored-zip-"))
+    try {
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "VaultExploit.t.sol"), "utf8"))
+      const snap = snapshotForgeReplay(ws, { contract: "VaultExploitTest", test: "test_reentrancy_drains_vault()" })
+      expect(vendoredLibs()).toEqual(["chimera", "forge-std"])
+      expect(JSON.stringify(snap).includes("too long to check")).toBe(false)
+      expect(snap.omitted).toEqual([])
+      const big = ["lib/forge-std/src/Vm.sol", "lib/forge-std/src/console.sol", "lib/forge-std/src/safeconsole.sol"]
+      for (const rel of big) {
+        const f = snap.files.find((x: { path: string }) => x.path === rel)
+        const bytes = readFileSync(path.join(lab, rel))
+        expect(bytes.length > 64 * 1024).toBe(true)
+        expect(f.text).toBeUndefined()
+        expect(f.vendored).toEqual({ lib: "forge-std", sha256: createHash("sha256").update(bytes).digest("hex") })
+      }
+      // The store keeps a vendored file by hash, and its bytes once, under lib/.
+      const kept = storeReplayFiles(snap, store)
+      const body = readFileSync(path.join(store, `${kept.store.sha256}.json`), "utf8")
+      expect(body.includes("contract Vm") || body.includes("interface Vm")).toBe(false)
+      expect(kept.store.bytes < 64 * 1024).toBe(true)
+      const vm = snap.files.find((x: { path: string }) => x.path === "lib/forge-std/src/Vm.sol").vendored.sha256
+      expect(readFileSync(path.join(store, "lib", vm))).toEqual(readFileSync(path.join(lab, "lib/forge-std/src/Vm.sol")))
+      const loaded = loadReplayFiles(kept, store)
+      const proof = { kind: "forge", pass: true, test: "test_reentrancy_drains_vault()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: loaded, proof } }), dir)
+      const files = readTree(dir)
+      for (const rel of big) expect(files.get(rel)).toBe(readFileSync(path.join(lab, rel), "utf8"))
+      for (const [name, text] of files) expect([name, /\[REDACTED: text of \d+ characters too long to check\]/.test(text)]).toEqual([name, false])
+      const readme = files.get("README.md") || ""
+      expect(readme).toContain("Vendored library files (`lib/forge-std`) are included unchanged")
+      expect(readme.split("\n")[0]).toBe("PROVEN: the engine's proof gate passed this finding when it was recorded. The harm (an ETH drain) is re-checked by `check-harm.mjs`.")
+      expect(commands(readme)).toHaveLength(2)
+      expect(files.get("SHA256SUMS")).toContain("  lib/forge-std/src/safeconsole.sol\n")
+      execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
+      // The store's copy is the source; with it gone the engine's copy serves.
+      rmSync(path.join(store, "lib"), { recursive: true, force: true })
+      expect(loadReplayFiles(kept, store).files.find((f: { path: string }) => f.path === "lib/forge-std/src/Vm.sol").text).toBe(files.get("lib/forge-std/src/Vm.sol"))
+      // A vendored hash that neither the store nor the engine holds: left out, no command.
+      const stale = { ...loaded, files: loaded.files.map((f: { path: string; vendored?: unknown }) => (f.path === "lib/forge-std/src/Vm.sol" ? { path: f.path, vendored: { lib: "forge-std", sha256: "0".repeat(64) } } : f)) }
+      const out = mkdtempSync(path.join(tmpdir(), "replay-vendored-stale-"))
+      try {
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay: stale, proof } }), out)
+        const r = readTree(out).get("README.md") || ""
+        expect(r).toContain("- `lib/forge-std/src/Vm.sol` — a forge-std file that neither the record nor the engine holds any more")
+        expect(commands(r)).toEqual([])
+        expect(r.split("\n")[0]).toContain("This bundle cannot be re-run from this folder: 1 file was left out")
+      } finally {
+        rmSync(out, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(store, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a source file over the redactor's cap, or one left out for a secret, leaves the bundle with no command", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-overcap-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Big.sol"), `contract Big {\n${"  uint256 public a;\n".repeat(4000)}}\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(snap.omitted).toEqual([{ path: "src/Big.sol", reason: "over 64 KB, so the redactor cannot check it" }])
+      expect(snap.command).toBeNull()
+      const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+      const readmeOf = (replay: unknown) => {
+        const d = mkdtempSync(path.join(tmpdir(), "replay-overcap-zip-"))
+        try {
+          unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof } }), d)
+          const files = readTree(d)
+          for (const [name, text] of files) expect([name, text.includes("too long to check")]).toEqual([name, false])
+          expect(files.has("src/Big.sol")).toBe(false)
+          expect(files.has("check-harm.mjs")).toBe(false)
+          return files.get("README.md") || ""
+        } finally {
+          rmSync(d, { recursive: true, force: true })
+        }
+      }
+      const readme = readmeOf(snap)
+      expect(readme.split("\n")[0]).toBe('PROVEN: the engine\'s proof gate passed this finding when it was recorded. This bundle cannot be re-run from this folder: 1 file was left out (see "Left out").')
+      expect(commands(readme)).toEqual([])
+      expect(readme).toContain("- `src/Big.sol` — over 64 KB, so the redactor cannot check it")
+      // An old record that holds the mark in place of code is caught at bundle time.
+      const old = { ...snap, omitted: [], files: [...snap.files, { path: "src/Big.sol", text: "[REDACTED: text of 76012 characters too long to check]" }] }
+      expect(readmeOf(old)).toContain("- `src/Big.sol` — over 64 KB, so the redactor cannot check it")
+      // A file left out for a secret also leaves no command.
+      rmSync(path.join(ws, "src", "Big.sol"))
+      writeFileSync(path.join(ws, "src", "Key.sol"), `// ${PEM}\ncontract Key {}\n`)
+      const withKey = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(withKey.omitted).toEqual([{ path: "src/Key.sol", reason: "secret file" }])
+      expect(commands(readmeOf(withKey))).toEqual([])
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+
+    // A request script over the cap is left out, and there is no rerun.
+    const script = `await request("GET", "/");\n// ${"x".repeat(70 * 1024)}\n`
+    const proof = { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak", detail: "x", passed: true }, log: [{ label: "1", request: { method: "GET", url: "http://origin:8080/" }, response: { status: 200, body: "ok" } }] }
+    const d = mkdtempSync(path.join(tmpdir(), "replay-overcap-http-"))
+    try {
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "http", script, proof }, recorded: { script, proof, pack: "web" } }), d)
+      const files = readTree(d)
+      expect(files.has("script.mjs")).toBe(false)
+      expect(files.has("rerun.mjs")).toBe(false)
+      expect((files.get("README.md") || "").split("\n")[0]).toContain("This bundle cannot be re-run from this folder: the request script is over 64 KB, so the redactor cannot check it, so it is left out.")
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  test("the header and name checks ask the redactor: code is kept, a header value it would mask is refused", () => {
+    // From the real web record that the old check refused: a variable, not a value.
+    expect(leakShapes('    headers: { Authorization: "Bearer " + a.d.token }')).toEqual([])
+    expect(leakShapes('fetch(u, { headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" } })')).toEqual([])
+    // The bundle redacts first; what the redactor masks there, the check never sees.
+    expect(leakShapes(bundleText("x-api-key: process.env.API_KEY"))).toEqual([])
+    // A value the redactor masks on a bare line is a leak when the text kept it.
+    expect(leakShapes(`"note": "send Authorization: Bearer ${BEARER}"`)).toContain("a header in text")
+  })
+
+  test("a path the redactor would mask is left out and named by a placeholder, never shipped", () => {
+    // Made up.
+    const stripe = "sk_live_51Hq7Lm2Xp9Rt4Vw8Zb3Nc6Kd"
+    const github = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-paths-"))
+    try {
+      mkdirSync(path.join(ws, "src", `${github}`), { recursive: true })
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", `key-${stripe}.sol`), "contract A {}\n")
+      writeFileSync(path.join(ws, "src", github, "B.sol"), "contract B {}\n")
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const record = JSON.stringify(snap)
+      expect(record.includes(stripe)).toBe(false)
+      expect(record.includes(github)).toBe(false)
+      expect(snap.omitted).toEqual([
+        { path: "[REDACTED]", reason: "its path holds a value the redactor masks" },
+        { path: "[REDACTED]", reason: "its path holds a value the redactor masks" },
+      ])
+      const proof = { kind: "forge", pass: true, test: "testDrain()" }
+      const zip = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } })
+      expect(zip.includes(stripe)).toBe(false)
+      expect(zip.includes(github)).toBe(false)
+      // An old record that names such a path inline gets the same rule.
+      const old = { ...snap, omitted: [{ path: `src/key-${stripe}.sol`, reason: "binary" }], files: [...snap.files, { path: `src/${github}/C.sol`, text: "contract C {}\n" }] }
+      const again = buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: old, proof } })
+      expect(again.includes(stripe)).toBe(false)
+      expect(again.includes(github)).toBe(false)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+    expect(evidenceReplay({ snapshotHash: "a".repeat(64), snapshot: { files: { [`keys/${stripe}.txt`]: "x", "README.md": "y" } } }).snapshotFiles).toEqual(["[REDACTED]", "README.md"])
+  })
+
   test("check-harm.mjs passes only when the replay moves the recorded wei", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-harm-"))
     const dir = mkdtempSync(path.join(tmpdir(), "replay-harm-zip-"))
@@ -424,7 +586,7 @@ describe("report: replay bundle", () => {
       const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       const vault = "0x00000000000000000000000000000000000000aa"
       const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: vault, lostWei: "1000000000000000000" } }
-      unzip(buildReplayBundle({ finding: { title: "drain", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "drain", proofKind: "forge", proof }, recorded: { replay, proof } }), dir)
       const trace = (wei: string, status = "Success") => ({
         "test/AgentPoc.t.sol:PocTest": { test_results: { "testDrain()": { status, traces: [["Execution", { arena: [
           { parent: null, trace: { kind: "CALL", address: "0x00000000000000000000000000000000000000bb", caller: "0x00000000000000000000000000000000000000cc", success: true, value: "0x0" } },
@@ -472,29 +634,31 @@ describe("report: replay bundle", () => {
     }
   })
 
-  test("the README's first line says PROVEN only for a proven finding", () => {
-    const firstLine = (zip: Buffer) => {
-      const dir = mkdtempSync(path.join(tmpdir(), "replay-verdict-"))
+  test("a finding that is not proven gets no bundle, and the refusal says why", () => {
+    const refused = (args: Record<string, unknown>) => {
       try {
-        unzip(zip, dir)
-        return (readTree(dir).get("README.md") || "").split("\n")[0]
-      } finally {
-        rmSync(dir, { recursive: true, force: true })
+        buildReplayBundle(args)
+        return null
+      } catch (err) {
+        return err as { refused?: boolean; message?: string }
       }
     }
     const lead = { ...forgeFinding, stages: { ...forgeFinding.stages, proven: false } }
-    expect(firstLine(buildReplayBundle({ finding: forgeFinding }))).toMatch(/^PROVEN: /)
-    expect(firstLine(buildReplayBundle({ finding: lead }))).toMatch(/^NOT PROVEN: /)
+    expect(bundleRefusal({ finding: forgeFinding })).toBeNull()
+    expect(refused({ finding: forgeFinding })).toBeNull()
+    expect(bundleRefusal({ finding: lead })).toBe(NOT_PROVEN_REFUSAL)
+    expect(refused({ finding: lead })?.refused).toBe(true)
+    expect(refused({ finding: lead })?.message).toContain("no replay bundle")
     // The app's verdict wins over a raw record that claims a pass.
-    expect(firstLine(buildReplayBundle({ finding: lead, recorded: { pocProved: true, proof: forgeFinding.proof } }))).toMatch(/^NOT PROVEN: /)
+    expect(bundleRefusal({ finding: lead, recorded: { pocProved: true, proof: forgeFinding.proof } })).toBe(NOT_PROVEN_REFUSAL)
     // A raw candidate with no app verdict: only pocProved === true is proven.
     const { stages: _stages, ...candidate } = forgeFinding
-    expect(firstLine(buildReplayBundle({ finding: candidate }))).toMatch(/^NOT PROVEN: /)
-    expect(firstLine(buildReplayBundle({ finding: candidate, recorded: { pocProved: false, proof: forgeFinding.proof } }))).toMatch(/^NOT PROVEN: /)
-    expect(firstLine(buildReplayBundle({ finding: candidate, recorded: { pocProved: true, proof: forgeFinding.proof } }))).toMatch(/^PROVEN: /)
-    const http = { title: "IDOR", proofKind: "http", proof: { kind: "http", status: "pass" } }
-    expect(firstLine(buildReplayBundle({ finding: { ...http, stages: { proven: false } } }))).toMatch(/^NOT PROVEN: /)
-    expect(firstLine(buildReplayBundle({ finding: { ...http, stages: { proven: true } } }))).toMatch(/^PROVEN: /)
+    expect(bundleRefusal({ finding: candidate })).toBe(NOT_PROVEN_REFUSAL)
+    expect(bundleRefusal({ finding: candidate, recorded: { pocProved: false, proof: forgeFinding.proof } })).toBe(NOT_PROVEN_REFUSAL)
+    expect(bundleRefusal({ finding: candidate, recorded: { pocProved: true, proof: forgeFinding.proof } })).toBeNull()
+    const http = { title: "IDOR", proofKind: "http", proof: { kind: "http", status: "fail", oracle: { name: "x", passed: false } } }
+    expect(bundleRefusal({ finding: { ...http, stages: { proven: false } } })).toBe(NOT_PROVEN_REFUSAL)
+    expect(bundleRefusal({ finding: { ...http, stages: { proven: true } } })).toBeNull()
   })
 
   test("the zip drops a file name with a backslash, a colon, or a control character", () => {
@@ -515,7 +679,7 @@ describe("report: replay bundle", () => {
       log: [{ label: "1", request: { method: "GET", url: "https://app.example.com/api/users/2", headers: { authorization: `Bearer ${BEARER}` } }, response: { status: 200, body: "ok" } }],
     }
     const zip = buildReplayBundle({
-      finding: { title: "IDOR", proofKind: "http", script, proof },
+      finding: { stages: { proven: true }, title: "IDOR", proofKind: "http", script, proof },
       recorded: { script, proof, pack: "web" },
     })
     expect(zip.includes(BEARER)).toBe(false)
@@ -609,7 +773,7 @@ describe("report: replay bundle", () => {
         response: { status: 200, headers: [["set-cookie", sid]], body: "ok" },
       }],
     }
-    const zip = buildReplayBundle({ finding: { title: "admin page", proofKind: "http", script, proof }, recorded: { script, proof, pack: "web" } })
+    const zip = buildReplayBundle({ finding: { stages: { proven: true }, title: "admin page", proofKind: "http", script, proof }, recorded: { script, proof, pack: "web" } })
     expect(zip.includes(sid)).toBe(false)
     expect(zip.includes(token)).toBe(false)
     const dir = mkdtempSync(path.join(tmpdir(), "replay-http-pairs-"))
@@ -633,7 +797,7 @@ describe("report: replay bundle", () => {
       const proof = { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak", detail, passed: true }, log: [] }
       let err: { refused?: boolean; name?: string; message?: string } | null = null
       try {
-        buildReplayBundle({ finding: { title: "leak", proofKind: "http", script: "await request(\"GET\", \"/\");\n", proof }, recorded: { proof, pack: "web" } })
+        buildReplayBundle({ finding: { stages: { proven: true }, title: "leak", proofKind: "http", script: "await request(\"GET\", \"/\");\n", proof }, recorded: { proof, pack: "web" } })
       } catch (e) {
         err = e as typeof err
       }
@@ -662,7 +826,7 @@ describe("report: replay bundle", () => {
       writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
       const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
       const plan = planReplayBundle({
-        finding: { title: "Proxy takeover", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
+        finding: { stages: { proven: true }, title: "Proxy takeover", proofKind: "forge", proof: { kind: "forge", pass: true, test: "testDrain()" } },
         recorded: { replay, proof: { kind: "forge", pass: true, test: "testDrain()" } },
       })
       expect(plan.unjudged).toEqual([
@@ -690,10 +854,10 @@ describe("report: replay bundle", () => {
       oracle: { name: "cross-tenant-read", detail: "read another tenant", passed: true },
       log: [{ label: "1", request: { method: "GET", url: `https://files.example.com/share/${urlToken}` }, response: { status: 200, body: "ok" } }],
     }
-    const http = planReplayBundle({ finding: { title: "share link", proofKind: "http", proof }, recorded: { proof, pack: "web" } })
+    const http = planReplayBundle({ finding: { stages: { proven: true }, title: "share link", proofKind: "http", proof }, recorded: { proof, pack: "web" } })
     expect(http.unjudged).toEqual([{ shape: "urlToken", count: 1, text: "1 URL part that may be an access token" }])
     const lab = { ...proof, log: [{ label: "1", request: { method: "GET", url: `http://origin:8080/share/${urlToken}` }, response: { status: 200, body: "ok" } }] }
-    expect(planReplayBundle({ finding: { title: "share link", proofKind: "http", proof: lab }, recorded: { proof: lab, pack: "web" } }).unjudged).toEqual([])
+    expect(planReplayBundle({ finding: { stages: { proven: true }, title: "share link", proofKind: "http", proof: lab }, recorded: { proof: lab, pack: "web" } }).unjudged).toEqual([])
   })
 
   test("a BIP39 phrase with no keyword is named by its checksum and left out", () => {
@@ -753,7 +917,7 @@ describe("report: replay bundle", () => {
       writeFileSync(path.join(dir, "run-m7-1.json"), JSON.stringify({ result: { findings: [{ title: "drain", pocProved: true, proof: { kind: "forge", pass: true, test: "testDrain()", replay: kept } }] } }))
       const recorded = loadRecordedReplay("m7-1.1")
       expect(recorded.replay.files).toEqual(snap.files)
-      const finding = { title: "drain", proofKind: "forge", proof: { kind: "forge" } }
+      const finding = { stages: { proven: true }, title: "drain", proofKind: "forge", proof: { kind: "forge" } }
       const out = mkdtempSync(path.join(tmpdir(), "replay-store-zip-"))
       try {
         unzip(buildReplayBundle({ finding, recorded }), out)
@@ -859,18 +1023,20 @@ describe("report: replay bundle", () => {
         [{ ev: "run_poc-done", passed: true, contract: "VaultExploitTest" }],
       )
       expect(f.pocProved).toBe(true)
-      expect(f.proof.replay.files.some((file: { path: string }) => file.path === "src/Vault.sol")).toBe(true)
-      expect(f.proof.replay.files.some((file: { path: string }) => file.path === "foundry.toml")).toBe(true)
-      expect(f.proof.replay.files.some((file: { path: string }) => file.path === "test/AgentPoc.t.sol")).toBe(true)
+      // The record keeps the paths and the store pointer; the files come back from the store.
+      expect(f.proof.replay.files).toBeUndefined()
+      for (const rel of ["src/Vault.sol", "foundry.toml", "test/AgentPoc.t.sol", "lib/forge-std/src/Vm.sol"]) expect(f.proof.replay.paths).toContain(rel)
+      const replay = loadReplayFiles(f.proof.replay)
+      expect(replay.filesLost).toBeUndefined()
       const zip = buildReplayBundle({
-        finding: { title: f.title, proofKind: "forge", proof: f.proof },
-        recorded: { proof: f.proof, replay: f.proof.replay },
+        finding: { stages: { proven: true }, title: f.title, proofKind: "forge", proof: f.proof },
+        recorded: { proof: f.proof, replay, pocProved: true },
       })
-      // Sample keys baked into forge-std. They must not ride along in the zip.
-      for (const secret of [ALCHEMY_KEY, "b9794ad1ddf84dfb8c34d6bb5dca2001", "WV407BEiBmjNJfKo9Uo_55u0z0ITyCOX"]) {
-        expect(zip.includes(secret)).toBe(false)
-      }
       unzip(zip, dir)
+      // forge-std ships as the engine installs it, so the proof compiles.
+      for (const rel of ["lib/forge-std/src/Vm.sol", "lib/forge-std/src/console.sol", "lib/forge-std/src/safeconsole.sol"]) {
+        expect(readFileSync(path.join(dir, rel), "utf8")).toBe(readFileSync(path.join(lab, rel), "utf8"))
+      }
       const readme = readFileSync(path.join(dir, "README.md"), "utf8")
       const cmd = section(readme, "Replay (offline)") || ""
       expect(cmd.startsWith("sha256sum -c SHA256SUMS && \\\n  docker run --rm --pull never --network none ")).toBe(true)
