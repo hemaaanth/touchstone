@@ -321,6 +321,10 @@ function largestFolders(root, limit = 5) {
   return rows.filter((r) => r.files > 0).sort((a, b) => b.files - a.files || a.rel.localeCompare(b.rel)).slice(0, limit);
 }
 
+// The known limit of folder URLs (see parseGithub), said in every refusal
+// that asks for one.
+const REF_SLASH = 'A branch or tag name that holds "/" cannot be used in a folder URL: the first part after tree/ is read as the branch, so use a branch or tag whose name has no "/".';
+
 // What an operator can do about a repo or folder that is over the caps: the
 // member's own file count, its largest folders, and folder URLs to use instead.
 function splitAdvice(dest, gh, over = "files") {
@@ -333,6 +337,7 @@ function splitAdvice(dest, gh, over = "files") {
   const example = top.find((r) => r.files <= MAX_FILES)?.rel ?? top[0]?.rel ?? "<folder>";
   const limit = over === "files" ? `${MAX_FILES} source files` : `${MAX_BYTES / 1024 / 1024} MB of source`;
   lines.push(`The whole scope (every member together) must stay under ${limit}. To audit it, edit the scope and replace this member with folder URLs that together fit, for example https://github.com/${gh.owner}/${gh.repo}/tree/${ref}/${base}${example} — each folder URL is fetched on its own, and a folder still over the cap must be split further.`);
+  lines.push(REF_SLASH);
   return lines.join(" ");
 }
 
@@ -435,7 +440,7 @@ async function fetchRepo(ws, gh) {
         keep = path.join(keep, part);
         let st = null;
         try { st = lstatSync(keep); } catch {}
-        if (!st?.isDirectory()) throw new Error(`refused ${label}: ${gh.subPath} is not a folder in ${gh.owner}/${gh.repo} at ${gh.ref} (it does not exist, or it is a file or a symlink). Check the folder URL`);
+        if (!st?.isDirectory()) throw new Error(`refused ${label}: ${gh.subPath} is not a folder in ${gh.owner}/${gh.repo} at ${gh.ref} (it does not exist, or it is a file or a symlink). Check the folder URL. ${REF_SLASH}`);
       }
     }
     // Prune it like an uploaded folder, then put it in place. An earlier copy

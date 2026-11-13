@@ -361,3 +361,15 @@ test("a refused folder member leaves no empty parent folders, but keeps a siblin
   await assert.rejects(fetchSource(ws2, deep), /252 source files/);
   assert.deepEqual(walk(path.join(ws2, "vendor")), Object.keys(many(2, "o__r@main/a/c")).sort());
 });
+
+test("a refusal says that a branch name with \"/\" cannot be used in a folder URL", async () => {
+  const url = "https://github.com/cosmos/sdk";
+  const ws = scopeWs([url]);
+  clones.set("https://github.com/cosmos/sdk.git", many(250, "x/staking"));
+  const err = await fetchSource(ws, url).then(() => null, (e) => e);
+  assert.match(err.message, /branch or tag name that holds "\/"/);
+  const gone = "https://github.com/cosmos/sdk/tree/feature/x/src";
+  const ws2 = scopeWs([gone]);
+  const err2 = await fetchSource(ws2, gone).then(() => null, (e) => e);
+  assert.match(err2.message, /branch or tag name that holds "\/"/);
+});
