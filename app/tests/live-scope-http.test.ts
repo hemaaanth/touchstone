@@ -138,6 +138,23 @@ describe("POST /api/scopes, kind live, private lab opt-in", () => {
     expect(grants().length).toBe(0)
   })
 
+  test("the opt-in with the token still refuses a DNS name or a metadata spelling", async () => {
+    for (const h of ["localhost.localdomain", "http://localhost.:3000", "fd00", "[fd00:ec2::0254]", "2852039166"]) {
+      const r = await post({ ...lab, hosts: [h] }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/Refused/)
+    }
+    expect(grants().length).toBe(0)
+    expect(existsSync(SCOPES)).toBe(false)
+  })
+
+  test("an IPv6 lab is stored as its IPv6 address", async () => {
+    const r = await post({ ...lab, hosts: ["[fd00::1]", "http://[::1]:8080"] }, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
+    expect(r.status).toBe(201)
+    expect(r.json.hosts).toEqual(["fd00::1", "::1"])
+    expect(grants()[0].hosts).toEqual(["fd00::1", "::1"])
+  })
+
   test("the opt-in with the token: saved, and only that grant opts in", async () => {
     const r = await post(lab, { ...CONSOLE, "x-touchstone-grant-token": TOKEN })
     expect(r.status).toBe(201)

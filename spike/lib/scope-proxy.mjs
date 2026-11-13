@@ -34,7 +34,7 @@ import { isIP } from "node:net";
 
 // hostCovers lets a grant entry like "*.example.com" cover a subdomain. We take
 // it from the grant store so the proxy and the grant agree on one matching rule.
-import { hostCovers } from "./grant-store.mjs";
+import { hostCovers, ipKind } from "./grant-store.mjs";
 
 // --- SSRF / DNS-rebinding guard ---------------------------------------------
 //
@@ -79,10 +79,21 @@ function isBlockedAddress(addr) {
 // lookup. When ALL resolved addresses pass, the first one is PINNED and returned,
 // so the caller connects to exactly the address that was checked — never a second
 // lookup that could answer differently (DNS rebinding).
+// Even with allowPrivate, these are never reached: cloud metadata, link-local,
+// the unspecified address, and multicast/reserved space. The opt-in is for a
+// loopback or private lab only. ipKind decides on the parsed address.
+const NEVER = new Set(["metadata", "link-local", "unspecified", "reserved"]);
+const neverReach = (addr) => NEVER.has(ipKind(addr));
+// Without the opt-in, only a public address passes. ipKind also catches the
+// spellings isBlockedAddress does not parse, like ::ffff:7f00:1.
+const blocked = (addr) => isBlockedAddress(addr) || ipKind(addr) !== "public";
+
 async function resolvePinned(host, allowPrivate) {
-  const h = String(host || "");
+  // A URL hostname keeps IPv6 brackets ("[::1]"); the address is inside them.
+  const h = String(host || "").replace(/^\[(.*)\]$/, "$1");
   if (isIP(h)) {
-    if (!allowPrivate && isBlockedAddress(h)) return { ok: false, reason: `non-public address ${h}` };
+    if (!allowPrivate && blocked(h)) return { ok: false, reason: `non-public address ${h}` };
+    if (neverReach(h)) return { ok: false, reason: `never-reachable address ${h}` };
     return { ok: true, address: h, family: isIP(h) };
   }
   let addrs;
@@ -92,10 +103,9 @@ async function resolvePinned(host, allowPrivate) {
     return { ok: false, reason: `could not resolve ${h}` };
   }
   if (!addrs.length) return { ok: false, reason: `${h} resolved to nothing` };
-  if (!allowPrivate) {
-    for (const { address } of addrs) {
-      if (isBlockedAddress(address)) return { ok: false, reason: `${h} resolves to a non-public address (${address})` };
-    }
+  for (const { address } of addrs) {
+    if (!allowPrivate && blocked(address)) return { ok: false, reason: `${h} resolves to a non-public address (${address})` };
+    if (neverReach(address)) return { ok: false, reason: `${h} resolves to a never-reachable address (${address})` };
   }
   const first = addrs[0];
   return { ok: true, address: first.address, family: first.family };
@@ -106,7 +116,9 @@ async function resolvePinned(host, allowPrivate) {
 // Returns { allowed, reason }. An empty allow-list blocks everything: no grant,
 // no reach.
 export function decide(allowSet, host) {
-  const h = String(host || "").toLowerCase().replace(/:\d+$/, "");
+  // Strip a ":port", but never from a bare IPv6 literal like "fd00::1".
+  const raw = String(host || "").toLowerCase();
+  const h = isIP(raw) ? raw : raw.replace(/:\d+$/, "");
   if (!h) return { allowed: false, reason: "no host" };
   const entries = [...(allowSet || [])];
   if (!entries.length) return { allowed: false, reason: "empty allow-list (no grant)" };
@@ -244,7 +256,9 @@ export function startScopeProxy({ allowedHosts = [], log, host = "127.0.0.1", po
   // the encrypted bytes. It does not read or weaken the TLS session; the log
   // still records the host and the allow/block decision.
   server.on("connect", (req, clientSocket, head) => {
-    const [targetHost, portStr] = String(req.url || "").split(":");
+    // "host:port", or "[v6]:port" for an IPv6 literal.
+    const m = String(req.url || "").match(/^(\[[^\]]*\]|[^:]*)(?::(\d+))?$/);
+    const [targetHost, portStr] = m ? [m[1], m[2]] : ["", ""];
     const tport = Number(portStr) || 443;
     const verdict = decide(allow, targetHost);
     if (!verdict.allowed) {

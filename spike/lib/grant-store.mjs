@@ -65,26 +65,90 @@ function writeGrants(arr) {
 // hostname, an "example.com:443" host:port, or a full "https://example.com/x"
 // URL and keeps only the hostname. Returns null for anything that is not a
 // usable hostname or IP literal, so a bad entry is dropped, never stored.
+//
+// CANONICAL. An IP literal comes out in one spelling, whatever spelling came
+// in, so every allow/deny decision sees the real address:
+//   - IPv4 in any form the WHATWG URL parser (and so fetch) accepts:
+//     2130706433, 0177.0.0.1 and 0x7f000001 all become 127.0.0.1.
+//   - IPv6 in its compressed form, without brackets: [fd00:0ec2:0:0:0:0:0:254]
+//     and fd00:ec2::0254 both become fd00:ec2::254.
+// The result is idempotent: normalizeHost(normalizeHost(x)) === normalizeHost(x).
+// A bare IPv6 literal is never cut at a ":" as if that were a port.
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 export function normalizeHost(raw) {
   let s = String(raw ?? "").trim().toLowerCase();
   if (!s) return null;
-  // Pull the hostname out of a URL, or a bare "host[:port][/path]".
-  if (s.includes("://")) {
-    try { s = new URL(s).hostname; } catch { return null; }
-  } else {
-    s = s.split("/")[0]; // drop any path
-    // Strip a :port, but keep a bracketed IPv6 literal intact.
-    if (!s.startsWith("[")) s = s.split(":")[0];
-    else s = s.replace(/^\[|\].*$/g, "");
+  // A wildcard entry, "*.example.com": a name pattern, never an address.
+  if (s.startsWith("*.")) {
+    const base = s.slice(2).split("/")[0].split(":")[0].replace(/\.$/, "");
+    if (!HOSTNAME.test(base)) return null;
+    // A base that parses as an IP ("*.0.1") is not a name pattern.
+    let parsed;
+    try { parsed = new URL(`http://${base}/`).hostname; } catch { return null; }
+    return parsed === base && !isIP(base) ? `*.${base}` : null;
   }
-  s = s.replace(/\.$/, ""); // drop a trailing dot (FQDN root)
-  if (!s) return null;
-  // A hostname label set, or an IPv4/IPv6 literal. No spaces, no wildcards here
-  // (a wildcard entry is stored separately as "*.example.com", handled below).
-  const hostname = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
-  const ipv6 = /^[0-9a-f:]+$/;
-  if (hostname.test(s) || ipv6.test(s)) return s;
-  return null;
+  if (isIP(s) === 6) s = `[${s}]`;
+  let host;
+  try {
+    host = new URL(s.includes("://") ? s : `http://${s}`).hostname;
+    // Parse the host again as http, so a host from any scheme is canonical too.
+    host = new URL(`http://${host}/`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.replace(/\.$/, ""); // drop a trailing dot (FQDN root)
+  if (host.startsWith("[")) return host.slice(1, -1); // IPv6, already compressed by URL
+  if (isIP(host) === 4) return host;
+  return HOSTNAME.test(host) ? host : null;
+}
+
+// "an unspecified address", "a loopback address".
+const article = (word) => (/^[aeiou]/.test(word) ? "an" : "a");
+
+// What kind of address an IP literal is, decided on the PARSED address, never
+// on its spelling. Returns null when the host is not an IP literal. Kinds:
+// "public", "loopback", "private" (RFC 1918, carrier-grade NAT, IPv6 unique-
+// local), "link-local", "metadata" (cloud metadata), "unspecified", "reserved"
+// (multicast and the like). An IPv6 address that carries an IPv4 address
+// (::ffff:a.b.c.d, the NAT64 64:ff9b::/96 prefix, the old ::a.b.c.d form) is
+// the kind of that IPv4 address.
+function v4Kind([a, b, c, d]) {
+  if ((a === 169 && b === 254 && c === 169 && d === 254) || (a === 100 && b === 100 && c === 100 && d === 200)) return "metadata";
+  if (a === 0) return "unspecified";
+  if (a === 127) return "loopback";
+  if (a === 169 && b === 254) return "link-local";
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return "private";
+  if (a >= 224) return "reserved";
+  return "public";
+}
+
+// Eight 16-bit words of a canonical IPv6 literal (as normalizeHost gives it).
+function v6Words(ip) {
+  const [head, tail] = ip.includes("::") ? ip.split("::") : [ip, null];
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const fill = tail === null ? [] : Array(8 - h.length - t.length).fill("0");
+  return [...h, ...fill, ...t].map((x) => parseInt(x, 16));
+}
+
+export function ipKind(raw) {
+  const ip = normalizeHost(raw);
+  if (!ip || !isIP(ip)) return null;
+  if (isIP(ip) === 4) return v4Kind(ip.split(".").map(Number));
+  const w = v6Words(ip);
+  if (w.length !== 8 || w.some((x) => !Number.isInteger(x) || x < 0 || x > 0xffff)) return "reserved";
+  const zero = (from, to) => w.slice(from, to).every((x) => x === 0);
+  const embedded = () => v4Kind([w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255]);
+  if (zero(0, 5) && w[5] === 0xffff) return embedded(); // ::ffff:a.b.c.d
+  if (w[0] === 0x64 && w[1] === 0xff9b && zero(2, 6)) return embedded(); // NAT64
+  if (zero(0, 8)) return "unspecified";
+  if (zero(0, 7) && w[7] === 1) return "loopback";
+  if (zero(0, 6)) return embedded(); // ::a.b.c.d, the old IPv4-compatible form
+  if (w[0] === 0xfd00 && w[1] === 0x0ec2 && zero(2, 7) && w[7] === 0x254) return "metadata";
+  if ((w[0] & 0xffc0) === 0xfe80) return "link-local";
+  if ((w[0] & 0xfe00) === 0xfc00) return "private";
+  if ((w[0] & 0xff00) === 0xff00 || (w[0] & 0xffc0) === 0xfec0) return "reserved"; // multicast, old site-local
+  return "public";
 }
 
 // A short list of public suffixes we refuse to wildcard. A grant for
@@ -116,34 +180,6 @@ function isLocalName(name) {
   return name === "localhost" || name === "localhost.localdomain" || name.endsWith(".localhost");
 }
 
-// True for an IP literal in a range a run must not reach without opting in:
-// loopback, private LAN, link-local (incl. cloud metadata 169.254.169.254),
-// carrier-grade NAT, unspecified, and the IPv6 equivalents. Same ranges the
-// scope proxy pins against (lib/scope-proxy.mjs) and lib/fetch.mjs refuses.
-function isPrivateIp(addr) {
-  const fam = isIP(addr);
-  if (fam === 4) {
-    const p = addr.split(".").map(Number);
-    const [a, b] = p;
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    return false;
-  }
-  if (fam === 6) {
-    const a = addr.toLowerCase().replace(/^\[|\]$/g, "");
-    if (a === "::" || a === "::1") return true;
-    if (a.startsWith("fe80") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb")) return true;
-    if (a.startsWith("fc") || a.startsWith("fd")) return true;
-    const m = a.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (m) return isPrivateIp(m[1]);
-    return false;
-  }
-  return false;
-}
-
 // Reject a host entry that must not be granted. Returns an error string, or null
 // if the entry is allowed. `allowPrivate` opts a grant into loopback/private
 // space on purpose (the operator's own LAN, or a test). Wildcard bases are
@@ -165,43 +201,49 @@ function grantEntryError(entry, allowPrivate) {
   }
   if (!allowPrivate) {
     if (isLocalName(e)) return `"${e}" is a loopback name; a grant for it would reach the console's own host. Pass allowPrivate to grant private space on purpose.`;
-    if (isIP(e) && isPrivateIp(e)) return `"${e}" is a loopback/private/link-local address; a grant for it could reach the host or cloud metadata. Pass allowPrivate to grant private space on purpose.`;
-    if (e === "0.0.0.0") return `"0.0.0.0" is the unspecified address and is never a target. Pass allowPrivate to grant private space on purpose.`;
+    // Decided on the parsed address (ipKind), so no spelling of a private
+    // address passes as public.
+    const kind = ipKind(e);
+    if (kind && kind !== "public") return `"${e}" is ${article(kind)} ${kind} address, not a public one; a grant for it could reach the host or cloud metadata. Pass allowPrivate to grant private space on purpose.`;
   }
   return null;
 }
 
-// Cloud metadata endpoints that sit outside 169.254/16. They are never a lab.
-const METADATA_IPS = new Set(["100.100.100.200", "fd00:ec2::254"]);
-
 // The stricter rule for a live scope the operator opts into private space (a
-// local lab). Returns an error string, or null if the entry is allowed. Every
-// host in such a scope must be a loopback name or a loopback/private IP literal:
-//   - No public host and no DNS name. An opted-in grant lets the proxy reach
-//     private space, so a public name in it could be rebound to a private
-//     address. A lab is named by "localhost" or by its IP.
-//   - No wildcard. A lab scope names exact hosts.
-//   - No link-local, unspecified or cloud-metadata address, even with the
-//     opt-in. Those are never a lab.
+// local lab). Returns an error string, or null if the entry is allowed. The
+// host is parsed first (normalizeHost, ipKind); the decision is on the parsed
+// address, never on the text. Every host in such a scope must be:
+//   - exactly "localhost", or
+//   - an IP literal whose address is loopback or private (RFC 1918, carrier-
+//     grade NAT, IPv6 unique-local).
+// So: no DNS name of any kind, not even localhost.localdomain or *.localhost.
+// An opted-in grant lets the proxy reach private space, so a name in it could
+// be answered with any address, including cloud metadata. No wildcard. No
+// link-local, unspecified, reserved or cloud-metadata address in any spelling.
+// A host that does not parse is refused here, not dropped.
+// The hostname as the operator typed it, before any trailing dot is dropped.
+function typedHostname(entry) {
+  const t = String(entry ?? "").trim();
+  try {
+    return new URL(t.includes("://") ? t : `http://${isIP(t) === 6 ? `[${t}]` : t}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
 export function privateLabHostError(entry) {
   const e = normalizeHost(entry);
-  if (!e) return null; // dropped, then caught by the "at least one valid host" check
+  if (!e) return `"${String(entry ?? "").trim()}" is not a host. A private lab scope takes only "localhost" or a loopback/private IP address.`;
   if (e.startsWith("*.")) return `"${e}" is a wildcard. A private lab scope names exact hosts.`;
-  if (isLocalName(e)) return null;
-  if (!isIP(e)) return `"${e}" is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
-  const mapped = e.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  const ip = mapped ? mapped[1] : e;
-  if (METADATA_IPS.has(ip)) return `"${e}" is a cloud metadata address and is never a lab.`;
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    if (a === 0) return `"${e}" is an unspecified address and is never a lab.`;
-    if (a === 169 && b === 254) return `"${e}" is link-local (cloud metadata lives here) and is never a lab.`;
-  } else {
-    if (ip === "::") return `"${e}" is the unspecified address and is never a lab.`;
-    if (/^fe[89ab]/.test(ip)) return `"${e}" is link-local and is never a lab.`;
-  }
-  if (!isPrivateIp(ip)) return `"${e}" is a public address. A private lab scope takes only loopback or private addresses.`;
-  return null;
+  // "localhost." is an absolute DNS name: the run is aimed at the name as typed,
+  // and the proxy would ask DNS for it. Only the bare name is a lab.
+  if (typedHostname(entry).endsWith(".")) return `"${String(entry).trim()}" ends in a dot, so it is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  if (e === "localhost") return null;
+  const kind = ipKind(e);
+  if (!kind) return `"${e}" is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  if (kind === "loopback" || kind === "private") return null;
+  if (kind === "public") return `"${e}" is a public address. A private lab scope takes only loopback or private addresses.`;
+  return `"${e}" is ${article(kind)} ${kind} address and is never a lab.`;
 }
 
 // Does a granted host entry cover a request host? Exact match, or a "*.example
@@ -213,6 +255,8 @@ export function hostCovers(entry, host) {
   const h = normalizeHost(host);
   if (!e || !h) return false;
   if (e.startsWith("*.")) {
+    // An IP address is never a subdomain.
+    if (isIP(h)) return false;
     const base = e.slice(2);
     return h === base ? false : h.endsWith("." + base);
   }
