@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/sidebar"
 import { ResizeHandle } from "@/components/resize-handle"
 import { ThreadList, type RunThreadCustom } from "@/components/assistant-ui/elements/thread-list"
-import markRaw from "../../public/touchstone-mark.svg?raw"
+import markRaw from "@/assets/touchstone-mark.svg?raw"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
@@ -138,7 +138,7 @@ export function AppSidebar({
 
 const NO_MESSAGES: ThreadMessageLike[] = []
 
-// The brand mark from public/touchstone-mark.svg. One filled shape in
+// The brand mark from src/assets/touchstone-mark.svg. One filled shape in
 // currentColor, so it takes the sidebar foreground in light and in dark.
 const MARK_VIEWBOX = /viewBox="([^"]+)"/.exec(markRaw)?.[1] ?? "0 0 32 32"
 const MARK_PATHS = [...markRaw.replace(/<!--[\s\S]*?-->/g, "").matchAll(/<path\b([^>]*)\/?>/g)].map((m) => {

@@ -9,7 +9,7 @@
 //   - src/fonts.css   the font face. Its URL is root-relative. When the app
 //                     serves the report, the font loads from the app. A saved
 //                     copy opened offline falls back to the system sans.
-//   - public/touchstone-mark.svg  the logo mark.
+//   - src/assets/touchstone-mark.svg  the logo mark.
 // The report has no script to set a .dark class, so the .dark block becomes a
 // prefers-color-scheme media query. The app follows the system setting too.
 import { readFileSync } from "node:fs"
@@ -33,7 +33,7 @@ function tokensCss() {
 let cache = null
 function load() {
   if (cache) return cache
-  const mark = read("public/touchstone-mark.svg").replace(/<!--[\s\S]*?-->/g, "").replace(/\n\s*/g, " ").trim()
+  const mark = read("src/assets/touchstone-mark.svg").replace(/<!--[\s\S]*?-->/g, "").replace(/\n\s*/g, " ").trim()
   cache = { css: `${stripComments(read("src/fonts.css")).trim()}\n${tokensCss()}`, mark }
   return cache
 }
