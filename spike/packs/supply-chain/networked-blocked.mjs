@@ -26,6 +26,17 @@ export const LEGITIFY = {
   secret: "SCM_TOKEN",
 };
 
+// chain-bench v0.1.10 (images/chain-bench/Dockerfile) takes the token only as
+// the argv flag `-t`: `scan` passes the cobra flag value straight to
+// FetchClientData (internal/commands/scan.go). No env var or config key feeds
+// it. The token rule forbids a token in argv (docker inspect and ps show it),
+// so the pack never runs chain-bench. An opt-in is an honest gap, no docker call.
+export const CHAIN_BENCH = {
+  image: "touchstone/chain-bench:0.1.10",
+  version: "0.1.10",
+  reason: "not covered: chain-bench v0.1.10 accepts the token only in argv (-t), which the token rule forbids; it is never run",
+};
+
 const now = () => new Date().toISOString();
 const imageId = (image) => { try { return execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", image], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
 const unavailable = (tool, reason, extra = {}) => ({ tool, mode: "api", status: "unavailable", reason, sha256: sha256(""), text: "", capturedAt: now(), ...extra });
@@ -62,11 +73,13 @@ export async function captureLegitify({ target = null, reach, token = process.en
 
 export async function captureBlocked(tool, opts) {
   if (tool === "legitify") return captureLegitify(opts);
+  if (tool === "chain-bench") return unavailable("chain-bench", CHAIN_BENCH.reason, { gapKind: "not-covered-token-in-argv" });
   throw new Error(`Unknown networked tool ${tool}`);
 }
 
 const CHECKS = {
   legitify: "repository policies (branch protection, review rules, actions permissions, secret scanning settings)",
+  "chain-bench": "CIS software supply chain benchmark (source code, build pipelines, dependencies, artifacts, deployment)",
 };
 
 // Coverage and gaps from the saved captures. Never a lead.
@@ -82,7 +95,7 @@ export function blockedFrom(snapshot) {
         : "saved output does not match its SHA-256";
     }
     coverage.push({ engine: tool, status: "unavailable", code: cap.code ?? null, timedOut: Boolean(cap.timedOut), reason, leads: 0 });
-    gaps.push({ kind: /^not covered: /.test(reason) ? "not-covered-needs-token" : "networked-tool-unavailable", detail: `${tool} is unavailable: ${reason}. Its checks (${CHECKS[tool]}) were not run. This is not a clean result.` });
+    gaps.push({ kind: cap.gapKind ?? (/^not covered: /.test(reason) ? "not-covered-needs-token" : "networked-tool-unavailable"), detail: `${tool} is unavailable: ${reason}. Its checks (${CHECKS[tool]}) were not run. This is not a clean result.` });
   }
   return { leads: [], coverage, gaps };
 }
