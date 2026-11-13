@@ -375,6 +375,45 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("line 1 of a forge README says which harm kind the folder re-checks and which it does not", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-harmkind-"))
+    try {
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest {}\n`)
+      const replay = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const victim = "0x00000000000000000000000000000000000000aa"
+      const cases = [
+        { harm: { ok: true, kind: "funds", victim, lostWei: "1" }, line: "The harm (an ETH drain) is re-checked by `check-harm.mjs`.", exit: 1 },
+        { harm: { ok: true, kind: "funds", asset: "token", victim, token: "0x00000000000000000000000000000000000000bb", lostUnits: "5" }, line: "The harm (a token drain) is NOT re-checked by this folder.", exit: 2 },
+        { harm: { ok: true, kind: "control", victim, writes: 1 }, line: "The harm (a control takeover: a write to an owner, admin, or implementation slot) is NOT re-checked by this folder.", exit: 2 },
+      ]
+      for (const c of cases) {
+        const proof = { kind: "forge", pass: true, test: "testDrain()", harm: c.harm }
+        const dir = mkdtempSync(path.join(tmpdir(), "replay-harmkind-zip-"))
+        try {
+          unzip(buildReplayBundle({ finding: { title: "t", proofKind: "forge", proof, stages: { proven: true } }, recorded: { replay, proof } }), dir)
+          const readme = readTree(dir).get("README.md") || ""
+          expect(readme.split("\n")[0]).toBe(`PROVEN: the engine's proof gate passed this finding when it was recorded. ${c.line}`)
+          if (c.exit === 2) expect(readme).toContain("A passing replay here shows that the test still passes, not that the harm still happens.")
+          // A trace that passes but moves no ETH: an ETH drain fails, the other kinds cannot be checked.
+          writeFileSync(path.join(dir, "replay.json"), JSON.stringify({ "test/AgentPoc.t.sol:PocTest": { test_results: { "testDrain()": { status: "Success", traces: [] } } } }))
+          let code = 0
+          try {
+            execFileSync("node", ["check-harm.mjs", "replay.json"], { cwd: dir, stdio: "ignore" })
+          } catch (err) {
+            code = (err as { status?: number }).status ?? -1
+          }
+          expect(code).toBe(c.exit)
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
   test("check-harm.mjs passes only when the replay moves the recorded wei", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-harm-"))
     const dir = mkdtempSync(path.join(tmpdir(), "replay-harm-zip-"))

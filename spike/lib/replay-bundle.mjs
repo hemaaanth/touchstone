@@ -700,7 +700,7 @@ function sha256Sums(entries) {
     .join("\n") + "\n";
 }
 
-function forgeReadme({ title, replay, command, prepare, fork }) {
+function forgeReadme({ title, replay, command, prepare, fork, harm }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   if (!command) {
     return `# Replay this finding
@@ -730,7 +730,7 @@ The proof test, the scope sources, and the Foundry config are in this folder. \`
 
 ${forkNote} ${solc} ${image} No provider key and no bearer token is in this folder.
 
-The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in this folder, the proof test included, differs from what was recorded. Forge then reruns the named test and writes its JSON trace to \`replay.json\`. \`node check-harm.mjs\` (Node 18 or later) reads that trace and checks it against \`harm.json\`, the harm the engine recorded. It exits 0 when the test passed and the victim lost the recorded wei, 1 when not, and 2 when the recorded harm is not an ETH drain (a token, storage, or control harm needs the engine's storage reader).
+The replay has three steps. \`sha256sum -c SHA256SUMS\` fails if any file in this folder, the proof test included, differs from what was recorded. Forge then reruns the named test and writes its JSON trace to \`replay.json\`. \`node check-harm.mjs\` (Node 18 or later) reads that trace and checks it against \`harm.json\`, the harm the engine recorded. It exits 0 when the test passed and the victim lost the recorded wei, 1 when not, and 2 when it cannot check. ${harmCheck(harm).long}
 ${prep}${fence(command && replaySteps(command), "Replay (offline)")}${omittedList(replay?.omitted)}`;
 }
 
@@ -836,6 +836,22 @@ function finish(entries, head) {
   return { zip: zipStore([...readme, ...entries]), unjudged };
 }
 
+// What check-harm.mjs re-checks for this finding's harm, in the words the
+// README uses. It reads the forge JSON trace, so it sees ETH moved by calls.
+// The gate reads a token drain and a control takeover from the replay's
+// storage writes (lib/control-trace.mjs), and that reader is not in the zip.
+function harmCheck(harm) {
+  const not = (what) => ({
+    short: `The harm (${what}) is NOT re-checked by this folder.`,
+    long: `This finding's harm is ${what}. The engine's gate read it from the replay's storage writes (\`lib/control-trace.mjs\`), and this folder does not hold that reader, so \`check-harm.mjs\` exits 2 for it. A passing replay here shows that the test still passes, not that the harm still happens.`,
+  });
+  if (!harm || harm.ok !== true) return { short: "The record holds no proven harm, so nothing is re-checked.", long: "The record holds no proven harm, so `check-harm.mjs` has nothing to compare and exits 2." };
+  if (harm.kind === "funds" && !harm.asset) return { short: "The harm (an ETH drain) is re-checked by `check-harm.mjs`.", long: "This finding's harm is an ETH drain, and `check-harm.mjs` re-checks it: the victim must lose the recorded wei in the replay trace." };
+  if (harm.kind === "funds" && harm.asset === "token") return not("a token drain");
+  if (harm.kind === "control") return not("a control takeover: a write to an owner, admin, or implementation slot");
+  return not(`of the kind "${String(harm.kind).replace(/[^\w -]/g, "").slice(0, 40)}"`);
+}
+
 // Line 1 of every README. The normalized finding's stages.proven is the app's
 // verdict; a raw record falls back to pocProved. Anything else is not proven.
 function verdictLine({ finding, recorded }) {
@@ -869,8 +885,9 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   // the offline command still gets one.
   const command = haveProject ? forgeCommand({ ...replay, fork }) : null;
   const prepare = haveProject ? prepareCommand(replay) : null;
+  const harm = proof?.harm ?? null;
   const readme = haveProject || files.length
-    ? forgeReadme({ title, replay, command, prepare, fork })
+    ? forgeReadme({ title, replay, command, prepare, fork, harm })
     : `# Replay this finding
 
 **${title}** · Foundry
@@ -890,7 +907,9 @@ ${omittedList(omitted)}`;
     pushFile(entries, "check-harm.mjs", readFileSync(CHECK_HARM, "utf8"), { own: true });
     pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
   }
-  return finish(entries, verdictLine({ finding, recorded }) + readme);
+  // Line 1 also says what the folder re-checks, so a reader of one line is not misled.
+  const line1 = command ? verdictLine({ finding, recorded }).replace(/\n\n$/, ` ${harmCheck(harm).short}\n\n`) : verdictLine({ finding, recorded });
+  return finish(entries, line1 + readme);
 }
 
 function httpBundle({ finding, recorded, proof }) {
