@@ -66,7 +66,7 @@ const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|clien
 // A password in a URL (https://user:pass@host), a curl -u user:pass, a
 // curl -b cookie list, and an env assignment such as DB_PASSWORD=… whose
 // name passes secretName. Only the secret part is masked.
-const URL_USERINFO = /(\/\/[^\s\/:@"'`]{1,64}:)([^\s\/@"'`]{1,256})(?=@)/g
+const URL_USERINFO = /(\/\/[^\s/:@"'`]{1,64}:)([^\s/@"'`]{1,256})(?=@)/g
 const CURL_USER = /((?:^|\s)(?:-u|--user)[ =]?["']?[^\s:"'@]{1,64}:)([^\s"']{1,256})/g
 const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s"']+))/g
 const ENV_ASSIGN = /\b([A-Z][A-Z0-9_]{1,63})=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|]+))/g
@@ -90,7 +90,7 @@ const SHAPES = [
 // True when one word looks like a credential and not like a lab placeholder
 // ("junk", "<bob token>", "$TOKEN"), a route or an English word.
 function secretish(tok, min = 8) {
-  if (tok.length < min || tok.startsWith("[REDACTED") || /^[<$\/{]/.test(tok)) return false
+  if (tok.length < min || tok.startsWith("[REDACTED") || /^[<$/{]/.test(tok)) return false
   if (/[0-9_\-./+=]/.test(tok)) return true
   if (tok.length >= 12 && /[a-z]/.test(tok) && /[A-Z]/.test(tok)) return true
   return tok.length >= 20
@@ -138,7 +138,7 @@ function maskQuery(m, head, value) {
 
 function maskCookieArg(m, head, q, quoted, bare) {
   const v = quoted ?? bare
-  if (!v.includes("=") || /^[\[$<{]/.test(v)) return m
+  if (!v.includes("=") || /^[[$<{]/.test(v)) return m
   return q ? `${head}${q}${MARK}${q}` : head + MARK
 }
 
