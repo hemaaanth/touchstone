@@ -40,8 +40,9 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   the vault stayed empty. Every invariant held vacuously.
 - **Fails closed.** These are a gap, never a clean result: a missing image; a
   timeout (an in-container kill at the limit minus 5 s; if the docker client
-  times out first, the shared runTool fix 6526bbe, not yet merged here,
-  removes the container); a kill by signal 9
+  times out first, the result is still a gap, but a container created after the client died can stay
+  behind in the "Created" state; that is a known open runTool issue, and
+  6526bbe does not close it); a kill by signal 9
   (exit 137 is the time limit or the 2 GB memory limit; we cannot tell which,
   and say so); any non-zero container exit, even with a valid report; a build
   error; no report; an empty or unreadable report; a failed `setUp` (Halmos
@@ -92,8 +93,10 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   Results are leads only and cannot support proof until the gate merges.
 - **Fails closed.** These are a gap, never a clean result: a missing image; a
   timeout (an in-container kill at the limit minus 5 s; if the docker client
-  times out first, the engine reports `timedOut` and the shared runTool fix
-  6526bbe, not yet merged here, removes the container); a kill by signal 9
+  times out first, the engine reports `timedOut`; the result is
+  still a gap, but a container created after the client died can stay
+  behind in the "Created" state; that is a known open runTool issue, and
+  6526bbe does not close it); a kill by signal 9
   (exit 137 is the time limit or the 2 GB memory limit; we cannot tell which,
   and say so); a build error; no report; a report cut short (no summary
   lines); a report with no tests; a test Echidna or Medusa could not run;
