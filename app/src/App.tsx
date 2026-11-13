@@ -10,7 +10,7 @@ import { isOwnScope, type CatalogState } from "@/lib/catalog"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
-import { RunChat } from "@/components/run-chat"
+import { RunChat, type FocusFinding } from "@/components/run-chat"
 import { FindingsPage } from "@/components/findings-page"
 import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
@@ -27,6 +27,8 @@ export function App() {
   const [catalog, setCatalog] = useState<CatalogState>("loading")
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [view, setView] = useState<View | null>(null)
+  // "Open this finding" in the open run (the Findings page's Open in run).
+  const [focus, setFocus] = useState<(FocusFinding & { run: string }) | null>(null)
   const [sidebarWidth, setSidebarWidth, sidebarDefault] = useStoredWidth("ts.sidebarWidth", 256, 208, 480)
 
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -166,7 +168,15 @@ export function App() {
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
 
-  const openRun = useCallback((id: string) => setView({ kind: "run", id }), [])
+  // Open a run, and with a finding id, land on that finding.
+  const openRun = useCallback((id: string, finding?: string) => {
+    setView({ kind: "run", id })
+    setFocus(finding ? { run: id, finding, at: Date.now() } : null)
+  }, [])
+  const select = useCallback((v: View) => {
+    setFocus(null)
+    setView(v)
+  }, [])
 
   const activeRun = view?.kind === "run" ? rows.find((r) => r.id === view.id) ?? null : null
   const page = view?.kind === "page" ? view.id : null
@@ -179,7 +189,7 @@ export function App() {
         defaultWidth={sidebarDefault}
         runs={rows}
         view={view}
-        onSelect={setView}
+        onSelect={select}
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
         onRename={onRename}
@@ -187,7 +197,15 @@ export function App() {
 
       <main className="flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} packs={packs} />
+          <RunChat
+            key={activeRun.id}
+            run={activeRun}
+            onArchive={onArchive}
+            onRename={onRename}
+            onDelete={onDelete}
+            packs={packs}
+            focus={focus?.run === activeRun.id ? focus : null}
+          />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
         ) : page === "findings" ? (
