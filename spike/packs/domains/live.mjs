@@ -198,7 +198,9 @@ export function failReason(result, image) {
 }
 
 // crawl: also run katana over the live pages. Surface sets it. Domains does not need it.
-export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false }) {
+// deep: also run checkdmarc, DNSViz and testssl.sh. Only the domains pack sets
+// it; surface leaves it off, so its capture is the same as on main.
+export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false, deep = true }) {
   const scope = assertReach(reach, domain);
   ensureImage();
   const dir = join(ws, '.live');
@@ -219,23 +221,26 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     passive.note(found.length);
     // Email authentication is DNS only. It keeps its own evidence key, so a
     // failed run is a coverage gap, never a clean result.
-    const emailCheck = await checkEmail(run, domain, reach.resolver);
-    const email = emailCheck.evidence;
-    const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
-    if (email) {
-      emailCoverage.leads = emailLeads({ root: domain, email }).length;
-      if (emailCheck.partial) { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCheck.error; }
-    } else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
-    // The DNSSEC chain is probed through the granted resolver. A failed chain
-    // read is a coverage gap, not an unsigned zone.
-    const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);
-    const dnssec = dnssecCheck.evidence;
-    const dnssecCoverage = coverage.find(c => c.engine === 'dnsviz-probe');
-    if (dnssec) {
-      dnssecCoverage.leads = dnssecLeads({ root: domain, dnssec }).length;
-      const gap = assessmentCoverage(dnssec);
-      if (gap) for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = gap.status; row.reason = gap.reason; }
-    } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
+    let email, dnssec;
+    if (deep) {
+      const emailCheck = await checkEmail(run, domain, reach.resolver);
+      email = emailCheck.evidence;
+      const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
+      if (email) {
+        emailCoverage.leads = emailLeads({ root: domain, email }).length;
+        if (emailCheck.partial) { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCheck.error; }
+      } else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
+      // The DNSSEC chain is probed through the granted resolver. A failed chain
+      // read is a coverage gap, not an unsigned zone.
+      const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);
+      dnssec = dnssecCheck.evidence;
+      const dnssecCoverage = coverage.find(c => c.engine === 'dnsviz-probe');
+      if (dnssec) {
+        dnssecCoverage.leads = dnssecLeads({ root: domain, dnssec }).length;
+        const gap = assessmentCoverage(dnssec);
+        if (gap) for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = gap.status; row.reason = gap.reason; }
+      } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
+    }
     const wild = 'touchstone-nx-' + Math.random().toString(36).slice(2, 10) + '.' + domain;
     const candidates = [...new Set([domain, ...wordlist.map(w => w + '.' + domain), ...found, wild])];
     put('hosts.txt', candidates);
@@ -298,8 +303,8 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     }
     // TLS is measured only where the capture already found an https endpoint.
     // The A record is passed as --ip, so the lab needs no resolver in the container.
-    const tlsCheck = await captureTls(run, ws, testsslTargets(http.map(r => r.url)), host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]);
-    for (const check of tlsCheck.runs) {
+    const tlsCheck = deep ? await captureTls(run, ws, testsslTargets(http.map(r => r.url)), host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]) : null;
+    for (const check of tlsCheck?.runs ?? []) {
       const row = coverage.find(c => c.engine === check.engine);
       if (check.report) row.leads = tlsLeads({ root: domain, tls: [check.report] }).length;
       else { row.status = 'unavailable'; row.reason = row.reason || check.error || 'the handshake was not measured'; }
@@ -313,7 +318,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.entries, dnssec, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
+    return { schema: 1, root: domain, zone, dns, http, ...(deep ? { email, tls: tlsCheck.entries, dnssec } : {}), rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.

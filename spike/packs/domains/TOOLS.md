@@ -116,6 +116,12 @@ and no snapshot makes the prepass capture the domain with the real tools and
 pin the result. It checks that the live capture finds `staging`, the takeover,
 the dangling CNAME and the drainer, and that the drainer replays green.
 
+checkdmarc, DNSViz and testssl.sh run only in the domains prepass
+(`deep: id === 'domains'` in `pack.mjs`). The surface prepass shares
+`captureDomain()` but does not run them, and its snapshot has no `email`,
+`tls` or `dnssec` key, as on main. `test/surface-live-wiring.test.mjs` checks
+this with every tool call faked.
+
 Keep dnsx, httpx and subfinder for capture. Add Nuclei as the second engine for
 the takeover lead. Add CSP Evaluator and Retire.js on captured bytes. Do not
 ensemble two zero-result takeover tools into a claimed takeover.

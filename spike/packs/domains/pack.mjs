@@ -37,7 +37,7 @@ export function prepassFor(id) { return async(ws,{emit=()=>{}}={})=>{
   const cfg = scopeConfig(ws);
   if(cfg.domain && !cfg.evidenceSnapshot) {
     emit({ev:id+'-capture-start',domain:cfg.domain});
-    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface'});
+    await pinLive(ws,cfg.domain,cfg.reach,{crawl:id==='surface',deep:id==='domains'});
   }
   const scan = await scanSnapshot(ws,id);
   const {snapshot} = loadSnapshot(ws);

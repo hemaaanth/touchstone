@@ -40,7 +40,12 @@ const answers = {
   },
 };
 let current;
+// The domains-only tools are never run for real here. Each call is recorded and
+// answered with a refusal, so no request leaves the machine.
+const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
+  const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
+  if (deep) { calls.push({ name: deep, ...opts }); return { code: 125, stdout: '', stderr: 'not run in this test', timedOut: false }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
@@ -231,3 +236,20 @@ test('a domains run does not run jsluice', async () => {
   rmSync(ws, { recursive: true, force: true });
   assert.equal(calls.some(c => c.name === 'jsluice'), false);
 });
+
+// M-D: checkdmarc, testssl and DNSViz belong to the domains pack. A surface
+// prepass must not run them, and its snapshot keeps the main-branch shape.
+test('a live surface run does not run the domains-only tools; a domains run does', async () => {
+  let { ws, record } = await prepass(surface);
+  const snapshot = JSON.parse(readFileSync(join(ws, 'snapshot.json'), 'utf8'));
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual(calls.filter(c => DEEP[c.name]).map(c => c.name), []);
+  for (const key of ['email', 'tls', 'dnssec']) assert.equal(key in snapshot, false, key);
+  assert.equal(record.coverage.some(c => /^(checkdmarc|testssl|dnsviz)/.test(c.engine)), false);
+  calls.length = 0;
+  ({ ws, record } = await prepass(domains));
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual([...new Set(calls.filter(c => DEEP[c.name]).map(c => c.name))], ['checkdmarc', 'dnsviz']);
+  assert.equal(record.coverage.find(c => c.engine === 'checkdmarc').status, 'unavailable');
+});
+
