@@ -764,6 +764,94 @@ contract Prank2Test is Test {
   assert.equal(isProven(f), false);
 });
 
+// ---- forged drains, review 2 (real forge) -----------------------------------
+//
+// Each case is a forgery from the second review: forge passes, and the trace
+// shows a real loss of a scope target, but the test made that loss with a
+// cheatcode. The gate must say "not proven". `forged` also checks that forge
+// passed: a forged case that fails forge proves nothing about the gate.
+async function forged(poc, files, body) {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, files, poc, body);
+  assert.equal(f.forgePassed, true, `${poc} must pass forge`);
+  assert.equal(f.proof.harm.ok, false, `${poc} must not be proven: ${JSON.stringify(f.proof.harm)}`);
+  assert.equal(isProven(f), false);
+  return f;
+}
+const LAB_VAULT = readFileSync(path.join(LAB, "src/Vault.sol"), "utf8");
+// A cheatcode declared `view` is reached by STATICCALL. Forge still runs it.
+const VM_VIEW = `interface VmView {
+  function prank(address) external view;
+  function etch(address, bytes calldata) external view;
+  function cloneAccount(address, address) external view;
+}
+`;
+
+// B1: a cheatcode called by STATICCALL is recorded like one called by CALL.
+test("forge: a prank AS the victim by STATICCALL is NOT proven (review 2 B1, staticprank)", { skip, timeout: 300_000 }, async () => {
+  await forged("StaticPrankTest", { "Tokens.sol": TOKENS }, `import "../src/Tokens.sol";
+${VM_VIEW}
+contract StaticPrankTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function test_x() public {
+    vault.tok();
+    VmView(address(vm)).prank(address(vault));
+    tok.transfer(address(0xBEEF), 100);
+  }
+}
+`);
+});
+
+test("forge: an etch over the scope token by STATICCALL is NOT proven (review 2 B1, staticetch)", { skip, timeout: 300_000 }, async () => {
+  await forged("StaticEtchTest", { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+${VM_VIEW}
+contract StaticEtchTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function test_x() public {
+    vault.tok();
+    VmView(address(vm)).etch(address(tok), address(fake).code);
+    FakeTok(address(tok)).drain(address(vault), address(0xBEEF));
+  }
+}
+`);
+});
+
+test("forge: a cloneAccount over the scope token by STATICCALL is NOT proven (review 2 B1, staticclone)", { skip, timeout: 300_000 }, async () => {
+  await forged("StaticCloneTest", { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+${VM_VIEW}
+contract StaticCloneTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function test_x() public {
+    vault.tok();
+    fake.setBal(address(vault), 100);
+    VmView(address(vm)).cloneAccount(address(fake), address(tok));
+    FakeTok(address(tok)).drain(address(vault), address(0xBEEF));
+  }
+}
+`);
+});
+
+test("forge: an ETH send AS the victim pranked by STATICCALL is NOT proven (review 2 B1, ethstatic)", { skip, timeout: 300_000 }, async () => {
+  await forged("EthStaticTest", { "Vault.sol": LAB_VAULT }, `import "../src/Vault.sol";
+${VM_VIEW}
+contract EthStaticTest is Test {
+  Vault v;
+  function setUp() public { v = new Vault(); vm.deal(address(this), 5 ether); v.deposit{value: 5 ether}(); }
+  function test_x() public {
+    v.totalAssets();
+    VmView(address(vm)).prank(address(v));
+    (bool ok,) = address(0xBEEF).call{value: 1 ether}("");
+    require(ok, "send");
+  }
+}
+`);
+});
+
 // A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
 // balance storage is identical to TOKENS; only the advisory logs are gone. The
 // ground-truth storage channel must prove a drain of it, and must NOT over-fire on

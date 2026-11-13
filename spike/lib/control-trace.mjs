@@ -143,7 +143,10 @@ export function extractControlTrace(traces) {
         const entitled = building !== null ? building === context : !execution || authority.includes(caller) || first;
         if (entitled) (held[context] ??= {})[key] = word(change.value);
       }
-      if (t.kind !== "CALL" || !t.success || !ok(i)) return;
+      if (!t.success || !ok(i)) return;
+      // A cheatcode is recorded for ANY call kind. A test can declare a cheatcode
+      // `view`; Solidity then reaches the VM by STATICCALL, and forge still runs it.
+      if (address !== VM && t.kind !== "CALL") return;
       if (address === VM && selector === ETCH) {
         const data = String(t.data).slice(10);
         const target = "0x" + data.slice(24, 64);
