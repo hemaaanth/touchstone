@@ -446,7 +446,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
     // the scope cannot support (static/fuzz on a brief with no local source yet) is
     // off with a reason, never silently dropped. The plan rides into the workspace
     // config, so the run worker builds exactly the tools this plan enables.
-    plan = planModules(target, modules)
+    plan = planModules(target, modules, target.pack ? PACKS[target.pack] : undefined)
     // Each run has its own budget. The worker stops the run when it is spent.
     budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
 

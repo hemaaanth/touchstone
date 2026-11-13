@@ -33,7 +33,24 @@ export function packFor(cfg = {}) {
   return pack;
 }
 
+// The pack fields that say where a module's tools reach. The Modules page builds
+// its sentences from them and from nothing else. See packs/README.md.
+//   labTarget   "rule-based": the lab assistant is a stand-in, not a model
+//   offline     true: no tool reaches a network
+//   fetches     ["github", "solc"]: what the host fetches for the run
+//   scanNet     "open": a live run's scanners use the open bridge network
+//   grants      "github": a live grant names GitHub repos or orgs, not hosts
+//   extraProof  "cloud-http": one check also gets an HTTP replay on a private cloud
+const REACH_FIELDS = ["labTarget", "offline", "fetches", "scanNet", "grants", "extraProof"];
+
 // What the New run dialog needs to list the modules.
 export function packList() {
-  return Object.values(PACKS).map(({ id, title, tier, proof, live }) => ({ id, title: title ?? id, tier, proof, live: live === true }));
+  return Object.values(PACKS).map((pack) => {
+    const { id, title, tier, proof, live } = pack;
+    const row = { id, title: title ?? id, tier, proof, live: live === true };
+    // Only a pack that sets a field carries it. An absent field stays absent,
+    // so the console does not invent a fact for every module.
+    for (const k of REACH_FIELDS) if (pack[k] !== undefined) row[k] = pack[k];
+    return row;
+  });
 }
