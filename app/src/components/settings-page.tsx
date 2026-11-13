@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
+import { Check, Info, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
 import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
 import { getConsoleToken, setConsoleToken, tokenHeaders } from "@/lib/console-token"
@@ -8,6 +8,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { ProviderLogo } from "@/components/provider-logo"
 import { Input } from "@/components/ui/input"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<SettingsState | null>(null)
@@ -494,9 +495,19 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
           )
         })}
       </div>
-      <p className="mt-2 px-2 text-xs text-muted-foreground">
-        With Daytona on, offline tools that work on a run's workspace run on Daytona. The workspace is uploaded first. This includes the Solidity analyzers and fuzzers, the keys pack's secret scans, forge builds, and the proof replay. So the target's files, and any keys in them, leave this machine. The proof verdict is read from files built on Daytona and copied back. These stay on local Docker: tools that use a network, the lab chain, image builds, and the supply-chain, infra-cloud and domains scans. Those scans work on a snapshot that belongs to no run. Each run, and each swarm child, gets its own machines. They are deleted when the run ends.
-      </p>
+      <div className="mt-2 flex items-start gap-1 px-2 text-xs text-muted-foreground">
+        <span>Daytona uploads the run workspace, including keys in its files. Networked tools and the lab chain stay local.</span>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger render={<button type="button" aria-label="Daytona execution details" className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" />}>
+              <Info className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm leading-relaxed">
+              Solidity analyzers, fuzzers, secret scans, forge builds, and proof replay run on Daytona. The proof verdict is copied back. Image builds and supply-chain, infra-cloud, and domains scans stay in local Docker on snapshots outside the run. Each run and fleet child gets its own machine, deleted when it ends.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
       <form
         className="mt-2 flex items-center gap-2 py-1.5 pr-1 pl-2"
         onSubmit={(e) => {
