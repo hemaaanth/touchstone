@@ -7,19 +7,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync } from "node:fs";
-import { compareQueue, hashWithSafeHash, parseSafeHash, queueJobs, runQueueWorld, safeHashLeads, safeHashNote, safeTxTypedData } from "../packs/keys/safe-hash.mjs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { compareQueue, hashWithSafeHash, parseSafeHash, queueJobs, runQueueWorld, safeHashLeads, safeHashNote, safeTxTypedData, underTimeout } from "../packs/keys/safe-hash.mjs";
 import { keysLeads, leadsFor } from "../packs/keys/common.mjs";
 import keys from "../packs/keys/pack.mjs";
 import { cleanupWorkspace, makeWorkspace } from "../lib/sandbox.mjs";
+import { runTool } from "../lib/wrap.mjs";
 
 const has = (image) => { try { execFileSync("docker", ["image", "inspect", image], { stdio: "ignore" }); return true; } catch { return false; } };
 const hasSafeHash = has("touchstone/safe-hash:0.0.19");
 const hasChain = has("touchstone-chain-tools:wave1");
 const skipReal = (!hasSafeHash && "safe-hash image not built") || (!hasChain && "chain-tools image not built");
 const LAB = new URL("../packs/keys/lab", import.meta.url).pathname;
-const OWNER0 = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
-const OWNER2 = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+// Anvil accounts 6 and 8. The main Keys lab uses accounts 0 to 2.
+const OWNER0 = "0x976ea74026e726554db657fa54763abd0c3a0aa9";
+const OWNER2 = "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f";
 
 // ---- pure parts
 
@@ -66,6 +70,36 @@ test("compareQueue does not check a Safe it cannot calibrate, and says so", () =
   assert.match(safeHashNote(out), /did NOT check/);
 });
 
+test("an empty queue is unavailable, not clean", () => {
+  for (const queue of [{}, { chainId: 11155111, safes: [] }, { chainId: 11155111, safes: null }]) {
+    const out = compareQueue(queue, new Map());
+    assert.equal(out.available, false);
+    assert.deepEqual(out.leads, []);
+    assert.match(safeHashNote(out), /did NOT check/);
+  }
+});
+
+test("a Safe that is a gap is named in the note, next to one that was checked", () => {
+  const good = queueOf().safes[0];
+  const other = { ...good, name: "other", address: "0x00000000000000000000000000000000000000bb", executions: [] };
+  const out = compareQueue({ chainId: 11155111, safes: [good, other] }, hashesOf({ "executed:0": h("1"), "shown:0": h("1"), "shown:1": h("2") }));
+  assert.equal(out.available, true);
+  assert.equal(out.checked.length, 1);
+  assert.equal(out.gaps.length, 1);
+  assert.match(safeHashNote(out), /for 1 Safe\(s\).*Not checked: Safe "other" 0x0000…00bb: no executed transaction to calibrate/);
+});
+
+test("compareQueue is unavailable when a shown hash is for another domain (chain or Safe)", () => {
+  const hashes = hashesOf({ "executed:0": h("1"), "shown:0": h("1"), "shown:1": h("2") });
+  for (const [k, v] of hashes) hashes.set(k, { ...v, domainHash: h("d") });
+  assert.equal(compareQueue(queueOf(), hashes).available, true);
+  hashes.set(`${SAFE}:shown:1`, { safeTxHash: h("2"), domainHash: h("e") });
+  const out = compareQueue(queueOf(), hashes);
+  assert.equal(out.available, false);
+  assert.match(out.reason, /more than one domain/);
+  assert.deepEqual(out.leads, []);
+});
+
 test("compareQueue is unavailable when a shown transaction has no hash", () => {
   const out = compareQueue(queueOf(), hashesOf({ "executed:0": h("1"), "shown:0": h("1") }));
   assert.equal(out.available, false);
@@ -80,6 +114,7 @@ test("compareQueue flags an approval no shown transaction hashes to, and an exec
   assert.equal(blind.leads.length, 1);
   assert.equal(blind.leads[0].check, "safe-hash-mismatch");
   assert.equal(blind.leads[0].block, 4);
+  assert.equal(blind.leads[0].where, `chain 11155111 ${SAFE}`, "never a bare address: the queue lab is not the target chain");
   const swapped = compareQueue(queueOf({ approvals: [] }), hashesOf({ "executed:0": h("1"), "shown:0": h("5"), "shown:1": h("2") }));
   assert.equal(swapped.leads.length, 1);
   assert.match(swapped.leads[0].description, /What ran is not what they saw/);
@@ -92,7 +127,98 @@ test("the check does not run in source mode, and the note says it did not", asyn
   assert.match(out.note, /did NOT check the Safe queue \(source mode/);
 });
 
-// ---- failure cases through the real runTool()
+// ---- failure cases in the prepass hook (safeHashLeads), the path the pack really calls
+
+const assertUnavailable = (out, why) => {
+  assert.equal(out.available, false);
+  assert.deepEqual(out.leads, []);
+  assert.match(out.note, /did NOT check the Safe queue/);
+  assert.match(out.reason, why);
+};
+
+test("the hook is unavailable, with no lead, when the safe-hash image is missing", { skip: !hasChain && "chain-tools image not built", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB);
+  try {
+    const before = readdirSync(ws).sort();
+    assertUnavailable(await safeHashLeads(ws, { world: true }, { image: "touchstone/safe-hash:does-not-exist" }), /not built/);
+    assert.deepEqual(readdirSync(ws).sort(), before, "the queue file is gone");
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("the hook is unavailable, with no lead, when the Safe queue lab does not run", async () => {
+  const ws = makeWorkspace(LAB);
+  try {
+    assertUnavailable(await safeHashLeads(ws, { world: true }, { worldImage: "touchstone-chain-tools:does-not-exist" }), /Safe queue lab did not run .*not built/);
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("the hook is unavailable, with no lead, when something throws", async () => {
+  assertUnavailable(await safeHashLeads("/nonexistent/touchstone-ws", { world: true }), /ENOENT/);
+});
+
+// ---- the docker call itself, through the real runTool() with a fake `docker` on PATH
+
+// The fake prints FAKE_OUT, exits FAKE_CODE and writes its argv to FAKE_ARGS.
+async function withFakeDocker(stdout, code, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "fake-docker-"));
+  const path = process.env.PATH;
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_ARGS"\nprintf "%s" "$FAKE_OUT"\nexit "$FAKE_CODE"\n');
+  chmodSync(join(dir, "docker"), 0o755);
+  Object.assign(process.env, { PATH: `${dir}:${path}`, FAKE_ARGS: join(dir, "args"), FAKE_OUT: stdout, FAKE_CODE: String(code) });
+  try { return await fn(() => readFileSync(join(dir, "args"), "utf8").split("\n").slice(0, -1)); }
+  finally {
+    process.env.PATH = path;
+    for (const k of ["FAKE_ARGS", "FAKE_OUT", "FAKE_CODE"]) delete process.env[k];
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const job0 = { id: "j0", typed: safeTxTypedData(1, SAFE, fields, 0) };
+const section = (i) => `@@ job ${i}\n${OUTPUT}@@ exit 0\n`;
+
+test("the safe-hash call runs with no network, no pull, no workspace, under timeout", async () => {
+  await withFakeDocker(section(0), 0, async (argv) => {
+    const out = await hashWithSafeHash([job0]);
+    assert.equal(out.ok, true, out.reason);
+    const a = argv();
+    assert.equal(a[a.indexOf("--network") + 1], "none");
+    assert.ok(a.includes("--pull=never"));
+    assert.ok(!a.includes("-v"), "the tool sees no workspace");
+    assert.deepEqual(a.slice(a.indexOf("touchstone/safe-hash:0.0.19") + 1, -3), ["timeout", "-k", "5", "60"]);
+  });
+});
+
+test("an empty report from a container that exits 0 is unavailable, not clean", async () => {
+  for (const out of ["", "@@ exit 0\n", "@@ job 0\n@@ exit 0\n"]) {
+    await withFakeDocker(out, 0, async () => {
+      assert.equal((await hashWithSafeHash([job0])).ok, false, JSON.stringify(out));
+    });
+  }
+});
+
+test("a nonzero container exit is not a result, even when every job parsed", async () => {
+  await withFakeDocker(section(0), 1, async () => {
+    const out = await hashWithSafeHash([job0]);
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /exit 1/);
+  });
+  // One job whose own exit is 1, inside a container that exits 0.
+  await withFakeDocker(section(0).replace("@@ exit 0", "@@ exit 1"), 0, async () => {
+    assert.equal((await hashWithSafeHash([job0])).ok, false);
+  });
+});
+
+test("a job number outside the job list, or a job printed twice, is unavailable and does not throw", async () => {
+  await withFakeDocker(section(0) + section(1), 0, async () => {
+    const out = await hashWithSafeHash([job0]);
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /job 1, which is not one of the 1 jobs/);
+  });
+  await withFakeDocker(section(0) + section(0), 0, async () => {
+    assert.equal((await hashWithSafeHash([job0, { ...job0, id: "j1" }])).ok, false);
+  });
+});
+
+// ---- failure cases through the real runTool() and the real image
 
 test("safe-hash reports unavailable, not clean, when its image is missing", async () => {
   process.env.SAFE_HASH_IMAGE = "touchstone/safe-hash:does-not-exist";
@@ -119,6 +245,18 @@ test("safe-hash reports unavailable when it times out", { skip: !hasSafeHash && 
   assert.match(out.reason, /timed out/);
 });
 
+test("a container that really hangs is stopped at the timeout, and nothing is left running", { skip: !hasSafeHash && "safe-hash image not built", timeout: 60_000 }, async () => {
+  // The same wrapper hashWithSafeHash uses, around a command that never ends.
+  const tag = `HANG_${process.pid}_${Date.now()}`;
+  const start = Date.now();
+  const run = await runTool({ image: "touchstone/safe-hash:0.0.19", ws: null, env: { [tag]: "1" }, timeoutMs: 4000, cmd: underTimeout(4000, ["sh", "-c", "sleep 300"]) });
+  assert.equal(run.timedOut, true);
+  assert.ok(Date.now() - start < 20_000, `the call returned after ${Date.now() - start} ms`);
+  const left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/safe-hash:0.0.19"], { encoding: "utf8" }).split("\n").filter(Boolean)
+    .filter((id) => execFileSync("docker", ["inspect", "-f", "{{.Config.Env}}", id], { encoding: "utf8" }).includes(tag));
+  assert.deepEqual(left, []);
+});
+
 // ---- the real run against the lab
 
 test("safe-hash-rs, run on the Safe queue lab, matches the Safe's own hash and flags the blind approval", { skip: skipReal, timeout: 300_000 }, async () => {
@@ -127,7 +265,7 @@ test("safe-hash-rs, run on the Safe queue lab, matches the Safe's own hash and f
     const before = readdirSync(ws).sort();
     const lab = await runQueueWorld(ws);
     assert.equal(lab.ok, true, lab.reason);
-    assert.deepEqual(readdirSync(ws).sort(), [...before, "safe-queue.json"].sort(), "only the queue file is left behind");
+    assert.deepEqual(readdirSync(ws).sort(), before, "nothing is left behind: the queue file is read, then deleted");
     const safe = lab.queue.safes[0];
     assert.equal(lab.queue.chainId, 11155111);
     assert.equal(safe.version, "1.4.1");
@@ -147,6 +285,7 @@ test("safe-hash-rs, run on the Safe queue lab, matches the Safe's own hash and f
     assert.equal(lead.check, "safe-hash-mismatch");
     assert.equal(lead.impact, "High");
     assert.equal(lead.owner, OWNER0);
+    assert.equal(lead.where, `chain 11155111 ${safe.address.toLowerCase()}`);
     assert.ok(!Object.values(out.checked[0].shown).includes(lead.hash));
     const honest = safe.approvals.find((a) => a.owner.toLowerCase() === OWNER2);
     assert.equal(honest.hash.toLowerCase(), out.checked[0].shown["1"], "owner 2 approved what was shown: no lead");
@@ -164,6 +303,13 @@ test("the Keys prepass now raises the blind-signing lead its own checks never fo
     assert.ok(!own.some((l) => /hash|blind/i.test(`${l.check} ${l.description}`)), "the pack had no blind-signing check");
     // After: the safe-hash-rs lead is in the brief, the record and the event.
     assert.equal(prep.record.safeHash, true);
+    assert.ok(!readdirSync(ws).includes("safe-queue.json"), "the agent sees one chain only");
+    // The queue lab's Safe and owners are not a contract or owner in the target lab.
+    const obs = readFileSync(join(ws, "chain-observation.json"), "utf8").toLowerCase();
+    const lead = events[0].top.find((l) => l.check === "safe-hash-mismatch");
+    const queueSafe = lead.where.split(" ").pop();
+    assert.match(lead.where, /^chain 11155111 0x[0-9a-f]{40}$/);
+    for (const addr of [queueSafe, OWNER0, OWNER2]) assert.ok(!obs.includes(addr.slice(2)), `${addr} is in the main observation`);
     assert.match(prep.env.CHAIN_BRIEF, /safe-hash-mismatch .* seen only by safe-hash-rs/);
     assert.match(prep.env.CHAIN_BRIEF, /blind signing/);
     assert.match(prep.env.CHAIN_BRIEF, /matched the hash the Safe emitted/);

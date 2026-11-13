@@ -2,7 +2,7 @@
 // of a transaction the signers were shown?
 //
 //   1. The queue lab world (runtime/safe-queue.mjs) runs in the chain-tools image. It writes
-//      `safe-queue.json`: the queue the wallet UI showed, plus what the chain recorded
+//      `safe-queue.json` (read, then deleted): the queue the wallet UI showed, plus what the chain recorded
 //      (ApproveHash events, ExecutionSuccess hashes, decoded execTransaction calls).
 //   2. safe-hash-rs (Cyfrin) hashes each transaction offline, in Docker with no network,
 //      as EIP-712 SafeTx typed data. We never compute a Safe hash ourselves.
@@ -30,24 +30,32 @@ const NO_IMAGE = /unable to find image|no such image|pull access denied/i;
 const HEX32 = /^0x[0-9a-f]{64}$/;
 const lc = (s) => String(s ?? "").toLowerCase();
 const short = (s) => `${String(s).slice(0, 6)}…${String(s).slice(-4)}`;
+// GNU timeout as the container's PID 1. On a timeout, runTool's docker client forwards SIGTERM
+// to PID 1. A shell or node as PID 1 ignores it, so a hung container (and the call) would run
+// on. timeout passes the signal on, and also stops the command itself just after the limit.
+export const underTimeout = (timeoutMs, argv) => ["timeout", "-k", "5", String(Math.max(1, Math.ceil(timeoutMs / 1000))), ...argv];
 
 // ---------------------------------------------------------------- the queue lab world
 
 // Run the queue world once. Returns { ok, queue } or { ok: false, reason }.
-export async function runQueueWorld(ws, { timeoutMs = 180_000 } = {}) {
-  rmSync(join(ws, QUEUE), { force: true });
+// The queue file is read and then deleted, so the agent's workspace never holds this second
+// chain: its only chain is the target in chain-observation.json.
+export async function runQueueWorld(ws, { timeoutMs = 180_000, image = CHAIN_IMAGE } = {}) {
+  const file = join(ws, QUEUE);
+  rmSync(file, { force: true });
   copyFileSync(WORLD_SRC, join(ws, WORLD_IN_WS));
   let run;
   try {
-    run = await runTool({ image: CHAIN_IMAGE, ws, env: { HOME: "/tmp" }, timeoutMs, cmd: ["node", WORLD_IN_WS] });
+    run = await runTool({ image, ws, env: { HOME: "/tmp" }, timeoutMs, cmd: underTimeout(timeoutMs, ["node", WORLD_IN_WS]) });
   } finally { rmSync(join(ws, WORLD_IN_WS), { force: true }); }
-  const file = join(ws, QUEUE);
-  if (!existsSync(file)) {
-    const why = run.timedOut ? "timed out" : NO_IMAGE.test(run.stderr) ? `image ${CHAIN_IMAGE} not built` : `exit ${run.code}: ${run.stderr.slice(-200)}`;
-    return { ok: false, reason: `the Safe queue lab did not run (${why})` };
-  }
-  try { return { ok: true, queue: JSON.parse(readFileSync(file, "utf8")) }; }
-  catch { return { ok: false, reason: "the Safe queue lab wrote a file that is not JSON" }; }
+  try {
+    if (!existsSync(file) || run.code !== 0) {
+      const why = run.timedOut || run.code === 124 ? "timed out" : NO_IMAGE.test(run.stderr) ? `image ${image} not built` : `exit ${run.code}: ${run.stderr.slice(-200)}`;
+      return { ok: false, reason: `the Safe queue lab did not run (${why})` };
+    }
+    try { return { ok: true, queue: JSON.parse(readFileSync(file, "utf8")) }; }
+    catch { return { ok: false, reason: "the Safe queue lab wrote a file that is not JSON" }; }
+  } finally { rmSync(file, { force: true }); }
 }
 
 // ---------------------------------------------------------------- the tool
@@ -84,20 +92,21 @@ export async function hashWithSafeHash(jobs, { timeoutMs = 60_000, image = SAFE_
   if (!jobs.length) return { ok: true, hashes: new Map() };
   const env = { N: String(jobs.length) };
   jobs.forEach((job, i) => { env[`J${i}`] = JSON.stringify(job.typed); });
-  const run = await runTool({ image, cmd: ["sh", "-c", BATCH], ws: null, env, timeoutMs });
-  if (run.timedOut) return { ok: false, reason: `${ENGINE} timed out` };
+  const run = await runTool({ image, cmd: underTimeout(timeoutMs, ["sh", "-c", BATCH]), ws: null, env, timeoutMs });
+  if (run.timedOut || run.code === 124) return { ok: false, reason: `${ENGINE} timed out` };
   if (NO_IMAGE.test(run.stderr)) return { ok: false, reason: `image ${image} not built (${BUILD})` };
   const sections = run.stdout.split(/^@@ job (\d+)$/m).slice(1);
   const hashes = new Map();
   for (let k = 0; k < sections.length; k += 2) {
-    const i = Number(sections[k]);
+    const job = jobs[Number(sections[k])];
     const body = sections[k + 1] ?? "";
+    if (!job || hashes.has(job.id)) return { ok: false, reason: `${ENGINE} printed job ${sections[k]}, which is not one of the ${jobs.length} jobs or came twice` };
     const exit = body.match(/^@@ exit (\d+)$/m)?.[1];
     const parsed = parseSafeHash(body);
-    if (exit !== "0" || !parsed) return { ok: false, reason: `${ENGINE} failed on ${jobs[i]?.id ?? `job ${i}`}: ${body.replace(/^@@ exit.*$/m, "").trim().slice(0, 160) || "no output"}` };
-    hashes.set(jobs[i].id, parsed);
+    if (exit !== "0" || !parsed) return { ok: false, reason: `${ENGINE} failed on ${job.id}: ${body.replace(/^@@ exit.*$/m, "").trim().slice(0, 160) || "no output"}` };
+    hashes.set(job.id, parsed);
   }
-  if (hashes.size !== jobs.length) return { ok: false, reason: `${ENGINE} hashed ${hashes.size} of ${jobs.length} transactions (exit ${run.code}${run.stderr ? `: ${run.stderr.slice(-160)}` : ""})` };
+  if (run.code !== 0 || hashes.size !== jobs.length) return { ok: false, reason: `${ENGINE} hashed ${hashes.size} of ${jobs.length} transactions (exit ${run.code}${run.stderr ? `: ${run.stderr.slice(-160)}` : ""})` };
   return { ok: true, hashes };
 }
 
@@ -123,6 +132,8 @@ export function compareQueue(queue, hashes, engine = ENGINE) {
   const gaps = [];
   for (const safe of queue?.safes ?? []) {
     const addr = lc(safe.address);
+    // The queue lab is its own chain, not the target. `where` says so, so no lead reads as a target address.
+    const where = `chain ${queue.chainId} ${addr}`;
     const label = `Safe "${safe.name}" ${short(safe.address)}`;
     const execs = (safe.executions ?? []).filter((ex) => ex.fields);
     if (!execs.length) { gaps.push(`${label}: no executed transaction to calibrate ${engine} against, so it was not checked`); continue; }
@@ -134,19 +145,23 @@ export function compareQueue(queue, hashes, engine = ENGINE) {
     }
     const shown = new Map((safe.queue ?? []).map((e) => [e.nonce, hashes.get(`${addr}:shown:${e.nonce}`)?.safeTxHash]));
     if ([...shown.values()].some((h) => !h)) return { available: false, reason: `${engine} returned no hash for a shown transaction of ${label}`, leads: [], checked, gaps };
+    // Bound to this Safe: every hash must use the domain (chain + Safe) of the calibrated executions.
+    const domains = new Set([...execs.map((ex) => `executed:${ex.nonce}`), ...(safe.queue ?? []).map((e) => `shown:${e.nonce}`)]
+      .map((k) => hashes.get(`${addr}:${k}`)?.domainHash));
+    if (domains.size !== 1) return { available: false, reason: `${engine} used more than one domain for ${label}, so its hashes are not all for this Safe`, leads: [], checked, gaps };
     checked.push({ safe: addr, chainId: queue.chainId, calibrated: execs.length, shown: Object.fromEntries(shown) });
     const shownList = [...shown].map(([n, h]) => `nonce ${n} → ${short(h)}`).join(", ");
     for (const ex of execs) {
       const want = shown.get(ex.nonce);
       if (want && want !== lc(ex.hash)) {
-        leads.push({ engine, check: "safe-hash-mismatch", impact: "High", where: addr, block: ex.block,
+        leads.push({ engine, check: "safe-hash-mismatch", impact: "High", where, block: ex.block,
           description: `${label} (Safe queue lab, chain ${queue.chainId}) executed nonce ${ex.nonce} with hash ${lc(ex.hash)}. The signers were shown a transaction for that nonce that ${engine} hashes to ${want}. What ran is not what they saw.` });
       }
     }
     const known = new Set([...shown.values(), ...execs.map((ex) => lc(ex.hash))]);
     for (const ap of safe.approvals ?? []) {
       if (known.has(lc(ap.hash))) continue;
-      leads.push({ engine, check: "safe-hash-mismatch", impact: "High", where: addr, block: ap.block, owner: lc(ap.owner), hash: lc(ap.hash),
+      leads.push({ engine, check: "safe-hash-mismatch", impact: "High", where, block: ap.block, owner: lc(ap.owner), hash: lc(ap.hash),
         description: `${label} (Safe queue lab, chain ${queue.chainId}): owner ${ap.owner} approved hash ${lc(ap.hash)} on chain (approveHash, block ${ap.block}). No transaction the signers were shown hashes to it. ${engine} hashed each shown transaction offline: ${shownList}. The owner signed a transaction they did not see (blind signing). Only the hash is on chain, so the real fields stay unknown until someone executes it.` });
     }
   }
@@ -162,14 +177,14 @@ export function safeHashNote(result) {
 }
 
 // The prepass hook. Lab mode only: a real folder has no Safe queue and no chain.
-// Never throws.
-export async function safeHashLeads(ws, { world }) {
+// Never throws. opts.image and opts.worldImage replace the two images (tests use this).
+export async function safeHashLeads(ws, { world }, { image, worldImage } = {}) {
   const done = (result) => ({ tool: ENGINE, key: "safeHash", ...result, note: safeHashNote(result) });
   if (!world) return done({ available: false, reason: "source mode: there is no Safe queue to check", leads: [], checked: [], gaps: [] });
   try {
-    const lab = await runQueueWorld(ws);
+    const lab = await runQueueWorld(ws, { image: worldImage });
     if (!lab.ok) return done({ available: false, reason: lab.reason, leads: [], checked: [], gaps: [] });
-    const hashed = await hashWithSafeHash(queueJobs(lab.queue));
+    const hashed = await hashWithSafeHash(queueJobs(lab.queue), { image });
     if (!hashed.ok) return done({ available: false, reason: hashed.reason, leads: [], checked: [], gaps: [] });
     return done(compareQueue(lab.queue, hashed.hashes));
   } catch (error) {
