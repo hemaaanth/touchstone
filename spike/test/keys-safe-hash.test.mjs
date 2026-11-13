@@ -255,7 +255,7 @@ test("safe-hash reports unavailable when it times out", { skip: !hasSafeHash && 
   assert.match(out.reason, /timed out/);
 });
 
-test("a container that really hangs is stopped at the timeout, and nothing is left running", { skip: "needs the shared runTool timeout fix (6526bbe on pack/domains); without it the container outlives the call", timeout: 60_000 }, async () => {
+test("a container that really hangs is stopped at the timeout, and nothing is left running", { skip: !hasSafeHash && "safe-hash image not built", timeout: 60_000 }, async () => {
   // A command that never ends. runTool itself must stop the container (shared wrap fix).
   const tag = `HANG_${process.pid}_${Date.now()}`;
   const start = Date.now();

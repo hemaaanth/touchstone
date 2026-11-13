@@ -104,6 +104,16 @@ export const TARGETS = [
     dir: "lab/vault-multi",
     proofSurface: SANDBOX_FOUNDRY,
   },
+  {
+    id: "vault-bytecode",
+    title: "Vault · bytecode only",
+    kind: "lab",
+    blurb: "A vault that ships only as deployed bytecode (src/<Name>.runtime.hex) with a stub that installs it; no vault source. The source tools see nothing, but Mythril reads the bytecode and flags an unprotected sweep(address) that drains the vault.",
+    entry: "src/BytecodeVault.sol",
+    signal: "static",
+    dir: "lab/vault-bytecode",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
 ]
 
 // Labs of the other packs. A pack's lab is a directory with a .touchstone.json
@@ -114,7 +124,7 @@ const PROOF_NOTE = {
   http: "Proven by a request replayed in Docker on a private network with no internet.",
   evidence: "Proven by checking the cited evidence again against the pinned snapshot in the run workspace.",
   forge: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
-  none: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
+  none: "This module has no replay oracle. The run reports leads. No finding can be proven.",
 }
 
 function packLabs() {
@@ -341,6 +351,11 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
     if (PACKS[pack]?.live !== true) {
       throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
     }
+    // The phishing pack must know the client's own defensive registrations, or it
+    // reports them as lookalikes. The list is required. An explicit [] means none.
+    if (pack === "phishing" && !Array.isArray(target.owned)) {
+      throw new Error(`live phishing target ${target.id} needs an owned list of the client's own lookalike domains. Use [] for none.`)
+    }
     const baseUrl = origins[0]
     // A live AI/MCP target can carry its own credential. It rides in the config
     // (the tool reads it) and in the brief (the agent reads it).
@@ -371,6 +386,14 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       })
       live.domain = hosts[0]
       live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+    }
+    // The phishing pack captures the lookalikes of one root domain the same way.
+    // `owned` lists the client's own defensive registrations; they raise no lead.
+    // The pack asserts the grant against `scope` before dnstwist runs.
+    if (pack === "phishing") {
+      live.domain = hosts[0]
+      live.reach = { network: "bridge", granted: true, scope: hosts }
+      live.owned = target.owned.map(String)
     }
     // The supply-chain pack reads GitHub repos or orgs through the read-only
     // API. `github` is what to read; `reach.scope` is what the grant covers.

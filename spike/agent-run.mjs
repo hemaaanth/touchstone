@@ -21,6 +21,7 @@ import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
 import { readSpendWith } from "./lib/attempt-cap.mjs";
+import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -34,6 +35,8 @@ import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
+import { leadsFrom } from "./lib/leads.mjs";
+import { afterNudge } from "./lib/nudge.mjs";
 
 // Tools tell the model how much of the run budget is left.
 readSpendWith(runSpend);
@@ -57,10 +60,6 @@ mkdirSync(DIR, { recursive: true });
 //   poc     run_poc attempts so far
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
-function auditState() {
-  return { poc: 0, passed: new Map(), found: [] };
-}
-
 async function openHarness(db, ws, state) {
   const pack = packFor(readTouchstone(ws));
   // Source navigation is the DEFAULT code-reading layer for any run given a local
@@ -200,7 +199,13 @@ async function chat({ harness, root, reports, state, fleet }) {
 
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
-  const state = auditState();
+  // The server owns this worker. A closed parent pipe means a restart; do not
+  // keep charging or writing the session while a new server recovers it.
+  if (process.env.TOUCHSTONE_PARENT_PIPE === "1") {
+    process.stdin.on("end", () => process.exit(1));
+    process.stdin.resume();
+  }
+  const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
   const { harness, root, reports, pack, fleet } = await openHarness(db, ws, state);
   event("opened", { mode });
   if (mode === "chat") {
@@ -214,7 +219,7 @@ async function child([, , , mode, db, ws]) {
   if (mode === "run") {
     // Stream the agent's thinking and prose to the UI for the whole live turn.
     // In CLI mode stdin is /dev/null, so the steer reader never fires.
-    await streamCognition(harness);
+    await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
     readSteers(root);
   }
 
@@ -224,11 +229,14 @@ async function child([, , , mode, db, ws]) {
   // One nudge, owned by the pack: ask a model that stopped early to work the
   // suspects it has not tried. Only after a clean end of turn.
   const more = settled.status === "done" ? pack.nudge(state) : null;
+  const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
+  const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
   if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
   settled = await fleet?.drain(ctx) ?? settled;
 
   const s = await summarize(root);
   flushFinal(s);
+  if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
   const usage = await chargeUsage(harness);
   event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
   await fleet?.close();
@@ -347,6 +355,7 @@ async function main() {
     proof: worst?.proof ?? null,
     decision: findings.length ? "approved" : null,
     recorded: findings.length > 0,
+    leads: leadsFrom(all),
     calls: settled?.summary?.calls?.map((c) => c.name),
     final: settled?.summary?.final?.text?.slice(0, 1200),
     usage: settled?.usage, reports: settled?.reports,

@@ -2,25 +2,28 @@
 // Output is redacted: a secret shows as [REDACTED] plus a hash, never in full.
 // A Git folder is read as committed files only. Add --worktree to read untracked and ignored files too.
 // Usage: node packs/supply-chain/scan.mjs <path> [--json] [--worktree] [--skipped-out <file>]
+// Signed artifacts: add --cosign-key <public key PEM file> --cosign-artifacts <path>[,...] (paths in the target).
+// cosign then verifies each artifact offline against that pinned key (cosign.mjs).
 //
 // Live GitHub mode reads a repo or an org through the read-only GitHub API at a
 // pinned commit. Nothing is cloned or run. It needs the operator's own statement
 // of who authorized the test. GITHUB_TOKEN is optional: it lifts the rate limit
 // and opens private repos the token can read. It is never printed.
 // Usage: node packs/supply-chain/scan.mjs --github <owner/repo[@ref]|owner|github.com URL>[,...] --authorized "<who authorized this>" [--json] [--skipped-out <file>]
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync, realpathSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync, realpathSync, statSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import pack, { SKIPPED_FILE } from "./pack.mjs";
 import { cryptoDetectors } from "./crypto.mjs";
 import { scannerDetectors } from "./scanners.mjs";
+import { cosignDetectors } from "./cosign.mjs";
 import { replayEvidence } from "../../lib/proof-evidence.mjs";
 import { githubTarget, githubEntry, githubScopeKey } from "../../lib/scopes-store.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const VALUED = ["--skipped-out", "--github", "--authorized"];
+const VALUED = ["--skipped-out", "--github", "--authorized", "--cosign-key", "--cosign-artifacts"];
 const target = args.find((a, i) => !a.startsWith("--") && !VALUED.includes(args[i - 1]));
 const usage = "Usage: node packs/supply-chain/scan.mjs <folder> [--json] [--worktree] [--skipped-out <file>]\n       node packs/supply-chain/scan.mjs --github <owner/repo[@ref]|owner>[,...] --authorized \"<who authorized this>\" [--json] [--skipped-out <file>]";
 for (const f of VALUED) if (flag(f) && !value(f)) { console.error(usage); process.exit(2); }
@@ -33,12 +36,18 @@ if (flag("--github")) {
   catch (err) { console.error(err.message); process.exit(2); }
 } else if (!target || !statSync(target, { throwIfNoEntry: false })?.isDirectory()) { console.error(usage); process.exit(2); }
 
+if (flag("--cosign-key") !== flag("--cosign-artifacts")) { console.error("--cosign-key and --cosign-artifacts go together"); process.exit(2); }
+let cosign = {};
+if (flag("--cosign-key")) {
+  try { cosign = { cosign: { publicKey: readFileSync(value("--cosign-key"), "utf8"), artifacts: value("--cosign-artifacts").split(",") } }; }
+  catch { console.error("cannot read the --cosign-key file"); process.exit(2); }
+}
 const ws = mkdtempSync(join(tmpdir(), "touchstone-scan-run-"));
 try {
   const source = github ? github.map((g) => `github:${g}`).join(",") : realpathSync(target);
   writeFileSync(join(ws, ".touchstone.json"), JSON.stringify(github
-    ? { pack: "supply-chain", kind: "live", github, reach: { granted: true, scope: github.map((g) => githubScopeKey(githubTarget(g))), authorizedBy: String(value("--authorized")).trim() } }
-    : { pack: "supply-chain", kind: "folder", source, worktree: flag("--worktree") }));
+    ? { pack: "supply-chain", kind: "live", github, reach: { granted: true, scope: github.map((g) => githubScopeKey(githubTarget(g))), authorizedBy: String(value("--authorized")).trim() }, ...cosign }
+    : { pack: "supply-chain", kind: "folder", source, worktree: flag("--worktree"), ...cosign }));
   let record;
   try { ({ record } = await pack.prepass(ws, {})); }
   catch (err) {
@@ -46,7 +55,7 @@ try {
     process.exitCode = 1;
   }
   if (record) {
-    const detectors = { ...cryptoDetectors, ...scannerDetectors() };
+    const detectors = { ...cryptoDetectors, ...scannerDetectors(), ...cosignDetectors() };
     const rows = [];
     for (const l of record.leads) {
       const proof = await replayEvidence(ws, l.evidence, { detectors });
