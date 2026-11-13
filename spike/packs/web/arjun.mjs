@@ -17,6 +17,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
+import { classifyCode, isTimeout } from "./toolrun.mjs";
 
 // Built by spike/scripts/build-labs.sh from packs/web/Dockerfile.arjun.
 export const ARJUN_IMAGE = "touchstone/web-arjun:2.2.7";
@@ -79,38 +80,72 @@ const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
 // Mine each endpoint in { endpoints } for undocumented parameters. One Arjun
 // container per endpoint (Arjun's -u takes a single URL); all join the existing
-// lab network, so no new network is created. Always resolves. A run that fails
-// is reported, and only a run that produced no usable result at all makes the
-// tool "unavailable" -- never a clean "found nothing" from a broken run.
+// lab network, so no new network is created. Always resolves; never throws.
+//
+// Fails closed per endpoint. Arjun exits 0 when it completes an endpoint, and
+// writes its -oJ file ONLY when it confirmed at least one parameter; a clean
+// endpoint exits 0 with no file (its stdout says "No parameters were
+// discovered"). So:
+//   - a timeout (timedOut, or exit 124/143/137) is a GAP for that endpoint;
+//   - any other non-zero exit is a GAP for that endpoint;
+//   - exit 0 means the endpoint was CHECKED: parse the file if present (a file
+//     that does not parse to an object is itself a gap), no file means checked
+//     with no parameters.
+// Parameters are kept only for the endpoint they were reported on (item 3).
+// The tool is "ran" if at least one endpoint was checked, "unavailable" if
+// none were; a partial run stays "ran" but carries a reason naming the gaps,
+// so a gap is never shown as a clean result (items 3-4).
 // Returns { coverage: [one entry], leads } in scanWeb's shape.
 export async function scanArjun({ net, baseUrl, endpoints = DEFAULT_ENDPOINTS, run = runTool, timeoutMs = 180_000 } = {}) {
   const leads = [];
-  let anyRan = false;
+  const gaps = [];              // human-readable reason per unchecked endpoint
+  let checked = 0;              // endpoints Arjun actually completed
   let lastCode = 0;
-  let lastErr = "";
   let timedOut = false;
   for (const ep of endpoints) {
+    const epPath = ep.startsWith("/") ? ep : `/${ep}`;
     const scratch = mkdtempSync(join(tmpdir(), "web-arjun-"));
     chmodSync(scratch, 0o777);
     try {
-      const url = `${baseUrl}${ep.startsWith("/") ? ep : `/${ep}`}`;
+      const url = `${baseUrl}${epPath}`;
       const r = await run({
-        image: ARJUN_IMAGE, ws: scratch, network: net, pull: "never", timeoutMs,
+        image: ARJUN_IMAGE, ws: scratch, network: net, timeoutMs,
         cmd: ["arjun", "-u", url, "-oJ", "/work/arjun.json", "-m", "GET", "-t", "10"],
       });
-      const got = parseArjun(read(join(scratch, "arjun.json")));
-      for (const l of got) leads.push(l);
-      // Arjun exits 0 on a clean scan. A 0 exit, or any parsed lead, means the
-      // run reached the target and did its job.
-      if (r.code === 0 || got.length) anyRan = true;
       lastCode = r.code;
-      timedOut = timedOut || Boolean(r.timedOut);
-      if (r.code !== 0) lastErr = cap(r.stderr, 160);
+      if (isTimeout(r.code, r.timedOut)) {
+        timedOut = true;
+        gaps.push(`${epPath}: timed out (exit ${r.code})`);
+        continue;
+      }
+      if (classifyCode(r.code) !== "ok") {
+        gaps.push(`${epPath}: arjun exited ${r.code} ${cap(r.stderr, 80)}`.trim());
+        continue;
+      }
+      // exit 0 == endpoint checked. A file only appears when params were found.
+      const file = join(scratch, "arjun.json");
+      if (existsSync(file)) {
+        const text = read(file);
+        let obj;
+        try { obj = JSON.parse(text); } catch { obj = undefined; }
+        if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+          gaps.push(`${epPath}: arjun exited 0 but its report did not parse`);
+          continue;
+        }
+        for (const l of parseArjun(text)) if (l.path === epPath) leads.push(l);
+      }
+      checked += 1;
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
   }
-  const status = anyRan ? "ran" : "unavailable";
+  const status = checked > 0 ? "ran" : "unavailable";
+  const gapNote = gaps.length
+    ? ` ${gaps.length} of ${endpoints.length} endpoint(s) not checked: ${cap(gaps.join("; "), 180)}`
+    : "";
+  const reason = status === "unavailable"
+    ? cap(`arjun checked 0 of ${endpoints.length} endpoint(s)${timedOut ? " (timed out)" : ""}.${gapNote}`, 240)
+    : gaps.length ? cap(`arjun ran but did not check every endpoint.${gapNote}`, 240) : "";
   return {
     coverage: [{
       engine: "arjun",
@@ -119,9 +154,8 @@ export async function scanArjun({ net, baseUrl, endpoints = DEFAULT_ENDPOINTS, r
       timedOut,
       leads: leads.length,
       endpoints: endpoints.length,
-      ...(status === "unavailable"
-        ? { reason: `arjun exited ${lastCode}${timedOut ? " (timed out)" : ""} with no parsable results across ${endpoints.length} endpoint(s). ${lastErr}` }
-        : {}),
+      checked,
+      ...(reason ? { reason } : {}),
     }],
     leads,
   };

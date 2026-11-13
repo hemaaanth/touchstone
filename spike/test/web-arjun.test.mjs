@@ -9,7 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArjun, scanArjun, ARJUN_IMAGE, DEFAULT_ENDPOINTS } from "../packs/web/arjun.mjs";
 import web from "../packs/web/pack.mjs";
@@ -111,7 +112,7 @@ test("scanArjun: a timeout is reported unavailable with timedOut set", async () 
   assert.match(r.coverage[0].reason, /timed out/);
 });
 
-test("scanArjun: one broken endpoint does not sink a good one (still ran)", async () => {
+test("scanArjun: one broken endpoint does not sink a good one (still ran, with a gap reason)", async () => {
   // First endpoint writes nothing and exits non-zero; second finds the param.
   let call = 0;
   const r = await scanArjun({
@@ -124,7 +125,90 @@ test("scanArjun: one broken endpoint does not sink a good one (still ran)", asyn
     },
   });
   assert.equal(r.coverage[0].status, "ran");
+  assert.equal(r.coverage[0].checked, 1);
   assert.ok(r.leads.some((l) => l.param === "debug"));
+  // The gap is never hidden: a partial run still carries a reason naming it.
+  assert.match(r.coverage[0].reason, /\/down/);
+  assert.match(r.coverage[0].reason, /not checked/);
+});
+
+test("scanArjun: exit 0 with NO file is a checked-clean endpoint (ran, zero leads)", async () => {
+  // Arjun writes its -oJ file ONLY when it finds parameters; a no-parameter
+  // endpoint exits 0 and writes nothing. That is 'checked, found nothing',
+  // not a gap -- the run is 'ran' with zero leads.
+  const r = await scanArjun({
+    net: "netx", baseUrl: "http://lab:8080", endpoints: ["/"],
+    run: async () => ({ code: 0, stdout: "No parameters were discovered.", stderr: "" }),
+  });
+  assert.equal(r.coverage[0].status, "ran");
+  assert.equal(r.coverage[0].checked, 1);
+  assert.equal(r.coverage[0].leads, 0);
+  assert.equal(r.leads.length, 0);
+});
+
+test("scanArjun: exit 0 but an unparsable report is a gap, not clean (item 2)", async () => {
+  const r = await scanArjun({
+    net: "netx", baseUrl: "http://lab:8080", endpoints: ["/healthz"],
+    run: async ({ ws }) => { writeFileSync(join(ws, "arjun.json"), "{not json"); return { code: 0, stdout: "", stderr: "" }; },
+  });
+  assert.equal(r.coverage[0].status, "unavailable"); // the only endpoint was a gap
+  assert.equal(r.coverage[0].checked, 0);
+  assert.equal(r.leads.length, 0);
+  assert.match(r.coverage[0].reason, /did not parse/);
+});
+
+// The shared runDocker() timeout fix sets timedOut:true even when the killed
+// client reports exit 0. The tool honors the flag on its own and never reads a
+// killed endpoint as checked. (The "container is actually gone" half of item 6
+// lives in that shared lib/wrap.mjs commit, not here; see the final report.)
+test("scanArjun: timedOut:true alone is a gap, even with a 0 exit code", async () => {
+  const r = await scanArjun({
+    net: "netx", baseUrl: "http://lab:8080", endpoints: ["/healthz"],
+    run: async ({ ws }) => { writeFileSync(join(ws, "arjun.json"), arjunJson([["http://lab:8080/healthz", "GET", ["debug"]]])); return { code: 0, stdout: "", stderr: "", timedOut: true }; },
+  });
+  assert.equal(r.coverage[0].status, "unavailable");
+  assert.equal(r.coverage[0].timedOut, true);
+  assert.equal(r.leads.length, 0, "a killed endpoint yields no leads even if a partial report was written");
+  assert.match(r.coverage[0].reason, /timed out/);
+});
+
+// Pin the EXACT Docker argv (checklist item 5). scanArjun picks the image and
+// the network; the shared runTool turns them into the `docker run` argv, where
+// --pull=never now lives. So this runs the REAL runTool (its default `run`)
+// behind a docker PATH shim that records its argv and exits 0 (a checked-clean
+// endpoint). It pins: --pull=never right after `run --rm`, the pinned local
+// image tag with the arjun command after it, and the named INTERNAL lab network
+// it was handed -- never "bridge"/"host"/"none".
+test("scanArjun: pins image, --pull=never and the internal lab network in the real docker argv (item 5)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arjun-argv-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"),
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    // Exit 0 with no report file == a checked-clean endpoint, so status is "ran".
+    const r = await scanArjun({ net: "ts-internal-net", baseUrl: "http://lab:8080", endpoints: ["/healthz"] });
+    assert.equal(r.coverage[0].status, "ran");
+  } finally {
+    process.env.PATH = path;
+  }
+  try {
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    const ni = args.indexOf("--network");
+    assert.ok(ni >= 0, "argv carries --network");
+    assert.equal(args[ni + 1], "ts-internal-net"); // the net it was given
+    assert.notEqual(args[ni + 1], "bridge");
+    assert.notEqual(args[ni + 1], "host");
+    assert.notEqual(args[ni + 1], "none");
+    const ii = args.indexOf(ARJUN_IMAGE);
+    assert.ok(ii >= 0, `pinned image ${ARJUN_IMAGE} in argv`);
+    assert.equal(ARJUN_IMAGE, "touchstone/web-arjun:2.2.7"); // exact pinned tag
+    assert.equal(args[ii + 1], "arjun"); // the arjun command follows the image
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- real run against the lab ----------------------------------------------
