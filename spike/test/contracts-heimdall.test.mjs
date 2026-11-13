@@ -130,6 +130,16 @@ test("heimdallScan returns the recovered functions when the unit decompiles", as
   assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
 });
 
+test("heimdallScan treats a non-zero exit as unavailable even when a good ABI was written", async () => {
+  const ws = mkdir();
+  const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ code: 1 }, goodAbi()) });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /exit 1/);
+  assert.equal(scan.units[0].status, "unavailable");
+  assert.deepEqual(scan.functions, []);
+  assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
+});
+
 test("heimdallScan treats an empty ABI as a gap, not a clean run with zero functions", async () => {
   const ws = mkdir();
   const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ code: 0 }, "[]") });
@@ -221,6 +231,22 @@ test("bytecode_findings renders the recovered ABI for the agent", async () => {
     const out = await tool.execute({});
     assert.match(out.output[0].text, /Heimdall recovered this ABI/);
     assert.match(out.output[0].text, /0x01681a62/);
+  } finally { delete process.env.BYTECODE_JSON; }
+});
+
+test("bytecode_findings prints Heimdall's recovered-function count, not a lead count", async () => {
+  const tool = bytecodeFindingsTool();
+  process.env.BYTECODE_JSON = JSON.stringify({
+    units: [{ file: "src/BytecodeVault.runtime.hex", bytes: 1504 }],
+    tools: [{ tool: "Mythril", status: "ran", suspects: 1 }, { tool: "Heimdall", status: "ran", recovered: 6 }],
+    leads: [],
+    abi: [],
+  });
+  try {
+    const text = (await tool.execute({})).output[0].text;
+    assert.match(text, /Heimdall: ran, 6 function\(s\) recovered\./);
+    assert.match(text, /Mythril: ran, 1 lead\(s\)\./);
+    assert.ok(!/undefined/.test(text), text);
   } finally { delete process.env.BYTECODE_JSON; }
 });
 

@@ -220,6 +220,20 @@ test("parseMythril keeps the first SWC-105 and drops its downstream re-report", 
   assert.equal(r.leads[0].pc, 369);
 });
 
+test("parseMythril keeps two SWC-105 leads whose call sequences do not overlap", () => {
+  const rep = JSON.parse(goodReport());
+  // Two separate drains: sweep alone, and withdraw alone. Neither sequence
+  // passes through the other's function, so neither is a re-report.
+  rep[0].issues = [
+    { swcID: "SWC-105", severity: "High", description: { head: "a", tail: "" }, locations: [{ sourceMap: "369:1:0" }], extra: { testCases: [{ steps: [{ name: "sweep(address)", input: "0x01681a62" }] }] } },
+    { swcID: "SWC-105", severity: "High", description: { head: "b", tail: "" }, locations: [{ sourceMap: "658:1:0" }], extra: { testCases: [{ steps: [{ name: "deposit()", input: "0xd0e30db0" }, { name: "withdraw(uint256)", input: "0x2e1a7d4d" }] }] } },
+  ];
+  const r = parseMythril(JSON.stringify(rep), UNIT);
+  assert.equal(r.leads.length, 2);
+  assert.deepEqual(r.leads.map((l) => l.where), ["BytecodeVault.sweep(address)", "BytecodeVault.withdraw(uint256)"]);
+  assert.deepEqual(r.leads.map((l) => l.pc), [369, 658]);
+});
+
 // ---- the prepass and the agent tool -----------------------------------------
 
 test("bytecodePrepass builds the env, record and run-view for a bytecode lab", async () => {

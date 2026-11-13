@@ -144,7 +144,9 @@ export function bytecodeFindingsTool() {
       if (!rep || !Array.isArray(rep.tools)) return { output: [{ type: "text", text: "No bytecode report. The bytecode tools did not run for this target." }] };
       const status = rep.tools.map((t) => t.status === "unavailable"
         ? `${t.tool}: unavailable (${t.reason}). This is a gap, not a clean result.`
-        : `${t.tool}: ${t.status}, ${t.suspects} lead(s).`).join("\n");
+        : t.tool === "Heimdall"
+          ? `${t.tool}: ${t.status}, ${t.recovered} function(s) recovered.`
+          : `${t.tool}: ${t.status}, ${t.suspects} lead(s).`).join("\n");
       const units = (rep.units ?? []).map((u) => `${u.file} (${u.bytes} bytes)`).join(", ");
       const abi = Array.isArray(rep.abi) && rep.abi.length
         ? `Heimdall recovered this ABI (declare it as an interface for your PoC):\n${rep.abi.map((f) => `- ${f.signature}`).join("\n")}`
