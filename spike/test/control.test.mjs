@@ -231,6 +231,28 @@ for (const [name, data] of [
   });
 }
 
+// H1b: cheatcodes that write storage or fake answers are recorded with the address
+// they act on, in any frame, kept or not. store keeps its slot; copyStorage acts on
+// its SECOND address; loadAllocs can write any account ("*").
+test("extract: store, copyStorage, mockCall and loadAllocs are recorded as tampers, kept or not", () => {
+  const SLOT = w(7);
+  const out = extractControlTrace(arenaOf(
+    node(null, { address: TEST }),
+    node(0, { address: VM, caller: TEST, data: "0x70ca10bb" + addrWord(SAFE).slice(2) + SLOT.slice(2) + w(1).slice(2) }),
+    node(0, { address: TEST, caller: TEST, success: false }),
+    node(2, { address: VM, caller: TEST, data: "0x203dac0d" + addrWord(OTHER).slice(2) + addrWord(PROXY).slice(2) }),
+    node(0, { kind: "STATICCALL", address: VM, caller: TEST, data: "0xb96213e4" + addrWord(OWNER).slice(2) + w(96).slice(2) + w(128).slice(2) }),
+    node(0, { address: VM, caller: TEST, data: "0xb3a056d7" + w(32).slice(2) + w(0).slice(2) }),
+  ));
+  assert.deepEqual(out.tampers, [
+    { target: SAFE, how: "store", slot: SLOT, kept: true },
+    { target: PROXY, how: "copyStorage", kept: false },
+    { target: OWNER, how: "mockCall", kept: true },
+    { target: "*", how: "loadAllocs", kept: true },
+  ]);
+  assert.deepEqual(out.writes, []);
+});
+
 test("extract: vm.store makes no SSTORE step, so it leaves no write", () => {
   const out = extractControlTrace(arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data: "0x70ca10bb" })));
   assert.deepEqual(out.writes, []);

@@ -492,6 +492,76 @@ test("harm gate: the impersonation reason keeps the base reason after it (H1d n3
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
+// ---- H1b: cheatcode tamper of a scope target (synthetic) --------------------
+//
+// A real storage-channel drain of VAULT's balance in the scope token TOKEN ("Ext",
+// balance base slot 0). `tamper` is a VM call placed before the drain. Without it
+// the drain is proven; with a tamper of TOKEN it must not be.
+const VM_ADDR = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
+const tamperDrain = (tamper, { reverted = false } = {}) => {
+  const arena = [node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" })];
+  if (tamper) {
+    if (reverted) arena.push(node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }));
+    arena.push(node(reverted ? 1 : 0, { kind: "CALL", address: VM_ADDR, caller: TEST, data: tamper }));
+  }
+  arena.push(callVault(), logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [transferLog(VAULT, ATTACKER, ONE)]));
+  return [setup(createToken()), ["Execution", { arena }]];
+};
+const tokenBalances = new Map([["Ext", [word("0x0")]]]);
+const judgeTamper = (traces, balances = tokenBalances) => emptyMaps(traces, { scope: TOKEN_SCOPE, balances });
+const storeData = (target, slot) => id("store(address,bytes32,bytes32)").slice(0, 10) + word(target).slice(2) + word(slot).slice(2) + word(ONE).slice(2);
+const tamperReason = /the test set the state of scope target .*0x0{38}aa \(Ext\) via vm\.\w+.*cannot be the source of proven harm.*Without that target:/;
+
+test("harm gate: the tamper base case (no cheatcode) is a proven token drain (H1b)", () => {
+  const h = judgeTamper(tamperDrain(null));
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.victim, VAULT);
+});
+
+// Every recorded cheatcode, with the scope token as the address it acts on.
+const TAMPER_CASES = [
+  ["store(address,bytes32,bytes32)", word(TOKEN).slice(2) + word("0x1").slice(2) + word(ONE).slice(2)],
+  ["copyStorage(address,address)", word(ATTACKER).slice(2) + word(TOKEN).slice(2)],
+  ["setArbitraryStorage(address)", word(TOKEN).slice(2)],
+  ["setArbitraryStorage(address,bool)", word(TOKEN).slice(2) + word("0x1").slice(2)],
+  ...["mockCall", "mockCallRevert"].flatMap((n) => [`${n}(address,bytes,bytes)`, `${n}(address,uint256,bytes,bytes)`, `${n}(address,bytes4,bytes)`, `${n}(address,uint256,bytes4,bytes)`])
+    .map((sig) => [sig, word(TOKEN).slice(2) + word("0x0").repeat(3).replace(/0x/g, "")]),
+  ["mockCalls(address,bytes,bytes[])", word(TOKEN).slice(2) + word("0x0").repeat(2).replace(/0x/g, "")],
+  ["mockCalls(address,uint256,bytes,bytes[])", word(TOKEN).slice(2) + word("0x0").repeat(3).replace(/0x/g, "")],
+  ["loadAllocs(string)", word("0x20").slice(2) + word("0x0").slice(2)],
+];
+for (const [sig, args] of TAMPER_CASES) {
+  test(`harm gate: a drain after ${sig} on the scope token is not proven, also in a reverted frame (H1b)`, () => {
+    for (const reverted of [false, true]) {
+      const h = judgeTamper(tamperDrain(id(sig).slice(0, 10) + args, { reverted }));
+      assert.equal(h.ok, false, `${sig} reverted=${reverted}: ${JSON.stringify(h)}`);
+      assert.match(h.reason, tamperReason);
+    }
+  });
+}
+
+// The one exempt store: forge-std deal(token, holder, x) writes the token's
+// balance slot for `holder`. When the holder is a scope target (it funds the
+// victim), the drain stays proven. Every other holder, or a token with no known
+// balance layout, is refused (fail closed).
+test("harm gate: a store of a scope token's balance slot for a scope holder is a fixture; the drain stays proven (H1b)", () => {
+  const h = judgeTamper(tamperDrain(storeData(TOKEN, balSlot(VAULT))));
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.victim, VAULT);
+});
+
+test("harm gate: a store of a scope token's balance slot for the attacker is refused (H1b)", () => {
+  const h = judgeTamper(tamperDrain(storeData(TOKEN, balSlot(ATTACKER))));
+  assert.equal(h.ok, false);
+  assert.match(h.reason, tamperReason);
+});
+
+test("harm gate: a balance-slot store on a token with no known balance layout is refused (H1b)", () => {
+  const h = judgeTamper(tamperDrain(storeData(TOKEN, balSlot(VAULT))), new Map());
+  assert.equal(h.ok, false);
+  assert.match(h.reason, tamperReason);
+});
+
 // ---- the whole impersonation family (M4, delta review) ---------------------
 //
 // vm.prank / vm.startPrank each have four overloads: plain, with a tx.origin,
@@ -1058,6 +1128,45 @@ test("forge: the same drain with deal() in setUp() is STILL proven with its exac
   assert.equal(isProven(f), true);
 });
 
+// H1b known losses (honest shapes the tamper rule now refuses, like fnsetup). Both
+// are forge-std deal() fixtures that write a scope token's storage beyond funding a
+// scope contract: deal to the attacker (its balance slot), and deal(…, true) (it
+// also writes totalSupply). The gate cannot tell these from a forged credit, so it
+// fails closed; the reason tells the agent how to restructure.
+const TS_TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  uint256 public totalSupply;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function transfer(address to, uint256 a) public returns (bool) { balanceOf[msg.sender] -= a; balanceOf[to] += a; emit Transfer(msg.sender, to, a); return true; }
+}
+contract TokVault {
+  Tok public tok;
+  constructor(Tok t) { tok = t; }
+  function withdraw(uint256 a) external { tok.transfer(msg.sender, a); } // BUG: anyone drains it
+}
+`;
+for (const [label, extra] of [
+  ["deal() that funds the attacker", "deal(address(tok), address(vault), 100e18); deal(address(tok), address(0xBEEF), 1e18);"],
+  ["deal(…, true) that also writes totalSupply", "deal(address(tok), address(vault), 100e18, true);"],
+]) {
+  test(`forge: an honest ${label} in setUp() is refused with the tamper reason (H1b known loss)`, { skip, timeout: 300_000 }, async () => {
+    const ws = makeWorkspace(LAB); workspaces.push(ws);
+    const f = await proveScope(ws, { "Tokens.sol": TS_TOKENS }, "DealFixTest", `import "../src/Tokens.sol";
+contract DealFixTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); ${extra} }
+  function test_x() public { vm.prank(address(0xBEEF)); vault.withdraw(100e18); assertGe(tok.balanceOf(address(0xBEEF)), 100e18); }
+}
+`);
+    assert.equal(f.forgePassed, true);
+    assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+    assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Tok\) via vm\.store;.*forge-std deal\(\) that funds a scope contract's token balance is fine/);
+    assert.equal(isProven(f), false);
+  });
+}
+
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
 // reverted frame is undone and the gate need not record it. If a forge version
 // ever kept such an etch, the fake drain below would run at the real token's
@@ -1418,7 +1527,7 @@ contract TokVault { Tok public tok; constructor(Tok t) { tok = t; } }
 // slot of the scope token with vm.store, then pulls the vault's real balance
 // with transferFrom. Today: proven, funds/token, lostUnits 100. The allowance is
 // the only cheatcode: without the store the transferFrom underflows.
-test("forge: an allowance written with vm.store on the scope token is NOT proven (H1b, storeallow)", { skip, todo: "H1b: vm.store on a scope target is not modelled; the gate reports the real balance-slot drop it enabled", timeout: 300_000 }, async () => {
+test("forge: an allowance written with vm.store on the scope token is NOT proven (H1b, storeallow)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);
   const f = await proveScope(ws, { "Tokens.sol": STORE_TOKENS }, "StoreAllowTest", `import "../src/Tokens.sol";
 contract StoreAllowTest is Test {
@@ -1436,6 +1545,7 @@ contract StoreAllowTest is Test {
 `);
   assert.equal(f.forgePassed, true);
   assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Tok\) via vm\.store;.*cannot be the source of proven harm/);
   assert.equal(isProven(f), false);
 });
 
@@ -1507,7 +1617,7 @@ contract Owned {
 // the scope contract with vm.store, then drains the ETH AS the stored attacker
 // through the owner-gated function. The store is the only way in. Today:
 // proven, funds, lostWei 1e18.
-test("forge: an owner written with vm.store on the scope contract is NOT proven (H1b, storeowner)", { skip, todo: "H1b: a vm.store of a control slot leaves no SSTORE step; the gate accepts the ETH the stored owner then drains", timeout: 300_000 }, async () => {
+test("forge: an owner written with vm.store on the scope contract is NOT proven (H1b, storeowner)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);
   const f = await proveScope(ws, { "Owned.sol": STORE_OWNED }, "StoreOwnerTest", `import "../src/Owned.sol";
 contract StoreOwnerTest is Test {
@@ -1529,6 +1639,7 @@ contract StoreOwnerTest is Test {
 `);
   assert.equal(f.forgePassed, true);
   assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Owned\) via vm\.store;.*cannot be the source of proven harm/);
   assert.equal(isProven(f), false);
 });
 
@@ -1584,7 +1695,7 @@ contract Bank {
 // mockcall: nothing is owed to the attacker, the test fakes the answer of the
 // scope contract's own getter with vm.mockCall, and claim() then pays real ETH.
 // Today: proven, funds, lostWei 1e18. The mock is the only cheatcode.
-test("forge: an answer faked with vm.mockCall on the scope contract is NOT proven (H1b, mockcall)", { skip, todo: "H1b: a mocked answer of a scope target is judged as the real one; the gate accepts the ETH the faked credit pays", timeout: 300_000 }, async () => {
+test("forge: an answer faked with vm.mockCall on the scope contract is NOT proven (H1b, mockcall)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);
   const f = await proveScope(ws, { "Bank.sol": MOCK_BANK }, "MockCallTest", `import "../src/Bank.sol";
 contract MockCallTest is Test {
@@ -1601,6 +1712,7 @@ contract MockCallTest is Test {
 `);
   assert.equal(f.forgePassed, true);
   assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Bank\) via vm\.mockCall;.*cannot be the source of proven harm/);
   assert.equal(isProven(f), false);
 });
 
