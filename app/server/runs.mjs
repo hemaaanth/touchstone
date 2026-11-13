@@ -23,9 +23,8 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
-import { spent } from "../../spike/lib/inference.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
-import { appRunBudgetUsd } from "./settings.mjs"
+import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
@@ -86,7 +85,7 @@ export function availableModels() {
 }
 
 export function spendState() {
-  return { usd: spent(), budgetUsd: appRunBudgetUsd() }
+  return { ...totalSpendState(), budgetUsd: appRunBudgetUsd() }
 }
 
 // The active inference provider, so the UI can show which gateway a run drives.
@@ -457,6 +456,10 @@ function pipeEvents(child, onEvent, onNoise) {
 
 export async function createRun({ alias, targetId, modules, budgetUsd, pack, mode = "fleet" } = {}) {
   const cfg = readConfig()
+  // The total spend cap comes first: at or above it, or with a ledger that
+  // cannot be read, nothing is prepared and nothing is spent.
+  const capRefusal = spendCapRefusal(cfg)
+  if (capRefusal) throw new Error(capRefusal)
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
@@ -679,7 +682,8 @@ function fleetEnv(run) {
 
 // The run's budget and what it has spent so far, from its own events. A
 // follow-up carries the spent amount forward, so the budget covers the whole run.
-function budgetEnv(run) {
+// Every worker also gets the total spend cap, so its guard stops at the cap.
+export function budgetEnv(run) {
   const set = run.events.findLast((e) => e.ev === "budget")
   // A charge may reach the worker's files before its stdout reaches the server.
   // Use the highest cumulative total from all three copies.
@@ -687,7 +691,7 @@ function budgetEnv(run) {
   if (run.eventsFile && existsSync(run.eventsFile)) charged.push(...readJsonl(run.eventsFile).filter((e) => e.ev === "spend"))
   const chargeFile = path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`)
   if (existsSync(chargeFile)) charged.push(...readJsonl(chargeFile))
-  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(Math.max(0, ...charged.map((e) => Number(e.usd) || 0))) }
+  return { RUN_BUDGET_USD: String(set?.usd ?? appRunBudgetUsd()), RUN_SPENT_USD: String(Math.max(0, ...charged.map((e) => Number(e.usd) || 0))), SPEND_CAP_USD: String(appSpendCapUsd()) }
 }
 
 // A transient provider fault: the gateway was busy, slow, or briefly down. The
@@ -730,13 +734,36 @@ function noteCoverage(run, { always = false } = {}) {
 // report the spend that ACTUALLY happened (never "nothing was spent" when it
 // did), and give one concrete next step. The structured shape drives the UI's
 // error card; `message` stays a plain string for older clients and logs.
-function failureInfo(run) {
+export function failureInfo(run) {
   const s = run.settled
   const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
   const detail = String(s?.detail ?? "").trim()
   const reason = s?.reason ?? s?.status ?? "unknown"
   const spentNote =
     spentUsd > 0 ? `About $${spentUsd.toFixed(4)} was spent on the work it did complete.` : "Nothing was spent."
+
+  // The total spend cap (the shared ledger) stopped the run, or the ledger or
+  // cap could not be read. A ceiling, not a model fault: another run would stop
+  // the same way, so it is not retryable.
+  // The ledger lock was held too long, so a paid call's cost was not recorded.
+  // Not a cap stop; its own sentence (LEDGER_LOCKED in spike/lib/inference.mjs).
+  if (/The spend ledger stayed locked/.test(`${detail} ${run.error ?? ""}`)) {
+    return {
+      kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
+      title: "Run stopped: the spend ledger stayed locked",
+      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock file next to the ledger, then start a new run.",
+      message: `the run stopped because its spend could not be recorded in the ledger — ${spentNote}`,
+    }
+  }
+  // Only our own cap messages carry this exact sentence (spike/lib/inference.mjs).
+  if (/This call is out of budget\./.test(`${detail} ${run.error ?? ""}`)) {
+    return {
+      kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
+      title: "Run stopped at the total spend cap",
+      hint: "All runs together reached the total spend cap, or the spend ledger could not be read. Settings shows the ledger and the cap. Raise the cap or fix the ledger before starting a new run.",
+      message: `the run stopped at the total spend cap before proving a finding — ${spentNote}`,
+    }
+  }
 
   // The budget guard fired: not an error, a ceiling. run.error is set from the
   // budget-reached event; keep that text but classify it so the UI is calm.
@@ -1027,7 +1054,9 @@ function ensureFiles(run) {
 // Start a follow-up: one operator message to an idle run. The worker reopens
 // the run's saved agent session in a fresh workspace, answers, and exits. Any
 // finding it proves is replayed and added to the run record.
-function followUp(run, text, clientId) {
+export function followUp(run, text, clientId) {
+  const capRefusal = spendCapRefusal()
+  if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)
