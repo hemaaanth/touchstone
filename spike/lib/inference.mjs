@@ -3,7 +3,7 @@
 // BASE_URL, MODELS and the key come from the provider active when this module
 // loads: PROVIDER=<id>, else the Settings default. Each engine run is a fresh
 // process, so this snapshot is that run's provider and budget.
-import { existsSync, linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FALLBACK_PRICE, activeProvider, readConfig, runBudgetUsd, providerKey } from "./providers.mjs";
 import { createRunBudget } from "./run-budget.mjs";
@@ -211,6 +211,9 @@ export function charge(modelId, usage) {
   const outTok = usage?.completion_tokens ?? usage?.output ?? 0;
   const usd = costOf(modelId, inTok, outTok);
   budget.charge(usd);
+  // Record the charged response before its stdout event or durable session can
+  // be interrupted. This cumulative value is the recovery budget floor.
+  if (process.env.RUN_CHARGE_FILE) appendFileSync(process.env.RUN_CHARGE_FILE, JSON.stringify(runSpend()) + "\n");
   record(modelId, usd, inTok, outTok);
   return usd;
 }

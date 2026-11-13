@@ -6,7 +6,7 @@ import type {
   PackChoice,
   RunMode,
 } from "@/lib/types"
-import type { CatalogState } from "@/lib/catalog"
+import { isOwnScope, type CatalogState } from "@/lib/catalog"
 import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
@@ -36,7 +36,9 @@ export function App() {
     fetchModels()
       .then(({ models, targets, packs }) => {
         setModels(models)
-        setTargets(targets)
+        // The operator's own scopes first, newest on top; then the labs that ship with the app.
+        const own = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
+        setTargets([...targets.filter(own).reverse(), ...targets.filter((t) => !own(t))])
         setPacks(packs ?? [])
         setCatalog("ready")
       })
@@ -63,12 +65,15 @@ export function App() {
     }
   }, [refreshModels])
 
+  // One run per module, started in turn. A run that started stays in the list
+  // if a later one fails; the dialog then stays open with the error.
   const onStart = useCallback(
-    (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => {
+    async (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias, targetId, budgetUsd, pack, mode)
-        .then((run) => {
+      try {
+        for (const pack of modules) {
+          const run = await startRun(alias, targetId, budgetUsd, pack, mode)
           setRuns((prev) => [
             {
               id: run.id,
@@ -81,12 +86,17 @@ export function App() {
             },
             ...prev.filter((r) => r.id !== run.id),
           ])
+          // Only the last run is opened; the others still need their stream.
+          loadRun(run.id)
           setView({ kind: "run", id: run.id })
-          setDialogOpen(false)
-          refreshModels()
-        })
-        .catch((err: unknown) => setStartError(err instanceof Error ? err.message : String(err)))
-        .finally(() => setBusy(false))
+        }
+        setDialogOpen(false)
+      } catch (err: unknown) {
+        setStartError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+        refreshModels()
+      }
     },
     [refreshModels],
   )

@@ -279,7 +279,8 @@ export interface ProofSurface {
 // scope's pack: "forge" for Solidity under Contracts, else "none".
 export type TargetScopeMember =
   | { kind: "repo"; url: string; proof: string }
-  | { kind: "folder"; name: string; files: number; proof: string }
+  // `path` is set in the scope list for a folder the server reads in place.
+  | { kind: "folder"; name: string; path?: string; files: number; proof: string }
 
 // One scope from the target library. `kind` is lab | local-source | brief |
 // scope (repos and folders mixed, any language);
@@ -295,6 +296,8 @@ export interface TargetScope {
   origins?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
+  // Every module this scope allows. A run picks one of them at start.
+  packs?: string[]
   blurb: string
   entry: string
   files?: string[]
