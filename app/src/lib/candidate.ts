@@ -23,6 +23,15 @@ export interface Candidate {
 
 export const WHY_UNPROVEN = "Why this isn't proven: no check covers this class yet."
 
+// The chat note for each candidate, and the label of a run of such notes. The
+// chat folds a run of notes into one row; without its own label that row
+// would read "Recon & static analysis".
+export const CANDIDATE_NOTE = "Recorded a candidate (unproven, needs review)"
+export function candidateGroupLabel(labels: string[]): string | null {
+  if (labels.length < 2 || !labels.every((l) => l.startsWith(`${CANDIDATE_NOTE}: `))) return null
+  return `Recorded ${labels.length} candidates (unproven, needs review)`
+}
+
 const SEVERITIES = ["critical", "high", "medium", "low", "informational"]
 const str = (v: unknown) => (typeof v === "string" ? v : "")
 

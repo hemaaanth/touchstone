@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { reduceEvents } from "../src/lib/runModel"
-import { candidateFrom } from "../src/lib/candidate"
+import { candidateFrom, candidateGroupLabel } from "../src/lib/candidate"
 import { CandidateDetail, CandidateList } from "../src/components/candidates"
 import { RunPanel } from "../src/components/run-panel"
 import type { RunEvent } from "../src/lib/types"
@@ -81,6 +81,15 @@ test("a candidate sent during the decide pass keeps its chat note", () => {
   const s = reduceEvents([{ t: 0, ev: "opened", mode: "decide" }, ev(cand("a"))])
   const note = s.steps.find((x) => x.label.startsWith("Recorded a candidate"))
   expect(note?.phase).toBe("run")
+})
+
+// The chat folds notes in a row into one row. A row of candidate notes says
+// what it holds, not "Recon & static analysis".
+test("a run of candidate notes gets its own label, and any other run keeps main's", () => {
+  const notes = reduceEvents([ev(cand("a")), ev(cand("b"))]).steps.filter((x) => x.kind === "note").map((x) => x.label)
+  expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (unproven, needs review)")
+  expect(candidateGroupLabel([notes[0]])).toBeNull()
+  expect(candidateGroupLabel([notes[0], "Read the static analyzer report"])).toBeNull()
 })
 
 describe("the Candidates group", () => {

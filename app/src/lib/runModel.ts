@@ -24,7 +24,7 @@ import type {
   Verdict,
 } from "./types"
 import { COORDINATOR } from "./types"
-import { candidateFrom, type Candidate } from "./candidate"
+import { CANDIDATE_NOTE, candidateFrom, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -735,7 +735,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (!c || candidates.some((x) => x.poc === c.poc)) break
         candidates.push(c)
         // Always a run-phase note: the chat drops notes from the decide pass.
-        steps.push({ key, kind: "note", phase: "run", label: `Recorded a candidate (unproven, needs review): ${c.title}` })
+        steps.push({ key, kind: "note", phase: "run", label: `${CANDIDATE_NOTE}: ${c.title}` })
         break
       }
       case "submit-rejected":
