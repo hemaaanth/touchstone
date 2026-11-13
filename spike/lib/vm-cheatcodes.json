@@ -215,8 +215,9 @@
     "name": "expectPartialRevert",
     "signature": "expectPartialRevert(bytes4)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0x1206c8a8",
@@ -523,8 +524,9 @@
     "name": "expectRevert",
     "signature": "expectRevert(bytes4,address)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0x261a323e",
@@ -604,8 +606,9 @@
     "name": "resumeGasMetering",
     "signature": "resumeGasMetering()",
     "iface": "VmSafe",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "exec",
+    "mutability": "nonpayable",
+    "note": "changes what gasleft() shows and whether code runs out of gas, so execution differs from a real chain"
   },
   {
     "selector": "0x2d0335ab",
@@ -1197,8 +1200,9 @@
     "name": "expectPartialRevert",
     "signature": "expectPartialRevert(bytes4,address)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0x51ac6a33",
@@ -1391,8 +1395,9 @@
     "name": "expectRevert",
     "signature": "expectRevert(bytes,address)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0x6229498b",
@@ -2843,8 +2848,9 @@
     "name": "resetGasMetering",
     "signature": "resetGasMetering()",
     "iface": "VmSafe",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "exec",
+    "mutability": "nonpayable",
+    "note": "changes what gasleft() shows and whether code runs out of gas, so execution differs from a real chain"
   },
   {
     "selector": "0xbe646da1",
@@ -2916,8 +2922,9 @@
     "name": "expectRevert",
     "signature": "expectRevert(bytes4)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0xc42a80a7",
@@ -3108,8 +3115,9 @@
     "name": "pauseGasMetering",
     "signature": "pauseGasMetering()",
     "iface": "VmSafe",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "exec",
+    "mutability": "nonpayable",
+    "note": "changes what gasleft() shows and whether code runs out of gas, so execution differs from a real chain"
   },
   {
     "selector": "0xd23cd037",
@@ -3198,8 +3206,9 @@
     "name": "expectRevert",
     "signature": "expectRevert(address)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0xd92d8efd",
@@ -3562,8 +3571,9 @@
     "name": "expectRevert",
     "signature": "expectRevert(bytes)",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0xf30c7ba3",
@@ -3610,8 +3620,9 @@
     "name": "expectRevert",
     "signature": "expectRevert()",
     "iface": "Vm",
-    "class": "control",
-    "mutability": "nonpayable"
+    "class": "outcome",
+    "mutability": "nonpayable",
+    "note": "a matched reverting call can report success and return replacement data, so the caller sees a different outcome"
   },
   {
     "selector": "0xf4c004e3",

@@ -13,7 +13,11 @@
 // `nonpayable` functions that the doc comment shows cannot change an account's
 // state, code, balance or nonce, the caller identity, a call's answer, or what
 // the chain sees later. A new `nonpayable` function from an upgrade fails until
-// someone allow-lists it on purpose. Stricter is always allowed.
+// someone allow-lists it on purpose. Stricter is always allowed. Two classes
+// sit between `control` and the account classes on purpose: `outcome` (a
+// matched revert can be reported as success with replacement return data) and
+// `exec` (the gas meter changes what `gasleft()` shows and whether code runs
+// out of gas). Neither may claim `control`.
 //
 // The table also carries a few selectors the pinned file does not declare but
 // the harm gate already names (newer-forge bool and bytes4 overloads). They are
@@ -37,7 +41,7 @@ const CANONICAL_VM_SOL = vmSol("vault-reentrancy");
 const TABLE = JSON.parse(readFileSync(join(ROOT, "spike/lib/vm-cheatcodes.json"), "utf8"));
 const CONTROL_TRACE = readFileSync(join(ROOT, "spike/lib/control-trace.mjs"), "utf8");
 
-const CLASSES = new Set(["read", "control", "time", "account", "mock", "fork", "fs", "state"]);
+const CLASSES = new Set(["read", "control", "time", "account", "mock", "fork", "fs", "state", "outcome", "exec"]);
 const MUTABILITIES = new Set(["view", "pure", "nonpayable"]);
 const SIG = /^[A-Za-z_]\w*\([0-9A-Za-z,[\]()]*\)$/;
 const bySelector = new Map(TABLE.map((e) => [e.selector, e]));
@@ -57,8 +61,7 @@ const ALLOWED = new Map([
   ["Vm:expectCallMinGas", "sets the next-call expectation and a gas floor"],
   ["Vm:expectEmit", "sets the next-log expectation"],
   ["Vm:expectEmitAnonymous", "sets the next anonymous-log expectation"],
-  ["Vm:expectPartialRevert", "sets the next-revert expectation"],
-  ["Vm:expectRevert", "sets the next-revert expectation"],
+  // expectRevert and expectPartialRevert are `outcome`, the gas meter is `exec`.
   ["Vm:expectSafeMemory", "sets the allowed memory window"],
   ["Vm:expectSafeMemoryCall", "sets the allowed memory window of the next subcontext"],
   ["Vm:stopExpectSafeMemory", "clears the allowed memory window"],
@@ -70,9 +73,6 @@ const ALLOWED = new Map([
   ["Vm:startSnapshotGas", "starts a named gas counter"],
   ["Vm:stopSnapshotGas", "stops a named gas counter"],
   // VmSafe, control: runner flags and the terminal.
-  ["VmSafe:pauseGasMetering", "sets the gas meter flag"],
-  ["VmSafe:resetGasMetering", "sets the gas meter counter"],
-  ["VmSafe:resumeGasMetering", "clears the gas meter flag"],
   ["VmSafe:setEnv", "writes the runner's process env"],
   ["VmSafe:sleep", "sleeps the test thread"],
   ["VmSafe:startDebugTraceRecording", "sets the debug trace flag"],
@@ -279,6 +279,9 @@ test("state-changing names never class as read or control", () => {
     /^mock/,
     /^clearMockedCalls$/,
     /^revertTo/,
+    /^expectRevert/,
+    /^expectPartialRevert/,
+    /^(pause|reset|resume)GasMetering$/,
     ...[
       "deal",
       "setNonce",
