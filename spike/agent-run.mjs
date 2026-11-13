@@ -15,6 +15,7 @@
 // every submitted test once more and records each finding with its own proof.
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -33,6 +34,7 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 
 // Tools tell the model how much of the run budget is left.
 readSpendWith(runSpend);
@@ -48,7 +50,8 @@ if (!MODELS[ALIAS]) {
 const TARGET = process.env.TARGET
   ? new URL(process.env.TARGET, import.meta.url).pathname
   : new URL("../lab/vault-reentrancy/", import.meta.url).pathname;
-const DIR = new URL("./results/agent/", import.meta.url).pathname;
+// AGENT_RESULTS_DIR moves the run records (a test sends them to a temp folder).
+const DIR = process.env.AGENT_RESULTS_DIR ? path.join(process.env.AGENT_RESULTS_DIR, "/") : new URL("./results/agent/", import.meta.url).pathname;
 mkdirSync(DIR, { recursive: true });
 
 // Per-process audit state. One run is one process, so plain memory is enough.
@@ -320,6 +323,9 @@ async function main() {
     error = String(err?.message ?? err);
     findings = [];
   }
+  // A run that did not read every GitHub member of its scope is not clean.
+  const sourceCov = sourceCoverage(readTouchstone(ws).links ?? [], all);
+  if (!findings.length && !error) error = coverageFailure(sourceCov)?.message ?? null;
   const worst = findings[0] ?? null;
   const pocRuns = all.filter((e) => e.ev === "run_poc").length;
 
@@ -331,6 +337,8 @@ async function main() {
     error: findings.length ? null : error,
     prepassError,
     ...prep?.record,
+    // Which GitHub members were read (and where) and which were not, with why.
+    sourceCoverage: sourceCov,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.

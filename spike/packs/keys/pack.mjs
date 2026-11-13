@@ -90,6 +90,8 @@ export default {
   title: "Keys and signing",
   tier: "P", // passive: Anvil runs only in our offline sandbox
   proof: "forge",
+  // No tool reaches a network. The Modules page reads this.
+  offline: true,
   system: (ws) => (hasWorld(ws, "keys") ? SYSTEM : sourceSystem("keys")),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "keys",

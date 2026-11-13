@@ -470,8 +470,12 @@ async function prepass(ws, { emit }) {
 export default {
   id: "contracts",
   title: "Contracts",
-  tier: "P", // passive: the code runs only in our offline sandbox
+  tier: "P", // passive: the target code and PoCs run only in our offline sandbox
   proof: "forge", // a finding is real only when its Foundry test replays green
+  // Where its tools reach. The Modules page reads this. fetch_source clones the
+  // scope's GitHub links on the host, and warmSolc downloads the compilers those
+  // files pin. Static, fuzz and run_poc run with --network none.
+  fetches: ["github", "solc"],
   system: systemFor,
   tools,
   kickoff,

@@ -199,6 +199,9 @@ export default {
   title: "Code review",
   tier: "P",
   proof: "none",
+  // fetch_source clones the scope's GitHub repos on the host. The other tools
+  // only read the workspace.
+  fetches: ["github"],
   system: () => SYSTEM,
   tools: (ws) => tools(ws),
   kickoff: () => KICKOFF,

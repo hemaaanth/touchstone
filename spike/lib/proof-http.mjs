@@ -44,6 +44,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 
 function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolveDocker) => {
@@ -172,9 +173,9 @@ export async function startLab({
   const cleanup = async () => stopLab({ proxyName, labName, netInner, netOuter, proxyDir });
   const fail = async (msg) => { await cleanup(); throw new Error(`startLab: ${msg}`); };
 
-  const ni = await docker(["network", "create", "--internal", netInner]);
+  const ni = await createLabNetwork(netInner, ["--internal"], { docker });
   if (ni.code !== 0) return fail(`inner network create failed: ${ni.stderr.trim().slice(0, 500)}`);
-  const no = await docker(["network", "create", "--internal", netOuter]);
+  const no = await createLabNetwork(netOuter, ["--internal"], { docker });
   if (no.code !== 0) return fail(`outer network create failed: ${no.stderr.trim().slice(0, 500)}`);
 
   // Lab on the inner network ONLY. The script never joins this network, so it
@@ -262,9 +263,9 @@ export async function stopLab(handle) {
         for (const id of Object.keys(JSON.parse(attached.stdout) ?? {})) await docker(["rm", "-f", id], { timeoutMs: 15_000 });
       } catch { /* no containers reported */ }
     }
-    await docker(["network", "rm", handle.netOuter], { timeoutMs: 15_000 });
+    await removeLabNetwork(handle.netOuter, { docker });
   }
-  if (handle.netInner) await docker(["network", "rm", handle.netInner], { timeoutMs: 15_000 });
+  if (handle.netInner) await removeLabNetwork(handle.netInner, { docker });
   if (handle.proxyDir) { try { rmSync(handle.proxyDir, { recursive: true, force: true }); } catch {} }
 }
 
