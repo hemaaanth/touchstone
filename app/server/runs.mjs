@@ -1471,14 +1471,20 @@ async function resumeRun(run) {
   if (state.phase === "proof" && run.settled) {
     const found = run.settled.findings?.length ? run.settled.findings : run.submitted
     if (found.length) return recordRun(run, found)
-    if (run.settled.status === "done" && run.settled.final) broadcast(run, { ev: "no-finding", final: run.settled.final })
-    setRunStatus(run, run.settled.status === "done" ? "no-finding" : "error")
-    finalize(run)
-    await endWorkspace(run)
-    broadcast(run, { ev: "closed" })
-    return
+    return endRestartedRun(run)
   }
   throw new Error(`unknown saved phase: ${state.phase}`)
+}
+
+// A restarted run whose proof phase settled with no finding: end it cleanly on
+// its saved verdict. One function so a later merge (fix/large-repo-scope's
+// coverageGap check on clean-end paths) is a one-line change here.
+async function endRestartedRun(run) {
+  if (run.settled.status === "done" && run.settled.final) broadcast(run, { ev: "no-finding", final: run.settled.final })
+  setRunStatus(run, run.settled.status === "done" ? "no-finding" : "error")
+  finalize(run)
+  await endWorkspace(run)
+  broadcast(run, { ev: "closed" })
 }
 
 function loadSavedRuns() {
