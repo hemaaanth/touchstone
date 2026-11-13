@@ -32,6 +32,7 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 
 // Tools tell the model how much of the run budget is left.
 readSpendWith(runSpend);
@@ -317,6 +318,9 @@ async function main() {
     error = String(err?.message ?? err);
     findings = [];
   }
+  // A run that did not read every GitHub member of its scope is not clean.
+  const sourceCov = sourceCoverage(readTouchstone(ws).links ?? [], all);
+  if (!findings.length && !error) error = coverageFailure(sourceCov)?.message ?? null;
   const worst = findings[0] ?? null;
   const pocRuns = all.filter((e) => e.ev === "run_poc").length;
 
@@ -328,6 +332,8 @@ async function main() {
     error: findings.length ? null : error,
     prepassError,
     ...prep?.record,
+    // Which GitHub members were read (and where) and which were not, with why.
+    sourceCoverage: sourceCov,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.

@@ -32,6 +32,7 @@ import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, 
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
+import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 
@@ -628,6 +629,22 @@ const TRANSIENT_ERR = /overload|server[_ ]?busy|rate.?limit|\b(429|500|502|503|5
 // fixes billing/quota or the key, so retrying is pointless.
 const ACCOUNT_ERR = /quota|billing|insufficient|payment|credit|usage[_ ]?limit|invalid.?api.?key|unauthorized|forbidden|\b401\b|\b403\b/i
 
+// Did this run read every GitHub member of its scope? A refused or skipped
+// fetch is a gap, never a clean result: if there is one, set the run's error
+// (kind "coverage") and return true, so the caller ends it as an error instead
+// of no-finding. See spike/lib/source-coverage.mjs.
+function runCoverage(run) {
+  return sourceCoverage(run.target?.links ?? scopeOf(run)?.links ?? [], run.events)
+}
+function coverageGap(run) {
+  const spentUsd = Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0)
+  const info = coverageFailure(runCoverage(run), { spentUsd })
+  if (!info) return false
+  run.errorInfo = info
+  run.error = info.message
+  return true
+}
+
 // Turn a settled-but-nothing-proved run into an honest, operator-readable
 // failure. The engine's `detail` is the real gateway/model error text; we use
 // it to tell a transient fault (just retry) from a genuine one (fix config),
@@ -737,7 +754,10 @@ function spawnAgent(run, leads) {
       endStopped(run)
       return
     }
-    if (s && s.status === "done") {
+    if (s && s.status === "done" && coverageGap(run)) {
+      // The agent finished, but part of the scope was never read.
+      setRunStatus(run, "error")
+    } else if (s && s.status === "done") {
       // Terminal, but not an error: the agent audited and found nothing to prove.
       run.error = null
       if (s.final) broadcast(run, { ev: "no-finding", final: s.final })
@@ -880,13 +900,14 @@ export function stopRun(id) {
 }
 
 // End a run the operator stopped: a `stopped` marker, then a quiet terminal
-// status. Nothing was proven, so it reads like a run that found nothing.
+// status. Nothing was proven, so it reads like a run that found nothing —
+// unless part of the scope was never read; then it ends as a coverage error.
 function endStopped(run) {
   run.stopping = false
   run.error = null
   run.errorInfo = null
   broadcast(run, { t: Date.now(), ev: "stopped" })
-  setRunStatus(run, "no-finding")
+  setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
   finalize(run)
   broadcast(run, { ev: "closed" })
 }
@@ -959,11 +980,12 @@ function followUp(run, text, clientId) {
       else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
       else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
       // A failed run that a follow-up retried: if the reply finished, or the
-      // operator stopped it, the old failure no longer describes the run.
+      // operator stopped it, the old failure no longer describes the run —
+      // unless part of the scope is still unread.
       if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
         run.error = null
         run.errorInfo = null
-        setRunStatus(run, "no-finding")
+        if (!coverageGap(run)) setRunStatus(run, "no-finding")
         finalize(run)
       }
     } catch (err) {
@@ -1098,6 +1120,8 @@ function persistRun(run, findings) {
     error: recorded ? null : (run.error ?? null),
     errorInfo: recorded ? null : (run.errorInfo ?? null),
     stopped: evs.some((e) => e.ev === "stopped"),
+    // Which GitHub members were read (and where) and which were not, with why.
+    sourceCoverage: runCoverage(run),
     // The pre-pass ensembles that fed the agent its leads: a suspect an engine
     // ranked, then proven by replay. A suspect is never a finding on its own.
     static: run.static ?? null,

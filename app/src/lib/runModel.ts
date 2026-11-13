@@ -92,7 +92,7 @@ export const severityRank = (s: string | undefined) => SEV_RANK[String(s ?? "").
 // the headline action; `detail` is the real engine/gateway error text; `hint`
 // is the one concrete next step; `spentUsd` is what the run actually cost.
 export interface RunFailure {
-  kind: "transient" | "account" | "budget" | "cutoff" | "model" | "crash" | "unknown"
+  kind: "transient" | "account" | "budget" | "cutoff" | "coverage" | "model" | "crash" | "unknown"
   title: string
   hint: string
   detail: string

@@ -1,0 +1,45 @@
+// Which scope members a run read, from its source-fetch events. Pure, offline.
+//
+//   node --test spike/test/source-coverage.test.mjs
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { sourceCoverage, coverageFailure } from "../lib/source-coverage.mjs";
+
+const A = "https://github.com/cosmos/cosmos-sdk";
+const B = "https://github.com/cosmos/cosmos-sdk/tree/main/x/bank";
+const ok = (url, where, files) => ({ ev: "source-fetch", url, ok: true, where, files });
+const no = (url, error) => ({ ev: "source-fetch", url, ok: false, error });
+
+test("no GitHub members means no coverage to check", () => {
+  assert.equal(sourceCoverage([], []), null);
+  assert.equal(sourceCoverage(["https://example.com/docs", "not a url"], []), null);
+  assert.equal(coverageFailure(null), null);
+});
+
+test("each member is fetched, refused or not fetched; the last attempt wins", () => {
+  const cov = sourceCoverage([A + "/", A + ".git", B], [
+    no(A, "cosmos/cosmos-sdk would bring this scope to 3053 source files (the cap is 200)"),
+    ok(B, "vendor/cosmos__cosmos-sdk@main/x/bank", 40),
+    { ev: "source-fetch", url: "https://github.com/other/repo", ok: true, where: "vendor/x", files: 1 },
+  ]);
+  assert.deepEqual(cov.members.map((m) => [m.url, m.status]), [[A, "refused"], [B, "fetched"]]);
+  assert.deepEqual([cov.fetched, cov.total, cov.complete], [1, 2, false]);
+  const later = sourceCoverage([A], [no(A, "clone timed out"), ok(A, "vendor/cosmos__cosmos-sdk", 120)]);
+  assert.equal(later.complete, true);
+  assert.deepEqual(sourceCoverage([A], []).members[0].status, "not-fetched");
+});
+
+test("a gap becomes a coverage error that lists what was read and what was not", () => {
+  const cov = sourceCoverage([A, B], [no(A, "3053 source files (the cap is 200)"), ok(B, "vendor/cosmos__cosmos-sdk@main/x/bank", 40)]);
+  const info = coverageFailure(cov, { spentUsd: 0.25 });
+  assert.equal(info.kind, "coverage");
+  assert.equal(info.retryable, false);
+  assert.equal(info.spentUsd, 0.25);
+  assert.equal(info.title, "Part of the scope was not read");
+  assert.match(info.detail, /Read:\n- .*x\/bank → vendor\/cosmos__cosmos-sdk@main\/x\/bank \(40 files\)/);
+  assert.match(info.detail, /Not read:\n- https:\/\/github\.com\/cosmos\/cosmos-sdk: 3053 source files/);
+  assert.match(info.message, /1 of 2 scope members were not read/);
+  assert.match(info.hint, /tree\/<branch>\/<folder>/);
+  assert.equal(coverageFailure(sourceCoverage([A], [])).title, "The scope was not read");
+  assert.equal(coverageFailure(sourceCoverage([B], [ok(B, "v", 1)])), null);
+});

@@ -28,6 +28,7 @@ import {
   Gauge,
   CloudOff,
   Scissors,
+  FolderX,
   RefreshCw,
   Square,
 } from "lucide-react"
@@ -69,6 +70,7 @@ const ERROR_ICON: Record<RunFailure["kind"], typeof TriangleAlert> = {
   account: CreditCard,
   budget: Gauge,
   cutoff: Scissors,
+  coverage: FolderX,
   model: TriangleAlert,
   crash: TriangleAlert,
   unknown: TriangleAlert,
