@@ -114,7 +114,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Depends on |
 |--------|-------|-----------|
-| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. Author done at `2bab7ce` (E1 to E4, L12). Coordinator ruling: a change of the Daytona server host drops the saved key; the author adds it, then review. |
+| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. Author done at `2bab7ce` (E1 to E4, L12). Coordinator ruling: a change of the Daytona server host drops the saved key; the author adds it, then review. Done at `0f80793`: the key is saved with its host and is never sent to another host. Review running: `thr_8xurh9f9p3` (Claude). |
 | 2b Modules page redesign | E5 | 1b Running: `thr_daurqy4zav`, branch `ui/modules-page`. Author done at `57bd755` (210 app tests). Coordinator ruling: the name showed twice per row; the pill becomes the row's name (one optional `ListRow` prop opened in `page-parts.tsx`). Author repairs before review. Repaired at `c7534e0` (the pill is the row's name; `ListRow` got one optional `name` prop; 213 app tests). Review running: `thr_efvd29q5fv` (codex). |
 | 2c Run Info pills + sidebar rule | B7, B4 | 1b, PR 7 |
 | 2d Scope brief | D2 | 1a, 1b |
