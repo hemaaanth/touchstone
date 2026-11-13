@@ -21,7 +21,11 @@ for a live phishing target.
 ## Proof model
 
 This pack is leads only. No phishing result is proven. `prove` returns an
-empty list and the only tool is `snapshot_leads`. The two strongest leads are:
+empty list and the only tool is `snapshot_leads`. So the manifest says
+`proof: 'none'`. It also says `live: true` and `scanNet: 'open'`, because a
+live capture runs dnstwist on the open `bridge` network. In the Proof column
+below, "evidence" means the lead's evidence, not a proof. The two strongest
+leads are:
 
 1. `registered-lookalike`: dnstwist generates the name again, offline, from the
    official domain, and the pinned DNS row has a routable A or AAAA, or an MX.

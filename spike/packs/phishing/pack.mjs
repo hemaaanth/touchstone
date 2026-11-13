@@ -33,9 +33,12 @@ async function prepass(ws, { emit = () => {} } = {}) {
   return { env: { LEADS: JSON.stringify(scan.leads) }, record: { pack: 'phishing', snapshotHash: scan.snapshotHash, leads: scan.leads, coverage: coverageOf(scan), stats: scan.stats } };
 }
 export default {
-  id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'evidence',
+  // Leads only, so no finding can be proven.
+  id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'none',
   // It captures DNS for permutations of a granted domain, so it can take a live one.
-  live: true,
+  // Live capture runs dnstwist on the open bridge network (reach.network from
+  // lib/targets.mjs), because DNS over UDP cannot go through the HTTP grant gate.
+  live: true, scanNet: 'open',
   system: () => 'This pack is leads only. Nothing it reports is proven. Audit only the pinned offline lookalike snapshot. Call snapshot_leads. Review all leads. Report each lookalike as a lead, with its exact lead id, check, severity and where cells. Mark reviewOnly leads as needing review by hand. A generated name with no DNS record is not a lead to report. An answer the resolver also gives for a random control name is a wildcard, not a registration. Name every *-evidence-missing lead in the summary. A resolving lookalike is not a phishing page; say only what the records show. A known-scam lead cites the list, line and pin. Write short sentences. End each lead with Fix:. Never access the internet.',
   tools,
   kickoff: (ws, env) => 'Review every lead, worst first. Report each as a lead with its exact lead id and evidence. This pack is leads only. Summarize coverage, including any evidence-missing lead. Leads: ' + (env.LEADS ?? 'Call snapshot_leads.'),

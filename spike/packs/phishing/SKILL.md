@@ -2,7 +2,7 @@
 name: phishing
 description: Check a pinned lookalike-domain snapshot and report registered or known-scam lookalikes of the client's brand as leads. Leads only; nothing is proven.
 tier: P
-proof: evidence
+proof: none
 tools: [snapshot_leads]
 labs: [spike/packs/phishing/lab]
 ---
