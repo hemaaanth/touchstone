@@ -107,6 +107,13 @@ const coverageGapId = fixture("coverage-gap", "proof", [{ ev: "settled", t: 6, s
 const settleFailedId = fixture("settle-failed", "proof", [{ ev: "settled", t: 6 }], {
   settled: { status: "error", findings: [] },
 });
+// A Review lead recorded before the crash is a `lead` event in the stream. The
+// reload rebuilds run.events from that stream, so the restart's persisted report
+// must still carry the lead (persistRun reads leadsFrom(run.events)).
+const leadKeptId = fixture("lead-kept", "proof", [
+  { ev: "lead", t: 6, id: "L1", agent: "review", severity: "high", file: "Vault.sol", line: 42, title: "Reentrancy", reason: "withdraw sends before zeroing the balance" },
+  { ev: "settled", t: 7, summary: { final: { text: "done" } } },
+], { settled: { status: "done", findings: [], final: { text: "done" } } });
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
 
 const logged = [];
@@ -272,6 +279,17 @@ test("a restarted run whose saved settle failed ends with a structured error rea
   assert.equal(run.status, "error");
   assert.match(run.error, /did not complete/);
   assert.equal(run.errorInfo?.message, run.error);
+});
+
+test("a restarted run keeps the Review leads it recorded before the crash", async () => {
+  for (let i = 0; i < 100 && !getRun(leadKeptId).events.some((e) => e.ev === "closed"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const report = JSON.parse(readFileSync(join(dir, `run-${leadKeptId}.json`), "utf8"));
+  assert.equal(report.result.leads.length, 1);
+  assert.equal(report.result.leads[0].id, "L1");
+  assert.equal(report.result.leads[0].title, "Reentrancy");
+  assert.equal(report.result.leads[0].file, "Vault.sol");
 });
 
 test("a corrupt state file shows the run as an error and logs once", async () => {
