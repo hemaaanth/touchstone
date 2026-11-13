@@ -1,6 +1,6 @@
 import "./helpers/isolated-env"
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -97,6 +97,21 @@ describe("grant endpoints", () => {
       expect(r.json.error).not.toContain("onlyuser")
     }
     expect((await call("GET", "/api/grants")).json.grants.length).toBe(before)
+  })
+
+  test("a DELETE the store refuses answers 400 with the store's sentence, not 500", async () => {
+    const add = await call("POST", "/api/grants", { hosts: ["delete-me.example.com"], kind: "authorized", approvedBy: "test" })
+    expect(add.status).toBe(201)
+    const lock = `${process.env.TOUCHSTONE_GRANTS_FILE}.lock`
+    mkdirSync(lock) // a folder at the lock path: the store refuses every write
+    try {
+      const r = await call("DELETE", `/api/grants/${add.json.id}`)
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/^Refused: the grant store lock .+ is a link or a folder, not a lock file\./)
+    } finally {
+      rmSync(lock, { recursive: true, force: true })
+    }
+    expect((await call("DELETE", `/api/grants/${add.json.id}`)).status).toBe(200)
   })
 
   test("a non-grant path is not handled", async () => {

@@ -111,12 +111,34 @@ export function sameToken(given, token) {
 // old one. Returns the new token, or null when `given` is not the current token.
 // A failed write throws, removes its temp file, and leaves the old token valid.
 // The error never holds a token.
+//
+// Two console processes can rotate at once, so the check and the write run
+// under the store lock of the token file (withStoreLock): the second waits,
+// then finds `given` is no longer current and is refused.
 export function rotateConsoleToken(given) {
   if (process.env.TOUCHSTONE_GRANT_TOKEN) {
     throw new Error("The console token is pinned by TOUCHSTONE_GRANT_TOKEN, so it cannot be rotated. Restart the console without it.");
   }
-  if (!sameToken(given, consoleToken())) return null;
   const file = consoleTokenFile();
+  const done = new Set();
+  try {
+    return withStoreLock(file, "console token", () => {
+      try {
+        return rotateLocked(given, file);
+      } finally {
+        done.add("ran");
+      }
+    });
+  } catch (e) {
+    if (done.has("ran")) throw e; // already a sentence from rotateLocked
+    // The lock could not be taken: busy, or the folder refuses it. No token in the message.
+    const why = /is busy/.test(String(e?.message)) ? "another console process is changing it right now" : `its lock could not be taken (${e?.code || "lock failed"})`;
+    throw new Error(`The console token was not changed: ${why}. The old token still works.`);
+  }
+}
+
+function rotateLocked(given, file) {
+  if (!sameToken(given, consoleToken())) return null;
   const token = randomUUID();
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   try {
@@ -127,12 +149,21 @@ export function rotateConsoleToken(given) {
     } finally {
       closeSync(fd);
     }
+    lockStillOurs(file);
     renameSync(tmp, file);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw new Error(`The console token was not changed: it could not be saved (${e.code || "write failed"}). The old token still works.`);
   }
   fallbackToken = null;
+  // The rename is done and the new token works now. Sync the folder so a power
+  // cut cannot bring the old file back. A failed folder sync is not thrown:
+  // the caller would then keep the old, no longer valid token on the page.
+  try {
+    syncFolder(path.dirname(file));
+  } catch {
+    /* durability across a power cut is weaker; the token is valid */
+  }
   return token;
 }
 
