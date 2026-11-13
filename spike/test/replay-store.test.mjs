@@ -83,7 +83,7 @@ test("pruneReplayStore removes the replay files and blobs no record names, and n
     // temp file left by a stopped write.
     const { writeRerunVerdict } = await import("../lib/replay-bundle.mjs");
     const { FOUNDRY_IMAGE } = await import("../lib/sandbox.mjs");
-    const verdict = (store_, tree) => ({ version: 1, tree, store: store_, pass: true, image: FOUNDRY_IMAGE, command: "x", at: Date.now() });
+    const verdict = (store_, key) => ({ version: 2, key, tree: key, store: store_, pass: true, image: FOUNDRY_IMAGE, command: "x", at: Date.now() });
     writeRerunVerdict(store, verdict(keep.store.sha256, "a".repeat(64)));
     writeRerunVerdict(store, verdict(gone.store.sha256, "b".repeat(64)));
     writeFileSync(path.join(store, "rerun", "c".repeat(64) + ".json"), "{ not json");

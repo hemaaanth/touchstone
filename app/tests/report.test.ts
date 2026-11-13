@@ -734,6 +734,15 @@ describe("report: replay bundle", () => {
       ["vm.loadAllocs", poc('vm.loadAllocs("src/allocs.json");'), "vm.loadAllocs"],
       ["getCode on a contract the bundle does not ship", poc('vm.getCode("Missing.sol:Missing");'), "vm.getCode"],
       ["a // inside a string cannot hide the call", poc('string memory u = "http://x"; vm.getCode(u);'), "vm.getCode"],
+      // Repair 1: forge-std's bare file helpers and the file probes.
+      ["bare readEIP1559ScriptArtifact (StdCheats)", poc('readEIP1559ScriptArtifact("broadcast/run.json");', "function readEIP1559ScriptArtifact(string memory) {}\n"), "readEIP1559ScriptArtifact"],
+      ["bare readReceipts (StdCheats)", poc('readReceipts("broadcast/run.json");', "function readReceipts(string memory) {}\n"), "readReceipts"],
+      ["vm.exists", poc('vm.exists("data/x.json");'), "vm.exists"],
+      ["vm.isFile", poc('vm.isFile("data/x.json");'), "vm.isFile"],
+      ["vm.readLink", poc('vm.readLink("data/link");'), "vm.readLink"],
+      ["vm.isDir", poc('vm.isDir("data");'), "vm.isDir"],
+      ["vm.fsMetadata", poc('vm.fsMetadata("data/x.json");'), "vm.fsMetadata"],
+      ["vm.projectRoot", poc("vm.projectRoot();"), "vm.projectRoot"],
     ]
     for (const [what, src, label] of noCmd) {
       const r = bundleReadme(src)
@@ -810,7 +819,7 @@ describe("report: replay bundle", () => {
       const r = readmeOf(ws, "PocTest")
       expect(r).not.toContain("RE-RUN CHECKED")
       expect(r).toContain("not re-run-checked")
-      expect(r).toContain("an automatic re-run check does not ship yet")
+      expect(r).toContain("These files are not re-run-checked (no passing offline check of these exact files)")
       expect(commands(r).length).toBeGreaterThanOrEqual(1)
     } finally {
       rmSync(ws, { recursive: true, force: true })
