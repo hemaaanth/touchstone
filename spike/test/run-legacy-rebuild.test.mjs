@@ -36,6 +36,7 @@ const read = sourceCoverage([REPO], [fetched]);
 const target = { title: "Cosmos SDK", pack: "review", links: [REPO] };
 const final = "I found no exploitable issue.";
 const finding = { title: "Unchecked send", severity: "high", poc: "x/bank/keeper/send.go" };
+const crash = { kind: "crash", retryable: true, reason: "no-settle", spentUsd: 0.12, title: "The run stopped unexpectedly", hint: "Press Run again.", detail: "The engine process ended before it reported a result: signal SIGKILL.", message: "The engine process ended before it reported a result: signal SIGKILL." };
 
 // Each record has the fields persistRun writes; no stream file, no engine file.
 const fixtures = {
@@ -46,6 +47,9 @@ const fixtures = {
   "legacy-clean-0000000004-1": { target, outcome: "no-finding", error: null, errorInfo: null, sourceCoverage: read, final, findings: [] },
   // From before sourceCoverage existed: nothing says a member was unread.
   "legacy-plain-0000000005-1": { target, outcome: "no-finding", final, findings: [] },
+  // A run that failed for another reason (a crash). Its scope was read, so
+  // only its own errorInfo can say why it ended.
+  "legacy-crash-0000000006-1": { target, outcome: "error", error: crash.message, errorInfo: crash, sourceCoverage: read, final: null, findings: [] },
 };
 for (const [id, result] of Object.entries(fixtures)) writeFileSync(path.join(RESULTS, `run-${id}.json`), JSON.stringify({ result }));
 
@@ -84,4 +88,12 @@ test("a rebuilt run that read its scope, or that has no coverage record, is stil
     assert.ok(!r.events.some((e) => e.ev === "coverage"), id);
     assert.equal(r.events.find((e) => e.ev === "no-finding")?.final, final, id);
   }
+});
+
+test("a rebuilt run whose record is another error ends on its own reason, not a generic one", () => {
+  const r = getRun("legacy-crash-0000000006-1");
+  assert.equal(r.status, "error");
+  assert.equal(lastStatus(r).errorInfo?.kind, "crash", "the record's own errorInfo, not the generic 'did not complete'");
+  assert.equal(lastStatus(r).error, crash.message);
+  assert.ok(!r.events.some((e) => e.ev === "coverage"), "a run that read its scope gets no coverage note");
 });
