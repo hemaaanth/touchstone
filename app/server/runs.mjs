@@ -649,6 +649,16 @@ export function failureInfo(run) {
   // The total spend cap (the shared ledger) stopped the run, or the ledger or
   // cap could not be read. A ceiling, not a model fault: another run would stop
   // the same way, so it is not retryable.
+  // The ledger lock was held too long, so a paid call's cost was not recorded.
+  // Not a cap stop; its own sentence (LEDGER_LOCKED in spike/lib/inference.mjs).
+  if (/The spend ledger stayed locked/.test(`${detail} ${run.error ?? ""}`)) {
+    return {
+      kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
+      title: "Run stopped: the spend ledger stayed locked",
+      hint: "Another process held the spend ledger's lock too long, so the cost of a paid call could not be recorded. Make sure no run is active, delete the spend.json.lock file next to the ledger, then start a new run.",
+      message: `the run stopped because its spend could not be recorded in the ledger — ${spentNote}`,
+    }
+  }
   // Only our own cap messages carry this exact sentence (spike/lib/inference.mjs).
   if (/This call is out of budget\./.test(`${detail} ${run.error ?? ""}`)) {
     return {

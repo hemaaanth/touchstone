@@ -96,6 +96,27 @@ describe("total spend cap", () => {
     expect(other.kind).not.toBe("budget")
   })
 
+  test("a ledger lock failure is its own stop, not a spend-cap stop", () => {
+    const saved = { ...inference.LEDGER_LOCK_MS }
+    Object.assign(inference.LEDGER_LOCK_MS, { waitMs: 50, staleMs: 10_000 })
+    writeFileSync(`${LEDGER}.lock`, "")
+    let detail = ""
+    try {
+      inference.charge("unknown-model", { input: 1000, output: 0 })
+    } catch (err) {
+      detail = (err as Error).message
+    } finally {
+      Object.assign(inference.LEDGER_LOCK_MS, saved)
+      rmSync(`${LEDGER}.lock`, { force: true })
+    }
+    expect(detail).toContain(inference.LEDGER_LOCKED)
+    const info = runs.failureInfo({ settled: { status: "unanswered", reason: "model_error", detail }, events: [] })
+    expect(info.kind).toBe("budget")
+    expect(info.retryable).toBe(false)
+    expect(info.title).toMatch(/spend ledger stayed locked/)
+    expect(info.title).not.toMatch(/spend cap/i)
+  })
+
   test("a follow-up is refused when the ledger is at the cap", () => {
     // This run has also spent its own budget, so without the cap check the
     // next check stops the follow-up before any workspace or worker.

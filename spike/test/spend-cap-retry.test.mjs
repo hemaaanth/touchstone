@@ -26,7 +26,7 @@ const LEDGER = join(dir, "spend.json");
 process.env.SPEND_LEDGER = LEDGER;
 process.env.RUN_BUDGET_USD = "1000";
 process.env.SPEND_CAP_USD = "50.85";
-const { guard, charge, ledgerCharge, LEDGER_LOCK_MS, runSpend, spent, spendCapUsd, spendCapMessage, DEFAULT_SPEND_CAP_USD } = await import("../lib/inference.mjs");
+const { guard, charge, ledgerCharge, LEDGER_LOCK_MS, LEDGER_LOCKED, runSpend, spent, spendCapUsd, spendCapMessage, DEFAULT_SPEND_CAP_USD } = await import("../lib/inference.mjs");
 const { budgetedApi } = await import("../lib/provider.mjs");
 
 const ledger = (totalUsd) => writeFileSync(LEDGER, JSON.stringify({ totalUsd, calls: 0, byModel: {} }));
@@ -266,6 +266,21 @@ test("ledger lock: a waiter outlasts a dead lock and still writes its charge", (
   assert.ok(Date.now() - t0 >= 140, "it waited for the lock to go stale");
   assert.ok(Math.abs(total() - 2) < 1e-9, `ledger ${total()}`);
   assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("spend.json.")), []);
+});
+
+test("ledger lock: a lock held too long stops the call with its own reason, not retried", (t) => {
+  const saved = { ...LEDGER_LOCK_MS };
+  t.after(() => Object.assign(LEDGER_LOCK_MS, saved));
+  Object.assign(LEDGER_LOCK_MS, { waitMs: 50, staleMs: 10_000 });
+  ledger(1);
+  writeFileSync(`${LEDGER}.lock`, "");
+  t.after(() => rmSync(`${LEDGER}.lock`, { force: true }));
+  let message;
+  try { charge("unknown-model", { input: 1_000_000, output: 0 }); } catch (err) { message = err.message; }
+  assert.ok(message?.includes(LEDGER_LOCKED), message);
+  assert.doesNotMatch(message, /spend cap|out of budget/i);
+  assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: message }), false);
+  assert.equal(total(), 1);
 });
 
 // ---- Many processes share one ledger. No charge is lost and the file never

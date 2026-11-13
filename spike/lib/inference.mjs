@@ -44,6 +44,9 @@ export function key() {
 // message with those words, even when an amount such as $500 looks like an HTTP
 // status. So a cap stop is never retried.
 const OUT = "This call is out of budget.";
+// A lock failure is not a cap stop, so it has its own sentence. "billing" also
+// stops pi-ai's retry: a call whose cost was not recorded must not be repeated.
+export const LEDGER_LOCKED = "The spend ledger stayed locked, so this call's cost was not recorded and no more billing is allowed.";
 let warnedMissing = false;
 function readLedger() {
   const file = ledgerPath();
@@ -93,7 +96,7 @@ function withLedgerLock(file, fn) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       try { if (Date.now() - statSync(lock).mtimeMs > LEDGER_LOCK_MS.staleMs) unlinkSync(lock); } catch { /* gone already */ }
-      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${OUT} Remove the lock file if no run is active.`);
+      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${LEDGER_LOCKED} Remove the lock file if no run is active.`);
       sleepMs(2 + Math.random() * 8);
     }
   }
