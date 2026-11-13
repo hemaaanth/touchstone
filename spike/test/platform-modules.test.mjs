@@ -39,6 +39,7 @@ const REACH = {
   "supply-chain": { proof: "evidence", live: true, grants: "github" },
   "domains": { proof: "evidence", live: true, scanNet: "open" },
   "surface": { proof: "none", live: true, scanNet: "open" },
+  "phishing": { proof: "none", live: true, scanNet: "open" },
   "web": { proof: "http", live: true, scanNet: "open" },
   "ai-mcp": { proof: "http", live: true, scanNet: "open", labTarget: "rule-based" },
   "keys": { proof: "forge", live: false, offline: true },
