@@ -43,8 +43,12 @@ const scanCmd = (secs) => [
   `if [ "$rc" != 137 ] && [ -s /tmp/h.json ]; then cat /tmp/h.json; else echo ${NO_JSON} >&2; tail -c 4000 /tmp/h.log >&2; fi`,
 ].join(" ");
 
-const CHECK_FN = /\bfunction\s+check_\w+\s*\(/;
-const CHECK_FNS = /\bfunction\s+(check_\w+)\s*\(/g;
+// The check_ functions Halmos can run: those in the code, not in a comment,
+// and not internal or private (Halmos runs only ABI functions). The name list
+// is read from the source text, so a commented-out check_ is not a gap.
+const CHECK_FNS = /\bfunction\s+(check_\w+)\s*\([^)]*\)([^{;]*)/g;
+const uncommented = (src) => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+const checkFns = (src) => [...uncommented(src).matchAll(CHECK_FNS)].filter((m) => !/\b(internal|private)\b/.test(m[2])).map((m) => m[1]);
 const bare = (name) => String(name).replace(/\(.*$/, "");
 
 // The test files that hold at least one check_ function, relative to ws.
@@ -57,7 +61,7 @@ export function symbolicSuites(ws) {
       const p = join(dir, name);
       const st = statSync(p);
       if (st.isDirectory()) walk(p);
-      else if (name.endsWith(".sol") && CHECK_FN.test(readFileSync(p, "utf8"))) out.push(relative(ws, p));
+      else if (name.endsWith(".sol") && checkFns(readFileSync(p, "utf8")).length) out.push(relative(ws, p));
     }
   };
   walk(root);
@@ -177,8 +181,8 @@ async function scanHalmos(ws, { timeoutMs = 300_000 } = {}) {
   for (const suite of suites) {
     if (parsed.gaps.some((g) => g.suite === suite && !g.name)) continue;
     const got = new Set(parsed.results.filter((x) => x.suite === suite).map((x) => bare(x.name)));
-    for (const m of readFileSync(join(ws, suite), "utf8").matchAll(CHECK_FNS)) {
-      if (!got.has(m[1])) parsed.gaps.push({ suite, name: m[1], reason: "Halmos reported no result for this check_ function" });
+    for (const fn of checkFns(readFileSync(join(ws, suite), "utf8"))) {
+      if (!got.has(fn)) parsed.gaps.push({ suite, name: fn, reason: "Halmos reported no result for this check_ function" });
     }
   }
   // The gate call site. One verdict per suite; today every verdict is "untrusted".

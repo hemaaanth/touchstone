@@ -238,13 +238,14 @@ test("parseHalmos throws on output that is not a Halmos report, and on a report 
 // A fake docker on PATH. It records its argv, prints SHIM_OUT on stdout and
 // exits with SHIM_CODE. runTool finds docker through PATH, so halmosScan runs
 // unchanged against it.
-async function withShim({ out = "", err = "", code = 0 }, fn) {
+async function withShim({ out = "", err = "", code = 0, edit = null }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "halmos-shim-"));
   const path = process.env.PATH;
   writeFileSync(join(dir, "out"), out);
   writeFileSync(join(dir, "err"), err);
   writeFileSync(join(dir, "docker"), `#!/bin/sh\nprintf "%s\\n" "$@" > "${dir}/args"\ncat "${dir}/out"\ncat "${dir}/err" >&2\nexit ${code}\n`, { mode: 0o755 });
   const ws = makeWorkspace(LAB);
+  if (edit) edit(ws);
   process.env.PATH = `${dir}:${path}`;
   try {
     const scan = await halmosScan(ws, { timeoutMs: 20_000 });
@@ -306,6 +307,33 @@ test("a declared check_ function with no result is a gap, and the run view says 
     assert.equal(scan.reason, "1 of 2 checks unchecked (Halmos reported no result for this check_ function)");
     const view = prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: halmosRecord(scan) }).tools.find((t) => t.name === "Halmos");
     assert.deepEqual(view, { name: "Halmos", status: "ran", reason: scan.reason, leads: 0 });
+  });
+});
+
+// Halmos runs only ABI functions in the code. A check_ in a comment, or an
+// internal or private helper named check_, is not a check it can report.
+test("a commented-out or internal check_ function is not a gap, and a file with only those is not a suite", async () => {
+  const extra = [
+    "  // function check_oldLine(uint256 a) public {}",
+    "  /* function check_oldBlock(uint256 a) public {} */",
+    "  function check_helper(uint256 a) internal pure returns (bool) { return a > 0; }",
+    "  function check_secret(uint256 a) private pure returns (bool) { return a > 0; }",
+  ].join("\n");
+  const edit = (ws) => {
+    const f = join(ws, SUITE);
+    const src = readFileSync(f, "utf8");
+    const end = src.lastIndexOf("}");
+    writeFileSync(f, `${src.slice(0, end)}${extra}\n${src.slice(end)}`);
+    writeFileSync(join(ws, "test/halmos/Old.t.sol"), "// function check_gone(uint256 a) public {}\n/*\nfunction check_alsoGone() external {}\n*/\ncontract Old {}\n");
+    assert.deepEqual(symbolicSuites(ws), [SUITE]);
+  };
+  await withShim({ out: JSON.stringify(REPORT), edit }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.suites, [SUITE]);
+    assert.deepEqual(scan.gaps, []);
+    assert.equal(scan.leads.length, 1);
+    const view = prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: halmosRecord(scan) }).tools.find((t) => t.name === "Halmos");
+    assert.deepEqual(view, { name: "Halmos", status: "ran", reason: null, leads: 1 });
   });
 });
 
