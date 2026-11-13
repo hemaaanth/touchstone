@@ -56,6 +56,25 @@ describe("candidatesOf and trackCandidate", () => {
     expect(run.findingIds).toEqual([])
     expect(JSON.parse(priorCandidatesEnv(run))).toEqual([{ n: 1, title: "Export leaks rows (a)", severity: "high", poc: "a", rootCause: "root-a", evidenceHash: "h1" }])
   })
+
+  // Review Minor 2: a proven finding takes the candidate's place.
+  test("a superseded candidate, or one whose poc is now a finding, is dropped", () => {
+    const list = candidatesOf([
+      ev(candidate("a")),
+      ev(candidate("b")),
+      ev(candidate("c")),
+      { t: 2, ev: "candidate-superseded", poc: "a", by: "other" },
+      { t: 3, ev: "finding-submitted", poc: "b", title: "proven b" },
+    ])
+    expect(list.map((c: { poc: string }) => c.poc)).toEqual(["c"])
+    const run: { candidates?: { poc: string }[] } = {}
+    trackCandidate(run, ev(candidate("a")))
+    trackCandidate(run, ev(candidate("b")))
+    expect(trackCandidate(run, { ev: "candidate-superseded", poc: "a" })).toBe(true)
+    expect(trackCandidate(run, { ev: "finding-submitted", poc: "b" })).toBe(true)
+    expect(run.candidates).toEqual([])
+    expect(recordCandidates(run)).toEqual([])
+  })
 })
 
 describe("the run record", () => {

@@ -61,6 +61,19 @@ describe("reduceEvents", () => {
   })
 })
 
+// Review Minor 2: a proven finding takes the candidate's place.
+test("reduceEvents drops a candidate once it is superseded or proven", () => {
+  const s = reduceEvents([
+    ev(cand("a")),
+    ev(cand("b")),
+    ev(cand("c")),
+    { t: 2, ev: "candidate-superseded", poc: "a", by: "other" },
+    { t: 3, ev: "finding-submitted", n: 1, poc: "b", title: "proven b", severity: "high" },
+  ])
+  expect(s.candidates.map((c) => c.poc)).toEqual(["c"])
+  expect(s.submitted.map((f) => f.poc)).toEqual(["b"])
+})
+
 describe("the Candidates group", () => {
   const c = candidateFrom(ev(cand("a")))!
 

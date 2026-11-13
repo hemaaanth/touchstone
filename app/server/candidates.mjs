@@ -18,15 +18,27 @@ export function normalizeCandidate(c) {
   return { ...makeCandidate({ ...rest, evidence: null }), evidence }
 }
 
-// The candidates in an event list, in submit order, one per poc.
+// The candidates in an event list, in submit order, one per poc, without
+// the ones a later event ended.
 export function candidatesOf(events) {
   const out = []
   for (const e of events ?? []) addCandidate(out, e)
   return out
 }
 
-// Add the candidate an event carries, if it is a new one. Returns true if added.
+// Events that end a candidate: the engine superseded it, or a finding was
+// proven for its poc. A run never shows a candidate beside its finding.
+const ENDS_CANDIDATE = ["candidate-superseded", "finding-submitted", "approval-pending"]
+
+// Apply one event to the list: add the candidate it carries if it is a new one,
+// or drop the candidate it ends. Returns true if the list changed.
 export function addCandidate(list, e) {
+  if (ENDS_CANDIDATE.includes(e?.ev)) {
+    const i = e.poc ? list.findIndex((x) => x.poc === e.poc) : -1
+    if (i < 0) return false
+    list.splice(i, 1)
+    return true
+  }
   if (e?.ev !== "candidate-submitted" || !e.candidate) return false
   const c = normalizeCandidate(e.candidate)
   if (list.some((x) => x.poc === c.poc)) return false

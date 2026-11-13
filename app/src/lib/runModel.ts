@@ -192,6 +192,10 @@ export function reduceEvents(events: RunEvent[]): RunState {
   const bulletin: BulletinNote[] = []
   const findings: FindingSummary[] = []
   const candidates: Candidate[] = []
+  const dropCandidate = (poc: string) => {
+    const i = poc ? candidates.findIndex((c) => c.poc === poc) : -1
+    if (i >= 0) candidates.splice(i, 1)
+  }
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
   let latestArtifact: { fileId: string; versionId: string } | null = null
@@ -581,6 +585,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // (`approval-pending`, then a decide phase). Either way the card sits
         // here in the transcript, and `pending` tracks the worst one so far.
         const poc = str(e.poc)
+        // A proven finding takes the place of a candidate with its poc.
+        dropCandidate(poc)
         if (submitted.some((f) => f.poc && f.poc === poc)) break
         const n = num(e.n) ?? submitted.length + 1
         const f: PendingApproval = {
@@ -596,6 +602,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.ev === "approval-pending") status = "awaiting-approval"
         break
       }
+      case "candidate-superseded":
+        dropCandidate(str(e.poc))
+        break
       case "candidate-submitted": {
         const c = candidateFrom(e)
         if (!c || candidates.some((x) => x.poc === c.poc)) break

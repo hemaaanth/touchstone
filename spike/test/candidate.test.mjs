@@ -249,6 +249,26 @@ test("candidateState saves each new candidate and restores the guards on resume"
   assert.equal(forged[0].provedBy, null);
 });
 
+// Review Minor 2: a finding proven for a candidate's poc or root cause takes
+// its place. The run never shows both.
+test("a finding for a candidate's poc or root cause removes the candidate, saves and says so", async () => {
+  const { candidateState, watchFindings } = await import("../lib/candidate.mjs");
+  let disk = null;
+  const state = watchFindings({ ...fresh(), candidates: candidateState([], (list) => { disk = JSON.stringify(list); }) });
+  for (const poc of ["a1", "a2", "a3"]) assert.ok((await checkCandidate({ pack: "web", state, lookup, args: args(poc) })).candidate);
+  state.found.push({ n: 1, poc: "a1", title: "proven a1" });
+  assert.deepEqual(state.candidates.map((c) => c.poc), ["a2", "a3"], "same poc");
+  state.found.push({ n: 2, poc: "other", rootCause: "script:a2", title: "proven root" });
+  assert.deepEqual(state.candidates.map((c) => c.poc), ["a3"], "same root cause");
+  state.found.push({ n: 3, poc: "unrelated", rootCause: "script:zzz" });
+  assert.deepEqual(state.candidates.map((c) => c.poc), ["a3"], "an unrelated finding leaves the candidate");
+  assert.deepEqual(JSON.parse(disk).map((c) => c.poc), ["a3"], "the removal is saved");
+  const gone = events().filter((e) => e.ev === "candidate-superseded").slice(-2);
+  assert.deepEqual(gone.map((e) => [e.poc, e.by]), [["a1", "a1"], ["a2", "other"]]);
+  assert.equal(state.found.length, 3, "every finding is still recorded");
+  assert.equal((await checkCandidate({ pack: "web", state, lookup, args: args("a4") })).candidate.n, 4, "numbers stay unique after a removal");
+});
+
 // Review Minor 1: hashes, topics and calldata words are not keys.
 test("64-hex values under hash names and inside calldata stay; a key under a secret name goes", () => {
   const H = "3f".repeat(32);

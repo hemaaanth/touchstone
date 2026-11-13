@@ -26,7 +26,7 @@ import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.m
 import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event } from "./lib/event.mjs";
-import { candidateState } from "./lib/candidate.mjs";
+import { candidateState, watchFindings } from "./lib/candidate.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
@@ -58,7 +58,7 @@ mkdirSync(DIR, { recursive: true });
 //   candidates  unproven, agent-asserted results (lib/candidate.mjs)
 //   attempts    attempt id -> what it captured, for submit_candidate
 function auditState() {
-  return { poc: 0, passed: new Map(), found: [], candidates: candidateState(), attempts: new Map() };
+  return watchFindings({ poc: 0, passed: new Map(), found: [], candidates: candidateState(), attempts: new Map() });
 }
 
 async function openHarness(db, ws, state) {
@@ -183,7 +183,8 @@ async function chat({ harness, root, reports, state, fleet }) {
   for (const f of JSON.parse(process.env.PRIOR_FOUND || "[]")) state.found.push(f);
   const prior = state.found.length;
   for (const c of JSON.parse(process.env.PRIOR_CANDIDATES || "[]")) state.candidates.push(c);
-  const priorCandidates = state.candidates.length;
+  // By poc, not by count: a finding this turn may supersede a prior candidate.
+  const priorCandidates = new Set(state.candidates.map((c) => c.poc));
   const before = (await harness.usage(ctx)).models ?? {};
   await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
   readSteers(root);
@@ -197,7 +198,7 @@ async function chat({ harness, root, reports, state, fleet }) {
   const s = await summarize(root);
   flushFinal(s);
   const usage = await chargeUsage(harness, before);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.slice(priorCandidates), usage, reports });
+  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found.slice(prior), candidates: state.candidates.filter((c) => !priorCandidates.has(c.poc)), usage, reports });
 }
 
 // ---- Child worker: one process runs the whole audit.

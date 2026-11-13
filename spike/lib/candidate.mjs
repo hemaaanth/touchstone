@@ -165,7 +165,32 @@ export function candidateState(saved = [], save = () => {}) {
     save(list);
     return n;
   };
+  Object.defineProperty(list, "save", { value: () => save(list) });
   return list;
+}
+
+// A finding proven for a candidate's poc or root cause takes its place: the
+// candidate is removed (and saved), and `candidate-superseded` tells the server
+// and the UI. The run never shows both. Wraps state.found.push, so every pack's
+// submit_finding is covered.
+export function watchFindings(state) {
+  const push = state.found.push.bind(state.found);
+  state.found.push = (...items) => {
+    const n = push(...items);
+    for (const f of items) supersede(state, f);
+    return n;
+  };
+  return state;
+}
+
+function supersede(state, f) {
+  const list = state.candidates ?? [];
+  const gone = list.filter((c) => c.poc === f?.poc || (c.rootCause != null && c.rootCause === f?.rootCause));
+  for (const c of gone) {
+    list.splice(list.indexOf(c), 1);
+    event("candidate-superseded", { poc: c.poc, by: f.poc ?? null });
+  }
+  if (gone.length) list.save?.();
 }
 
 export const isCandidate = (r) => r?.candidate === true || r?.kind === "candidate";
@@ -221,7 +246,8 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   const haystack = squash(attempt.text);
   const missing = cites.find((c) => squash(c).length < 8 || !haystack.includes(squash(c)));
   if (missing) return refuse("bad-cite", `Cannot record this candidate: the cited line "${missing.slice(0, 120)}" is not in the evidence of "${poc}" (or is shorter than 8 characters). Quote the exact lines that show the harm.`);
-  const n = state.candidates.length + 1;
+  // Max + 1, so a number is never reused after a candidate is superseded.
+  const n = Math.max(0, ...state.candidates.map((c) => c.n)) + 1;
   // The pack's own scrub first (it knows its secret shapes), then the shared one.
   const line = (t) => scrubText(scrubLine(String(t ?? "")));
   const candidate = makeCandidate({
