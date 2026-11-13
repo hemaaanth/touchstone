@@ -138,6 +138,8 @@ export function planRemote(args, ws, remoteWs) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {
       out.push(a);
+    } else if (/^--pull(?:=|$)/.test(a)) {
+      out.push(a);
     } else if (a.startsWith("-")) {
       return stay(`flag ${a.split("=")[0]} is not known to the remote path`);
     } else {
