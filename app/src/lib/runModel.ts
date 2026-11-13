@@ -826,6 +826,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       // An operator message to an idle run starts a follow-up worker.
       case "reply-start":
         newTurn()
+        restoring = null // a restore line of an earlier turn is history
         closed = false
         replying = true
         replyStartedAt = typeof e.t === "number" ? e.t : null
@@ -862,12 +863,19 @@ export function reduceEvents(events: RunEvent[]): RunState {
         const state = str(e.state)
         if (!label || !["rebuilt", "restoring", "kept"].includes(state)) break
         // The server sends one "restoring" event per source, up to twenty in a
-        // row. They are one status line that changes, not twenty lines: while
-        // the line is still the last step, the next event writes over it. The
-        // result of the restore ("rebuilt" or "kept") writes over it too.
-        if (restoring && steps.at(-1) === restoring) restoring.label = label
-        else steps.push({ key, kind: "system", phase, label })
-        restoring = state === "restoring" ? steps.at(-1)! : null
+        // row. They are one status line that changes, not twenty lines: the
+        // next event writes over the line. The result of the restore ("rebuilt"
+        // or "kept") writes over it too. A Stop can come in between; its note
+        // stays below the line, so a stopped restore reads as one line that
+        // says it stopped. After any other step the line is history.
+        const at = restoring ? steps.lastIndexOf(restoring) : -1
+        if (restoring && at >= 0 && steps.slice(at + 1).every((s) => s.kind === "note")) {
+          restoring.label = label
+          restoring = state === "restoring" ? restoring : null
+        } else {
+          steps.push({ key, kind: "system", phase, label })
+          restoring = state === "restoring" ? steps.at(-1)! : null
+        }
         break
       }
       case "archived":

@@ -1613,7 +1613,11 @@ async function restoreSources(run, ws, kept) {
   // A joined run keeps one tree for the run and a copy in each module that reads code.
   const packs = run.packs ?? kept?.packs
   for (const [k, [url, pin]] of todo.entries()) {
-    if (run.stopping) return { ...out, stopped: true } // `restoring` stays: the next follow-up goes on
+    if (run.stopping) {
+      // `restoring` stays in the record. The line on the screen must not go on saying "Fetching".
+      say(`The restore stopped after ${k} of ${todo.length} sources. The next message to this run puts the sources back first.`)
+      return { ...out, stopped: true }
+    }
     say(`Fetching ${repoName(url)} (${k + 1} of ${todo.length}).`)
     try {
       const report = await restoreSource(ws, url)

@@ -1646,9 +1646,10 @@ test("A6: the restore says what it does, one event per source, and Stop ends it 
     assert.deepEqual(said.map((e) => [e.state, e.message]), [
       ["restoring", "The fetched sources of this run are put back into its workspace, as this run read them before: 2 to fetch. Each one can take up to 90 seconds."],
       ["restoring", "Fetching acme/prog1 (1 of 2)."],
-    ], "one event before, one per source, and none for the source after the Stop");
+      ["restoring", "The restore stopped after 1 of 2 sources. The next message to this run puts the sources back first."],
+    ], "one event before, one per source, none for the source after the Stop, and one that says it stopped");
     assert.ok(!said.some((e) => e.message.includes(tmpdir()) || e.message.includes(dir)), "no path of this host");
-    assert.deepEqual(r.events.slice(-3).map((e) => e.ev), ["stop-requested", "stopped", "closed"]);
+    assert.deepEqual(r.events.slice(-4).map((e) => e.ev), ["stop-requested", "workspace", "stopped", "closed"]);
     const ws = kept(run.id).ws;
     made.push(ws);
     assert.deepEqual([codeOf(ws, m1), codeOf(ws, m2)], ["export const v = 1\n", null], "the first source is there, the second is not");

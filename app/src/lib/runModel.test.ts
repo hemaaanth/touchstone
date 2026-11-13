@@ -87,11 +87,14 @@ test("the events of a source restore are one status line that changes, and the r
   // The result is the one line that stays.
   const result = "The earlier workspace of this run is gone, so this is a new workspace built from the same scope. These fetched sources could not be put back, so they are not in it: https://github.com/acme/repo2: could not fetch commit 0123456789ab of acme/repo2."
   assert.deepEqual(rows([...progress, ev("workspace", { state: "rebuilt", message: result }), say(0, "Looking again")]), [`system:${result}`, "say:Looking again"])
-  // A restore that the operator stopped: its last line stays, then the stop.
-  assert.deepEqual(rows([...progress.slice(0, 3), ev("stop-requested"), ev("stopped")]), ["system:Fetching acme/repo1 (1 of 20).", "note:Stopping the run", "note:You stopped the run. Send a message to continue."])
-  // A later restore, after other steps, is a new line: the old one is history.
-  const again = [...progress.slice(0, 3), ev("stopped"), ev("reply-start"), ev("workspace", { state: "restoring", message: "Fetching acme/repo1 (1 of 20)." }), ev("workspace", { state: "kept", message: "The server did that now." })]
-  assert.deepEqual(rows(again), ["system:Fetching acme/repo1 (1 of 20).", "note:You stopped the run. Send a message to continue.", "system:The server did that now."])
+  // A restore that the operator stopped. The server says so in one more event,
+  // after the stop request: it writes over the same line, and the two stop notes stay together below it.
+  const halted = "The restore stopped after 1 of 20 sources. The next message to this run puts the sources back first."
+  assert.deepEqual(rows([...progress.slice(0, 3), ev("stop-requested"), ev("workspace", { state: "restoring", message: halted }), ev("stopped")]), [`system:${halted}`, "note:Stopping the run", "note:You stopped the run. Send a message to continue."])
+  // The next follow-up finishes the restore. Its line is a new one, below the stop: the old line is history.
+  const again = [...progress.slice(0, 3), ev("stop-requested"), ev("workspace", { state: "restoring", message: halted }), ev("stopped"), ev("closed"), ev("reply-start"), ev("workspace", { state: "restoring", message: "Fetching acme/repo1 (1 of 20)." })]
+  assert.deepEqual(rows(again), [`system:${halted}`, "note:Stopping the run", "note:You stopped the run. Send a message to continue.", "system:Fetching acme/repo1 (1 of 20)."])
+  assert.deepEqual(rows([...again, ev("workspace", { state: "kept", message: "The server did that now." })]).at(-1), "system:The server did that now.")
 })
 
 test("a workspace event with no message, or with a state this code does not know, shows nothing and does not throw", () => {
