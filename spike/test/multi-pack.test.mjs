@@ -285,15 +285,17 @@ test("each module's pre-pass leads stay its own, even when another fails", async
     tools: () => [], prepass: async () => ({ env: { LEADS: "ALPHA-ONLY" }, record: {} }) };
   const b = { id: "beta", title: "beta", system: () => "", kickoff: (_ws, env) => `Leads: ${env.LEADS ?? "none"}`,
     tools: () => [], prepass: async () => { throw new Error("capture failed"); } };
-  const pack = multiPack([a, b]);
   const ws = mkdtempSync(path.join(tmpdir(), "multi-env-"));
   roots.push(ws);
-  const prep = await pack.prepass(ws, {});
-  assert.deepEqual(Object.keys(prep.env), ["TS_ALPHA__LEADS"]);
+  // Two objects, as in production: the server runs the pre-pass, the worker
+  // builds its own pack and kicks off. Nothing may travel inside an object.
+  const prep = await multiPack([a, b]).prepass(ws, {});
+  assert.deepEqual(Object.keys(prep.env).sort(), ["TS_ALPHA__LEADS", "TS_JOINED__KEYS"]);
   assert.deepEqual(prep.record.failed, ["beta"]);
-  const text = pack.kickoff(ws, { ...prep.env, PATH: "/bin" });
+  // A stray plain key (a future engine could set one) must not reach a module.
+  const text = multiPack([a, b]).kickoff(ws, { ...prep.env, LEADS: "STRAY", PATH: "/bin" });
   assert.match(sectionOf(text, "alpha"), /Leads: ALPHA-ONLY/);
-  assert.match(sectionOf(text, "beta"), /Leads: none/, "beta must not get alpha's leads");
+  assert.match(sectionOf(text, "beta"), /Leads: none/, "beta must not get alpha's leads or the stray key");
 });
 
 test("two tools with one name are refused, not mis-routed", () => {

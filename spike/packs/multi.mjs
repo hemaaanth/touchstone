@@ -30,8 +30,11 @@ export function multiPacks(cfg = {}) {
 const slug = (id) => String(id).replace(/[^A-Za-z0-9_]/g, "_");
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// The env key that carries one module's own pre-pass value.
+// The env key that carries one module's own pre-pass value. `PRODUCED` names
+// the plain keys any module's pre-pass set, so a plain key can be dropped for
+// every module when the kickoff runs on another pack object.
 const envKey = (id, key) => `TS_${slug(id).toUpperCase()}__${key}`;
+const PRODUCED = "TS_JOINED__KEYS";
 
 // A Map view over the run's one `passed` map. Each module sees only its own keys.
 function scopedMap(map, id) {
@@ -129,8 +132,6 @@ export function multiPack(members) {
   const titles = members.map((p) => `${p.title ?? p.id} (${p.id})`);
   const views = new WeakMap(); // audit state -> Map(module id -> member state)
   const renames = new Map(); // ws -> Map(module id -> rename)
-  // The pre-pass env of each module, by module id (see kickoff).
-  const leadsBy = new Map();
 
   const viewOf = (state, id) => {
     if (!state || typeof state !== "object") return state;
@@ -205,14 +206,23 @@ export function multiPack(members) {
     },
 
     // Each module's own first message. The pre-pass values travel as
-    // `TS_<ID>__<KEY>`; each module gets its own back under the plain key, and
-    // never another module's plain key — another pack's `LEADS` is not its own.
-    // Real environment (PATH and the rest) passes through untouched.
+    // `TS_<ID>__<KEY>`, and this runs on another pack object (the server runs
+    // the pre-pass, the worker builds the pack), so each module's own keys come
+    // out of `env` here and every other module's key goes. A plain key of
+    // another module would otherwise read as its own (`LEADS`); real environment
+    // (PATH and the rest) passes through untouched.
     kickoff(ws, env = {}) {
+      const prefixes = members.map((p) => [p.id, envKey(p.id, "")]);
+      const produced = new Set((env[PRODUCED] ?? "").split(",").filter(Boolean));
       const parts = members.map((p) => {
         const own = { ...env };
-        for (const [id, other] of leadsBy) if (id !== p.id) for (const k of Object.keys(other)) delete own[k];
-        Object.assign(own, leadsBy.get(p.id) ?? {});
+        delete own[PRODUCED];
+        for (const k of produced) delete own[k];
+        for (const [k, v] of Object.entries(env)) {
+          const owner = prefixes.find(([, prefix]) => k.startsWith(prefix));
+          if (!owner || owner[0] !== p.id) continue;
+          own[k.slice(owner[1].length)] = v;
+        }
         return section(p, renameFor(ws, p.id)(p.kickoff(memberDir(ws, p.id), own)));
       });
       return [`This run covers ${members.length} modules. Do the task of each module below. Finish one module's task before you start the next.`, ...parts].join("\n\n");
@@ -239,7 +249,6 @@ export function multiPack(members) {
     async prepass(ws, opts = {}) {
       const done = [];
       const failed = [];
-      leadsBy.clear();
       for (const p of members) {
         if (typeof p.prepass !== "function") continue;
         try {
@@ -250,10 +259,14 @@ export function multiPack(members) {
       }
       if (!done.length && failed.length) throw new Error(failed.map(([id, e]) => `${id}: ${e}`).join("; "));
       const env = {};
+      const produced = new Set();
       for (const [id, r] of done) {
-        leadsBy.set(id, r.env ?? {});
-        for (const [k, v] of Object.entries(r.env ?? {})) env[envKey(id, k)] = v;
+        for (const [k, v] of Object.entries(r.env ?? {})) {
+          env[envKey(id, k)] = v;
+          produced.add(k);
+        }
       }
+      if (produced.size) env[PRODUCED] = [...produced].join(",");
       const byPack = Object.fromEntries(done.map(([id, r]) => [id, r.record ?? null]));
       // Only the module ids: a pre-pass error text can hold a secret.
       const record = { pack: MULTI, packs: ids, byPack, ...(failed.length ? { failed: failed.map(([id]) => id) } : {}) };
