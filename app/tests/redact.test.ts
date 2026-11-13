@@ -167,13 +167,13 @@ describe("redact: proof text keeps its meaning and its syntax", () => {
   test("a quoted header keeps its closing quote", () => {
     expect(text(`curl -H 'X-Api-Key: AIzaSyFAKEfake1234' https://x`)).toBe(`curl -H 'X-Api-Key: [REDACTED]' https://x`)
     expect(text(`curl -H "Authorization: Basic dXNlcjpodW50ZXIy" https://x`)).toBe(`curl -H "Authorization: Basic [REDACTED]" https://x`)
-    expect(text(`["Cookie: sid=s3ssionFAKEvalue9"]`)).toBe(`["Cookie: [REDACTED]"]`)
+    expect(text(`["Cookie: sid=s3ssionFAKEvalue9"]`)).toBe(`["Cookie: sid=[REDACTED]"]`)
     expect(text(`{"cmd":"curl -H \\"Authorization: Basic dXNlcjpodW50ZXIy\\" x"}`)).toBe(`{"cmd":"curl -H \\"Authorization: Basic [REDACTED]\\" x"}`)
   })
 
   test("a header line in a recorded HTTP dump is masked", () => {
     const dump = `GET /api/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${live}\r\nX-Api-Key: ${live}\r\nCookie: sid=${live}\r\n\r\n`
-    expect(text(dump)).toBe("GET /api/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer [REDACTED]\r\nX-Api-Key: [REDACTED]\r\nCookie: [REDACTED]\r\n\r\n")
+    expect(text(dump)).toBe("GET /api/me HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer [REDACTED]\r\nX-Api-Key: [REDACTED]\r\nCookie: sid=[REDACTED]\r\n\r\n")
     expect(text(`> Authorization: Bearer ${live}\n< HTTP/1.1 200 OK`)).toBe("> Authorization: Bearer [REDACTED]\n< HTTP/1.1 200 OK")
     expect(text(`"HTTP/1.1 200\\r\\nx-session-token: ${live}\\r\\n"`)).toBe(`"HTTP/1.1 200\\r\\nx-session-token: [REDACTED]\\r\\n"`)
   })
@@ -211,7 +211,7 @@ describe("redact: an Authorization value with several parts", () => {
   })
 
   test("every cookie in a Cookie header is masked", () => {
-    expect(text(`Cookie: theme=dark; sid=${sig}\n`)).toBe("Cookie: [REDACTED]\n")
+    expect(text(`Cookie: theme=dark; sid=${sig}\n`)).toBe("Cookie: theme=[REDACTED]; sid=[REDACTED]\n")
   })
 
   test("a PoC script that sends these headers still parses", () => {
@@ -244,7 +244,7 @@ describe("redact: secrets in commands and URLs (review Minor 1)", () => {
   test("curl -u and curl -b values are masked", () => {
     expect(text("curl -u alice:s3cretFAKE99 https://x")).toBe("curl -u alice:[REDACTED] https://x")
     expect(text("curl --user 'alice:s3cretFAKE99' https://x")).toBe("curl --user 'alice:[REDACTED]' https://x")
-    expect(text(`curl -b "sid=s3ssionFAKE9; theme=dark" https://x`)).toBe(`curl -b "[REDACTED]" https://x`)
+    expect(text(`curl -b "sid=s3ssionFAKE9; theme=dark" https://x`)).toBe(`curl -b "sid=[REDACTED]; theme=[REDACTED]" https://x`)
     expect(text("curl --cookie sid=s3ssionFAKE9 https://x")).toBe("curl --cookie [REDACTED] https://x")
   })
 
@@ -437,5 +437,25 @@ describe("redact: header lines after a list mark, a table bar, a tab or a comma 
     expect(timeMs("\n| token |" + " ".repeat(MB))).toBeLessThan(2000)
     expect(timeMs(", token: " + "a".repeat(MB))).toBeLessThan(2000)
     expect(timeMs("\t- ".repeat(MB / 3))).toBeLessThan(2000)
+  })
+})
+
+describe("redact: a cookie value is masked per cookie (delta review 4)", () => {
+  const sid = "s3ssionFAKEvalue9"
+  test("Set-Cookie keeps its attributes and each cookie name", () => {
+    expect(text(`Set-Cookie: sid=${sid}; Path=/; SameSite=None; Secure; HttpOnly\n`)).toBe("Set-Cookie: sid=[REDACTED]; Path=/; SameSite=None; Secure; HttpOnly\n")
+    expect(text(`- cookie: token=${sid}; theme=dark`)).toBe("- cookie: token=[REDACTED]; theme=[REDACTED]")
+    expect(text(`{"cookie":"sid=${sid}; Path=/"}`)).toBe(`{"cookie":"sid=[REDACTED]; Path=/"}`)
+    expect(text(`curl -b sid=${sid} https://x`)).toBe("curl -b sid=[REDACTED] https://x")
+  })
+  test("a placeholder or empty cookie value stays", () => {
+    for (const s of ["- cookie: token=<alice token>", "Cookie: sid=$SID", "Cookie: token=", 'headers: { cookie: "token=" + t }']) expect(text(s)).toBe(s)
+  })
+  test("a bare cookie value with no name is still masked as a pair value", () => {
+    expect(text(`{"cookie":"${sid}"}`)).toBe(`{"cookie":"[REDACTED]"}`)
+  })
+  test("1 MB of cookie pairs finishes in linear time", () => {
+    const MB = 1 << 20
+    for (const s of ["Cookie: " + "a=b; ".repeat(MB / 6), "Cookie: a=" + ";".repeat(MB), "Cookie: " + "=".repeat(MB)]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })

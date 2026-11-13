@@ -140,8 +140,27 @@ function maskHeaderValue(name, value) {
     const m = /^([A-Za-z][\w-]*)([ \t]+)([\s\S]+)$/.exec(value)
     if (m) return credential(m[3]) ? `${m[1]}${m[2]}${MARK}` : null
   }
-  if (/cookie$/i.test(name)) return value.includes("=") ? MARK : null
+  if (/cookie$/i.test(name)) return maskCookie(value)
   return credential(value) ? MARK : null
+}
+
+// Each name=value in a Cookie or Set-Cookie value. Every cookie value is
+// masked: a cookie value has no reliable secret shape. The cookie names,
+// the Set-Cookie attributes (Path=/, SameSite=None) and an empty or
+// placeholder value ("token=<alice token>", "sid=$SID") stay. Null when
+// nothing was masked.
+const COOKIE_PAIR = /(^|;[ \t]*)([^=;\s]+)=([^;]*)/g
+const COOKIE_ATTR = /^(?:path|domain|expires|max-age|samesite|priority|partitioned)$/i
+function maskCookie(value) {
+  let hit = false
+  COOKIE_PAIR.lastIndex = 0
+  const out = value.replace(COOKIE_PAIR, (m, lead, name, v) => {
+    const t = v.trimEnd()
+    if (COOKIE_ATTR.test(name) || /^(?:$|[\s<$[{])/.test(t) || keepUnder(t)) return m
+    hit = true
+    return `${lead}${name}=${MARK}${v.slice(t.length)}`
+  })
+  return hit ? out : null
 }
 
 function maskHeader(m, lead, name, sep, raw) {
@@ -157,16 +176,16 @@ function maskHeader(m, lead, name, sep, raw) {
 // A code value that is a template or a variable stays: `${t}`, "$TOKEN".
 // So does a "value" that starts or ends with a space or a comma. That is
 // the text between two markdown code spans, as in "`?token=`, `Bearer`".
-// A cookie with no value, such as "token=" + t, stays too.
+// A cookie with no value, such as "token=" + t, stays too (maskCookie).
 function maskCodeValue(name, value) {
   if (/^[<$\s,;:)\]}]|\s$|\$\{/.test(value)) return null
-  if (/cookie$/i.test(name) && !/=[^;\s]/.test(value)) return null
   return maskPairValue(name, value)
 }
 
 function maskPairValue(name, value) {
   if (!secretName(name) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
+  if (/cookie$/i.test(name) && value.includes("=")) return maskCookie(value)
   return MARK
 }
 
@@ -179,9 +198,9 @@ function maskQuery(m, head, name, value) {
 }
 
 function maskCookieArg(m, head, q, quoted, bare) {
-  const v = quoted ?? bare
-  if (!v.includes("=") || /^[[$<{]/.test(v)) return m
-  return q ? `${head}${q}${MARK}${q}` : head + MARK
+  const masked = maskCookie(quoted ?? bare)
+  if (masked == null) return m
+  return q ? `${head}${q}${masked}${q}` : head + masked
 }
 
 function maskFlag(m, head, name, q, quoted, bare) {
