@@ -1,4 +1,4 @@
-// Slither through runTool() for the chain packs (lib/slither.mjs).
+// Slither through runTool() for the chain-watch and keys packs (lib/slither.mjs).
 // The real-run tests need the image (tools/build-slither-image.sh) and skip when it
 // is not built. The failure tests run without it.
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import { join, relative } from "node:path";
 import { SLITHER_DEFAULT_IMAGE, parseSlither, slitherLeads, slitherScan } from "../lib/slither.mjs";
 import { aderynLeads, chainPrepass, sourceLeads } from "../packs/keys/common.mjs";
 import chainWatch from "../packs/chain-watch/pack.mjs";
+import keys from "../packs/keys/pack.mjs";
 import { cleanupWorkspace, forgeTest, makeWorkspace, writePoc } from "../lib/sandbox.mjs";
 
 const imageExists = (image) => {
@@ -215,6 +216,75 @@ test("chain-watch lab: the Slither lead proves with funds harm through the forge
     assert.ok(run.passed && !run.failed, run.output);
     const found = [{ n: 1, title: "Vault can be re-initialized", severity: "critical", poc: "ReinitVaultTest", explanation: "x", source }];
     const [proved] = await chainWatch.prove(ws, found, [{ ev: "run_poc-done", passed: true, contract: "ReinitVaultTest" }], () => {});
+    assert.equal(proved.proof.status, "pass", JSON.stringify(proved.proof));
+    assert.equal(proved.proof.harm.kind, "funds");
+  } finally { cleanupWorkspace(ws); }
+});
+
+// ---- keys: the same adapter on the keys lab
+
+
+const KEYS_LAB = new URL("../packs/keys/lab", import.meta.url).pathname;
+
+test("keys lab: Slither flags the never-set `required` quorum and leaves the workspace clean", { skip: !hasImage && "image not built", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(KEYS_LAB);
+  try {
+    const before = tree(ws);
+    const scan = await slitherLeads(ws);
+    assert.equal(scan.available, true, scan.reason);
+    const lead = scan.leads.find((l) => l.check === "uninitialized-state");
+    assert.ok(lead, JSON.stringify(scan.leads.map((l) => l.check)));
+    assert.equal(lead.impact, "High");
+    assert.match(lead.where, /^CosignVault\.required \(src\/CosignVault\.sol:\d+\)$/);
+    assert.deepEqual(tree(ws), before, "the scan must not write into the workspace");
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("keys lab: Slither finds the zero quorum that the Safe checks, source checks and Aderyn miss", { skip: (!hasImage || !hasAderyn) && "image not built", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(KEYS_LAB);
+  try {
+    // Aderyn does flag CosignVault.sol, but only `eth-send-unchecked-address` on the payout call.
+    // Nothing but Slither names the root cause: `required` is never set.
+    const onQuorum = (l) => l.check === "uninitialized-state" || /\brequired\b/.test(`${l.where} ${l.description ?? ""}`);
+    assert.deepEqual(sourceLeads(ws).filter(onQuorum), []);
+    const aderyn = await aderynLeads(ws);
+    assert.equal(aderyn.available, true, aderyn.reason);
+    assert.deepEqual(aderyn.leads.filter(onQuorum), []);
+    const slither = await slitherLeads(ws);
+    assert.ok(slither.leads.some((l) => onQuorum(l) && /CosignVault/.test(l.where)));
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("keys prepass in source mode puts the Slither lead in the brief and the record", { skip: !hasImage && "image not built", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(KEYS_LAB);
+  try {
+    execFileSync("rm", [join(ws, "src", "KeysLab.sol")]);
+    const prep = await keys.prepass(ws, { emit: () => {} });
+    assert.equal(prep.record.source, true);
+    assert.equal(prep.record.slither, true);
+    assert.match(prep.env.CHAIN_BRIEF, /uninitialized-state at CosignVault\.required/);
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("keys prepass in lab mode (Anvil world) shows the Slither lead in the brief", { skip: (!hasImage || !hasTools) && "image not built", timeout: 600_000 }, async () => {
+  const ws = makeWorkspace(KEYS_LAB);
+  try {
+    const prep = await keys.prepass(ws, { emit: () => {} });
+    assert.equal(prep.record.source, false, "the lab world ran");
+    assert.equal(prep.record.slither, true);
+    assert.match(prep.env.CHAIN_BRIEF, /\[High\] uninitialized-state at CosignVault\.required .* seen only by Slither/);
+  } finally { cleanupWorkspace(ws); }
+});
+
+test("keys lab: the Slither lead proves with funds harm through the forge oracle", { skip: !hasFoundry && "foundry image not pulled", timeout: 600_000 }, async () => {
+  const ws = makeWorkspace(KEYS_LAB);
+  try {
+    const source = readFileSync(join(KEYS_LAB, "oracle", "CosignVaultTest.t.sol"), "utf8");
+    writePoc(ws, source);
+    const run = await forgeTest(ws, { matchContract: "CosignVaultTest" });
+    assert.ok(run.passed && !run.failed, run.output);
+    const found = [{ n: 1, title: "One owner pays out alone", severity: "critical", poc: "CosignVaultTest", explanation: "x", source }];
+    const [proved] = await keys.prove(ws, found, [{ ev: "run_poc-done", passed: true, contract: "CosignVaultTest" }], () => {});
     assert.equal(proved.proof.status, "pass", JSON.stringify(proved.proof));
     assert.equal(proved.proof.harm.kind, "funds");
   } finally { cleanupWorkspace(ws); }
