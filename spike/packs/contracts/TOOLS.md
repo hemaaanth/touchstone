@@ -182,9 +182,11 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
 The forge replay proves a funds finding when a scope target loses value in the test body.
 - ETH: a loss counts only as the excess of what one party took out of the target over what that
   same party put in, across setUp() and the body. The test contract and the contracts it deployed
-  are one party. ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct is the
-  test's own. So a setUp() deposit and the same address's own withdraw is not a drain. The loss
-  is never more than the target's net ETH change in the body.
+  are one party. ETH the test put on a target with vm.deal is credited to the test party as "put
+  in" (its own), so a test-side take of exactly that amount is not a drain, but a take beyond it
+  still is. For vm.coinbase or a selfdestruct into a test contract the amount is unknown, so the
+  test party's whole take from that target is dropped. A setUp() deposit and the same address's own
+  withdraw is not a drain. The loss is never more than the target's net ETH change in the body.
 - Tokens: the same rule. Each drop of a scope holder's balance slot takes its recipient from the
   token's own Transfer logs (setUp() and body), and is netted against what that recipient put in.
   Tokens a funding deal() put on the holder are the test's own. The part of a drop that no
@@ -197,6 +199,12 @@ The forge replay proves a funds finding when a scope target loses value in the t
 **Limit: a replay cannot judge authorization.** A legitimate sweep by an address that never paid
 in (an admin withdraw, a fee claim, a payout to a user another address funded) still reads as a
 drain. The gate trusts the attack path the PoC shows. A reviewer must still read the path.
+
+**Limit: the netting is per target.** A party's "put in" and "took out" are summed per scope
+contract. A deposit through one scope contract and a withdraw from another are not netted together.
+So these honest shapes still read as a drain: a router or zap that forwards the deposit to the vault
+(the user paid the router, not the vault); and `depositFor(B)` paid by A (B takes out of the vault
+and never paid it). `main` proves these too, at a larger value.
 
 ## Harm gate: cheatcodes (the backstop)
 
@@ -235,7 +243,9 @@ no call followed, every scope target is unusable.
 contract into `deployCode(string,uint256)` (`0x0af6a701`). That overload is in the forge binary but
 not in forge-std 1.9.4's Vm.sol, so the backstop refuses it as unknown. Measured: 1 of 18 proven
 PoCs, 28 of 159 PoCs (17 times in setUp(), 8 in a test function). The workaround for a PoC: deploy
-with `new X()`, then fund it with `vm.deal`.
+with `new X()` and fund the victim through a pranked user's deposit, then drain it with a pranked
+attacker address. Do NOT fund with `vm.deal`, `deal()` or a constructor value: those count as the
+test's own, so a loss of them is not proven.
 
 ## Gaps in our wrapping
 
