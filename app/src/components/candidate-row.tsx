@@ -53,7 +53,7 @@ export const CandidateListRow = memo(function CandidateListRow({
               <span className="whitespace-nowrap sm:hidden">{candidateShortState(c)}</span>
               <span className="hidden min-w-0 truncate sm:inline">{candidateState(c)}</span>
             </span>,
-            c.measured && c.measured.count > 1 ? <span key="count" className="shrink-0 whitespace-nowrap tabular-nums">{c.measured.count} places</span> : null,
+            c.measured && c.measured.count > 1 ? <span key="count" data-slot="candidate-count" className="shrink-0 whitespace-nowrap tabular-nums max-sm:hidden">{c.measured.count} places</span> : null,
             <TruncatedText key="scope" text={scopeOf(f)} />,
             <span key="at" data-slot="candidate-date" className="shrink-0 whitespace-nowrap tabular-nums max-sm:hidden" title="When the run started">
               {f.at != null && when ? when(f.at) : "Date not recorded"}

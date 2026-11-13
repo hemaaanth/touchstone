@@ -117,8 +117,9 @@ describe("the candidate row on a phone", () => {
     expect(out).toMatch(/<span class="hidden min-w-0 truncate sm:inline">Candidate · measurement repeated<\/span>/)
     expect(candidateShortState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate")
   })
-  test("the date is hidden below sm", () => {
+  test("the date and the places count are hidden below sm", () => {
     expect(out).toMatch(/data-slot="candidate-date" class="[^"]*\bmax-sm:hidden\b/)
+    expect(out).toMatch(/data-slot="candidate-count" class="[^"]*\bmax-sm:hidden\b/)
     expect(out).toContain("13 Nov, 12:00")
   })
 })
