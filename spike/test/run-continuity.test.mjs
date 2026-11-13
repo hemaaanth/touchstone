@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -62,21 +62,27 @@ function spawn(cmd, args, opts = {}) {
   return child;
 }
 mock.module("node:child_process", { exports: { ...realChild, default: { ...realChild, spawn }, spawn } });
+// A live run opens a Docker boundary. These tests have no live target, so a live
+// scope gets an inert gate. Every other scope keeps the real one.
+const realReach = await import("../lib/reach.mjs");
+const openReach = (target, opts) => (target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts));
+mock.module("../lib/reach.mjs", { exports: { ...realReach, openReach } });
 
 const dir = mkdtempSync(path.join(tmpdir(), "run-continuity-"));
 const RESULTS = path.join(dir, "results");
 process.env.TOUCHSTONE_RESULTS_DIR = RESULTS;
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
+process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
 const made = []; // workspaces a test deleted from the record's view; removed at the end
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {
     if (f.endsWith(".workspace.json")) made.push(JSON.parse(readFileSync(path.join(RESULTS, f), "utf8")).ws);
   }
-  for (const ws of made) rmSync(ws, { recursive: true, force: true });
+  for (const ws of made) if (ws) rmSync(ws, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
 
-const { addScope, removeScope } = await import("../lib/scopes-store.mjs");
+const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-store.mjs");
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
 const { createRun, getRun, steerRun, deleteRun, archiveRun } = runs;
@@ -244,7 +250,7 @@ test("A3: a finished run on a generated lab takes a follow-up in the same lab; a
       title: "Generated lab", blurb: "Made per run.",
       make: async () => {
         makes++;
-        const lab = mkdtempSync(path.join(tmpdir(), "genlab-test-"));
+        const lab = mkdtempSync(path.join(tmpdir(), "touchstone-supply-"));
         made.push(lab);
         writeFileSync(path.join(lab, ".touchstone.json"), JSON.stringify({ pack: "genfake", kind: "lab" }));
         return lab;
@@ -384,6 +390,213 @@ test("deleting a run deletes its kept workspace", async () => {
   deleteRun(id);
   assert.ok(!existsSync(call.args[4]));
   assert.ok(existsSync(path.join(RESULTS, "trash", `run-${id}.workspace.json`)));
+});
+
+// ---- Safety: the record's path is checked before a delete or a reuse --------------
+
+const record = (id) => path.join(RESULTS, `run-${id}.workspace.json`);
+const point = (id, ws) => writeFileSync(record(id), JSON.stringify({ ...kept(id), ws }));
+
+test("safety: a record that names another run's workspace does not delete it", async () => {
+  const a = await finished();
+  const b = await finished();
+  made.push(a.call.args[4]);
+  point(a.id, b.call.args[4]);
+  deleteRun(a.id);
+  assert.ok(existsSync(path.join(b.call.args[4], "notes.md")), "run B keeps its workspace");
+  scripts.push({ act: look, events: [done] });
+  steerRun(b.id, "Still there?");
+  await settle(b.id, 1);
+  assert.equal(spawns.at(-1).args[4], b.call.args[4]);
+  assert.deepEqual(spawns.at(-1).saw, { source: true, note: true });
+});
+
+test("safety: a record that names some other temp folder does not delete it, by delete or by the cap", async () => {
+  // One folder that carries the run's mark but has no workspace name, and one
+  // with the name but no mark: no run kept it.
+  const other = mkdtempSync(path.join(tmpdir(), "not-a-workspace-"));
+  const unbound = mkdtempSync(path.join(tmpdir(), "redteam-run-"));
+  made.push(other, unbound);
+  for (const folder of [other, unbound]) {
+    writeFileSync(path.join(folder, "keep.txt"), "not the run's file");
+    const a = await finished();
+    made.push(a.call.args[4]);
+    if (folder === other) writeFileSync(path.join(folder, ".touchstone-run"), a.id);
+    point(a.id, folder);
+    deleteRun(a.id);
+    assert.ok(existsSync(path.join(folder, "keep.txt")), `${path.basename(folder)} is left alone`);
+  }
+  process.env.TOUCHSTONE_KEEP_WORKSPACES = "1";
+  try {
+    const a = await finished();
+    made.push(a.call.args[4]);
+    point(a.id, other);
+    await new Promise((res) => setTimeout(res, 20)); // the record times must differ
+    await finished(); // its end runs the cap, and run A's record is over it
+    assert.ok(existsSync(path.join(other, "keep.txt")), "the cap leaves the folder alone");
+    assert.equal(kept(a.id).ws, undefined, "the record no longer names the path");
+  } finally {
+    delete process.env.TOUCHSTONE_KEEP_WORKSPACES;
+  }
+});
+
+test("safety: a link under the temp folder does not lead a delete outside it", async () => {
+  // The temp folder for this test is dir/tmp, so dir/outside is outside it.
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = path.join(dir, "tmp");
+  const outside = path.join(dir, "outside");
+  mkdirSync(process.env.TMPDIR);
+  mkdirSync(outside);
+  try {
+    const a = await finished();
+    // The victim even carries the run's mark. Only the canonical path refuses it.
+    const victim = path.join(outside, "redteam-run-abc123");
+    mkdirSync(victim);
+    writeFileSync(path.join(victim, "keep.txt"), "outside the temp folder");
+    writeFileSync(path.join(victim, ".touchstone-run"), a.id);
+    symlinkSync(outside, path.join(tmpdir(), "link"));
+    point(a.id, path.join(tmpdir(), "link", "redteam-run-abc123"));
+    deleteRun(a.id);
+    assert.ok(existsSync(path.join(victim, "keep.txt")), "a link parent is not followed");
+
+    // A link is refused even when it leads to a marked directory in the temp folder.
+    const b = await finished();
+    const inside = path.join(tmpdir(), "redteam-run-def456");
+    mkdirSync(inside);
+    writeFileSync(path.join(inside, ".touchstone-run"), b.id);
+    const link = path.join(tmpdir(), "redteam-run-linked");
+    symlinkSync(inside, link);
+    point(b.id, link);
+    scripts.push({ events: [done] });
+    steerRun(b.id, "Where am I?");
+    const r = await settle(b.id, 1);
+    assert.ok(![link, inside].includes(spawns.at(-1).args[4]), "a link is not reused");
+    assert.equal(r.events.filter((e) => e.ev === "workspace").length, 1);
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = before;
+  }
+});
+
+test("safety: a follow-up does not reuse another run's workspace; it gets a new one and says so", async () => {
+  const a = await finished();
+  const b = await finished();
+  made.push(a.call.args[4]);
+  point(a.id, b.call.args[4]);
+  scripts.push({ act: (call) => writeFileSync(path.join(call.args[4], "from-a.txt"), "run A wrote this"), events: [done] });
+  steerRun(a.id, "Carry on.");
+  const r = await settle(a.id, 1);
+  const ws = spawns.at(-1).args[4];
+  assert.notEqual(ws, b.call.args[4]);
+  assert.ok(!existsSync(path.join(b.call.args[4], "from-a.txt")), "run A's agent did not write into run B's workspace");
+  const events = r.events.filter((e) => e.ev === "workspace");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].state, "rebuilt");
+  assert.equal(kept(a.id).ws, ws, "the record names the new workspace");
+});
+
+// ---- Safety: a kept workspace holds no credential ---------------------------------
+
+// Every file under a folder that holds one of the texts.
+function holding(folder, texts) {
+  const hits = [];
+  for (const e of readdirSync(folder, { withFileTypes: true, recursive: true })) {
+    if (!e.isFile()) continue;
+    const file = path.join(e.parentPath, e.name);
+    const body = readFileSync(file, "latin1");
+    if (texts.some((t) => body.includes(t))) hits.push(path.relative(folder, file));
+  }
+  return hits;
+}
+
+test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets it back from the scope library, or is told it is gone", async () => {
+  // Synthetic values. No real credential is used.
+  const TOKEN = "synthetic-reader-token-0001";
+  const ADMIN = "synthetic-admin-token-0002";
+  const live = addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
+  const real = { prepass: PACKS["ai-mcp"].prepass, teardown: PACKS["ai-mcp"].teardown };
+  PACKS["ai-mcp"].prepass = undefined; // no live target to scan
+  PACKS["ai-mcp"].teardown = undefined;
+  // What the agent can read when a worker starts.
+  const read = (call) => {
+    const ws = call.args[4];
+    call.brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
+    call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
+    call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
+  };
+  const restart = async () => {
+    delete globalThis.__touchstoneRuns; // a new server process: no copy in memory
+    return import(`../../app/server/runs.mjs?restart-${Date.now()}`);
+  };
+  try {
+    scripts.push({
+      act: (call) => {
+        read(call);
+        writeFileSync(call.args[3], "");
+        writeFileSync(path.join(call.args[4], "notes.md"), `curl -H "Authorization: Bearer ${ADMIN}" works`);
+      },
+      events: [done],
+    });
+    const { id } = await createRun({ targetId: live.id, pack: "ai-mcp", mode: "solo" });
+    await settle(id);
+    const first = spawns.at(-1);
+    const ws = first.args[4];
+    assert.ok(first.brief.includes(TOKEN), "the run itself has the token");
+    assert.deepEqual(Object.keys(first.mcp.tokens), [TOKEN, ADMIN]);
+
+    // After the run: no kept file holds a credential.
+    assert.ok(existsSync(path.join(ws, "notes.md")), "the workspace is kept");
+    assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "no file in the kept workspace");
+    assert.ok(![TOKEN, ADMIN].some((t) => readFileSync(record(id), "utf8").includes(t)), "not the record");
+    assert.deepEqual(kept(id).target.mcp, { toolScope: { echo: "read" } }, "the record keeps what the token may do, not the token");
+    assert.deepEqual(holding(RESULTS, [TOKEN, ADMIN]), [], "no file of the run in the results folder");
+
+    // The scope is in the library: the follow-up gets the credential again.
+    let server = await restart();
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(id, "Try the admin token again.");
+    let r = await settle(id, closes(id, server), server);
+    const second = spawns.at(-1);
+    assert.equal(second.args[4], ws);
+    assert.equal(second.brief, first.brief);
+    assert.deepEqual(second.mcp, first.mcp);
+    assert.ok(second.note.includes(ADMIN), "the agent's own note has the token back");
+    assert.ok(!r.events.some((e) => e.ev === "workspace"), "nothing to tell the operator");
+    assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "and it leaves again when the follow-up ends");
+    assert.ok(![TOKEN, ADMIN].some((t) => readFileSync(record(id), "utf8").includes(t)));
+
+    // The scope is gone: the follow-up runs without the credential and says so.
+    removeScope(live.id);
+    server = await restart();
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(id, "And now?");
+    r = await settle(id, closes(id, server), server);
+    const third = spawns.at(-1);
+    assert.equal(third.args[4], ws);
+    assert.ok(![TOKEN, ADMIN].some((t) => third.brief.includes(t) || third.note.includes(t)));
+    assert.deepEqual(third.mcp, { toolScope: { echo: "read" } });
+    const told = r.events.filter((e) => e.ev === "workspace");
+    assert.equal(told.length, 1);
+    assert.equal(told[0].message, "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.");
+    assert.ok(third.env.WORKSPACE_NOTE.includes(told[0].message), "the agent is told the same");
+    assert.ok(!r.events.some((e) => e.ev === "reply-error"));
+
+    // The same when the workspace is gone too: one event, both facts.
+    rmSync(ws, { recursive: true, force: true });
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(id, "And without the files?");
+    r = await settle(id, closes(id, server), server);
+    const fourth = spawns.at(-1);
+    made.push(fourth.args[4]);
+    assert.ok(!fourth.brief.includes("Bearer token"));
+    assert.equal(fourth.mcp.token, undefined);
+    const again = r.events.filter((e) => e.ev === "workspace");
+    assert.equal(again.length, 2);
+    assert.equal(again[1].state, "rebuilt");
+    assert.ok(again[1].message.endsWith(told[0].message));
+  } finally {
+    Object.assign(PACKS["ai-mcp"], real);
+  }
 });
 
 // ---- Messages -------------------------------------------------------------------

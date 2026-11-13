@@ -18,7 +18,7 @@
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
 import { DatabaseSync } from "node:sqlite"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, lstatSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -1008,32 +1008,126 @@ function readWorkspace(id) {
   }
 }
 
-// The workspace is a directory this user owns. The temp folder is shared: a
-// path someone else made there is not the run's workspace.
-function workspaceAlive(ws) {
+function writeWorkspace(id, rec) {
+  const file = workspaceFile(id)
+  writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o600 })
+  renameSync(`${file}.tmp`, file)
+}
+
+// The names a run workspace can have (spike/lib/sandbox.mjs, the generated lab).
+const WS_NAME = /^(redteam-run|touchstone-supply)-[A-Za-z0-9]{6}$/
+// The server writes the run id into this file when it keeps a workspace. A
+// record alone does not bind a directory to a run: the directory names the run too.
+const WS_MARK = ".touchstone-run"
+
+// The one check before the server keeps, reuses or deletes a workspace. The path
+// can come from a record file, so it proves nothing by itself. The directory
+// must be a real directory of this user, directly inside the temp folder, with a
+// workspace name. With an id it must also carry that run's mark. Returns the
+// canonical path, or null.
+function checkedWorkspace(ws, id) {
   try {
-    const st = statSync(ws)
-    return st.isDirectory() && st.uid === (process.getuid?.() ?? st.uid)
+    if (typeof ws !== "string" || !ws) return null
+    const st = lstatSync(ws) // lstat: a symlink is refused, not followed
+    if (!st.isDirectory() || st.uid !== (process.getuid?.() ?? st.uid)) return null
+    const real = realpathSync(ws)
+    if (path.dirname(real) !== realpathSync(tmpdir()) || !WS_NAME.test(path.basename(real))) return null
+    if (id === undefined) return real
+    const mark = path.join(real, WS_MARK)
+    return lstatSync(mark).isFile() && readFileSync(mark, "utf8") === id ? real : null
   } catch {
-    return false
+    return null
   }
 }
 
-// Delete a kept workspace. The path comes from a record file, so delete only a
-// run directory inside the temp folder, never some other path.
-function removeKept(ws) {
-  if (ws && workspaceAlive(ws) && path.resolve(ws).startsWith(path.resolve(tmpdir()) + path.sep)) rmSync(ws, { recursive: true, force: true })
+// Delete the kept workspace of a run. A path that fails the check is left alone.
+function removeKept(id) {
+  const ws = checkedWorkspace(readWorkspace(id)?.ws, id)
+  if (ws) rmSync(ws, { recursive: true, force: true })
 }
 
-// Keep the workspace of a run that has an agent session: only that run can take
-// a follow-up. Returns false when there is nothing to keep.
-function keepWorkspace(run, ws) {
-  if (!run?.id || !workspaceAlive(ws) || !existsSync(path.join(RESULTS_DIR, `run-${run.id}.sqlite`))) return false
+// Take the path out of a run's record. The scope snapshot stays, so a follow-up
+// still builds a new workspace from the run's own scope.
+function unbindWorkspace(id) {
+  const rec = readWorkspace(id)
+  if (!rec?.ws) return
+  delete rec.ws
   try {
-    const target = run.target ?? (run.saved ? run.saved.target : null) ?? readWorkspace(run.id)?.target ?? null
-    const file = workspaceFile(run.id)
-    writeFileSync(`${file}.tmp`, JSON.stringify({ ws, target, modules: run.modules ?? [] }), { mode: 0o600 })
-    renameSync(`${file}.tmp`, file)
+    writeWorkspace(id, rec)
+  } catch {
+    rmSync(workspaceFile(id), { force: true })
+  }
+}
+
+// ---- The credential of a live AI/MCP scope. The scope library holds it
+// (spike/data/scopes.json, fields mcp.token and mcp.tokens). A run's workspace
+// gets a copy in BRIEF.md and .touchstone.json. A kept workspace must not hold
+// one, so the copies leave when the run ends and come back for a follow-up.
+const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {})])].filter((s) => typeof s === "string" && s)
+function withoutSecrets(target) {
+  if (!target?.mcp) return target
+  const mcp = { ...target.mcp }
+  delete mcp.token
+  delete mcp.tokens
+  return { ...target, mcp }
+}
+const placeholder = (i) => `[touchstone: credential ${i + 1} removed when the run ended]`
+const bytes = (s) => Buffer.from(s, "utf8").toString("latin1") // files are read as bytes
+
+// Swap exact texts in every file of a workspace. Links are not followed.
+// shortcut: only an exact copy is found, not an encoded or split one, and a file
+// is read whole. Scan the encoded forms too if agents start to store them.
+function swapInFiles(dir, pairs) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, e.name)
+    if (e.isDirectory()) swapInFiles(file, pairs)
+    else if (e.isFile()) {
+      const before = readFileSync(file, "latin1")
+      const text = pairs.reduce((t, [from, to]) => t.split(from).join(to), before)
+      if (text !== before) writeFileSync(file, text, "latin1")
+    }
+  }
+}
+
+// Change the `mcp` part of the workspace config, which the AI/MCP tools read.
+function editMcp(ws, change) {
+  const file = path.join(ws, ".touchstone.json")
+  if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) return
+  const cfg = JSON.parse(readFileSync(file, "utf8"))
+  if (!cfg.mcp || typeof cfg.mcp !== "object") return
+  change(cfg.mcp)
+  writeFileSync(file, JSON.stringify(cfg, null, 2))
+}
+
+function scrubSecrets(ws, secrets) {
+  editMcp(ws, (mcp) => {
+    delete mcp.token
+    delete mcp.tokens
+  })
+  swapInFiles(ws, secrets.map((s, i) => [bytes(s), placeholder(i)]).sort((a, b) => b[0].length - a[0].length))
+}
+
+function restoreSecrets(ws, target) {
+  swapInFiles(ws, secretsOf(target).map((s, i) => [placeholder(i), bytes(s)]))
+  editMcp(ws, (mcp) => Object.assign(mcp, credentialOf(target)))
+}
+const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
+
+// Keep the workspace of a run that has an agent session: only that run can take
+// a follow-up. Returns false when there is nothing to keep, or when the
+// credential could not be taken out: the workspace is then deleted as before.
+function keepWorkspace(run, ws) {
+  const real = run?.id && existsSync(path.join(RESULTS_DIR, `run-${run.id}.sqlite`)) ? checkedWorkspace(ws) : null
+  if (!real) return false
+  try {
+    const old = readWorkspace(run.id)
+    const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
+    const secrets = secretsOf(target)
+    if (secrets.length) scrubSecrets(real, secrets)
+    const mark = path.join(real, WS_MARK)
+    rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
+    writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
+    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1050,13 +1144,14 @@ function pruneWorkspaces() {
   try {
     const kept = readdirSync(RESULTS_DIR)
       .map((f) => /^run-(.+)\.workspace\.json$/.exec(f))
-      .filter(Boolean)
+      .filter((m) => m && readWorkspace(m[1])?.ws)
       .map((m) => ({ id: m[1], at: statSync(path.join(RESULTS_DIR, m[0])).mtimeMs }))
       .sort((a, b) => b.at - a.at)
     for (const { id } of kept.slice(keep)) {
       const run = runs.get(id)
       if (run && !idle(run)) continue
-      removeKept(readWorkspace(id)?.ws)
+      removeKept(id)
+      unbindWorkspace(id)
     }
   } catch {
     // Best effort: a failed prune must not fail the run that just ended.
@@ -1170,9 +1265,24 @@ export function followUp(run, text, clientId) {
   // snapshot; its scope may allow several modules now, so it comes back under
   // the module this run used.
   const kept = readWorkspace(run.id)
-  const ws = kept?.ws && workspaceAlive(kept.ws) ? kept.ws : null
-  const library = run.target || kept?.target ? null : run.scope?.id ? getTarget(run.scope.id) : null
-  const target = run.target ?? kept?.target ?? (library ? withPack(library, run.scope.pack ?? library.pack) : null)
+  // The record's path is used only when the directory passes the check and
+  // carries this run's mark. Otherwise the path leaves the record.
+  const ws = checkedWorkspace(kept?.ws, run.id)
+  if (kept?.ws && !ws) unbindWorkspace(run.id)
+  const fromLibrary = () => {
+    const library = run.scope?.id ? getTarget(run.scope.id) : null
+    return library ? withPack(library, run.scope.pack ?? library.pack) : null
+  }
+  let target = run.target ?? kept?.target ?? fromLibrary()
+  // The credential is not kept with the workspace. It comes back from the scope
+  // library, where it already is. Only the credential: the rest stays the run's
+  // own snapshot. A scope that is gone from the library gives none.
+  let noCredential = ""
+  if (target && kept?.credential && !secretsOf(target).length) {
+    const found = credentialOf(fromLibrary())
+    if (secretsOf({ mcp: found }).length) target = { ...target, mcp: { ...target.mcp, ...found } }
+    else noCredential = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
+  }
   if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
   if (target) run.target = target
   if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")
@@ -1251,6 +1361,18 @@ export function followUp(run, text, clientId) {
 
   if (ws) {
     run.ws = ws
+    if (noCredential) {
+      broadcast(run, { t: Date.now(), ev: "workspace", state: "kept", message: noCredential })
+      start(`Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there. ${noCredential} A placeholder text stands where a file held it.`)
+      return { ok: true, followUp: true }
+    }
+    try {
+      if (kept?.credential) restoreSecrets(ws, target)
+    } catch (err) {
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: `The access token could not be put back into the workspace: ${String(err?.message ?? err)} Send the message again to retry.` })
+      end()
+      return { ok: true, followUp: true }
+    }
     start(null)
     return { ok: true, followUp: true }
   }
@@ -1266,6 +1388,7 @@ export function followUp(run, text, clientId) {
         "Files the agent wrote before are not in it.",
         lost.length ? `These fetched sources are not in it: ${[...new Set(lost)].join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
         target.generated ? "The lab was generated again with new throwaway keys, so it is not the same repository as before." : "",
+        noCredential,
       ].filter(Boolean).join(" ")
       broadcast(run, { t: Date.now(), ev: "workspace", state: "rebuilt", message })
       start(`Operator follow-up. ${message} Write or fetch again what you need.`)
@@ -1353,7 +1476,7 @@ export function deleteRun(id) {
   if (!run) throw new Error("no such run")
   if (!idle(run)) throw new Error("the agent is still working; delete it once it stops")
   // The kept workspace goes with the run. Its record moves to the trash below.
-  removeKept(readWorkspace(id)?.ws)
+  removeKept(id)
   const trash = path.join(RESULTS_DIR, "trash")
   mkdirSync(trash, { recursive: true })
   const prefix = `run-${id}.`
