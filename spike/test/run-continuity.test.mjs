@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { DatabaseSync } from "node:sqlite";
 import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as realFs from "node:fs";
 import { tmpdir } from "node:os";
@@ -1115,6 +1116,142 @@ test("safety: a workspace whose record says it holds a credential that nobody kn
   steerRun(a.id, "Go on.");
   await settle(a.id, 1);
   assert.ok(!existsSync(a.call.args[4]));
+});
+
+// ---- K4: orphan workspaces ---------------------------------------------------------
+
+const markOf = (ws) => readFileSync(path.join(ws, ".touchstone-run"), "utf8");
+// A temp folder with a workspace name, one file, and the mark text given.
+function folder(mark) {
+  const ws = mkdtempSync(path.join(tmpdir(), "redteam-run-"));
+  made.push(ws);
+  writeFileSync(path.join(ws, "keep.txt"), "a file");
+  if (mark) writeFileSync(path.join(ws, ".touchstone-run"), mark);
+  return ws;
+}
+// Boot a new server and collect what it logs about the temp folder.
+async function boot() {
+  const lines = [];
+  const warn = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try {
+    return { server: await restart(), swept: lines.filter((l) => l.includes("temp folders with a workspace name")) };
+  } finally {
+    console.warn = warn;
+  }
+}
+
+test("the boot removes a temp folder that carries this server's mark and that no run record names; every other folder is left alone", async () => {
+  const a = await finished();
+  const c = await finished();
+  const wsA = a.call.args[4];
+  const ghost = markOf(wsA).replace(a.id, "ghost-2611130900-1");
+  assert.notEqual(ghost, markOf(wsA));
+  // Orphans: the mark names a run that no record names, or a run whose record points elsewhere.
+  const gone = { "no record names the run": folder(ghost), "the run's record points elsewhere": folder(markOf(wsA)) };
+  // Not ours to touch.
+  const outside = path.join(dir, "outside-sweep", "redteam-run-abc124");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, ".touchstone-run"), ghost);
+  const link = path.join(tmpdir(), "redteam-run-lnk0k4");
+  symlinkSync(outside, link);
+  made.push(link);
+  const linkedMark = folder();
+  writeFileSync(path.join(dir, "a-mark"), ghost);
+  symlinkSync(path.join(dir, "a-mark"), path.join(linkedMark, ".touchstone-run"));
+  const stays = {
+    "no mark": folder(),
+    "a mark of the older form": folder("ghost-2611130900-1"),
+    "a mark of another results folder": folder(`ghost-2611130900-1\n${"0".repeat(32)}`),
+    "a mark that is a link": linkedMark,
+    "a link to a marked folder outside the temp folder": outside,
+    "the kept workspace of a run": wsA,
+  };
+  // Another live server answers run C right now, so a folder with C's mark waits.
+  const busy = folder(markOf(c.call.args[4]));
+  const otherServer = new DatabaseSync(path.join(RESULTS, `run-${c.id}.owner.sqlite`));
+  otherServer.exec("BEGIN IMMEDIATE");
+  try {
+    // A folder of another user is never touched. Here every folder looks like one.
+    const getuid = process.getuid;
+    process.getuid = () => getuid() + 1;
+    try {
+      await boot();
+    } finally {
+      process.getuid = getuid;
+    }
+    for (const [why, ws] of Object.entries(gone)) assert.ok(existsSync(path.join(ws, "keep.txt")), `another user's folder stays (${why})`);
+
+    const { swept } = await boot();
+    for (const [why, ws] of Object.entries(gone)) assert.ok(!existsSync(ws), `removed: ${why}`);
+    for (const [why, ws] of Object.entries(stays)) assert.ok(existsSync(ws), `left alone: ${why}`);
+    assert.ok(existsSync(path.join(wsA, "notes.md")) && existsSync(link));
+    assert.ok(existsSync(path.join(busy, "keep.txt")), "a run that another server answers keeps the folder for now");
+    // One log line with the counts.
+    assert.equal(swept.length, 1);
+    const [, removed, unmarked, foreign] = /: (\d+) with this server's mark and no run record were removed; (\d+) with no mark and (\d+) with another mark were left alone\.$/.exec(swept[0]).map(Number);
+    assert.ok(removed >= 2 && unmarked >= 2 && foreign >= 2, swept[0]);
+  } finally {
+    otherServer.close();
+  }
+  // A reload of the module in the same process does not sweep again.
+  const late = folder(ghost);
+  await import(`../../app/server/runs.mjs?reload-${Date.now()}`);
+  assert.ok(existsSync(late), "one sweep per server process");
+  // The next boot: the other server is gone, so its folder goes too. The kept workspaces stay.
+  await boot();
+  assert.ok(!existsSync(busy) && !existsSync(late));
+  assert.ok(existsSync(c.call.args[4]) && existsSync(wsA));
+});
+
+test("a workspace that a follow-up built belongs to the run at once: after a server stop the next boot scrubs it, or deletes it when the scope is gone, and a later follow-up reuses it", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    // A follow-up whose workspace is gone gets a new one. Its worker never exits, and the server stops.
+    const rebuilt = async (run) => {
+      rmSync(run.ws, { recursive: true, force: true });
+      scripts.push({ hang: true });
+      const before = spawns.length;
+      server.steerRun(run.id, "Go on.");
+      for (let i = 0; i < 300 && spawns.length === before; i++) await new Promise((res) => setTimeout(res, 10));
+      const ws = spawns.at(-1).args[4];
+      made.push(ws);
+      assert.notEqual(ws, run.ws);
+      assert.equal(kept(run.id).ws, ws, "the record names the new workspace before the worker ends");
+      assert.equal(markOf(ws).split("\n")[0], run.id, "and the folder carries the run's mark");
+      return { ...run, ws, lock: lockOf(run.id) };
+    };
+    const a = await rebuilt(await liveEnded(server));
+    const b = await rebuilt(await liveEnded(server));
+    scripts.push({ act: work, events: [fetched, done] });
+    const plain = await server.createRun({ targetId: scope.id, pack: "review", mode: "solo" });
+    await settle(plain.id, 0, server);
+    const p = await rebuilt({ id: plain.id, ws: spawns.at(-1).args[4] });
+    for (const run of [a, b]) {
+      assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]), [".touchstone.json"], "the new workspace has the credential");
+      assert.equal(kept(run.id).restored, true, "and the record says so");
+    }
+    assert.equal(kept(p.id).restored, undefined, "a scope without a credential needs no such mark");
+    removeScope(b.live.id);
+    for (const run of [a, b, p]) run.lock.close(); // the old server is dead
+    server = await restart();
+
+    // Run A: the scope has the credential, so the boot takes every copy out. The workspace stays.
+    assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), []);
+    assert.equal(kept(a.id).restored, undefined);
+    // Run B: nobody knows the credential now, so the workspace is deleted.
+    assert.ok(!existsSync(b.ws));
+    // A later follow-up works in the same workspace: no second rebuild.
+    for (const run of [a, p]) {
+      const events = server.getRun(run.id).events.filter((e) => e.ev === "workspace").length;
+      scripts.push({ events: [done] });
+      server.steerRun(run.id, "Go on.");
+      const r = await settle(run.id, closes(run.id, server), server);
+      assert.equal(spawns.at(-1).args[4], run.ws);
+      assert.equal(r.events.filter((e) => e.ev === "workspace").length, events, "no new workspace event");
+    }
+    assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), []);
+  });
 });
 
 // ---- Messages -------------------------------------------------------------------

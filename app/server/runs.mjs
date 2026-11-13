@@ -22,6 +22,7 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdir
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { createHash } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
@@ -1078,7 +1079,32 @@ function writeWorkspace(id, rec) {
 const WS_NAME = /^(redteam-run|touchstone-supply)-[A-Za-z0-9]{6}$/
 // The server writes the run id into this file when it keeps a workspace. A
 // record alone does not bind a directory to a run: the directory names the run too.
+// A second line names the results folder of the server that wrote the mark (a
+// hash, so the agent does not learn the path). The temp folder is shared with
+// other servers and with tests, and the boot sweep must know its own folders.
 const WS_MARK = ".touchstone-run"
+function resultsHome() {
+  let dir = path.resolve(RESULTS_DIR)
+  try {
+    dir = realpathSync(dir)
+  } catch {
+    // not made yet
+  }
+  return createHash("sha256").update(dir).digest("hex").slice(0, 32)
+}
+const markText = (id) => `${id}\n${resultsHome()}`
+// The mark of a folder: { id, home }, or null when it has no real mark file.
+// `home` is undefined for a mark from before the second line.
+function readMark(dir) {
+  try {
+    const file = path.join(dir, WS_MARK)
+    if (!lstatSync(file).isFile()) return null // a link is not a mark
+    const [id, home] = readFileSync(file, "utf8").split("\n")
+    return id ? { id, home } : null
+  } catch {
+    return null
+  }
+}
 // Where a joined run keeps one sub-workspace per module (spike/packs/multi.mjs).
 const MODULES_DIR = MULTI_DIR
 
@@ -1095,23 +1121,25 @@ function checkedWorkspace(ws, id) {
     const real = realpathSync(ws)
     if (path.dirname(real) !== realpathSync(tmpdir()) || !WS_NAME.test(path.basename(real))) return null
     if (id === undefined) return real
-    const mark = path.join(real, WS_MARK)
-    return lstatSync(mark).isFile() && readFileSync(mark, "utf8") === id ? real : null
+    return readMark(real)?.id === id ? real : null
   } catch {
     return null
   }
 }
 
 // Delete the kept workspace of a run. A path that fails the check is left alone.
-function removeKept(id) {
-  const ws = checkedWorkspace(readWorkspace(id)?.ws, id)
+const removeKept = (id) => removeChecked(readWorkspace(id)?.ws, id)
+
+// The checked delete: only a folder that passes the check and carries the mark of `id`.
+function removeChecked(dir, id) {
+  const ws = checkedWorkspace(dir, id)
   if (!ws) return
   try {
     rmSync(ws, { recursive: true, force: true })
   } catch (err) {
     // A part stayed. Put the mark back, so a later delete still passes the check.
     try {
-      writeFileSync(path.join(ws, WS_MARK), id, { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
+      writeFileSync(path.join(ws, WS_MARK), markText(id), { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
     } catch {
       // the mark is still there, or the folder itself is gone or closed
     }
@@ -1295,6 +1323,75 @@ function cleanRestored(run) {
   }
 }
 
+// The record of a run's workspace: the path, the run's scope snapshot without
+// the credential, and whether the scope has a credential at all.
+const workspaceRecord = (run, real, target, old, secrets) => ({ ws: real, target: withoutSecrets(target), ...(run.packs ? { packs: run.packs } : {}), modules: run.modules ?? old?.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+
+// A workspace that a follow-up just built belongs to the run from that moment:
+// the record names it, then the folder carries the run's mark. The record comes
+// first, so a marked folder is never without one. If the server stops before
+// the follow-up ends, the next boot finds the folder through the record and
+// takes the credential out (cleanRestored). Best effort: on a failure the
+// follow-up goes on as before, and its ending keeps or deletes the workspace.
+function bindWorkspace(run, ws, target, old) {
+  try {
+    const real = checkedWorkspace(ws)
+    if (!real) return
+    const secrets = secretsOf(credentialTarget(target, run.packs))
+    writeWorkspace(run.id, { ...workspaceRecord(run, real, target, old, secrets), ...(secrets.length ? { restored: true } : {}) })
+    writeFileSync(path.join(real, WS_MARK), markText(run.id), { flag: "wx", mode: 0o600 })
+  } catch {
+    // see above
+  }
+}
+
+// ---- Orphan workspaces. A folder in the temp folder that carries this
+// server's mark, but that the run's record does not name, belongs to nobody: its
+// run was deleted, or the record points to another folder. A follow-up never
+// finds it again, and it can hold what the agent wrote. The boot removes it,
+// through the checked delete. A folder without a mark is never touched: it may
+// be a live run's, another server's or a test's. Neither is a folder whose
+// mark another results folder wrote, nor one with a mark of the older form.
+// Those are only counted, in one log line.
+function sweepOrphans() {
+  const seen = { unmarked: 0, foreign: 0, removed: 0 }
+  try {
+    const tmp = realpathSync(tmpdir())
+    const home = resultsHome()
+    for (const name of readdirSync(tmp)) {
+      if (!WS_NAME.test(name)) continue
+      const dir = checkedWorkspace(path.join(tmp, name))
+      if (!dir) continue // a link, or a folder of another user
+      const mark = readMark(dir)
+      if (!mark) seen.unmarked += 1
+      else if (mark.home !== home) seen.foreign += 1
+      else if (removeOrphan(dir, mark.id)) seen.removed += 1
+    }
+  } catch {
+    // Best effort: the boot goes on.
+  }
+  if (seen.unmarked || seen.foreign || seen.removed) {
+    console.warn(`[runs] temp folders with a workspace name: ${seen.removed} with this server's mark and no run record were removed; ${seen.unmarked} with no mark and ${seen.foreign} with another mark were left alone.`)
+  }
+}
+
+function removeOrphan(dir, id) {
+  const lock = { id }
+  let mine = false
+  try {
+    // A server may work on the run right now: this one (a run it resumes at
+    // boot) or another live one. The run's lock says so.
+    if (existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) && !(mine = own(lock))) return false
+    if (checkedWorkspace(readWorkspace(id)?.ws, id) === dir) return false // the run's own kept workspace
+    removeChecked(dir, id)
+    return !existsSync(dir)
+  } catch {
+    return false // a part stayed: the mark is back, so the next boot tries again
+  } finally {
+    if (mine) release(lock)
+  }
+}
+
 // Keep the workspace of a run that has an agent session: only that run can take
 // a follow-up. Returns false when there is nothing to keep, or when the
 // credential could not be taken out: the workspace is then deleted as before.
@@ -1310,8 +1407,8 @@ function keepWorkspace(run, ws) {
     if (secrets.length) scrubSecrets(real, secrets)
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
-    writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
-    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), ...(run.packs ? { packs: run.packs } : {}), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+    writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
+    writeWorkspace(run.id, workspaceRecord(run, real, target, old, secrets))
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1606,6 +1703,7 @@ export function followUp(run, text, clientId) {
   buildWorkspace(run, target, kept).then(
     (made) => {
       run.ws = made
+      bindWorkspace(run, made, target, kept)
       const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
       const message = [
         "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
@@ -2237,6 +2335,9 @@ function loadSavedRuns() {
   }
   for (const id of ids) loadSavedRun(id)
   for (const id of ids) cleanRestored(runs.get(id))
+  // Once per server process, not at each reload of this module.
+  if (!registry.swept) sweepOrphans()
+  registry.swept = true
 }
 
 // Another process owned these runs at load. Follow their saved streams, and
