@@ -255,7 +255,10 @@ export function deleteScope(id) {
 // Run registry. Live runs keep their subscribers here. Every event a run
 // broadcasts is also appended to `run-<id>.stream.jsonl`, so a server restart
 // loses nothing: at load, saved runs come back from disk (loadSavedRuns below).
-const runs = new Map()
+// Vite can re-evaluate this module inside the same process. Keep live runs,
+// their workers and their locks in one process-wide registry so the new copy adopts them.
+const registry = (globalThis.__touchstoneRuns ??= { runs: new Map(), retry: null })
+const runs = registry.runs
 let seq = 0
 const TERMINAL = ["recorded", "denied", "error", "no-finding"]
 
@@ -1457,71 +1460,95 @@ function loadSavedRuns() {
   const ids = new Set()
   for (const f of readdirSync(RESULTS_DIR)) {
     const m = APP_RUN.exec(f)
-    if (m) ids.add(m[1])
+    if (m && !runs.has(m[1])) ids.add(m[1])
   }
-  for (const id of ids) {
-    try {
-      const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
-      const recordFile = path.join(RESULTS_DIR, `run-${id}.json`)
-      let events
-      let mtime
-      if (existsSync(streamFile)) {
-        events = readJsonl(streamFile)
-        mtime = statSync(streamFile).mtimeMs
-      } else if (existsSync(recordFile)) {
-        const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
-        const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
-        events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
-        mtime = statSync(recordFile).mtimeMs
-      } else if (existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
-        events = []
-        mtime = statSync(path.join(RESULTS_DIR, `run-${id}.state.json`)).mtimeMs
-      } else continue
-      if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) continue
-      const run = savedRun(id, events, mtime)
-      // A second server must not finalize a fleet run that its first server
-      // still owns, even though fleet recovery itself is not supported.
-      if (run.interrupted && run.status === "error" && !own(run)) continue
-      runs.set(id, run)
-      if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
-        ensureFiles(run)
-        if (own(run)) {
-          try {
-            run.ws = JSON.parse(readFileSync(run.stateFile, "utf8")).ws
-            endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
-          } catch (err) {
-            release(run)
-            throw err
-          }
-        }
-      }
-      // The server stopped during this run, so no record was written. Write
-      // one now from the stream: the run is an error, with its reason.
-      if (run.interrupted && run.status === "error") {
-        if (!existsSync(recordFile)) finalize(run)
-        release(run)
-      }
-      if (run.interrupted && run.status !== "error") {
-        ensureFiles(run)
-        if (own(run)) {
-          const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
-          if (stopped) {
-            const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
-            run.ws = state.ws
-            endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
-          } else resumeRun(run).catch(async (err) => {
-            run.error = `Recovery could not continue: ${String(err?.message ?? err)}`
-            await endWorkspace(run).catch(() => {})
-            setRunStatus(run, "error")
-            finalize(run)
-            broadcast(run, { ev: "closed" })
-          })
-        }
-      }
-    } catch (err) {
-      console.warn(`[runs] skipped saved run ${id}: ${String(err?.message ?? err).slice(0, 200)}`)
+  for (const id of ids) loadSavedRun(id)
+}
+
+// Another process owned these runs at load. Follow their saved streams, and
+// take a run over once its owner exits.
+function adoptOrphans() {
+  for (const [id, old] of runs) {
+    if (old.owner || !old.interrupted || TERMINAL.includes(old.status)) continue
+    runs.delete(id)
+    loadSavedRun(id)
+    const run = runs.get(id)
+    if (!run) {
+      runs.set(id, old)
+      continue
+    }
+    for (const send of old.subscribers) {
+      for (const e of run.events.slice(old.events.length)) send(e)
+      if (!idle(run)) run.subscribers.add(send)
     }
   }
 }
 
+function loadSavedRun(id) {
+  try {
+    const streamFile = path.join(RESULTS_DIR, `run-${id}.stream.jsonl`)
+    const recordFile = path.join(RESULTS_DIR, `run-${id}.json`)
+    let events
+    let mtime
+    if (existsSync(streamFile)) {
+      events = readJsonl(streamFile)
+      mtime = statSync(streamFile).mtimeMs
+    } else if (existsSync(recordFile)) {
+      const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
+      const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
+      events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
+      mtime = statSync(recordFile).mtimeMs
+    } else if (existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
+      events = []
+      mtime = statSync(path.join(RESULTS_DIR, `run-${id}.state.json`)).mtimeMs
+    } else return
+    if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) return
+    const run = savedRun(id, events, mtime)
+    // A second server must not finalize a fleet run that its first server
+    // still owns, even though fleet recovery itself is not supported.
+    if (run.interrupted && run.status === "error" && !own(run)) return
+    runs.set(id, run)
+    if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
+      ensureFiles(run)
+      if (own(run)) {
+        try {
+          run.ws = JSON.parse(readFileSync(run.stateFile, "utf8")).ws
+          endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
+        } catch (err) {
+          release(run)
+          throw err
+        }
+      }
+    }
+    // The server stopped during this run, so no record was written. Write
+    // one now from the stream: the run is an error, with its reason.
+    if (run.interrupted && run.status === "error") {
+      if (!existsSync(recordFile)) finalize(run)
+      release(run)
+    }
+    if (run.interrupted && run.status !== "error") {
+      ensureFiles(run)
+      if (own(run)) {
+        const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
+        if (stopped) {
+          const state = JSON.parse(readFileSync(run.stateFile, "utf8"))
+          run.ws = state.ws
+          endWorkspace(run).catch(() => {}).finally(() => endStopped(run))
+        } else resumeRun(run).catch(async (err) => {
+          run.error = `Recovery could not continue: ${String(err?.message ?? err)}`
+          await endWorkspace(run).catch(() => {})
+          setRunStatus(run, "error")
+          finalize(run)
+          broadcast(run, { ev: "closed" })
+        })
+      }
+    }
+  } catch (err) {
+    console.warn(`[runs] skipped saved run ${id}: ${String(err?.message ?? err).slice(0, 200)}`)
+  }
+}
+
 loadSavedRuns()
+clearInterval(registry.retry)
+registry.retry = setInterval(adoptOrphans, Number(process.env.TOUCHSTONE_OWNER_RETRY_MS) || 5000)
+registry.retry.unref()

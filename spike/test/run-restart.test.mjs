@@ -14,6 +14,7 @@ const ws = join(dir, "workspace");
 mkdirSync(ws);
 writeFileSync(join(ws, ".touchstone.json"), JSON.stringify({ kind: "lab", pack: "web" }));
 process.env.TOUCHSTONE_RESULTS_DIR = dir;
+process.env.TOUCHSTONE_OWNER_RETRY_MS = "20";
 const id = "restart-test-2611122323-1";
 const target = { id: "lab-web", title: "Web lab", kind: "lab", pack: "web" };
 const prepasses = [];
@@ -161,15 +162,23 @@ test("a crash during report writing replaces the partial temporary report", asyn
   assert.equal(getRun(reportId).events.filter((e) => e.ev === "finding").length, 1);
 });
 
-test("a second server cannot restart a run while its owner is alive", async () => {
+test("a second server cannot restart a run while its owner is alive, then takes it over", async () => {
   const locked = fixture("owned-elsewhere", "prepass");
   const owner = new DatabaseSync(join(dir, `run-${locked}.owner.sqlite`));
   owner.exec("BEGIN IMMEDIATE");
   const fleet = fixture("fleet-owned", "prepass", [{ ev: "mode", t: 7, mode: "fleet" }]);
   const fleetOwner = new DatabaseSync(join(dir, `run-${fleet}.owner.sqlite`));
   fleetOwner.exec("BEGIN IMMEDIATE");
+  // A second process has its own registry; only the lock files are shared.
+  const shared = globalThis.__touchstoneRuns;
+  delete globalThis.__touchstoneRuns;
+  let second;
   try {
-    const second = await import(`../../app/server/runs.mjs?lock-test-${Date.now()}`);
+    second = await import(`../../app/server/runs.mjs?lock-test-${Date.now()}`);
+  } finally {
+    globalThis.__touchstoneRuns = shared;
+  }
+  try {
     assert.equal(second.getRun(locked).status, "running");
     assert.equal(second.getRun(locked).events.filter((e) => e.ev === "phase-restarted").length, 0);
     assert.equal(second.getRun(fleet), null);
@@ -177,12 +186,12 @@ test("a second server cannot restart a run while its owner is alive", async () =
     owner.close();
     fleetOwner.close();
   }
-  const third = await import(`../../app/server/runs.mjs?released-test-${Date.now()}`);
-  for (let i = 0; i < 100 && third.getRun(locked)?.status !== "no-finding"; i++) {
+  // The first owner exits later: the retry timer takes the run over.
+  for (let i = 0; i < 200 && second.getRun(locked)?.status !== "no-finding"; i++) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(third.getRun(locked).status, "no-finding");
-  assert.equal(third.getRun(locked).events.filter((e) => e.ev === "phase-restarted").length, 1);
+  assert.equal(second.getRun(locked).status, "no-finding");
+  assert.equal(second.getRun(locked).events.filter((e) => e.ev === "phase-restarted").length, 1);
 });
 
 test("operator stop and completed status are not restarted", async () => {
