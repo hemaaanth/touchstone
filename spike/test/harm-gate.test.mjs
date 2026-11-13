@@ -852,6 +852,45 @@ contract EthStaticTest is Test {
 `);
 });
 
+// B2: forge keeps prank state in its inspector, not in EVM state, so a revert
+// does not undo it. A prank armed in a frame that reverts still impersonates.
+const REV_PRANK = (poc, arm) => `import "../src/Tokens.sol";
+contract ${poc} is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function arm() external { ${arm}; revert("x"); }
+  function fire() external { tok.transfer(address(0xBEEF), 100); }
+  function test_x() public { vault.tok(); try this.arm() {} catch {} this.fire(); }
+}
+`;
+test("forge: a prank AS the victim armed in a reverted frame is NOT proven (review 2 B2, revprank)", { skip, timeout: 300_000 }, async () => {
+  await forged("RevPrankTest", { "Tokens.sol": TOKENS }, REV_PRANK("RevPrankTest", "vm.prank(address(vault))"));
+});
+
+test("forge: a startPrank AS the victim armed in a reverted frame is NOT proven (review 2 B2, revstart)", { skip, timeout: 300_000 }, async () => {
+  await forged("RevStartTest", { "Tokens.sol": TOKENS }, REV_PRANK("RevStartTest", "vm.startPrank(address(vault))"));
+});
+
+// Guard for the other side of B2: code is journaled EVM state, so an etch in a
+// reverted frame is undone and the gate need not record it. If a forge version
+// ever kept such an etch, the fake drain below would run at the real token's
+// address and this test would catch it.
+test("forge: an etch over the scope token in a reverted frame does not forge a drain", { skip, timeout: 300_000 }, async () => {
+  await forged("RevEtchTest", { "Tokens.sol": TOKENS, "Fake.sol": FAKE_TOK }, `import "../src/Tokens.sol";
+import "../src/Fake.sol";
+contract RevEtchTest is Test {
+  Tok tok; TokVault vault; FakeTok fake;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); fake = new FakeTok(); tok.mint(address(vault), 100); }
+  function arm() external { vm.etch(address(tok), address(fake).code); revert("x"); }
+  function test_x() public {
+    vault.tok();
+    try this.arm() {} catch {}
+    try FakeTok(address(tok)).drain(address(vault), address(0xBEEF)) {} catch {}
+  }
+}
+`);
+});
+
 // A token that emits NO Transfer event — a hostile or sloppy in-scope ERC-20. Its
 // balance storage is identical to TOKENS; only the advisory logs are gone. The
 // ground-truth storage channel must prove a drain of it, and must NOT over-fire on
