@@ -115,6 +115,9 @@ const leadKeptId = fixture("lead-kept", "proof", [
   { ev: "settled", t: 7, summary: { final: { text: "done" } } },
 ], { settled: { status: "done", findings: [], final: { text: "done" } } });
 const finishedId = fixture("already-finished", "agent", [{ ev: "status", t: 6, status: "no-finding" }, { ev: "closed", t: 7 }]);
+// A solo run the restart stopped before it saved any state: no state file.
+const noStateId = "no-state-2611122323-1";
+writeFileSync(join(dir, `run-${noStateId}.stream.jsonl`), [...events.slice(0, 5), { ev: "spend", t: 9, usd: 0.1 }].map((e) => JSON.stringify(e) + "\n").join(""));
 
 const logged = [];
 const consoleError = console.error;
@@ -302,4 +305,34 @@ test("a corrupt state file shows the run as an error and logs once", async () =>
   assert.equal(run.status, "error");
   assert.match(run.error, /saved recovery state is unreadable/);
   assert.equal(existsSync(join(dir, `run-${corruptId}.state.json`)), false);
+});
+
+test("every restart ending is a cut-off, stamped at the run's last event, and the list row says so", async () => {
+  for (const runId of [noStateId, corruptId, fleetRestartId]) {
+    for (let i = 0; i < 100 && !getRun(runId).events.some((e) => e.ev === "closed"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  const ending = (runId) => getRun(runId).events.findLast((e) => e.ev === "status")
+  // A solo run with no state file: a cut-off with the same plain reason, and
+  // no "Run again" (there is no saved session to continue).
+  const solo = getRun(noStateId);
+  assert.equal(solo.status, "error");
+  assert.equal(solo.errorInfo?.kind, "cutoff");
+  assert.equal(solo.errorInfo?.retryable, false);
+  assert.equal(solo.error, "the server restarted during this run, so it stopped");
+  assert.equal(ending(noStateId).errorInfo.kind, "cutoff");
+  // The ending is stamped at the last event (spend, t 9), not at the boot.
+  assert.equal(ending(noStateId).t, 9);
+  // An unreadable state file and a fleet are restart endings too.
+  assert.equal(getRun(corruptId).errorInfo?.kind, "cutoff");
+  assert.equal(getRun(corruptId).errorInfo?.retryable, false);
+  assert.equal(getRun(fleetRestartId).errorInfo?.kind, "cutoff");
+  // The list row carries the kind; a finished run has none. A saved settle
+  // that failed is a real failure, not a cut-off.
+  const row = (runId) => listRuns().find((r) => r.id === runId);
+  assert.equal(row(noStateId).errorKind, "cutoff");
+  assert.equal(row(fleetRestartId).errorKind, "cutoff");
+  assert.equal(row(finishedId).errorKind, null);
+  assert.notEqual(row(settleFailedId).errorKind, "cutoff");
 });

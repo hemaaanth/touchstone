@@ -594,6 +594,9 @@ export interface RunSummary {
   name?: string | null
   // The title of the scope the run attacks, for runs with no name or finding.
   scopeTitle?: string | null
+  // How an error run ended (the server's errorInfo.kind). "cutoff" is a server
+  // restart that cut the run off: it reads Interrupted, not failed.
+  errorKind?: string | null
 }
 
 export type Verdict = "approve" | "deny"

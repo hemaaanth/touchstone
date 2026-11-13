@@ -405,6 +405,9 @@ export function listRuns() {
       name: r.name ?? null,
       scopeTitle: scopeOf(r)?.title ?? null,
       title: r.pending?.title ?? null,
+      // How an error run ended (`errorInfo.kind`), so the list can tell a
+      // restart's cut-off ("cutoff") from a failure.
+      errorKind: r.errorInfo?.kind ?? null,
       // The target this run audits — its stable headline, so the sidebar shows a
       // real name from the first second instead of the model alias.
       target: scopeOf(r)?.title ?? null,
@@ -1827,6 +1830,8 @@ function savedRun(id, events, mtime) {
   let model = null
   let archived = false
   let name = null
+  // How the stream's last error ended, so the run list keeps its kind.
+  let streamInfo = null
   const submitted = []
   for (const e of events) {
     if (e.ev === "archived") archived = Boolean(e.archived)
@@ -1842,6 +1847,7 @@ function savedRun(id, events, mtime) {
       if (e.decision) decision = e.decision
       if (Array.isArray(e.findingIds)) findingIds = e.findingIds
       if (typeof e.error === "string") error = e.error
+      streamInfo = e.status === "error" && e.errorInfo && typeof e.errorInfo === "object" ? e.errorInfo : null
     }
   }
   // A terminal status always lands in the stream file. Without one, the server
@@ -1872,22 +1878,35 @@ function savedRun(id, events, mtime) {
   // The children that were mid-turn end here. loadSavedRun writes these to the file.
   const cut = interrupted || replyCut ? cutOffEvents(events) : []
   events.push(...cut)
+  // A restart ending is stamped at the run's last event, like a cut-off child,
+  // so the run's time is the time it worked, not the time the server came back.
+  const end = events.findLast((e) => typeof e.t === "number")?.t ?? Date.now()
   let errorInfo = null
   // Only a solo run starts its agent again. A fleet goes on by itself only from
   // its proof phase, where every agent has already ended.
   if (interrupted && (!saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
     status = "error"
-    if (saved !== false && mode === "fleet") errorInfo = fleetCutOff(id, events)
-    error = saved === false
-      ? "saved recovery state is unreadable; start a new run"
-      : errorInfo?.message ?? "the server restarted during this run, so it stopped"
-    events.push({ t: Date.now(), ev: "status", status, error, ...(errorInfo ? { errorInfo } : {}) })
+    // Every restart ending is a cut-off (kind "cutoff"), not a failure.
+    const session = saved !== false && existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events) : {
+      kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
+      spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+      title: "This run stopped at the server restart",
+      hint: saved === false
+        ? "The server restarted during this run, and its saved state could not be read, so it cannot go on. Start a new run on the same scope."
+        : session
+          ? "The server restarted during this run. It was not started again, so nothing more was spent. Press Run again to continue in this chat."
+          : "The server restarted before this run started its agent. Start a new run on the same scope.",
+      message: saved === false ? "saved recovery state is unreadable; start a new run" : "the server restarted during this run, so it stopped",
+    }
+    error = errorInfo.message
+    events.push({ t: end, ev: "status", status, error, errorInfo })
   }
   if (replyCut) {
-    events.push({ t: Date.now(), ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
-    events.push({ t: Date.now(), ev: "closed" })
+    events.push({ t: end, ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
+    events.push({ t: end, ev: "closed" })
   }
-  if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: Date.now(), ev: "closed" })
+  if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
   return {
     id,
     alias,
@@ -1907,7 +1926,7 @@ function savedRun(id, events, mtime) {
     findingIds,
     decision,
     error,
-    errorInfo,
+    errorInfo: errorInfo ?? streamInfo,
     interrupted,
     saved,
     cut,

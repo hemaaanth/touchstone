@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { agentLook, buildMessages, runHeadStatus, runInterruption, runModules, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -266,4 +266,13 @@ test("a cut-off fleet that ended as recorded gets one calm run-level note", () =
   // A run with no cut-off agent, or one still running, has no note.
   assert.equal(runInterruption(reduceEvents([{ ev: "status", status: "recorded" }, { ev: "closed" }]), "recorded"), null)
   assert.equal(runInterruption(reduceEvents(fleetEvents([]).slice(0, -1)), "running"), null)
+})
+
+test("the run list row: a restart's cut-off reads Interrupted with a neutral dot; a real failure stays red", () => {
+  assert.deepEqual(runRowStatus({ status: "error", errorKind: "cutoff" }), { word: "Interrupted", tone: "neutral" })
+  assert.deepEqual(runRowStatus({ status: "error", errorKind: "model" }), { word: "Error", tone: "red" })
+  assert.deepEqual(runRowStatus({ status: "error" }), { word: "Error", tone: "red" })
+  assert.deepEqual(runRowStatus({ status: "recorded", errorKind: null }), { word: "Proven", tone: "green" })
+  // The kind only matters for an error: a finished run keeps its own word.
+  assert.deepEqual(runRowStatus({ status: "no-finding", errorKind: "cutoff" }), { word: "No finding", tone: "neutral" })
 })

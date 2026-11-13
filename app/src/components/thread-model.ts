@@ -5,7 +5,7 @@ import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
 import { packOf } from "@/lib/catalog"
 import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
-import { isTerminal } from "@/lib/format"
+import { isTerminal, statusLabel, statusTone, type Tone } from "@/lib/format"
 import { AGENT_WORD, agentName, dotClass } from "@/components/fleet-view"
 import { awaitingReply, turnId, type Sent } from "@/lib/sent"
 
@@ -458,6 +458,13 @@ export async function sendCopy(
 // pack. The line takes a list, so a run that holds several shows them all.
 export function runModules(state: RunState): string[] {
   return state.scope ? [packOf(state.scope)] : []
+}
+
+// A run row's word and dot tone in the run list. A run a restart cut off reads
+// "Interrupted" in neutral ink; every other status keeps its word and tone.
+export function runRowStatus(r: { status: RunStatus; errorKind?: string | null }): { word: string; tone: Tone } {
+  if (r.status === "error" && r.errorKind === "cutoff") return { word: "Interrupted", tone: "neutral" }
+  return { word: statusLabel(r.status), tone: statusTone(r.status) }
 }
 
 // How one agent's state reads in a row, a header or a dot. An agent a server
