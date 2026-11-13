@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 import { INK, severityTone } from "@/lib/format";
 import type { Severity } from "@/lib/types";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { DotMatrix, type DotMatrixState } from "@/components/ui/dot-matrix";
+import type { RunMarkKind } from "@/components/thread-model";
 
 // Small marks that replace a second status word. Each one is an icon with a
 // tooltip and an accessible name, so a row needs at most one text label.
@@ -171,5 +173,51 @@ export function ProofMark({
     <Hint label={word} tip={tip ?? word} className={className}>
       <ProofIcon state={state} />
     </Hint>
+  );
+}
+
+// The run's status as one mark, the assistant-ui dot-matrix element, in one
+// box of one size for every state: the title beside it never moves when a
+// run starts, finishes or fails. A live state moves (the dots sweep); a
+// settled state is a still glyph; reduced motion stills them all. Colour
+// follows docs/restraint.md: working is neutral, green only for a proven
+// finding, red only for a failure.
+const RUN_MARK: Record<RunMarkKind, { state: DotMatrixState; ink: string }> = {
+  starting: { state: "connecting", ink: "text-muted-foreground" },
+  working: { state: "thinking", ink: "text-muted-foreground" },
+  replaying: { state: "loading", ink: "text-muted-foreground" },
+  paused: { state: "paused", ink: "text-muted-foreground" },
+  proven: { state: "success", ink: "text-ok" },
+  done: { state: "idle", ink: "text-muted-foreground" },
+  failed: { state: "error", ink: "text-bad" },
+};
+
+// The box every state shares.
+const RUN_MARK_BOX = "size-3.5";
+
+export function RunStatusMark({
+  kind,
+  label,
+  className,
+  "aria-hidden": hidden,
+}: {
+  kind: RunMarkKind;
+  /** The status word, read by screen readers ("Running", "Proven"). */
+  label: string;
+  className?: string;
+  /** Hide it when the row already says the status in its own text. */
+  "aria-hidden"?: boolean;
+}) {
+  const mark = RUN_MARK[kind];
+  return (
+    <DotMatrix
+      state={mark.state}
+      label={label}
+      role="img"
+      aria-label={hidden ? undefined : label}
+      aria-hidden={hidden || undefined}
+      data-mark={kind}
+      className={cn(RUN_MARK_BOX, mark.ink, className)}
+    />
   );
 }
