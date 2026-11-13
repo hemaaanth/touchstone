@@ -229,7 +229,7 @@ test("one engine down is a gap; the other engine's lead still counts", async () 
 
 // A PATH docker shim stands in for the real client. It sees the real argv and
 // answers per engine with a given stdout and exit code.
-async function withShim({ echidna = ECHIDNA, medusa = MEDUSA, ecode = 1, mcode = 7 }, fn) {
+async function withShim({ echidna = ECHIDNA, medusa = MEDUSA, ecode = 1, mcode = 7, prep = () => {} }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "chimera-shim-"));
   const path = process.env.PATH;
   for (const [e, out, code] of [["echidna", echidna, ecode], ["medusa", medusa, mcode]]) {
@@ -245,6 +245,7 @@ async function withShim({ echidna = ECHIDNA, medusa = MEDUSA, ecode = 1, mcode =
     "",
   ].join("\n"), { mode: 0o755 });
   const ws = makeWorkspace(LAB);
+  prep(ws);
   process.env.PATH = `${dir}:${path}`;
   try {
     const scan = await chimeraScan(ws, { timeoutMs: 20_000 });
@@ -324,6 +325,26 @@ test("a property the engine did not report is a gap, and the run view says some 
     assert.deepEqual(scan.gaps, [{ suite: SUITE, engine: "Echidna", name: "property_shareSupply()", reason: "Echidna reported no result for this property" }]);
     assert.equal(scan.reason, "1 of 12 engine checks unchecked (Echidna reported no result for this property)");
     assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: scan.reason, leads: 1 });
+  });
+});
+
+test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
+  const a = "test/recon/CryticTester.sol";
+  const b = "test/recon/CryticTester2.sol";
+  const prep = (ws) => writeFileSync(join(ws, b), readFileSync(join(ws, a), "utf8"));
+  await withShim({ prep }, (scan, args) => {
+    const reason = `more than one CryticTester (${a}, ${b}); Chimera ran none`;
+    assert.equal(scan.applicable, true);
+    assert.equal(scan.available, false);
+    assert.equal(scan.reason, reason);
+    assert.deepEqual(scan.suites, [a, b]);
+    assert.deepEqual(scan.gaps, [{ suite: a, reason }, { suite: b, reason }]);
+    assert.deepEqual(scan.engines, []);
+    assert.deepEqual(scan.leads, []);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "unavailable", reason, leads: 0 });
+    // The docker shim was never called.
+    assert.throws(() => args("echidna"), /ENOENT/);
+    assert.throws(() => args("medusa"), /ENOENT/);
   });
 });
 
