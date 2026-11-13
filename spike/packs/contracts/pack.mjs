@@ -367,7 +367,7 @@ function tools(ws, state) {
       }
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
-      event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
+      event("finding-submitted", { pack: "contracts", n, title: args.title, severity: args.severity, poc });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });

@@ -115,7 +115,7 @@ function tools(ws, state) {
         file: lead.file, lines: lead.lines, commit: lead.commit, evidence: lead.evidence,
         ...(lead.address ? { address: lead.address } : {}), ...(lead.secret ? { secret: lead.secret } : {}), proof };
       state.found.push(finding);
-      event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
+      event("finding-submitted", { pack: "supply-chain", n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, continue: "Check the next root cause." });
     } }),
   ];

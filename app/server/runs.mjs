@@ -702,7 +702,9 @@ function engineEvents(run) {
     if (e.ev === "finding-submitted") {
       // The agent proved one more bug and keeps going. Track it, and keep the
       // worst one as the run's headline for the sidebar.
-      run.submitted.push({ n: e.n, title: e.title, severity: e.severity, poc: e.poc })
+      // The module the finding came through, so a proof or a rebuild can place
+      // it. The tool stamps it; an older engine leaves it absent.
+      run.submitted.push({ n: e.n, title: e.title, severity: e.severity, poc: e.poc, ...(e.pack ? { pack: e.pack } : {}) })
       run.pending = sortFindings(run.submitted)[0]
       broadcast(run, { ev: "status", status: run.status, pending: run.pending })
     }
@@ -1469,7 +1471,8 @@ export function followUp(run, text, clientId) {
     unbindWorkspace(run.id)
     ws = null
   }
-  const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
+  // The module rides along: a joined run's duplicate checks work per module.
+  const prior = run.submitted.map(({ n, title, severity, poc, pack }) => ({ n, title, severity, poc, ...(pack ? { pack } : {}) }))
   run.settled = null
   run.error = null
   run.errorInfo = null
@@ -1951,7 +1954,7 @@ function savedRun(id, events, mtime) {
     if (e.ev === "packs" && Array.isArray(e.packs) && e.packs.length > 1) packs = e.packs
     if (e.ev === "provider") ({ provider = null, model = null } = e)
     if ((e.ev === "finding-submitted" || e.ev === "approval-pending") && !submitted.some((f) => f.poc === e.poc)) {
-      submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc })
+      submitted.push({ n: e.n ?? submitted.length + 1, title: e.title, severity: e.severity, poc: e.poc, ...(e.pack ? { pack: e.pack } : {}) })
     }
     if (e.ev === "status") {
       status = e.status ?? status

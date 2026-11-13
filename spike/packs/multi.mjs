@@ -71,7 +71,10 @@ function memberState(state, id) {
   const found = new Proxy(state.found, {
     get(list, key) {
       if (key === "push") return push;
-      const own = list.filter((f) => f?.pack === id);
+      // Prior findings from an older record (or a worker that died before the
+      // tool stamped them) have no pack: they are visible to every module, so a
+      // duplicate of one is still refused.
+      const own = list.filter((f) => f?.pack === id || f?.pack == null);
       const v = own[key];
       return typeof v === "function" ? v.bind(own) : v;
     },
@@ -287,8 +290,11 @@ export function multiPack(members) {
         const proven = (await p.prove(memberDir(ws, p.id), mine, events, log)) ?? [];
         for (const f of proven) out.push({ ...f, pack: p.id });
       }
+      // A finding with no module is still a finding: it records unproven, as one
+      // on a one-module run does when its replay cannot run.
       const loose = (found ?? []).filter((f) => !ids.includes(f?.pack));
-      if (loose.length) log(`${loose.length} finding(s) name no module of this run, so no module replays them`);
+      if (loose.length) log(`${loose.length} finding(s) name no module of this run; they are kept unproven`);
+      for (const f of loose) out.push({ ...f, pocProved: false });
       return out.map((f, i) => ({ f, i })).sort((a, b) => rank(a.f.severity) - rank(b.f.severity) || a.i - b.i).map((x) => x.f);
     },
 

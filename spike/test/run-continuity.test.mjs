@@ -746,6 +746,52 @@ for (const [rel, empty] of [["modules", false], ["modules", true], ["modules/ai-
   });
 }
 
+// A worker that submits a finding and then dies: the finding must still record,
+// unproven. A one-module run does that today through `run.submitted`; a joined
+// run used to drop it because the row had no module.
+test("a joined worker that dies after submitting still records the finding, unproven", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+      // No `pack`: an older engine, or a worker that died before the stamp.
+      { t: 1, ev: "finding-submitted", n: 1, title: "IDOR on /api/orders", severity: "high", poc: "replay-1" },
+      { t: 2, ev: "status", status: "running" },
+    ], code: 1 });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    const r = await settle(id);
+    assert.deepEqual(r.submitted.map((f) => f.title), ["IDOR on /api/orders"]);
+    const rec = JSON.parse(readFileSync(path.join(RESULTS, `run-${id}.json`), "utf8")).result;
+    assert.equal(rec.findings.length, 1, "the finding is in the record");
+    assert.equal(rec.findings[0].pack, undefined, "it names no module, and is kept anyway");
+    assert.equal(rec.findings[0].pocProved, false, "and it is not proven without a replay");
+    made.push(spawns.at(-1).args[4]);
+  });
+});
+
+test("a joined follow-up refuses a duplicate of a finding the run already holds", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+      { t: 1, ev: "finding-submitted", pack: "web", n: 1, title: "IDOR on /api/orders", severity: "high", poc: "replay-1" },
+      // An older row: no module. Both must reach the worker named.
+      { t: 2, ev: "finding-submitted", n: 2, title: "Old claim", severity: "low", poc: "replay-2" },
+      done,
+    ] });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    const r = await settle(id);
+    made.push(spawns.at(-1).args[4]);
+    assert.deepEqual(r.submitted.map((f) => f.poc), ["replay-1", "replay-2"]);
+    // The prior list the worker gets names the module, so web's own duplicate
+    // check sees the earlier finding.
+    const server = await restart();
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    server.steerRun(id, "Anything else?");
+    await settle(id, closes(id, server), server);
+    const call = spawns.at(-1);
+    assert.deepEqual(JSON.parse(call.env.PRIOR_FOUND).map((f) => [f.poc, f.pack]), [["replay-1", "web"], ["replay-2", undefined]]);
+  });
+});
+
 test("safety: a joined run rebuilt from nothing is rebuilt joined, with no credential", async () => {
   await withLivePack(async () => {
     const live = livePair(["web", "ai-mcp"]);

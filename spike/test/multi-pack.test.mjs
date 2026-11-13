@@ -239,10 +239,15 @@ test("two modules may record the same label without refusing each other", async 
   assert.deepEqual(state.found.map((f) => f.pack), ["alpha", "beta"]);
   // A module still refuses its OWN duplicate.
   assert.equal((await tools.get("submit_finding_alpha").execute({ title: "again", severity: "low", poc: "replay-1" })).isError, true);
+  // A prior finding carried in without a module (an older record, or a follow-up
+  // whose row has none) is refused by every module too.
+  state.found.push({ n: 9, title: "old claim", severity: "low", poc: "replay-9" });
+  assert.equal((await tools.get("submit_finding_beta").execute({ title: "dup", severity: "low", poc: "replay-9" })).isError, true);
   // And reading the list gives a module only its own rows.
   const proven = await pack.prove(ws, state.found, []);
   assert.deepEqual(seen.proved.map((p) => p.id), ["alpha", "beta"]);
-  assert.deepEqual(proven.map((f) => f.title).sort(), ["alpha", "beta"]);
+  assert.deepEqual(proven.map((f) => f.title).sort(), ["alpha", "beta", "old claim"]);
+  assert.equal(proven.find((f) => f.title === "old claim").pocProved, false, "the old claim stays unproven");
 });
 
 test("the proof state of a module is its own", async () => {
