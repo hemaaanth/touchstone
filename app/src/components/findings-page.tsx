@@ -544,10 +544,11 @@ export const FindingListRow = memo(function FindingListRow({
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={f.proven} />
       </span>
-      {/* The module as one dot, right-aligned in the fixed column. Hover,
-          focus or a tap grows it into a pill with its name. */}
+      {/* The module as one dot, right-aligned in the fixed column. Hover or a
+          tap grows it into a pill with its name. Not a tab stop: the row
+          already says its module (the mark's label). */}
       <span data-col="module" className="flex justify-end">
-        <ModuleDots ids={[moduleOf(f)]} packs={[{ id: moduleOf(f), title: moduleTitle }]} />
+        <ModuleDots ids={[moduleOf(f)]} packs={[{ id: moduleOf(f), title: moduleTitle }]} tabStop={false} />
       </span>
       <RowMenu label={`Actions for ${f.title}`}>
         <RowMenuItem onClick={open}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { animate, motion, useMotionValue, useReducedMotion, useTransform, type MotionValue } from "motion/react"
 import { cn } from "cn"
@@ -6,72 +6,89 @@ import { moduleStyle, orderModules } from "@/lib/module-colors"
 import {
   DOT,
   ITEM_GAP_X,
-  ITEM_GAP_Y,
   LINE_H,
   NAME_GAP,
   OPEN_PAD_X,
-  OPEN_PAD_Y,
   REST_H,
+  openLayout,
   pillLeft,
   pillMaxWidth,
   restDotLeft,
   restWidth,
+  type OpenLayout,
 } from "@/lib/module-dots-layout"
+import { dropOnOwnScroll, mayHoverOpen, noteScroll, swallowTapClick } from "@/lib/module-dots-rules"
 
 // A run's modules as one mark that grows. At rest it is a small stack with a
 // dot for every module, in the module's own colour (src/lib/module-colors.ts)
-// and the server's module order. On hover, keyboard focus or a tap, the same
-// mark grows to the right into a pill that names every module: each dot slides
-// to its place and its name appears beside it. Closing is the same movement
-// backwards. Nothing is drawn twice: while the pill is out, the stack in the
-// row is empty.
+// and the server's module order. While the pointer is on it, while it has
+// keyboard focus, or after a tap, the same mark grows to the right into a pill
+// that names every module: each dot slides to its place and its name unfolds
+// beside it. Closing is the same movement backwards. Nothing is drawn twice:
+// while the pill is out, the stack in the row is empty.
 //
-// The pill keeps the mark's left edge and its vertical centre. It lies over
-// whatever is to the right (in the sidebar, past the rail), so it lives in a
-// portal, outside the list's clip, and the row's layout never changes. It wraps
-// onto more lines when the screen is too narrow, and moves left only when not
-// even a short pill fits (a phone). It closes when the page scrolls.
+// The pill only shows; it takes no pointer events. A wheel over it scrolls the
+// list beneath, and a click on it reaches what lies under it. It keeps the
+// mark's left edge and its vertical centre, and lies over whatever is to the
+// right (in the sidebar, past the rail), so it lives in a portal, outside the
+// list's clip, and the row's layout never changes. It is at most MAX_OPEN_W
+// wide, with balanced lines, and moves left only when not even a short pill
+// fits (a phone). A scroll of the mark's own list drops it.
 //
 // Reduced motion: no movement; the small state is replaced by the large one.
 //
 //   <ModuleDots ids={run.packs} packs={packs} />
-//   <ModuleDots ids={[finding.pack]} packs={packs} />   // one module
+//   <ModuleDots ids={[finding.pack]} packs={packs} tabStop={false} />
 
-// Hover waits a moment, so a pointer that only crosses the mark opens
-// nothing; a short grace lets the pointer move from the mark onto the pill.
+// Hover waits a moment, so a pointer that only crosses the mark opens nothing.
 const OPEN_DELAY = 120
-const CLOSE_DELAY = 80
 // Quick and calm: an ease-out with no overshoot.
 const DURATION = 0.22
 const EASE = [0.32, 0.72, 0, 1] as const
 
 export type Module = { id: string; title: string }
-
-// When the page last scrolled. A scroll drops an open pill, and the browser
-// then sends a fresh pointer-enter to whatever mark is under the resting
-// pointer; a hover that comes right after a scroll opens nothing.
-let lastScroll = -Infinity
-let watching = false
-function watchScroll() {
-  if (watching) return
-  watching = true
-  window.addEventListener("scroll", () => (lastScroll = performance.now()), { capture: true, passive: true })
-}
-const SCROLL_QUIET = 300
 // Where the mark was on the screen when the pill came out.
 type Anchor = { left: number; top: number; vw: number; ring: string }
-// The open pill, measured: its size, and each dot's place inside it.
-export type OpenLayout = { w: number; h: number; dots: { x: number; y: number; nameW: number; cut?: boolean }[] }
+
+// Every scroll in the page, by the element that scrolled; a mark only asks
+// about its own lists (module-dots-rules.ts).
+let watching = false
+function watchScrolls() {
+  if (watching) return
+  watching = true
+  window.addEventListener("scroll", (e) => e.target && noteScroll(e.target, performance.now()), { capture: true, passive: true })
+}
+
+// The mark's own scroll containers: every scrolling ancestor, and the page.
+function scrollParents(el: Element): EventTarget[] {
+  const out: EventTarget[] = []
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const s = getComputedStyle(p)
+    if (/(auto|scroll|overlay)/.test(s.overflowY + s.overflowX)) out.push(p)
+  }
+  out.push(document)
+  return out
+}
+
+// A menu or a modal that the mark is not inside: the pill must not lie over it.
+function underLayer(el: Element) {
+  if (document.querySelector('[role="menu"]')) return true
+  return [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"]')].some((d) => !d.contains(el))
+}
 
 export function ModuleDots({
   ids,
   packs,
+  tabStop = true,
   className,
 }: {
   // Module (pack) ids. Duplicates show once.
   ids: readonly string[]
   // The server's module list: each module's title, and the order of the dots.
   packs?: readonly { id: string; title: string }[]
+  // A keyboard stop of its own. A list whose row already names its module
+  // (the Findings page) leaves it out of the tab order.
+  tabStop?: boolean
   className?: string
 }) {
   const reduce = useReducedMotion() ?? false
@@ -83,77 +100,91 @@ export function ModuleDots({
   // Set while the pill is out: open, or on its way back.
   const [anchor, setAnchor] = useState<Anchor | null>(null)
   const markRef = useRef<HTMLSpanElement>(null)
-  const pillRef = useRef<HTMLDivElement>(null)
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef(false)
-  const over = useRef({ mark: false, pill: false })
-  // Closed by hand (a click, a tap, Escape): hover does not reopen it until
-  // the pointer has left the mark.
+  // Why it is open: the pointer is on the mark, the mark has keyboard focus,
+  // or a tap opened it. It closes when none holds.
+  const why = useRef({ over: false, focus: false, tap: false })
+  // Closed by hand (Escape): hover and focus do not reopen it until the
+  // pointer leaves or focus moves.
   const shut = useRef(false)
-  useEffect(watchScroll, [])
+  const lists = useRef<EventTarget[]>([])
+  useEffect(watchScrolls, [])
 
-  const show = useCallback(() => {
+  const show = () => {
     window.clearTimeout(timer.current)
     const el = markRef.current
-    if (!el) return
-    setAnchor((a) => {
-      if (a) return a
+    if (!el || underLayer(el)) return
+    if (!anchor) {
       const r = el.getBoundingClientRect()
       const ring = getComputedStyle(el).getPropertyValue("--module-dots-ring").trim()
-      return { left: r.left, top: r.top, vw: document.documentElement.clientWidth, ring: ring || "var(--background)" }
-    })
+      lists.current = scrollParents(el)
+      setAnchor({ left: r.left, top: r.top, vw: document.documentElement.clientWidth, ring: ring || "var(--background)" })
+    }
     setOpen(true)
-  }, [setAnchor])
-  const hide = useCallback(() => {
+  }
+  const settle = () => {
+    const w = why.current
+    if (!w.over && !w.focus && !w.tap) {
+      window.clearTimeout(timer.current)
+      setOpen(false)
+    }
+  }
+  const closeAll = () => {
     window.clearTimeout(timer.current)
+    why.current = { over: false, focus: false, tap: false }
     setOpen(false)
-  }, [])
+  }
   // Gone at once, with no movement back: the mark has moved (a scroll).
-  const drop = useCallback(() => {
-    window.clearTimeout(timer.current)
+  const drop = () => {
+    closeAll()
     pending.current = false
-    over.current = { mark: false, pill: false }
-    setOpen(false)
     setAnchor(null)
-  }, [setAnchor])
-  const later = (fn: () => void, ms: number) => {
+  }
+  const hoverLater = () => {
     window.clearTimeout(timer.current)
     pending.current = true
     timer.current = window.setTimeout(() => {
       pending.current = false
-      fn()
-    }, ms)
+      const el = markRef.current
+      const ok = el && mayHoverOpen({ over: why.current.over, shut: shut.current, containers: scrollParents(el), now: performance.now() })
+      if (ok) show()
+    }, OPEN_DELAY)
   }
-  const hoverOpen = () => over.current.mark && !shut.current && performance.now() - lastScroll > SCROLL_QUIET && show()
-  const close = () => {
-    shut.current = true
-    hide()
-  }
-  const leave = () => later(() => !over.current.mark && !over.current.pill && hide(), CLOSE_DELAY)
 
-  // While open: Escape closes, a tap outside closes, a scroll or resize drops it.
+  // While out: Escape closes it; a tap or click elsewhere closes it (and on
+  // touch, that tap does nothing else); a scroll of its own list, a resize,
+  // or a context menu drops it.
+  const live = useRef({ closeAll, drop })
+  useEffect(() => {
+    live.current = { closeAll, drop }
+  })
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
       shut.current = true
-      hide()
+      live.current.closeAll()
     }
     const onDown = (e: PointerEvent) => {
-      const t = e.target as Node
-      if (!markRef.current?.contains(t) && !pillRef.current?.contains(t)) hide()
+      if (markRef.current?.contains(e.target as Node)) return
+      live.current.closeAll()
+      if (e.pointerType !== "mouse") swallowTapClick(window)
     }
+    const onDrop = () => live.current.drop()
+    const stopScroll = dropOnOwnScroll(lists.current, onDrop)
     window.addEventListener("keydown", onKey)
     window.addEventListener("pointerdown", onDown, true)
-    window.addEventListener("scroll", drop, true)
-    window.addEventListener("resize", drop)
+    window.addEventListener("contextmenu", onDrop, true)
+    window.addEventListener("resize", onDrop)
     return () => {
+      stopScroll()
       window.removeEventListener("keydown", onKey)
       window.removeEventListener("pointerdown", onDown, true)
-      window.removeEventListener("scroll", drop, true)
-      window.removeEventListener("resize", drop)
+      window.removeEventListener("contextmenu", onDrop, true)
+      window.removeEventListener("resize", onDrop)
     }
-  }, [open, hide, drop])
+  }, [open])
   useEffect(() => () => window.clearTimeout(timer.current), [])
 
   const width = restWidth(modules.length)
@@ -168,70 +199,60 @@ export function ModuleDots({
         ref={markRef}
         data-slot="module-dots"
         data-open={open || undefined}
-        tabIndex={0}
+        tabIndex={tabStop ? 0 : -1}
         role="img"
         aria-label={`${modules.length === 1 ? "Module" : "Modules"}: ${modules.map((m) => m.title).join(", ")}`}
         onPointerEnter={(e) => {
           if (e.pointerType !== "mouse") return
-          over.current.mark = true
-          if (!open) later(hoverOpen, OPEN_DELAY)
+          why.current.over = true
+          if (!open) hoverLater()
         }}
         // A pointer that rests after a scroll opens it once it moves again.
         onPointerMove={(e) => {
           if (e.pointerType !== "mouse" || open || pending.current) return
-          over.current.mark = true
-          later(hoverOpen, OPEN_DELAY)
+          why.current.over = true
+          hoverLater()
         }}
         onPointerLeave={(e) => {
           if (e.pointerType !== "mouse") return
-          over.current.mark = false
+          why.current.over = false
           shut.current = false
-          leave()
+          settle()
         }}
-        onFocus={(e) => e.currentTarget.matches(":focus-visible") && show()}
-        onBlur={() => !over.current.mark && !over.current.pill && hide()}
-        // A tap opens and closes it; so does a click.
+        onFocus={(e) => {
+          if (!e.currentTarget.matches(":focus-visible") || shut.current) return
+          why.current.focus = true
+          show()
+        }}
+        onBlur={() => {
+          why.current.focus = false
+          shut.current = false
+          settle()
+        }}
         onClick={(e) => {
           e.stopPropagation()
-          if (open) close()
-          else show()
+          // A mouse click only opens: the pointer is on the mark, so hover
+          // holds it. A tap opens it and a second tap closes it.
+          if ((e.nativeEvent as PointerEvent).pointerType === "mouse" || !("pointerType" in e.nativeEvent)) {
+            shut.current = false
+            show()
+            return
+          }
+          if (open) {
+            closeAll()
+          } else {
+            why.current.tap = true
+            show()
+          }
         }}
         className={cn(box, "rounded-full outline-none focus-visible:ring-1 focus-visible:ring-ring")}
         style={{ width, height: REST_H }}
       >
-        {modules.map((m, i) => (
-          <span
-            key={m.id}
-            aria-hidden
-            data-slot="module-dot"
-            data-module={m.id}
-            style={{ ...moduleStyle(m.id), width: DOT, height: DOT, left: restDotLeft(i), opacity: anchor ? 0 : undefined }}
-            className="absolute rounded-full bg-(--module) ring-[1.5px] ring-(--module-dots-ring,var(--background))"
-          />
-        ))}
+        <ModuleDotsStack modules={modules} hidden={anchor !== null} />
       </span>
       {anchor
         ? createPortal(
-            <Pill
-              modules={modules}
-              anchor={anchor}
-              open={open}
-              reduce={reduce}
-              pillRef={pillRef}
-              onClosed={() => {
-                over.current.pill = false
-                setAnchor(null)
-              }}
-              onEnter={() => {
-                over.current.pill = true
-                window.clearTimeout(timer.current)
-              }}
-              onLeave={() => {
-                over.current.pill = false
-                leave()
-              }}
-              onTap={close}
-            />,
+            <Pill modules={modules} anchor={anchor} open={open} reduce={reduce} onClosed={() => setAnchor(null)} />,
             document.body,
           )
         : null}
@@ -239,52 +260,50 @@ export function ModuleDots({
   )
 }
 
+// The mark at rest: a dot for every module, overlapping. Hidden while the pill
+// is out, so no dot is ever drawn in the row and in the pill at once.
+// Exported for its test.
+export function ModuleDotsStack({ modules, hidden }: { modules: readonly Module[]; hidden: boolean }) {
+  return modules.map((m, i) => (
+    <span
+      key={m.id}
+      aria-hidden
+      data-slot="module-dot"
+      data-module={m.id}
+      style={{ ...moduleStyle(m.id), width: DOT, height: DOT, left: restDotLeft(i), opacity: hidden ? 0 : undefined }}
+      className="absolute rounded-full bg-(--module) ring-[1.5px] ring-(--module-dots-ring,var(--background))"
+    />
+  ))
+}
+
 // The mark grown into a pill. `p` runs 0 (the mark at rest, in its exact place)
-// to 1 (open); every part of the pill is drawn from it.
+// to 1 (open); every part of the pill is drawn from it. It takes no pointer
+// events.
 function Pill({
   modules,
   anchor,
   open,
   reduce,
-  pillRef,
   onClosed,
-  onEnter,
-  onLeave,
-  onTap,
 }: {
   modules: Module[]
   anchor: Anchor
   open: boolean
   reduce: boolean
-  pillRef: RefObject<HTMLDivElement | null>
   onClosed: () => void
-  onEnter: () => void
-  onLeave: () => void
-  onTap: () => void
 }) {
   const measureRef = useRef<HTMLDivElement>(null)
   const [layout, setLayout] = useState<OpenLayout | null>(null)
   const p = useMotionValue(0)
-  const maxWidth = pillMaxWidth(anchor.left, anchor.vw)
 
-  // Lay the open pill out once, hidden, before the first paint.
+  // Measure each name once, hidden, before the first paint; the lines are laid
+  // out from those widths (openLayout).
   useLayoutEffect(() => {
     const m = measureRef.current
     if (!m) return
-    const items = [...m.children] as HTMLElement[]
-    const right = Math.max(...items.map((el) => el.offsetLeft + el.getBoundingClientRect().width))
-    setLayout({
-      w: right + OPEN_PAD_X,
-      h: m.offsetHeight,
-      dots: items.map((el) => ({
-        x: el.offsetLeft,
-        y: el.offsetTop + (16 - DOT) / 2,
-        // The exact width: a rounded-down one cuts the name with an ellipsis.
-        nameW: (el.lastElementChild as HTMLElement).getBoundingClientRect().width,
-        cut: (el.lastElementChild as HTMLElement).scrollWidth > (el.lastElementChild as HTMLElement).clientWidth,
-      })),
-    })
-  }, [])
+    const widths = ([...m.children] as HTMLElement[]).map((el) => el.getBoundingClientRect().width)
+    setLayout(openLayout(widths, pillMaxWidth(anchor.left, anchor.vw)))
+  }, [anchor])
 
   const done = useRef(onClosed)
   useEffect(() => {
@@ -311,18 +330,10 @@ function Pill({
 
   return (
     <motion.div
-      ref={pillRef}
       data-slot="module-dots-pill"
       data-open={open || undefined}
-      onPointerEnter={(e) => e.pointerType === "mouse" && onEnter()}
-      onPointerLeave={(e) => e.pointerType === "mouse" && onLeave()}
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation()
-        onTap()
-      }}
-      style={{ left, top, width, height, pointerEvents: open ? "auto" : "none" }}
-      className="fixed z-50"
+      style={{ left, top, width, height }}
+      className="pointer-events-none fixed z-50"
     >
       <motion.div
         aria-hidden
@@ -330,22 +341,16 @@ function Pill({
         className="bg-popover ring-foreground/10 absolute inset-0 rounded-[10px] shadow-md ring-1"
       />
       {layout ? <ModuleDotsPillBody modules={modules} layout={layout} p={p} ring={anchor.ring} /> : null}
-      {/* The open layout, measured before the first paint, never seen, and
-          gone once measured, so each name is in the page once. */}
+      {/* Each name's own width, measured before the first paint, never seen,
+          and gone once measured, so each name is in the page once. */}
       {layout ? null : (
-      <div
-        ref={measureRef}
-        aria-hidden
-        className="invisible absolute top-0 left-0 flex w-max flex-wrap text-xs leading-4"
-        style={{ maxWidth, padding: `${OPEN_PAD_Y}px ${OPEN_PAD_X}px`, columnGap: ITEM_GAP_X, rowGap: ITEM_GAP_Y }}
-      >
-        {modules.map((m) => (
-          <span key={m.id} className="inline-flex h-4 max-w-full min-w-0 items-center whitespace-nowrap" style={{ gap: NAME_GAP }}>
-            <span className="shrink-0" style={{ width: DOT, height: DOT }} />
-            <span className="truncate">{m.title}</span>
-          </span>
-        ))}
-      </div>
+        <div ref={measureRef} aria-hidden className="invisible absolute top-0 left-0 flex flex-col text-xs leading-4">
+          {modules.map((m) => (
+            <span key={m.id} className="w-max whitespace-nowrap">
+              {m.title}
+            </span>
+          ))}
+        </div>
       )}
     </motion.div>
   )
