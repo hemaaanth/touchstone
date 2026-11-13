@@ -164,7 +164,7 @@ export function fetchRun(id: string): Promise<RunView> {
 
 // Follow a run's event stream from event index `since` on (the events before
 // it came from fetchRun). Returns an unsubscribe function. `onEnd` fires once
-// when the stream stops, for any reason.
+// when the run closes or the caller unsubscribes.
 export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0, onEnd?: () => void): () => void {
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/stream?since=${since}`)
   let ended = false
@@ -184,8 +184,8 @@ export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0,
     onEvent(e)
     if (e.ev === "closed") end()
   }
-  // The server ends the stream after "closed"; any other drop also ends it.
-  source.onerror = end
+  // EventSource reconnects after a server restart; closing it here leaves the
+  // last "running" event on screen forever instead of receiving the new status.
   return end
 }
 

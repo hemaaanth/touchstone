@@ -12,7 +12,7 @@ import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { startProgress } from "@/lib/startup"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
-import { runTitle } from "@/lib/format"
+import { isTerminal, runTitle } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { TitleInput } from "@/components/title-input"
@@ -603,7 +603,7 @@ function RunHeader({
   title: React.ReactNode
   actions: React.ReactNode
 }) {
-  const running = state ? live : status === "running"
+  const running = !isTerminal(status) && (state ? live : status === "running")
   // A stop is the newest fact about the run, so it wins over an older failure.
   const stopped = !!state?.stopped
   const failed = status === "error" && !stopped
