@@ -424,6 +424,25 @@ test("a dropped test counts as unchecked in the run view", async () => {
   });
 });
 
+// The CR-only case for Chimera. Properties.sol has only CR line ends and
+// TargetFunctions.sol mixes LF, CR and CRLF. A "//" comment ends at each, so
+// both properties stay bound and the lead survives.
+test("CR-only and mixed line ends keep every property bound, and the lead survives", async () => {
+  const prep = (ws) => {
+    const props = join(ws, "test/recon/Properties.sol");
+    writeFileSync(props, readFileSync(props, "utf8").replace(/\n/g, "\r"));
+    const tf = join(ws, "test/recon/TargetFunctions.sol");
+    let n = 0;
+    writeFileSync(tf, readFileSync(tf, "utf8").replace(/\n/g, () => ["\n", "\r", "\r\n"][n++ % 3]));
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.dropped, []);
+    assert.deepEqual(scan.gaps, []);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
+  });
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";

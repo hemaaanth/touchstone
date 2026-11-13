@@ -124,7 +124,11 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     One in a comment or a string, or `internal` or `private`, is not counted,
     because the engines call only ABI functions. A comment marker inside a
     string is not a comment, so it hides nothing. Both adapters read the
-    source through one scanner, `solidity-source.mjs`.
+    source through one scanner, `solidity-source.mjs`. Its line ends follow
+    solc 0.8 (checked with 0.8.38): a `//` comment ends at LF, CR or CRLF, so
+    a CR-only file is read in full. (VT, FF, NEL, LS and PS also end it, but
+    then the file does not compile.) A backslash before a line end inside a
+    string continues the string.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
     Limits: a base name declared in more than one file gives the union of

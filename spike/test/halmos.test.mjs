@@ -8,6 +8,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { halmosBrief, halmosRecord, halmosScan, parseHalmos, symbolicSuites } from "../packs/contracts/halmos.mjs";
+import { codeOnly } from "../packs/contracts/solidity-source.mjs";
 import { suiteTrust } from "../packs/contracts/suite-trust.mjs";
 import { makeWorkspace, cleanupWorkspace } from "../lib/sandbox.mjs";
 import { prepassView } from "../lib/prepass-view.mjs";
@@ -372,6 +373,61 @@ test("a comment marker inside a string hides no check_; a check_ inside a string
     assert.deepEqual(scan.leads.map((l) => [l.where, l.property]).sort(), [["Hidden.check_bug", "check_bug()"], ["ShareVaultSymbolicTest.check_withdrawBurnsAtLeastValue", "check_withdrawBurnsAtLeastValue(uint256)"]]);
     assert.deepEqual(scan.results.filter((x) => x.suite === "test/Hidden.t.sol").map((x) => [x.name, x.status]), [["check_bug()", "counterexample"], ["check_after()", "pass"]]);
   });
+});
+
+// The reviewer's case: a compiler-valid file with only CR line ends (solc
+// 0.8.38 builds it and real Halmos breaks check_bug). A "//" comment ends at
+// CR, so the rest of the file is code and check_bug is a lead.
+test("a CR-only file keeps its check_ function, and its counterexample is a lead", async () => {
+  const CR_HIDDEN = "// License header\rpragma solidity ^0.8.20;\rcontract Hidden { function check_bug() public { assert(false); } }\r";
+  const report = { exitcode: 1, test_results: {
+    ...REPORT.test_results,
+    "test/Hidden.t.sol:Hidden": [{ name: "check_bug()", exitcode: 1, num_models: 1, models: [{ model: {}, is_valid: true }], num_paths: [1, 1, 0], time: [0.1, 0, 0.1], num_bounded_loops: 0 }],
+  } };
+  const edit = (ws) => {
+    writeFileSync(join(ws, "test/Hidden.t.sol"), CR_HIDDEN);
+    assert.deepEqual(symbolicSuites(ws), ["test/Hidden.t.sol", SUITE]);
+  };
+  await withShim({ out: JSON.stringify(report), edit }, (scan) => {
+    assert.equal(scan.applicable, true);
+    assert.deepEqual(scan.gaps, []);
+    assert.deepEqual(scan.leads.map((l) => l.where).sort(), ["Hidden.check_bug", "ShareVaultSymbolicTest.check_withdrawBurnsAtLeastValue"]);
+  });
+});
+
+// LF, CR and CRLF in one file. Each "//" comment ends at its own line end, and
+// an escaped CRLF inside a string continues the string, as in solc.
+test("a file with mixed line ends keeps every check_ after each kind of line comment", async () => {
+  const MIXED = [
+    "// SPDX-License-Identifier: MIT\r\n",
+    "pragma solidity ^0.8.20;\r",
+    "contract Mixed {\n",
+    "    // after LF\n    function check_lf() public {}\n",
+    "    // after CR\r    function check_cr() public {}\r",
+    "    // after CRLF\r\n    function check_crlf() public {}\r\n",
+    '    string s = "a\\\r\n // still in the string\\\r b\\\n c";\r',
+    "    function check_afterString() public {}\n",
+    "}\r\n",
+  ].join("");
+  const pass = (name) => ({ name, exitcode: 0, num_models: 0, models: [], num_paths: [1, 1, 0], time: [0.1, 0, 0.1], num_bounded_loops: 0 });
+  const report = { exitcode: 1, test_results: {
+    ...REPORT.test_results,
+    "test/Mixed.t.sol:Mixed": ["check_lf()", "check_cr()", "check_crlf()", "check_afterString()"].map(pass),
+  } };
+  const edit = (ws) => writeFileSync(join(ws, "test/Mixed.t.sol"), MIXED);
+  await withShim({ out: JSON.stringify(report), edit }, (scan) => {
+    assert.deepEqual(scan.suites, ["test/Mixed.t.sol", SUITE]);
+    assert.deepEqual(scan.gaps, []);
+    assert.equal(scan.results.filter((x) => x.suite === "test/Mixed.t.sol").length, 4);
+  });
+  // The scanner keeps every CR and LF in place and blanks only what it must.
+  const code = codeOnly(MIXED);
+  assert.equal(code.length, MIXED.length);
+  assert.deepEqual([...code].map((ch, i) => (ch === "\r" || ch === "\n") === (MIXED[i] === "\r" || MIXED[i] === "\n")).filter((x) => !x), []);
+  assert.deepEqual([...code.matchAll(/function (\w+)/g)].map((m) => m[1]), ["check_lf", "check_cr", "check_crlf", "check_afterString"]);
+  assert.ok(!code.includes("still in the string"));
+  // A plain CR ends an unclosed string, so it cannot hide the next line.
+  assert.match(codeOnly('string s = "open\rfunction check_next() public {}'), /function check_next/);
 });
 
 test("an empty report is unavailable, not clean", async () => {
