@@ -6,6 +6,8 @@
 // leads. The agent writes a test that runs a harmful transaction the setup should
 // have blocked. See SKILL.md and TOOLS.md.
 import { chainNudge, chainPrepass, chainTools, keysLeads, proveWithHarm, hasWorld, sourceKickoff, sourceSystem } from "./common.mjs";
+import { SAFE_HASH_ENGINE, safeHashLeads } from "./safe-hash.mjs";
+import { SAFE_TX_HASHES_ENGINE } from "./safe-tx-hashes.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a pair of Safe multisig wallets that the operator owns. Each Safe
@@ -104,6 +106,6 @@ export default {
   }),
   kickoff,
   nudge: (state) => chainNudge(state, "suspect"),
-  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "keys", analyze: keysLeads, slither: true }),
+  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "keys", analyze: keysLeads, slither: true, extra: (w, o) => safeHashLeads(w, o, { engines: [SAFE_HASH_ENGINE, SAFE_TX_HASHES_ENGINE] }) }),
   prove: proveWithHarm,
 };

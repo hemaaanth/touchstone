@@ -543,7 +543,9 @@ const slitherFields = (slither) => (slither ? { slither: slither.available, ...(
 // The same for OpenZeppelin Monitor, only when the pack runs it on a lab chain.
 const monitorFields = (monitor) => (monitor ? { ozMonitor: monitor.available, ...(monitor.available ? {} : { ozMonitorReason: monitor.reason }) } : {});
 
-export async function chainPrepass(ws, { emit }, { mode, analyze, slither: useSlither = false, monitor: useMonitor = false }) {
+// `extra(ws, { world })` is an optional pack check that never throws. It returns
+// { flags, leads, note } (Keys: the safe-hash blind-signing check). flags go in the record.
+export async function chainPrepass(ws, { emit }, { mode, analyze, slither: useSlither = false, monitor: useMonitor = false, extra }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
   const obs = world ? await observe(ws, mode) : null;
@@ -552,19 +554,20 @@ export async function chainPrepass(ws, { emit }, { mode, analyze, slither: useSl
   const slither = useSlither ? await slitherLeads(ws) : null;
   // OpenZeppelin Monitor is opt-in per pack (lib/oz-monitor.mjs) and needs a lab chain. null means it did not run.
   const monitor = useMonitor && world ? await ozMonitorLeads(ws) : null;
+  const more = extra ? await extra(ws, { world }) : null;
   const base = leadsFor(ws, analyze);
   // OpenZeppelin Monitor leads come right after the pack's own: they read the same lab chain.
   // Slither, then Aderyn leads come last in each impact class. They are extra engines on the source.
   // Slither goes first: its results carry a confidence and drop Informational ones, and the brief
   // shows only 12 leads.
-  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...(monitor?.leads ?? []), ...(slither?.leads ?? []), ...aderyn.leads]);
+  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...(monitor?.leads ?? []), ...(slither?.leads ?? []), ...aderyn.leads, ...(more?.leads ?? [])]);
   const block = obs ? (obs.block ?? obs.toBlock) : null;
   emit({ t: Date.now(), ev: "chain-scan", pack: mode, engines: [...new Set(leads.flatMap((l) => l.engines))],
-    block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor),
+    block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor), ...(more?.flags ?? {}),
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
-    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) + (slither ? slitherNote(slither) : "") + (monitor ? ozMonitorNote(monitor) : "") },
-    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor),
+    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) + (slither ? slitherNote(slither) : "") + (monitor ? ozMonitorNote(monitor) : "") + (more?.note ?? "") },
+    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor), ...(more?.flags ?? {}),
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };
 }
