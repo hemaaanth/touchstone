@@ -29,6 +29,10 @@ export function MermaidBlock({
 }) {
   const box = useRef<HTMLDivElement>(null)
   const frame = useRef<HTMLDivElement>(null)
+  const picture = useRef<HTMLDivElement>(null)
+  const note = useRef<HTMLParagraphElement>(null)
+  // After "Draw diagram", focus goes to the result, not to the page body.
+  const focusNext = useRef(false)
   const [width, setWidth] = useState(0)
   const [font, setFont] = useState<{ sans: string; mono: string } | null>(null)
   const [good, setGood] = useState<{ source: string; svg: string; width: number; type: string } | null>(null)
@@ -88,6 +92,12 @@ export function MermaidBlock({
   }
   useLayoutEffect(readMore, [good, width, view])
 
+  useEffect(() => {
+    if (!focusNext.current || (!good && !error)) return
+    focusNext.current = false
+    ;(good ? picture.current : note.current)?.focus()
+  }, [good, error])
+
   return (
     <div ref={box} data-mermaid="" className="my-2 min-w-0 first:mt-0 last:mb-0">
       {good ? (
@@ -123,9 +133,11 @@ export function MermaidBlock({
               {/* A diagram shrinks to fit down to 70% of its size; a wider one
                   scrolls sideways instead of turning its text unreadable. */}
               <div
+                ref={picture}
+                tabIndex={-1}
                 role="img"
                 aria-label={`Diagram: ${good.type}`}
-                className="flex justify-center [&>svg]:h-auto [&>svg]:min-w-0 [&>svg]:max-w-full"
+                className="flex justify-center rounded outline-none focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:h-auto [&>svg]:min-w-0 [&>svg]:max-w-full"
                 style={{ minWidth: Math.round(good.width * 0.7) }}
                 // Only the allow-list pass's output (lib/svg-allow.ts).
                 dangerouslySetInnerHTML={{ __html: good.svg }}
@@ -143,11 +155,18 @@ export function MermaidBlock({
       ) : (
         <>
           {fallback}
-          {draw && error ? <p className="-mt-1 mb-2 text-xs text-muted-foreground">Not drawn: {error}</p> : null}
+          {draw && error ? (
+            <p ref={note} tabIndex={-1} className="-mt-1 mb-2 text-xs text-muted-foreground outline-none">
+              Not drawn: {error}
+            </p>
+          ) : null}
           {closed && deferred && !asked ? (
             <button
               type="button"
-              onClick={() => setAsked(true)}
+              onClick={() => {
+                focusNext.current = true
+                setAsked(true)
+              }}
               className="focus-ring -mt-1 mb-2 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               Draw diagram

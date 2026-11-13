@@ -31,8 +31,12 @@ export const ELEMENTS: ReadonlySet<string> = new Set([
 
 // Attributes Pele emits, without a namespace. `xml:space` is the one
 // namespaced attribute kept (it only says how to treat white space).
+// No `class`: Pele draws with inline styles only, and no app CSS reads a Pele
+// class (it emits 267 over the fixture), so none is written. A source's
+// `classDef` names, or a Tailwind utility such as `fixed`, never reach the page,
+// and a newer Pele cannot add one either.
 export const ATTRIBUTES: ReadonlySet<string> = new Set([
-  "aria-describedby", "aria-labelledby", "aria-roledescription", "class", "cx", "cy", "d", "data-icon",
+  "aria-describedby", "aria-labelledby", "aria-roledescription", "cx", "cy", "d", "data-icon",
   "data-id", "fill", "fill-opacity", "font-family", "font-size", "font-style", "font-weight", "height",
   "id", "opacity", "points", "r", "role", "rx", "ry", "stroke", "stroke-dasharray", "stroke-linecap",
   "stroke-linejoin", "stroke-width", "style", "text-anchor", "transform", "viewBox", "width", "x", "y",
@@ -40,72 +44,124 @@ export const ATTRIBUTES: ReadonlySet<string> = new Set([
   "gradientUnits", "offset", "stop-color", "x1", "x2",
 ])
 
-// Inline style properties kept. Custom properties are kept only as Pele's own
-// plumbing: a `--_x` name whose value is `var(--pele-…)`. So a source's
-// `themeVariables` (written as `--pele-series-1:#ff0000`) is dropped.
+// Inline style properties kept. No custom property is written, and no `font`
+// shorthand (it can name a font): Pele's `font:14px sans-serif` becomes
+// `font-size:14px`.
 export const STYLE_PROPS: ReadonlySet<string> = new Set([
-  "color", "direction", "fill", "font", "font-family", "font-style", "font-weight", "height",
+  "color", "direction", "fill", "font-family", "font-size", "font-style", "font-weight", "height",
   "letter-spacing", "max-width", "rx", "stroke", "stroke-dasharray", "stroke-dashoffset",
   "stroke-width", "text-transform", "word-spacing",
 ])
 
-// Colour attributes and properties keep only a token. A fixed colour attribute
-// (an arrowhead coloured by `linkStyle`) becomes the line token; a fixed colour
-// declaration is dropped, so the element falls back to its token attribute.
-const COLOURS = new Set(["fill", "stroke", "color", "stop-color"])
-// Only Pele's own variables: a source must not reach an app token such as
-// `--destructive`. The frame maps every `--pele-*` to a neutral token.
-const TOKEN = /^\s*(var\(--(_[a-z]+|pele-[a-z0-9-]+)(,[^;()]*)?\)|none|transparent|currentcolor|inherit)\s*$/i
-const PELE_VAR = /^var\(--pele-[a-z0-9-]+(,[^;()]*)?\)$/
+// The Pele variables `.mermaid-frame` maps to app tokens (src/index.css). This
+// list is the one source of truth: a test fails when the CSS and this list
+// differ. A `var(...)` is written only with one of these names, and never with
+// its fallback, so an unmapped name cannot fall back to a fixed colour.
+export const FRAME_VARS: ReadonlySet<string> = new Set(
+  [
+    "bg", "fg", "fg-on-light", "fg-on-dark", "muted", "line", "surface", "surface-alt", "border",
+    "accent", "critical", "error", "font", "font-mono", "radius", "title-weight", "heading-weight",
+    "bold-weight", "series-1", "series-2", "series-3", "series-4", "series-5", "series-6", "series-7",
+    "series-8",
+  ].map((n) => `--pele-${n}`),
+)
+
+const LINE = "var(--pele-line)"
+const PAINTS = new Set(["fill", "stroke", "color", "stop-color"])
+const KEYWORD = /^(none|transparent|currentcolor|inherit)$/i
+// One `var(--name)` or `var(--name, fallback)` and nothing else. The fallback
+// is read only to be dropped.
+const ONE_VAR = /^var\((--[\w-]+)\s*(?:,[^()]*)?\)$/
 // A value may hold only these characters. No `\`, `;`, `<`, `>`, `&`, `@`,
 // `{`, `}`, `/`, `*` (no comment), `:` (no scheme).
 const PLAIN_VALUE = /^[\w\s#.,%()'"+-]*$/
 const LOCAL_URL = /^url\(#[\w-]+\)$/
-// A paint that points at a gradient in the same SVG, with a token fallback
+// A paint that points at a gradient in the same SVG, with a fallback
 // (Sankey: `url(#m1-g0) var(--pele-series-1,#4c78a8)`).
-const LOCAL_PAINT = /^url\(#[\w-]+\)\s+(.+)$/
+const LOCAL_PAINT = /^(url\(#[\w-]+\))\s+(.+)$/
 
-function cleanValue(name: string, value: string): string | null {
-  const v = value.trim()
-  if (COLOURS.has(name)) {
-    const paint = LOCAL_PAINT.exec(v)
-    if (paint) return TOKEN.test(paint[1]) ? v : "var(--_l)"
-    return TOKEN.test(v) ? v : "var(--_l)"
+// Pele's root sets aliases such as `--_s:var(--pele-surface,#f3f3f3)` and the
+// shapes use `var(--_s)`. The aliases are read from the root and each use is
+// written as the frame name itself (`var(--pele-surface)`); the alias
+// declarations are not written. An alias to an unmapped name is unknown.
+type Aliases = ReadonlyMap<string, string>
+
+export function readAliases(rootStyle: string | undefined): Aliases {
+  const out = new Map<string, string>()
+  for (const decl of (rootStyle ?? "").split(";")) {
+    const i = decl.indexOf(":")
+    const prop = decl.slice(0, i).trim()
+    const m = ONE_VAR.exec(decl.slice(i + 1).trim())
+    if (/^--_[a-z]+$/.test(prop) && m && FRAME_VARS.has(m[1])) out.set(prop, m[1])
   }
+  return out
+}
+
+// `var(--x[, fallback])` as `var(--pele-y)`, or null.
+function frameVar(v: string, aliases: Aliases): string | null {
+  const m = ONE_VAR.exec(v)
+  if (!m) return null
+  const name = FRAME_VARS.has(m[1]) ? m[1] : aliases.get(m[1])
+  return name ? `var(${name})` : null
+}
+
+// A paint: a keyword, a frame variable, or a same-document gradient with one of
+// those after it. Null for anything else.
+function paint(v: string, aliases: Aliases): string | null {
+  if (KEYWORD.test(v)) return v
+  if (LOCAL_URL.test(v)) return v
+  const g = LOCAL_PAINT.exec(v)
+  if (g) {
+    const after = KEYWORD.test(g[2]) ? g[2] : frameVar(g[2], aliases)
+    return after ? `${g[1]} ${after}` : null
+  }
+  return frameVar(v, aliases)
+}
+
+// Any other value. A value with `var(` must be exactly one frame variable.
+function plain(name: string, v: string, aliases: Aliases): string | null {
+  if (/var\(/i.test(v)) return frameVar(v, aliases)
+  if (name === "font-family") return null
   if (/url\(/i.test(v) && !LOCAL_URL.test(v)) return null
-  if (name === "class") {
-    // Only Pele's own class names. A source's `classDef` names (or a Tailwind
-    // utility such as `fixed`) would be styled by the app's CSS.
-    const kept = v.split(/\s+/).filter((c) => /^pele[\w-]*$/.test(c))
-    return kept.length ? kept.join(" ") : null
-  }
-  if (name === "font-family") return TOKEN.test(v) ? v : null
-  if (name === "style") return cleanStyle(v)
   if (name === "d" || name === "points" || name === "transform" || name === "viewBox") {
     return /^[\w\s.,()+-]*$/.test(v) ? v : null
   }
   return PLAIN_VALUE.test(v) ? v : null
 }
 
-function cleanStyle(style: string): string | null {
+function cleanValue(name: string, value: string, aliases: Aliases): string | null {
+  const v = value.trim()
+  // A fixed colour attribute (an arrowhead coloured by `linkStyle`) becomes
+  // the line colour.
+  if (PAINTS.has(name)) return paint(v, aliases) ?? LINE
+  // A style with a foreign url() is dropped whole.
+  if (name === "style") return /url\((?!#)/i.test(v) ? null : cleanStyle(v, aliases)
+  return plain(name, v, aliases)
+}
+
+function cleanStyle(style: string, aliases: Aliases): string | null {
   const kept: string[] = []
   for (const decl of style.split(";")) {
     const i = decl.indexOf(":")
     if (i < 0) continue
     const prop = decl.slice(0, i).trim().toLowerCase()
     const value = decl.slice(i + 1).trim()
-    if (prop.startsWith("--")) {
-      if (/^--_[a-z]+$/.test(prop) && PELE_VAR.test(value)) kept.push(`${prop}:${value}`)
+    if (prop === "font") {
+      const size = /(?:^|\s)(\d+(?:\.\d+)?px)(?:\s|$)/.exec(value)
+      if (size) kept.push(`font-size:${size[1]}`)
       continue
     }
-    if (!STYLE_PROPS.has(prop) || !PLAIN_VALUE.test(value) || /url\(/i.test(value)) continue
-    if ((COLOURS.has(prop) || prop === "font-family") && !TOKEN.test(value)) continue
-    kept.push(`${prop}:${value}`)
+    if (!STYLE_PROPS.has(prop)) continue
+    // A fixed colour declaration is dropped, so the element keeps its token
+    // attribute.
+    const v = PAINTS.has(prop) ? paint(value, aliases) : plain(prop, value, aliases)
+    if (v !== null && !/url\(/i.test(v)) kept.push(`${prop}:${v}`)
   }
   return kept.length ? kept.join(";") : null
 }
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+const esc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 
 const SHAPES = new Set(["path", "rect", "circle", "ellipse", "polygon", "text"])
 
@@ -114,6 +170,7 @@ const SHAPES = new Set(["path", "rect", "circle", "ellipse", "polygon", "text"])
 export function writeAllowedSvg(root: SvgNode | null): string | null {
   if (!root || root.kind !== "el" || root.ns !== SVG_NS || root.name !== "svg") return null
   let shapes = 0
+  const aliases = readAliases(root.attrs.find((a) => a.ns === null && a.name === "style")?.value)
   const walk = (n: SvgNode): string => {
     if (n.kind === "text") return esc(n.value)
     if (n.ns !== SVG_NS || !ELEMENTS.has(n.name)) return ""
@@ -125,7 +182,7 @@ export function writeAllowedSvg(root: SvgNode | null): string | null {
       if (a.ns === XML_NS && a.name === "space") name = "xml:space"
       else if (a.ns === null && ATTRIBUTES.has(a.name)) name = a.name
       else continue
-      const value = name === "xml:space" ? (a.value === "preserve" ? a.value : null) : cleanValue(a.name, a.value)
+      const value = name === "xml:space" ? (a.value === "preserve" ? a.value : null) : cleanValue(a.name, a.value, aliases)
       if (value !== null) out += ` ${name}="${esc(value)}"`
     }
     return `${out}>${n.children.map(walk).join("")}</${n.name}>`

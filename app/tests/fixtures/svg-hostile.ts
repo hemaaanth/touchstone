@@ -39,12 +39,12 @@ export const HOSTILE: { name: string; svg: string; out?: string | null }[] = [
     name: "url() in attributes",
     svg: `<svg ${NS}><rect width="1" height="1" fill="url(https://example.invalid/a)" stroke="url(#m1)" transform="url(x)"/></svg>`,
     // A paint becomes the line token; any other attribute with url() goes.
-    out: `${OPEN}<rect width="1" height="1" fill="var(--_l)" stroke="var(--_l)"></rect></svg>`,
+    out: `${OPEN}<rect width="1" height="1" fill="var(--pele-line)" stroke="url(#m1)"></rect></svg>`,
   },
   {
     name: "a same-document gradient paint (Sankey) and a foreign fallback",
     svg: `<svg ${NS}><path d="M0,0L1,1" fill="url(#m1-g0) var(--pele-series-1,#4c78a8)"/><path d="M0,0L1,1" fill="url(#m1-g0) url(https://example.invalid/a)"/></svg>`,
-    out: `${OPEN}<path d="M0,0L1,1" fill="url(#m1-g0) var(--pele-series-1,#4c78a8)"></path><path d="M0,0L1,1" fill="var(--_l)"></path></svg>`,
+    out: `${OPEN}<path d="M0,0L1,1" fill="url(#m1-g0) var(--pele-series-1)"></path><path d="M0,0L1,1" fill="var(--pele-line)"></path></svg>`,
   },
   {
     name: "url() and other properties in a style",
@@ -65,17 +65,47 @@ export const HOSTILE: { name: string; svg: string; out?: string | null }[] = [
   {
     name: "class names other than Pele's",
     svg: `<svg ${NS}><rect width="1" height="1" class="pele-node fixed inset-0 z-50"/></svg>`,
-    out: `${OPEN}<rect width="1" height="1" class="pele-node"></rect></svg>`,
+    // No class is written at all.
+    out: `${OPEN}${R}</svg>`,
   },
   {
     name: "custom properties and colours in a style",
     svg: `<svg ${NS} style="--pele-series-1:#ff0000;--_bg:var(--pele-bg,#fff);--_x:red;--_y:var(--destructive);color:var(--_fg)">${R}</svg>`,
-    out: `<svg xmlns="http://www.w3.org/2000/svg" style="--_bg:var(--pele-bg,#fff);color:var(--_fg)">${R}</svg>`,
+    // No custom property is written. --_fg is not defined by the root, so
+    // color:var(--_fg) has no frame name and goes too.
+    out: `${OPEN}${R}</svg>`,
   },
   {
     name: "fixed colours and app tokens",
     svg: `<svg ${NS}><rect width="1" height="1" fill="#ff0000" stroke="var(--destructive)" style="fill:green;stroke:var(--_l)"/></svg>`,
-    out: `${OPEN}<rect width="1" height="1" fill="var(--_l)" stroke="var(--_l)" style="stroke:var(--_l)"></rect></svg>`,
+    out: `${OPEN}<rect width="1" height="1" fill="var(--pele-line)" stroke="var(--pele-line)"></rect></svg>`,
+  },
+  // Review N5-2 M1: a Pele-looking variable the frame does not map would fall
+  // back to its fixed colour. Only mapped names are written, never a fallback.
+  {
+    name: "an unmapped Pele variable with a colour fallback",
+    svg: `<svg ${NS}><rect width="100" height="30" fill="var(--pele-unmapped,red)"/></svg>`,
+    out: `${OPEN}<rect width="100" height="30" fill="var(--pele-line)"></rect></svg>`,
+  },
+  {
+    name: "an alias to an unmapped variable",
+    svg: `<svg ${NS} style="--_s:var(--pele-unmapped,red);--_b:var(--pele-border,red)"><rect width="1" height="1" fill="var(--_s)" stroke="var(--_b)" style="fill:var(--_s);rx:var(--_s)"/></svg>`,
+    out: `${OPEN}<rect width="1" height="1" fill="var(--pele-line)" stroke="var(--pele-border)"></rect></svg>`,
+  },
+  {
+    name: "a gradient paint whose fallback is unmapped or fixed",
+    svg: `<svg ${NS}><path d="M0,0L1,1" fill="url(#g) var(--pele-unmapped,red)"/><path d="M0,0L1,1" fill="url(#g) red"/><path d="M0,0L1,1" stroke="url(#g) var(--pele-series-2,#00ff00)"/></svg>`,
+    out: `${OPEN}<path d="M0,0L1,1" fill="var(--pele-line)"></path><path d="M0,0L1,1" fill="var(--pele-line)"></path><path d="M0,0L1,1" stroke="url(#g) var(--pele-series-2)"></path></svg>`,
+  },
+  {
+    name: "a font shorthand that names a font",
+    svg: `<svg ${NS}><text style="font:30px Papyrus;font-weight:bold">x</text><text style="font:italic 700 30px/2 Papyrus, serif">y</text></svg>`,
+    out: `${OPEN}<text style="font-size:30px;font-weight:bold">x</text><text>y</text></svg>`,
+  },
+  {
+    name: "an apostrophe in a value and in text",
+    svg: `<svg ${NS}><text data-id="it's">it's</text></svg>`,
+    out: `${OPEN}<text data-id="it&#39;s">it&#39;s</text></svg>`,
   },
   {
     name: "markup in text as entities",

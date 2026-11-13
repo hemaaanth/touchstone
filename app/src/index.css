@@ -101,7 +101,9 @@
 
 /* Pele diagrams (src/components/mermaid-block.tsx). Every colour is an app
    token or a mix of two, so light and dark both follow the theme and no red or
-   green appears (docs/restraint.md). A colour change needs no redraw. */
+   green appears (docs/restraint.md). A colour change needs no redraw.
+   The names here must equal FRAME_VARS in src/lib/svg-allow.ts (a test checks):
+   the SVG keeps a var() only with one of these names, and no fallback. */
 .mermaid-frame {
   --pele-bg: color-mix(in oklab, var(--muted) 60%, var(--background));
   --pele-fg: var(--foreground);
@@ -118,6 +120,9 @@
   --pele-font: var(--font-sans);
   --pele-font-mono: var(--font-mono);
   --pele-radius: var(--radius-sm);
+  --pele-title-weight: bold;
+  --pele-heading-weight: bold;
+  --pele-bold-weight: bold;
   --pele-series-1: color-mix(in oklab, var(--foreground) 85%, var(--background));
   --pele-series-2: color-mix(in oklab, var(--foreground) 70%, var(--background));
   --pele-series-3: color-mix(in oklab, var(--foreground) 55%, var(--background));

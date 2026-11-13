@@ -4,7 +4,8 @@ import { renderAsync } from "pele/lazy"
 import { drawMermaid, fenceClosed, peleOptions, type DrawOptions } from "@/lib/mermaid"
 import { Markdown, MAX_DIAGRAMS } from "@/components/markdown"
 import { miniXml } from "./helpers/mini-xml"
-import { fixedColours, namesOffList } from "./helpers/svg-check"
+import { cssFrameVars, fixedColours, namesOffList } from "./helpers/svg-check"
+import { FRAME_VARS, type SvgNode } from "@/lib/svg-allow"
 import examples from "./fixtures/pele-examples.json"
 
 // Bun has no DOMParser: the pass reads the tree from the test reader.
@@ -157,6 +158,70 @@ describe("every diagram type Pele registers", () => {
     }
     expect(n).toBeGreaterThan(150)
   }, 30000)
+})
+
+describe("the frame variables", () => {
+  test("the code's list and the CSS .mermaid-frame block name the same variables", () => {
+    expect([...FRAME_VARS].sort()).toEqual([...cssFrameVars()].sort())
+  })
+
+  // Every paint Pele gives with a variable keeps that colour, now named by
+  // the frame variable itself; none falls to the line colour because its name
+  // is unmapped. A fixed colour becomes the line colour.
+  test("every example keeps every themed paint it had", async () => {
+    const mapped = cssFrameVars()
+    let paints = 0
+    for (const [, list] of samples) {
+      for (const src of list) {
+        const raw = miniXml((await rawOf(src)).svg)
+        const r = await draw(src)
+        expect(r.ok).toBe(true)
+        if (!r.ok || raw.kind !== "el") continue
+        const alias = new Map<string, string>()
+        for (const d of (raw.attrs.find((a) => a.name === "style")?.value ?? "").split(";")) {
+          const m = /^\s*(--_[a-z]+)\s*:\s*var\((--pele-[\w-]+)/.exec(d)
+          if (m) alias.set(m[1], m[2])
+        }
+        const want = (v: string): string => {
+          const g = /^(url\(#[\w-]+\))\s+(.+)$/.exec(v)
+          if (g) {
+            const after = want(g[2])
+            return after === "var(--pele-line)" && !/--pele-line|--_l\b/.test(g[2]) ? after : `${g[1]} ${after}`
+          }
+          if (/^(none|transparent|currentcolor|inherit)$/i.test(v)) return v
+          const m = /^var\((--[\w-]+)/.exec(v)
+          const name = m ? (m[1].startsWith("--pele-") ? m[1] : alias.get(m[1])) : undefined
+          return name ? `var(${name})` : "var(--pele-line)"
+        }
+        const pair = (a: SvgNode, b: SvgNode) => {
+          if (a.kind !== "el" || b.kind !== "el") return
+          for (const at of a.attrs) {
+            if (!["fill", "stroke", "stop-color"].includes(at.name)) continue
+            const w = want(at.value.trim())
+            for (const m of w.matchAll(/var\((--[\w-]+)\)/g)) expect(mapped.has(m[1])).toBe(true)
+            expect(b.attrs.find((x) => x.name === at.name)?.value).toBe(w)
+            paints++
+          }
+          const ea = a.children.filter((c) => c.kind === "el")
+          const eb = b.children.filter((c) => c.kind === "el")
+          expect(eb.length).toBe(ea.length)
+          ea.forEach((c, i) => pair(c, eb[i]))
+        }
+        pair(raw, miniXml(r.svg))
+      }
+    }
+    expect(paints).toBeGreaterThan(4000)
+  }, 30000)
+
+  test("no class and no custom property reaches the page", async () => {
+    for (const [, list] of samples) {
+      const r = await draw(list[0])
+      if (!r.ok) continue
+      expect(r.svg).not.toMatch(/\sclass=/)
+      expect(r.svg).not.toMatch(/[";]\s*--[\w-]+\s*:/)
+      expect(r.svg).not.toMatch(/var\([^)]*,/)
+    }
+  })
 })
 
 describe("the cache", () => {
