@@ -5,7 +5,7 @@ import { Markdown } from "@/components/markdown"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Hint, SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, type Candidate } from "@/lib/candidate"
+import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, rowFocusStep, scheduleRowFocus, type Candidate } from "@/lib/candidate"
 
 // The run's candidates. A candidate is unproven. Either the agent saw harm the
 // pack's checks do not cover (agent-asserted), or the engine's replay only
@@ -50,21 +50,20 @@ function CandidateRow({ candidate: c, focusAt = null }: { candidate: Candidate; 
   // A new focus opens and marks the row, set while rendering (React's way to
   // follow a prop), so the row never shows closed first.
   const [seen, setSeen] = useState<number | null>(null)
-  if (focusAt != null && focusAt !== seen) {
-    setSeen(focusAt)
-    setOpen(true)
-    setMarked(true)
+  const step = rowFocusStep(focusAt, seen)
+  if (step) {
+    setSeen(step.seen)
+    setOpen(step.open)
+    setMarked(step.marked)
   }
   const row = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (focusAt == null) return
     const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-    const t0 = setTimeout(() => row.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" }), 0)
-    const t1 = setTimeout(() => setMarked(false), 2400)
-    return () => {
-      clearTimeout(t0)
-      clearTimeout(t1)
-    }
+    return scheduleRowFocus({
+      scroll: () => row.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" }),
+      unmark: () => setMarked(false),
+    })
   }, [focusAt])
   return (
     <Collapsible ref={row} open={open} onOpenChange={setOpen} data-focused={marked || undefined} className={cn("transition-colors duration-700 motion-reduce:transition-none", open && "bg-foreground/[0.03]", marked && "bg-foreground/[0.07]")}>
@@ -125,6 +124,7 @@ export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
 // oracle its replay read. Rows fold only for the same check and rule
 // (spike/lib/candidate.mjs splitMeasured), so the places differ by where only.
 type Item = { title?: string | null; file?: string | null; lines?: unknown; where?: unknown }
+const SHOWN_PLACES = 12
 function placeOf(i: Item): string | null {
   const w = i.where && typeof i.where === "object" ? (i.where as Record<string, unknown>) : {}
   const file = typeof i.file === "string" ? i.file : typeof w.file === "string" ? w.file : null
@@ -137,7 +137,9 @@ function placeOf(i: Item): string | null {
 
 function MeasuredFacts({ candidate: c }: { candidate: Candidate }) {
   const m = c.measured!
-  const items = (((c.evidence as { items?: unknown } | null)?.items ?? []) as Item[]).slice(0, 12)
+  const all = ((c.evidence as { items?: unknown } | null)?.items ?? []) as Item[]
+  const items = all.slice(0, SHOWN_PLACES)
+  const more = Math.max(0, m.count - items.length)
   return (
     <>
       {m.check ? (
@@ -156,6 +158,7 @@ function MeasuredFacts({ candidate: c }: { candidate: Candidate }) {
                 {placeOf(i) ?? i.title ?? `place ${k + 1}`}
               </li>
             ))}
+            {more ? <li className="text-[11px] text-muted-foreground">… and {more} more, in the evidence</li> : null}
           </ul>
         </Field>
       ) : null}

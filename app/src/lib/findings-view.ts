@@ -193,6 +193,8 @@ export const CANDIDATE_STATE: Record<string, string> = {
   "harm-not-judged": "Candidate · harm not judged",
   unknown: "Candidate · not proof of harm",
 }
+// The one short word a phone row shows (below sm): never truncated.
+export const candidateShortState = (c: CandidateSummary) => (c.measured ? "Measured" : "Candidate")
 export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · needs review")
 
 // The count line's words, before "· N proven" (N3). Candidates are counted

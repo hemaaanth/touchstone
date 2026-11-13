@@ -136,3 +136,43 @@ export function candidatesStatus(items: Candidate[]): string {
   if (measured === items.length) return "Unproven"
   return "Unproven · some need review"
 }
+
+// ── Landing on a candidate (N3, M2) ─────────────────────────────────────────
+// The focus form for a candidate: the Findings page opens a run at it.
+export const CANDIDATE_FOCUS = "candidate:"
+// How long a candidate the run landed on stays marked.
+export const MARK_MS = 2400
+
+// The run view, once a candidate focus finds its candidate: the panel opens
+// at its Candidates section and is told which row to open.
+export function applyCandidateFocus(
+  set: { panelOpen: (open: boolean) => void; section: (s: "candidates") => void; candidateOpen: (v: { poc: string; at: number }) => void },
+  poc: string,
+  at: number,
+): void {
+  set.panelOpen(true)
+  set.section("candidates")
+  set.candidateOpen({ poc, at })
+}
+
+// The row, on a new focus: open and marked. Null when the focus is not new.
+export function rowFocusStep(focusAt: number | null, seen: number | null): { seen: number; open: true; marked: true } | null {
+  return focusAt != null && focusAt !== seen ? { seen: focusAt, open: true, marked: true } : null
+}
+
+// After the row opened: scroll it into view at once, and clear its mark after
+// MARK_MS. Returns the cleanup. `timers` is injectable for a test.
+export function scheduleRowFocus(
+  act: { scroll: () => void; unmark: () => void },
+  timers: { set: (f: () => void, ms: number) => unknown; clear: (t: unknown) => void } = {
+    set: (f, ms) => setTimeout(f, ms),
+    clear: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+  },
+): () => void {
+  const t0 = timers.set(act.scroll, 0)
+  const t1 = timers.set(act.unmark, MARK_MS)
+  return () => {
+    timers.clear(t0)
+    timers.clear(t1)
+  }
+}

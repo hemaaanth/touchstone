@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { candidateRow, candidateState, countLine, DEFAULT_VIEW, filterFindings, sortFindings } from "../src/lib/findings-view"
+import { candidateRow, candidateShortState, candidateState, countLine, DEFAULT_VIEW, filterFindings, sortFindings } from "../src/lib/findings-view"
 import { CandidateListRow } from "../src/components/candidate-row"
 import { FINDING_ROW_COLS } from "../src/components/findings-page"
 import type { CandidateSummary, FindingSummary } from "../src/lib/types"
@@ -103,5 +103,22 @@ describe("the count line", () => {
     expect(line("proven")).toEqual({ lead: "1 of 2 findings", candidates: null })
     const one = [finding("a", true)]
     expect(countLine(one, one, DEFAULT_VIEW)).toEqual({ lead: "1 finding", candidates: null })
+  })
+})
+
+// Repair 2 (UI re-review M3): the phone row (below sm) keeps a short state
+// word that never shrinks, and shows no date, so nothing runs under the
+// severity bars. It regressed once (the m4 date), so its classes are pinned.
+describe("the candidate row on a phone", () => {
+  const out = renderToStaticMarkup(<CandidateListRow finding={candidateRow(cand("x", { at: 5 }))} cols={FINDING_ROW_COLS} moduleTitle="Domains" run={undefined} onOpenRun={() => {}} when={() => "13 Nov, 12:00"} />)
+  test("the state is one short word that never shrinks below sm; the full words from sm up", () => {
+    expect(out).toMatch(/data-slot="candidate-state" class="[^"]*\bshrink-0\b[^"]*\bsm:shrink\b/)
+    expect(out).toMatch(/<span class="whitespace-nowrap sm:hidden">Measured<\/span>/)
+    expect(out).toMatch(/<span class="hidden min-w-0 truncate sm:inline">Candidate · measurement repeated<\/span>/)
+    expect(candidateShortState(cand("x", { origin: "agent", measured: null }))).toBe("Candidate")
+  })
+  test("the date is hidden below sm", () => {
+    expect(out).toMatch(/data-slot="candidate-date" class="[^"]*\bmax-sm:hidden\b/)
+    expect(out).toContain("13 Nov, 12:00")
   })
 })

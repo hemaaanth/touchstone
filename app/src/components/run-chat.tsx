@@ -10,6 +10,7 @@ import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, 
 import type { Finding, PackChoice, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding, fetchNowCandidate } from "@/lib/api"
+import { applyCandidateFocus, CANDIDATE_FOCUS } from "@/lib/candidate"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
 import { cn } from "cn"
@@ -454,9 +455,7 @@ export function RunChat({
     if (!focus || !focusCandidate || !hasCandidate || candidateDone.current === focus) return
     const t = setTimeout(() => {
       candidateDone.current = focus
-      setPanelOpen(true)
-      setSection("candidates")
-      setCandidateOpen({ poc: focusCandidate, at: focus.at })
+      applyCandidateFocus({ panelOpen: setPanelOpen, section: setSection, candidateOpen: setCandidateOpen }, focusCandidate, focus.at)
     }, 0)
     return () => clearTimeout(t)
   }, [focus, focusCandidate, hasCandidate, setPanelOpen, setSection])
@@ -730,8 +729,6 @@ function messageText(message: AppendMessage): string {
 // "Open this finding" from another page: the finding's id, and when it was
 // asked (Date.now()), so a second ask for the same finding jumps again.
 export type FocusFinding = { finding: string; at: number }
-// The focus form for a candidate: the Findings page opens a run at it.
-export const CANDIDATE_FOCUS = "candidate:"
 
 // The run's top bar: status dot, title, the status word, and the ⋯ menu.
 // Mode, runtime and spend live in the run panel's Info section. Before the run

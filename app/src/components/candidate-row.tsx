@@ -1,13 +1,13 @@
 import { memo } from "react"
 import { ChevronRight, ShieldQuestionMark } from "lucide-react"
 import type { FindingSummary, RunSummary } from "@/lib/types"
-import { candidateState, scopeOf } from "@/lib/findings-view"
+import { candidateShortState, candidateState, scopeOf } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { ModuleDots } from "@/components/module-dots"
 import { RowMenu, RowMenuItem, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
 import { rowClass } from "@/components/page-parts-style"
-import { CANDIDATE_FOCUS } from "@/components/run-chat"
+import { CANDIDATE_FOCUS } from "@/lib/candidate"
 
 // A candidate on the Findings page (N3). It sits in the findings' row grid, so
 // its columns line up with theirs, but it is neutral (docs/restraint.md): a
@@ -46,10 +46,18 @@ export const CandidateListRow = memo(function CandidateListRow({
         <RowTitle title={f.title || "Candidate"} opens={Boolean(run)} popup={false} />
         <RowMeta
           items={[
-            <span key="state" className="min-w-0 truncate" title={candidateState(c)}>{candidateState(c)}</span>,
+            // On a phone (below sm) the state is one short word that never
+            // shrinks, and the date is left out: the row keeps its words and
+            // never runs under the severity bars. From sm up, the full words.
+            <span key="state" data-slot="candidate-state" className="flex min-w-0 shrink-0 sm:shrink" title={candidateState(c)}>
+              <span className="whitespace-nowrap sm:hidden">{candidateShortState(c)}</span>
+              <span className="hidden min-w-0 truncate sm:inline">{candidateState(c)}</span>
+            </span>,
             c.measured && c.measured.count > 1 ? <span key="count" className="shrink-0 whitespace-nowrap tabular-nums">{c.measured.count} places</span> : null,
             <TruncatedText key="scope" text={scopeOf(f)} />,
-            f.at != null && when ? <span key="at" className="shrink-0 whitespace-nowrap tabular-nums" title="When the run started">{when(f.at)}</span> : "Date not recorded",
+            <span key="at" data-slot="candidate-date" className="shrink-0 whitespace-nowrap tabular-nums max-sm:hidden" title="When the run started">
+              {f.at != null && when ? when(f.at) : "Date not recorded"}
+            </span>,
           ]}
         />
       </div>

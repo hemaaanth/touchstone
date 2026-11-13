@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { reduceEvents } from "../src/lib/runModel"
-import { candidateFrom, candidateGroupLabel, candidatesStatus } from "../src/lib/candidate"
+import { applyCandidateFocus, candidateFrom, candidateGroupLabel, candidatesStatus, MARK_MS, rowFocusStep, scheduleRowFocus } from "../src/lib/candidate"
 import { runHeadStatus } from "../src/components/thread-model"
 import { statusLabel, statusTone } from "../src/lib/format"
 import { CandidateDetail, CandidateList } from "../src/components/candidates"
@@ -302,4 +302,45 @@ test("a measured fold shows its check and rule, and each place as file:line or h
   expect(fold).toContain(".github/workflows/deploy.yml:8")
   expect(fold).toContain(".github/workflows/deploy.yml:12")
   expect(renderToStaticMarkup(<CandidateDetail candidate={candidateFrom(ev(measured()))!} />)).toContain("a.test")
+})
+
+// Repair 2 (UI re-review m-a, m-b).
+describe("landing on a candidate, and a long fold", () => {
+  test("m-a: a fold of more places than it lists says how many more are in the evidence", () => {
+    const items = Array.from({ length: 14 }, (_, k) => ({ poc: `z${k}`, file: ".github/workflows/deploy.yml", lines: [k + 1] }))
+    const many = candidateFrom(ev(measured({ measured: { reason: "repeated", repeated: true, check: "tool:zizmor", rule: "zizmor/unpinned-uses", count: 14 }, evidence: { kind: "measured", check: "tool:zizmor", items } })))!
+    const fold = renderToStaticMarkup(<CandidateDetail candidate={many} />)
+    expect(fold).toContain("Fired at 14 places")
+    expect(fold).toContain("deploy.yml:12")
+    expect(fold).not.toContain("deploy.yml:13")
+    expect(fold).toContain("… and 2 more, in the evidence")
+  })
+
+  test("m-b: a focus opens the row (it renders open, with its fold, and marked)", () => {
+    const meas = candidateFrom(ev(measured()))!
+    expect(rowFocusStep(7, null)).toEqual({ seen: 7, open: true, marked: true })
+    expect(rowFocusStep(7, 7)).toBeNull()
+    expect(rowFocusStep(null, null)).toBeNull()
+    const html = renderToStaticMarkup(<CandidateList items={[meas]} focus={{ poc: meas.poc, at: 1 }} />)
+    expect(html).toContain("Measurement repeated: the replay found the same fact again. It shows no harm.")
+    expect(html).toContain("data-focused")
+    expect(renderToStaticMarkup(<CandidateList items={[meas]} />)).not.toContain("data-focused")
+  })
+
+  test("m-b: the mark clears after MARK_MS, and the row scrolls into view first", () => {
+    const due: [() => void, number][] = []
+    const done: string[] = []
+    const stop = scheduleRowFocus({ scroll: () => done.push("scroll"), unmark: () => done.push("unmark") }, { set: (f, ms) => due.push([f, ms]), clear: () => {} })
+    expect(due.map(([, ms]) => ms)).toEqual([0, MARK_MS])
+    for (const [f] of due) f()
+    expect(done).toEqual(["scroll", "unmark"])
+    expect(MARK_MS).toBeGreaterThan(0)
+    expect(typeof stop).toBe("function")
+  })
+
+  test("m-b: a candidate focus opens the panel at its Candidates section and names the row", () => {
+    const calls: unknown[][] = []
+    applyCandidateFocus({ panelOpen: (o) => calls.push(["panel", o]), section: (s) => calls.push(["section", s]), candidateOpen: (v) => calls.push(["row", v]) }, "lead-3", 9)
+    expect(calls).toEqual([["panel", true], ["section", "candidates"], ["row", { poc: "lead-3", at: 9 }]])
+  })
 })
