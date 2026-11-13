@@ -133,7 +133,7 @@ function parseGithub(u) {
     if (seg.length > 4) {
       try { subPath = decodeURIComponent(seg.slice(4).join("/")); } catch { subPath = seg.slice(4).join("/"); }
     }
-    return { kind: "repo", owner, repo, ref: seg[3], subPath };
+    return { kind: "repo", owner, repo, ref: seg[3], ...(subPath ? { subPath } : {}) };
   }
   if (kind === "blob" && seg.length >= 5) {
     const ref = seg[3];
