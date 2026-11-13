@@ -25,6 +25,13 @@ describe("redact: big inputs finish in linear time", () => {
   })
 })
 
+describe("redact: a long header value finishes in linear time", () => {
+  test("1 MB of open quoted parameters after a header name", () => {
+    expect(timeMs("Authorization: Digest " + 'a="b, '.repeat(MB / 6))).toBeLessThan(2000)
+    expect(timeMs('"Authorization: Digest ' + 'a=\\"b, '.repeat(MB / 7))).toBeLessThan(2000)
+  })
+})
+
 describe("redact: secrets inside a JSON string", () => {
   // Same shape as the real /siwe/verify response: {"token":"<48 hex>"}.
   const hex48 = "5f0c1e2d3a4b".repeat(4)
@@ -165,5 +172,52 @@ describe("redact: proof text keeps its meaning and its syntax", () => {
   test("a query secret keeps the text after it", () => {
     expect(text(`see \`/api/me?token=${live}\`, then`)).toBe("see `/api/me?token=[REDACTED]`, then")
     expect(text(text(`/a?token=${live}&b=1`))).toBe("/a?token=[REDACTED]&b=1")
+  })
+})
+
+describe("redact: an Authorization value with several parts", () => {
+  // A synthetic 64-hex signature and a fake key id, the shapes in a signed
+  // AWS request and a Digest response.
+  const sig = "9f" + "3a".repeat(31)
+  const aws = `AWS4-HMAC-SHA256 Credential=AKIDFAKEEXAMPLE/20260101/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${sig}`
+  const digest = `Digest username="alice", realm="lab", nonce="n0nceFAKE42", uri="/api/me", response="${sig}"`
+
+  test("an AWS4 header line is masked to the end of the line", () => {
+    const out = text(`GET / HTTP/1.1\r\nAuthorization: ${aws}\r\nHost: x`)
+    expect(out).toBe("GET / HTTP/1.1\r\nAuthorization: AWS4-HMAC-SHA256 [REDACTED]\r\nHost: x")
+    expect(text(out)).toBe(out)
+  })
+
+  test("a Digest header line keeps no quoted part", () => {
+    expect(text(`Authorization: ${digest}\nnext line`)).toBe("Authorization: Digest [REDACTED]\nnext line")
+    const esc = digest.replaceAll('"', '\\"')
+    expect(text(`"GET /\\nAuthorization: ${esc}\\nHost: x"`)).toBe(`"GET /\\nAuthorization: Digest [REDACTED]\\nHost: x"`)
+  })
+
+  test("a quoted AWS4 or Digest header is masked to its closing quote", () => {
+    expect(text(`curl -H 'Authorization: ${aws}' https://x`)).toBe(`curl -H 'Authorization: AWS4-HMAC-SHA256 [REDACTED]' https://x`)
+    expect(text(`curl -H 'Authorization: ${digest}' https://x`)).toBe(`curl -H 'Authorization: Digest [REDACTED]' https://x`)
+    const esc = digest.replaceAll('"', '\\"')
+    expect(text(`curl -H "Authorization: ${esc}" https://x`)).toBe(`curl -H "Authorization: Digest [REDACTED]" https://x`)
+  })
+
+  test("every cookie in a Cookie header is masked", () => {
+    expect(text(`Cookie: theme=dark; sid=${sig}\n`)).toBe("Cookie: [REDACTED]\n")
+  })
+
+  test("a PoC script that sends these headers still parses", () => {
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor
+    const script = [
+      `const h1 = 'Authorization: ${aws}';`,
+      "const h2 = `Authorization: " + digest + "`;",
+      `const h3 = "Cookie: sid=${sig}; theme=dark";`,
+      `const h4 = {"Authorization": "${digest.replaceAll('"', '\\"')}"};`,
+      `const raw = "GET / HTTP/1.1\\r\\nAuthorization: ${digest.replaceAll('"', '\\"')}\\r\\n\\r\\n";`,
+    ].join("\n")
+    const out = text(script)
+    expect(() => new AsyncFunction(script)).not.toThrow()
+    expect(() => new AsyncFunction(out)).not.toThrow()
+    expect(out).not.toContain(sig)
+    expect(out).not.toContain("nonceFAKE")
   })
 })

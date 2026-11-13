@@ -37,13 +37,17 @@ const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)
 // escaped "\n", with an optional curl -v "> " or "< "), or right after an
 // opening quote or backtick, as in curl -H "Authorization: Basic …". Prose
 // such as "Missing authorization: the endpoint …" is not a header.
-// The value is one or two words. It never takes a quote, a backslash, a
-// bracket, a comma or a semicolon, so the text around it keeps its syntax.
+// The value runs to the end of the header, so every part of an AWS4 or
+// Digest value is covered. On a line it stops at a line break (real or
+// escaped), a quote, a backslash or a bracket; a quoted Digest parameter
+// (name="…" or name=\"…\") is part of the value. After a quote it stops at
+// the same closing quote or a line break. A trailing comma, semicolon or
+// space stays outside the mask, so the text around it keeps its syntax.
 const HEADER_NAME = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:[ \t]*)`
-const WORD = String.raw`[^\s"'` + "`" + String.raw`\\,;()\[\]{}<>]+`
-const HEADER_VALUE = `(${WORD}(?:[ \\t]+${WORD})?)`
-const LINE_HEADER = new RegExp(String.raw`(?<=^|[\r\n]|\\n)([ \t]*(?:[<>] )?)` + HEADER_NAME + HEADER_VALUE, "g")
-const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER_NAME + HEADER_VALUE, "g")
+const LINE_VALUE = String.raw`((?:=(?:"[^"\\\r\n]*"|\\"[^"\\\r\n]*\\")|\[REDACTED[^\]\r\n]{0,80}\]|[^\r\n\\"'` + "`" + String.raw`()\[\]{}<>]|\\[^rn"\r\n])+)`
+const QUOTE_VALUE = String.raw`((?:=\\"[^"\\\r\n]*\\"|(?!\1)[^\\\r\n]|\\(?![rn]|\1)[^\r\n])+)`
+const LINE_HEADER = new RegExp(String.raw`(?<=^|[\r\n]|\\n)([ \t]*(?:[<>] )?)` + HEADER_NAME + LINE_VALUE, "g")
+const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER_NAME + QUOTE_VALUE, "g")
 
 // Each optional part has one way to match a run of spaces. Two adjacent
 // \s* / \s+ that can split the same run made this quadratic (ReDoS).
@@ -94,9 +98,10 @@ function maskHeaderValue(name, value) {
   return credential(value) ? MARK : null
 }
 
-function maskHeader(m, lead, name, sep, value) {
-  const masked = maskHeaderValue(name, value)
-  return masked == null ? m : `${lead}${name}${sep}${masked}`
+function maskHeader(m, lead, name, sep, raw) {
+  const value = raw.replace(/[ \t,;]+$/, "")
+  const masked = value && maskHeaderValue(name, value)
+  return masked ? `${lead}${name}${sep}${masked}${raw.slice(value.length)}` : m
 }
 
 // The masked value of a "key":"value" pair, or null to keep it. An
