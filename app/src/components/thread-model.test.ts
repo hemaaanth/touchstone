@@ -7,7 +7,7 @@ import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
 import { orderModules } from "../lib/module-colors"
-import { agentLook, buildMessages, findingTarget, focusActions, inRunOrder, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, composerNotice, findingTarget, focusActions, inRunOrder, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -396,4 +396,44 @@ test("Run Info's module pills follow the run's own order, not the server's list"
   // The pills order by that list, as ModulePills does.
   assert.deepEqual(orderModules(["contracts", "domains", "web"], ordered!.map((p) => p.id)), ["web", "contracts", "domains"])
   assert.equal(inRunOrder(undefined, ["web"]), undefined)
+})
+
+test("a refused rename or archive says why in the composer line; a refused send comes first", () => {
+  const refusal = { title: "Not renamed", text: "this console's token is out of date; reload the page" }
+  assert.deepEqual(composerNotice(null, refusal), { title: "Not renamed", detail: "This console's token is out of date; reload the page." })
+  assert.deepEqual(composerNotice("spend cap reached", refusal), { title: "Message not sent", detail: "Spend cap reached." })
+  assert.equal(composerNotice(null, null), null)
+})
+
+test("a joined run's finding card reads its own module's proof, not the scope's; a one-module run reads as before", () => {
+  const contracts = { ev: "scope", scope: { id: "s", title: "Vault and site", kind: "lab", pack: "contracts", proofSurface: { kind: "sandbox-foundry" } } } as RunEvent
+  const kinds = (events: RunEvent[], packProof: Record<string, string> = {}) =>
+    buildMessages(reduceEvents(events), reduceEvents(events).steps, "recorded", false, false, null, packProof)
+      .flatMap((m) => (Array.isArray(m.content) ? (m.content as { toolName?: string; args?: { proofKind?: string } }[]) : []))
+      .filter((p) => p.toolName === "proof")
+      .map((p) => p.args?.proofKind)
+  const web: RunEvent = { ev: "finding-submitted", n: 1, title: "XSS", severity: "medium", poc: "xss-1", pack: "web" }
+  // From the finding's own record (the server sends pack and proofKind).
+  assert.deepEqual(kinds([contracts, web, { ev: "finding", id: `${R}.1`, runId: R, title: "XSS", poc: "xss-1", pack: "web", proofKind: "http" }]), ["http"])
+  // Before the record arrives: from the module it came through.
+  assert.deepEqual(kinds([contracts, web], { web: "http", contracts: "forge" }), ["http"])
+  // A one-module run, or a card with no module: the scope's, as today.
+  const forge: RunEvent = { ev: "finding-submitted", n: 1, title: "Drain", severity: "high", poc: "DrainTest" }
+  assert.deepEqual(kinds([contracts, forge, { ev: "finding", id: `${R}.1`, runId: R, title: "Drain", poc: "DrainTest" }]), ["forge"])
+})
+
+test("a recorded finding with a module but no proof kind reads its module's proof, before the scope's", () => {
+  // The review's case: no pack on the card, no proofKind on the record, only the record's pack.
+  const contracts = { ev: "scope", scope: { id: "s", title: "Vault", kind: "lab", pack: "contracts", proofSurface: { kind: "sandbox-foundry" } } } as RunEvent
+  const events: RunEvent[] = [
+    contracts,
+    { ev: "finding-submitted", n: 1, title: "XSS", severity: "medium", poc: "P" },
+    { ev: "finding", id: `${R}.1`, runId: R, title: "XSS", poc: "P", pack: "web" },
+  ]
+  const state = reduceEvents(events)
+  const kinds = buildMessages(state, state.steps, "recorded", false, false, null, { web: "http", contracts: "forge" })
+    .flatMap((m) => (Array.isArray(m.content) ? (m.content as { toolName?: string; args?: { proofKind?: string } }[]) : []))
+    .filter((p) => p.toolName === "proof")
+    .map((p) => p.args?.proofKind)
+  assert.deepEqual(kinds, ["http"])
 })

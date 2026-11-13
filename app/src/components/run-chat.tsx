@@ -19,7 +19,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { agentLook, buildMessages, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone, type HeadTone } from "@/components/thread-model"
+import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
@@ -77,6 +77,7 @@ export function RunChat({
   onDelete,
   packs,
   focus = null,
+  actionError = null,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
@@ -87,6 +88,9 @@ export function RunChat({
   // "Open this finding" (the Findings page): the finding's id. `at` is when it
   // was asked, so asking again for the same finding jumps again.
   focus?: FocusFinding | null
+  // A rename or archive of this run that the server refused: what did not
+  // happen, and the server's sentence. It shows in the composer's line.
+  actionError?: { title: string; text: string } | null
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
@@ -258,13 +262,15 @@ export function RunChat({
 
   // A fleet's main chat is the coordinator's thread. Its "session started"
   // marker says nothing there, so it is left out. A solo run keeps every step.
+  // Each module's proof kind, so a finding's card reads its own module's proof.
+  const packProof = useMemo(() => Object.fromEntries((packs ?? []).map((p) => [p.id, p.proof])), [packs])
   const mainSteps = useMemo(
     () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
     [state, fleet],
   )
   const messages = useMemo(
-    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null), state, mainSteps, live, fleet, sent, outcomes),
-    [state, mainSteps, status, live, fleet, sent, outcomes],
+    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null, packProof), state, mainSteps, live, fleet, sent, outcomes),
+    [state, mainSteps, status, live, fleet, sent, outcomes, packProof],
   )
 
   // assistant-ui blocks Send while a run is live unless the runtime has a
@@ -374,11 +380,11 @@ export function RunChat({
   const peekMessages = useMemo(() => {
     if (!peek || !state) return []
     const steps = threadSteps(state.steps, peek.id)
-    const ms = buildMessages(state, steps, status, peekLive, true, peek.id)
+    const ms = buildMessages(state, steps, status, peekLive, true, peek.id, packProof)
     const wait = awaitingReply(steps, peekLive, peek.id)
     if (wait) ms.push(waitingMessage(state, wait.id, true, peek.id))
     return ms
-  }, [peek, state, status, peekLive])
+  }, [peek, state, status, peekLive, packProof])
   const peekRuntime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: peekMessages,
     isRunning: peekLive,
@@ -596,7 +602,7 @@ export function RunChat({
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
-                  sendError={composerError}
+                  notice={composerNotice(composerError, actionError)}
                   sending={pending}
                   context={state ? mainContext(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
@@ -649,7 +655,7 @@ export function RunChat({
                             onRetry={() => {}}
                             retrying={false}
                             archived={archived}
-                            sendError={null}
+                            notice={null}
                             readOnly
                           />
                         </AssistantRuntimeProvider>

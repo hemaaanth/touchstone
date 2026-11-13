@@ -128,13 +128,19 @@ export function App() {
 
   // Archive (or bring back) a run from the rail. The run store holds the flag,
   // so the row moves and the composer locks once the run reloads.
+  // A refused rename or archive says why, in the run view's composer line.
+  const [refused, setRefused] = useState<{ run: string; title: string; text: string } | null>(null)
+  const refuse = (run: string, title: string) => (e: unknown) =>
+    setRefused({ run, title, text: e instanceof Error ? e.message : String(e) })
+  const done = (run: string) => setRefused((cur) => (cur?.run === run ? null : cur))
   const onArchive = useCallback((id: string, archived: boolean) => {
     archiveRun(id, archived)
       .then(() => {
         setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, archived } : r)))
         reloadRun(id)
+        done(id)
       })
-      .catch(() => {})
+      .catch(refuse(id, archived ? "Not archived" : "Not restored"))
   }, [])
 
   // Rename a run from the rail or its top bar. The list holds the name, so the
@@ -144,8 +150,14 @@ export function App() {
     const clean = name.replace(/\s+/g, " ").trim().slice(0, 120) || null
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, name: clean } : r)))
     renameRun(id, clean ?? "")
-      .then(() => reloadRun(id))
-      .catch(() => fetchRuns().then(setRuns).catch(() => {}))
+      .then(() => {
+        reloadRun(id)
+        done(id)
+      })
+      .catch((e: unknown) => {
+        refuse(id, "Not renamed")(e)
+        fetchRuns().then(setRuns).catch(() => {})
+      })
   }, [])
 
   // Delete a run from its top bar. The row leaves the list, and the view moves
@@ -207,6 +219,7 @@ export function App() {
             onDelete={onDelete}
             packs={packs}
             focus={focus?.run === activeRun.id ? focus : null}
+            actionError={refused?.run === activeRun.id ? refused : null}
           />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
