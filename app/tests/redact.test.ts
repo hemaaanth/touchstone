@@ -369,3 +369,21 @@ describe("redact: secret query names (delta review 4)", () => {
     for (const s of ["/api/items?page=2&sort=Zq7Xv9KpR2mN4tW8", "/oauth?code=200", "/x?token=t1"]) expect(text(s)).toBe(s)
   })
 })
+
+describe("redact: secret command-line flags (delta review 4)", () => {
+  const pk = "0x" + "ac0974bec39a17e3".repeat(4)
+  test("--private-key, --api-key= and a quoted --token are masked", () => {
+    expect(text(`cast send --private-key ${pk} --rpc-url http://127.0.0.1:8545 0xabc`)).toBe(
+      "cast send --private-key [REDACTED] --rpc-url http://127.0.0.1:8545 0xabc",
+    )
+    expect(text("tool --api-key=tk_alice_7f3a9c2e run")).toBe("tool --api-key=[REDACTED] run")
+    expect(text(`tool --token "Zq7Xv9KpR2mN4tW8"`)).toBe('tool --token "[REDACTED]"')
+  })
+  test("a variable, a plain flag and a short value stay", () => {
+    for (const s of ['cast send --private-key "$PK"', "forge test --match-test testExploit", "tool --token t1"]) expect(text(s)).toBe(s)
+  })
+  test("1 MB of flags finishes in linear time", () => {
+    expect(timeMs("--private-key".repeat(MB / 13))).toBeLessThan(2000)
+    expect(timeMs("--token " + " ".repeat(MB))).toBeLessThan(2000)
+  })
+})

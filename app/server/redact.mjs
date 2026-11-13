@@ -83,6 +83,9 @@ const QUERY_NAME = /^(?:key|sig|code|auth)$/i
 const URL_USERINFO = /(\/\/[^\s/:@"'`]{1,64}:)([^\s/@"'`]{1,256})(?=@)/g
 const CURL_USER = /((?:^|\s)(?:-u|--user)[ =]?["']?[^\s:"'@]{1,64}:)([^\s"']{1,256})/g
 const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s"']+))/g
+// A command-line flag whose name passes secretName: cast send
+// --private-key 0x…, --api-key=…, --token "…".
+const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\r\n]*)\3|([^\s"'`;&|()<>]+))/g
 const ENV_ASSIGN = /\b([A-Z][A-Z0-9_]{1,63})=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|]+))/g
 
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
@@ -167,6 +170,12 @@ function maskCookieArg(m, head, q, quoted, bare) {
   return q ? `${head}${q}${MARK}${q}` : head + MARK
 }
 
+function maskFlag(m, head, name, q, quoted, bare) {
+  const v = quoted ?? bare
+  if (!secretName(name) || !secretish(v, 6)) return m
+  return q ? `${head}${q}${MARK}${q}` : head + MARK
+}
+
 function maskEnv(m, name, dq, sq, bare) {
   const v = dq ?? sq ?? bare
   if (!secretName(name) || !secretish(v, 6)) return m
@@ -176,7 +185,7 @@ function maskEnv(m, name, dq, sq, bare) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -201,6 +210,7 @@ function redactText(text) {
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_COOKIE, maskCookieArg)
+  out = out.replace(CLI_FLAG, maskFlag)
   out = out.replace(ENV_ASSIGN, maskEnv)
   for (const re of SHAPES) out = out.replace(re, MARK)
   return out
