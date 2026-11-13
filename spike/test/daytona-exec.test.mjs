@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { closeRun, delta, execConfig, imageGuard, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
+import { runTool } from "../lib/wrap.mjs";
 
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
@@ -354,6 +355,37 @@ test("the full remote script parses in sh for both image guards (--pull=never an
     assert.match(pulled, /docker pull -q 'img:1'/);
     // sh -n parses without running. A syntax error exits non-zero and execFileSync throws.
     for (const script of fake.scripts) execFileSync("sh", ["-n"], { input: script, stdio: ["pipe", "ignore", "pipe"] });
+  });
+});
+
+// runTool names its container for the local timeout. The remote script names
+// it too, and its watchdog kills that name. Docker uses the last --name, so a
+// second one would make the watchdog miss the container: a hung tool would
+// end as a success. The script must hold one --name, the one it kills.
+test("runTool's argv on the remote path has one --name, the one the watchdog kills", async () => {
+  const shim = mkdtempSync(join(tmpdir(), "dtn-name-"));
+  const record = join(shim, "args");
+  const path = process.env.PATH;
+  await withFake({}, async ({ mod, ws, fake }) => {
+    let args;
+    try {
+      writeFileSync(join(shim, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+      process.env.PATH = shim + ":" + path;
+      const saved = process.env.TOUCHSTONE_EXEC;
+      process.env.TOUCHSTONE_EXEC = "local";
+      try { await runTool({ image: "img:1", cmd: ["true"], ws }); } finally { process.env.TOUCHSTONE_EXEC = saved; }
+      args = readFileSync(record, "utf8").trim().split("\n");
+    } finally {
+      process.env.PATH = path;
+      rmSync(shim, { recursive: true, force: true });
+    }
+    assert.equal(args.filter((a) => a === "--name").length, 1, "runTool gives a --name");
+    assert.equal(planRemote(args, ws, "/r").args.includes("--name"), false);
+    assert.equal((await mod.remoteDocker(args, { ws }))?.stdout, "hi");
+    const script = fake.scripts.at(-1);
+    const names = [...script.matchAll(/'--name' '([^']+)'/g)].map((m) => m[1]);
+    assert.equal(names.length, 1, "names in the docker run line: " + names.join(", "));
+    assert.equal(script.match(/docker kill (\S+) &&/)?.[1], names[0]);
   });
 });
 

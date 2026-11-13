@@ -92,6 +92,19 @@ test("a timeout removes the container and returns near timeoutMs", { skip: !hasD
   assert.equal(left.includes(mark), false, "the container is still there");
 });
 
+// A timeout can fire before Docker created the container. No "Created"
+// container may stay behind. The mark is in the command, so ps -a shows it.
+test("a 50 ms timeout leaves no container behind", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout50-" + process.pid;
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 50 });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  const left = () => execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Names}} {{.Status}} {{.Command}}"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(mark));
+  assert.deepEqual(left(), [], "a container is left at return");
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.deepEqual(left(), [], "a container appeared after return");
+});
+
 test("runTool mounts the workspace and has no network", { skip: !hasDocker && "no docker" }, async () => {
   const ws = mkdtempSync(join(tmpdir(), "wrap-"));
   try {
