@@ -303,6 +303,52 @@ test("harm gate: a setUp-funded vault drained in the test body is still a token 
   assert.equal(h.lostUnits, "100");
 });
 
+// ---- cloneAccount recorded as an etch (M3) ---------------------------------
+//
+// vm.cloneAccount(source, target) copies source's code onto target. The gate
+// used to see only vm.etch, so a fake deployed with cloneAccount read as the
+// real scope contract and a forged drain/takeover built on it was proven.
+// control-trace.mjs now records cloneAccount as an etch of its second argument,
+// so the target stops being a scope contract — the same path a plain etch takes.
+
+const CLONE = "0x533d61c9";
+const cloneAccount = (source, target) => node(0, {
+  kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST,
+  data: CLONE + word(source).slice(2) + word(target).slice(2),
+});
+
+test("harm gate: cloneAccount over the scope target removes it, so a forged takeover proves nothing (M3)", () => {
+  // Clone a fake over the one scope target, then re-point its owner slot. Before
+  // the fix the clone was invisible, the target stayed in scope, and the owner
+  // re-point read as a control takeover. Now the target is etched away.
+  const SOURCE = "0x00000000000000000000000000000000000000c0";
+  const traces = [setup(), exec(
+    cloneAccount(SOURCE, VAULT),
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x13af4035", steps: [sstore("0x0", "0x" + TEST.slice(2).padStart(64, "0"), "0x" + ATTACKER.slice(2).padStart(64, "0"))] }),
+  )];
+  const h = verdict(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /deployed no contract from the audited scope/);
+});
+
+test("harm gate: a Transfer log from a scope token the test cloned over is not a drain (M3 cloneover)", () => {
+  // TOKEN is a scope token, then cloned over with a fake. A storage-plus-log
+  // drain built on it must be rejected: the clone etched TOKEN away, so it is no
+  // longer the audited token. The genuine victim (VAULT) stays in scope but is
+  // not drained, so the verdict is no-harm.
+  const SOURCE = "0x00000000000000000000000000000000000000c0";
+  const log = transferLog(VAULT, ATTACKER, ONE);
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    cloneAccount(SOURCE, TOKEN),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
 // ---- real forge, in Docker --------------------------------------------------
 
 const hasForge = (() => {

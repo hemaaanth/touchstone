@@ -5,10 +5,11 @@
 // does not decide what counts as harm. Packs read the result (see packs/keys/control.mjs).
 //
 // What we keep:
-// - etches: calls to the cheatcode `etch(address,bytes)` that stayed in the trace, read
-//   from EVERY trace, `Setup` included. A setUp() etch swaps a target's code before the
-//   test body runs, so the harm gate must still exclude the address; the record is not
-//   itself harm. `index` is the out.calls offset the etch applies to.
+// - etches: calls to the cheatcode `etch(address,bytes)`, plus `cloneAccount(source,target)`
+//   recorded as an etch of its target, that stayed in the trace, read from EVERY trace,
+//   `Setup` included. A setUp() etch swaps a target's code before the test body runs, so
+//   the harm gate must still exclude the address; the record is not itself harm. `index`
+//   is the out.calls offset the etch applies to.
 // - writes (from the "Execution" trace only): a real SSTORE (value changed) in a call
 //   that did not revert and outside any contract constructor. A write made under a Safe
 //   `setup` call carries `setup: true`. A setUp write is fixture, not an exploit step.
@@ -27,6 +28,11 @@
 import { keccak256, toUtf8Bytes } from "ethers";
 const VM = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
 const ETCH = "0xb4d6c782";
+// vm.cloneAccount(address source, address target) copies source's code (and
+// storage, balance, nonce) onto target. For the harm gate that is an etch of
+// the SECOND argument: target is no longer the scope's compiled code, so it
+// must stop being a scope target, exactly as a plain etch does.
+const CLONE_ACCOUNT = "0x533d61c9";
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -113,6 +119,13 @@ export function extractControlTrace(traces) {
         const target = "0x" + data.slice(24, 64);
         const length = parseInt(data.slice(128, 192) || "0", 16);
         out.etches.push({ index: out.calls.length, target, code: "0x" + data.slice(192, 192 + length * 2) });
+      } else if (address === VM && selector === CLONE_ACCOUNT) {
+        // cloneAccount(source, target): the SECOND word is the target whose code
+        // was replaced. The cloned bytes come from source's live code, not the
+        // calldata, so we record no code — the harm gate reads only `target`.
+        const data = String(t.data).slice(10);
+        const target = "0x" + data.slice(88, 128);
+        out.etches.push({ index: out.calls.length, target, code: "0x" });
       } else if (execution && address !== VM) out.calls.push({ address, caller });
     });
   }
