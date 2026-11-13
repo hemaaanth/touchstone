@@ -39,6 +39,7 @@ import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 import { MULTI_DIR, prepassViewOf } from "../../spike/packs/multi.mjs"
+import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -337,6 +338,7 @@ function broadcast(run, event) {
   }
   if (event.ev === "closed") {
     release(run)
+    if (registry.pruneOwed) pruneReplays(run)
     if (TERMINAL.includes(run.status) && !run.replying) {
       if (run.stateFile) rmSync(run.stateFile, { force: true })
       if (run.db) rmSync(`${run.db}.audit.json`, { force: true })
@@ -1707,8 +1709,24 @@ export function deleteRun(id) {
       if (f.startsWith(prefix)) renameSync(path.join(RESULTS_DIR, f), path.join(trash, f))
     }
   }
+  // The run's record is in the trash now, so it names no replay file any more.
+  pruneReplays(run)
   runs.delete(id)
   return { ok: true }
+}
+
+// Remove each stored replay file (replay/<sha256>.json) that no run record
+// names any more. A run in its proof check stores a replay file before its
+// record names it, so nothing is removed while another run works: the prune is
+// owed then, and runs when a run closes. `self` is the run that is ending.
+function pruneReplays(self) {
+  registry.pruneOwed = [...runs.values()].some((r) => r !== self && !idle(r))
+  if (registry.pruneOwed) return
+  try {
+    pruneReplayStore(RESULTS_DIR) // removes nothing when a record cannot be read
+  } catch {
+    // Best effort: the delete or the close itself is done.
+  }
 }
 
 // Assemble the engine's canonical { result, transcript } record and write it

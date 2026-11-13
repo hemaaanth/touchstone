@@ -407,6 +407,52 @@ test("deleting a run deletes its kept workspace", async () => {
   assert.ok(existsSync(path.join(RESULTS, "trash", `run-${id}.workspace.json`)));
 });
 
+// A stored replay file, as a proven finding leaves it (replay/<sha256>.json). With
+// an id, that run's record names it.
+const replayFile = (c) => path.join(RESULTS, "replay", `${c.repeat(64)}.json`);
+function storeReplay(c, id) {
+  mkdirSync(path.join(RESULTS, "replay"), { recursive: true });
+  writeFileSync(replayFile(c), "{}");
+  if (!id) return;
+  const file = path.join(RESULTS, `run-${id}.json`);
+  const rec = JSON.parse(readFileSync(file, "utf8"));
+  rec.result.findings = [...(rec.result.findings ?? []), { title: "T", proof: { replay: { store: { sha256: c.repeat(64) } } } }];
+  writeFileSync(file, JSON.stringify(rec));
+}
+
+test("deleting a run removes the replay files only it named; nothing goes while a record cannot be read or another run works", async () => {
+  const [a, b, c, d] = [await finished(), await finished(), await finished(), await finished()];
+  for (const [letter, run] of [["a", a], ["b", b], ["c", c], ["d", d]]) storeReplay(letter, run.id);
+  deleteRun(a.id);
+  assert.ok(!existsSync(replayFile("a")), "the deleted run's replay file is gone");
+  assert.ok(["b", "c", "d"].every((l) => existsSync(replayFile(l))), "a file that another record names stays");
+
+  // A record that cannot be read: the prune removes nothing.
+  const torn = path.join(RESULTS, "run-torn.json");
+  writeFileSync(torn, '{"result": ');
+  try {
+    deleteRun(c.id);
+    assert.ok(existsSync(replayFile("c")));
+  } finally {
+    rmSync(torn);
+  }
+
+  // Run B works. Its proof check has stored a replay file that no record names yet.
+  scripts.push({ hang: true });
+  steerRun(b.id, "Go on.");
+  storeReplay("e");
+  deleteRun(d.id);
+  assert.ok(existsSync(replayFile("e")), "a working run's new replay file is not removed");
+  assert.ok(existsSync(replayFile("d")), "so this prune waits");
+  // B's record names the file, then B ends: the prune that was owed runs.
+  storeReplay("e", b.id);
+  runs.stopRun(b.id);
+  await settle(b.id, 1);
+  assert.deepEqual(readdirSync(path.join(RESULTS, "replay")).sort(), [`${"b".repeat(64)}.json`, `${"e".repeat(64)}.json`]);
+  deleteRun(b.id);
+  assert.deepEqual(readdirSync(path.join(RESULTS, "replay")), []);
+});
+
 // ---- Safety: the record's path is checked before a delete or a reuse --------------
 
 const record = (id) => path.join(RESULTS, `run-${id}.workspace.json`);
