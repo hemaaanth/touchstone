@@ -229,7 +229,9 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
+| H1 | doing | PR 4 (harm gate), `merge/pr-4` `4915bde`: re-review NOT READY (`thr_qxi2n9w6dn`). Three bypasses inside the claim (cheatcode by STATICCALL, prank in a reverted frame, delegate prank as the token) and `mockFunction`. None is a regression: `main` proves all of them, and the candidate already stops 10 forged cases that `main` proves. Repair round 2 with author `thr_sfn46di74u`. PR 3 is its twin; close it when PR 4 merges. |
+| H1b | todo | Harm gate, tamper class: `vm.store` and `vm.mockCall` on a scope target forge a drain (also on `main`). Needs a rule that keeps real PoCs that use `vm.store` for fixture. Plus a backstop for unknown cheatcodes (a call whose caller is not its parent frame). Own reviewer. Wave 3. |
+| H1c | todo | A PoC body that calls forge-std `deal(token, …)` makes more than 8 MiB of trace and can never be proven (`sandbox.mjs:237`). Fails closed, but costs true positives. Raise the cap or tell the agent to put `deal` in `setUp`. Wave 3. |
 | H2 | review | PR 7 (report redaction), `merge/pr-7` 5265d20: author done (10 commits after the merge with main, 246 app tests pass). Final delta review runs (thread `thr_tjjx45bfz5`). Open by design: JSON escaped three or more times (see H2b). Blocks F2. |
 | H2b | todo | Follow-up to PR 7: redact JSON at every escape level by decoding each level, instead of one regex per depth. Wave 3. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
