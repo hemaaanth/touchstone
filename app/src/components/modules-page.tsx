@@ -6,7 +6,7 @@ import { moduleAside, moduleNote, packOf, PLAN_STEP, planStepState, plural, proo
 import { ago } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Empty, Label, PageBody, PageHeader, RunLinks, UncountedNote } from "@/components/page-parts"
+import { Empty, Label, PageBody, PageHeader, RunLinks } from "@/components/page-parts"
 
 // The attack modules the agent can run. One row per pack the engine's loader
 // lists (GET /api/models `packs`). Closed, a row shows the pack, how it proves
@@ -28,15 +28,12 @@ export function ModulesPage({
   briefs: Record<string, RunBrief>
   onOpenRun: (id: string) => void
 }) {
-  const { scoped, loading, unscoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
+  const { scoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader icon={Boxes} title="Modules" />
       <PageBody>
-        <p className="mb-4 text-xs text-muted-foreground">
-          Each module brings its own tools. A finding is real only when a replay passes.
-        </p>
         {catalog === "loading" ? (
           <Empty>Loading…</Empty>
         ) : catalog === "error" && packs.length === 0 ? (
@@ -57,7 +54,6 @@ export function ModulesPage({
             ))}
           </ul>
         )}
-        <UncountedNote loading={loading} unscoped={unscoped} />
       </PageBody>
     </div>
   )

@@ -1,6 +1,5 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runTool } from '../../lib/wrap.mjs';
@@ -10,12 +9,14 @@ import { tlsLeads } from './tls.mjs';
 import { dnssecLeads } from './dnssec.mjs';
 
 export const IMAGE = 'touchstone-domains-tools:wave2';
-// Build the tools image from this folder when it is missing. This builds our own image. It runs no third-party code.
+// A run never builds an image: a build takes minutes and may pull from the network.
+// Setup builds every image. A missing image is an error that says so.
+export const missingImage = image => 'The image ' + image + ' is missing. Run node spike/scripts/setup.mjs to build it. A run never builds an image.';
 let imageReady;
-export function ensureImage() {
+export function ensureImage(exec = execFileSync) {
   if (imageReady) return;
-  try { execFileSync('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }); }
-  catch { execFileSync('docker', ['build', '-t', IMAGE, fileURLToPath(new URL('.', import.meta.url))], { stdio: 'ignore', timeout: 600000 }); }
+  try { exec('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }); }
+  catch { throw new Error(missingImage(IMAGE)); }
   imageReady = true;
 }
 export async function analyzeSnapshot(snapshot) {
