@@ -86,7 +86,7 @@ async function collectSlitherLeadsUnit(ws, srcDir, files, timeoutMs) {
   writeFileSync(unitPath, unit);
   try {
     const args = [
-      "run", "--rm", "--network", "none",
+      "run", "--rm", "--pull=never", "--network", "none",
       "-v", `${ws}:/work`, "-w", "/work", "--entrypoint", "sh",
       IMG,
       "-c",
@@ -117,7 +117,7 @@ async function collectSlitherLeadsPerFile(ws, files, timeoutMs) {
   let failed = 0;
   for (const rel of files) {
     const args = [
-      "run", "--rm", "--network", "none",
+      "run", "--rm", "--pull=never", "--network", "none",
       "-v", `${ws}:/work`, "-w", "/work", "--entrypoint", "sh",
       IMG,
       "-c",
