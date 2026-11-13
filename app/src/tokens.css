@@ -4,6 +4,11 @@
    CSS: only the :root block and the .dark block. */
 
 :root {
+    /* The scheme the page really uses, declared on the root for each theme. A
+       browser that recolours pages for its own dark mode (Chrome's auto dark,
+       Samsung Internet's "prefer media query" setting) leaves a page alone that
+       says it is already dark. index.html keeps the meta tag in step. */
+    color-scheme: light;
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -59,6 +64,7 @@
 }
 
 .dark {
+    color-scheme: dark;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
