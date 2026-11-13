@@ -55,6 +55,8 @@ export function RunPanel({
   width,
   onWidth,
   initialWidth,
+  compact = false,
+  control,
 }: {
   state: RunState
   live: boolean
@@ -74,7 +76,13 @@ export function RunPanel({
   width: number
   onWidth: (w: number) => void
   initialWidth: number
+  // On a narrow screen the folded line is the top bar's PanelControl, so the
+  // panel shows only when open, fills the width it is given, and has no drag
+  // edge. Escape gives focus back to that control.
+  compact?: boolean
+  control?: React.RefObject<HTMLButtonElement | null>
 }) {
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const agents = state.agents
   const notes = state.bulletin
   // Replay proofs belong to their findings, not to the run's working files.
@@ -101,27 +109,34 @@ export function RunPanel({
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
   // The folded line. Each count bumps when it goes up.
-  const summary = [
-    showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
-    showBulletin ? counted(notes.length, "note") : null,
-    showLeads ? counted(recordedLeads.length, "lead") : null,
-    counted(found.length, "finding"),
-    counted(docs.length, "file"),
-  ].filter((p) => p != null)
+  const summary = panelSummary(state, mode)
+  // Escape folds the panel and gives focus back to its toggle. The drawer
+  // also closes on Escape; the panel takes the key first.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "Escape" || !open || e.defaultPrevented) return
+    e.preventDefault()
+    onOpenChange(false)
+    ;(compact ? control?.current : toggleRef.current)?.focus()
+  }
 
   // One width, open or folded, so the corner never jumps when it folds. The
   // run chat owns the width: the top bar keeps the same room for the folded
   // line. The operator can drag the left edge; the width is kept across reloads.
   return (
     <div
-      style={{ width }}
+      id="run-panel"
+      style={compact ? undefined : { width }}
+      onKeyDown={onKeyDown}
       className={cn(
         "pointer-events-auto relative flex max-h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-popover/95 backdrop-blur-md",
         open && "shadow-lg",
+        compact && "w-full",
       )}
     >
-      <ResizeHandle edge="left" width={width} onWidth={onWidth} initial={initialWidth} label="Resize panel" />
+      {compact ? null : <ResizeHandle edge="left" width={width} onWidth={onWidth} initial={initialWidth} label="Resize panel" />}
       <button
+        ref={toggleRef}
+        hidden={compact}
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
@@ -284,6 +299,63 @@ function statePills(items: PanelFinding[]): Pill[] {
   return PILL_ORDER.map((card) => ({ card, n: items.filter((f) => f.card === card).length }))
     .filter((p) => p.n > 0)
     .map(({ card, n }) => ({ key: card, n, state: card, title: `${n} ${CARD_WORD[card].toLowerCase()}`, ok: card === "proven" }))
+}
+
+// The folded line's counts: agents (or Solo), notes, leads, findings, files.
+function panelSummary(state: RunState, mode: RunMode) {
+  const notes = state.bulletin
+  const showAgents = mode === "fleet" || state.agents.length > 0
+  const showBulletin = mode === "fleet" || notes.length > 0
+  const showLeads = state.leads.length > 0 || state.scope?.pack === "review"
+  return [
+    showAgents ? counted(state.agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
+    showBulletin ? counted(notes.length, "note") : null,
+    showLeads ? counted(state.leads.length, "lead") : null,
+    counted(panelFindings(state).length, "finding"),
+    counted(state.artifacts.filter((d) => d.kind !== "proof").length, "file"),
+  ].filter((p) => p != null)
+}
+
+// The folded panel on a narrow screen: one small button in the top bar, so
+// the run title keeps the bar. It shows the finding count; its name reads the
+// whole folded line. Its width is fixed, so a count or a live run ending never
+// moves the title.
+export function PanelControl({
+  state,
+  mode,
+  open,
+  onOpenChange,
+  ref,
+}: {
+  state: RunState
+  mode: RunMode
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  ref: React.RefObject<HTMLButtonElement | null>
+}) {
+  const summary = panelSummary(state, mode)
+  const findings = panelFindings(state).length
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={() => onOpenChange(!open)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && open) {
+          e.preventDefault()
+          onOpenChange(false)
+        }
+      }}
+      aria-expanded={open}
+      aria-controls="run-panel"
+      aria-label={`Run panel: ${summary.map((p) => (p.n != null ? `${p.n} ${p.word}` : p.word)).join(", ")}`}
+      className="flex h-8 w-14 shrink-0 items-center justify-center gap-1 rounded-lg border border-border/60 bg-popover/95 text-xs text-muted-foreground tabular-nums outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <ShieldCheck className="size-3.5 shrink-0" />
+      <Bump n={findings} />
+      <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-180")} />
+    </button>
+  )
 }
 
 // One count of the folded line, like "3 files". Its number bumps on its own.

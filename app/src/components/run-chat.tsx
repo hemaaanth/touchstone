@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -21,7 +21,7 @@ import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
 import { buildMessages, OpenArtifact, runHeadStatus, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
+import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
   AGENT_WORD,
   FleetContext,
@@ -384,7 +384,8 @@ export function RunChat({
   // The run panel. It stays as the operator left it, on desktop and phone
   // apart. On a phone it starts folded, and folds again after a pick, since
   // the drawer covers the screen.
-  const [panelOpen, setPanelOpen] = useStoredFlag(isNarrow() ? "ts.panelOpen.phone" : "ts.panelOpen", !isNarrow())
+  const narrow = useNarrow()
+  const [panelOpen, setPanelOpen] = useStoredFlag(narrow ? "ts.panelOpen.phone" : "ts.panelOpen", !narrow)
   const [section, setSection] = useStoredSection()
   const picked = () => {
     if (isNarrow()) setPanelOpen(false)
@@ -399,9 +400,13 @@ export function RunChat({
   // top bar's right side, so it covers no chat; the title truncates earlier.
   // Open, it drops down from there over the chat. On a narrow view it shrinks
   // so the title keeps some room.
+  // Below md (a phone) the folded panel is one small button in the bar, so the
+  // title keeps the bar. Open, the panel drops below the bar across the whole
+  // width. Nothing done there changes the saved desktop width.
   const [storedPanel, setPanelWidth, panelDefault] = useStoredWidth("ts.panelWidth", 320, 280, 560)
   const panelWidth = viewWidth ? Math.min(storedPanel, Math.max(200, viewWidth - 240)) : storedPanel
   const showPanel = !!state && !!mode
+  const controlRef = useRef<HTMLButtonElement>(null)
 
   const back = below ? (
     <BackButton
@@ -415,21 +420,33 @@ export function RunChat({
   ) : null
 
   // Renaming swaps the title's text for an input of the same size, in the
-  // same h1, so nothing in the bar moves.
+  // same h1, so nothing in the bar moves. After Enter or Escape, focus goes
+  // back to the title; after a click away it stays where the click put it.
+  const refocusTitle = useRef(false)
+  const endRename = () => {
+    refocusTitle.current = document.activeElement?.closest("header h1") != null
+    setRenaming(false)
+  }
   const titleNode = renaming ? (
     <h1 className="min-w-0 text-sm font-medium">
       <TitleInput
         value={title}
         onSave={(name) => {
           onRename(run.id, name)
-          setRenaming(false)
+          endRename()
         }}
-        onCancel={() => setRenaming(false)}
+        onCancel={endRename}
       />
     </h1>
   ) : (
     <h1 className="min-w-0 truncate text-sm font-medium">
       <button
+        ref={(el) => {
+          if (el && refocusTitle.current) {
+            refocusTitle.current = false
+            el.focus()
+          }
+        }}
         type="button"
         title="Rename run"
         onClick={() => setRenaming(true)}
@@ -440,6 +457,51 @@ export function RunChat({
     </h1>
   )
 
+  // The panel sits in the top bar's right side, over the room the bar keeps
+  // for it, and opens down over the chat. It stops above the composer. Only
+  // the panel itself takes clicks. On a phone it shows only when open, below
+  // the bar, across the width, and it comes right after the bar in the page,
+  // so Tab goes from its control into it.
+  const panelLayer =
+    showPanel && (!narrow || panelOpen) ? (
+      <div
+        inert={drawerOpen && !beside}
+        className={cn(
+          "pointer-events-none absolute bottom-28 flex items-start justify-end",
+          narrow ? "top-[54px] right-3 left-3" : "top-[7px] right-3",
+          beside ? "z-30" : "z-10",
+        )}
+        style={beside ? { right: drawerWidth + 12 } : undefined}
+      >
+        <RunPanel
+          state={state}
+          live={live}
+          mode={mode}
+          model={run.alias}
+          open={panelOpen}
+          onOpenChange={setPanelOpen}
+          section={section}
+          onSection={setSection}
+          selectedAgent={peek?.id ?? null}
+          onAgent={(id) => {
+            openPeek(id)
+            picked()
+          }}
+          openDoc={openDoc?.id ?? null}
+          openVersion={topFile?.version ?? null}
+          onFile={(id, v) => {
+            openFile(false)(id, v)
+            picked()
+          }}
+          width={panelWidth}
+          onWidth={setPanelWidth}
+          initialWidth={panelDefault}
+          compact={narrow}
+          control={controlRef}
+        />
+      </div>
+    ) : null
+
   return (
     <OpenArtifact.Provider value={openFile(false)}>
       <FleetContext.Provider value={fleetView}>
@@ -449,7 +511,13 @@ export function RunChat({
               state={state}
               status={status}
               title={titleNode}
-              panelWidth={showPanel ? panelWidth : null}
+              narrow={narrow}
+              panelWidth={showPanel && !narrow ? panelWidth : null}
+              control={
+                showPanel && narrow ? (
+                  <PanelControl state={state} mode={mode} open={panelOpen} onOpenChange={setPanelOpen} ref={controlRef} />
+                ) : null
+              }
               actions={
                 <RunActions
                   archived={archived}
@@ -461,6 +529,7 @@ export function RunChat({
               }
             />
           </div>
+          {narrow ? panelLayer : null}
 
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
@@ -483,44 +552,7 @@ export function RunChat({
             </div>
           </div>
 
-          {/* The panel sits in the top bar's right side, over the room the
-              bar keeps for it, and opens down over the chat. It stops above
-              the composer. Only the panel itself takes clicks. */}
-          {showPanel ? (
-            <div
-              inert={drawerOpen && !beside}
-              className={cn(
-                "pointer-events-none absolute top-[7px] right-3 bottom-28 flex items-start justify-end",
-                beside ? "z-30" : "z-10",
-              )}
-              style={beside ? { right: drawerWidth + 12 } : undefined}
-            >
-              <RunPanel
-                state={state}
-                live={live}
-                mode={mode}
-                model={run.alias}
-                open={panelOpen}
-                onOpenChange={setPanelOpen}
-                section={section}
-                onSection={setSection}
-                selectedAgent={peek?.id ?? null}
-                onAgent={(id) => {
-                  openPeek(id)
-                  picked()
-                }}
-                openDoc={openDoc?.id ?? null}
-                openVersion={topFile?.version ?? null}
-                onFile={(id, v) => {
-                  openFile(false)(id, v)
-                  picked()
-                }}
-                width={panelWidth}
-                onWidth={setPanelWidth}
-                initialWidth={panelDefault}
-              />
-            </div>
-          ) : null}
+          {narrow ? null : panelLayer}
 
           {/* The drawer covers the run from the right, over the top bar.
               Nothing under it moves; the chat dims and blurs a little, and a
@@ -608,21 +640,26 @@ function RunHeader({
   state,
   status,
   title,
+  narrow,
   panelWidth,
+  control,
   actions,
 }: {
   state: RunState | null
   status: RunSummary["status"]
   title: React.ReactNode
+  narrow: boolean
   // The room the folded run panel takes at the bar's right, if it shows.
   panelWidth: number | null
+  // On a phone: the panel's small button, at the bar's right.
+  control: React.ReactNode
   actions: React.ReactNode
 }) {
   // The dot is the status. The word lives in its tooltip and its accessible
   // name, so the title never moves when the status changes.
   const head = runHeadStatus(state, status)
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3 max-md:px-3">
+    <header className={cn("flex h-12 shrink-0 items-center border-b px-5 pe-3 max-md:px-3", narrow ? "gap-2" : "gap-2.5")}>
       <SidebarTrigger className="-ml-1 md:hidden" />
       <TooltipProvider delay={300}>
         <Tooltip>
@@ -642,8 +679,9 @@ function RunHeader({
         </Tooltip>
       </TooltipProvider>
       <div className="flex min-w-0 items-baseline">{title}</div>
-      <span className="ml-auto" />
-      {actions}
+      {narrow ? null : <span className="ml-auto" />}
+      <div className={cn("flex shrink-0", narrow && "ml-auto")}>{actions}</div>
+      {control}
       {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
     </header>
   )
@@ -787,8 +825,19 @@ function storePane(runId: string, fileId: string | null) {
 
 // Read at call time, not from state: the first artifact can land before a
 // hook-based mobile flag has settled. Matches Tailwind's `md` breakpoint.
+const NARROW = "(max-width: 767px)"
 function isNarrow(): boolean {
-  return window.matchMedia("(max-width: 767px)").matches
+  return window.matchMedia(NARROW).matches
+}
+
+// The same test for layout. It changes in the same render the view crosses
+// md, so the bar and the panel never show a mix of both layouts.
+function useNarrow(): boolean {
+  return useSyncExternalStore((change) => {
+    const q = window.matchMedia(NARROW)
+    q.addEventListener("change", change)
+    return () => q.removeEventListener("change", change)
+  }, isNarrow)
 }
 
 
