@@ -1,11 +1,13 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2 } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
-import { removeScope } from "@/lib/api"
+import { removeScope, saveScopeBrief } from "@/lib/api"
 import { isOwnScope, packOf, plural, SCOPE_KIND, scopedRuns, scopeMeta, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ModulePills } from "@/components/module-pill"
@@ -155,6 +157,7 @@ export function ScopesPage({
               runs={runsOf(shown)}
               onOpenRun={onOpenRun}
               onRemove={() => askRemove(shown)}
+              onChanged={onChanged}
             />
           ) : null}
         </SheetContent>
@@ -199,6 +202,7 @@ function ScopeDetail({
   runs,
   onOpenRun,
   onRemove,
+  onChanged,
 }: {
   target: TargetChoice
   own: boolean
@@ -206,6 +210,7 @@ function ScopeDetail({
   runs: ScopedRun[]
   onOpenRun: (id: string) => void
   onRemove: () => void
+  onChanged: () => void
 }) {
   const items = contents(t)
   return (
@@ -232,9 +237,14 @@ function ScopeDetail({
           <ModulePills ids={modulesOf(t)} packs={packs} className="gap-1.5" />
         </section>
 
-        {/* BRIEF SLOT. The editable "Brief" field of this scope goes here: one
-            <section> like the others, with <Label>Brief</Label> over the field.
-            It sits between Modules and "In this scope". */}
+        <section className="flex flex-col gap-2">
+          <Label>Brief</Label>
+          {own ? (
+            <BriefField key={t.id} target={t} onSaved={onChanged} />
+          ) : (
+            <p className="text-xs text-muted-foreground">A demo scope takes no brief.</p>
+          )}
+        </section>
 
         {items.length ? (
           <section className="flex flex-col gap-2">
@@ -285,42 +295,86 @@ function ScopeDetail({
   )
 }
 
-// The add form, inside the Add scope dialog. `AddScope` (new-run-dialog.tsx)
-// has no "start open" prop and no "closed" callback yet. Until it has them,
-// this wrapper opens the form at once, and closes the dialog when the form
-// closes itself (Esc in a field, or a saved scope).
+// The add form, inside the Add scope dialog. It starts open, and the dialog
+// closes when the form closes itself (Esc in a field, or a saved scope).
 function AddScopeForm({ packs, onAttached, onClose }: { packs: PackChoice[]; onAttached: () => void; onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
-  const box = useRef<HTMLDivElement>(null)
-  const close = useRef(onClose)
-  useLayoutEffect(() => {
-    close.current = onClose
-  })
-
-  useLayoutEffect(() => {
-    const root = box.current
-    if (!root) return
-    // Closed, `AddScope` is one button. Open, it is the form.
-    const closed = () => root.firstElementChild instanceof HTMLButtonElement
-    let wasOpen = !closed()
-    if (!wasOpen) (root.firstElementChild as HTMLButtonElement).click()
-    const watch = new MutationObserver(() => {
-      if (!closed()) wasOpen = true
-      else if (wasOpen) close.current()
-    })
-    watch.observe(root, { childList: true })
-    return () => watch.disconnect()
-  }, [])
-
   return (
     <div className="flex min-w-0 flex-col gap-2">
       {/* The dialog has its own close button, so the form's is hidden. So is
           the closed-state button, which would flash while the dialog fades. */}
-      <div ref={box} className="[&_button[aria-label=Cancel]]:hidden [&>button]:hidden [&>div]:mt-0">
-        <AddScope packs={packs} onAttached={onAttached} onError={setError} />
+      <div className="[&_button[aria-label=Cancel]]:hidden [&>button]:hidden [&>div]:mt-0">
+        <AddScope packs={packs} defaultOpen onClose={onClose} onAttached={onAttached} onError={setError} />
       </div>
       {error ? <p role="alert" className="text-xs leading-relaxed text-bad">{error}</p> : null}
     </div>
+  )
+}
+
+// The scope brief: the operator's text for the model. Every run of the scope
+// gets it in the agent's instructions, and a follow-up gets the current one.
+// The server keeps the limit and refuses more with a sentence; the count shows
+// only near it.
+const BRIEF_MAX = 8000
+function BriefField({ target, onSaved }: { target: TargetChoice; onSaved: () => void }) {
+  const saved = target.brief ?? ""
+  const [text, setText] = useState(saved)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const length = text.trim().length
+  const dirty = text.trim() !== saved
+  const save = () => {
+    if (!dirty || busy) return
+    setBusy(true)
+    setError(null)
+    saveScopeBrief(target.id, text)
+      .then(() => {
+        setDone(true)
+        onSaved()
+      }, (e: Error) => setError(e.message))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <>
+      <Textarea
+        aria-label={`Brief for ${target.title}`}
+        value={text}
+        disabled={busy}
+        onChange={(e) => {
+          setText(e.target.value)
+          setDone(false)
+          setError(null)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault()
+            save()
+          }
+        }}
+        placeholder="Optional. What every run of this scope should know: what matters most, what to look at first, how to report."
+        className="max-h-64 min-h-20 overflow-y-auto text-[13px] leading-relaxed md:text-[13px]"
+      />
+      <div className="flex min-h-7 items-center gap-3">
+        <Button size="sm" variant="outline" disabled={!dirty || busy} onClick={save}>
+          {busy ? <Loader2 className="animate-spin" /> : null}
+          {dirty && !text.trim() ? "Clear brief" : "Save brief"}
+        </Button>
+        {done && !dirty ? <span className="text-xs text-muted-foreground">Saved. The next run and the next follow-up get it.</span> : null}
+        {length > BRIEF_MAX - 1000 ? (
+          <span className={cn("ml-auto text-[11px] tabular-nums", length > BRIEF_MAX ? "text-warn" : "text-muted-foreground")}>
+            {length.toLocaleString("en-US")} / {BRIEF_MAX.toLocaleString("en-US")}
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p role="alert" className="text-xs leading-relaxed text-warn">
+          {error}
+        </p>
+      ) : (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">Text for the model only. It never adds a host, a grant or a tool.</p>
+      )}
+    </>
   )
 }
 

@@ -413,16 +413,22 @@ const tickable = (p: PackChoice) => p.live === true && p.proof === "http" && !p.
 // nothing moves. A scope holds GitHub repos and local folders, or websites.
 // Each one added shows in a list under the row, and the scope is saved as one
 // unit. Under the list: its name, then the modules it allows.
+// `defaultOpen` starts with the form open (the Scopes page dialog). `onClose`
+// runs whenever the form closes itself: Esc, Cancel, or a saved scope.
 export function AddScope({
   packs,
   onAttached,
   onError,
+  defaultOpen = false,
+  onClose,
 }: {
   packs: PackChoice[]
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
+  defaultOpen?: boolean
+  onClose?: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [url, setUrl] = useState("")
   const [name, setName] = useState("")
   const [sources, setSources] = useState<Source[]>([])
@@ -462,6 +468,7 @@ export function AddScope({
     setChatPath("")
     setChatBudget("")
     onError(null)
+    onClose?.()
   }
   const add = (s: Source) => {
     // One scope is either code (repos, folders) or live websites, not both.
@@ -644,6 +651,14 @@ export function AddScope({
               </li>
             ))}
           </ul>
+          {/* The grant covers exactly the names listed. Subdomain discovery
+              needs a wildcard entry, after the plain name. Text only. */}
+          {live ? (
+            <p className="border-t border-border/60 py-1.5 pr-2 pl-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              Subdomain discovery needs a <span className="font-mono">*.</span> entry: add{" "}
+              <span className="font-mono">*.example.com</span> after <span className="font-mono">example.com</span>.
+            </p>
+          ) : null}
           {/* Name, then modules. A ticked module shows the fields it needs under
               it. The confirmations sit last, next to the Add button. */}
           <label className={formRow}>

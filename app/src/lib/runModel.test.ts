@@ -336,3 +336,21 @@ test("lead events fill state.leads with evidence, one per id, worst first, never
   assert.ok(state.leads.every((l) => !("proven" in l)))
   assert.deepEqual(state.findings, [])
 })
+
+test("the scope brief: Run Info gets the last one, a follow-up can remove it, and it is no step", () => {
+  const base: RunEvent[] = [{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }, { t: 2, ev: "brief", text: "Look at auth first." }]
+  let s = reduceEvents(base)
+  assert.equal(s.brief, "Look at auth first.")
+  assert.ok(!s.steps.some((st) => /brief/i.test(st.label ?? "")))
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "Second." }])
+  assert.equal(s.brief, "Second.")
+  s = reduceEvents([...base, { t: 3, ev: "brief", text: "" }])
+  assert.equal(s.brief, null)
+  assert.equal(reduceEvents([{ t: 1, ev: "scope", scope: { id: "s", title: "svc" } }]).brief, null)
+})
+
+test("an older run's read of the Touchstone BRIEF.md is not shown as a repo file", () => {
+  const s = reduceEvents([{ t: 1, ev: "read_source", file: "BRIEF.md" }, { t: 2, ev: "read_source", file: "src/Vault.sol" }])
+  const labels = s.steps.filter((st) => st.kind === "read").map((st) => st.label)
+  assert.deepEqual(labels, ["Read the scope brief", "Read src/Vault.sol"])
+})

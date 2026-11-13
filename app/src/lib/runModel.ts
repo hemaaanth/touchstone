@@ -110,6 +110,9 @@ export interface RunState {
   // until it arrives (or on an old run that predates the event). The header
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
+  // The operator's scope brief the agent got, from the last `brief` event.
+  // Null when the run had none or it was removed in a later follow-up.
+  brief: string | null
   status: RunStatus
   // The worst finding submitted so far (null until the first one).
   pending: PendingApproval | null
@@ -190,6 +193,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
+  let brief: string | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
@@ -254,6 +258,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "brief":
+        // The scope brief went into the agent's instructions. Run Info shows it;
+        // it is not a step. "" means a follow-up removed it.
+        brief = str(e.text) || null
+        break
       case "modules": {
         // The pipeline plan. It shows on the Modules page, not in the
         // transcript, so it adds no step.
@@ -298,7 +307,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "list", phase, label: "Listed the contract sources" })
         break
       case "read_source":
-        steps.push({ key, kind: "read", phase, label: `Read ${str(e.file) || "a source file"}` })
+        // Older runs got the scope text as a BRIEF.md file that Touchstone wrote.
+        // It was never a file of the repo, so it is not named as one.
+        steps.push({ key, kind: "read", phase, label: str(e.file).replace(/^\.\//, "") === "BRIEF.md" ? "Read the scope brief" : `Read ${str(e.file) || "a source file"}` })
         break
       case "run_poc":
         steps.push({
@@ -787,6 +798,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     events,
     steps,
     scope,
+    brief,
     status,
     pending,
     submitted,
