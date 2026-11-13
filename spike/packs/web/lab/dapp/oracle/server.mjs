@@ -113,7 +113,24 @@ function requireSession(req, res, next) {
 const app = express();
 app.use(express.json());
 
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+// BUG 6: /healthz is a documented, public, unauthenticated route, but it also
+// honours an UNDOCUMENTED `debug` query parameter. With no `debug`, it is the
+// plain health probe operators expect. With `debug` present it reflects the
+// value back and adds internal detail (the staging build tag and the signer
+// address, not the key). No page or spec mentions the parameter, so the prepass
+// scanners (zap spider, nuclei templates, dalfox, ffuf path discovery) never
+// send it -- only a parameter-mining tool (Arjun) that guesses the NAME finds
+// it. This models a leftover debug flag / hidden feature on a shipped endpoint.
+// Plain `/healthz` behaviour is unchanged, so this is additive for other tools.
+app.get("/healthz", (req, res) => {
+  const out = { ok: true };
+  if ("debug" in req.query) {
+    out.debug = String(req.query.debug); // reflected -> a param miner flags it
+    out.build = "staging";
+    out.signerAddress = LEAKED_SIGNER.signerAddress; // internal detail, not the key
+  }
+  res.json(out);
+});
 
 app.get("/siwe/nonce", (_req, res) => {
   res.json({ nonce: freshNonce() });
