@@ -66,8 +66,14 @@ const SECRET_VAR = /secret|token|passw|passphrase|mnemonic|private|credential|ap
 // "tokenAddress=0x…". Under a password or secret name nothing is kept.
 const WORD_SECRET = /passw|passphrase|secret|^pwd$/i;
 // The pins the engine computes. Their 64-hex values are not keys. Any other
-// name is judged by its value.
-const PIN_NAME = /^(?:snapshotHash|evidenceHash|sha256|digest|topics?)$/i;
+// name is judged by its value. Of an event's topics only the first, the
+// event signature, is a pin. An indexed argument can hold anything the PoC
+// emitted; it is kept only when it is a padded address (12 zero bytes, then
+// 20 bytes), which a key is not.
+const PIN_NAME = /^(?:snapshotHash|evidenceHash|sha256|digest)$/i;
+const TOPICS = /^topics$/i;
+const HEX32 = /^(?:0x)?[0-9a-fA-F]{64}$/;
+const PADDED_ADDRESS = /^(?:0x)?0{24}[0-9a-fA-F]{40}$/;
 const BIP39 = new Set(Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().getWord(i)));
 
 // Each regex is linear: every start sits at the start of a token run, and no
@@ -77,7 +83,7 @@ const BIP39 = new Set(Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().g
 //
 // Exactly 64 hex, so a calldata word inside a longer run stays. A value
 // labelled as a pin in the text ("snapshotHash": ...) stays.
-const HEX_KEY = /(?<![0-9A-Za-z_])(?<!(?:snapshotHash|evidenceHash|sha256|[Tt]opics?|[Dd]igest)["']?\s{0,3}[:=]\s{0,3}["']?)(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z_])/g;
+const HEX_KEY = /(?<![0-9A-Za-z_])(?<!(?:snapshotHash|evidenceHash|sha256|[Dd]igest)["']?\s{0,3}[:=]\s{0,3}["']?)(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z_])/g;
 const PEM_OPEN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g;
 const BASIC = /(?<keep>\b[Bb]asic[ \t]+)(?=[A-Za-z0-9+/=]{0,200}(?:[0-9+/=]|[a-z][A-Z]|[A-Z][a-z]{0,3}[A-Z]))[A-Za-z0-9+/=]{8,}/g;
 const SPLIT = /\b(?:gh[pousr]_|github_pat_|glpat-|xox[baprs]-|sk-|[sr]k_(?:live|test)_|npm_|AKIA|ASIA|eyJ)[A-Za-z0-9_.-]{0,120}(?:\r?\n|\\n)[A-Za-z0-9_.-]{1,120}/g;
@@ -181,6 +187,9 @@ function walkExtras(value, name, extra, under) {
     return scrubExtras(value, extra, { hex: !PIN_NAME.test(name) });
   }
   if (typeof value !== "object") return value;
+  if (Array.isArray(value) && TOPICS.test(name) && !secret) {
+    return value.map((v, i) => (typeof v === "string" && HEX32.test(v) && (i === 0 || PADDED_ADDRESS.test(v)) ? v : walkExtras(v, "", extra, false)));
+  }
   if (Array.isArray(value)) return value.map((v) => walkExtras(v, name, extra, secret));
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walkExtras(v, k, extra, secret)]));
 }

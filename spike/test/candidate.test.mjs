@@ -1,7 +1,7 @@
 // The shared candidate record and submit_candidate checks (lib/candidate.mjs).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubExtras, scrubText, scrubValue } from "../lib/candidate.mjs";
@@ -381,6 +381,19 @@ test("64-hex values under pin names and inside calldata stay; a key under a secr
   assert.ok(!scrubText(`privateKey: "0x${H}"`).includes(H));
 });
 
+// Review round 1, m3: of an event's topics only the first (the event
+// signature) is a pin. An indexed argument the PoC emitted is judged by its
+// value: a key-shaped word goes, a padded address stays.
+test("only the event signature topic is a pin; an indexed key goes, a padded address stays", () => {
+  const SIG = "dd".repeat(32);
+  const KEY = "4c".repeat(32);
+  const ADDR = `0x${"0".repeat(24)}${"ab".repeat(20)}`;
+  const v = scrubValue({ logs: [{ topics: [`0x${SIG}`, ADDR, `0x${KEY}`], data: "0x" }] });
+  assert.deepEqual(v.logs[0].topics, [`0x${SIG}`, ADDR, "[REDACTED]"]);
+  assert.ok(!JSON.stringify(scrubValue({ topics: [`0x${KEY}`, `0x${KEY}`] })).includes(`${KEY}"]`), "a second key-shaped topic goes");
+  assert.ok(!scrubText(`topics: 0x${KEY}`).includes(KEY), "in text a topic label keeps nothing");
+});
+
 // Delta review Major A, part 3: only a pin the engine computes keeps its
 // 64-hex value by name. Any other field is checked by its value, so a key a
 // trace log carries under one of these names is scrubbed.
@@ -402,4 +415,25 @@ test("a 64-hex value after a txHash label in text is scrubbed", () => {
   const out = scrubText(`"txHash":"0x${WORD}"`);
   assert.ok(!out.includes(WORD), out);
   assert.equal(scrubText(`"snapshotHash":"${WORD}"`), `"snapshotHash":"${WORD}"`, "the snapshot pin stays");
+});
+
+// Review round 1, m1: a worker the server restarts reopens its audit file
+// (lib/audit-state.mjs). The candidates in it must come back, with the cap,
+// the numbering and the guards, and still unproven.
+test("auditState saves the candidates and a restarted worker gets them back", async (t) => {
+  const { auditState } = await import("../lib/audit-state.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "cand-audit-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "run.audit.json");
+  const first = auditState(file);
+  for (const poc of ["a1", "a2", "a3"]) assert.ok((await checkCandidate({ pack: "web", state: first, lookup, args: args(poc) })).candidate);
+  const second = auditState(file);
+  assert.deepEqual(second.candidates.map((c) => [c.n, c.poc, c.proven, c.candidate]), [[1, "a1", false, true], [2, "a2", false, true], [3, "a3", false, true]]);
+  assert.equal((await checkCandidate({ pack: "web", state: second, lookup, args: args("a4") })).reason, "cap");
+  assert.equal((await checkCandidate({ pack: "web", state: second, lookup, args: args("sameRoot") })).reason, "cap");
+  // A finding proven at submit takes a1's place; the removal is saved too.
+  second.found.push({ n: 1, title: "proven a1", poc: "a1" });
+  const third = auditState(file);
+  assert.deepEqual(third.candidates.map((c) => c.poc), ["a2", "a3"]);
+  assert.equal((await checkCandidate({ pack: "web", state: third, lookup, args: args("a4") })).candidate.n, 4, "numbers are not reused");
 });
