@@ -49,7 +49,7 @@ import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
-import { agentLook, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
+import { agentLook, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -425,6 +425,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     eyebrow?: string
     spawn?: Step[]
     fleetFinding?: boolean
+    stepKey?: string
     waiting?: boolean
   }
   if (a.eyebrow) return <Eyebrow text={a.eyebrow} />
@@ -439,6 +440,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
         state={a.card ?? "waiting"}
         proofKind={a.proofKind ?? "forge"}
         proofArtifactId={a.proofArtifactId ?? null}
+        stepKey={a.stepKey}
       />
     )
   if (a.pending)
@@ -447,6 +449,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
         state={a.card ?? "waiting"}
         proofKind={a.proofKind ?? "forge"}
         proofArtifactId={a.proofArtifactId ?? null}
+        stepKey={a.stepKey}
       />
   if (a.group) return <ToolGroupPart group={a.group} />
   if (a.artifact && a.version && !a.step)
@@ -514,6 +517,9 @@ function MessageCard({ step }: { step: Step }) {
 }
 
 const fleetRow = "flex max-w-160 items-center gap-2.5 rounded-[10px] border bg-background px-3 py-2.5"
+
+// A card the view just jumped to: the cards' own focus ring, for a moment.
+const MARK = "ring-2 ring-foreground/15"
 
 // Fleet: the coordinator started agents. A run of spawns folds into one row
 // that names the first two. A name opens that agent's peek. "+N" or the
@@ -926,13 +932,17 @@ function FindingCard({
   state,
   proofKind,
   proofArtifactId,
+  stepKey,
 }: {
   pending: PendingApproval
   state: CardState
   proofKind: ProofKind
   proofArtifactId: string | null
+  // The card's step, so a jump can find it and mark it with the focus ring.
+  stepKey?: string
 }) {
   const openArtifact = useContext(OpenArtifact)
+  const marked = useContext(MarkedStep) === stepKey && !!stepKey
   const proven = state === "proven"
   const clickable = proven && !!proofArtifactId
   const m = CARD_MARK[state]
@@ -967,14 +977,19 @@ function FindingCard({
     return (
       <button
         type="button"
+        data-step-key={stepKey}
         onClick={() => openArtifact(proofArtifactId)}
-        className={cn(card, cardInteractive, "group block w-full overflow-hidden text-left")}
+        className={cn(card, cardInteractive, "group block w-full overflow-hidden text-left", marked && MARK)}
       >
         {body}
       </button>
     )
   }
-  return <div className={cn(card, "overflow-hidden")}>{body}</div>
+  return (
+    <div data-step-key={stepKey} className={cn(card, "overflow-hidden", marked && MARK)}>
+      {body}
+    </div>
+  )
 }
 
 // Fleet: a submitted finding as one compact row. Green shows only once the
@@ -984,13 +999,16 @@ function FindingRow({
   state,
   proofKind,
   proofArtifactId,
+  stepKey,
 }: {
   pending: PendingApproval
   state: CardState
   proofKind: ProofKind
   proofArtifactId: string | null
+  stepKey?: string
 }) {
   const openArtifact = useContext(OpenArtifact)
+  const marked = useContext(MarkedStep) === stepKey && !!stepKey
   const proven = state === "proven"
   const note = proven ? `Reproduced on oracle replay${pending.poc ? ` · ${pending.poc}` : ""}` : CARD_NOTE[proofKind][state]
   // One text label at most: the title. The proof state is the leading icon and
@@ -1010,11 +1028,16 @@ function FindingRow({
       <button
         type="button"
         title="Open replay proof"
+        data-step-key={stepKey}
         onClick={() => openArtifact(proofArtifactId)}
-        className={cn(fleetRow, cardInteractive, "w-full")}
+        className={cn(fleetRow, cardInteractive, "w-full", marked && MARK)}
       >
         {body}
       </button>
     )
-  return <div className={fleetRow}>{body}</div>
+  return (
+    <div data-step-key={stepKey} className={cn(fleetRow, marked && MARK)}>
+      {body}
+    </div>
+  )
 }

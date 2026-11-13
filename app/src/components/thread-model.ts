@@ -21,6 +21,10 @@ import { awaitingReply, turnId, type Sent } from "@/lib/sent"
 // no-op (nothing to open).
 export const OpenArtifact = createContext<(fileId: string, versionId?: string) => void>(() => {})
 
+// The step key of the card the view just jumped to, so that card shows the
+// focus ring for a moment. Null when nothing is marked.
+export const MarkedStep = createContext<string | null>(null)
+
 export type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
 
 // The proof kind of a submitted finding: what the scope's proof surface says,
@@ -162,7 +166,7 @@ export function buildMessages(
         type: "tool-call",
         toolCallId: step.key,
         toolName: "proof",
-        args: { pending: step.finding, card, proofKind, proofArtifactId, fleetFinding: fleet },
+        args: { pending: step.finding, card, proofKind, proofArtifactId, fleetFinding: fleet, stepKey: step.key },
         result: card,
       })
       return
@@ -277,11 +281,7 @@ export function cardFor(
   status: RunStatus,
 ): { card: CardState; proofKind: ProofKind; proofArtifactId: string | null } {
   const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
-  const rec = legacy
-    ? state.submitted.length === 1 && status === "recorded"
-      ? state.findings[0]
-      : undefined
-    : state.findings.find((f) => f.poc === sub.poc)
+  const rec = recordFor(state, sub, status)
   const proofKind = proofKindOf(state)
   if (rec) {
     if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
@@ -292,6 +292,35 @@ export function cardFor(
   if (status === "deciding") return { card: "replaying", proofKind, proofArtifactId: null }
   if (status === "recorded" || isTerminal(status)) return { card: "dropped", proofKind, proofArtifactId: null }
   return { card: "waiting", proofKind, proofArtifactId: null }
+}
+
+// The recorded finding a submitted card stands for: by its PoC, or, in an old
+// record whose findings carry no PoC, the one finding of a one-card run.
+function recordFor(state: RunState, sub: PendingApproval, status: RunStatus) {
+  const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
+  return legacy
+    ? state.submitted.length === 1 && status === "recorded"
+      ? state.findings[0]
+      : undefined
+    : state.findings.find((f) => f.poc === sub.poc)
+}
+
+// "Open this finding" (the Findings page's Open in run): where a finding of
+// this run sits. `key` is the step that holds its card, `agent` the child whose
+// thread holds that card (null: the main chat), `proofId` its replay proof when
+// a replay proved it. Null for an id this run does not have, so an unknown id
+// or another run's finding does nothing. While the stream loads, the card may
+// not be there yet: then `key` is null and the caller waits.
+export function findingTarget(
+  state: RunState,
+  status: RunStatus,
+  findingId: string,
+): { key: string | null; agent: string | null; proofId: string | null } | null {
+  const rec = state.findings.find((f) => f.id === findingId)
+  if (!rec) return null
+  const step = state.steps.find((s) => s.kind === "submitted" && s.finding && recordFor(state, s.finding, status)?.id === rec.id)
+  const proofId = step?.finding ? cardFor(state, step.finding, status).proofArtifactId : null
+  return { key: step?.key ?? null, agent: step?.agent ?? null, proofId }
 }
 
 // One sentence as a card or the composer shows it: a capital first letter and

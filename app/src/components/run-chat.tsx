@@ -19,7 +19,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { agentLook, buildMessages, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
+import { agentLook, buildMessages, findingTarget, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type HeadTone } from "@/components/thread-model"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
@@ -76,6 +76,7 @@ export function RunChat({
   onRename,
   onDelete,
   packs,
+  focus = null,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
@@ -83,6 +84,9 @@ export function RunChat({
   onDelete: (id: string) => Promise<void>
   // The server's module list, for the Run Info pills.
   packs?: PackChoice[]
+  // "Open this finding" (the Findings page): the finding's id. `at` is when it
+  // was asked, so asking again for the same finding jumps again.
+  focus?: FocusFinding | null
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
@@ -330,6 +334,38 @@ export function RunChat({
       setHighlight(key)
     }
   }
+  // "Open this finding": once the run has the finding's card, scroll to it and
+  // mark it, and for a proven finding open its replay proof in the drawer, as
+  // a click on the card does. A finding a child agent submitted has its card in
+  // that agent's thread: unproven, the drawer shows that thread at the card. On
+  // a phone the drawer never opens by itself. An id this run does not have does
+  // nothing. A cold load waits: the effect runs again as the stream lands.
+  const target = focus && state ? findingTarget(state, status, focus.finding) : null
+  const targetSig = target ? `${target.key}|${target.agent}|${target.proofId}` : null
+  const focusRef = useRef({ target, openFile, openPeek })
+  useEffect(() => {
+    focusRef.current = { target, openFile, openPeek }
+  })
+  const focused = useRef<FocusFinding | null>(null)
+  useEffect(() => {
+    const t0 = focusRef.current.target
+    if (!focus || !t0 || focused.current === focus || !targetSig) return
+    if (!t0.key && !t0.proofId) return
+    const t = setTimeout(() => {
+      const { target: t1, openFile: file, openPeek: peek } = focusRef.current
+      if (!t1) return
+      focused.current = focus
+      if (t1.key && !t1.agent) {
+        setHighlight(t1.key)
+        setJump({ where: "main", key: t1.key, n: Date.now() })
+      }
+      if (isNarrow()) return
+      if (t1.proofId) file(false)(t1.proofId)
+      else if (t1.agent && t1.key) peek(t1.agent, t1.key)
+    }, 0)
+    return () => clearTimeout(t)
+  }, [focus, targetSig])
+
   // Escape closes the drawer, unless a menu or dialog inside it takes the key.
   // Focus moves into the drawer when it opens and back to the opener when it
   // closes. The dimmed chat behind it is inert, so Tab stays out of it.
@@ -508,6 +544,7 @@ export function RunChat({
 
   return (
     <OpenArtifact.Provider value={openFile(false)}>
+      <MarkedStep.Provider value={highlight}>
       <FleetContext.Provider value={fleetView}>
         <div ref={rootRef} className="relative flex h-full min-w-0 flex-col overflow-hidden">
           <div inert={drawerOpen} className="shrink-0">
@@ -625,6 +662,7 @@ export function RunChat({
           ) : null}
         </div>
       </FleetContext.Provider>
+      </MarkedStep.Provider>
     </OpenArtifact.Provider>
   )
 }
@@ -637,6 +675,10 @@ function messageText(message: AppendMessage): string {
     .join("")
     .trim()
 }
+
+// "Open this finding" from another page: the finding's id, and when it was
+// asked (Date.now()), so a second ask for the same finding jumps again.
+export type FocusFinding = { finding: string; at: number }
 
 // The run's top bar: status dot, title, the status word, and the ⋯ menu.
 // Mode, runtime and spend live in the run panel's Info section. Before the run
