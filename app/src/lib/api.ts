@@ -227,8 +227,9 @@ export function deleteProvider(id: string): Promise<SettingsState> {
   return deleteJson<SettingsState>(`/api/settings/providers/${encodeURIComponent(id)}`)
 }
 
-export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean }> {
-  return postJson<{ models: DiscoveredModel[]; keyUsed: boolean }>("/api/settings/discover", body)
+// keyNote: why the provider's key was not sent (another host), or null.
+export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean; keyNote?: string | null }> {
+  return postJson<{ models: DiscoveredModel[]; keyUsed: boolean; keyNote?: string | null }>("/api/settings/discover", body)
 }
 
 export function setDefaultModel(provider: string, model: string): Promise<SettingsState> {

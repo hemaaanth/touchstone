@@ -52,6 +52,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
+import { scrubError, scrubUrl } from "./redact-url.mjs";
 
 export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
@@ -227,10 +228,17 @@ function client(c) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
-    const r = await fetch(url, init);
+    // The server URL may hold a user name, password or query: no error,
+    // cause or echoed body keeps it (redact-url.mjs).
+    let r;
+    try {
+      r = await fetch(url, init);
+    } catch (err) {
+      throw scrubError(err, API);
+    }
     if (!r.ok) {
       const text = (await r.text()).slice(0, 300);
-      const e = new Error(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`);
+      const e = new Error(scrubUrl(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`, API));
       e.status = r.status;
       throw e;
     }

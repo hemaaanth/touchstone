@@ -437,6 +437,8 @@ function ProviderEditor({
   const [manual, setManual] = useState("")
   const [busy, setBusy] = useState<"fetch" | "save" | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Why the provider's key was not sent with Fetch models (another host).
+  const [keyNote, setKeyNote] = useState<string | null>(null)
 
   const rows = useMemo(() => {
     const ids = new Set(chosen.map((m) => m.id))
@@ -459,9 +461,11 @@ function ProviderEditor({
   const fetchList = async () => {
     setBusy("fetch")
     setError(null)
+    setKeyNote(null)
     try {
       const r = await discoverModels({ id: provider?.id, baseUrl, apiKey: apiKey || undefined })
       setFound(r.models)
+      setKeyNote(r.keyNote ?? null)
       // Refresh prices the gateway publishes for models already chosen.
       setChosen((cur) =>
         cur.map((m) => {
@@ -521,6 +525,7 @@ function ProviderEditor({
             {busy === "fetch" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Fetch models
           </Button>
         </div>
+        {keyNote ? <span className="text-xs text-muted-foreground">{keyNote}</span> : null}
         {(found?.length ?? 0) > 8 ? <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter, e.g. abliterated" aria-label="Filter models" /> : null}
         {rows.length > 0 ? (
           <ul className="max-h-80 divide-y overflow-y-auto rounded-lg border">

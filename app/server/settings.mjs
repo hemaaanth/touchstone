@@ -20,6 +20,7 @@ import {
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
+import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
 import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
@@ -268,20 +269,9 @@ function slug(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32)
 }
 
-// A URL as the page may see it: scheme, host, port and path. A user name,
-// password, query or #part is cut, and `cut` says so. A plain URL comes back
-// as it is. Not a URL: nothing is shown.
-export function publicUrl(raw) {
-  if (!raw) return { url: "", cut: false }
-  let u
-  try {
-    u = new URL(String(raw))
-  } catch {
-    return { url: "", cut: true }
-  }
-  const cut = Boolean(u.username || u.password || u.search || u.hash)
-  return { url: cut ? `${u.protocol}//${u.host}${u.pathname}`.replace(/\/+$/, "") : String(raw), cut }
-}
+// publicUrl (redact-url.mjs) is what the page may see of a URL. Re-exported
+// for the tests and for callers that import it from here.
+export { publicUrl }
 
 // The form sends back the URL it was shown. When that is the cut form of the
 // stored URL, keep the stored one, so the hidden parts are not lost.
@@ -395,26 +385,35 @@ function perMillion(v) {
 }
 
 // List the models a gateway serves for this key: GET {baseUrl}/models. Free.
-// Uses the key from the body, else the saved or env key of provider `id`.
+// Uses the key from the body, else the saved or env key of provider `id`. A
+// provider's key (saved or env) goes only to its saved base URL (same scheme, host
+// and port), like the Daytona key. No text from this call holds a hidden part
+// of the URL: every error goes through scrubUrl with the raw URL.
 export async function discoverModels(body = {}) {
   const saved = body.id ? allProviders()[body.id] : null
   const baseUrl = cleanBaseUrl(keepHidden(body.baseUrl, saved?.baseUrl) || saved?.baseUrl)
   const shown = publicUrl(baseUrl).url
-  const key = (typeof body.apiKey === "string" && body.apiKey.trim()) || providerKey(saved)
+  const typed = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const savedKey = providerKey(saved)
+  const bound = Boolean(saved?.baseUrl) && originOf(baseUrl) !== "" && originOf(baseUrl) === originOf(saved.baseUrl)
+  const key = typed || (bound ? savedKey : null)
+  const keyNote =
+    !typed && savedKey && !bound ? `The provider's key was not sent: it goes only to ${originOf(saved.baseUrl) || "its saved base URL"}.` : null
+  const fail = (msg) => new Error(scrubUrl(keyNote ? `${msg} ${keyNote}` : msg, baseUrl, saved?.baseUrl))
   const res = await fetch(`${baseUrl}/models`, {
     headers: { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
     signal: AbortSignal.timeout(15_000),
   }).catch((err) => {
-    throw new Error(`could not reach ${shown}/models: ${String(err?.message ?? err)}`)
+    throw fail(`could not reach ${shown}/models: ${errorText(err)}`)
   })
   const text = await res.text()
   const scrub = (s) => (key ? s.split(key).join("***") : s).slice(0, 300)
-  if (!res.ok) throw new Error(`${shown}/models returned ${res.status}: ${scrub(text)}`)
+  if (!res.ok) throw fail(`${shown}/models returned ${res.status}: ${scrub(text)}`)
   let json
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error(`${shown}/models did not return JSON`)
+    throw fail(`${shown}/models did not return JSON`)
   }
   const list = Array.isArray(json) ? json : json.data ?? json.models ?? []
   const models = list
@@ -430,5 +429,5 @@ export async function discoverModels(body = {}) {
       }
     })
     .filter(Boolean)
-  return { models, keyUsed: Boolean(key) }
+  return { models, keyUsed: Boolean(key), keyNote }
 }

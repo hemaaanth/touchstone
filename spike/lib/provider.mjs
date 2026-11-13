@@ -9,6 +9,7 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
 import { event, withAgent } from "./event.mjs";
+import { scrubUrl } from "./redact-url.mjs";
 
 // Charge each response before the harness can start another call, including
 // retries and subagents. Forward the final event only after accounting.
@@ -41,13 +42,13 @@ export function budgetedApi(api, agentForSession = () => undefined) {
               event("spend", { ...runSpend(), ...contextUse(model, usage) });
             }
           }
-          output.push(e.type === "error" ? markTransient(e) : e);
+          output.push(e.type === "error" ? markTransient(scrubbed(e, model.baseUrl)) : e);
         }
       } catch (err) {
         output.push({ type: "error", reason: "error", error: {
           role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          stopReason: "error", errorMessage: transientMessage(err?.message ?? err), timestamp: Date.now(),
+          stopReason: "error", errorMessage: transientMessage(scrubUrl(err?.message ?? err, model.baseUrl)), timestamp: Date.now(),
         } });
       } finally { output.end(); }
     });
@@ -81,6 +82,15 @@ function transientMessage(text) {
   const t = String(text ?? "");
   if (!TRANSPORT_DROP.test(t) || CLIENT_STATUS.test(t) || isRetryableAssistantError({ stopReason: "error", errorMessage: t })) return t;
   return `${t} (transient network error)`;
+}
+// The base URL may hold a user name, password or query, and the adapter's
+// error text (Node fetch) can name it in full. It goes into run events and
+// records, so take it out (redact-url.mjs).
+function scrubbed(e, baseUrl) {
+  const m = e.error?.errorMessage;
+  if (typeof m !== "string") return e;
+  const clean = scrubUrl(m, baseUrl);
+  return clean === m ? e : { ...e, error: { ...e.error, errorMessage: clean } };
 }
 function markTransient(e) {
   if (e.error?.stopReason !== "error") return e;
