@@ -542,6 +542,11 @@ export async function prepareRunWorkspace(target, { modules = [] } = {}) {
 // a run-level source-coverage check still sees every link. A run with one module
 // never comes here: it keeps `prepareRunWorkspace` and its `pack` field.
 //
+// The target's own module list is the consent: every id must be one that
+// `eligiblePacks` returns, exactly as `pickTarget` requires for one module. A
+// lab, a brief and a local-source target belong to one module and have no second
+// module to offer, so a joined run is refused there with a plain sentence.
+//
 // `packs` is the module ids in the operator's order; duplicates are dropped.
 export async function prepareMultiWorkspace(target, { packs = [], modules = [] } = {}) {
   const ids = [...new Set(packs.map(String))]
@@ -550,6 +555,15 @@ export async function prepareMultiWorkspace(target, { packs = [], modules = [] }
   }
   const unknown = ids.filter((id) => !PACKS[id])
   if (unknown.length) throw new Error(`Unknown pack "${unknown.join('", "')}". Known: ${Object.keys(PACKS).join(", ")}`)
+  const allowed = eligiblePacks(target)
+  const denied = ids.filter((id) => !allowed.includes(id))
+  if (denied.length) {
+    throw new Error(
+      allowed.length < 2
+        ? `target ${target.id} is a ${target.kind} for the one module "${allowed.join('", "')}", so it cannot also run "${denied.join('", "')}": use a scope or a live target for several modules`
+        : `target ${target.id} belongs to pack "${allowed.join('", "')}", not "${denied.join('", "')}"`,
+    )
+  }
   const ws = mkdtempSync(path.join(tmpdir(), "redteam-run-"))
   try {
     mkdirSync(path.join(ws, MULTI_DIR), { recursive: true })

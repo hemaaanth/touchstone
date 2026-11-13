@@ -54,20 +54,23 @@ function scopedMap(map, id) {
 }
 
 // One module's view of the run's audit state. The findings list is shared, so
-// numbering and duplicate checks span the run; a finding this module pushes is
-// stamped with its module id. The rest (attempt counter) is the run's own.
+// the record keeps one list and one numbering; a finding this module pushes is
+// stamped with its module id. Reads see ONLY this module's findings, because
+// every pack's duplicate check is written as "is this root cause already mine?"
+// (a shared list would refuse another module's finding that happens to use the
+// same label). The attempt counter stays the run's own.
 function memberState(state, id) {
+  const push = (...items) => {
+    // The tool decides the module; text the agent writes never does.
+    for (const f of items) if (f && typeof f === "object") f.pack = id;
+    return state.found.push(...items);
+  };
   const found = new Proxy(state.found, {
     get(list, key) {
-      if (key === "push") {
-        return (...items) => {
-          // The tool decides the module; text the agent writes never does.
-          for (const f of items) if (f && typeof f === "object") f.pack = id;
-          return list.push(...items);
-        };
-      }
-      const v = Reflect.get(list, key, list);
-      return typeof v === "function" ? v.bind(list) : v;
+      if (key === "push") return push;
+      const own = list.filter((f) => f?.pack === id);
+      const v = own[key];
+      return typeof v === "function" ? v.bind(own) : v;
     },
   });
   const passed = state.passed instanceof Map ? scopedMap(state.passed, id) : state.passed;
@@ -99,9 +102,22 @@ function renamer(pairs) {
   return (text) => (typeof text === "string" ? text.replace(re, (m) => to.get(m) ?? m) : text);
 }
 
+// Every tool text the agent reads names tools: the description, each parameter
+// description, and the result a tool returns ("Call submit_finding now"). All of
+// them get the same names as the tools, or the agent is told a name it lacks at
+// the exact moment it must call one. A result is plain data; only its text
+// blocks are touched.
 function renameResult(result, rename) {
   if (!result || !Array.isArray(result.output)) return result;
   return { ...result, output: result.output.map((o) => (o?.type === "text" && typeof o.text === "string" ? { ...o, text: rename(o.text) } : o)) };
+}
+
+// A schema is plain JSON Schema data. Only `description` values are renamed: an
+// `enum`/`const` value stays as it is, because the pack compares against it.
+function renameSchema(value, rename) {
+  if (Array.isArray(value)) return value.map((v) => renameSchema(v, rename));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, k === "description" ? rename(v) : renameSchema(v, rename)]));
 }
 
 const RANK = { critical: 0, high: 1, medium: 2, moderate: 2, low: 3, info: 4, informational: 4 };
@@ -113,6 +129,8 @@ export function multiPack(members) {
   const titles = members.map((p) => `${p.title ?? p.id} (${p.id})`);
   const views = new WeakMap(); // audit state -> Map(module id -> member state)
   const renames = new Map(); // ws -> Map(module id -> rename)
+  // The pre-pass env of each module, by module id (see kickoff).
+  const leadsBy = new Map();
 
   const viewOf = (state, id) => {
     if (!state || typeof state !== "object") return state;
@@ -164,21 +182,37 @@ export function multiPack(members) {
     },
 
     tools(ws, state) {
-      return members.flatMap((p) => {
+      const out = members.flatMap((p) => {
         const rename = renameFor(ws, p.id);
-        return (p.tools?.(memberDir(ws, p.id), viewOf(state, p.id)) ?? []).map((t) => {
-          const name = rename(t.name);
-          if (name === t.name) return t;
-          return { ...t, name, description: rename(t.description), execute: async (...args) => renameResult(await t.execute(...args), rename) };
-        });
+        // Every tool is wrapped, not only a renamed one: a plain name can still
+        // name a shared tool in its description, a parameter or its result.
+        return (p.tools?.(memberDir(ws, p.id), viewOf(state, p.id)) ?? []).map((t) => ({
+          ...t,
+          name: rename(t.name),
+          description: rename(t.description),
+          ...(t.parameters ? { parameters: renameSchema(t.parameters, rename) } : {}),
+          execute: async (...args) => renameResult(await t.execute(...args), rename),
+        }));
       });
+      // The registry routes a call by name. Two tools with one name would send a
+      // call to the wrong module, so say so once rather than mis-route silently.
+      const seen = new Set();
+      for (const t of out) {
+        if (seen.has(t.name)) throw new Error(`two tools of this run are both named "${t.name}"`);
+        seen.add(t.name);
+      }
+      return out;
     },
 
+    // Each module's own first message. The pre-pass values travel as
+    // `TS_<ID>__<KEY>`; each module gets its own back under the plain key, and
+    // never another module's plain key — another pack's `LEADS` is not its own.
+    // Real environment (PATH and the rest) passes through untouched.
     kickoff(ws, env = {}) {
       const parts = members.map((p) => {
         const own = { ...env };
-        const prefix = envKey(p.id, "");
-        for (const [k, v] of Object.entries(env)) if (k.startsWith(prefix)) own[k.slice(prefix.length)] = v;
+        for (const [id, other] of leadsBy) if (id !== p.id) for (const k of Object.keys(other)) delete own[k];
+        Object.assign(own, leadsBy.get(p.id) ?? {});
         return section(p, renameFor(ws, p.id)(p.kickoff(memberDir(ws, p.id), own)));
       });
       return [`This run covers ${members.length} modules. Do the task of each module below. Finish one module's task before you start the next.`, ...parts].join("\n\n");
@@ -199,12 +233,13 @@ export function multiPack(members) {
     },
 
     // Each module's pre-pass in its own workspace, one after another. A module
-    // whose pre-pass fails does not stop the others. The env: a key one module
-    // sets goes through as is; a key several modules set (LEADS) goes through
-    // only under each module's own name, and kickoff hands each module its own.
+    // whose pre-pass fails does not stop the others. Its env keys go out under
+    // `TS_<ID>__<KEY>` only, never plain: a plain key would reach every module,
+    // and web's leads would print under domains. kickoff splits them again.
     async prepass(ws, opts = {}) {
       const done = [];
       const failed = [];
+      leadsBy.clear();
       for (const p of members) {
         if (typeof p.prepass !== "function") continue;
         try {
@@ -214,21 +249,17 @@ export function multiPack(members) {
         }
       }
       if (!done.length && failed.length) throw new Error(failed.map(([id, e]) => `${id}: ${e}`).join("; "));
-      const count = new Map();
-      for (const [, r] of done) for (const k of Object.keys(r.env ?? {})) count.set(k, (count.get(k) ?? 0) + 1);
       const env = {};
       for (const [id, r] of done) {
-        for (const [k, v] of Object.entries(r.env ?? {})) {
-          env[envKey(id, k)] = v;
-          if (count.get(k) === 1) env[k] = v;
-        }
+        leadsBy.set(id, r.env ?? {});
+        for (const [k, v] of Object.entries(r.env ?? {})) env[envKey(id, k)] = v;
       }
       const byPack = Object.fromEntries(done.map(([id, r]) => [id, r.record ?? null]));
       // Only the module ids: a pre-pass error text can hold a secret.
       const record = { pack: MULTI, packs: ids, byPack, ...(failed.length ? { failed: failed.map(([id]) => id) } : {}) };
-      // Contracts keeps its static and fuzz parts at the top, as a one-module run does.
-      if (byPack.contracts?.static) record.static = byPack.contracts.static;
-      if (byPack.contracts?.fuzz) record.fuzz = byPack.contracts.fuzz;
+      // Contracts keeps each of its pre-pass parts at the top, as a one-module
+      // run does, so its own panels still find them.
+      for (const k of ["static", "fuzz", "symbolic", "chimera"]) if (byPack.contracts?.[k]) record[k] = byPack.contracts[k];
       return { env, record };
     },
 

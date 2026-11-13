@@ -1798,6 +1798,7 @@ function savedRun(id, events, mtime) {
   let decision = null
   let error = null
   let findingIds = []
+  let scope = null
   let modules = null
   // A joined run's modules, from its own event. Null on a one-module record.
   let packs = null
