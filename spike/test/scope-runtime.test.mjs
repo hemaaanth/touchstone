@@ -2,6 +2,7 @@
 // plan, and the Review pack's read-only proof gate.
 //
 //   node --test spike/test/scope-runtime.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

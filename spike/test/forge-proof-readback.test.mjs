@@ -2,6 +2,7 @@
 // only the root conversation. The recorder keeps the replayed test on the
 // finding, and a proof that passed the harm gate stays proven when the report
 // is read back. A failing or absent proof does not, even if pocProved is set.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { writeFileSync, rmSync } from "node:fs"

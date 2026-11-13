@@ -7,6 +7,7 @@
 // and exits. No real engine starts, so no model is called and nothing is spent.
 // The fault: a repo scope over the file cap was refused by fetch_source, the
 // agent settled with nothing to report, and the run ended `no-finding`.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";

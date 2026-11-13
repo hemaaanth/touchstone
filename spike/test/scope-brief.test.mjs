@@ -4,6 +4,7 @@
 //
 // Throwaway stores only (TOUCHSTONE_SCOPES_FILE, TOUCHSTONE_GRANTS_FILE). No
 // network, no docker, no model.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

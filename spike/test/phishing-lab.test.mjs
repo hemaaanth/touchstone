@@ -1,6 +1,7 @@
 // Phishing pack: offline replay of the pinned lab capture and the vendored MetaMask slice.
 // runTool is mocked with real dnstwist `--format list` output recorded in packs/phishing/validation/.
 // No test here resolves a name or opens a network: the mock refuses any call that is not offline generation.
+import "./helpers/isolated-env.mjs";
 import { test, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import dns from 'node:dns';

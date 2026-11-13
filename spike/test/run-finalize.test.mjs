@@ -2,6 +2,7 @@
 // live web run on example.com: Strix's agent crashed, the server stopped during
 // the run, and only the stream file was left. Loading it must write a record
 // that reads as an error with its reason, with no finding.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

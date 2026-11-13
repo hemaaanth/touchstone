@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 
 // The client side of the console guard: every write in src/lib/api.ts carries

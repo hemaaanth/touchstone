@@ -1,5 +1,6 @@
 // A Vite reload re-evaluates runs.mjs in the same process. The new module must
 // adopt a live run: list it, keep its events, and stop it. No model calls.
+import "./helpers/isolated-env.mjs";
 import { test, mock, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";

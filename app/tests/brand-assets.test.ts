@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
+// @ts-expect-error — plain .mjs module, no types
 import { markSvg } from "../server/brand.mjs"
 
 const SRC = path.join(import.meta.dir, "..", "src")

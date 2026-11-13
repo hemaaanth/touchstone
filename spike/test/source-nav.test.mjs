@@ -5,6 +5,7 @@
 // src/ + vendor/ so test fixtures and vendored toolchains cannot shadow the
 // target. The engine binary is RUN, never committed, so the few assertions that
 // need it are gated on resolveCbmBinary(); the rest run everywhere.
+import "./helpers/isolated-env.mjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, symlinkSync } from 'node:fs';

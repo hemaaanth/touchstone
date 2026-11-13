@@ -9,23 +9,28 @@ import domains from './pack.mjs';
 import surface from '../surface/pack.mjs';
 import { runTool } from '../../lib/wrap.mjs';
 import { captureTools,compareTakeovers } from './tools.mjs';
-import { startLab } from './labctl.mjs';
+import { startLab,toCanonAddresses,toRunAddresses } from './labctl.mjs';
 import { IMAGE,detectorsFor } from './checks.mjs';
 import { replayEvidence } from '../../lib/proof-evidence.mjs';
 const lab=fileURLToPath(new URL('./lab',import.meta.url));
 const ws=mkdtempSync(join(tmpdir(),'touchstone-domains-smoke-'));
 let network,lab_;
 const docker=args=>execFileSync('docker',args,{encoding:'utf8',timeout:60000});
-function cleanup() {
-  lab_?.stop();
+async function cleanup() {
+  await lab_?.stop();
   rmSync(ws,{recursive:true,force:true});
 }
 try {
   cpSync(lab,ws,{recursive:true});
   if(process.argv.includes('--lab')) {
-    lab_=startLab(lab); network=lab_.network;
+    lab_=await startLab(lab); network=lab_.network;
+    // capture.mjs names the canonical lab addresses; this run's lab has its own subnet.
+    const ips={dns:lab_.resolver,web:lab_.web};
+    writeFileSync(join(ws,'capture.mjs'),toRunAddresses(readFileSync(join(lab,'capture.mjs'),'utf8'),ips));
     const capture=await runTool({image:IMAGE,ws,network,cmd:['capture'],timeoutMs:15000});
     assert.equal(capture.code,0,capture.stderr);
+    // Compare and pin in the canonical addresses the lab files use.
+    capture.stdout=toCanonAddresses(capture.stdout,ips);
     if(process.argv.includes('--pin')) {
       // Maintenance: write a fresh snapshot and re-pin it in both labs. Review the diff before you commit.
       const bytes=JSON.stringify(JSON.parse(capture.stdout)),hash=createHash('sha256').update(bytes).digest('hex');
@@ -34,16 +39,16 @@ try {
         const cfg=JSON.parse(readFileSync(join(dir,'.touchstone.json'),'utf8')); cfg.evidenceSnapshot.sha256=hash;
         writeFileSync(join(dir,'.touchstone.json'),JSON.stringify(cfg,null,2));
       }
-      console.log('pinned',hash); cleanup(); process.exit(0);
+      console.log('pinned',hash); await cleanup(); process.exit(0);
     }
     assert.deepEqual(JSON.parse(capture.stdout),JSON.parse(readFileSync(join(lab,'snapshot.json'),'utf8')),'Fresh lab must match the pinned snapshot');
-    const reports=await captureTools(ws,network);
+    const reports=await captureTools(ws,network,lab_.resolver);
     assert(reports.dnsx.some(r=>r.host==='old.touchstone.test' && r.cname?.includes('removed.touchstone.test')));
     assert(reports.httpx.some(r=>r.url==='http://www.touchstone.test:8080' && r.status_code===200));
-    const comparison=await compareTakeovers(ws,network);
+    const comparison=await compareTakeovers(ws,network,lab_.resolver);
     assert.equal(comparison.dnsReaper.code,0,comparison.dnsReaper.stderr);
     assert.equal(comparison.nuclei.code,0,comparison.nuclei.stderr);
-    const observatory=await runTool({image:'touchstone-observatory:1.7.2',ws,network,cmd:['172.30.44.20:8080'],timeoutMs:30000});
+    const observatory=await runTool({image:'touchstone-observatory:1.7.2',ws,network,cmd:[lab_.web+':8080'],timeoutMs:30000});
     assert.equal(observatory.code,0,observatory.stderr);
     const headerReport=JSON.parse(observatory.stdout);
     assert.equal(headerReport.tests['content-security-policy'].result,'csp-not-implemented');
@@ -99,5 +104,5 @@ try {
   assert.deepEqual(await domains.prove(ws,state.found,[],()=>{}),[]);
   console.log(JSON.stringify({domains:findings.length,surface:inventory.record.leads.length,tamper:'rejected',spendUSD:0}));
 } finally {
-  cleanup();
+  await cleanup();
 }

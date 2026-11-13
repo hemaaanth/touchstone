@@ -3,6 +3,7 @@
 // The fixture is a real no-token capture of octokit/request-error.js, recorded
 // from api.github.com and raw.githubusercontent.com. Tests replay it by URL, so
 // no test sends a network request. An unrecorded URL is a 404.
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

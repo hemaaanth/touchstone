@@ -3,6 +3,7 @@
 // reach exactly those hosts. Removing the scope removes the grant.
 //
 // Throwaway stores via TOUCHSTONE_SCOPES_FILE and TOUCHSTONE_GRANTS_FILE.
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

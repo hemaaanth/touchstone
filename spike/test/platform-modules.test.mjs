@@ -1,6 +1,7 @@
 // Module choice: the pack list, target filtering by pack, and the pack written
 // into each run's .touchstone.json. A fake pack with a fake lab stands in for a
 // pack that another thread ships; it is added and removed inside the test.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs"

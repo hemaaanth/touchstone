@@ -13,6 +13,7 @@
 // never touched. A local http server stands in for the granted host. No docker.
 //
 //   node --test spike/test/reach.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";

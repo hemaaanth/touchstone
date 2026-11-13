@@ -6,6 +6,7 @@
 // agent-run.mjs runs on import. spawn is mocked: the "worker" is a fake child
 // that prints a refused source-fetch and a settled event with no finding, then
 // exits. No model is called, nothing is spent, and the record goes to a temp folder.
+import "./helpers/isolated-env.mjs";
 import { test, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realChild from "node:child_process";

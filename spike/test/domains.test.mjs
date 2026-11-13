@@ -1,3 +1,4 @@
+import "./helpers/isolated-env.mjs";
 import {before,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';

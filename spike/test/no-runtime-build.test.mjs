@@ -5,6 +5,7 @@
 // Every docker call here is a stub. Nothing reaches docker.
 //
 //   node --test spike/test/no-runtime-build.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";

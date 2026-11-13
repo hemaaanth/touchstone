@@ -1,5 +1,6 @@
 // katana: the real tool against the 127.0.0.1 SPA lab, and its parser on recorded output.
 // Record the fixture again with: RECORD_KATANA=1 node --test test/surface-katana.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

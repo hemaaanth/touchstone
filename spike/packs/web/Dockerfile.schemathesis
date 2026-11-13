@@ -10,7 +10,7 @@
 # modify or redistribute its source, so it is listed in TOOLS.md, not
 # THIRD_PARTY.md. Its transitive Python dependencies are resolved at build time
 # as wheels and are not individually pinned (the tool version is).
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 ARG ST_VERSION=4.33.4
 ARG ST_SHA256=6b9b2f17d12e6474d5a53d8a61d0d8e10620c259249cb30a2d7cf2cd6688b56d
 RUN set -eux; \

@@ -1,6 +1,7 @@
 // B1: replay re-parses the stored tool output. It never trusts a stored verdict.
 // The three attack inputs come from review 3. Each one writes a matching pin,
 // so only the stored-output check can stop it.
+import "./helpers/isolated-env.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';

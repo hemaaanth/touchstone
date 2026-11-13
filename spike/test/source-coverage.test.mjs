@@ -1,6 +1,7 @@
 // Which scope members a run read, from its source-fetch events. Pure, offline.
 //
 //   node --test spike/test/source-coverage.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sourceCoverage, coverageFailure } from "../lib/source-coverage.mjs";

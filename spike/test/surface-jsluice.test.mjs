@@ -1,6 +1,7 @@
 // jsluice: the real tool on the JavaScript katana fetched from the 127.0.0.1 SPA lab, and its parsers on recorded output.
 // Record the fixtures again with: RECORD_JSLUICE=1 node --test test/surface-jsluice.test.mjs
 // Record katana first if the lab changed, so both fixtures come from the same lab run.
+import "./helpers/isolated-env.mjs";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

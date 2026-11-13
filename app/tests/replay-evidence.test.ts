@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
