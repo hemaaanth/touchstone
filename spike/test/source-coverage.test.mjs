@@ -16,7 +16,7 @@ test("no GitHub members means no coverage to check", () => {
   assert.equal(coverageFailure(null), null);
 });
 
-test("each member is fetched, refused or not fetched; the last attempt wins", () => {
+test("each member is fetched, refused or not fetched; a member counts as read once any attempt landed", () => {
   const cov = sourceCoverage([A + "/", A + ".git", B], [
     no(A, "cosmos/cosmos-sdk would bring this scope to 3053 source files (the cap is 200)"),
     ok(B, "vendor/cosmos__cosmos-sdk@main/x/bank", 40),
@@ -27,6 +27,9 @@ test("each member is fetched, refused or not fetched; the last attempt wins", ()
   const later = sourceCoverage([A], [no(A, "clone timed out"), ok(A, "vendor/cosmos__cosmos-sdk", 120)]);
   assert.equal(later.complete, true);
   assert.deepEqual(sourceCoverage([A], []).members[0].status, "not-fetched");
+  // A failed refetch keeps the earlier copy on disk (lib/fetch.mjs), so it does not undo a good fetch.
+  const refetch = sourceCoverage([A], [ok(A, "vendor/cosmos__cosmos-sdk", 120), no(A, "clone timed out"), no(A, "would bring this scope to 260 source files (the cap is 200)")]);
+  assert.deepEqual([refetch.members[0].status, refetch.members[0].where, refetch.members[0].files, refetch.complete], ["fetched", "vendor/cosmos__cosmos-sdk", 120, true]);
 });
 
 test("a gap becomes a coverage error that lists what was read and what was not", () => {

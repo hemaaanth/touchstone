@@ -373,3 +373,16 @@ test("a refusal says that a branch name with \"/\" cannot be used in a folder UR
   const err2 = await fetchSource(ws2, gone).then(() => null, (e) => e);
   assert.match(err2.message, /branch or tag name that holds "\/"/);
 });
+
+test("a refused refetch of a file keeps the earlier copy", async () => {
+  const blob = "https://github.com/org/x/blob/main/src/V.sol", repo = "https://github.com/org/fat";
+  const raw = "https://raw.githubusercontent.com/org/x/main/src/V.sol";
+  const ws = scopeWs([blob, repo]);
+  blobs.set(raw, "contract V {}\n");
+  const first = await fetchSource(ws, blob);
+  clones.set("https://github.com/org/fat.git", { "src/A.sol": "// " + "a".repeat(800 * 1024) + "\n", "src/B.sol": "// " + "b".repeat(800 * 1024) + "\n" });
+  await fetchSource(ws, repo);
+  blobs.set(raw, "// " + "c".repeat(600 * 1024) + "\n");
+  await assert.rejects(fetchSource(ws, blob), /MB of source \(the cap is 2 MB\)/);
+  assert.equal(readFileSync(path.join(ws, first.where), "utf8"), "contract V {}\n", "the earlier copy is back");
+});

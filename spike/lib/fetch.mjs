@@ -556,8 +556,15 @@ async function fetchBlob(ws, gh) {
   if (body.includes("\u0000") || secretContent(body)) throw new Error(`refused to save ${base}: its content is binary or looks like a secret`);
   const dest = path.join(ws, rel);
   mkdirSync(path.dirname(dest), { recursive: true });
+  // A refused refetch puts the earlier copy back, like fetchRepo does.
+  const before = existsSync(dest) ? readFileSync(dest) : null;
   writeFileSync(dest, body);
-  enforceCaps(ws, dest, gh.filePath);
+  try {
+    enforceCaps(ws, dest, gh.filePath);
+  } catch (e) {
+    if (before) writeFileSync(dest, before);
+    throw e;
+  }
   const pragmas = gh.filePath.endsWith(".sol") ? pragmaVersions(body) : [];
   return {
     kind: "file",

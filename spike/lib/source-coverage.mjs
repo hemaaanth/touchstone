@@ -15,20 +15,25 @@ function memberUrl(raw) {
 // links: the scope's member links. events: the run's events.
 // Returns null when the scope has no GitHub members (nothing to fetch), else
 // { members: [{ url, status, where?, files?, reason? }], fetched, total, complete }.
-// The last attempt for a member decides its status. fetch_source takes only the
-// first MAX_MEMBERS links, so every link past that is a gap: it can never be read.
+// A member is read once any attempt landed (the last one that landed gives
+// where and how many files): a refused or failed refetch keeps the earlier copy
+// on disk (lib/fetch.mjs). Otherwise the last failure gives the reason.
+// fetch_source takes only the first MAX_MEMBERS links, so every link past that
+// is a gap: it can never be read.
 export function sourceCoverage(links, events) {
   const all = [...new Set((links ?? []).map(memberUrl).filter(Boolean))];
   if (!all.length) return null;
   const urls = all.slice(0, MAX_MEMBERS);
-  const last = new Map();
+  const last = new Map(), lastOk = new Map();
   for (const e of events ?? []) {
     if (e?.ev !== "source-fetch") continue;
     const u = memberUrl(e.url);
-    if (u && urls.includes(u)) last.set(u, e);
+    if (!u || !urls.includes(u)) continue;
+    last.set(u, e);
+    if (e.ok) lastOk.set(u, e);
   }
   const members = urls.map((url) => {
-    const e = last.get(url);
+    const e = lastOk.get(url) ?? last.get(url);
     if (!e) return { url, status: "not-fetched", reason: "the agent did not fetch it" };
     if (e.ok) return { url, status: "fetched", where: e.where ?? null, files: Number(e.files) || 0 };
     return { url, status: "refused", reason: String(e.error ?? "the fetch failed").slice(0, 1500) };
