@@ -356,6 +356,22 @@ test("lead events fill state.leads with evidence, one per id, worst first, never
   assert.deepEqual(state.findings, [])
 })
 
+// A joined run says which modules it covers, in order. The pre-pass view and Run
+// Info read state.packs, so it must never be empty on a run that has a scope.
+test("a packs event fills state.packs in order, and one module stays one", () => {
+  assert.deepEqual(reduceEvents([ev("packs", { packs: ["web", "domains"] })]).packs, ["web", "domains"])
+  assert.deepEqual(reduceEvents([ev("packs", { packs: ["web"] })]).packs, ["web"])
+  // An empty or broken list falls back to the scope's own module below.
+  assert.deepEqual(reduceEvents([ev("packs", { packs: [] })]).packs, [])
+})
+
+// A record from before the packs event still names its one module.
+test("an old record gets its one module from the scope", () => {
+  const scope = { id: "s", title: "Site", kind: "live", pack: "web", blurb: "", entry: "", signal: "", proofSurface: { kind: "http", note: "" } }
+  assert.deepEqual(reduceEvents([ev("scope", { scope })]).packs, ["web"])
+  assert.deepEqual(reduceEvents([]).packs, [])
+})
+
 // B8: the closing words of a run that proved nothing. The engine used to cut
 // `final` at 4000 characters; the stream held the whole text.
 const whole = `## Summary\n\n${"The vault rounds in its own favour. ".repeat(190)}**medium — src/utils/about.ts** ends it.`

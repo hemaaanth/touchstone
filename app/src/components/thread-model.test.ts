@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { agentLook, buildMessages, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, findingTarget, focusActions, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -216,7 +216,12 @@ test("an old record with only the final text shows it once, before a later turn"
   assert.deepEqual(out, ["Nothing to prove.", "and the router?", "The router is fine."])
 })
 
-test("Run Info's module line is a list: today one entry, the scope's pack", () => {
+test("Run Info's module line names every module of a joined run, in order", () => {
+  const state = reduceEvents([{ ev: "packs", packs: ["web", "domains", "surface"] }])
+  assert.deepEqual(runModules(state), ["web", "domains", "surface"])
+})
+
+test("Run Info's module line on an old record is the scope's one pack", () => {
   const scope = { id: "s", title: "S", kind: "lab", blurb: "", entry: "" }
   assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope: { ...scope, pack: "web" } }])), ["web"])
   // A scope saved before modules is a Contracts scope.
@@ -275,4 +280,74 @@ test("the run list row: a restart's cut-off reads Interrupted with a neutral dot
   assert.deepEqual(runRowStatus({ status: "recorded", errorKind: null }), { word: "Proven", tone: "green" })
   // The kind only matters for an error: a finished run keeps its own word.
   assert.deepEqual(runRowStatus({ status: "no-finding", errorKind: "cutoff" }), { word: "No finding", tone: "neutral" })
+})
+
+// "Open this finding": where a finding of this run sits.
+const R = "run-2611130715-1"
+const submittedEv = (n: number, poc: string, agent?: string): RunEvent => ({ ev: "finding-submitted", n, title: `F${n}`, severity: "high", poc, ...(agent ? { agent } : {}) })
+const findingEv = (k: number, poc: string, proven = true): RunEvent => ({ ev: "finding", id: `${R}.${k}`, runId: R, title: `F${k}`, severity: "high", poc, proven })
+const proofEv = (k: number): RunEvent => ({ ev: "artifact-open", id: `proof-${R}.${k}`, title: "Replay proof", kind: "proof", findingId: `${R}.${k}` })
+
+test("open a finding: its card's step and its replay proof, for a proven one", () => {
+  const state = reduceEvents([submittedEv(1, "PocA"), submittedEv(2, "PocB"), findingEv(1, "PocA"), findingEv(2, "PocB", false), proofEv(1), { ev: "status", status: "recorded" }])
+  const card = (n: number) => state.steps.find((s) => s.kind === "submitted" && s.finding?.n === n)?.key
+  assert.deepEqual(findingTarget(state, "recorded", `${R}.1`), { key: card(1), agent: null, proofId: `proof-${R}.1` })
+  // Not proven: the card only, no proof to open.
+  assert.deepEqual(findingTarget(state, "recorded", `${R}.2`), { key: card(2), agent: null, proofId: null })
+  // The card's step really carries its key into the thread.
+  const keys = buildMessages(state, state.steps, "recorded", false)
+    .flatMap((m) => (Array.isArray(m.content) ? (m.content as { toolName?: string; args?: { stepKey?: string } }[]) : []))
+    .filter((p) => p.toolName === "proof")
+    .map((p) => p.args?.stepKey)
+  assert.deepEqual(keys, [card(1), card(2)])
+})
+
+test("open a finding: an unknown id or another run's finding does nothing", () => {
+  const state = reduceEvents([submittedEv(1, "PocA"), findingEv(1, "PocA"), { ev: "status", status: "recorded" }])
+  assert.equal(findingTarget(state, "recorded", `${R}.9`), null)
+  assert.equal(findingTarget(state, "recorded", "other-run-2611120000-1.1"), null)
+  assert.equal(findingTarget(reduceEvents([]), "starting", `${R}.1`), null, "a cold load before the stream lands")
+})
+
+test("open a finding: a child agent's finding is in that agent's thread", () => {
+  const state = reduceEvents([
+    { ev: "subagent-spawned", id: "a-1", name: "drain-econ", conv: "c1" },
+    submittedEv(1, "PocA", "a-1"),
+    findingEv(1, "PocA", false),
+    { ev: "status", status: "recorded" },
+  ])
+  assert.equal(findingTarget(state, "recorded", `${R}.1`)?.agent, "a-1")
+})
+
+test("open a finding: an old one-card record whose finding has no PoC still finds its card", () => {
+  const state = reduceEvents([
+    { ev: "approval-pending", id: "x", title: "Old", severity: "high" },
+    { ev: "finding", id: "old-run-1", runId: "old-run-1", title: "Old", severity: "high", proven: true },
+    { ev: "artifact-open", id: "proof-old-run-1", title: "Replay proof", kind: "proof", findingId: "old-run-1" },
+    { ev: "status", status: "recorded" },
+  ])
+  const t = findingTarget(state, "recorded", "old-run-1")
+  assert.ok(t?.key)
+  assert.equal(t?.proofId, "proof-old-run-1")
+})
+
+test("open a finding: a proof that lands after its card still opens, once, with no second jump", () => {
+  // The server announces the finding before its proof document.
+  const first = reduceEvents([submittedEv(3, "PocC"), findingEv(3, "PocC"), { ev: "status", status: "recorded" }])
+  const later = reduceEvents([submittedEv(3, "PocC"), findingEv(3, "PocC"), proofEv(3), { ev: "status", status: "recorded" }])
+  const id = `${R}.3`
+  const a = focusActions(findingTarget(first, "recorded", id), { jumped: false, opened: false }, false)
+  assert.ok(a.jump)
+  assert.equal(a.proof, null)
+  const b = focusActions(findingTarget(later, "recorded", id), a.done, false)
+  assert.equal(b.jump, null, "no second jump")
+  assert.equal(b.proof, `proof-${R}.3`)
+  const c = focusActions(findingTarget(later, "recorded", id), b.done, false)
+  assert.deepEqual([c.jump, c.proof, c.peek], [null, null, null], "nothing more after that")
+  // On a phone the drawer never opens by itself, early or late.
+  const phone = focusActions(findingTarget(later, "recorded", id), { jumped: false, opened: false }, true)
+  assert.ok(phone.jump)
+  assert.equal(phone.proof, null)
+  // An unknown id does nothing.
+  assert.deepEqual(focusActions(findingTarget(later, "recorded", `${R}.9`), { jumped: false, opened: false }, false).jump, null)
 })

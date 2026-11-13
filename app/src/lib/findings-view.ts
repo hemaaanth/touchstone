@@ -5,6 +5,8 @@ import type { FindingSummary } from "./types"
 
 export type SortKey = "proven" | "severity" | "newest" | "oldest" | "scope"
 export type StateFilter = "all" | "proven" | "unproven"
+// A dismissed finding is hidden until the operator asks to see it.
+export type DismissedFilter = "hide" | "show"
 export interface FindingsView {
   q: string
   scope: string
@@ -15,9 +17,10 @@ export interface FindingsView {
   from: string
   to: string
   sort: SortKey
+  dismissed: DismissedFilter
 }
 export const ALL = "all"
-export const DEFAULT_VIEW: FindingsView = { q: "", scope: ALL, module: ALL, severity: ALL, state: "all", from: "", to: "", sort: "proven" }
+export const DEFAULT_VIEW: FindingsView = { q: "", scope: ALL, module: ALL, severity: ALL, state: "all", from: "", to: "", sort: "proven", dismissed: "hide" }
 
 export const SORTS: { value: SortKey; label: string }[] = [
   { value: "proven", label: "Proven first" },
@@ -46,6 +49,7 @@ export function isFiltered(v: FindingsView): boolean {
 export function filterFindings(rows: FindingSummary[], v: FindingsView): FindingSummary[] {
   const q = v.q.trim().toLowerCase()
   return rows.filter((f) => {
+    if (v.dismissed === "hide" && f.dismissed) return false
     if (q && !(f.title ?? "").toLowerCase().includes(q)) return false
     if (v.scope !== ALL && scopeOf(f) !== v.scope) return false
     if (v.module !== ALL && moduleOf(f) !== v.module) return false
@@ -69,8 +73,11 @@ const provenFirst = (a: FindingSummary, b: FindingSummary) => Number(b.proven) -
 const bySeverity = (a: FindingSummary, b: FindingSummary) => rank(b.severity) - rank(a.severity)
 const byDefault = (a: FindingSummary, b: FindingSummary) => provenFirst(a, b) || bySeverity(a, b) || newest(a, b)
 
+// A dismissed finding sorts after every open one, whatever the sort.
+const openFirst = (a: FindingSummary, b: FindingSummary) => Number(a.dismissed) - Number(b.dismissed)
+
 export function sortFindings(rows: FindingSummary[], sort: SortKey): FindingSummary[] {
-  const cmp =
+  const by =
     sort === "severity"
       ? (a: FindingSummary, b: FindingSummary) => bySeverity(a, b) || provenFirst(a, b) || newest(a, b)
       : sort === "newest"
@@ -80,7 +87,7 @@ export function sortFindings(rows: FindingSummary[], sort: SortKey): FindingSumm
           : sort === "scope"
             ? (a: FindingSummary, b: FindingSummary) => scopeOf(a).localeCompare(scopeOf(b)) || byDefault(a, b)
             : byDefault
-  return [...rows].sort(cmp)
+  return [...rows].sort((a, b) => openFirst(a, b) || by(a, b))
 }
 
 // The redaction cap (server/redact.mjs): a text over 64 KB is replaced whole by

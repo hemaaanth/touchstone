@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as realFs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -640,6 +640,205 @@ test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets
     assert.equal(again.length, 2);
     assert.equal(again[1].state, "rebuilt");
     assert.ok(again[1].message.endsWith(told[0].message));
+  });
+});
+
+
+// ---- Safety: a JOINED run's credential, whatever the module order -------------
+
+// A joined scope: the site module and the MCP module in ONE run. The credential
+// lives in the ai-mcp module and nowhere else.
+const livePair = (packs) => addLiveScope({ title: "Site and MCP", hosts: ["127.0.0.1"], pack: packs, permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
+// What a worker can read: the ai-mcp module's own config. The token reaches the
+// root agent only, in that module's first message, which reads the config.
+const readJoined = (call) => {
+  const ws = call.args[4];
+  assert.ok(!existsSync(path.join(ws, "modules", "ai-mcp", "BRIEF.md")), "no old scope file");
+  call.brief = PACKS["ai-mcp"].kickoff(path.join(ws, "modules", "ai-mcp"), {});
+  call.mcp = JSON.parse(readFileSync(path.join(ws, "modules", "ai-mcp", ".touchstone.json"), "utf8")).mcp;
+};
+
+for (const packs of [["web", "ai-mcp"], ["ai-mcp", "web"]]) {
+  test(`safety: a joined run (${packs.join(", ")}) keeps no credential, and scrubs it again after a follow-up`, async () => {
+    await withLivePack(async () => {
+      const live = livePair(packs);
+      // The engine child reads the workspace while the run is live, before the
+      // end scrubs it.
+      scripts.push({ act: (call) => {
+        readJoined(call);
+        writeFileSync(call.args[3], "");
+        writeFileSync(path.join(call.args[4], "notes.md"), `curl -H "Authorization: Bearer ${ADMIN}" works`);
+      }, events: [done] });
+      const { id } = await createRun({ targetId: live.id, packs, mode: "solo" });
+      await settle(id);
+      const first = spawns.at(-1);
+      const ws = first.args[4];
+      // One workspace, one part per module.
+      assert.deepEqual(readdirSync(path.join(ws, "modules")), [...packs].sort());
+      const root = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"))
+      assert.equal(root.pack, "multi");
+      assert.deepEqual(root.packs, packs);
+      assert.deepEqual(kept(id).packs, packs, "the record keeps the modules");
+      assert.deepEqual(runs.getRun(id).packs, packs, "and so does the view");
+      assert.ok(first.env.SCOPE_NOTES.includes("127.0.0.1"), "the scope notes reach the agent");
+      // The run itself had the token in the ai-mcp module only.
+      assert.ok(first.brief.includes(TOKEN), "the module that needs it had it");
+      assert.deepEqual(Object.keys(first.mcp.tokens), [TOKEN, ADMIN]);
+      assert.ok(!existsSync(path.join(ws, "modules", "web", "BRIEF.md")));
+      // After the end: no file under the kept workspace holds a credential, and
+      // no config holds it either.
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "no file in the kept workspace");
+      const cfg = readFileSync(path.join(ws, "modules", "ai-mcp", ".touchstone.json"), "utf8");
+      assert.ok(!cfg.includes(TOKEN) && !cfg.includes(ADMIN), "the config is scrubbed as JSON too");
+      assert.deepEqual(JSON.parse(cfg).mcp, { toolScope: { echo: "read" } });
+      assert.deepEqual(kept(id).target.mcp, { toolScope: { echo: "read" } });
+      assert.deepEqual(holding(RESULTS, [TOKEN, ADMIN]), []);
+
+      // A follow-up gets the credential back in the ai-mcp module, and it leaves again.
+      const server = await restart();
+      scripts.push({ act: readJoined, events: [done] });
+      server.steerRun(id, "Try the admin token again.");
+      const r = await settle(id, closes(id, server), server);
+      const second = spawns.at(-1);
+      assert.equal(second.args[4], ws);
+      assert.ok(second.brief.includes(TOKEN), "the module that needs it has it back");
+      assert.deepEqual(Object.keys(second.mcp.tokens), [TOKEN, ADMIN]);
+      assert.ok(!r.events.some((e) => e.ev === "workspace"), "nothing to tell the operator");
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "and it leaves again when the follow-up ends");
+    });
+  });
+}
+
+// A path under `modules/` that is a link out of the workspace. The real thing is
+// moved outside, under a name no run owns, and a link stands in its place. A
+// scrub or a restore that follows it writes into the outside copy.
+let outside = 0;
+function linkOut(ws, rel, empty = false) {
+  const from = path.join(ws, rel);
+  const to = path.join(dir, `outside-${++outside}`);
+  if (empty) mkdirSync(to);
+  else cpSync(from, to, { recursive: true });
+  rmSync(from, { recursive: true, force: true });
+  symlinkSync(to, from, lstatSync(to).isDirectory() ? "dir" : "file");
+  return to;
+}
+const outsideBytes = (p) => lstatSync(p).isDirectory()
+  ? [...readdirSync(p, { withFileTypes: true, recursive: true })].filter((e) => e.isFile()).map((e) => readFileSync(path.join(e.parentPath, e.name), "latin1")).join("\u0000")
+  : readFileSync(p, "latin1");
+
+for (const [rel, empty] of [["modules", false], ["modules", true], ["modules/ai-mcp", false], ["modules/ai-mcp/.touchstone.json", false]]) {
+  test(`safety: a link at ${rel}${empty ? " (an empty folder)" : ""} sends no write outside; the follow-up rebuilds`, async () => {
+    await withLivePack(async () => {
+      const live = livePair(["web", "ai-mcp"]);
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+      const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+      await settle(id);
+      const ws = spawns.at(-1).args[4];
+      made.push(ws);
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), []);
+      const out = linkOut(ws, rel, empty);
+      const before = outsideBytes(out);
+      const server = await restart();
+      scripts.push({ act: readJoined, events: [done] });
+      server.steerRun(id, "Go on.");
+      const r = await settle(id, closes(id, server), server);
+      const fresh = spawns.at(-1).args[4];
+      made.push(fresh);
+      // The folder went and a new one was built, joined and clean.
+      assert.notEqual(fresh, ws, "the linked workspace is not reused");
+      assert.ok(!existsSync(ws), "it is removed");
+      assert.ok(existsSync(path.join(fresh, "modules", "ai-mcp")), "both modules are built again");
+      assert.deepEqual(r.events.filter((e) => e.ev === "workspace").map((e) => e.state), ["rebuilt"]);
+      assert.deepEqual(holding(fresh, [TOKEN, ADMIN]), []);
+      // Nothing outside changed: no token, no rewrite.
+      assert.equal(outsideBytes(out), before, `nothing outside the workspace changed (${rel})`);
+    });
+  });
+}
+
+// A worker that submits a finding and then dies: the finding must still record,
+// unproven. A one-module run does that today through `run.submitted`; a joined
+// run used to drop it because the row had no module.
+test("a joined worker that dies after submitting still records the finding, unproven", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+      // No `pack`: an older engine, or a worker that died before the stamp.
+      { t: 1, ev: "finding-submitted", n: 1, title: "IDOR on /api/orders", severity: "high", poc: "replay-1" },
+      { t: 2, ev: "status", status: "running" },
+    ], code: 1 });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    const r = await settle(id);
+    assert.deepEqual(r.submitted.map((f) => f.title), ["IDOR on /api/orders"]);
+    const rec = JSON.parse(readFileSync(path.join(RESULTS, `run-${id}.json`), "utf8")).result;
+    assert.equal(rec.findings.length, 1, "the finding is in the record");
+    assert.equal(rec.findings[0].pack, undefined, "it names no module, and is kept anyway");
+    assert.equal(rec.findings[0].pocProved, false, "and it is not proven without a replay");
+    // A second worker names its module: the record and the finding event carry
+    // it, so the Findings page shows the right pill. Domains' own prepass and
+    // replay need a live capture, so they are stubbed here.
+    const real = { prepass: PACKS.domains.prepass, prove: PACKS.domains.prove };
+    PACKS.domains.prepass = undefined;
+    PACKS.domains.prove = async (ws, found) => found.map((f) => ({ ...f, pocProved: true }));
+    try {
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+        { t: 1, ev: "finding-submitted", pack: "domains", n: 1, title: "Dangling CNAME", severity: "high", poc: "cdn-1" },
+      ], code: 1 });
+      const second = await createRun({ targetId: live.id, packs: ["web", "domains"], mode: "solo" });
+      const r2 = await settle(second.id);
+      made.push(spawns.at(-1).args[4]);
+      const rec2 = JSON.parse(readFileSync(path.join(RESULTS, `run-${second.id}.json`), "utf8")).result;
+      assert.deepEqual(rec2.findings.map((f) => f.pack), ["domains"]);
+      assert.ok(r2.events.some((e) => e.ev === "finding" && e.pack === "domains"), `${r2.status} | ${r2.error}`);
+    } finally {
+      Object.assign(PACKS.domains, real);
+    }
+  });
+});
+
+test("a joined follow-up refuses a duplicate of a finding the run already holds", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+      { t: 1, ev: "finding-submitted", pack: "web", n: 1, title: "IDOR on /api/orders", severity: "high", poc: "replay-1" },
+      // An older row: no module. Both must reach the worker named.
+      { t: 2, ev: "finding-submitted", n: 2, title: "Old claim", severity: "low", poc: "replay-2" },
+      done,
+    ] });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    const r = await settle(id);
+    made.push(spawns.at(-1).args[4]);
+    assert.deepEqual(r.submitted.map((f) => f.poc), ["replay-1", "replay-2"]);
+    // The prior list the worker gets names the module, so web's own duplicate
+    // check sees the earlier finding.
+    const server = await restart();
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    server.steerRun(id, "Anything else?");
+    await settle(id, closes(id, server), server);
+    const call = spawns.at(-1);
+    assert.deepEqual(JSON.parse(call.env.PRIOR_FOUND).map((f) => [f.poc, f.pack]), [["replay-1", "web"], ["replay-2", undefined]]);
+  });
+});
+
+test("safety: a joined run rebuilt from nothing is rebuilt joined, with no credential", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    await settle(id);
+    const ws = spawns.at(-1).args[4];
+    made.push(ws);
+    rmSync(ws, { recursive: true, force: true });
+    const server = await restart();
+    scripts.push({ act: readJoined, events: [done] });
+    server.steerRun(id, "Start the files again.");
+    const r = await settle(id, closes(id, server), server);
+    const fresh = spawns.at(-1).args[4];
+    made.push(fresh);
+    assert.notEqual(fresh, ws);
+    assert.ok(existsSync(path.join(fresh, "modules", "web")) && existsSync(path.join(fresh, "modules", "ai-mcp")), "both modules are built again");
+    assert.deepEqual(r.events.filter((e) => e.ev === "workspace").map((e) => e.state), ["rebuilt"]);
+    assert.deepEqual(holding(fresh, [TOKEN, ADMIN]), []);
   });
 });
 

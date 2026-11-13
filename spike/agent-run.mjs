@@ -25,7 +25,7 @@ import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { getTarget, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
+import { getTarget, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
@@ -285,11 +285,26 @@ async function main() {
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   // TARGET_ID selects a library target (a live scope included) and prepares it
   // the way the app does; TARGET stays the direct path for a working checkout.
-  const target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  // PACKS=web,domains makes ONE run over several modules of that target: one
+  // workspace, one per module inside it, one grant, one reach decision. One id
+  // in PACKS is the run's one module, the same as the app's `pack`.
+  let target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  const packs = [...new Set(String(process.env.PACKS ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
+  if (packs.length && !target) throw new Error("PACKS needs TARGET_ID: a module is a module of a library target");
+  // pickTarget is the one place that checks a target runs and allows a module,
+  // and it returns the target under that module. One PACKS id takes that path,
+  // so a module the target does not allow is refused here too.
+  if (target && packs.length === 1) target = pickTarget({ id: target.id, pack: packs[0] });
   const reach = target ? await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" }) : null;
-  const ws = target ? await prepareRunWorkspace(target) : makeWorkspace(TARGET);
+  // Several modules: the build checks the target's own list again, so the CLI
+  // and the app refuse the same things.
+  const ws = !target
+    ? makeWorkspace(TARGET)
+    : packs.length > 1
+      ? await prepareMultiWorkspace(target, { packs })
+      : await prepareRunWorkspace(target);
   const pack = packFor(readTouchstone(ws));
-  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events`, ...(target ? scopeEnv(target) : {}) };
+  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events`, ...(target ? scopeEnv(target, packs) : {}) };
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 

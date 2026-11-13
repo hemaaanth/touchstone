@@ -590,7 +590,7 @@ function tools(ws, state) {
         oracleName: entry.oracleName,
       };
       state.found.push(finding);
-      event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
+      event("finding-submitted", { pack: "web", n, title: finding.title, severity: finding.severity, poc: label });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });

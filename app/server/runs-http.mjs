@@ -59,10 +59,12 @@ export async function handleRuns(req, res) {
   // POST /api/runs — start a real agent run. `modules`, when given, is the set of
   // toggleable module ids the operator left on; the orchestrator resolves it
   // against the scope so an unsupported module is off with a reason, not dropped.
+  // `packs` is the modules the ONE run covers: two or more build one joined run,
+  // one or none is today's single `pack`.
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, mode: body.mode }))
+      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

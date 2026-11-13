@@ -90,7 +90,7 @@ function tools(ws, state) {
         poc: `infra-evidence-${lead.id}`, rootCause: lead.rootCause, explanation: lead.description, file: lead.file, lines: lead.lines, resource: lead.resource, commit: lead.commit, evidence: lead.evidence, proof,
         ...(lead.secret ? { secret: lead.secret } : {}), ...(lead.address ? { address: lead.address } : {}) };
       state.found.push(finding);
-      event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
+      event("finding-submitted", { pack: "infra-cloud", n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, next: "Continue with the next distinct root cause." });
     } }),
   ];
