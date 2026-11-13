@@ -213,6 +213,24 @@ test("a designator etch with no kept flag is no delegation change (fail closed)"
   assert.deepEqual(controlChanges(t, lab), []);
 });
 
+// H1d n1: cloneAccount and mockFunction are recorded also when the call was not
+// kept. Forge keeps a mock in its inspector, and a recorded entry can only drop a
+// target, so the record must not depend on the frame's outcome.
+for (const [name, data] of [
+  ["cloneAccount", "0x533d61c9" + addrWord(EVIL).slice(2) + addrWord(OWNER).slice(2)],
+  ["mockFunction", "0xadf84d21" + addrWord(OWNER).slice(2) + addrWord(EVIL).slice(2) + w(96).slice(2) + w(0).slice(2)],
+]) {
+  test(`extract: a ${name} that was not kept is still recorded as an etch of the scope address`, () => {
+    for (const arena of [
+      arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data, success: false })),
+      arenaOf(node(null, { address: TEST }), node(0, { address: TEST, caller: TEST, success: false }), node(1, { address: VM, caller: TEST, data })),
+    ]) {
+      const out = extractControlTrace(arena);
+      assert.deepEqual(out.etches.map((e) => [e.target, e.kept]), [[OWNER, false]]);
+    }
+  });
+}
+
 test("extract: vm.store makes no SSTORE step, so it leaves no write", () => {
   const out = extractControlTrace(arenaOf(node(null, { address: TEST }), node(0, { address: VM, caller: TEST, data: "0x70ca10bb" })));
   assert.deepEqual(out.writes, []);
