@@ -1022,6 +1022,42 @@ test("forge: the real lab ETH drain is STILL proven with its exact value (review
   assert.equal(isProven(f), true);
 });
 
+// H1c: a forge-std deal(token, …) in the test BODY makes a replay trace above the
+// 8 MiB cap (about 10 MiB on the pinned image). The cut trace is never judged; the
+// proof fails and the reason tells the agent to move deal into setUp(). The same
+// drain with deal in setUp() stays small and is proven with its exact value.
+const DEAL_DRAIN = (poc, setupDeal) => `import "../src/Tokens.sol";
+contract ${poc} is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); ${setupDeal ? "deal(address(tok), address(vault), 100e18);" : ""} }
+  function test_x() public {
+    ${setupDeal ? "" : "deal(address(tok), address(vault), 100e18);"}
+    vm.prank(address(0xBEEF)); vault.withdraw(100e18);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100e18);
+  }
+}
+`;
+test("forge: a deal() in the test body makes a trace above the cap; it is not judged and the reason says use setUp() (H1c)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealBodyTest", DEAL_DRAIN("DealBodyTest", false));
+  assert.equal(f.forgePassed, true);
+  assert.ok(f.proof, "a cut trace still gives a failed proof with a reason, not null");
+  assert.equal(f.proof.pass, false);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*call deal in setUp\(\)/);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: the same drain with deal() in setUp() is STILL proven with its exact value (H1c TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealSetupTest", DEAL_DRAIN("DealSetupTest", true));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.asset, "token");
+  assert.equal(f.proof.harm.lostUnits, "100000000000000000000");
+  assert.equal(isProven(f), true);
+});
+
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
 // reverted frame is undone and the gate need not record it. If a forge version
 // ever kept such an etch, the fake drain below would run at the real token's
