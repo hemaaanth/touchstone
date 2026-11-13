@@ -51,6 +51,19 @@ logs. When both see a change in the same block, the lead is `corroborated`. A
 slot change with no log is a silent change. A monitor that reads only events
 misses it. The lead says so.
 
+A third engine, OpenZeppelin Monitor, runs in lab mode only. The pre-pass starts a
+second copy of the same lab world on a Docker network with no route out. The monitor
+reads that chain block by block. It reads calls as well as events, so it also sees the
+silent upgrade. Its leads use the same check names and merge with the ones above. It
+adds one check of its own:
+
+| Check | Impact | What it means |
+|-------|--------|---------------|
+| `admin-call-by-non-owner` | High | An address that is not the owner called an admin function on the proxy, and the call succeeded. The lead lists each call and block. |
+
+Monitor leads reach the agent in the brief. When the monitor cannot run, the brief says
+so. No monitor leads then does not mean the chain is clean.
+
 ## Source checks (any folder)
 
 The pre-pass also reads `src/**/*.sol` with our own text checks. They need no lab world.
