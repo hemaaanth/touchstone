@@ -181,7 +181,7 @@ export async function startLab({
   // Lab on the inner network ONLY. The script never joins this network, so it
   // cannot reach the lab except through the proxy.
   const labArgs = [
-    "run", "-d", "--rm", "--name", labName,
+    "run", "-d", "--rm", "--pull=never", "--name", labName,
     "--network", netInner, "--network-alias", ORIGIN_ALIAS,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "256", "--memory", "512m",
@@ -209,7 +209,7 @@ export async function startLab({
     return fail(`proxy folder setup failed: ${String(e?.message ?? e).slice(0, 300)}`);
   }
   const proxyArgs = [
-    "run", "-d", "--name", proxyName,
+    "run", "-d", "--pull=never", "--name", proxyName,
     "--network", netInner,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "128", "--memory", "256m",
@@ -246,7 +246,7 @@ async function waitReady(handle, { readyPath, timeoutMs, probeSecret, intervalMs
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const r = await docker([
-      "run", "--rm", "--network", handle.net,
+      "run", "--rm", "--pull=never", "--network", handle.net,
       PROXY_IMAGE, "node", "-e",
       `fetch(${JSON.stringify(url)},{headers:{"x-touchstone-probe":${JSON.stringify(probeSecret)}}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
     ], { timeoutMs: 8_000 });
@@ -424,7 +424,7 @@ export async function runRequestScript(handle, script, { timeoutMs = 20_000 } = 
         // killed when docker run's timeout sends SIGTERM: PID 1 (node) would ignore
         // SIGTERM, but tini forwards it and reaps the child. Without this a hung
         // script would stall every later run on this lab via the serialize() queue.
-        "run", "--rm", "--init", "--network", handle.net,
+        "run", "--rm", "--init", "--pull=never", "--network", handle.net,
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--pids-limit", "128", "--memory", "256m",
         "-v", `${dir}:/app/_run:ro`,

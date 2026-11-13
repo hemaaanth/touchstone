@@ -213,7 +213,7 @@ export async function runLiveScript(ws, script, { timeoutMs = 30_000 } = {}) {
       const r = await docker([
         // Mounted under /app (not /work) and run from there: the image's own
         // node_modules sit at /app, which is where `import "ethers"` resolves.
-        "run", "--rm", "--init", "--network", t.net, ...HARDEN,
+        "run", "--rm", "--init", "--pull=never", "--network", t.net, ...HARDEN,
         "-v", `${dir}:/app/_run`, "-w", "/app",
         "-e", `TOUCHSTONE_BASE_URL=${t.baseUrl}`,
         "-e", `TOUCHSTONE_SCOPE_PROXY=${t.gate}`,

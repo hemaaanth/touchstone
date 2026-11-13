@@ -214,7 +214,7 @@ export async function startTxLab({ image = KEYS_IMAGE, mode = "keys", readyTimeo
       throw new Error(`startTxLab: network create failed: ${net.stderr.trim().slice(0, 200)}`);
     }
     const labArgs = [
-      "run", "-d", "--init", "--name", labName,
+      "run", "-d", "--init", "--pull=never", "--name", labName,
       "--label", "touchstone.txlab", "--label", `touchstone.txlab.tag=${tag}`,
       "--network", netName,
       // Publish container :8545 to an ephemeral host-only port so ONLY the harness reaches it.

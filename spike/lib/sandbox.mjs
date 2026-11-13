@@ -153,7 +153,7 @@ export async function warmSolc(version) {
     writeFileSync(join(dir, "foundry.toml"), `[profile.default]\nsrc = "src"\nout = "out"\n`);
     writeFileSync(join(dir, "src", "W.sol"), `// SPDX-License-Identifier: MIT\npragma solidity ${v};\ncontract W {}\n`);
     const args = [
-      "run", "--rm",
+      "run", "--rm", "--pull=never", // the solc download needs the network; the image is never fetched
       "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
       "-v", `${dir}:/work`, "-w", "/work",
       IMG, `forge build --use ${v}`,
@@ -315,8 +315,9 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
   // position/value guess. It only enlarges the artifact JSON; the replay is unchanged.
   let cmd = `forge test --offline ${solcUse(ws)} --extra-output storageLayout ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
   if (matchContract) cmd += ` --match-contract ${matchContract}`;
+  // --pull=never, one word: the only form planRemote (lib/daytona.mjs) accepts, as forgeTest.
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,
