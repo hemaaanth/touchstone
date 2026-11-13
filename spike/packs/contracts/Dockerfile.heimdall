@@ -4,8 +4,10 @@
 # network only. At run time the pack starts it through runTool(): --network
 # none, --pull=never. We pass `--skip-resolving`, so Heimdall never looks a
 # selector up online; it recovers the ABI from the bytecode alone.
+# The Debian base is pinned by the digest BuildKit resolved for the shipped
+# touchstone/heimdall:0.9.3 image (see `docker buildx history inspect`).
 # Build: docker build -f spike/packs/contracts/Dockerfile.heimdall -t touchstone/heimdall:0.9.3 spike/packs/contracts
-FROM debian:trixie-slim AS fetch
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 ARG HEIMDALL_TAG=0.9.3
@@ -15,7 +17,7 @@ RUN set -eu; cd /tmp \
   && echo "${HEIMDALL_SHA256}  heimdall" | sha256sum -c - \
   && install -m 0755 heimdall /usr/local/bin/heimdall
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 # Heimdall links OpenSSL, zlib, brotli and zstd at run time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 zlib1g libbrotli1 libzstd1 \
