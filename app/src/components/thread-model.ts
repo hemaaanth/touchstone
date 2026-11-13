@@ -240,14 +240,6 @@ export function buildMessages(
   flushSpawn()
   flushGroup()
 
-  // Closing prose (the agent's words when nothing could be proven). A run that
-  // did not read its whole scope ends as a coverage error, but its words stay.
-  const closing = status === "no-finding" || (status === "error" && state.errorInfo?.kind === "coverage")
-  if (owner == null && closing && state.finalText) {
-    if (!buf) buf = open("final")
-    ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
-  }
-
   flush()
   return msgs
 }
@@ -458,4 +450,11 @@ export async function sendCopy(
     update((xs) => xs.filter((x) => x.id !== copy.id))
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// The run's modules (packs), for Run Info. A joined run holds several: the
+// `packs` event says which, and the model falls back to the scope's own pack on
+// an old record. Nothing here needs to guess.
+export function runModules(state: RunState): string[] {
+  return state.packs
 }
