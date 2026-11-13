@@ -93,3 +93,10 @@ export function sortFindings(rows: FindingSummary[], sort: SortKey): FindingSumm
 // The redaction cap (server/redact.mjs): a text over 64 KB is replaced whole by
 // this mark. A copy that holds it says so.
 export const TOO_LONG = /\[REDACTED: text of \d+ characters too long to check\]/
+
+// "18 KB": a replay bundle's size, for its download button.
+export function sizeText(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}

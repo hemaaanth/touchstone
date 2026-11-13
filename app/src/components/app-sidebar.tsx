@@ -1,8 +1,9 @@
 import { useMemo } from "react"
 import { Boxes, Bug, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
-import type { RunSummary } from "@/lib/types"
+import type { PackChoice, RunSummary } from "@/lib/types"
 import { ago, DOT, isTerminal, runTitle } from "@/lib/format"
+import { joinedModules } from "@/lib/catalog"
 import { runRowStatus } from "@/components/thread-model"
 import {
   Sidebar,
@@ -39,7 +40,10 @@ export function AppSidebar({
   width,
   onWidth,
   defaultWidth,
+  packs = [],
 }: {
+  // The server's module list: the titles and the order of a joined run's pills.
+  packs?: PackChoice[]
   width: number
   onWidth: (w: number) => void
   defaultWidth: number
@@ -67,8 +71,8 @@ export function AppSidebar({
 
   // The runs list is the assistant-ui thread list element, fed from our runs
   // through an external-store thread list. It has no chat of its own.
-  const threads = useMemo(() => open.map((r) => runThread(r, "regular" as const)), [open])
-  const archivedThreads = useMemo(() => archived.map((r) => runThread(r, "archived" as const)), [archived])
+  const threads = useMemo(() => open.map((r) => runThread(r, "regular" as const, packs)), [open, packs])
+  const archivedThreads = useMemo(() => archived.map((r) => runThread(r, "archived" as const, packs)), [archived, packs])
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: NO_MESSAGES,
     convertMessage: (m) => m,
@@ -169,7 +173,7 @@ function TouchstoneMark() {
 }
 
 // One run as a thread list item. `custom` carries what the row shows.
-function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
+function runThread<S extends "regular" | "archived">(r: RunSummary, status: S, packs: PackChoice[]) {
   const done = isTerminal(r.status)
   // A restart's cut-off reads Interrupted with a neutral dot, not as a failure.
   const row = runRowStatus(r)
@@ -180,5 +184,7 @@ function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
     running: !done,
     canArchive: done,
   }
+  const modules = joinedModules(r, packs)
+  if (modules) custom.modules = modules
   return { status, id: r.id, title: runTitle(r), custom }
 }

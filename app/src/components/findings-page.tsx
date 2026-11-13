@@ -1,9 +1,9 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, Bug, Check, ChevronRight, FileText, PanelRight, Search, X } from "lucide-react"
+import { Bot, Bug, Check, ChevronRight, FileArchive, FileText, Loader2, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
-import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
+import { bundleUrl, fetchBundleCheck, fetchFinding, fetchFindingText, fetchFindings, type BundleCheck } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, DEFAULT_VIEW, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, DEFAULT_VIEW, sizeText, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -155,14 +155,16 @@ export function FindingsPage({
   const runOf = (f: FindingSummary) => (f.runId ? runs.find((r) => r.id === f.runId) : undefined)
 
   // The sheet keeps its finding while it slides out, so `open` is its own flag.
-  const [detail, setDetail] = useState<{ id: string; open: boolean } | null>(null)
+  // `bundle` is set when the row menu asked for the replay bundle: the sheet
+  // then starts the bundle check at once.
+  const [detail, setDetail] = useState<{ id: string; open: boolean; bundle?: boolean } | null>(null)
   const open = detail ? all.find((f) => f.id === detail.id) : undefined
   const sheet = useRef<HTMLDivElement>(null)
   const { note, flash, copy, keepOnly } = useCopy((id) => setDetail({ id, open: true }))
   const openDetail = useCallback(
-    (f: FindingSummary) => {
+    (f: FindingSummary, bundle = false) => {
       keepOnly(f.id)
-      setDetail({ id: f.id, open: true })
+      setDetail({ id: f.id, open: true, bundle })
     },
     [keepOnly],
   )
@@ -272,6 +274,7 @@ export function FindingsPage({
               note={note?.id === open.id ? note : null}
               onCopy={(format) => copy(open, format)}
               onOpenRun={onOpenRun}
+              bundle={detail?.bundle === true}
             />
           ) : null}
         </SheetContent>
@@ -409,7 +412,7 @@ export const FindingListRow = memo(function FindingListRow({
   moduleTitle: string
   run: RunSummary | undefined
   active: boolean
-  onOpen: (f: FindingSummary) => void
+  onOpen: (f: FindingSummary, bundle?: boolean) => void
   onCopy: (f: FindingSummary, format: CopyFormat) => void
   onOpenRun: (id: string, findingId?: string) => void
 }) {
@@ -450,6 +453,13 @@ export const FindingListRow = memo(function FindingListRow({
           <RowMenuItem onClick={() => onCopy(f, "agent")}>
             <Bot /> {COPY_LABEL.agent}
           </RowMenuItem>
+          {/* Only a proven finding has a bundle. The sheet opens and asks the
+              server about it first, so the operator sees what it holds. */}
+          {f.proven ? (
+            <RowMenuItem onClick={() => onOpen(f, true)}>
+              <FileArchive /> {BUNDLE_LABEL}
+            </RowMenuItem>
+          ) : null}
         </RowMenu>
       }
       onOpen={open}
@@ -485,6 +495,7 @@ function FindingDetail({
   note,
   onCopy,
   onOpenRun,
+  bundle = false,
 }: {
   finding: FindingSummary
   moduleTitle: string
@@ -492,6 +503,8 @@ function FindingDetail({
   note: CopyNote | null
   onCopy: (format: CopyFormat) => void
   onOpenRun: (id: string, findingId?: string) => void
+  // The row menu asked for the bundle: start its check at once.
+  bundle?: boolean
 }) {
   const full = useFullFinding(f.id)
   return (
@@ -543,6 +556,8 @@ function FindingDetail({
           {note ? <p role="status" className="text-xs leading-relaxed text-muted-foreground">{fullNote(note)}</p> : null}
         </div>
 
+        {f.proven ? <BundleControl key={f.id} id={f.id} start={bundle} /> : null}
+
         {full === null ? (
           <div role="status" aria-busy="true" className="flex flex-col gap-3">
             <span className="sr-only">Loading the proof…</span>
@@ -558,5 +573,85 @@ function FindingDetail({
         )}
       </div>
     </>
+  )
+}
+
+// ── Replay bundle (H3c) ─────────────────────────────────────────────────────
+
+const BUNDLE_LABEL = "Download replay bundle"
+
+// The bundle control in the sheet. It asks the server first (`bundle-check`),
+// then offers the download. Nothing here is red: it is not a destructive control.
+function BundleControl({ id, start }: { id: string; start: boolean }) {
+  const [state, setState] = useState<{ kind: "idle" | "checking" | "failed" } | { kind: "done"; check: BundleCheck }>({ kind: start ? "checking" : "idle" })
+  const check = useCallback(
+    () =>
+      fetchBundleCheck(id).then(
+        (answer) => setState({ kind: "done", check: answer }),
+        () => setState({ kind: "failed" }),
+      ),
+    [id],
+  )
+  const ask = () => {
+    setState({ kind: "checking" })
+    void check()
+  }
+  // From the row menu: the state starts as "checking"; ask once.
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!start || asked.current) return
+    asked.current = true
+    void check()
+  }, [start, check])
+
+  if (state.kind === "done") return <BundleResult check={state.check} href={bundleUrl(id)} />
+  return (
+    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
+      <Button size="sm" variant="outline" disabled={state.kind === "checking"} onClick={ask}>
+        {state.kind === "checking" ? <Loader2 className="animate-spin" /> : <FileArchive />}
+        {state.kind === "checking" ? "Checking the bundle…" : BUNDLE_LABEL}
+      </Button>
+      {state.kind === "failed" ? <p role="status" className="text-xs text-muted-foreground">The server did not answer. Try again.</p> : null}
+    </section>
+  )
+}
+
+// The README's text is Markdown: a `name` in backticks reads as code.
+function codeSpans(text: string) {
+  return text.split(/(`[^`]+`)/).map((part, i) =>
+    /^`[^`]+`$/.test(part) ? (
+      <code key={i} className="font-mono text-[0.92em]">
+        {part.slice(1, -1)}
+      </code>
+    ) : (
+      part
+    ),
+  )
+}
+
+// What the server said about the bundle. A refusal shows its one sentence and
+// no download. Otherwise: what the bundle is (the README's own first words),
+// the counts it could not judge (never a value), and the download with its size.
+export function BundleResult({ check, href }: { check: BundleCheck; href: string }) {
+  if (!check.ok) {
+    return (
+      <section aria-label="Replay bundle" className="flex flex-col gap-1.5">
+        <Label>Replay bundle</Label>
+        <p role="status" className="text-xs leading-relaxed text-muted-foreground">{check.error}</p>
+      </section>
+    )
+  }
+  return (
+    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
+      <Button size="sm" variant="outline" render={<a href={href} download />}>
+        <FileArchive /> {BUNDLE_LABEL} <span className="text-muted-foreground tabular-nums">· {sizeText(check.bytes)}</span>
+      </Button>
+      {check.about ? <p className="text-xs leading-relaxed text-muted-foreground">{codeSpans(check.about)}</p> : null}
+      {check.note && check.unjudged.length ? (
+        <p role="status" className="text-xs leading-relaxed text-muted-foreground">
+          {check.note}: {check.unjudged.map((u) => u.text).join("; ")}.
+        </p>
+      ) : null}
+    </section>
   )
 }
