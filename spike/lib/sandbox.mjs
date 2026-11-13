@@ -273,8 +273,10 @@ export function forgeReplayCommand({ matchContract, solc } = {}) {
   return `docker run --rm --pull never --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
 }
 
-// Run once, online, before a replay on a fresh machine: pull nothing (the image
-// is pinned by digest), create the solc cache volume and warm the pinned solc.
+// Run once, online, before a replay on a fresh machine. Its `docker run`s pull
+// the pinned image by digest when it is missing: that is the one online fetch, so
+// they carry no --pull flag. They create the solc cache volume and warm the pinned
+// solc. The replay itself (forgeReplayCommand) then runs with --pull never.
 export function forgePrepareCommand({ solc } = {}) {
   const v = solc && solc !== "auto" ? solc : null;
   if (!v) return null;

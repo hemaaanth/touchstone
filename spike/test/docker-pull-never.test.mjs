@@ -13,29 +13,21 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { planRemote } from "../lib/daytona.mjs";
-import { forgeTestJson } from "../lib/sandbox.mjs";
+import { imageGuard, planRemote } from "../lib/daytona.mjs";
+import { FOUNDRY_IMAGE, forgeTest, forgeTestJson } from "../lib/sandbox.mjs";
 
 const SPIKE = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-// Argument lists that run with no pull flag on purpose. `marker` is text inside
-// the list that names it; an entry that matches no list fails the test.
-const ARGV_EXCEPTIONS = [
-  ...["slither 'src/${UNIT_FILE}'", "slither 'src/${rel}'"].map((marker) => ({ file: "lib/static.mjs", marker })),
-  { file: "lib/fuzz.mjs", marker: "echidna Harness.sol" },
-  { file: "lib/medusa.mjs", marker: "medusa fuzz" },
-].map((e) => ({
-  ...e,
-  reason: "eth-security-toolbox (1.38 GB) through runDocker, so it can run on Daytona. Today the machine pulls the "
-    + "pinned image itself; with --pull=never every new machine would get a 1.38 GB upload from this host instead "
-    + "(lib/daytona.mjs code 199, pushImage). Waits for the owner's call on the remote path (wave/l35-report.md).",
-}));
+// Argument lists that run with no pull flag on purpose: none. (The four
+// eth-security-toolbox lists carry the flag since the remote guard lets a Daytona
+// machine pull a digest-pinned, `daytona: true` image itself; see lib/daytona.mjs.)
+const ARGV_EXCEPTIONS = [];
 
 // `docker run` written as shell text, not an argument list.
 const SHELL_EXCEPTIONS = [
   { file: "lib/daytona.mjs", marker: "chown 1000:1000 /svm", reason: "warmScript runs ON the Daytona machine: it puts the pinned Foundry image and solc on the machine, with the network on purpose" },
   { file: "lib/daytona.mjs", marker: "forge build --use $V", reason: "warmScript, as above: the solc download needs the network" },
-  { file: "lib/sandbox.mjs", marker: "chown 1000:1000 /svm", reason: "forgePrepareCommand: the prepare step a person runs online on a fresh machine, from the replay README; not an engine run" },
+  { file: "lib/sandbox.mjs", marker: "chown 1000:1000 /svm", reason: "forgePrepareCommand: the README's prepare step a person runs once, online, on a fresh machine; it pulls the pinned image there on purpose (the replay runs with --pull never); not an engine run" },
   { file: "lib/sandbox.mjs", marker: "forge build --use ${v} W.sol", reason: "forgePrepareCommand, as above" },
 ];
 
@@ -168,3 +160,20 @@ test("the Daytona planner accepts the forgeTestJson argument list: it does not f
     assert.ok(plan.args.includes("/r/ws:/work"), "the workspace mount is rewritten");
   });
 });
+
+// L35, second part: a Daytona machine without Foundry pulls the pinned ref itself
+// for both forge runs (an 862 MB upload from this host before). The guard the
+// machine gets for the real argv of forgeTest and forgeTestJson pulls the ref.
+for (const [name, run] of [["forgeTest", forgeTest], ["forgeTestJson", forgeTestJson]]) {
+  test(`${name} on Daytona: a machine without Foundry pulls the pinned ref, it is not uploaded`, async () => {
+    await withStubDocker(async ({ ws, argv }) => {
+      await run(ws, { matchContract: "XTest", timeoutMs: 20_000 });
+      const plan = planRemote(argv(), ws, "/r/ws");
+      assert.equal(plan.local, null);
+      assert.equal(plan.image, FOUNDRY_IMAGE);
+      const guard = imageGuard(plan.args, plan.image, "/d");
+      assert.ok(guard.includes(`docker pull -q '${FOUNDRY_IMAGE}'`), guard);
+      assert.ok(plan.args.includes("--pull=never") && plan.args.includes("none"), "the run itself keeps --pull=never and --network none");
+    });
+  });
+}
