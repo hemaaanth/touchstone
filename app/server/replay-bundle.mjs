@@ -1,12 +1,13 @@
 // Load the replay snapshot a run saved, and build the zip the report route returns.
 //
-// proveFindings stores the snapshot on the proof, and the run record keeps that
-// proof. The normalized finding the page renders does not carry the file bytes
-// (findings.mjs rebuilds a view of the proof), so the bundle reads the raw run
-// file for the snapshot and the request script.
+// proveFindings stores the snapshot's files in replay/<sha256>.json in the
+// results folder, and the run record keeps only that hash and the paths. An
+// old record keeps the files inline. The normalized finding the page renders
+// does not carry either (findings.mjs rebuilds a view of the proof), so the
+// bundle reads the raw run file, then the replay file it names.
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import { buildReplayBundle, bundleRefusal, planReplayBundle, UNJUDGED_NOTE } from "../../spike/lib/replay-bundle.mjs"
+import { buildReplayBundle, bundleRefusal, loadReplayFiles, planReplayBundle, UNJUDGED_NOTE } from "../../spike/lib/replay-bundle.mjs"
 import { resultsDir } from "./findings.mjs"
 
 export { buildReplayBundle, bundleRefusal, planReplayBundle, UNJUDGED_NOTE }
@@ -42,6 +43,6 @@ export function loadRecordedReplay(findingId) {
     script: row?.script ?? null,
     evidence: row?.evidence ?? null,
     proof,
-    replay: proof?.replay ?? row?.replay ?? null,
+    replay: loadReplayFiles(proof?.replay ?? row?.replay ?? null, path.join(resultsDir(), "replay")),
   }
 }

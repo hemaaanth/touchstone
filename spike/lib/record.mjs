@@ -8,11 +8,12 @@
 // The CLI and the web server both call this, so both record the same shape.
 //
 // The workspace is deleted after this returns. snapshotForgeReplay copies the
-// proof test, the scope sources, and foundry.toml onto the proof first, so a
-// later report export can zip them. The snapshot never includes a provider key
-// or a bearer token.
+// proof test, the scope sources, and foundry.toml first, so a later report
+// export can zip them. storeReplayFiles writes those files to the results
+// folder (replay/<sha256>.json); the proof keeps the hash and the paths only.
+// The snapshot never includes a provider key or a bearer token.
 import { proofDelta } from "./proof.mjs";
-import { snapshotForgeReplay } from "./replay-bundle.mjs";
+import { snapshotForgeReplay, storeReplayFiles } from "./replay-bundle.mjs";
 
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -52,7 +53,8 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
         if (delta) {
           let replay = null;
           try {
-            replay = snapshotForgeReplay(ws, { contract: f.poc, test: delta.test });
+            replay = storeReplayFiles(snapshotForgeReplay(ws, { contract: f.poc, test: delta.test }));
+            if (replay?.filesLost) log(`replay snapshot for ${f.poc}: ${replay.filesLost}`);
           } catch (err) {
             log(`replay snapshot failed for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);
           }

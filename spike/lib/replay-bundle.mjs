@@ -2,9 +2,10 @@
 //
 // The narrative report tells the story. This module is the part a judge can
 // rerun. proveFindings (lib/record.mjs) calls snapshotForgeReplay while the
-// workspace still exists; the caller deletes that directory after record, so
-// the snapshot has to ride on the proof object that gets saved with the run.
-// buildReplayBundle turns that snapshot into a zip: the proof test, the scope
+// workspace still exists; the caller deletes that directory after record.
+// storeReplayFiles writes the snapshot's files to replay/<sha256>.json in the
+// results folder, and the proof keeps only that hash, the counts, and the
+// paths. loadReplayFiles reads them back for the bundle. buildReplayBundle turns that snapshot into a zip: the proof test, the scope
 // sources, foundry.toml, the proof JSON, fork parameters, and a README whose
 // one command reruns the proof from inside the unzipped folder.
 //
@@ -16,9 +17,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { Mnemonic, wordlists } from "ethers";
 import { pinnedSolc, warmFor } from "./sandbox.mjs";
@@ -499,6 +501,63 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   return replay;
 }
 
+// The replay files leave the run record. Each forge finding held about 820 KB
+// of source, and every reader of the run records parsed it. The files go to
+// replay/<sha256>.json next to the run records, named by the SHA-256 of that
+// file's bytes, so two findings with the same sources share one file. The text
+// is the redacted text from snapshotForgeReplay; the bundle redacts it again.
+export const REPLAY_FILES_VERSION = 3;
+const STORE_HASH = /^[a-f0-9]{64}$/;
+export function replayStoreDir() {
+  const results = process.env.TOUCHSTONE_RESULTS_DIR || process.env.AGENT_RESULTS_DIR || fileURLToPath(new URL("../results/agent/", import.meta.url));
+  return join(results, "replay");
+}
+
+// The replay as the run record keeps it: no file text. A store that fails is
+// named on the replay, and the bundle says the files are gone.
+export function storeReplayFiles(replay, dir = replayStoreDir()) {
+  if (!replay || !Array.isArray(replay.files)) return replay;
+  const { files, ...rest } = replay;
+  const body = JSON.stringify({ version: 1, files: files.map((f) => ({ path: f.path, text: f.text })) });
+  const sha256 = createHash("sha256").update(body).digest("hex");
+  const kept = { ...rest, version: REPLAY_FILES_VERSION, paths: files.map((f) => f.path) };
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${sha256}.json`);
+    if (!existsSync(file)) {
+      writeFileSync(`${file}.tmp`, body, { mode: 0o600 });
+      renameSync(`${file}.tmp`, file);
+    }
+    return { ...kept, store: { sha256, fileCount: files.length, bytes: Buffer.byteLength(body) } };
+  } catch (err) {
+    return { ...kept, store: null, filesLost: `the replay files could not be stored (${String(err?.code || err?.message || err).slice(0, 80)})` };
+  }
+}
+
+// The replay with its files back. An old record kept the text inline: it is
+// returned as it is. A store file that is gone or does not match its hash
+// gives no files and a reason; the bundle names it and has no command.
+export function loadReplayFiles(replay, dir = replayStoreDir()) {
+  if (!replay || Array.isArray(replay.files) || replay.kind === "evidence") return replay;
+  if (replay.filesLost) return { ...replay, files: [] };
+  const sha256 = replay.store?.sha256;
+  if (typeof sha256 !== "string" || !STORE_HASH.test(sha256)) return replay.store === undefined ? replay : { ...replay, files: [], filesLost: "the record names no replay file" };
+  let bytes;
+  try {
+    bytes = readFileSync(join(dir, `${sha256}.json`));
+  } catch {
+    return { ...replay, files: [], filesLost: "the replay file is no longer in the results folder" };
+  }
+  if (createHash("sha256").update(bytes).digest("hex") !== sha256) return { ...replay, files: [], filesLost: "the replay file does not match the hash in the record" };
+  try {
+    const files = JSON.parse(bytes.toString("utf8")).files;
+    if (!Array.isArray(files) || !files.every((f) => typeof f?.path === "string" && typeof f?.text === "string")) throw new Error("bad shape");
+    return { ...replay, files };
+  } catch {
+    return { ...replay, files: [], filesLost: "the replay file is not readable" };
+  }
+}
+
 // What an evidence proof keeps for a later export: the pin and the names of
 // the captured files. Never the file text. A snapshot holds raw target files
 // (.env, hardhat configs, keys), and no redaction layer strips them yet.
@@ -816,7 +875,7 @@ function forgeBundle({ finding, recorded, replay, proof }) {
 
 **${title}** · Foundry
 
-This run was recorded before the workspace was snapshotted, and the workspace is deleted after record. ${testSource ? "The proof test source is in `test/AgentPoc.t.sol`." : "The proof test source was not on the recorded proof."} The scope sources and \`foundry.toml\` were not kept, so there is no command that can rerun the proof from this folder.
+${replay?.filesLost ? `The replay files of this run are gone: ${replay.filesLost}.` : "This run was recorded before the workspace was snapshotted, and the workspace is deleted after record."} ${testSource ? "The proof test source is in `test/AgentPoc.t.sol`." : "The proof test source was not on the recorded proof."} The scope sources and \`foundry.toml\` were not kept, so there is no command that can rerun the proof from this folder.
 
 \`fork.json\` records \`rpc\` as ${rpcShown} and \`block\` as null. No provider key is included.
 ${omittedList(omitted)}`;

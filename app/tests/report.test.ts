@@ -13,7 +13,7 @@ import { buildReport, buildReplayBundle, renderReportHtml, renderReportMarkdown,
 // @ts-expect-error — plain .mjs module, no types
 import { loadRecordedReplay } from "../server/replay-bundle.mjs"
 // @ts-expect-error — plain .mjs module, no types
-import { planReplayBundle, snapshotForgeReplay } from "../../spike/lib/replay-bundle.mjs"
+import { planReplayBundle, replayStoreDir, snapshotForgeReplay, storeReplayFiles } from "../../spike/lib/replay-bundle.mjs"
 // @ts-expect-error — resolved from spike/node_modules; the app does not depend on ethers
 import { Mnemonic } from "../../spike/node_modules/ethers/lib.esm/index.js"
 
@@ -676,6 +676,80 @@ describe("report: replay bundle", () => {
       expect(replay.omitted).toEqual([{ path: "src/Note.sol", reason: "holds a mnemonic the redactor cannot mask" }])
       expect(replay.files.map((f: { path: string }) => f.path)).toContain("src/Prose.sol")
     } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("the run record keeps the replay's hash and paths; the files live in replay/<sha256>.json", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-store-runs-"))
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-store-ws-"))
+    const prev = process.env.TOUCHSTONE_RESULTS_DIR
+    process.env.TOUCHSTONE_RESULTS_DIR = dir
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), `contract Vault { function withdraw() external {} }\n`)
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `contract PocTest is Test { function testDrain() public {} }\n`)
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(replayStoreDir()).toBe(path.join(dir, "replay"))
+      const kept = storeReplayFiles(snap)
+      // The record: no file text, only the hash, the counts and the paths.
+      expect(kept.files).toBeUndefined()
+      expect(kept.version).toBe(3)
+      expect(kept.paths).toEqual(snap.files.map((f: { path: string }) => f.path))
+      expect(kept.store.sha256).toMatch(/^[a-f0-9]{64}$/)
+      expect(kept.store.fileCount).toBe(snap.files.length)
+      expect(JSON.stringify(kept).includes("function withdraw")).toBe(false)
+      expect(kept.command).toBe(snap.command)
+      const file = path.join(dir, "replay", `${kept.store.sha256}.json`)
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(createHash("sha256").update(readFileSync(file)).digest("hex")).toBe(kept.store.sha256)
+      expect(kept.store.bytes).toBe(statSync(file).size)
+      // The same sources give the same file, not a second one.
+      expect(storeReplayFiles(snap).store.sha256).toBe(kept.store.sha256)
+      expect(readdirSync(path.join(dir, "replay"))).toEqual([`${kept.store.sha256}.json`])
+
+      // The bundle reads the files back through the record.
+      writeFileSync(path.join(dir, "run-m7-1.json"), JSON.stringify({ result: { findings: [{ title: "drain", pocProved: true, proof: { kind: "forge", pass: true, test: "testDrain()", replay: kept } }] } }))
+      const recorded = loadRecordedReplay("m7-1.1")
+      expect(recorded.replay.files).toEqual(snap.files)
+      const finding = { title: "drain", proofKind: "forge", proof: { kind: "forge" } }
+      const out = mkdtempSync(path.join(tmpdir(), "replay-store-zip-"))
+      try {
+        unzip(buildReplayBundle({ finding, recorded }), out)
+        const files = readTree(out)
+        expect(files.get("src/Vault.sol")).toContain("function withdraw")
+        expect(section(files.get("README.md") || "", "Replay (offline)")).toContain("forge test --offline")
+      } finally {
+        rmSync(out, { recursive: true, force: true })
+      }
+
+      // A changed or missing file gives no files and says why. No command.
+      writeFileSync(file, readFileSync(file, "utf8").replace("withdraw", "withdrew"))
+      const changed = loadRecordedReplay("m7-1.1")
+      expect(changed.replay.files).toEqual([])
+      expect(changed.replay.filesLost).toBe("the replay file does not match the hash in the record")
+      const readme = (() => {
+        const d = mkdtempSync(path.join(tmpdir(), "replay-store-lost-"))
+        try {
+          unzip(buildReplayBundle({ finding, recorded: changed }), d)
+          return readTree(d).get("README.md") || ""
+        } finally {
+          rmSync(d, { recursive: true, force: true })
+        }
+      })()
+      expect(readme).toContain("The replay files of this run are gone: the replay file does not match the hash in the record.")
+      expect(commands(readme)).toEqual([])
+      rmSync(file)
+      expect(loadRecordedReplay("m7-1.1").replay.filesLost).toBe("the replay file is no longer in the results folder")
+      // A store path in a record cannot leave the folder: the name must be a hash.
+      writeFileSync(path.join(dir, "run-m7-2.json"), JSON.stringify({ result: { findings: [{ title: "x", proof: { kind: "forge", replay: { ...kept, store: { sha256: "../run-m7-1" } } } }] } }))
+      expect(loadRecordedReplay("m7-2.1").replay.filesLost).toBe("the record names no replay file")
+    } finally {
+      if (prev === undefined) delete process.env.TOUCHSTONE_RESULTS_DIR
+      else process.env.TOUCHSTONE_RESULTS_DIR = prev
+      rmSync(dir, { recursive: true, force: true })
       rmSync(ws, { recursive: true, force: true })
     }
   })
