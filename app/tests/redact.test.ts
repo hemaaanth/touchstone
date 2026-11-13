@@ -355,3 +355,17 @@ describe("redact: code pairs keep markdown and empty cookies (delta review 2)", 
     ]) expect(text(s)).toBe(s)
   })
 })
+
+describe("redact: secret query names (delta review 4)", () => {
+  const v = "Zq7Xv9KpR2mN4tW8yB3cL6"
+  test("session, code, sig and presigned S3 values are masked", () => {
+    expect(text(`GET /cb?session=${v}&code=${v}&state=abc`)).toBe("GET /cb?session=[REDACTED]&code=[REDACTED]&state=abc")
+    expect(text(`https://lab/f?sv=2024&sig=${v}`)).toBe("https://lab/f?sv=2024&sig=[REDACTED]")
+    expect(text(`https://b.s3.amazonaws.com/k?X-Amz-Security-Token=${v}&X-Amz-Signature=${"ab12".repeat(16)}&X-Amz-Expires=300`)).toBe(
+      "https://b.s3.amazonaws.com/k?X-Amz-Security-Token=[REDACTED]&X-Amz-Signature=[REDACTED]&X-Amz-Expires=300",
+    )
+  })
+  test("plain query names and short values stay", () => {
+    for (const s of ["/api/items?page=2&sort=Zq7Xv9KpR2mN4tW8", "/oauth?code=200", "/x?token=t1"]) expect(text(s)).toBe(s)
+  })
+})

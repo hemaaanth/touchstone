@@ -71,7 +71,11 @@ const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER
 const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})/gi
 // The value stops at a quote, backtick, bracket, comma or backslash, so
 // "`?token=`," keeps its backtick and comma.
-const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token|key)=)([^&\s#"'`,;()[\]{}<>\\]+)/gi
+// Any query name that passes secretName counts (session, X-Amz-Signature,
+// X-Amz-Security-Token), and so do a few short names that are secret only
+// in a URL: key, sig, code (an OAuth code) and auth.
+const QUERY = /([?&#]([A-Za-z][\w.-]{0,63})=)([^&\s#"'`,;()[\]{}<>\\]+)/g
+const QUERY_NAME = /^(?:key|sig|code|auth)$/i
 
 // A password in a URL (https://user:pass@host), a curl -u user:pass, a
 // curl -b cookie list, and an env assignment such as DB_PASSWORD=… whose
@@ -151,7 +155,8 @@ function maskPairValue(name, value) {
 
 // A query value: trailing sentence punctuation stays outside the mask, and
 // a short variable name such as ?token=t1 is not a credential.
-function maskQuery(m, head, value) {
+function maskQuery(m, head, name, value) {
+  if (!secretName(name) && !QUERY_NAME.test(name)) return m
   const v = value.replace(/[.:!?]+$/, "")
   return secretish(v, 6) ? head + MARK + value.slice(v.length) : m
 }
