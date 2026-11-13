@@ -28,7 +28,7 @@ import { activeProvider, allProviders, defaultAlias, readConfig } from "../../sp
 import { appRunBudgetUsd } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
-import { openReach } from "../../spike/lib/reach.mjs"
+import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -284,7 +284,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -477,6 +477,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // Resolve modules and budget before the setup checkpoint; nothing is spent.
   const plan = planModules(target, modules)
   const budget = budgetUsd == null || budgetUsd === "" ? appRunBudgetUsd(cfg) : validateRunBudget(budgetUsd)
+  const grantIds = enforceReach(target).grants.map((g) => g.id)
   mkdirSync(RESULTS_DIR, { recursive: true })
   const id = monotonicId(alias)
   const db = path.join(RESULTS_DIR, `run-${id}.sqlite`)
@@ -490,6 +491,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
     alias,
     provider: provider.id,
     target,
+    grantIds,
     modules: plan,
     mode,
     budget,
@@ -536,7 +538,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
 
   setRunStatus(run, "starting")
   try {
-    run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" })
+    run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
     run.ws = await prepareRunWorkspace(target, { modules: plan })
     savePhase(run, "prepass")
   } catch (err) {
@@ -1382,6 +1384,7 @@ async function resumeRun(run) {
   if (!state.target || (state.phase !== "setup" && !state.ws)) throw new Error("the saved workspace or target is missing; start a new run")
   run.ws = state.ws
   run.target = state.target // Never replace this snapshot with a newer, wider scope.
+  run.grantIds = state.grantIds ?? [] // Missing live grant snapshots fail closed.
   run.leads = state.leads ?? {}
   run.prepass = state.prepass ?? null
   run.static = run.prepass?.static ?? null
@@ -1400,7 +1403,7 @@ async function resumeRun(run) {
       { ev: "status", status: "starting" },
     ]
     for (const event of initial) if (!run.events.some((e) => e.ev === event.ev)) broadcast(run, { t: Date.now(), ...event })
-    run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy" })
+    run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
     broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: "setup" })
     run.ws = await prepareRunWorkspace(run.target, { modules: run.modules ?? [] })
     savePhase(run, "prepass")
@@ -1428,7 +1431,7 @@ async function resumeRun(run) {
     }
   }
   if (!existsSync(path.join(run.ws, ".touchstone.json"))) throw new Error("the saved workspace is missing; start a new run")
-  run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy" })
+  run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
   // This event is a real retry marker. The old stream is never renumbered.
   broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: state.phase })
   if (state.phase === "prepass") {

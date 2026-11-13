@@ -20,7 +20,7 @@
 // launch (app/server/runs.mjs createRun) and hands the module a confined handle.
 // Swapping a module's direct network for this gated one happens here, behind the
 // seam, with no change to any module (WAVE2.md SEAM rule).
-import { requireGrant, normalizeHost } from "./grant-store.mjs";
+import { requireGrant, normalizeHost, getGrant, grantActive, hostCovers } from "./grant-store.mjs";
 import { startScopeProxy } from "./scope-proxy.mjs";
 import { confineReach } from "./reach-confine.mjs";
 
@@ -71,7 +71,7 @@ export function reachHosts(target) {
 // The gate decision, with no network I/O. Returns { hosts, networkKind, grants },
 // or throws a clear refusal. Pure, so the default-deny rule is easy to test on
 // its own. `grants` is the covering grants (empty for an offline run).
-export function enforceReach(target, { now = Date.now() } = {}) {
+export function enforceReach(target, { now = Date.now(), grantIds } = {}) {
   const hosts = reachHosts(target);
   const networkKind = isNetworkKind(target && target.kind);
   if (networkKind && !hosts.length) {
@@ -81,10 +81,13 @@ export function enforceReach(target, { now = Date.now() } = {}) {
         `Only ${[...NON_NETWORK_KINDS].join(", ")} may run with no host.`,
     );
   }
-  // A host present (on ANY kind) always needs a grant. requireGrant throws a
-  // refusal that names the first uncovered host. An offline kind with no host
-  // skips the gate entirely, exactly as before — no behavior change for labs.
-  const grants = hosts.length ? requireGrant(hosts, now) : [];
+  // A resumed run may use only its original active grants. A replacement grant
+  // cannot widen the scope or revive a run after its first grant was revoked.
+  const grants = !hosts.length ? [] : grantIds == null ? requireGrant(hosts, now) : hosts.map((host) => {
+    const grant = grantIds.map(getGrant).find((g) => grantActive(g, now) && g.hosts.some((h) => hostCovers(h, host)));
+    if (!grant) throw new Error(`Refused: the saved grant for ${host} is missing or expired. Start a new run with a current grant.`);
+    return grant;
+  }).filter((g, i, all) => all.findIndex((x) => x.id === g.id) === i);
   return { hosts, networkKind, grants };
 }
 
@@ -117,8 +120,8 @@ function allowFromGrants(grants) {
 // capture the agent's own model-inference calls, which go to the provider (an
 // un-granted host) and the gate would wrongly block them. The gate confines
 // TARGET-bound traffic, not the agent's thinking.
-export async function openReach(target, { now = Date.now(), mode = "proxy", proxyHost = "127.0.0.1" } = {}) {
-  const { hosts, networkKind, grants } = enforceReach(target, { now });
+export async function openReach(target, { now = Date.now(), mode = "proxy", proxyHost = "127.0.0.1", grantIds } = {}) {
+  const { hosts, networkKind, grants } = enforceReach(target, { now, grantIds });
   if (!hosts.length) {
     return {
       live: false,
