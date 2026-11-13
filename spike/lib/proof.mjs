@@ -842,7 +842,6 @@ function netTokenDrains(drains, traces, targets, funded) {
 
 // The backstop reason, or null. Each hit names the cheatcode and how to repair.
 const BACKSTOP_FIX = {
-  outcome: "assert the revert with try/catch, or keep expectRevert out of the proof test",
   state: "do not restore an earlier state inside the proof test",
   exec: "remove gas metering cheatcodes from the proof test",
   fork: "the replay is offline: do not create, select or roll a fork, or replay a transaction, in the proof test",
@@ -851,6 +850,14 @@ const BACKSTOP_FIX = {
 };
 function backstopNote(controlTrace) {
   if (controlTrace?.cheatTable === "missing") return "the gate's cheatcode table (spike/lib/vm-cheatcodes.json) is missing or does not parse, so it cannot check the cheatcodes the test used; nothing is proven.";
+  // outcome is trusted, with one guard: the call an expectation was armed for must
+  // be a reverted frame. If the trace shows it successful, or no call followed, the
+  // trace and the test disagree: refuse.
+  const broken = (controlTrace?.expects ?? []).filter((e) => !e.armed || e.armed.success);
+  if (broken.length) {
+    const what = [...new Set(broken.map((e) => `vm.${e.name} (in ${e.where})`))].join(", ");
+    return `the test used ${what}, but the trace shows no reverted call for it to expect (the call it was armed for succeeded, or no call followed), so the trace and the test disagree and no scope target counts. To repair: make the expected call really revert, or remove the expectation from the proof test.`;
+  }
   const hits = controlTrace?.backstop ?? [];
   if (!hits.length) return null;
   const seen = new Map();

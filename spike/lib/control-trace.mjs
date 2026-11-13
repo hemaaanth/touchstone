@@ -29,6 +29,8 @@
 //   revert does not undo it. A target the test impersonated is no target at all (not a
 //   victim, token or takeover context): the move is the test acting as that target, not
 //   an exploit (see lib/proof.mjs).
+// - expects: each expectRevert / expectPartialRevert with the call it was armed for:
+//   { selector, name, where, armed: { index, success } | null }.
 // - backstop: VM calls whose selector is not in lib/vm-cheatcodes.json, or whose class
 //   makes the trace untrustworthy: { selector, name, class, where, kept }. `cheatTable` is
 //   "missing" when that file could not be read.
@@ -131,7 +133,6 @@ export const HANDLED = new Map([
 // file does not classify). A VM call is a backstop hit when its selector is not in
 // the table, or its class means the trace no longer tells what really happened:
 // - state (revertTo*): the test restored an earlier state;
-// - outcome (expectRevert*): a revert the test expected reads as a success;
 // - exec (gas metering): the test changed how the run is metered;
 // - fork: the calls after it may run on another chain;
 // - and broadcastRawTransaction (class account): it runs a signed raw transaction
@@ -139,7 +140,12 @@ export const HANDLED = new Map([
 // Every other class is trusted or handled per target by the rules above. A hit
 // makes every scope target unusable (see judgeHarm). If the table is missing or
 // does not parse, the gate proves nothing.
-export const BACKSTOP_CLASSES = new Set(["state", "outcome", "exec", "fork"]);
+export const BACKSTOP_CLASSES = new Set(["state", "exec", "fork"]);
+// outcome (expectRevert, expectPartialRevert) is trusted: the harm channels read the
+// TRACE, and the trace marks the expected call as reverted whatever the test sees
+// (pinned on real forge by the "expectRevert … (outcome trusted)" tests). One guard
+// stays: each outcome call is recorded in `expects` with the call it was armed for,
+// and the gate refuses when that call is not a reverted frame (see judgeHarm).
 const BACKSTOP_NAMES = new Set(["broadcastRawTransaction"]);
 // Cheatcodes of class account or mock that no rule records, and why that is safe.
 // The vm-cheatcodes test (harm-gate) fails when the table gains an account or mock
@@ -176,7 +182,7 @@ const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
 export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
-  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], ethFunded: [], backstop: [], cheatTable: cheatTable ? "ok" : "missing", calls: [] };
+  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], ethFunded: [], backstop: [], expects: [], cheatTable: cheatTable ? "ok" : "missing", calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
   const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
@@ -254,6 +260,20 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
         // The backstop: any frame, kept or not (an entry can only drop targets).
         if (cheatTable) {
           const known = cheatTable.get(selector);
+          // The call an expectation is armed for: forge checks it when a call ends at
+          // the depth of the cheatcode's caller or shallower. So it is the first later
+          // non-VM node at most as deep as this VM call node. None found: null.
+          if (known?.class === "outcome") {
+            const depth = (j) => { let d = 0; for (let n = arena[j]; n && n.parent != null; n = arena[n.parent]) d++; return d; };
+            const mine = depth(i);
+            let armed = null;
+            for (let j = i + 1; j < arena.length; j++) {
+              if (lc(arena[j]?.trace?.address) === VM || depth(j) > mine) continue;
+              armed = { index: j, success: arena[j]?.trace?.success === true };
+              break;
+            }
+            out.expects.push({ selector, name: known.name, where: execution ? "body" : "setUp", armed });
+          }
           if (!known) out.backstop.push({ selector, name: null, class: "unknown", where: execution ? "body" : "setUp", kept });
           else if (BACKSTOP_CLASSES.has(known.class) || BACKSTOP_NAMES.has(known.name)) out.backstop.push({ selector, name: known.name, class: known.class, where: execution ? "body" : "setUp", kept });
         }
