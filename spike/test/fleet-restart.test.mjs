@@ -390,7 +390,8 @@ test("the card says the run keeps its files only when the workspace is there", a
   const gone = await closed(goneId);
   assert.match(gone.errorInfo.hint, /Press Run again to continue in this chat\. The run keeps its history and its agents\.$/);
   assert.doesNotMatch(gone.errorInfo.hint, /files/);
-  assert.match((await closed(cutId)).errorInfo?.hint ?? "its files.", /its files\.$/);
+  // A fleet whose workspace is there (and that no later test continues) says "its files".
+  assert.match((await closed(threeId)).errorInfo.hint, /The run keeps its history, its agents and its files\.$/);
 });
 
 test("a fleet that stopped during its proof check finishes the check; no agent runs", async () => {

@@ -1339,7 +1339,11 @@ function bindWorkspace(run, ws, target, old) {
     if (!real) return
     const secrets = secretsOf(credentialTarget(target, run.packs))
     writeWorkspace(run.id, { ...workspaceRecord(run, real, target, old, secrets), ...(secrets.length ? { restored: true } : {}) })
-    writeFileSync(path.join(real, WS_MARK), markText(run.id), { flag: "wx", mode: 0o600 })
+    const mark = path.join(real, WS_MARK)
+    // The copied source can bring a file or a link with this name. It goes
+    // first (a link is removed, never followed), as in keepWorkspace.
+    rmSync(mark, { recursive: true, force: true })
+    writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
   } catch {
     // see above
   }
@@ -1351,10 +1355,12 @@ function bindWorkspace(run, ws, target, old) {
 // finds it again, and it can hold what the agent wrote. The boot removes it,
 // through the checked delete. A folder without a mark is never touched: it may
 // be a live run's, another server's or a test's. Neither is a folder whose
-// mark another results folder wrote, nor one with a mark of the older form.
-// Those are only counted, in one log line.
+// mark another results folder wrote, nor one with a mark of the older form,
+// nor one whose mark holds something that is not a run id (the id goes into
+// file paths). A folder whose run has a record that cannot be read stays too:
+// that record may name it. Those are only counted, in one log line.
 function sweepOrphans() {
-  const seen = { unmarked: 0, foreign: 0, removed: 0 }
+  const seen = { unmarked: 0, foreign: 0, removed: 0, unread: 0, kept: 0 }
   try {
     const tmp = realpathSync(tmpdir())
     const home = resultsHome()
@@ -1364,29 +1370,38 @@ function sweepOrphans() {
       if (!dir) continue // a link, or a folder of another user
       const mark = readMark(dir)
       if (!mark) seen.unmarked += 1
-      else if (mark.home !== home) seen.foreign += 1
-      else if (removeOrphan(dir, mark.id)) seen.removed += 1
+      else if (mark.home !== home || !isRunId(mark.id)) seen.foreign += 1
+      else seen[removeOrphan(dir, mark.id)] += 1
     }
   } catch {
     // Best effort: the boot goes on.
   }
-  if (seen.unmarked || seen.foreign || seen.removed) {
-    console.warn(`[runs] temp folders with a workspace name: ${seen.removed} with this server's mark and no run record were removed; ${seen.unmarked} with no mark and ${seen.foreign} with another mark were left alone.`)
+  if (seen.unmarked || seen.foreign || seen.removed || seen.unread) {
+    console.warn(`[runs] temp folders with a workspace name: ${seen.removed} with this server's mark and no run record were removed; ${seen.unread} with a run record that cannot be read, ${seen.unmarked} with no mark and ${seen.foreign} with another mark were left alone.`)
   }
 }
 
+// "removed", or why the folder stays: "kept" (a run uses it, or the delete
+// failed), "unread" (the run's record is there but cannot be read).
 function removeOrphan(dir, id) {
   const lock = { id }
   let mine = false
   try {
     // A server may work on the run right now: this one (a run it resumes at
     // boot) or another live one. The run's lock says so.
-    if (existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) && !(mine = own(lock))) return false
-    if (checkedWorkspace(readWorkspace(id)?.ws, id) === dir) return false // the run's own kept workspace
+    if (existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) && !(mine = own(lock))) return "kept"
+    // No record file: the run has no workspace. A file that is there but is
+    // torn, closed to this user or not a record is not "no record": it may name
+    // this folder, so the folder stays.
+    if (lstatSync(workspaceFile(id), { throwIfNoEntry: false })) {
+      const rec = readWorkspace(id)
+      if (!rec || typeof rec !== "object" || Array.isArray(rec)) return "unread"
+      if (checkedWorkspace(rec.ws, id) === dir) return "kept" // the run's own kept workspace
+    }
     removeChecked(dir, id)
-    return !existsSync(dir)
+    return existsSync(dir) ? "kept" : "removed"
   } catch {
-    return false // a part stayed: the mark is back, so the next boot tries again
+    return "kept" // a part stayed: the mark is back, so the next boot tries again
   } finally {
     if (mine) release(lock)
   }
@@ -1923,6 +1938,8 @@ function finalize(run) {
 // its `run-<id>.json` record; we rebuild the same event shape from those two.
 // CLI runs (`run-<alias>.json`, no stamp) are not app runs and are skipped.
 const APP_RUN = /^run-([a-z0-9.-]+-\d{10}-\d+)\.(stream\.jsonl|state\.json|json)$/
+// The same form, for an id that comes from file content and goes into a path.
+const isRunId = (id) => APP_RUN.test(`run-${id}.json`)
 
 function readJsonl(file) {
   const out = []

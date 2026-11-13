@@ -91,12 +91,27 @@ process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
 const made = []; // workspaces a test deleted from the record's view; removed at the end
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {
-    if (f.endsWith(".workspace.json")) made.push(JSON.parse(readFileSync(path.join(RESULTS, f), "utf8")).ws);
+    if (!f.endsWith(".workspace.json")) continue;
+    try {
+      made.push(JSON.parse(readFileSync(path.join(RESULTS, f), "utf8"))?.ws);
+    } catch {
+      // a record a test damaged on purpose
+    }
   }
   for (const ws of made) if (ws) rmSync(ws, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 });
 
+// The workspace build with one extra: a test can act on a new workspace before
+// the server binds it, as a copied source folder that brings its own files does.
+let afterBuild = null;
+const realTargets = await import("../lib/targets.mjs");
+const prepareRunWorkspace = async (...args) => {
+  const ws = await realTargets.prepareRunWorkspace(...args);
+  afterBuild?.(ws);
+  return ws;
+};
+mock.module("../lib/targets.mjs", { exports: { ...realTargets, prepareRunWorkspace } });
 const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-store.mjs");
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
@@ -1089,6 +1104,7 @@ test("safety: the boot clean-up does not touch a workspace that is not the run's
 test("safety: the mark put back after a failed delete does not write through a link", async () => {
   const a = await finished();
   const ws = a.call.args[4];
+  made.push(ws); // its mark becomes a link, so the cap can take it out of the record
   const locked = path.join(ws, "locked");
   mkdirSync(locked);
   writeFileSync(path.join(locked, "file"), "x");
@@ -1167,6 +1183,32 @@ test("the boot removes a temp folder that carries this server's mark and that no
     "a link to a marked folder outside the temp folder": outside,
     "the kept workspace of a run": wsA,
   };
+  // A run whose record is there but cannot be read: the record may name the folder.
+  const idOf = (name) => `ghost-${name}-2611130900-1`;
+  const markFor = (name) => markOf(wsA).replace(a.id, idOf(name));
+  for (const [name, text] of [["torn", '{"ws":'], ["closed", "{}"], ["null", "null"], ["list", "[]"]]) {
+    stays[`its run's record cannot be read (${name})`] = folder(markFor(name));
+    writeFileSync(record(idOf(name)), text);
+  }
+  chmodSync(record(idOf("closed")), 0);
+  // A record that names the folder by another spelling of its path.
+  const spelled = folder(markFor("spelled"));
+  writeFileSync(record(idOf("spelled")), JSON.stringify({ ws: `${path.dirname(spelled)}/./${path.basename(spelled)}` }));
+  stays["its run's record names it by another spelling"] = spelled;
+  // A lock file that cannot be opened says nothing about who works on the run.
+  stays["its run's lock cannot be read"] = folder(markFor("badlock"));
+  writeFileSync(path.join(RESULTS, `run-${idOf("badlock")}.owner.sqlite`), "this is not a database");
+  // A mark whose first line is not a run id: it would go into file paths.
+  const trav = "../../../outside-sweep/trav";
+  stays["a mark that holds a path, not a run id"] = folder(markOf(wsA).replace(a.id, trav));
+  const lure = path.join(dir, "outside-sweep", "run-trav.owner.sqlite"); // where that id would lead
+  new DatabaseSync(lure).close();
+  // An orphan that cannot be deleted in one go: a part stays, and the delete took its mark.
+  const stuck = folder(markFor("stuck"));
+  mkdirSync(path.join(stuck, "locked"));
+  writeFileSync(path.join(stuck, "locked", "file"), "x");
+  chmodSync(path.join(stuck, "locked"), 0o500);
+  onRmFail = (target) => target === stuck && rmSync(path.join(stuck, ".touchstone-run"), { force: true });
   // Another live server answers run C right now, so a folder with C's mark waits.
   const busy = folder(markOf(c.call.args[4]));
   const otherServer = new DatabaseSync(path.join(RESULTS, `run-${c.id}.owner.sqlite`));
@@ -1187,12 +1229,19 @@ test("the boot removes a temp folder that carries this server's mark and that no
     for (const [why, ws] of Object.entries(stays)) assert.ok(existsSync(ws), `left alone: ${why}`);
     assert.ok(existsSync(path.join(wsA, "notes.md")) && existsSync(link));
     assert.ok(existsSync(path.join(busy, "keep.txt")), "a run that another server answers keeps the folder for now");
+    assert.ok(!existsSync(`${lure}-journal`) && readdirSync(path.dirname(lure)).length === 2, "nothing outside the results folder was opened");
+    // The part that stayed has its mark back, in the same form, so the next boot finds it.
+    assert.ok(existsSync(path.join(stuck, "locked", "file")));
+    assert.equal(markOf(stuck), markFor("stuck"));
     // One log line with the counts.
     assert.equal(swept.length, 1);
-    const [, removed, unmarked, foreign] = /: (\d+) with this server's mark and no run record were removed; (\d+) with no mark and (\d+) with another mark were left alone\.$/.exec(swept[0]).map(Number);
-    assert.ok(removed >= 2 && unmarked >= 2 && foreign >= 2, swept[0]);
+    const [, removed, unread, unmarked, foreign] = /: (\d+) with this server's mark and no run record were removed; (\d+) with a run record that cannot be read, (\d+) with no mark and (\d+) with another mark were left alone\.$/.exec(swept[0]).map(Number);
+    assert.ok(removed === 2 && unread === 4 && unmarked >= 2 && foreign >= 3, swept[0]);
   } finally {
     otherServer.close();
+    onRmFail = null;
+    chmodSync(path.join(stuck, "locked"), 0o700);
+    chmodSync(record(idOf("closed")), 0o600);
   }
   // A reload of the module in the same process does not sweep again.
   const late = folder(ghost);
@@ -1200,7 +1249,7 @@ test("the boot removes a temp folder that carries this server's mark and that no
   assert.ok(existsSync(late), "one sweep per server process");
   // The next boot: the other server is gone, so its folder goes too. The kept workspaces stay.
   await boot();
-  assert.ok(!existsSync(busy) && !existsSync(late));
+  assert.ok(!existsSync(busy) && !existsSync(late) && !existsSync(stuck));
   assert.ok(existsSync(c.call.args[4]) && existsSync(wsA));
 });
 
@@ -1251,6 +1300,45 @@ test("a workspace that a follow-up built belongs to the run at once: after a ser
       assert.equal(r.events.filter((e) => e.ev === "workspace").length, events, "no new workspace event");
     }
     assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), []);
+  });
+});
+
+test("a mark that a new workspace already holds does not stop the bind: the run's own mark replaces it, a link is not followed, and the next boot takes the credential out", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    const victim = path.join(dir, "bind-victim.txt");
+    writeFileSync(victim, "untouched");
+    const plants = {
+      file: (ws) => writeFileSync(path.join(ws, ".touchstone-run"), "what the copied source brought"),
+      link: (ws) => symlinkSync(victim, path.join(ws, ".touchstone-run")),
+    };
+    const runsOf = {};
+    for (const [kind, plant] of Object.entries(plants)) {
+      const run = await liveEnded(server);
+      rmSync(run.ws, { recursive: true, force: true });
+      scripts.push({ hang: true });
+      const before = spawns.length;
+      afterBuild = plant;
+      try {
+        server.steerRun(run.id, "Go on.");
+        for (let i = 0; i < 300 && spawns.length === before; i++) await new Promise((res) => setTimeout(res, 10));
+      } finally {
+        afterBuild = null;
+      }
+      const ws = spawns.at(-1).args[4];
+      made.push(ws);
+      assert.equal(kept(run.id).ws, ws);
+      assert.ok(readdirSync(ws, { withFileTypes: true }).find((e) => e.name === ".touchstone-run").isFile(), `${kind}: the mark is a real file`);
+      assert.equal(markOf(ws).split("\n")[0], run.id, `${kind}: the folder carries the run's mark`);
+      runsOf[kind] = { ...run, ws, lock: lockOf(run.id) };
+    }
+    assert.equal(readFileSync(victim, "utf8"), "untouched", "nothing was written through the link");
+    for (const run of Object.values(runsOf)) run.lock.close(); // the old server is dead
+    server = await restart();
+    for (const [kind, run] of Object.entries(runsOf)) {
+      assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]), [], `${kind}: the boot took the credential out`);
+      assert.equal(kept(run.id).ws, run.ws, `${kind}: the run keeps the workspace`);
+    }
   });
 });
 
