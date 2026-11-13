@@ -188,6 +188,8 @@ export function parseOzMonitor(stdout, expected, ctx) {
     let r;
     if ((r = /^RUN (\S+) (\d+) (\d+) (\d+|-)$/.exec(line))) {
       lastRun = `${r[1]} ${r[2]}`;
+      // One run per monitor and block. A second one would hide the first one's failure.
+      if (runs.has(lastRun)) return fail(`two runs for monitor ${r[1]} at block ${r[2]}`);
       runs.set(lastRun, { code: Number(r[3]), total: r[4] === "-" ? null : Number(r[4]), error: null });
     } else if ((r = /^ERR (.*)$/.exec(line)) && lastRun) {
       runs.get(lastRun).error = r[1].trim();

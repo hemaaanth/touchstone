@@ -122,6 +122,14 @@ test("parseOzMonitor fails closed on a non-zero exit and names the error", () =>
   assert.match(r.reason, /monitor admin failed at block 6: Failed to get EVM client/);
 });
 
+test("parseOzMonitor fails closed on a second RUN line for the same monitor and block", () => {
+  const out = goodOutput().replace("RUN admin 5 0 1", "RUN admin 5 1 -\nERR boom\nRUN admin 5 0 1");
+  const r = parseOzMonitor(out, EXPECT, CTX);
+  assert.equal(r.available, false);
+  assert.match(r.reason, /two runs for monitor admin at block 5/);
+  assert.deepEqual(r.leads, []);
+});
+
 test("parseOzMonitor fails closed when the trigger kept fewer matches than the monitor found", () => {
   // Seen for real: the monitor exits 0 even when its script trigger fails.
   const out = goodOutput().split("\n").filter((l) => !l.startsWith("MATCH admin 5")).join("\n");
