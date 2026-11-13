@@ -996,7 +996,7 @@ function followUp(run, text, clientId) {
       if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
         run.error = null
         run.errorInfo = null
-        if (!coverageGap(run)) setRunStatus(run, "no-finding")
+        setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
         finalize(run)
       }
     } catch (err) {

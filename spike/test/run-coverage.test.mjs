@@ -161,3 +161,18 @@ test("a run that records a finding with part of its scope unread stays recorded 
   assert.equal(clean.status, "recorded");
   assert.ok(!clean.events.some((e) => e.ev === "coverage"));
 });
+
+test("a follow-up that retries a failed run and still leaves a gap broadcasts the coverage error, not the old one", async () => {
+  scripts.push({ events: [{ ev: "settled", status: "unanswered", findings: [] }] });
+  const { id } = await start();
+  let r = await settle(id);
+  assert.equal(r.status, "error");
+  assert.notEqual(r.errorInfo?.kind, "coverage", "the first failure is not a coverage error");
+  writeFileSync(path.join(process.env.TOUCHSTONE_RESULTS_DIR, `run-${id}.sqlite`), "");
+  scripts.push({ events: [done] });
+  steerRun(id, "Try again.");
+  r = await settle(id, 1);
+  const last = r.events.findLast((e) => e.ev === "status");
+  assert.equal(last.status, "error");
+  assert.equal(last.errorInfo?.kind, "coverage", "the UI and a replay see the coverage error");
+});
