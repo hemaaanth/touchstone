@@ -114,8 +114,8 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Depends on |
 |--------|-------|-----------|
-| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b |
-| 2b Modules page redesign | E5 | 1b |
+| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. |
+| 2b Modules page redesign | E5 | 1b Running: `thr_daurqy4zav`, branch `ui/modules-page`. |
 | 2c Run Info pills + sidebar rule | B7, B4 | 1b, PR 7 |
 | 2d Scope brief | D2 | 1a, 1b |
 | 2e One multi-module run (code + tests) | D3 | 1a |
@@ -197,11 +197,11 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| E1 | todo | Daytona row: a much shorter description. No region in it (`us-west-3` is hard-coded as a default in `spike/lib/daytona.mjs:58`). Move the access notes into an info icon next to the word "Daytona". No tooltip plus small text at once. |
-| E2 | todo | Daytona needs its server URL and region (target) as settings next to the key. Not every account uses the default server or `us-west-3`. |
-| E3 | todo | Add provider dialog: remove the box inside the box. |
-| E4 | todo | Provider rows and the provider edit form look broken: off layout, the base URL is cut off. Redesign in the C3 pattern. |
-| E5 | todo | Modules page redesign (no "Pipeline", no tool lists, C1 pills, C3 list). Settings page in the same language. |
+| E1 | doing | Daytona row: a much shorter description. No region in it (`us-west-3` is hard-coded as a default in `spike/lib/daytona.mjs:58`). Move the access notes into an info icon next to the word "Daytona". No tooltip plus small text at once. |
+| E2 | doing | Daytona needs its server URL and region (target) as settings next to the key. Not every account uses the default server or `us-west-3`. |
+| E3 | doing | Add provider dialog: remove the box inside the box. |
+| E4 | doing | Provider rows and the provider edit form look broken: off layout, the base URL is cut off. Redesign in the C3 pattern. |
+| E5 | doing | Modules page redesign (no "Pipeline", no tool lists, C1 pills, C3 list). Settings page in the same language. |
 
 ## F. Findings page (new)
 
@@ -284,7 +284,7 @@ The review of the base commit found real defects. Most are older than the base c
 | L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
 | L10 | todo | A refused rename or archive shows no message (`app/src/App.tsx:133`, `:144`): the title goes back and nothing explains it. Show the refusal text in the existing error slot. Can fire after a token change, now that these writes are guarded. Also: the Settings refusal line moves the page 36 px. From the 1g review. Wave 2 (with 2c). |
 | L11 | todo | The console token in `spike/data/console-token` never changes. A leaked token stays valid until the file is removed. Add a rotate action or rotate on a schedule. From the 1g review. Wave 3. |
-| L12 | todo | `TruncatedText` (`app/src/components/page-parts.tsx:323`) cannot take keyboard focus, so a keyboard user cannot open the full-value tooltip. Make an overflowing value focusable; keep fitting text out of the Tab order. From the 1b review. Goes with 2a (Settings URL uses it). |
+| L12 | doing | `TruncatedText` (`app/src/components/page-parts.tsx:323`) cannot take keyboard focus, so a keyboard user cannot open the full-value tooltip. Make an overflowing value focusable; keep fitting text out of the Tab order. From the 1b review. Goes with 2a (Settings URL uses it). |
 | L13 | todo | `AddScope` (`new-run-dialog.tsx`) has no `defaultOpen` / `onClose`; the Scopes page clicks it open and watches the DOM. Give it a controlled open API. From the 1b report and review. Wave 2 with 2d. |
 | L14 | todo | `spike/scripts/setup.mjs`: `--only web,contracts` (space form) is not read, only `--only=a,b`; the `strix` entry points to a missing `tools/strix/Dockerfile`; `node:20-slim` is not in the manifest. From the G4 report and the G2 review. Wave 3. |
 
