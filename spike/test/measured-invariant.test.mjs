@@ -150,6 +150,18 @@ async function agree(id, step) {
 
 const harm = (n, poc, title = "IDOR, proven") => ({ n, title, severity: "high", poc, script: "s" });
 
+// First: this run is finished by the first boot; a later reload would hide
+// a wrong live announce (the reload reads the view from the record again).
+test("a restart in the proof phase of a record with a measured row: only the proven row is announced, with its id", async () => {
+  const run = await closed(proofId);
+  assert.deepEqual(run.events.filter((e) => e.ev === "finding").map((e) => [e.id, e.proven]), [[`${proofId}.2`, true]]);
+  const got = await agree(proofId, "after the proof-phase restart");
+  assert.deepEqual(got.candidates, [["measured", "lead-1"]]);
+  await reload();
+  await closed(proofId);
+  await agree(proofId, "after a reload");
+});
+
 test("D: a follow-up that proves harm on an older run with a measured row", async () => {
   await closed(dId);
   await agree(dId, "load");
@@ -217,16 +229,6 @@ test("mixed: measure, reuse a label twice, prove, dismiss, archive, reload", asy
   const got = await agree(mixId, "after a reload");
   assert.deepEqual(got.findings, proved.findings);
   assert.deepEqual(got.candidates, reused.candidates);
-});
-
-test("a restart in the proof phase of a record with a measured row: only the proven row is announced, with its id", async () => {
-  const run = await closed(proofId);
-  assert.deepEqual(run.events.filter((e) => e.ev === "finding").map((e) => [e.id, e.proven]), [[`${proofId}.2`, true]]);
-  const got = await agree(proofId, "after the proof-phase restart");
-  assert.deepEqual(got.candidates, [["measured", "lead-1"]]);
-  await reload();
-  await closed(proofId);
-  await agree(proofId, "after a reload");
 });
 
 // The stream of a record-only run is written from the record's events plus
