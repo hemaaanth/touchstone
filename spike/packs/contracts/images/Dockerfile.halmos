@@ -1,0 +1,22 @@
+# Halmos (a16z, AGPL-3.0): symbolic testing of Foundry tests.
+# Build: spike/packs/contracts/images/build.sh halmos
+# Build time needs network. Run time is --network none --pull=never (runTool).
+#
+# Pins:
+#   python   3.12-slim by digest
+#   forge    copied from the Foundry image by digest (forge 1.9.0)
+#   solc     0.8.38 static binary, checked by sha256
+#   halmos   0.3.3 and every Python dependency, exact versions
+FROM ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39 AS foundry
+
+FROM python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+COPY --from=foundry /usr/local/bin/forge /usr/local/bin/forge
+ADD --checksum=sha256:65c3180a336eabb6bdc4bbd49cc405aeb233976964ae6c11fba2a6c8be8f3243 \
+    https://github.com/ethereum/solidity/releases/download/v0.8.38/solc-static-linux /usr/local/bin/solc
+RUN chmod 0755 /usr/local/bin/solc
+COPY halmos-requirements.txt /tmp/req.txt
+RUN pip install --no-cache-dir --no-deps -r /tmp/req.txt && rm /tmp/req.txt \
+ && halmos --version && forge --version && solc --version
+# runTool runs as the host user, who has no home in the image. Forge must never
+# try to download solc: it uses the baked binary and stays offline.
+ENV HOME=/tmp FOUNDRY_OFFLINE=true FOUNDRY_SOLC=/usr/local/bin/solc
