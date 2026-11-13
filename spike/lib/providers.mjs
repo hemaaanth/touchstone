@@ -17,6 +17,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { DEFAULT_RUN_BUDGET_USD, validateRunBudget } from "./run-budget.mjs";
+import { originOf } from "./redact-url.mjs";
 
 // Legacy CLI callers may still import this name. It is now a per-run limit.
 export const DEFAULT_CAP_USD = DEFAULT_RUN_BUDGET_USD;
@@ -125,9 +126,24 @@ export function allProviders(cfg = readConfig()) {
   return out;
 }
 
-// The key for a provider: the one saved in Settings, else its env var.
+// The key for a provider: the one saved in Settings, else its env var. Every
+// real call (a run, Fetch models, Strix) gets the key here, next to
+// p.baseUrl. A saved key is bound to the saved base URL: a save that moves
+// the base URL to another scheme, host or port drops it (settings.mjs
+// saveProvider). An env key is bound to the provider's built-in base URL
+// (envKeyHome): when the base URL points elsewhere, it is not used.
 export function providerKey(p) {
-  return p?.apiKey || (p?.keyEnv ? process.env[p.keyEnv] : null) || null;
+  if (p?.apiKey) return p.apiKey;
+  const env = p?.keyEnv ? process.env[p.keyEnv] : null;
+  if (!env) return null;
+  const home = envKeyHome(p);
+  return home && home === originOf(p.baseUrl) ? env : null;
+}
+
+// The scheme, host and port an env key is sent to: the built-in base URL of
+// the provider ("" for a provider with no built-in entry).
+export function envKeyHome(p) {
+  return originOf(PROVIDERS[p?.id]?.baseUrl);
 }
 
 export function activeId(cfg = readConfig()) {

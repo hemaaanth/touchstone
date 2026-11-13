@@ -14,12 +14,14 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  envKeyHome,
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
+import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
 import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
@@ -143,10 +145,17 @@ export function totalSpendState(cfg = readConfig()) {
   return { usd: ledger.usd, capUsd, ledgerError: ledger.error ?? capError }
 }
 
+// envHome: where the provider's env key may go (its built-in base URL), so
+// the form can warn before a save. held: why an env key is set but not used.
 function keyState(p) {
   const k = providerKey(p)
-  if (!k) return { set: false, source: null, last4: null }
-  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, last4: k.length > 8 ? k.slice(-4) : null }
+  const envHome = p.keyEnv ? envKeyHome(p) || null : null
+  if (!k) {
+    const envName = p.keyEnv && process.env[p.keyEnv] ? p.keyEnv : null
+    const held = envName ? `The key from ${envName} is only sent to ${envHome || "its built-in server"}, not ${originOf(p.baseUrl) || "this URL"}.` : null
+    return { set: false, source: null, envName, envHome, last4: null, held }
+  }
+  return { set: true, source: p.apiKey ? "settings" : "env", envName: p.apiKey ? null : p.keyEnv, envHome, last4: k.length > 8 ? k.slice(-4) : null }
 }
 
 function modelRows(p) {
@@ -167,7 +176,10 @@ export function getSettings() {
   const providers = Object.values(all).map((p) => ({
     id: p.id,
     label: p.label,
-    baseUrl: p.baseUrl ?? "",
+    // GET /api/settings needs no console token: no user name, password,
+    // query or #part of a URL goes out.
+    baseUrl: publicUrl(p.baseUrl).url,
+    baseUrlHidden: publicUrl(p.baseUrl).cut,
     builtIn: Boolean(p.builtIn),
     saved: Boolean(cfg.providers?.[p.id]),
     key: keyState(p),
@@ -200,7 +212,9 @@ function executionState(cfg) {
     key: c.apiKey
       ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null, saved: Boolean(saved.apiKey) }
       : { set: false, source: null, envName: null, last4: null, held: c.keyHeld, saved: Boolean(saved.apiKey) },
-    apiUrl: c.apiUrl,
+    apiUrl: publicUrl(c.apiUrl).url,
+    apiUrlHidden: publicUrl(c.apiUrl).cut,
+    envKeyHost: c.envKeyHost,
     target: c.target,
     snapshot: c.snapshot,
     // A server env var wins over the saved value. Name it, so the form can say so.
@@ -263,6 +277,17 @@ function slug(s) {
   return String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32)
 }
 
+// publicUrl (redact-url.mjs) is what the page may see of a URL. Re-exported
+// for the tests and for callers that import it from here.
+export { publicUrl }
+
+// The form sends back the URL it was shown. When that is the cut form of the
+// stored URL, keep the stored one, so the hidden parts are not lost.
+function keepHidden(posted, stored) {
+  const shown = publicUrl(stored)
+  return shown.cut && String(posted ?? "").trim() === shown.url ? stored : posted
+}
+
 function cleanBaseUrl(raw) {
   let u
   try {
@@ -314,11 +339,14 @@ export function saveProvider(body = {}) {
   const entry = {
     id,
     label: label || prev.label || preset?.label || id,
-    baseUrl: cleanBaseUrl(body.baseUrl || prev.baseUrl || preset?.baseUrl),
+    baseUrl: cleanBaseUrl(keepHidden(body.baseUrl, prev.baseUrl || preset?.baseUrl) || prev.baseUrl || preset?.baseUrl),
   }
+  // A saved key goes only to the server it was saved for: a new scheme, host
+  // or port drops it, unless this request brings a key. A new path keeps it.
   const key = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const sameServer = originOf(entry.baseUrl) === originOf(prev.baseUrl || preset?.baseUrl)
   if (key) entry.apiKey = key
-  else if (prev.apiKey && !body.clearKey) entry.apiKey = prev.apiKey
+  else if (prev.apiKey && !body.clearKey && sameServer) entry.apiKey = prev.apiKey
   if (body.models !== undefined) {
     const models = modelTable(body.models)
     if (Object.keys(models).length) entry.models = models
@@ -368,25 +396,35 @@ function perMillion(v) {
 }
 
 // List the models a gateway serves for this key: GET {baseUrl}/models. Free.
-// Uses the key from the body, else the saved or env key of provider `id`.
+// Uses the key from the body, else the saved or env key of provider `id`. A
+// provider's key (saved or env) goes only to its saved base URL (same scheme, host
+// and port), like the Daytona key. No text from this call holds a hidden part
+// of the URL: every error goes through scrubUrl with the raw URL.
 export async function discoverModels(body = {}) {
   const saved = body.id ? allProviders()[body.id] : null
-  const baseUrl = cleanBaseUrl(body.baseUrl || saved?.baseUrl)
-  const key = (typeof body.apiKey === "string" && body.apiKey.trim()) || providerKey(saved)
+  const baseUrl = cleanBaseUrl(keepHidden(body.baseUrl, saved?.baseUrl) || saved?.baseUrl)
+  const shown = publicUrl(baseUrl).url
+  const typed = typeof body.apiKey === "string" ? body.apiKey.trim() : ""
+  const savedKey = providerKey(saved)
+  const bound = Boolean(saved?.baseUrl) && originOf(baseUrl) !== "" && originOf(baseUrl) === originOf(saved.baseUrl)
+  const key = typed || (bound ? savedKey : null)
+  const keyNote =
+    !typed && savedKey && !bound ? `The provider's key was not sent: it goes only to ${originOf(saved.baseUrl) || "its saved base URL"}.` : null
+  const fail = (msg) => new Error(scrubUrl(keyNote ? `${msg} ${keyNote}` : msg, baseUrl, saved?.baseUrl))
   const res = await fetch(`${baseUrl}/models`, {
     headers: { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
     signal: AbortSignal.timeout(15_000),
   }).catch((err) => {
-    throw new Error(`could not reach ${baseUrl}/models: ${String(err?.message ?? err)}`)
+    throw fail(`could not reach ${shown}/models: ${errorText(err)}`)
   })
   const text = await res.text()
   const scrub = (s) => (key ? s.split(key).join("***") : s).slice(0, 300)
-  if (!res.ok) throw new Error(`${baseUrl}/models returned ${res.status}: ${scrub(text)}`)
+  if (!res.ok) throw fail(`${shown}/models returned ${res.status}: ${scrub(text)}`)
   let json
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error(`${baseUrl}/models did not return JSON`)
+    throw fail(`${shown}/models did not return JSON`)
   }
   const list = Array.isArray(json) ? json : json.data ?? json.models ?? []
   const models = list
@@ -402,5 +440,5 @@ export async function discoverModels(body = {}) {
       }
     })
     .filter(Boolean)
-  return { models, keyUsed: Boolean(key) }
+  return { models, keyUsed: Boolean(key), keyNote }
 }
