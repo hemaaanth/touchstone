@@ -18,7 +18,10 @@ RUN set -eu; cd /tmp \
   && install -m 0755 heimdall /usr/local/bin/heimdall
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
-# Heimdall links OpenSSL, zlib, brotli and zstd at run time.
+# Heimdall links OpenSSL, zlib and zstd at run time (checked with ldd).
+# libbrotli1 is not needed: nothing in the binary links or loads it. It is
+# kept until the next image rebuild, so this file still matches the shipped
+# image; drop it then (see the follow-up in TOOLS.md).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 zlib1g libbrotli1 libzstd1 \
   && rm -rf /var/lib/apt/lists/*

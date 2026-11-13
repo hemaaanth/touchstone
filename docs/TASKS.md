@@ -75,6 +75,15 @@ Minor findings do not block a merge. They go to a minors list in this file and a
 - A dependency upgrade. A scan of a target outside the authorized scope. Mainnet.
 - A third-party tool that would run outside Docker `runTool()` offline mode (the four approved network tools excepted).
 
+**hstack skills** (owner, 2026-11-13: use them when they help; optional)
+
+- Every thread may use the hstack skills. They are a starting point, not a rule. A thread that finds one unhelpful works without it.
+- Authors: `map` (callers and blast radius before a change), `investigate` and `trace` (unclear symptom, root cause), `plan`, `build`, `prove` (evidence before a claim in the report), `exercise` (hands-on UI check), `trim` (simplify own code), `handoff` (at a stop condition).
+- Reviewers: `review` and `prove`.
+- Coordinator: `delegate` (already the policy above), `babysit` for the open cloud PRs, `handoff` at wave ends.
+- Children do not use `ship`, `land`, `yolo`, `babysit` or `delegate`: those push, open or merge PRs, or spawn threads. The rules above and the assignment file win over a skill's default steps.
+- The short form for children is in the shared rules file (`wave/RULES.md` in the coordinator's thread storage).
+
 **Reporting**
 
 - This file changes state at every merge. The progress page is republished at the end of each wave.
@@ -111,7 +120,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | 2d Scope brief | D2 | 1a, 1b |
 | 2e One multi-module run (code + tests) | D3 | 1a |
 | 2f Cloud PR 6 | H3 | PR 7 |
-| 2g Toolkit branches, three at a time | G1 to G7 | 1e |
+| 2g Toolkit branches, three at a time | G1 to G7 | 1e. Started 2026-11-13: G4, G2, G7. G1 and G3 wait for 1h. G5 waits for 1a and 1c. |
 
 **Wave 3. New surface and old debts.**
 
@@ -137,7 +146,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 |------|----------|-----------|
 | ~~Yes or no on the protected fleet files~~ **yes, 2026-11-13, for A5 and I7 only.** Each gets its own reviewer. The gate line `if (verdict.proven === true)` is never touched. Every other thread keeps the boundary. | A5, I7 | no longer blocked |
 | ~~Daytona API key~~ **received 2026-11-13** (`DAYTONA_API_KEY` in `spike/.env.local`). API URL: `https://app.daytona.io/api`. The owner said yes to Daytona use on their account (2026-11-13). | J1, I1 to I6 | Waves 1 to 3 are not affected |
-| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. New token received 2026-11-13: it reads `hemaaanth/touchstone` (Metadata and Contents: HTTP 200). It lacks read on Actions, Administration (branch protection) and Pull requests (HTTP 403), so those tool checks will report "no access" in the live proof. Optional: add those three read permissions to the token. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
+| ~~A classic GitHub token, read-only~~ **received 2026-11-13** (`GITHUB_TOKEN`). The token has no scopes: it reads public repos only. `hemaaanth/touchstone` is private, so the live proof needs a public repo of the owner as its target (open question), and Legitify org checks will be thin. Second new token received 2026-11-13: it reads `hemaaanth/touchstone` (repo, contents, pull requests, Actions workflows: HTTP 200). Branch protection answers HTTP 403 with "Upgrade to GitHub Pro or make this repository public": a GitHub plan limit for private repos, not a token gap. The token is complete. Checked 2026-11-13: the RPC URL answers chain id 1, the Daytona key is accepted (HTTP 200), the GitHub token is accepted. | G3 live path (Scorecard API, Legitify), G9 | no longer blocked |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
 | ~~A fork RPC URL~~ **received 2026-11-13** (`MAINNET_RPC_URL`; local fork only, no transaction). The same key works for other chains: change the chain id in the path (`…/standard/evm/<chain id>?key=…`). | Stader fork work | no longer blocked |
 | ~~Yes to close PR 3 on GitHub~~ **yes, 2026-11-13: close PR 3 when PR 4 is merged** | H1 tidy-up | no longer blocked |
@@ -205,12 +214,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
-| G2 | todo | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. |
+| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
-| G4 | todo | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. |
+| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
-| G7 | todo | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). |
+| G7 | doing | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). Thread `thr_xjgfmpmrg3`. |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
 | G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
