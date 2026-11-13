@@ -25,25 +25,23 @@ export const LEGITIFY = {
   secret: "SCM_TOKEN",
 };
 
-// chain-bench v0.1.10 (images/chain-bench/Dockerfile) takes the token only as
-// the argv flag `-t`: `scan` passes the cobra flag value straight to
-// FetchClientData (internal/commands/scan.go). No env var or config key feeds
-// it. The token rule forbids a token in argv: the host `ps` would show it to any
-// local user. (`docker inspect` shows an env token too, in Config.Env. The rule
-// allows env, so that is not the reason.) So the pack never runs chain-bench.
-// An opt-in is an honest gap, no docker call.
-export const CHAIN_BENCH = {
-  image: "touchstone/chain-bench:0.1.10",
-  version: "0.1.10",
-  reason: "not covered: chain-bench v0.1.10 accepts the token only in argv (-t), which the token rule forbids; it is never run",
-};
+// chain-bench left this file: its image reads the token from SCM_TOKEN, so it
+// runs in capture mode (chain-bench.mjs).
 
-// raven (raven-cycode 1.0.9) is not wired: `download` takes the token only as
-// argv `--token`, it fetches workflow files from raw.githubusercontent.com
-// (outside the capture allow-list), and it needs Redis plus Neo4j servers.
+// raven (raven-cycode 1.0.9) is not wired. Reading its source (src/cmdline.py,
+// src/downloader): `download` takes the token as argv `--token` (fixable the
+// way chain-bench was: Python can set sys.argv in the process), but three
+// blockers remain, and they are why it stays blocked:
+//   - no single-repository mode: `download account` reads every repository of
+//     a user or organization, and `download crawl` reads public repositories by
+//     star count. The grant names one repository.
+//   - it stores workflows in Redis and indexes them in Neo4j (`index`, `report`):
+//     two servers the capture boundary does not run.
+//   - it fetches each workflow file from its download_url on
+//     raw.githubusercontent.com, outside the capture allow-list (api.github.com).
 export const RAVEN = {
   version: "1.0.9",
-  reason: "not covered: raven 1.0.9 takes the token only in argv (--token), reads raw.githubusercontent.com outside the capture allow-list, and needs Redis plus Neo4j; it is never run",
+  reason: "not covered: raven 1.0.9 has no single-repository mode (it reads a whole account, or crawls public repositories), needs Redis plus Neo4j servers, and fetches workflow files from raw.githubusercontent.com outside the capture allow-list; it is never run",
 };
 
 const now = () => new Date().toISOString();
@@ -87,14 +85,12 @@ export async function captureLegitify({ target = null, scopeId = null, token = p
 
 export async function captureBlocked(tool, opts) {
   if (tool === "legitify") return captureLegitify(opts);
-  if (tool === "chain-bench") return unavailable("chain-bench", CHAIN_BENCH.reason, { gapKind: "not-covered-token-in-argv" });
-  if (tool === "raven") return unavailable("raven", RAVEN.reason, { gapKind: "not-covered-token-in-argv" });
+  if (tool === "raven") return unavailable("raven", RAVEN.reason, { gapKind: "not-covered-tool-scope" });
   throw new Error(`Unknown networked tool ${tool}`);
 }
 
 const CHECKS = {
   legitify: "repository policies (branch protection, review rules, actions permissions, secret scanning settings)",
-  "chain-bench": "CIS software supply chain benchmark (source code, build pipelines, dependencies, artifacts, deployment)",
   raven: "cross-workflow CI/CD graph queries (injection, untrusted checkout, artifact poisoning across workflows)",
 };
 
