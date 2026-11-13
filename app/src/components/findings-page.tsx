@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { Bot, Bug, ChevronRight, FileText, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
@@ -77,7 +77,8 @@ function useCopy() {
   const [note, setNote] = useState<CopyNote>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
-  const copy = (f: FindingSummary, format: CopyFormat) => {
+  // Stable, so a memoised row does not render again when the note changes.
+  const copy = useCallback((f: FindingSummary, format: CopyFormat) => {
     clearTimeout(timer.current)
     copyFinding(f.id, format).then(
       ({ tooLong }) => {
@@ -92,7 +93,7 @@ function useCopy() {
       },
       () => setNote({ tone: "error", text: "Could not copy. The server did not answer, or the browser blocked the clipboard." }),
     )
-  }
+  }, [])
   return { note, copy }
 }
 
@@ -127,7 +128,10 @@ export function FindingsPage({
   const set = <K extends keyof FindingsView>(k: K, v: FindingsView[K]) => setView((cur) => ({ ...cur, [k]: v }))
 
   const all = useMemo(() => (load.state === "ready" ? load.rows : []), [load])
-  const shown = useMemo(() => sortFindings(filterFindings(all, view), view.sort), [all, view])
+  // The list follows the filters a beat behind the input, so typing stays
+  // quick with many rows. Rows that stay in the list do not render again.
+  const deferred = useDeferredValue(view)
+  const shown = useMemo(() => sortFindings(filterFindings(all, deferred), deferred.sort), [all, deferred])
   const packTitle = (id: string) => packs.find((p) => p.id === id)?.title
   const runOf = (f: FindingSummary) => (f.runId ? runs.find((r) => r.id === f.runId) : undefined)
 
@@ -135,10 +139,11 @@ export function FindingsPage({
   const [detail, setDetail] = useState<{ id: string; open: boolean } | null>(null)
   const open = detail ? all.find((f) => f.id === detail.id) : undefined
   const sheet = useRef<HTMLDivElement>(null)
-  const openDetail = (f: FindingSummary) => setDetail({ id: f.id, open: true })
+  const openDetail = useCallback((f: FindingSummary) => setDetail({ id: f.id, open: true }), [])
 
   const { note, copy } = useCopy()
-  const proven = all.filter((f) => f.proven).length
+  const proven = shown.filter((f) => f.proven).length
+  const clear = () => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort }))
 
   return (
     <ListPage
@@ -171,13 +176,19 @@ export function FindingsPage({
         </ListEmpty>
       ) : (
         <>
-          <Filters view={view} set={set} rows={all} packTitle={packTitle} onClear={() => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort }))} />
+          <Filters view={view} set={set} rows={all} packTitle={packTitle} />
 
           <div className="-mt-3 flex min-h-5 items-center gap-3 text-xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">
               {isFiltered(view) ? `${shown.length} of ${all.length} findings` : `${all.length} findings`}
               {proven ? <span className="text-ok"> · {proven} proven</span> : null}
             </span>
+            {/* Here, not in the filter rows, so showing it moves nothing. */}
+            {isFiltered(view) && shown.length > 0 ? (
+              <Button variant="ghost" size="xs" className="-my-1 text-muted-foreground" onClick={clear}>
+                <X /> Clear filters
+              </Button>
+            ) : null}
             <span role="status" className={cn("ml-auto min-w-0 truncate text-right", note?.tone === "error" && "text-foreground")} title={note?.text}>
               {note?.text}
             </span>
@@ -188,7 +199,7 @@ export function FindingsPage({
               icon={Search}
               title="No finding matches these filters"
               action={
-                <Button size="sm" variant="outline" onClick={() => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort }))}>
+                <Button size="sm" variant="outline" onClick={clear}>
                   <X /> Clear filters
                 </Button>
               }
@@ -202,8 +213,8 @@ export function FindingsPage({
                   moduleTitle={packTitle(moduleOf(f)) ?? f.module}
                   run={runOf(f)}
                   active={detail?.open === true && detail.id === f.id}
-                  onOpen={() => openDetail(f)}
-                  onCopy={(format) => copy(f, format)}
+                  onOpen={openDetail}
+                  onCopy={copy}
                   onOpenRun={onOpenRun}
                 />
               ))}
@@ -266,13 +277,11 @@ function Filters({
   set,
   rows,
   packTitle,
-  onClear,
 }: {
   view: FindingsView
   set: <K extends keyof FindingsView>(k: K, v: FindingsView[K]) => void
   rows: FindingSummary[]
   packTitle: (id: string) => string | undefined
-  onClear: () => void
 }) {
   // Each list holds only the values the findings have.
   const scopes = useMemo(() => [...new Set(rows.map(scopeOf))].sort((a, b) => a.localeCompare(b)), [rows])
@@ -321,11 +330,6 @@ function Filters({
           ]}
           onChange={(v) => set("state", v as StateFilter)}
         />
-        {isFiltered(view) ? (
-          <Button variant="ghost" size="sm" className="px-2 text-xs text-muted-foreground" onClick={onClear}>
-            <X /> Clear filters
-          </Button>
-        ) : null}
         <FilterSelect
           label="Sort by"
           value={view.sort}
@@ -340,7 +344,7 @@ function Filters({
 
 // ── One row ─────────────────────────────────────────────────────────────────
 
-export function FindingListRow({
+export const FindingListRow = memo(function FindingListRow({
   finding: f,
   moduleTitle,
   run,
@@ -353,10 +357,11 @@ export function FindingListRow({
   moduleTitle: string
   run: RunSummary | undefined
   active: boolean
-  onOpen: () => void
-  onCopy: (format: CopyFormat) => void
+  onOpen: (f: FindingSummary) => void
+  onCopy: (f: FindingSummary, format: CopyFormat) => void
   onOpenRun: (id: string) => void
 }) {
+  const open = () => onOpen(f)
   return (
     <ListRow
       icon={<ProofIcon state={f.proven ? "proven" : "unproven"} className="size-4" />}
@@ -379,26 +384,26 @@ export function FindingListRow({
       trailing={moduleOf(f) ? <ModulePill id={moduleOf(f)} label={moduleTitle} compact /> : null}
       menu={
         <RowMenu label={`Actions for ${f.title}`}>
-          <RowMenuItem onClick={onOpen}>
+          <RowMenuItem onClick={open}>
             <PanelRight /> View details
           </RowMenuItem>
           <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id)}>
             <ChevronRight /> Open in run
           </RowMenuItem>
           <RowMenuSeparator />
-          <RowMenuItem onClick={() => onCopy("md")}>
+          <RowMenuItem onClick={() => onCopy(f, "md")}>
             <FileText /> {COPY_LABEL.md}
           </RowMenuItem>
-          <RowMenuItem onClick={() => onCopy("agent")}>
+          <RowMenuItem onClick={() => onCopy(f, "agent")}>
             <Bot /> {COPY_LABEL.agent}
           </RowMenuItem>
         </RowMenu>
       }
-      onOpen={onOpen}
+      onOpen={open}
       active={active}
     />
   )
-}
+})
 
 // ── The sheet ───────────────────────────────────────────────────────────────
 
