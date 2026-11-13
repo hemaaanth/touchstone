@@ -314,13 +314,16 @@ describe("redact: a secret pair in JS or Python code (delta review 2)", () => {
   })
 
   test("comparisons, templates, variables and plain names stay", () => {
+    // A value that is secretish by the generic rule but is not a vendor or lab
+    // token shape, so only the name or the "===" decides whether it is masked.
+    const opaque = "s3cretVALUE9f3a9c2e1"
     for (const s of [
-      `if (token === "${key}") ok()`,
+      `if (token === "${opaque}") ok()`,
       "const token = `${t1}`",
       'const apiKey = "$API_KEY"',
       `{ authorization: "Bearer " + t1 }`,
-      `{ title: '${key}' }`,
-      `{ publicKey: '${key}' }`,
+      `{ title: '${opaque}' }`,
+      `{ publicKey: '${opaque}' }`,
       `{ token: '0x5fbdb2315678afecb367f032d93f642f64180aa3' }`,
     ]) expect(text(s)).toBe(s)
   })
@@ -699,5 +702,68 @@ describe("redact: an assignment keeps a short setting like the JSON pair (final 
     for (const s of [`const sortKey = "created_at";`, "CACHE_KEY=user_profile"]) expect(text(s)).toBe(s)
     expect(text(`const dbPassword = "letmein-please";`)).toBe(`const dbPassword = "[REDACTED]";`)
     expect(text("DB_PASSWORD=abc123 node x")).toBe("DB_PASSWORD=[REDACTED] node x")
+  })
+})
+
+describe("redact: a bare vendor or lab token in prose or a path (H2b item 1)", () => {
+  // Synthetic values with the published length and alphabet of each vendor.
+  const g36 = "ab12CD34ef56GH78ij90KL12mn34OP56qr78"
+  test("each vendor prefix is masked in prose and inside a path", () => {
+    const cases: [string, string][] = [
+      [`returned token tk_live_9f8e7d6c5b4a39281706 to the caller`, "tk_live_9f8e7d6c5b4a39281706"],
+      [`the lab key tk_alice_9f1c4a2e was used`, "tk_alice_9f1c4a2e"],
+      [`saved to /var/log/tk_bob_77ab0e31.json`, "tk_bob_77ab0e31"],
+      [`secret sk_live_${g36.slice(0, 24)} here`, `sk_live_${g36.slice(0, 24)}`],
+      [`token ghp_${g36} leaked`, `ghp_${g36}`],
+      [`see /tmp/ghp_${g36}.txt`, `ghp_${g36}`],
+      [`gho_${g36} oauth`, `gho_${g36}`],
+      [`github_pat_11ABCDE0y${g36.slice(0, 20)} fine`, `github_pat_11ABCDE0y${g36.slice(0, 20)}`],
+      [`slack xoxb-111111111-222222222-${g36.slice(0, 24)} ok`, `xoxb-111111111-222222222-${g36.slice(0, 24)}`],
+      [`key id AKIAFAKEFAKEFAKE1234 rotated`, "AKIAFAKEFAKEFAKE1234"],
+      [`glpat-${g36.slice(0, 20)} token`, `glpat-${g36.slice(0, 20)}`],
+      [`npm_${g36} registry`, `npm_${g36}`],
+    ]
+    for (const [s, secret] of cases) {
+      expect(text(s)).not.toContain(secret)
+      expect(text(s)).toContain("[REDACTED]")
+    }
+  })
+  test("a publishable key, an embedded identifier and a short label stay", () => {
+    for (const s of [
+      `pk_live_${g36.slice(0, 24)} is publishable`,
+      `var file_ghp_${g36} = 1`,
+      "tk_live_run is a label",
+      "tk_x_1 short",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a lab token in the middle of 1 MB finishes in linear time", () => {
+    expect(timeMs("tk_live_" + "9".repeat(MB) + " tail")).toBeLessThan(2000)
+    expect(timeMs("ghp_" + "a".repeat(MB) + " tail")).toBeLessThan(2000)
+  })
+})
+
+describe("redact: an RPC or API key in a URL path (H2b item 2)", () => {
+  const K = "FAKE0fake1FAKE2fake3FAKE4fake5fa"
+  test("the key in a provider URL path is masked, the host stays", () => {
+    const cases: [string, string][] = [
+      [`rpc https://eth-mainnet.g.alchemy.com/v2/${K} call`, "rpc https://eth-mainnet.g.alchemy.com/v2/[REDACTED] call"],
+      [`https://mainnet.infura.io/v3/${K}`, "https://mainnet.infura.io/v3/[REDACTED]"],
+      [`https://rpc.ankr.com/eth/${K}`, "https://rpc.ankr.com/eth/[REDACTED]"],
+      [`https://nd-1.quiknode.pro/${K}/`, "https://nd-1.quiknode.pro/[REDACTED]/"],
+      [`https://edge.goldsky.com/standard/evm/1?key=${K}`, "https://edge.goldsky.com/standard/evm/1?key=[REDACTED]"],
+    ]
+    for (const [s, want] of cases) expect(text(s)).toBe(want)
+  })
+  test("a provider host with no key, a placeholder and a doc path stay", () => {
+    for (const s of [
+      "https://polygon-rpc.com/",
+      "https://eth.llamarpc.com/eth",
+      "https://eth-mainnet.g.alchemy.com/v2/${RPC_KEY}",
+      "https://docs.alchemy.com/reference/eth-getbalance",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a provider URL with a 1 MB path finishes in linear time", () => {
+    expect(timeMs("https://rpc.ankr.com/eth/" + "a1".repeat(MB / 2) + " x")).toBeLessThan(2000)
+    expect(timeMs("https://x.alchemy.com" + "/seg".repeat(MB / 4) + " x")).toBeLessThan(2000)
   })
 })

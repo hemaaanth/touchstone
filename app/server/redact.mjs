@@ -118,6 +118,23 @@ const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})
 const QUERY = /([?&#]([A-Za-z][\w.-]{0,63})=)([^&\s#"'`,;()[\]{}<>\\]+)/g
 const QUERY_NAME = /^(?:key|sig|code|auth)$/i
 
+// An RPC or API key in a URL path on a known provider host:
+// https://eth-mainnet.g.alchemy.com/v2/<key>, https://mainnet.infura.io/v3/<key>,
+// https://rpc.ankr.com/eth/<key>. The host and the fixed path parts (/v2/) stay;
+// a path segment that looks like a key becomes the mark. The Goldsky form
+// (…?key=<key>) is a query, so QUERY already masks it. Provider list and the
+// key-segment test are the same as the replay bundle (spike/lib/replay-bundle.mjs).
+const RPC_NAMES = "alchemy|infura|ankr|quiknode|quicknode|blastapi|chainstack|getblock|nodereal|drpc|tenderly|moralis|blockpi|pokt"
+const RPC_URL = new RegExp(String.raw`(https?:\/\/[a-zA-Z0-9.-]*(?:${RPC_NAMES})[a-zA-Z0-9.-]*)((?:\/[^\s"'\`\\?#]*)+)`, "gi")
+// A URL path segment is a key when it is long and mixes letters and digits.
+// A placeholder (${RPC_KEY}) or an already-redacted part stays.
+const keySegment = (seg) => seg.length >= 16 && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !seg.startsWith("${") && !seg.startsWith("[REDACTED")
+function maskRpcUrl(m, host, path) {
+  let hit = false
+  const out = path.replace(/[^/?#]+/g, (seg) => (keySegment(seg) ? ((hit = true), MARK) : seg))
+  return hit ? host + out : m
+}
+
 // A password in a URL (https://user:pass@host), a curl -u user:pass, a
 // curl -b cookie list, and an env assignment such as DB_PASSWORD=… whose
 // name passes secretName. Only the secret part is masked.
@@ -140,8 +157,25 @@ const ENV_ASSIGN = /(?<![\w$.?&#/-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"
 // A code reference such as settings.API_KEY or res.body.token, not a value.
 const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 
-// Shapes that are a secret wherever they sit. Deliberately not bare hex:
-// snapshot hashes and commits are 40/64 hex and the proof needs them.
+// Shapes that are a secret wherever they sit: in prose, in a file name, in a
+// path segment. Each is a vendor prefix plus the vendor's own length and
+// alphabet, so the prefix alone is not enough to fire. A match starts at a
+// non-identifier boundary (\b or a lookbehind), so "file_ghp_x" (one
+// identifier) stays and "/x/ghp_x" (a path segment) is masked.
+// Deliberately NOT bare hex: a snapshot hash or a commit is 40/64 hex and the
+// proof needs it. pk_live_/pk_test_ (Stripe PUBLISHABLE keys) are public and
+// are not here, so they stay.
+// Sources for the format of each (prefix, length, alphabet):
+//   AKIA/ASIA + 16 upper base32   AWS, "IAM identifiers" docs
+//   gh[pousr]_ + 36 base62        GitHub, "token formats" (ghp/gho/ghu/ghs/ghr)
+//   github_pat_ + base62/_        GitHub, fine-grained PAT
+//   glpat- + 20                   GitLab, personal access token
+//   xox[baprs]- + 10              Slack, "token types and scopes"
+//   (sk|rk)_(live|test)_ + 10     Stripe, "API keys" (secret/restricted)
+//   sk- + 20                      OpenAI, "API keys"
+//   eyJ + "." + "." parts           JWT, RFC 7519 (base64url header.payload.sig)
+//   npm_ + 36 base62              npm, "about access tokens"
+//   tk_<name>_<hex>               this project's lab token (oracle lab dapp)
 const SHAPES = [
   // The body is bounded: an unended BEGIN must not rescan the rest of the text.
   /-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY-----[\s\S]{0,10000}?-----END [A-Z0-9 ]{0,32}PRIVATE KEY-----/g,
@@ -154,6 +188,9 @@ const SHAPES = [
   /\bsk-[A-Za-z0-9-]{20,}\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\bnpm_[A-Za-z0-9]{36,}\b/g,
+  // The lab token is tk_<name>_<suffix>: tk_alice_9f1c4a2e, tk_live_<20 hex>.
+  // The suffix is 6+ hex, so a plain word such as tk_live_run stays.
+  /\btk_[a-z][a-z0-9]*_[0-9a-fA-F]{6,}\b/g,
 ]
 
 // True when one word looks like a credential and not like a lab placeholder
@@ -320,7 +357,7 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -349,6 +386,7 @@ function redactText(text) {
   out = out.replace(QUOTE_HEADER, maskQuoteHeader)
   out = out.replace(BEARER, maskBearer)
   out = out.replace(QUERY, maskQuery)
+  out = out.replace(RPC_URL, maskRpcUrl)
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_COOKIE, maskCookieArg)
