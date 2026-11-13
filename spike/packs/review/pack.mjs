@@ -10,14 +10,20 @@
 //   - prove() returns [], so the engine records nothing as proven.
 // A lead is a lead. It never becomes "proven" under this pack.
 //
+// record_lead saves each lead the moment the agent ranks it, as a `lead` event
+// with its evidence (file, line, reason). The event goes to EVENTS_FILE at once,
+// so a lead survives a later model error, a stop, or a server restart. The run
+// record and the run view read leads from those events.
+//
 // Reads are confined: the real path (symlinks resolved) must stay inside the
-// workspace under src/, vendor/, or be BRIEF.md, and it must be a regular,
+// workspace under src/ or vendor/, and it must be a regular,
 // allowlisted, non-secret file. fetch_source fetches only the scope's own repo
 // links, on the host, into vendor/.
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, relative, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
-import { obj, str } from "@earendil-works/pi-schema";
+import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { moduleOn } from "../../lib/modules.mjs";
 import { fetchSource } from "../../lib/fetch.mjs";
@@ -32,7 +38,6 @@ const SEARCH_HITS = 100;
 // May the agent see this workspace-relative path? Only allowlisted source under
 // src/ or vendor/, never a hidden, secret, dependency, or build file.
 export function visible(rel) {
-  if (rel === "BRIEF.md") return true;
   const parts = rel.split(sep);
   if (parts.some((p) => !p || p.startsWith(".") || p === "..")) return false;
   // Local folders sit under src/. A fetched repo sits at vendor/<owner>__<repo>/
@@ -86,10 +91,18 @@ What this run can and cannot do:
 - You can read the code. You cannot prove a finding here. No replay oracle fits
   this code, so there is no submit_finding tool and nothing you report is marked
   proven. Report leads, not verdicts.
-- Read BRIEF.md first. It lists the scope's members: local folders (under src/)
-  and GitHub repos. Fetch each repo with fetch_source before you read it.
+- Read the scope section at the end of these instructions first. It lists the
+  scope's members: local folders (under src/) and GitHub repos, and the
+  operator's brief when there is one. Fetch each repo with fetch_source before
+  you read it.
 - Use list_sources to see files, read_source to read one, and search_source to
   find a literal string across all files.
+- Record each lead with record_lead as soon as you can point at a file and a
+  line: severity, file, line, what an attacker does, why you think it holds, and
+  what would prove it. Do not wait for the end. A lead that lives only in your
+  final message is lost if the model fails first. A lead is not a finding;
+  record_lead never marks anything proven. bulletin_post, where it exists, only
+  shares a note with other agents; it does not record a lead.
 - The sandbox has no network. Only fetch_source reaches out, on the host, and
   only for the repos the scope lists.
 
@@ -101,13 +114,24 @@ How to review:
   unchecked arithmetic, and logic bugs specific to this code.
 - Ignore style and hypothetical issues with no attacker path.
 
-End with a lead list, worst first. One line per lead:
+End with a lead list, worst first, of the leads you recorded. One line per lead:
   severity (critical/high/medium/low) — file:line — what an attacker does — why you think it holds — what would prove it.
 Then a short coverage note: what you read, and what you did not reach.`;
 
-export const KICKOFF = "Review this scope. Read BRIEF.md, fetch any listed repos, map the code, and report a ranked lead list. Nothing here can be proven, so mark every item as a lead.";
+export const KICKOFF = "Review this scope. Read the scope section of your instructions, fetch any listed repos, map the code, record each lead with record_lead as you find it, and end with a ranked lead list. Nothing here can be proven, so every item is a lead.";
 
-export function tools(ws) {
+// The one nudge after a clean end: a review that recorded no lead must either
+// record the leads it ranked or say it found none.
+export const NUDGE = "You recorded no lead with record_lead. For each lead you ranked, call record_lead now with its severity, file, line, what an attacker does, why it holds, and what would prove it. If you found no lead, say so in one line.";
+
+const SEVERITIES = ["critical", "high", "medium", "low"];
+const TITLE_CAP = 300;
+const REASON_CAP = 2000;
+// Leads one run may record. Each is an event the run view reduces again on
+// every update, so a runaway loop must stop here.
+export const LEAD_CAP = 200;
+
+export function tools(ws, state = {}) {
   const cfg = readTouchstone(ws);
   const links = new Set((cfg.links ?? []).map((u) => { try { return githubRepoUrl(u); } catch { return null; } }).filter(Boolean));
   const text = (t, isError = false) => ({ output: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
@@ -120,20 +144,20 @@ export function tools(ws) {
     execute: async () => {
       event("list_sources");
       const files = listFiles(ws);
-      return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos BRIEF.md lists)");
+      return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos the scope lists)");
     },
   });
 
   const readSource = defineTool({
     name: "read_source",
-    description: "Read one file. Pass a path list_sources printed, or BRIEF.md.",
-    parameters: obj({ file: str({ description: "a path from list_sources, or BRIEF.md" }) }),
+    description: "Read one file. Pass a path list_sources printed. The scope and its brief are in your instructions, not in a file.",
+    parameters: obj({ file: str({ description: "a path from list_sources" }) }),
     replay: "safe",
     execute: async (args) => {
       const raw = String(args.file ?? "");
       event("read_source", { file: raw });
       const abs = resolveReadable(ws, raw);
-      if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows, or BRIEF.md. Hidden, secret, dependency, and binary files are never readable.`, true);
+      if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows. Hidden, secret, dependency, and binary files are never readable.`, true);
       let body;
       try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
       if (body.length > FILE_READ_CAP) body = body.slice(0, FILE_READ_CAP) + `\n\n…[truncated at ${FILE_READ_CAP} bytes]`;
@@ -169,15 +193,15 @@ export function tools(ws) {
 
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the scope's GitHub repos into vendor/<owner>__<repo>/. Pass a repo URL exactly as BRIEF.md lists it. The fetch runs on the host; the review stays offline.",
-    parameters: obj({ url: str({ description: "a repo URL from BRIEF.md" }) }),
+    description: "Fetch one of the scope's GitHub repos into vendor/<owner>__<repo>/. Pass a repo URL exactly as the scope section of your instructions lists it. The fetch runs on the host; the review stays offline.",
+    parameters: obj({ url: str({ description: "a repo URL the scope lists" }) }),
     replay: "unsafe",
     execute: async (args) => {
       const raw = String(args.url ?? "").trim();
       event("fetch_source", { url: raw });
       let url;
       try { url = githubRepoUrl(raw); } catch { url = null; }
-      if (!url || !links.has(url)) return text(`Not one of this scope's repos: ${raw}. Fetch only a URL BRIEF.md lists.`, true);
+      if (!url || !links.has(url)) return text(`Not one of this scope's repos: ${raw}. Fetch only a URL the scope lists. A scope brief cannot add one.`, true);
       let report;
       try {
         report = await fetchSource(ws, url);
@@ -191,18 +215,67 @@ export function tools(ws) {
     },
   });
 
-  return [listSources, readSource, searchSource, ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
+  // One lead per file:line, by a stable id. A second call on the same line
+  // returns the first lead's id and writes no event.
+  const recorded = new Set();
+  const recordLead = defineTool({
+    name: "record_lead",
+    description: "Record one lead the moment you rank it, so it is saved even if the run fails later. Give the file and line it is on, what an attacker does, and why you think it holds. A lead is not a finding and is never marked proven.",
+    parameters: obj({
+      severity: oneOf(SEVERITIES),
+      file: str({ description: "the file the lead is in, as list_sources prints it" }),
+      line: int({ minimum: 1, description: "the 1-based line the lead points at" }),
+      title: str({ description: "what an attacker does, in one line" }),
+      reason: str({ description: "why you think it holds: the code path and the missing check" }),
+      proof: opt(str({ description: "what would prove it" })),
+    }),
+    // Idempotent: the id is a hash of file:line and the run keeps one lead per
+    // id, so a re-run after a crash writes the same lead again, not a new one.
+    replay: "safe",
+    execute: async (args) => {
+      const severity = String(args.severity ?? "").toLowerCase();
+      const raw = String(args.file ?? "");
+      const line = Number(args.line);
+      const title = String(args.title ?? "").trim().slice(0, TITLE_CAP);
+      const reason = String(args.reason ?? "").trim().slice(0, REASON_CAP);
+      const proof = typeof args.proof === "string" ? args.proof.trim().slice(0, REASON_CAP) : "";
+      if (!SEVERITIES.includes(severity)) return text(`Severity must be one of ${SEVERITIES.join(", ")}.`, true);
+      if (!title || !reason) return text("Give a title (what an attacker does) and a reason (why it holds).", true);
+      const abs = resolveReadable(ws, raw);
+      if (!abs) return text(`Not a readable source file: ${raw}. Pass a path list_sources shows.`, true);
+      let body;
+      try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
+      const lines = body ? body.split("\n").length - (body.endsWith("\n") ? 1 : 0) : 0;
+      if (!Number.isInteger(line) || line < 1 || line > lines) return text(`Line ${args.line} is not in ${raw}, which has ${lines} line${lines === 1 ? "" : "s"}.`, true);
+      const file = relative(realpathSync(ws), abs).split(sep).join("/");
+      const id = "lead-" + createHash("sha1").update(`${file}:${line}`).digest("hex").slice(0, 12);
+      if (recorded.has(id)) return text(`Not recorded: ${id} already holds the lead for ${file}:${line}. One lead per line; put a second issue on the line that shows it, or fold it into that lead.`, true);
+      if (recorded.size >= LEAD_CAP) return text(`Lead cap reached: this run already recorded ${LEAD_CAP} leads, the most one run may record. This lead was not recorded. Stop recording and end with your ranked lead list.`, true);
+      recorded.add(id);
+      state.leads = recorded.size;
+      event("lead", { id, severity, file, line, title, reason, ...(proof ? { proof } : {}) });
+      return text(`Recorded ${id}: ${severity} — ${file}:${line} — ${title}. It stays a lead; nothing here is proven.`);
+    },
+  });
+
+  return [listSources, readSource, searchSource, recordLead, ...(moduleOn(cfg.modules, "fetch") && links.size ? [fetchSourceTool] : [])];
 }
 
 export default {
   id: "review",
   title: "Code review",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "Code with no Solidity in it, such as Rust, Go, TypeScript or Python.",
   tier: "P",
   proof: "none",
+  // fetch_source clones the scope's GitHub repos on the host. The other tools
+  // only read the workspace.
+  fetches: ["github"],
   system: () => SYSTEM,
-  tools: (ws) => tools(ws),
+  tools: (ws, state) => tools(ws, state),
   kickoff: () => KICKOFF,
-  nudge: () => null,
+  nudge: (state) => (state?.leads ? null : NUDGE),
   // No replay oracle fits this code. No finding may pass this pack.
   prove: async () => [],
 };

@@ -20,6 +20,7 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { Wallet } from "ethers";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftText } from "../../lib/attempt-cap.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { sortFindings } from "../../lib/record.mjs";
 import {
@@ -27,13 +28,15 @@ import {
   readLabHandle,
   runRequestScript,
   startLab,
-  stopLab,
   teardownPersistedLab,
   writeLabHandle,
+  writeScanHandle,
+  teardownPersistedScan,
   requireImage,
 } from "../../lib/proof-http.mjs";
 
 import { scanWeb, docQueryUrls } from "./scan.mjs";
+import { extraScans, foldScan } from "./discovery.mjs";
 import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubProof } from "./redact.mjs";
@@ -43,7 +46,7 @@ const LEADS_FILE = ".web-leads.json";
 
 // Total run_request_script attempts for the whole audit. Three root causes
 // are planted; this leaves room to explore and still re-try a failed attempt.
-const MAX_SCRIPT_RUNS = Number(process.env.MAX_HTTP_RUNS ?? 12);
+const MAX_SCRIPT_RUNS = attemptCap("MAX_HTTP_RUNS");
 
 // --- Oracles: each reads the independently-recorded transcript, never the
 // script's own console.log claims, and decides if a known harm pattern
@@ -437,8 +440,9 @@ How the audit works:
 - Plan first. List each suspect worst first in your reply: the sign-in flow itself,
   every documented route's ownership check, whether any undocumented route exists,
   and every page that echoes input back (a page can reflect a query value as HTML).
-- Spend at most 3 run_request_script attempts chasing one suspect. If it still does
-  not trip a known pattern, mark it "not proven" and move on.
+- Give one suspect about 3 run_request_script attempts. If it still does not trip a
+  known pattern, mark it "not proven" for now and move on. Come back to it once the
+  other suspects are done, if budget is left.
 - The moment a script trips a pattern, call submit_finding. Then CONTINUE with the
   next suspect — do not stop at the first finding.
 - Not findings: a 401/403 that correctly blocks a request, or a route that returns
@@ -486,6 +490,10 @@ function kickoff(ws, env = {}) {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
   if (brief) parts.push(`BRIEF.md:\n${brief}`);
+  // A live scope's bearer token goes only into this first message, the root
+  // agent's, as it did when the brief file held it. Fleet children never get it.
+  const token = isLive(ws) ? readTouchstone(ws).mcp?.token : null;
+  if (typeof token === "string" && token) parts.push(`Bearer token for this site: ${token}`);
   if (openapi) parts.push(`openapi.yaml (the documented routes — there may be more):\n${openapi}`);
   return parts.join("\n\n");
 }
@@ -493,8 +501,7 @@ function kickoff(ws, env = {}) {
 function nudge(state) {
   if (state.found.length === 0) return null;
   const list = state.found.map((f) => `- #${f.n} ${f.title} (${f.severity})`).join("\n");
-  const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_request_script attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
 }
 
 function tools(ws, state) {
@@ -537,12 +544,11 @@ function tools(ws, state) {
         const body = typeof e.resBody === "string" ? e.resBody : JSON.stringify(e.resBody);
         return `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${(body ?? "").slice(0, 300)}`;
       });
-      const left = MAX_SCRIPT_RUNS - attempt;
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
         : "\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.";
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
-      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${left} script attempt${left === 1 ? "" : "s"} left.)` }] };
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
   });
 
@@ -584,9 +590,8 @@ function tools(ws, state) {
         oracleName: entry.oracleName,
       };
       state.found.push(finding);
-      event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
-      const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. You have ${left} script attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
+      event("finding-submitted", { pack: "web", n, title: finding.title, severity: finding.severity, poc: label });
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
 
@@ -617,24 +622,27 @@ function tools(ws, state) {
 async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   if (isLive(ws)) return livePrepass(ws, { emit, reach });
   await requireImage(image, "web");
-  const handle = await startLab({ image });
+  const handle = await startLab({ image, onStart: (partial) => writeLabHandle(ws, partial) });
   writeLabHandle(ws, handle);
   emit({ ev: "web-lab-started", image, alias: handle.alias });
 
   // A second, throwaway lab: scanner traffic must not touch the one the agent
   // will explore, or it would pollute the recorded transcripts and lab state.
   let scan = { coverage: [], leads: [] };
-  let scanLab = null;
   try {
-    scanLab = await startLab({ image });
+    const scanLab = await startLab({ image, onStart: (partial) => writeScanHandle(ws, partial) });
+    writeScanHandle(ws, scanLab);
     emit({ ev: "web-scan-started", engines: ["zap", "nuclei", "dalfox"] });
     // Feed dalfox the input URLs the operator documents (brief, OpenAPI).
     const docs = ["BRIEF.md", "openapi.yaml"].map((f) => readWorkspaceText(ws, f)).join("\n");
     scan = await scanWeb({ net: scanLab.net, baseUrl: scanLab.netBaseUrl, urls: docQueryUrls(docs, scanLab.netBaseUrl) });
+    // Extra discovery tools (ffuf, ...) run against the same throwaway lab and
+    // fold their leads in. Each is fail-closed, so this never aborts the scan.
+    for (const extra of await extraScans({ net: scanLab.net, baseUrl: scanLab.netBaseUrl })) scan = foldScan(scan, extra);
   } catch (err) {
     emit({ ev: "web-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
   } finally {
-    if (scanLab) await stopLab(scanLab).catch(() => {});
+    await teardownPersistedScan(ws).catch(() => {});
   }
   const record = { pack: "web", coverage: scan.coverage, leads: scan.leads };
   writeFileSync(join(ws, LEADS_FILE), JSON.stringify(record, null, 2));
@@ -719,7 +727,8 @@ expects. The two well-known test key pairs are available when the site accepts t
 signPersonal(key, message) and buildSiwe(fields) are injected. If the site needs an
 account you have no key for, say so; never invent one.
 
-BRIEF.md names the site and its base URL. Read it first. The prepass scanners (zap,
+The scope section at the end of these instructions names the site and its base URL,
+and holds the operator's brief when there is one. Read it first. The prepass scanners (zap,
 nuclei, dalfox) ran against the real host; their leads are in your first message and in
 web_leads. Leads are hints. They cannot sign in, so they miss session and authorization
 bugs.
@@ -728,8 +737,8 @@ Rules:
 - One finding per ROOT CAUSE. One fix closes one finding.
 - Plan first, worst first: the sign-in flow, every discovered route's ownership check,
   undocumented routes, then pages that echo input.
-- At most 3 run_request_script attempts per suspect. If it does not trip a pattern, mark
-  it "not proven" and move on.
+- About 3 run_request_script attempts per suspect. If it does not trip a pattern, mark
+  it "not proven" for now and move on. Come back to it later if budget is left.
 - The moment a script trips a pattern, call submit_finding with that label, then keep
   going. Stop when every suspect is proven or ruled out, or the budget is spent, then
   write the coverage summary, one line per suspect: proven / not exploitable / not tried.
@@ -748,10 +757,16 @@ starting with "Fix:". Keep going without asking questions. Work from the real si
 export default {
   id: "web",
   title: "Web and sign-in",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "A dApp backend from the outside: its sign-in with Ethereum flow and its REST API.",
   tier: "P", // passive
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
+  // network. Only the request scripts and replays go through the grant gate.
+  scanNet: "open",
   system: (ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM),
   tools,
   kickoff,

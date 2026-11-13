@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prepassView, prepassFailed, prepassFromResult } from "../lib/prepass-view.mjs";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { scanSchemathesis } from "../packs/web/schemathesis.mjs";
+import { halmosRecord } from "../packs/contracts/halmos.mjs";
+import { chimeraRecord } from "../packs/contracts/chimera.mjs";
 
 test("a Contracts record shows static and fuzz as tools, worst lead first", () => {
   const v = prepassView({
@@ -87,4 +92,79 @@ test("a CLI record keeps its prepass at the top level; the fold is built from it
   assert.equal(prepassFromResult({ prepass: own, leads: [{ check: "other" }] }), own);
   assert.equal(prepassFromResult({ alias: "a", findings: [], pack: "domains" }), null);
   assert.equal(prepassFromResult(null), null);
+});
+
+test("a CLI Contracts record keeps its Halmos and Chimera rows next to static", () => {
+  // The shape agent-run.mjs writes: the pack record spread into the result.
+  const symbolic = halmosRecord({
+    tool: "halmos", available: true, applicable: true, reason: null, gaps: [], trust: {},
+    results: [{ name: "check_withdraw", status: "counterexample" }],
+    leads: [{ check: "symbolic-counterexample", impact: "High", where: "test/Vault.t.sol", property: "check_withdraw" }],
+  });
+  const chimera = chimeraRecord({
+    tool: "chimera", engines: ["echidna", "medusa"], available: false, applicable: true,
+    reason: "the suite did not compile", gaps: [], trust: {}, results: [], leads: [],
+  });
+  const cli = {
+    alias: "qwen-abl", status: "recorded", findings: [],
+    static: { tool: "slither", engines: ["slither"], suspects: 0, top: [] },
+    symbolic, chimera,
+  };
+  const view = prepassView(prepassFromResult(cli));
+  assert.deepEqual(view.tools.map((t) => t.name), ["slither", "halmos", "chimera"]);
+  assert.equal(view.tools[2].status, "unavailable");
+  assert.equal(view.tools[2].reason, "the suite did not compile");
+  assert.equal(view.leads.length, 1);
+  assert.equal(view.leads[0].check, "symbolic-counterexample");
+  // A record with only the new phases is still a Contracts record.
+  assert.equal(prepassView(prepassFromResult({ alias: "a", symbolic })).leads.length, 1);
+  assert.equal(prepassView({ chimera }).tools[0].name, "chimera");
+});
+
+test("a ZAP lead shows its rule id and CWE, also from an older record", () => {
+  const v = prepassView({ leads: [
+    { engine: "zap", check: "CSP header not set", impact: "Medium", where: "/", rule: "10038", cwe: "693", description: "ZAP rule 10038, CWE-693. Parameter: q." },
+    { engine: "zap", check: "Cookie without flag", impact: "Low", where: "/login", description: "ZAP rule 10010, CWE-1004. Parameter: sid." },
+    { engine: "zap", check: "Info leak", impact: "Info", where: "/x", description: "ZAP rule 10027. " },
+    { engine: "semgrep", check: "sqli", impact: "High", where: "a.js", description: "Raw query." },
+  ] });
+  const by = Object.fromEntries(v.leads.map((l) => [l.check, l]));
+  assert.equal(by["CSP header not set"].rule, "10038 · CWE-693");
+  assert.equal(by["CSP header not set"].detail, "Parameter: q.");
+  assert.equal(by["Cookie without flag"].rule, "10010 · CWE-1004");
+  assert.equal(by["Cookie without flag"].detail, "Parameter: sid.");
+  assert.equal(by["Info leak"].rule, "10027");
+  assert.equal(by.sqli.rule, "");
+  assert.equal(by.sqli.detail, "Raw query.");
+});
+
+test("a partly errored Schemathesis run shows its reason in the view (real wrapper, real view)", async () => {
+  // The reviewer's input: exit 1, 1 of 8 operations tested, 7 errored, no failures.
+  const run = async ({ ws }) => {
+    writeFileSync(join(ws, "report.json"), JSON.stringify({
+      complete: true, operations: { total: 8, selected: 8, tested: 1, errored: 7, skipped: 0 },
+      failures: [], errors: [{ title: "connection error" }],
+    }));
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const scan = await scanSchemathesis({ net: "netx", baseUrl: "http://lab:8080", run });
+  const v = prepassView(scan);
+  const row = v.tools.find((t) => t.name === "schemathesis");
+  assert.equal(row.status, "ran");
+  assert.match(row.reason, /7 of 8 operations errored/);
+});
+
+test("a timed-out row keeps its reason; a clean ran row still has reason null", () => {
+  const v = prepassView({ coverage: [
+    { engine: "slow", status: "timed-out", leads: 2 },
+    { engine: "clean", status: "ran", leads: 0 },
+    { engine: "noted", status: "ok", reason: "no package-lock.json in snapshot", leads: 0 },
+  ], leads: [] });
+  const by = Object.fromEntries(v.tools.map((t) => [t.name, t]));
+  assert.equal(by.slow.status, "ran");
+  assert.match(by.slow.reason, /time cap/);
+  assert.equal(by.clean.status, "ran");
+  assert.equal(by.clean.reason, null);
+  assert.equal(by.noted.status, "ran");
+  assert.equal(by.noted.reason, "no package-lock.json in snapshot");
 });

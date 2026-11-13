@@ -1,0 +1,32 @@
+# Heimdall 0.9.3 (Jonathan Becker), MIT license. Decompiles EVM bytecode and
+# recovers the ABI (selectors, argument and return types, state mutability).
+# The pinned release binary, fetched by sha256 at build time. Build-time
+# network only. At run time the pack starts it through runTool(): --network
+# none, --pull=never. We pass `--skip-resolving`, so Heimdall never looks a
+# selector up online; it recovers the ABI from the bytecode alone.
+# The Debian base is pinned by the digest BuildKit resolved for the shipped
+# touchstone/heimdall:0.9.3 image (see `docker buildx history inspect`).
+# Build: docker build -f spike/packs/contracts/Dockerfile.heimdall -t touchstone/heimdall:0.9.3 spike/packs/contracts
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS fetch
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+ARG HEIMDALL_TAG=0.9.3
+ARG HEIMDALL_SHA256=8d58c97f56d584d5d0737d0d0895fc8c68b7b8b2b680f2a7842245789f0b4868
+RUN set -eu; cd /tmp \
+  && curl -fsSL "https://github.com/Jon-Becker/heimdall-rs/releases/download/${HEIMDALL_TAG}/heimdall-linux-amd64" -o heimdall \
+  && echo "${HEIMDALL_SHA256}  heimdall" | sha256sum -c - \
+  && install -m 0755 heimdall /usr/local/bin/heimdall
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+# Heimdall links OpenSSL, zlib and zstd at run time (checked with ldd).
+# libbrotli1 is not needed: nothing in the binary links or loads it. It is
+# kept until the next image rebuild, so this file still matches the shipped
+# image; drop it then (see the follow-up in TOOLS.md).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 zlib1g libbrotli1 libzstd1 \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=fetch /usr/local/bin/heimdall /usr/local/bin/heimdall
+# Heimdall writes its config under $HOME/.bifrost. runTool runs as the host
+# user, who has no home in the image, so point HOME at a writable dir.
+ENV HOME=/tmp
+ENTRYPOINT ["heimdall"]

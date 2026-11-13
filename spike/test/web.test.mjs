@@ -4,6 +4,7 @@
 // is not built.
 //
 //   node --experimental-test-module-mocks --test test/web.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -511,9 +512,9 @@ test("web smoke: run_request_script finds all four planted bugs and prove() repl
     const prep = await web.prepass(ws, { emit: (e) => events.push(e) });
     assert.equal(events[0].ev, "web-lab-started");
 
-    // The prepass ran all three tools and found the planted leads. It must NOT
+    // The prepass ran all seven tools and found the planted leads. It must NOT
     // find the two bugs that need a signed-in session: a clean scan misses them.
-    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["dalfox:ran", "nuclei:ran", "zap:ran"]);
+    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["arjun:ran", "dalfox:ran", "ffuf:ran", "jwt-tool:ran", "nuclei:ran", "schemathesis:ran", "zap:ran"]);
     const checks = prep.record.leads.map((l) => l.check);
     assert.ok(checks.includes("reflected-xss"), checks.join(","));
     assert.ok(checks.includes("debug-config-exposed"), checks.join(","));

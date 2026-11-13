@@ -5,6 +5,7 @@
 // a non-allowed host is blocked with 403, logged, and never reaches a target.
 //
 //   node --test spike/test/scope-proxy.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -116,6 +117,118 @@ test("a POST body is forwarded to an allowed target", async () => {
     assert.equal(r.status, 200);
     const body = await r.json();
     assert.match(body.saw, /POST \/submit/);
+    assert.equal(gate.log.records[0].decision, "allow");
+  } finally {
+    await gate.stop();
+  }
+});
+
+// Regression tests for the private-lab opt-in. The gate decides on the parsed
+// address, never on the spelling, and the opt-in never reaches metadata.
+
+test("decide keeps an IPv6 literal whole and never matches it to a DNS name", () => {
+  assert.equal(decide(["fd00::1"], "fd00::1").allowed, true);
+  assert.equal(decide(["fd00::1"], "[fd00::1]").allowed, true);
+  assert.equal(decide(["fd00::1"], "[fd00:0:0:0:0:0:0:1]:8080").allowed, true);
+  assert.equal(decide(["fd00::1"], "fd00").allowed, false);
+  assert.equal(decide(["::1"], "[::1]:8080").allowed, true);
+  // An encoded IPv4 form is the same address as its dotted form.
+  assert.equal(decide(["127.0.0.1"], "2130706433").allowed, true);
+  // A wildcard never covers an IP address.
+  assert.equal(decide(["*.example.com"], "127.0.0.1").allowed, false);
+});
+
+test("with the opt-in, a metadata address on the allow-list is still blocked before any connection", async () => {
+  for (const url of [
+    "http://169.254.169.254/latest/meta-data/",
+    "http://[fd00:ec2::254]/latest/meta-data/",
+    "http://[::ffff:169.254.169.254]/latest/meta-data/",
+    "http://0.0.0.0/",
+  ]) {
+    const host = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
+    const gate = await startScopeProxy({ allowedHosts: [host], allowPrivate: true, log: new ScopeLog({ sink: () => {} }) });
+    try {
+      const r = await fetch(gate.url, { headers: { "x-touchstone-url": url } });
+      assert.equal(r.status, 403, url);
+      assert.match(await r.text(), /never-reachable/, url);
+      const [rec] = gate.log.records;
+      assert.equal(rec.decision, "block", url);
+      // Blocked by the address pin, which runs before any socket is opened.
+      assert.match(rec.reason, /never-reachable/, url);
+    } finally {
+      await gate.stop();
+    }
+  }
+});
+
+test("without the opt-in, a loopback target on the allow-list is blocked by the address pin", async () => {
+  const gate = await startScopeProxy({ allowedHosts: ["127.0.0.1"], log: new ScopeLog({ sink: () => {} }) });
+  try {
+    const r = await fetch(gate.url, { headers: { "x-touchstone-url": targetUrl + "/x" } });
+    assert.equal(r.status, 403);
+    assert.match(gate.log.records[0].reason, /non-public/);
+  } finally {
+    await gate.stop();
+  }
+});
+
+test("with the opt-in, an IPv6 loopback lab is reached through the gate", async (t) => {
+  const v6 = http.createServer((req, res) => res.end("v6 lab"));
+  try {
+    await new Promise((resolve, reject) => {
+      v6.once("error", reject);
+      v6.listen(0, "::1", resolve);
+    });
+  } catch {
+    t.skip("this host has no IPv6 loopback");
+    return;
+  }
+  const gate = await startScopeProxy({ allowedHosts: ["::1"], allowPrivate: true, log: new ScopeLog({ sink: () => {} }) });
+  try {
+    const r = await fetch(gate.url, { headers: { "x-touchstone-url": `http://[::1]:${v6.address().port}/` } });
+    assert.equal(r.status, 200);
+    assert.equal(await r.text(), "v6 lab");
+    assert.equal(gate.log.records[0].decision, "allow");
+  } finally {
+    await gate.stop();
+    v6.close();
+  }
+});
+
+test("a localhost grant refuses localhost. when DNS returns a public address", async () => {
+  let lookups = 0;
+  const dns = async (name) => {
+    assert.equal(name, "localhost.");
+    lookups++;
+    return [{ address: "8.8.8.8", family: 4 }];
+  };
+  // This is an opted-in exact-localhost scope. The name matcher still covers
+  // the dotted form, but the address pin must refuse the public DNS answer.
+  assert.equal(decide(["localhost"], "localhost.").allowed, true);
+  const gate = await startScopeProxy({ allowedHosts: ["localhost"], allowPrivate: true, resolve: dns, log: new ScopeLog({ sink: () => {} }) });
+  try {
+    const r = await fetch(gate.url, { headers: { "x-touchstone-url": "http://localhost./proof" } });
+    assert.equal(r.status, 403);
+    assert.match(await r.text(), /non-loopback/);
+    assert.equal(lookups, 1);
+    assert.equal(gate.log.records[0].decision, "block");
+    assert.match(gate.log.records[0].reason, /non-loopback/);
+    assert.deepEqual(gate.log.reached(), []);
+  } finally {
+    await gate.stop();
+  }
+});
+
+test("an opted-in localhost grant still forwards a loopback answer", async () => {
+  const dns = async (name) => {
+    assert.equal(name, "localhost.");
+    return [{ address: "127.0.0.1", family: 4 }];
+  };
+  const gate = await startScopeProxy({ allowedHosts: ["localhost"], allowPrivate: true, resolve: dns, log: new ScopeLog({ sink: () => {} }) });
+  try {
+    const r = await fetch(gate.url, { headers: { "x-touchstone-url": `http://localhost.:${target.address().port}/proof` } });
+    assert.equal(r.status, 200);
+    assert.match((await r.json()).saw, /GET \/proof/);
     assert.equal(gate.log.records[0].decision, "allow");
   } finally {
     await gate.stop();

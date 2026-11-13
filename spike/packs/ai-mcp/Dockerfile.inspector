@@ -1,7 +1,7 @@
 # MCP Inspector CLI, pinned. MIT license.
 # Built with network access (npm install). Run with a private lab network only.
 # Build: docker build -f spike/packs/ai-mcp/Dockerfile.inspector -t touchstone/mcp-inspector:0.17.2 spike/packs/ai-mcp
-FROM node:20-slim
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
 RUN npm install -g @modelcontextprotocol/inspector@0.17.2 && npm cache clean --force
 ENV HOME=/tmp
 WORKDIR /work

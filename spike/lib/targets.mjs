@@ -49,14 +49,35 @@
 //                     operator's website.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
-import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath } from "./scopes-store.mjs"
-import { reachHosts } from "./reach.mjs"
+import { MULTI, MULTI_DIR, memberDir } from "../packs/multi.mjs"
+import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeOutline, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
+import { reachHosts, allowsPrivate } from "./reach.mjs"
+import { ipKind } from "./grant-store.mjs"
+import { isIP } from "node:net"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
+
+// The resolver a live domains/surface capture sends its DNS questions to. A public
+// recursive resolver by default; TOUCHSTONE_DNS_RESOLVER overrides it. The value must
+// parse as an IP; a private, loopback or link-local address is refused unless the
+// target's reach allows private addresses. An unusable value yields no resolver, so
+// the DNS tools (checkdmarc, DNSViz) do not run and their rows are gaps (live.mjs).
+const DEFAULT_DNS_RESOLVER = "1.1.1.1"
+const PRIVATE_RESOLVER_KINDS = new Set(["private", "loopback", "link-local"])
+function liveResolver(target) {
+  const raw = String(process.env.TOUCHSTONE_DNS_RESOLVER ?? DEFAULT_DNS_RESOLVER).trim()
+  // A bare IP only: ipKind normalizes URL-ish forms, so "1.1.1.1:53", "https://1.1.1.1"
+  // or "1.1.1" would otherwise read as public. isIP refuses them, so they gap.
+  if (!isIP(raw)) return null
+  const kind = ipKind(raw)
+  if (kind === "public") return raw
+  if (PRIVATE_RESOLVER_KINDS.has(kind) && allowsPrivate(target)) return raw
+  return null
+}
 const ROOT = path.resolve(HERE, "../..") // repo root
 
 export const TARGET_KINDS = ["lab", "local-source", "brief", "scope", "live"]
@@ -104,6 +125,26 @@ export const TARGETS = [
     dir: "lab/vault-multi",
     proofSurface: SANDBOX_FOUNDRY,
   },
+  {
+    id: "vault-shares",
+    title: "ShareVault · share math",
+    kind: "lab",
+    blurb: "A share vault that ships its own property suite. withdraw rounds the shares it burns down, so small withdrawals are free; redeem books shares as assets, so the vault turns insolvent after yield.",
+    entry: "src/ShareVault.sol",
+    signal: "symbolic",
+    dir: "lab/vault-shares",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
+  {
+    id: "vault-bytecode",
+    title: "Vault · bytecode only",
+    kind: "lab",
+    blurb: "A vault that ships only as deployed bytecode (src/<Name>.runtime.hex) with a stub that installs it; no vault source. The source tools see nothing, but Mythril reads the bytecode and flags an unprotected sweep(address) that drains the vault.",
+    entry: "src/BytecodeVault.sol",
+    signal: "static",
+    dir: "lab/vault-bytecode",
+    proofSurface: SANDBOX_FOUNDRY,
+  },
 ]
 
 // Labs of the other packs. A pack's lab is a directory with a .touchstone.json
@@ -114,7 +155,7 @@ const PROOF_NOTE = {
   http: "Proven by a request replayed in Docker on a private network with no internet.",
   evidence: "Proven by checking the cited evidence again against the pinned snapshot in the run workspace.",
   forge: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
-  none: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
+  none: "This module has no replay oracle. The run reports leads. No finding can be proven.",
 }
 
 function packLabs() {
@@ -178,6 +219,46 @@ function packLabs() {
 // local-source) have no pack field and are Contracts. A "scope" always has one.
 export const packOf = (target) => target?.pack ?? "contracts"
 
+// A module every website scope allows, with nothing to tick: it can test a live
+// site, it reads public records and sends no attack request (no HTTP replay),
+// and it needs no input but the host names. The console uses the same rule
+// (app/src/components/new-run-dialog.tsx).
+const alwaysOn = (p) => p?.live === true && p.proof !== "http" && !p.grants
+
+// The modules a scope allows. A run picks one of them at start (pickTarget).
+// The scope's own module comes first: it is the default.
+// - A website scope: the modules the operator ticked, plus the always-on ones.
+// - A code scope: Code review always, and Contracts when it has known Solidity
+//   or a repo (only a fetch shows what a repo holds).
+// - Any other target (a lab, a brief, a GitHub capture scope): its one module.
+export function eligiblePacks(target) {
+  const own = packOf(target)
+  if (target?.kind === "live" && !target.github) {
+    const ticked = (Array.isArray(target.packs) ? target.packs : [own]).filter((id) => PACKS[id]?.live === true && !PACKS[id].grants)
+    return [...new Set([...ticked, ...Object.keys(PACKS).filter((id) => alwaysOn(PACKS[id]))])]
+  }
+  if (target?.kind === "scope") {
+    const members = Array.isArray(target.members) ? target.members : []
+    const contracts = solidityKnown(members) || members.some((m) => m.kind === "repo")
+    return [...new Set([own, ...(contracts ? ["contracts"] : []), "review"])]
+  }
+  return [own]
+}
+
+// The scope as one run sees it, under the module that run picked. The run keeps
+// this copy (run.target in the console), so a restart keeps its module.
+export function withPack(target, pack) {
+  if (target?.kind === "scope") {
+    const solidity = memberFilePaths(target.members ?? []).some((f) => /\.sol$/i.test(f.path))
+    return { ...target, pack, signal: pack === "contracts" && solidity ? "static" : "agent", proofSurface: SCOPE_PACKS[pack] ?? target.proofSurface }
+  }
+  if (target?.kind !== "live") return target
+  // Only the AI and MCP module gets the caller's token. The phishing module must
+  // know the client's own lookalike domains; a scope that lists none has none.
+  const { mcp, ...rest } = target
+  return { ...rest, pack, ...(pack === "ai-mcp" && mcp ? { mcp } : {}), ...(pack === "phishing" ? { owned: target.owned ?? [] } : {}) }
+}
+
 // The exact origins a live run aims at. New scopes carry `origins` (scheme +
 // host + port as typed); older ones carry only hosts, which default to https.
 function liveOrigins(target) {
@@ -201,18 +282,26 @@ export function resolveTargetDir(target) {
 // The summary shape the API serves — no filesystem paths leak to the client.
 // A brief also carries its links (the sources a run will fetch) so the UI can
 // show what a run pulls before it starts; the full markdown stays server-side.
-export function targetSummary(target) {
+// `paths` adds a folder's path on this machine and the scope brief. Only the
+// scope list asks for them; a run's scope event does not, so a local path never
+// reaches a report.
+export function targetSummary(target, { paths = false } = {}) {
   const s = {
     id: target.id,
     title: target.title,
     kind: target.kind,
     pack: packOf(target),
+    // Every module this scope allows. The operator picks from these at run start.
+    packs: eligiblePacks(target),
     blurb: target.blurb,
     entry: target.entry,
     signal: target.signal,
     proofSurface: target.proofSurface,
   }
   if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
+  // The scope list carries the operator's brief, so the Scopes page can edit
+  // it. A run's scope event does not: the run gets its own `brief` event.
+  if (paths && briefOf(target)) s.brief = briefOf(target)
   if (target.kind === "local-source") s.files = (target.files ?? []).map((f) => f.path)
   // A live target shows the host(s) it would touch, so the operator sees exactly
   // what a run reaches before starting it — and whether a grant must be added.
@@ -227,7 +316,7 @@ export function targetSummary(target) {
     // Per member: what it is and how it is proven. No file content.
     s.members = members.map((m) => (m.kind === "repo"
       ? { kind: "repo", url: m.url, proof: memberProof(m, packOf(target)) }
-      : { kind: "folder", name: m.name, files: m.files.length, proof: memberProof(m, packOf(target)) }))
+      : { kind: "folder", name: m.name, ...(paths && m.path ? { path: m.path } : {}), files: m.files.length, proof: memberProof(m, packOf(target)) }))
   }
   return s
 }
@@ -246,8 +335,7 @@ function isRunnable(target) {
   // live host would scan its own lab, so it is not offered. The grant check
   // happens at run start (createRun -> openReach), not here.
   if (target.kind === "live") {
-    const pack = PACKS[packOf(target)]
-    return reachHosts(target).length > 0 && pack?.live === true
+    return reachHosts(target).length > 0 && eligiblePacks(target).some((id) => PACKS[id]?.live === true)
   }
   return false
 }
@@ -257,7 +345,7 @@ function isRunnable(target) {
 // scopes store. Both are summarized the same way.
 export function listTargets() {
   const builtin = [...TARGETS, ...packLabs()].map((t) => ({ ...targetSummary(t), runnable: isRunnable(t) }))
-  const user = readScopes().map((s) => ({ ...targetSummary(s), runnable: isRunnable(s) }))
+  const user = readScopes().map((s) => ({ ...targetSummary(s, { paths: true }), runnable: isRunnable(s) }))
   const all = [...builtin, ...user]
   return all.sort((a, b) => Number(b.runnable) - Number(a.runnable))
 }
@@ -272,15 +360,17 @@ export function getTarget(id) {
 // Pick the target for a run. An explicit id wins; otherwise choose at random
 // from the runnable labs of the chosen pack (Contracts by default) so repeated
 // Runs stop hammering one prepared bug. Throws if an explicit id is unknown, not
-// yet runnable, or belongs to another pack, so a bad request fails loudly
-// instead of silently falling back.
+// yet runnable, or does not allow the pack, so a bad request fails loudly
+// instead of silently falling back. A scope with several modules comes back as
+// the run's own copy under the picked one (withPack).
 export function pickTarget({ id, pack } = {}) {
   if (id) {
     const t = getTarget(id)
     if (!t) throw new Error(`unknown target: ${id}`)
     if (!isRunnable(t)) throw new Error(`target kind not yet runnable: ${t.kind}`)
-    if (pack && packOf(t) !== pack) throw new Error(`target ${id} belongs to pack "${packOf(t)}", not "${pack}"`)
-    return t
+    const allowed = eligiblePacks(t)
+    if (pack && !allowed.includes(pack)) throw new Error(`target ${id} belongs to pack "${allowed.join('", "')}", not "${pack}"`)
+    return withPack(t, pack ?? allowed[0])
   }
   const want = pack ?? "contracts"
   let labs = [...TARGETS, ...packLabs()].filter((t) => t.kind === "lab" && packOf(t) === want && isRunnable(t))
@@ -291,11 +381,123 @@ export function pickTarget({ id, pack } = {}) {
   return labs[Math.floor(Math.random() * labs.length)]
 }
 
+// ---- What a run is told about its scope ---------------------------------------
+// Touchstone used to write this into the workspace as BRIEF.md, so the run view
+// showed "Read BRIEF.md" as if the repo had that file. Now it reaches the agent
+// in one way only: two env values the agent worker puts into the agent's
+// instructions (agent-run.mjs). Nothing is written into the workspace.
+//   SCOPE_NOTES  what Touchstone knows: the members, the websites, the base
+//                URL. Built from the scope record. Never a token.
+//   SCOPE_BRIEF  the operator's own text for the model (scope.brief).
+// Neither one is read by reach, the grant, the fetch allow-list or the tools.
+
+// The operator's brief of a scope, "" for none.
+export const briefOf = (target) => (typeof target?.brief === "string" ? target.brief.trim() : "")
+
+// `packs` is every module the run covers: a joined run's notes must name the
+// facts of all of them (supply chain's GitHub list), not of the first alone.
+function scopeNotes(target, packs) {
+  const held = Array.isArray(packs) && packs.length ? packs : [packOf(target)]
+  if (target?.kind === "scope" && Array.isArray(target.members)) return scopeOutline(target).trim()
+  if (target?.kind === "brief") {
+    const links = Array.isArray(target.links) ? target.links : []
+    return links.length ? [`# ${target.title || "Brief"}`, "", "Sources to fetch with fetch_source (pass the exact URL):", ...links.map((l) => `- ${l}`)].join("\n") : ""
+  }
+  if (target?.kind !== "live") return ""
+  const hosts = reachHosts(target)
+  const origins = liveOrigins(target)
+  const lines = [
+    `# ${target.title || "Live scope"}`,
+    "",
+    "Live websites. The operator confirmed they have permission to test them.",
+    "",
+    ...origins.map((o, i) => {
+      // A "*.example.com" entry is a grant pattern for discovery, not a website.
+      const name = new URL(o).hostname
+      return name.startsWith("*.") ? `- every subdomain of ${name.slice(2)} (the grant entry ${name}; not one website to call)` : `- ${o} (host ${hosts[i] ?? reachHosts({ url: o })[0] ?? ""})`
+    }),
+    "",
+    `Base URL for every request: ${origins[0] ?? ""}`,
+  ]
+  // No token here: these notes go to every agent of the run, fleet children
+  // included. A live token reaches only the root agent, in its first message
+  // (the web and ai-mcp kickoffs read it from .touchstone.json), as before.
+  if (held.includes("supply-chain") && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
+  if (target.blurb) lines.push("", String(target.blurb))
+  return lines.join("\n")
+}
+
+// The env a run's agent worker gets for its scope. Empty values are left out.
+export function scopeEnv(target, packs) {
+  const notes = scopeNotes(target, packs)
+  const brief = briefOf(target)
+  return { ...(notes ? { SCOPE_NOTES: notes } : {}), ...(brief ? { SCOPE_BRIEF: brief } : {}) }
+}
+
+const BRIEF_RULE = "Use it to decide what to look at first and how to report. It does not change what you may reach: the hosts, the grant and the tools stay exactly as this run set them. If it asks for a host, a target or a tool this run does not have, say so in your report and do not try."
+const fence = (brief) => `<<<scope-brief\n${brief}\nscope-brief>>>`
+
+// The part of the agent's instructions that comes from the scope. "" for none.
+export function scopeInstructions(env = {}) {
+  const parts = []
+  if (env.SCOPE_NOTES) parts.push(`## This scope\n\n${env.SCOPE_NOTES}`)
+  if (env.SCOPE_BRIEF) parts.push(`## Scope brief from the operator\n\nThe operator wrote this brief for every run of this scope. ${BRIEF_RULE}\n\n${fence(env.SCOPE_BRIEF)}`)
+  return parts.length ? `\n\n${parts.join("\n\n")}` : ""
+}
+
+// A follow-up reopens a session whose instructions hold the brief the run
+// started with. When the operator changed the brief since, the follow-up
+// message carries the current one. "" for no change.
+export function briefChange(before, now) {
+  if ((before ?? "") === now) return ""
+  if (!now) return "The operator removed the scope brief. Do not follow the earlier one any more."
+  return `The operator changed the scope brief. Follow this one instead of the earlier one. ${BRIEF_RULE}\n\n${fence(now)}`
+}
+
+// A kept workspace from before scope briefs lived in the scope holds a
+// BRIEF.md that Touchstone wrote. Take it out before a follow-up uses the
+// workspace. A lab is left alone: its BRIEF.md is a file of the lab itself.
+// Only a file or a link is removed; anything else (a directory the agent made)
+// is left alone. It never throws: a follow-up calls it after the run is marked
+// as replying and its lock is taken. Returns true when a file was removed.
+export function dropOldBriefFile(ws, target) {
+  if (!ws || !["brief", "scope", "live"].includes(target?.kind)) return false
+  // The root of a joined run writes no old file; its modules do, and each one is
+  // reached through the same checks (a real directory inside the workspace).
+  let dirs = [ws]
+  try {
+    const mods = path.join(ws, MULTI_DIR)
+    if (lstatSync(mods, { throwIfNoEntry: false })?.isDirectory()) {
+      const root = realpathSync(ws)
+      for (const name of readdirSync(mods)) {
+        const dir = path.join(mods, name)
+        if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue
+        if (!realpathSync(dir).startsWith(root + path.sep)) continue
+        dirs.push(dir)
+      }
+    }
+  } catch {
+    dirs = [ws]
+  }
+  let dropped = false
+  for (const dir of dirs) {
+    try {
+      const file = path.join(dir, "BRIEF.md")
+      const st = lstatSync(file, { throwIfNoEntry: false })
+      if (!st || st.isDirectory()) continue
+      unlinkSync(file)
+      dropped = true
+    } catch {
+      // one module's file must not stop the others
+    }
+  }
+  return dropped
+}
+
 // Build the run's workspace for any runnable target, and write the per-workspace
 // .touchstone.json config every later step reads. A lab copies its prepared repo
 // and compiles with the pinned solc so its suspect lines line up. A brief starts
-// empty — its BRIEF.md is written in, its code is fetched into vendor/ at run
-// time — and compiles in "auto" solc so forge matches whatever the fetched code
+// empty — its code is fetched into vendor/ at run time — and compiles in "auto" solc so forge matches whatever the fetched code
 // pins. `modules` is the on/off plan for this run; it rides in the config so the
 // agent child and the decide child agree on which tools exist across a resume.
 export function prepareWorkspace(target, { modules = [] } = {}) {
@@ -326,38 +528,30 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
   if (target.kind === "scope") return prepareScopeWorkspace(target, { modules })
   if (target.kind === "brief") {
     const ws = makeBriefWorkspace()
-    writeFileSync(path.join(ws, "BRIEF.md"), String(target.brief || ""))
-    // The links are the only URLs fetch_source may fetch (lib/fetch.mjs).
+    // The pasted markdown is the scope brief: it reaches the agent through
+    // scopeEnv, not as a file. The links are the only URLs fetch_source may fetch (lib/fetch.mjs).
     writeTouchstone(ws, { kind: "brief", solc: "auto", pack, modules, links: Array.isArray(target.links) ? target.links : [] })
     return ws
   }
   if (target.kind === "live") {
-    // No code to copy. The workspace holds a short brief that names the exact
-    // websites and their base URLs, so the agent knows what it may test and the
-    // request tool knows where to aim.
+    // No code to copy. The agent learns the exact websites and their base URLs
+    // from scopeEnv; the request tool reads where to aim from the config.
     const hosts = reachHosts(target)
     const origins = liveOrigins(target)
     if (!origins.length) throw new Error(`live target ${target.id} names no usable website`)
     if (PACKS[pack]?.live !== true) {
       throw new Error(`The ${pack} module cannot test a live website yet. It would scan its own lab instead of ${hosts[0]}.`)
     }
+    // The phishing pack must know the client's own defensive registrations, or it
+    // reports them as lookalikes. The list is required. An explicit [] means none.
+    if (pack === "phishing" && !Array.isArray(target.owned)) {
+      throw new Error(`live phishing target ${target.id} needs an owned list of the client's own lookalike domains. Use [] for none.`)
+    }
     const baseUrl = origins[0]
     // A live AI/MCP target can carry its own credential. It rides in the config
-    // (the tool reads it) and in the brief (the agent reads it).
+    // (the tool reads it) and in the agent's instructions (scopeEnv).
     const mcp = target.mcp ?? null
     const ws = makeBriefWorkspace()
-    const lines = [
-      `# ${target.title || "Live scope"}`,
-      "",
-      "Live websites. The operator confirmed they have permission to test them.",
-      "",
-      ...origins.map((o, i) => `- ${o} (host ${hosts[i] ?? reachHosts({ url: o })[0] ?? ""})`),
-      "",
-      `Base URL for every request: ${baseUrl}`,
-    ]
-    if (mcp?.token) lines.push("", `Bearer token: ${mcp.token}`)
-    if (target.blurb) lines.push("", String(target.blurb))
-    writeFileSync(path.join(ws, "BRIEF.md"), lines.join("\n") + "\n")
     const live = { kind: "live", pack, modules, hosts, origins, baseUrl, ...(mcp ? { mcp } : {}) }
     // The domain packs capture one root domain into a pinned snapshot. They read
     // `domain` and `reach`; the network is the egress one (their tools resolve
@@ -369,7 +563,28 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
         return { scheme: u.protocol.slice(0, -1), port: Number(u.port || (u.protocol === "https:" ? 443 : 80)) }
       })
       live.domain = hosts[0]
-      live.reach = { network: "bridge", granted: true, scope: hosts, ports }
+      // The capture checks every tool input against `scope`, and refuses a name
+      // that resolves to a private address unless the scope's own grant allows it.
+      // DNS questions for the granted domain go to a public recursive resolver (a lab keeps its own).
+      const resolver = liveResolver(target)
+      live.reach = { network: "bridge", granted: true, scope: hosts, ports, ...(resolver ? { resolver } : {}), ...(allowsPrivate(target) ? { allowPrivate: true } : {}) }
+    }
+    // The phishing pack captures the lookalikes of one root domain the same way.
+    // `owned` lists the client's own defensive registrations; they raise no lead.
+    // The pack asserts the grant against `scope` before dnstwist runs.
+    if (pack === "phishing") {
+      live.domain = hosts[0]
+      live.reach = { network: "bridge", granted: true, scope: hosts }
+      live.owned = target.owned.map(String)
+    }
+    // The supply-chain pack reads GitHub repos or orgs through the read-only
+    // API. `github` is what to read; `reach.scope` is what the grant covers.
+    // The pack asserts both in code before its first request.
+    if (pack === "supply-chain") {
+      const github = Array.isArray(target.github) ? target.github.map(String) : []
+      if (!github.length) throw new Error(`live target ${target.id} names no GitHub repo or org`)
+      live.github = github
+      live.reach = { granted: true, scope: github.map((g) => g.split("@")[0]), hosts }
     }
     writeTouchstone(ws, live)
     return ws
@@ -391,7 +606,7 @@ function writeScopeFile(ws, rel, content) {
 
 // A scope's workspace. Folder files land under src/ (one folder keeps its own
 // layout; with several, each starts with its folder name). Repos are fetched at
-// run time into vendor/. BRIEF.md lists the members.
+// run time into vendor/. The agent learns the members from scopeEnv.
 //   - contracts: a Foundry workspace. Only the Solidity is ever proven, by the
 //     offline Foundry replay. "brief" kind when there are repos to fetch, so the
 //     pack uses its fetch-first prompt.
@@ -408,7 +623,6 @@ function prepareScopeWorkspace(target, { modules }) {
   }
   try {
     for (const f of memberFilePaths(target.members ?? [])) writeScopeFile(ws, f.path, f.content)
-    writeFileSync(path.join(ws, "BRIEF.md"), scopeBrief(target))
   } catch (e) {
     rmSync(ws, { recursive: true, force: true })
     throw e
@@ -436,4 +650,72 @@ export async function prepareRunWorkspace(target, { modules = [] } = {}) {
   }
   writeTouchstone(ws, { ...readTouchstone(ws), kind: "lab", pack, modules })
   return ws
+}
+
+// Build one workspace that covers several modules of one run (piece D3).
+//
+// Each module keeps its own sub-workspace, `<ws>/modules/<id>`, built by that
+// module's own path above, so its config, its brief and its networks stay its
+// own: a module that captures a network writes its `reach` block into its own
+// file, never into another module's. The run's reach decision is made once, by
+// the app, from the scope's own grant — this build never touches a host.
+//
+// The run's root config names the modules in `packs`, so packFor returns the
+// joined pack and every later step reads the same list. `links` is the union, so
+// a run-level source-coverage check still sees every link. A run with one module
+// never comes here: it keeps `prepareRunWorkspace` and its `pack` field.
+//
+// The target's own module list is the consent: every id must be one that
+// `eligiblePacks` returns, exactly as `pickTarget` requires for one module. A
+// lab, a brief and a local-source target belong to one module and have no second
+// module to offer, so a joined run is refused there with a plain sentence.
+//
+// `packs` is the module ids in the operator's order; duplicates are dropped.
+export async function prepareMultiWorkspace(target, { packs = [], modules = [] } = {}) {
+  const ids = [...new Set(packs.map(String))]
+  if (ids.length < 2) {
+    throw new Error(`a multi-module run needs more than one module (got ${ids.length ? `"${ids[0]}"` : "none"})`)
+  }
+  const unknown = ids.filter((id) => !PACKS[id])
+  if (unknown.length) throw new Error(`Unknown pack "${unknown.join('", "')}". Known: ${Object.keys(PACKS).join(", ")}`)
+  const allowed = eligiblePacks(target)
+  const denied = ids.filter((id) => !allowed.includes(id))
+  if (denied.length) {
+    throw new Error(
+      allowed.length < 2
+        ? `target ${target.id} is a ${target.kind} for the one module "${allowed.join('", "')}", so it cannot also run "${denied.join('", "')}": use a scope or a live target for several modules`
+        : `target ${target.id} belongs to pack "${allowed.join('", "')}", not "${denied.join('", "')}"`,
+    )
+  }
+  const ws = mkdtempSync(path.join(tmpdir(), "redteam-run-"))
+  try {
+    mkdirSync(path.join(ws, MULTI_DIR), { recursive: true })
+    for (const id of ids) {
+      // The module's own build path, under the module it is: a target copy is
+      // per module, so nothing is shared but the root.
+      const built = await prepareRunWorkspace(withPack(target, id), { modules })
+      const dest = memberDir(ws, id)
+      try {
+        renameSync(built, dest)
+      } catch {
+        // A generated lab may come from another filesystem.
+        cpSync(built, dest, { recursive: true })
+        rmSync(built, { recursive: true, force: true })
+      }
+    }
+    // One `src/` at the root too, for the symbol index the engine builds over the
+    // run root: the same files, copied once. Member reads keep their own `src/`.
+    if (ids.some((id) => id === "contracts" || id === "review")) {
+      for (const id of ids) {
+        const src = path.join(memberDir(ws, id), "src")
+        if (existsSync(src)) cpSync(src, path.join(ws, "src"), { recursive: true, force: true })
+      }
+    }
+    const links = [...new Set(ids.flatMap((id) => readTouchstone(memberDir(ws, id)).links ?? []))]
+    writeTouchstone(ws, { kind: target.kind, pack: MULTI, packs: ids, modules, links })
+    return ws
+  } catch (err) {
+    rmSync(ws, { recursive: true, force: true })
+    throw err
+  }
 }

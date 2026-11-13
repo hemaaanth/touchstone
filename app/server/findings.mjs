@@ -2,7 +2,7 @@
 // UI renders. No invented values: every field here is lifted from a run the
 // engine actually produced (spike/results/agent/run-*.json). A finding is only
 // "proven" because a Foundry replay in a sandbox reproduced it.
-import { readdir, readFile, writeFile } from "node:fs/promises"
+import { open, readdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
@@ -10,8 +10,9 @@ import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-// app/server -> repo root -> spike/results/agent
-const RESULTS_DIR = path.resolve(HERE, "../../spike/results/agent")
+// app/server -> repo root -> spike/results/agent. TOUCHSTONE_RESULTS_DIR is
+// how runs.mjs and tests point at a throwaway folder. Read on each call.
+export const resultsDir = () => process.env.TOUCHSTONE_RESULTS_DIR || path.resolve(HERE, "../../spike/results/agent")
 
 const num = (s) => Number(String(s).replace(/,/g, ""))
 
@@ -76,6 +77,14 @@ function parseBalances(testSource) {
   return rows.filter((r) => r.after && r.after !== r.before)
 }
 
+// The harm gate refused this replay. A missing proof is not a refusal: older
+// records predate the gate and still count when their own transcript passed.
+function harmBlocked(proof) {
+  if (!proof || typeof proof !== "object") return false
+  if (proof.pass === false || proof.status === "fail") return true
+  return Boolean(proof.harm) && proof.harm.ok !== true
+}
+
 // The exact assertion lines that make the proof — real strings lifted from the
 // passing PoC. These are every condition the replay actually checked, so we take
 // the whole Foundry assert family (assertEq / assertGt / assertTrue / …), not
@@ -131,9 +140,10 @@ function normalize(raw, { id, runId, finding }) {
 
   // The proving run is the submitted test passing its OWN replay. A throwaway
   // diagnostic that happens to pass never counts — if the submitted contract
-  // never passed, the run is simply not proven. (finding.poc is the contract
-  // name the agent submitted; the engine's submit gate already refused an
-  // unproven submission, so this re-derivation only mirrors that on read.)
+  // never passed, the transcript alone does not prove the run. (finding.poc is
+  // the contract name the agent submitted; the engine's submit gate already
+  // refused an unproven submission, so this re-derivation only mirrors that
+  // on read.)
   const submittedContract = finding.poc || null
   const provingIndex = submittedContract
     ? runs.findIndex((x) => x.pass && x.contract === submittedContract)
@@ -145,14 +155,42 @@ function normalize(raw, { id, runId, finding }) {
   // transfers array so a malformed or null delta falls back to the source parse.
   const engineProof = finding.proof && Array.isArray(finding.proof.transfers) ? finding.proof : null
 
-  // The exploit source shown and parsed is the proving run's own test — or, if
-  // nothing proved, the last attempt, so the report still shows what was tried.
-  const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
-  const testSource = sourceCall ? sourceCall.args.test_source : null
-  // The write-up is this finding's own submit_finding call. A run can submit
-  // several findings, so match on the test contract it names.
-  const submits = (t.calls || []).filter((x) => x.name === "submit_finding")
-  const submit = submits.find((x) => x.args?.poc_contract === finding.poc) || (submits.length === 1 ? submits[0] : null)
+  // A forge finding stays proven when its recorded proof passed the harm gate,
+  // even with no root-transcript run_poc. isProven already refuses a failed
+  // replay or a harm verdict that is not ok, so a failing or absent proof
+  // cannot become proven through this path. A transcript pass still counts for
+  // records made before the harm gate, which have no proof.harm. The proof must
+  // be for this finding's own test: proveFindings sets proof.contract to its poc.
+  const p = finding.proof
+  const harmOk = p?.pass === true && p?.harm?.ok === true && (p.contract == null || p.contract === finding.poc)
+  const transcriptPass = Boolean(proving && proving.pass)
+  const forgeProven = isProven(finding) && (transcriptPass || harmOk)
+
+  // The exploit source is the test the recorder replayed (`finding.source`).
+  // A fleet child runs the PoC, and summarize() keeps only the root conversation,
+  // so that call is often missing here. The transcript's own proving call is the
+  // fallback for older records; the last attempt is what was tried when nothing
+  // proved. A finding proven only by its stored proof never falls back to the
+  // last attempt: that call may be another contract, and its source, assertions
+  // and balance rows would stand in for a test that was not replayed.
+  // proof.source is the replay label ("engine-replay"), never the Solidity.
+  const submittedSource = typeof finding.source === "string" && finding.source.trim() ? finding.source : null
+  const transcriptSource = provingIndex >= 0 ? pocCalls[provingIndex]?.args?.test_source ?? null : null
+  const lastAttempt = pocCalls.length ? pocCalls[pocCalls.length - 1]?.args?.test_source ?? null : null
+  const testSource = submittedSource || transcriptSource || (forgeProven ? null : lastAttempt) || null
+
+  // The write-up is this finding's own submit call. A run can submit several
+  // findings, so match on the label or the test contract it names. In a joined
+  // run a tool name that two modules share ends in the module id
+  // (submit_finding_web, submit_finding_contracts; spike/packs/multi.mjs), and
+  // two modules may share a label, so only this finding's module's call counts.
+  // A plain submit_finding is a one-module run, an old record, or the one
+  // module of a joined run that has the tool.
+  const ownTool = finding.pack ? `submit_finding_${String(finding.pack).replace(/[^A-Za-z0-9_]/g, "_")}` : null
+  const joined = Array.isArray(r.packs) && r.packs.length > 1
+  const submits = (t.calls || []).filter((x) => x.name === "submit_finding" || (ownTool && x.name === ownTool))
+  const named = (x) => x.args?.label ?? x.args?.poc_contract
+  const submit = submits.find((x) => finding.poc != null && named(x) === finding.poc) || (!joined && submits.length === 1 ? submits[0] : null)
   const readSrc = (t.results || []).find((x) => x.name === "read_source")
 
   const modelName = Object.keys((r.usage && r.usage.models) || {})[0] || null
@@ -214,7 +252,9 @@ function normalize(raw, { id, runId, finding }) {
   // field; a forge proof identifies them as the contracts pack. A non-forge
   // proof with no saved pack is a module run whose provenance we no longer have
   // — we say Unknown rather than invent "contracts"/"Vault.sol" it never ran.
-  const pack = r.pack || (kind === "forge" ? "contracts" : null)
+  // A finding's own `pack` wins: one run can hold several modules, and each
+  // finding names the one that made it. Else the run's pack.
+  const pack = finding.pack || r.pack || (kind === "forge" ? "contracts" : null)
 
   return {
     id,
@@ -245,8 +285,8 @@ function normalize(raw, { id, runId, finding }) {
     // so `proven` stays true and only the final stage reads "dismissed".
     stages: {
       hypothesis: other ? true : Boolean(readSrc),
-      reproduced: other ? true : runs.length > 0,
-      proven: other ? isProven(finding) : Boolean(finding.pocProved && proving && proving.pass),
+      reproduced: other ? true : runs.length > 0 || forgeProven,
+      proven: other ? isProven(finding) : forgeProven,
       accepted: finding.dismissed
         ? "dismissed"
         : r.decision === "approved"
@@ -262,7 +302,9 @@ function normalize(raw, { id, runId, finding }) {
       test: engineProof ? engineProof.test : proving ? proving.test : finding.poc,
       contract: finding.poc || null,
       gas: proving ? proving.gas : engineProof ? engineProof.gasUsed : null,
-      pass: Boolean(proving && proving.pass),
+      // A harm-gate failure is never a pass, even when a root run_poc passed.
+      // A harm-gated proof with no root run_poc still is.
+      pass: harmBlocked(finding.proof) ? false : Boolean(transcriptPass || forgeProven),
       runs,
       // The money the exploit actually moved. Preferred source is the engine's
       // structured proof delta: real signed ETH deltas per address, read from the
@@ -274,14 +316,20 @@ function normalize(raw, { id, runId, finding }) {
         address: x.address,
         net: x.net,
         gained: Boolean(x.gained),
+        // The exact signed wei, when the record has it: a dust move does not
+        // read as "+0 ETH". An older record has none and sends none.
+        ...(typeof x.netWei === "string" ? { netWei: x.netWei } : {}),
       })) : [],
+      // What the proof gate says was lost (spike/lib/proof.mjs): an ETH or
+      // token drain, or a control takeover. Null on a record from before it.
+      harm: engineProof?.harm ?? null,
       // The real runtime log lines the proving test emitted (decoded by forge),
       // verbatim machine output — empty for older runs.
       logs: engineProof && Array.isArray(engineProof.logs) ? engineProof.logs : [],
       balances: parseBalances(testSource),
       assertions: parseAssertions(testSource),
-      rerunCommand: proving && proving.test
-        ? `forge test --match-test ${proving.test}`
+      rerunCommand: proving?.test || (forgeProven && engineProof?.test)
+        ? `forge test --match-test ${proving?.test || engineProof.test}`
         : null,
       testSource,
     },
@@ -304,7 +352,7 @@ function normalize(raw, { id, runId, finding }) {
 async function readRuns() {
   let entries = []
   try {
-    entries = await readdir(RESULTS_DIR)
+    entries = await readdir(resultsDir())
   } catch {
     return []
   }
@@ -312,7 +360,7 @@ async function readRuns() {
   const out = []
   for (const file of files) {
     try {
-      const raw = JSON.parse(await readFile(path.join(RESULTS_DIR, file), "utf8"))
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
       for (const item of splitRun(raw, runId)) {
         out.push({ ...normalize(raw, item), _index: item.index })
@@ -324,8 +372,35 @@ async function readRuns() {
   return out
 }
 
+// When a run started: the time of its first engine event, the same time the
+// report shows (report.mjs runAt). Only the head of the events file is read: the
+// file can be tens of MB. Null when the run kept no events; the file's own date
+// is not used, because a copy or a checkout changes it.
+async function runStartedAt(runId) {
+  let file
+  try {
+    file = await open(path.join(resultsDir(), `run-${runId}.events`))
+    const { buffer, bytesRead } = await file.read(Buffer.alloc(64 * 1024), 0, 64 * 1024, 0)
+    for (const line of buffer.toString("utf8", 0, bytesRead).split("\n")) {
+      try {
+        const t = JSON.parse(line)?.t
+        if (Number.isFinite(t)) return t
+      } catch {
+        // A line cut by the 64 KB read, or a torn line.
+      }
+    }
+  } catch {
+    // No events file.
+  } finally {
+    await file?.close()
+  }
+  return null
+}
+
 export async function listFindings() {
   const all = await readRuns()
+  const started = new Map()
+  for (const f of all) if (!started.has(f.runId)) started.set(f.runId, await runStartedAt(f.runId))
   // The list shows only the few fields a row needs.
   return all.map((f) => ({
     id: f.id,
@@ -333,7 +408,11 @@ export async function listFindings() {
     title: f.title,
     severity: f.severity,
     module: f.module,
+    pack: f.pack ?? null,
     target: f.target,
+    // The scope the run used (newer runs), and when the run started.
+    scope: f.scope?.title ?? null,
+    at: started.get(f.runId),
     stages: f.stages,
     proven: f.stages.proven,
     dismissed: f.dismissed,
@@ -348,7 +427,7 @@ export async function listFindings() {
 // agent's work. Missing or torn lines are skipped, never shown as a fake step.
 async function readEvents(id) {
   try {
-    const text = await readFile(path.join(RESULTS_DIR, `run-${id}.events`), "utf8")
+    const text = await readFile(path.join(resultsDir(), `run-${id}.events`), "utf8")
     return text
       .split("\n")
       .filter((l) => l.trim())
@@ -365,11 +444,19 @@ async function readEvents(id) {
   }
 }
 
-export async function getFinding(id) {
+// `events: false` leaves the run's transcript out (events: []). The Findings
+// page's sheet shows only the finding and its proof, and a run's events can
+// be tens of MB.
+export async function getFinding(id, { events: withEvents = true } = {}) {
   const all = await readRuns()
   const found = all.find((f) => f.id === id) || null
   if (!found) return null
-  const { _index, ...finding } = found
+  const { _index, ...rest } = found
+  // When the run started (ms), as the list sends it. `ms` is the run's
+  // duration, so a reader that wants a date uses this (replay-bundle.mjs
+  // provenDate takes `at` first).
+  const finding = { ...rest, at: await runStartedAt(rest.runId) }
+  if (!withEvents) return { ...finding, events: [] }
   // The transcript belongs to the run, which may hold several findings.
   const events = await readEvents(finding.runId)
   // Replay the opening `scope` and `modules` events a live run streams but the
@@ -396,7 +483,7 @@ export async function dismissFinding(id, dismissed) {
   if (!/^[\w.-]+$/.test(id)) throw new Error("bad finding id")
   const target = (await readRuns()).find((f) => f.id === id)
   if (!target) throw new Error("no such finding")
-  const file = path.join(RESULTS_DIR, `run-${target.runId}.json`)
+  const file = path.join(resultsDir(), `run-${target.runId}.json`)
   const raw = JSON.parse(await readFile(file, "utf8"))
   raw.result = raw.result || {}
   // A multi-finding record keeps the flag on the finding itself; a legacy

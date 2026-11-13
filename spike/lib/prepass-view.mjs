@@ -3,7 +3,11 @@
 // Every pack's prepass hook returns a `record` the run keeps as `prepass`. The
 // shapes differ:
 //   Contracts      { static: { tool, engines, suspects, top[] },
-//                    fuzz:   { tool, engines, applicable, suspects, top[] } }
+//                    fuzz:   { tool, engines, applicable, suspects, top[] },
+//                    symbolic: same keys plus status/reason (Halmos),
+//                    chimera:  same keys plus status/reason (Chimera),
+//                    mythril, heimdall: { tool, engines, status, reason, suspects, top[] }
+//                    (the last two only for a bytecode-only target) }
 //   supply chain   { coverage: [{ engine, status, code, timedOut, leads }],
 //                    leads: [{ check, impact, where, file, lines, description, engine }] }
 //   Keys, Chain watch { mode, block, suspects, corroborated, top: [{ check, impact, where }] }
@@ -11,7 +15,8 @@
 //   any other pack the same coverage / leads keys, or `tools` instead of `coverage`
 // prepassView turns each of them into one shape for the run view:
 //   { total, tools: [{ name, status: "ran" | "unavailable", reason, leads }],
-//     leads: [{ check, impact, where, detail, tools[], corroborated }] }
+//     leads: [{ check, impact, where, rule, detail, tools[], corroborated }] }
+// `rule` is the scanner's rule id and CWE ("10038 · CWE-693"), or "".
 // Leads are worst first. A lead is never a finding: only a replay proves one.
 // Pack data is untrusted: sizes are capped and no secret value is ever copied
 // (only fields we name are read, and a secret lead field is never one of them).
@@ -40,7 +45,10 @@ function statusOf(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
   if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };
-  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: null };
+  // A run that finished can still carry a caveat ("7 of 8 operations errored",
+  // or a run that left some checks unchecked): keep it, so "ran" never reads
+  // as a clean pass when it is not one.
+  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: str(t.reason) || (Number(t.gaps) > 0 ? "Some checks did not run." : null) };
   const reason = str(t.reason)
     || (t.timedOut ? "Timed out." : t.code != null && t.code !== 0 ? `Exited with code ${str(t.code, 10)}.` : "")
     || (s === "unavailable" ? "Not available." : "The tool failed.");
@@ -51,25 +59,50 @@ function tool(t, name, leads) {
   return { name: str(name, 60) || "tool", ...statusOf(t), leads };
 }
 
+// Older ZAP leads keep the rule id and CWE only at the start of their
+// description: "ZAP rule 10038, CWE-693. Parameter: q."
+const ZAP_PREFIX = /^ZAP rule (\d+)(?:, CWE-(\d+))?\.\s*/;
+
+// The rule id and CWE of a lead, from named fields only. `rule` is the rule
+// id only when the lead also has a check; alone it is the check itself.
+function ruleOf(o, detail) {
+  const id = o.ruleId ?? o.pluginid ?? (o.check != null ? o.rule : null);
+  const cwe = o.cwe ?? o.cweid;
+  const parts = [];
+  if (id != null && String(id) !== "") parts.push(str(id, 60));
+  if (cwe != null && String(cwe) !== "" && String(cwe) !== "-1") parts.push(`CWE-${str(cwe, 10).replace(/^CWE-/i, "")}`);
+  const m = ZAP_PREFIX.exec(detail);
+  const rest = m ? detail.slice(m[0].length) : detail;
+  if (parts.length) return { rule: parts.join(" · "), detail: rest };
+  if (!m) return { rule: "", detail };
+  return { rule: m[2] ? `${m[1]} · CWE-${m[2]}` : m[1], detail: rest };
+}
+
 function lead(l, toolNames) {
   const o = obj(l);
   const names = arr(o.engines).map((e) => str(e, 60)).filter(Boolean);
   if (!names.length) names.push(str(o.engine ?? o.tool ?? toolNames, 60));
+  const { rule, detail } = ruleOf(o, str(o.property ?? o.description ?? o.detail ?? o.summary, 240));
   return {
     check: str(o.check ?? o.rule ?? o.title, 120),
     impact: str(o.impact ?? o.severity, 20),
     where: where(o.where ?? o.file, o.lines?.[0] ?? o.line),
-    detail: str(o.property ?? o.description ?? o.detail ?? o.summary, 240),
+    rule,
+    detail,
     tools: names.filter(Boolean),
     corroborated: Boolean(o.corroborated),
   };
 }
 
-// A Contracts record: the static and fuzz phases, each with a ranked top list.
+// The Contracts record's phases, each with a ranked top list. Every check of the
+// Contracts shape uses this one list, so a new phase cannot be lost in one of them.
+const CONTRACTS = [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"], ["chimera", "Chimera"], ["mythril", "Mythril"], ["heimdall", "Heimdall"]];
+const isContracts = (r) => CONTRACTS.some(([k]) => r[k]);
+
 function contracts(rec) {
   const tools = [];
   const leads = [];
-  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"]]) {
+  for (const [key, label] of CONTRACTS) {
     const p = rec[key];
     if (!p || typeof p !== "object") continue;
     const engines = arr(p.engines).map((e) => str(e, 40)).filter(Boolean);
@@ -86,7 +119,7 @@ export function prepassView(record) {
 
   let tools;
   let leads;
-  if (rec.static || rec.fuzz) {
+  if (isContracts(rec)) {
     ({ tools, leads } = contracts(rec));
   } else if (Array.isArray(rec.top) && !rec.leads && !rec.coverage && !rec.tools) {
     // One world scan with a ranked top list (the chain packs).
@@ -127,7 +160,7 @@ export function prepassView(record) {
 export function prepassFromResult(r) {
   const res = obj(r);
   if (res.prepass) return res.prepass;
-  if (res.static || res.fuzz) return { static: res.static, fuzz: res.fuzz };
+  if (isContracts(res)) return Object.fromEntries(CONTRACTS.filter(([k]) => res[k] != null).map(([k]) => [k, res[k]]));
   const out = {};
   for (const k of ["coverage", "tools", "leads", "mode", "pack", "suspects", "top"]) if (res[k] != null) out[k] = res[k];
   // `top` alone is the chain packs' shape; a result with only `pack` is not a prepass.

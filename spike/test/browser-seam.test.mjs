@@ -6,6 +6,7 @@
 // TOUCHSTONE_GRANTS_FILE.
 //
 //   node --test spike/test/browser-seam.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";

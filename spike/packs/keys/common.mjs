@@ -11,24 +11,26 @@
 // A lead is not a finding. Only a replayed test with shown harm is a finding.
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative, resolve, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { forgeTest, writePoc } from "../../lib/sandbox.mjs";
 import { runTool } from "../../lib/wrap.mjs";
 import { IMPACT_RANK } from "../../lib/ensemble.mjs";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { proveFindings } from "../../lib/record.mjs";
 import { aderynScan } from "../../lib/aderyn.mjs";
+import { slitherLeads, slitherNote } from "../../lib/slither.mjs";
+import { ozMonitorLeads, ozMonitorNote } from "../../lib/oz-monitor.mjs";
 import { labOf, controlChanges } from "./control.mjs";
 import { scanSources } from "./source-checks.mjs";
 
 export const IMAGE = "touchstone-chain-tools:wave1";
 export const OBSERVATION = "chain-observation.json";
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const FILE_READ_CAP = 256 * 1024;
-const MAX_POC = Number(process.env.MAX_POC ?? 8);
+// No count cap unless MAX_POC is set. The run spend budget is the stop.
+const MAX_POC = attemptCap("MAX_POC");
 
 const lc = (value) => String(value ?? "").toLowerCase();
 const isZero = (word) => /^0x0*$/.test(String(word ?? "0x"));
@@ -47,16 +49,13 @@ export const KNOWN_KEYS = [
 
 // ---------------------------------------------------------------- the world
 
-let imageReady = null;
-function ensureImage() {
-  imageReady ??= new Promise((done, fail) => {
-    execFile("docker", ["image", "inspect", IMAGE], (missing) => {
-      if (!missing) return done();
-      execFile("docker", ["build", "-q", "-f", "spike/packs/keys/runtime/Dockerfile", "-t", IMAGE, "."],
-        { cwd: ROOT, timeout: 900_000 }, (error) => (error ? fail(error) : done()));
-    });
+// A run never builds the image: setup does. A missing image is an error that says so.
+export function ensureImage(exec = execFile) {
+  return new Promise((done, fail) => {
+    exec("docker", ["image", "inspect", IMAGE], (missing) => (missing
+      ? fail(new Error(`The image ${IMAGE} is missing. Run node spike/scripts/setup.mjs to build it. A run never builds an image.`))
+      : done()));
   });
-  return imageReady;
 }
 
 // Run the lab world once. `mode` is "keys" or "chain-watch". Returns the parsed observation.
@@ -419,10 +418,9 @@ export function chainTools(ws, state, spec) {
       const result = await forgeTest(ws, { matchContract: args.contract_name });
       event("run_poc-done", { contract: args.contract_name, passed: result.passed, failed: result.failed, timedOut: result.timedOut });
       if (result.passed) state.passed.set(args.contract_name, args.test_source);
-      const left = MAX_POC - attempt;
       const note = result.passed && !state.found.some((f) => f.poc === args.contract_name)
         ? `\n\nThis test PASSED. If it shows real harm (funds leave a deployed contract), call submit_finding for \`${args.contract_name}\`.` : "";
-      return text(`${result.output || "(no output)"}${note}\n\n(${left} run_poc attempt${left === 1 ? "" : "s"} left.)`);
+      return text(`${result.output || "(no output)"}${note}\n\n(${leftText(MAX_POC, attempt, "run_poc")})`);
     },
   });
   const submitFinding = defineTool({
@@ -448,8 +446,7 @@ export function chainTools(ws, state, spec) {
       const n = state.found.length + 1;
       state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
       event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
-      const left = Math.max(0, MAX_POC - state.poc);
-      return text(`Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next lead, worst first. Skip anything this finding's fix would also stop. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left.`);
+      return text(`Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next lead, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")}`);
     },
   });
   return [listSources, readSource, stateTool, leadsTool, runPoc, submitFinding];
@@ -459,9 +456,8 @@ export function chainTools(ws, state, spec) {
 export function chainNudge(state, noun) {
   if (state.found.length === 0 || state.poc >= MAX_POC) return null;
   const list = state.found.map((f) => `#${f.n} ${f.title} (${f.severity}, test \`${f.poc}\`)`).join("\n");
-  const left = MAX_POC - state.poc;
-  event("audit-continue", { found: state.found.length, left });
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"}:\n${list}\n\nGo back to the ${noun} list. Try each lead you have not proven or ruled out, worst first. You have ${left} run_poc attempt${left === 1 ? "" : "s"} left. Submit only a NEW root cause that the fixes above would not stop. If no leads are left, write the coverage summary now: one line per lead, marked "proven", "not exploitable", or "not tried".`;
+  event("audit-continue", { found: state.found.length, left: leftCount(MAX_POC, state.poc) });
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"}:\n${list}\n\nGo back to the ${noun} list. Try each lead you have not proven or ruled out, worst first. ${leftText(MAX_POC, state.poc, "run_poc")} Submit only a NEW root cause that the fixes above would not stop. If no leads are left, write the coverage summary now: one line per lead, marked "proven", "not exploitable", or "not tried".`;
 }
 
 // The prepass for one chain pack. Runs the lab world, turns the observation into
@@ -481,7 +477,7 @@ Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the project code. Read the contracts you test.
 - There is no lab and no recorded chain state. The state tool will say so. Do not wait for it.
-- The leads tool returns ranked leads from our source checks. Aderyn leads come in the brief.
+- The leads tool returns ranked leads from our source checks. Aderyn leads, and Slither leads when the pack runs Slither, come in the brief.
   A lead is a guess from the code text. It counts only when your test proves it.
 - There are no known keys. Never invent a key. Use vm.addr(n), vm.prank and vm.deal.
 - Write a test (a contract that imports forge-std/Test.sol and the project contract, for
@@ -530,28 +526,43 @@ the operator questions. Work from the actual code.`;
 export function sourceKickoff(mode, brief) {
   const base = "Audit the contracts under src/. Call the leads tool, read the code, list every suspect worst first, then prove each one you can with its own passing Foundry test that deploys the real contract and moves ETH out or changes who controls it. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return brief
-    ? `${base}\n\n${brief}\n\nA lead is real only once your test proves it. Leads from source checks and Aderyn are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    ? `${base}\n\n${brief}\n\nA lead is real only once your test proves it. Leads from source checks and static tools (Aderyn, Slither) are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 }
 
 // Tell the agent when Aderyn did not run, so "no Aderyn leads" is never read as "clean".
 export const aderynNote = (aderyn) => aderyn.available ? "" : `\n\nNOTE: Aderyn did NOT run (${String(aderyn.reason ?? "its image is missing").slice(0, 160)}). Having no Aderyn leads here does NOT mean the code is clean. Read the code yourself.`;
 
-export async function chainPrepass(ws, { emit }, { mode, analyze }) {
+// Slither fields for the emit and the record, only when the pack runs Slither.
+const slitherFields = (slither) => (slither ? { slither: slither.available, ...(slither.available ? {} : { slitherReason: slither.reason }) } : {});
+// The same for OpenZeppelin Monitor, only when the pack runs it on a lab chain.
+const monitorFields = (monitor) => (monitor ? { ozMonitor: monitor.available, ...(monitor.available ? {} : { ozMonitorReason: monitor.reason }) } : {});
+
+// `extra(ws, { world })` is an optional pack check that never throws. It returns
+// { flags, leads, note } (Keys: the safe-hash blind-signing check). flags go in the record.
+export async function chainPrepass(ws, { emit }, { mode, analyze, slither: useSlither = false, monitor: useMonitor = false, extra }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
   const obs = world ? await observe(ws, mode) : null;
   const aderyn = await aderynLeads(ws);
+  // Slither is opt-in per pack (lib/slither.mjs). null means the pack did not ask for it.
+  const slither = useSlither ? await slitherLeads(ws) : null;
+  // OpenZeppelin Monitor is opt-in per pack (lib/oz-monitor.mjs) and needs a lab chain. null means it did not run.
+  const monitor = useMonitor && world ? await ozMonitorLeads(ws) : null;
+  const more = extra ? await extra(ws, { world }) : null;
   const base = leadsFor(ws, analyze);
-  // Aderyn leads come last in each impact class. They are a second engine on the source.
-  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads]);
+  // OpenZeppelin Monitor leads come right after the pack's own: they read the same lab chain.
+  // Slither, then Aderyn leads come last in each impact class. They are extra engines on the source.
+  // Slither goes first: its results carry a confidence and drop Informational ones, and the brief
+  // shows only 12 leads.
+  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...(monitor?.leads ?? []), ...(slither?.leads ?? []), ...aderyn.leads, ...(more?.leads ?? [])]);
   const block = obs ? (obs.block ?? obs.toBlock) : null;
   emit({ t: Date.now(), ev: "chain-scan", pack: mode, engines: [...new Set(leads.flatMap((l) => l.engines))],
-    block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor), ...(more?.flags ?? {}),
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
-    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) },
-    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) + (slither ? slitherNote(slither) : "") + (monitor ? ozMonitorNote(monitor) : "") + (more?.note ?? "") },
+    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor), ...(more?.flags ?? {}),
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };
 }

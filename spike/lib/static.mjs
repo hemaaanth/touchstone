@@ -21,7 +21,7 @@ import { runDocker } from "./wrap.mjs";
 import { aderynScan } from "./aderyn.mjs";
 import { mergeStatic, IMPACT_RANK } from "./ensemble.mjs";
 
-const IMG = "ghcr.io/trailofbits/eth-security-toolbox:nightly";
+const IMG = "ghcr.io/trailofbits/eth-security-toolbox:nightly@sha256:205f5d7c5f41c8ef4ead6ef5c95fddf0cb69352a547a8b47c3e172e5d01ac35c";
 const SOLC = "0.8.38"; // match the sandbox replay compiler so the suspect lines line up
 // The aggregate entry file we synthesize to force one compilation unit. It is
 // written into src/ only for the scan and deleted immediately after, so the agent

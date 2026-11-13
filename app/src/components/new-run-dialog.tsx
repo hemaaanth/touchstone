@@ -1,15 +1,14 @@
 import { useRef, useState } from "react"
-import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, X } from "lucide-react"
-import type { ModelChoice, PackChoice, Playbook, RunMode, TargetChoice } from "@/lib/types"
-import { attachScope } from "@/lib/api"
-import { DEFAULT_PACK, packOf } from "@/lib/catalog"
+import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
+import type { ModelChoice, PackChoice, RunMode, TargetChoice } from "@/lib/types"
+import { attachScope, type ScopeMember } from "@/lib/api"
+import { DEFAULT_PACK, packOf, plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 const RANDOM = "random"
-const NONE = "none"
 const DEFAULT_BUDGET = "5.00"
 
 const MODES: { value: RunMode; label: string; hint: string }[] = [
@@ -18,17 +17,18 @@ const MODES: { value: RunMode; label: string; hint: string }[] = [
 ]
 const MODE_KEY = "ts.runMode"
 
-// The New Run window. It has four fields: the scope, an optional playbook,
-// Fleet or Solo, and the budget. The model is the server's default (the first in the list),
-// so there is no model picker. "Random" omits targetId, so the server picks
-// and repeat runs do not re-break one bug. Scopes are added on the Scopes page.
+// The New Run window picks the scope, its modules, Fleet or Solo, and budget.
+// A scope allows one or more modules. Nothing is assumed: the operator ticks the
+// modules to run, and each ticked module is its own run. The model is the
+// server's default (the first in the list), so there is no model picker.
+// "Random" omits targetId, so the server picks and repeat runs do not re-break
+// one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
   open,
   onOpenChange,
   models,
   targets,
   packs,
-  playbooks = [],
   busy,
   error,
   onStart,
@@ -38,17 +38,17 @@ export function NewRunDialog({
   models: ModelChoice[]
   targets: TargetChoice[]
   packs: PackChoice[]
-  // Saved run recipes. There is no playbook store on the server yet, so this
-  // is empty and the field shows "None".
-  playbooks?: Playbook[]
   busy: boolean
   error: string | null
-  onStart: (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => void
+  // One run covers every module in `modules`.
+  onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => void
 }) {
   const alias = models[0]?.alias ?? ""
-  const runnable = targets.filter((t) => t.runnable && packs.some((p) => p.id === packOf(t)))
+  // The modules a scope allows that the server also lists.
+  const allowed = (t: TargetChoice) => (t.packs ?? [packOf(t)]).flatMap((id) => packs.find((p) => p.id === id) ?? [])
+  const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0)
   const [scopeId, setScopeId] = useState(RANDOM)
-  const [playbookId, setPlaybookId] = useState(NONE)
+  const [ticked, setTicked] = useState<string[]>([])
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
@@ -57,29 +57,20 @@ export function NewRunDialog({
     localStorage.setItem(MODE_KEY, m)
   }
 
-  const playbook = playbooks.find((p) => p.id === playbookId) ?? null
   const scope = runnable.find((t) => t.id === scopeId) ?? null
-  const pack = playbook?.pack ?? (scope ? packOf(scope) : DEFAULT_PACK)
+  const eligible = scope ? allowed(scope) : []
+  // A scope with one module needs no tick. A random scope runs the default module.
+  const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk
-
-  // A playbook brings its own scope and budget. The operator can still change them.
-  const onPlaybook = (id: string) => {
-    setPlaybookId(id)
-    const p = playbooks.find((x) => x.id === id)
-    if (!p) return
-    if (runnable.some((t) => t.id === p.targetId)) setScopeId(p.targetId)
-    if (p.budgetUsd != null) setBudget(p.budgetUsd.toFixed(2))
-  }
+  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk && modules.length > 0
 
   const submit = () => {
     if (!canStart) return
-    onStart(alias, scopeId === RANDOM ? undefined : scopeId, budgetN, pack, mode)
+    onStart(alias, scope?.id, budgetN, modules, mode)
   }
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
-  const playbookItems = [{ value: NONE, label: "None" }, ...playbooks.map((p) => ({ value: p.id, label: p.title }))]
 
   const notice = !budgetOk
     ? "The budget must be between $0.01 and $1,000."
@@ -88,6 +79,8 @@ export function NewRunDialog({
       : runnable.length === 0
         ? "No runnable scopes are available right now."
         : error
+  // Not an error: the Start button waits for a tick.
+  const hint = !notice && scope && modules.length === 0 ? "Tick the modules to run." : null
 
   const label = "text-[11px] leading-[15px] font-semibold tracking-[0.06em] text-muted-foreground"
   const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
@@ -114,7 +107,15 @@ export function NewRunDialog({
         >
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-scope">SCOPE</span>
-            <Select items={scopeItems} value={scopeId} onValueChange={(v) => v && setScopeId(String(v))}>
+            <Select
+              items={scopeItems}
+              value={scopeId}
+              onValueChange={(v) => {
+                if (!v) return
+                setScopeId(String(v))
+                setTicked([])
+              }}
+            >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
                 <SelectValue className="min-w-0 truncate" />
               </SelectTrigger>
@@ -128,28 +129,28 @@ export function NewRunDialog({
             </Select>
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <span className={label} id="new-run-playbook">
-              PLAYBOOK <span className="font-normal tracking-normal text-muted-foreground/60">· optional</span>
-            </span>
-            <Select items={playbookItems} value={playbookId} onValueChange={(v) => v && onPlaybook(String(v))}>
-              <SelectTrigger
-                className={field}
-                aria-labelledby="new-run-playbook"
-                disabled={!playbooks.length}
-                title={playbooks.length ? undefined : "No saved playbooks yet."}
-              >
-                <SelectValue className="min-w-0 truncate" />
-              </SelectTrigger>
-              <SelectContent alignItemWithTrigger={false} className="p-1">
-                {playbookItems.map((p) => (
-                  <SelectItem key={p.value} value={p.value} className="text-[13px]">
-                    <span className="truncate">{p.label}</span>
-                  </SelectItem>
+          {scope ? (
+            <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-run-modules">
+              <span className={label} id="new-run-modules">MODULES</span>
+              <div className="flex flex-col rounded-lg border border-input bg-background py-1">
+                {eligible.map((p) => (
+                  <label key={p.id} className={cn("flex h-8 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
+                    <input
+                      type="checkbox"
+                      checked={modules.includes(p.id)}
+                      disabled={busy || eligible.length === 1}
+                      onChange={(e) => setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                      className="size-3.5 shrink-0 accent-foreground"
+                    />
+                    {p.title}
+                  </label>
                 ))}
-              </SelectContent>
-            </Select>
-          </div>
+              </div>
+              {modules.length > 1 ? (
+                <span className="text-xs text-muted-foreground">One run covers {plural(modules.length, "module")}.</span>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-mode">AGENTS</span>
@@ -195,18 +196,19 @@ export function NewRunDialog({
                 onChange={(e) => setBudget(e.target.value)}
                 aria-label="Budget for this run in USD"
               />
-              <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
+              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "One budget, shared" : "Run stops at this limit"}</span>
             </span>
           </label>
 
           {notice ? <p className="text-xs text-bad">{notice}</p> : null}
+          {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
         </form>
 
         <div className="flex items-center justify-end gap-2 border-t px-5 py-3.5">
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
           <Button onClick={submit} disabled={!canStart}>
             {busy ? <Loader2 className="animate-spin" /> : null}
-            Start run
+            {modules.length > 1 ? "Start one run" : "Start run"}
           </Button>
         </div>
       </DialogContent>
@@ -318,13 +320,45 @@ function githubUrl(raw: string): string | null {
 
 const repoName = (url: string) => new URL(url).pathname.split("/")[2] ?? url
 
+// A folder is a path on this machine, read in place by the server (the
+// default), or files uploaded from the browser (the fallback).
 type Source =
   | { kind: "repo"; url: string }
+  | { kind: "folder"; name: string; path: string }
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
   | { kind: "site"; host: string; origin: string }
 
-const sourceKey = (s: Source) => (s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : `folder:${s.name}`)
+const sourceKey = (s: Source) =>
+  s.kind === "repo" ? s.url : s.kind === "site" ? `site:${s.origin}` : "path" in s ? `path:${s.path}` : `folder:${s.name}`
+
+// A folder path the operator typed: "/..." or "~/...". The server expands "~",
+// resolves the path, and reads the folder. The name is its last part, made
+// safe the same way the server does it.
+function localPath(raw: string): { name: string; path: string } | null {
+  const text = raw.trim().replace(/\/+$/, "")
+  if (!(text.startsWith("/") || text === "~" || text.startsWith("~/"))) return null
+  const base = text.split("/").filter(Boolean).pop() ?? ""
+  const name = base === "~" ? "home" : base.replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
+  return { name, path: text }
+}
 const sourceLabel = (s: Source) => (s.kind === "repo" ? repoName(s.url) : s.kind === "site" ? s.host : s.name)
+
+// A wildcard entry the operator typed, "*.example.com": a grant pattern that
+// covers every subdomain of example.com (never example.com itself). Returns the
+// base name, or null. Only this one spelling: a star, a dot, then a plain name
+// of at least two labels. No scheme, port, path, second star or IP address.
+// The server applies the same rule (spike/lib/live-hosts.mjs), and the grant
+// store refuses "*.com" and the common public suffixes after it.
+function wildcardBase(raw: string): string | null {
+  const text = raw.trim().toLowerCase()
+  if (!text.startsWith("*.")) return null
+  const base = text.slice(2).replace(/\.$/, "")
+  const labels = base.split(".")
+  if (labels.length < 2 || !labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return null
+  if (labels.every((l) => /^[0-9]+$/.test(l))) return null
+  return base
+}
+const isWildSite = (s: Source) => s.kind === "site" && s.host.startsWith("*.")
 
 // A website address the operator typed, as the exact origin a run will call.
 // "example.com" means https; "https://app.example.com:8443/login" keeps its
@@ -340,67 +374,123 @@ function siteOrigin(raw: string): string | null {
     return null
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null
-  if (u.username || u.password || !u.hostname.includes(".")) return null
+  if (u.username || u.password) return null
+  // A bare name like "intranet" is a typo more often than a target. localhost
+  // and IP literals are fine: a local lab is named that way.
+  if (!u.hostname.includes(".") && !labHost(u.hostname) && !u.hostname.startsWith("[")) return null
   return u.origin
 }
 
-// What POST /api/scopes gets for a list of sources: one members array, repos
-// and folders mixed, in any language. The server picks the pack from the
-// content. `pack` is the module the scope was added under; it counts only for
-// repos, whose content the server does not know until a run fetches it.
-// Live websites go as { kind: "live", hosts, permission }: the checkbox is the
-// operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string): Parameters<typeof attachScope>[0] {
-  const title = name || sources.map(sourceLabel).join(" + ")
-  const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
-  const bearer = token.trim()
-  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}) }
-  const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
-  return { title, members, ...(pack ? { pack } : {}) }
+// True for a loopback or private host: a local lab, not a public website. The
+// server checks again and refuses such a host unless the operator opts in.
+// A URL hostname keeps IPv6 brackets, so they are stripped first.
+function labHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (h === "localhost" || h.endsWith(".localhost")) return true
+  const v4 = h.match(/^(?:::ffff:)?(\d+)\.(\d+)\.\d+\.\d+$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+  }
+  return h === "::1" || /^f[cd]/.test(h)
 }
 
-// The add row under a scope list. Closed, it is one quiet row. Open, the same
+// What POST /api/scopes gets for a list of sources: one members array, repos
+// and folders mixed, in any language. The server works out the modules of a
+// code scope from its content.
+// Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
+// list of modules the operator ticked, and the checkbox is the operator saying
+// they may test the websites. The server records it as a grant.
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
+  const title = name || sources.map(sourceLabel).join(" + ")
+  // Plain websites first: a run sends its requests to the first one, and a
+  // wildcard entry is a grant pattern, not a website.
+  const ordered = [...sources.filter((s) => !isWildSite(s)), ...sources.filter(isWildSite)]
+  const sites = ordered.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
+  const bearer = token.trim()
+  // garak runs only with a chat path and a budget. The server checks both.
+  const chatPath = chat.path.trim()
+  const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
+  if (sites.length) {
+    const mcp = modules.includes("ai-mcp")
+    return { kind: "live", title, hosts: sites, permission, pack: modules, ...(bearer && mcp ? { token: bearer } : {}), ...(assistant && mcp ? { assistant } : {}), ...(allowPrivate ? { allowPrivate: true } : {}) }
+  }
+  const members = sources.flatMap((s): ScopeMember[] =>
+    s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
+  )
+  return { title, members }
+}
+
+// A module every website scope allows, with nothing to tick. Same rule as
+// alwaysOn in spike/lib/targets.mjs: it can test a live site, it sends no
+// attack request, and it needs no input but the host names.
+const alwaysOn = (p: PackChoice) => p.live === true && p.proof !== "http" && !p.grants
+// A module the operator ticks for a website scope.
+const tickable = (p: PackChoice) => p.live === true && p.proof === "http" && !p.grants
+
+// The add row over the scope list. Closed, it is one quiet row. Open, the same
 // row becomes the input in place: same height, padding, and text start, so
-// nothing moves. A scope holds one or more GitHub repos or local folders; each
-// one added shows in a list under the row, and the scope is saved as one unit.
+// nothing moves. A scope holds GitHub repos and local folders, or websites.
+// Each one added shows in a list under the row, and the scope is saved as one
+// unit. Under the list: its name, then the modules it allows.
+// `defaultOpen` starts with the form open (the Scopes page dialog). `onClose`
+// runs whenever the form closes itself: Esc, Cancel, or a saved scope.
 export function AddScope({
-  pack,
   packs,
   onAttached,
   onError,
+  defaultOpen = false,
+  onClose,
 }: {
-  pack?: string
-  // The modules that can attack a live host; a live scope must name one.
-  packs?: PackChoice[]
+  packs: PackChoice[]
   onAttached: (scope: TargetChoice) => void
   onError: (msg: string | null) => void
+  defaultOpen?: boolean
+  onClose?: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [url, setUrl] = useState("")
   const [name, setName] = useState("")
   const [sources, setSources] = useState<Source[]>([])
   const [busy, setBusy] = useState(false)
   const [permission, setPermission] = useState(false)
   const [token, setToken] = useState("")
-  const [module, setModule] = useState("web")
+  const [chatPath, setChatPath] = useState("")
+  const [chatBudget, setChatBudget] = useState("")
+  // The modules ticked for a website scope. A run picks from them at start.
+  const [modules, setModules] = useState<string[]>(["web"])
+  const [allowPrivate, setAllowPrivate] = useState(false)
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const siteModule = pack && pack !== "contracts" ? pack : module
-  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token) : null
   const live = sources.some((s) => s.kind === "site")
-  const livePacks = (packs ?? []).filter((p) => p.live)
+  // The wildcard entries widen the permission: the tick must name them.
+  const wildBases = sources.flatMap((s) => (s.kind === "site" && isWildSite(s) ? [s.host.slice(2)] : []))
+  // A local lab: the opt-in shows only when a listed website is loopback or private.
+  const lab = sources.some((s) => s.kind === "site" && labHost(s.host))
+  const choices = packs.filter(tickable)
+  const included = packs.filter(alwaysOn)
+  // In the server's module order, so the first ticked one is the scope's default.
+  // With nothing ticked the scope still allows the always-included modules.
+  const ticked = choices.filter((p) => modules.includes(p.id)).map((p) => p.id)
+  const siteModules = ticked.length ? ticked : included.map((p) => p.id)
   // Only the AI/MCP module takes a caller credential. A website does not.
-  const wantsToken = live && siteModule === "ai-mcp"
+  const wantsToken = live && ticked.includes("ai-mcp")
+  const title = (id: string, fallback: string) => packs.find((p) => p.id === id)?.title ?? fallback
 
   const close = () => {
     setOpen(false)
     setUrl("")
     setName("")
     setSources([])
+    setModules(["web"])
     setPermission(false)
+    setAllowPrivate(false)
     setToken("")
+    setChatPath("")
+    setChatBudget("")
     onError(null)
+    onClose?.()
   }
   const add = (s: Source) => {
     // One scope is either code (repos, folders) or live websites, not both.
@@ -409,11 +499,50 @@ export function AddScope({
     }
     onError(null)
     // The tick covers the websites listed when it was ticked. A new one needs a new tick.
-    if (s.kind === "site") setPermission(false)
+    if (s.kind === "site") {
+      setPermission(false)
+      setAllowPrivate(false)
+    }
     setSources((list) => (list.some((x) => sourceKey(x) === sourceKey(s)) ? list : [...list, s]))
   }
   const addUrl = () => {
     const text = url.trim()
+    const local = localPath(text)
+    if (local) {
+      add({ kind: "folder", ...local })
+      setUrl("")
+      return
+    }
+    // A star is never parsed as a URL: the parser would encode it, and the
+    // server would drop the entry from the grant. Keep the one accepted
+    // spelling as it is, and refuse every other one with a sentence.
+    if (/\*|%2a/i.test(text)) {
+      // A name with letters outside plain ASCII: say the punycode form, as the server does.
+      if ([...text].some((c) => c.charCodeAt(0) > 127)) {
+        let ascii = ""
+        try {
+          ascii = text.trim().startsWith("*.") ? new URL(`http://${text.trim().slice(2)}`).hostname : ""
+        } catch {
+          // no ASCII form: the general hint below
+        }
+        return onError(`"${text}" has letters outside plain ASCII. Write the punycode form${ascii ? `: *.${ascii}` : ", for example *.xn--bcher-kva.de for *.bücher.de"}.`)
+      }
+      if (/^\*\.[a-z0-9-]+\.?$/i.test(text)) return onError(`"${text}" is too broad: a wildcard needs a domain name of at least two labels after "*.", so *.example.com, never *.com.`)
+      const base = wildcardBase(text)
+      if (!base) return onError(`"${text}" is not a wildcard entry Touchstone accepts. Write it as *.example.com: a star, a dot and a domain name, with no scheme, port or path.`)
+      add({ kind: "site", host: `*.${base}`, origin: `*.${base}` })
+      setUrl("")
+      return
+    }
+    // A user name or password in the address: say so, and never keep it.
+    try {
+      const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`)
+      if (u.username || u.password) {
+        return onError(`The address for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a website address. Remove it; an AI and MCP scope takes its token in the Bearer token field.`)
+      }
+    } catch {
+      // not a URL: the checks below say so
+    }
     const href = githubUrl(text) ?? (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? null : githubUrl(`https://${text}`))
     const origin = href ? null : siteOrigin(text)
     const host = origin ? new URL(origin).hostname : null
@@ -422,22 +551,29 @@ export function AddScope({
     if (host === "github.com" || host?.endsWith(".github.com")) {
       return onError("Use a GitHub repository URL like https://github.com/owner/repo.")
     }
-    if (!href && !origin) return onError("Use a GitHub repository URL or a website address.")
+    if (!href && !origin) return onError("Use a GitHub repository URL, a website address, or a folder path like ~/project.")
     add(href ? { kind: "repo", url: href } : { kind: "site", host: host!, origin: origin! })
     setUrl("")
   }
-  const save = () => {
-    if (!body || busy) return
+  // The Add button stays clickable. A click with something missing says what.
+  const save = async () => {
+    if (!sources.length || busy) return
+    const wild = sources.find(isWildSite)
+    if (wild?.kind === "site" && !sources.some((s) => s.kind === "site" && !isWildSite(s))) {
+      return onError(`A wildcard entry needs a plain website too. Add ${wild.host.slice(2)} as well.`)
+    }
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
+    if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
     setBusy(true)
     onError(null)
-    attachScope(body)
-      .then((scope) => {
-        close()
-        onAttached(scope)
-      })
-      .catch((e: Error) => onError(e.message))
-      .finally(() => setBusy(false))
+    try {
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate)))
+      close()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onFolder = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -470,6 +606,9 @@ export function AddScope({
     )
   }
 
+  // One form row: a fixed label column, then the field.
+  const formRow = "flex items-center gap-3 border-t border-border/60 py-1.5 pr-2 pl-2.5"
+  const formLabel = "w-[72px] shrink-0 text-[11px] text-muted-foreground"
   const chip =
     "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-3.5"
   return (
@@ -496,12 +635,18 @@ export function AddScope({
               else save()
             }
           }}
-          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL") : "GitHub URL or website"}
-          aria-label="GitHub repository URL or website address"
+          placeholder={sources.length ? (live ? "Add another website" : "Add another GitHub URL or folder path") : "GitHub URL, website, or folder path"}
+          aria-label="GitHub repository URL, website address, or local folder path"
           className="h-full min-w-0 flex-1 bg-transparent leading-none outline-none placeholder:text-muted-foreground"
         />
-        <button type="button" className={chip} disabled={busy} onClick={() => folderRef.current?.click()}>
-          <Folder /> Folder
+        <button
+          type="button"
+          className={chip}
+          disabled={busy}
+          title="Upload a folder from the browser instead. Typing its path is better: the server reads it in place."
+          onClick={() => folderRef.current?.click()}
+        >
+          <Upload /> Upload
         </button>
         <button
           type="button"
@@ -530,11 +675,18 @@ export function AddScope({
                   {s.kind === "repo" ? <FolderGit2 /> : s.kind === "site" ? <Globe /> : <Folder />}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">
-                  {s.kind === "repo" ? s.url.replace(/^https:\/\/github\.com\//, "") : s.kind === "site" ? s.origin : `${s.name}/`}
+                  {s.kind === "repo"
+                    ? s.url.replace(/^https:\/\/github\.com\//, "")
+                    : s.kind === "site"
+                      ? s.origin
+                      : "path" in s
+                        ? s.path
+                        : `${s.name}/`}
                 </span>
+                {isWildSite(s) ? <span className="shrink-0 text-[11px] text-muted-foreground">all subdomains</span> : null}
                 {s.kind === "folder" ? (
                   <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                    {s.files.length} {s.files.length === 1 ? "file" : "files"}
+                    {"path" in s ? "read in place" : `${s.files.length} ${s.files.length === 1 ? "file" : "files"} uploaded`}
                   </span>
                 ) : null}
                 <button
@@ -543,7 +695,10 @@ export function AddScope({
                   title="Remove from scope"
                   disabled={busy}
                   onClick={() => {
-                    if (s.kind === "site") setPermission(false)
+                    if (s.kind === "site") {
+                      setPermission(false)
+                      setAllowPrivate(false)
+                    }
                     setSources((list) => list.filter((x) => sourceKey(x) !== sourceKey(s)))
                   }}
                   className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-3.5"
@@ -553,53 +708,18 @@ export function AddScope({
               </li>
             ))}
           </ul>
+          {/* The grant covers exactly the names listed. Subdomain discovery
+              needs a wildcard entry, after the plain name. Text only. */}
           {live ? (
-            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
-              <input
-                type="checkbox"
-                checked={permission}
-                disabled={busy}
-                onChange={(e) => {
-                  setPermission(e.target.checked)
-                  if (e.target.checked) onError(null)
-                }}
-                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
-              />
-              <span>
-                I have permission to test these websites. A run sends real requests to them.
-              </span>
-            </label>
+            <p className="border-t border-border/60 py-1.5 pr-2 pl-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              Subdomain discovery needs a <span className="font-mono">*.</span> entry: add{" "}
+              <span className="font-mono">*.example.com</span> after <span className="font-mono">example.com</span>.
+            </p>
           ) : null}
-          {live && livePacks.length > 1 ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Module</span>
-              <select
-                value={siteModule}
-                disabled={busy}
-                onChange={(e) => setModule(e.target.value)}
-                aria-label="Module that tests this website"
-                className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none"
-              >
-                {livePacks.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          {wantsToken ? (
-            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Bearer token</span>
-              <input
-                value={token}
-                disabled={busy}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="optional; the caller token to audit with"
-                aria-label="Bearer token the run may use"
-                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
-              />
-            </label>
-          ) : null}
-          <div className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
+          {/* Name, then modules. A ticked module shows the fields it needs under
+              it. The confirmations sit last, next to the Add button. */}
+          <label className={formRow}>
+            <span className={formLabel}>Name</span>
             <input
               value={name}
               disabled={busy}
@@ -617,15 +737,116 @@ export function AddScope({
               }}
               maxLength={120}
               placeholder={sources.map(sourceLabel).join(" + ")}
-              aria-label="Scope name"
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
-            <span className="shrink-0 text-[11px] text-muted-foreground">
-              {live
-                ? `${sources.length} ${sources.length === 1 ? "website" : "websites"}, tested as one unit`
-                : `${sources.length} ${sources.length === 1 ? "source" : "sources"}, tested as one unit`}
+          </label>
+          <div role="group" aria-labelledby="add-scope-modules" className={cn(formRow, "items-start py-2")}>
+            <span id="add-scope-modules" className={cn(formLabel, "leading-5")}>Modules</span>
+            {live ? (
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                  {choices.map((p) => (
+                    <label key={p.id} className="flex h-5 cursor-pointer items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={modules.includes(p.id)}
+                        disabled={busy}
+                        onChange={(e) => setModules((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                        className="size-3.5 shrink-0 accent-foreground"
+                      />
+                      {p.title}
+                    </label>
+                  ))}
+                </div>
+                {included.length ? (
+                  <span className="text-[11px] leading-relaxed text-muted-foreground">
+                    Always included: {included.map((p) => p.title).join(", ")}.
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              <span className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
+                Set by the code. {title("review", "Code review")} always. {title("contracts", "Contracts")} too, for Solidity or a GitHub repo.
+              </span>
+            )}
+          </div>
+          {wantsToken ? (
+            <label className={formRow}>
+              <span className={formLabel}>Bearer token</span>
+              <input
+                value={token}
+                disabled={busy}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="Optional. The caller token an AI and MCP run tests with."
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </label>
+          ) : null}
+          {wantsToken ? (
+            <div className={formRow}>
+              <span className={formLabel}>Chat path</span>
+              <input
+                value={chatPath}
+                disabled={busy}
+                onChange={(e) => setChatPath(e.target.value)}
+                placeholder="Optional. The assistant's chat path, like /agent/chat."
+                aria-label="Assistant chat path the prompt probe may call"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+              <input
+                value={chatBudget}
+                disabled={busy}
+                inputMode="numeric"
+                onChange={(e) => setChatBudget(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                placeholder="Requests"
+                aria-label="Most requests the prompt probe may send (8 to 200)"
+                className="h-7 w-20 shrink-0 bg-transparent text-right font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </div>
+          ) : null}
+          {live ? (
+            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input
+                type="checkbox"
+                checked={permission}
+                disabled={busy}
+                onChange={(e) => {
+                  setPermission(e.target.checked)
+                  if (e.target.checked) onError(null)
+                }}
+                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
+              />
+              <span>
+                {wildBases.length
+                  ? `I have permission to test these websites and every subdomain of ${wildBases.join(", ")}. A run sends real requests to them.`
+                  : "I have permission to test these websites. A run sends real requests to them."}
+              </span>
+            </label>
+          ) : null}
+          {lab ? (
+            <label className="flex cursor-pointer items-start gap-2.5 border-t border-border/60 py-2 pr-2 pl-2.5 text-xs leading-relaxed">
+              <input
+                type="checkbox"
+                checked={allowPrivate}
+                disabled={busy}
+                onChange={(e) => {
+                  setAllowPrivate(e.target.checked)
+                  if (e.target.checked) onError(null)
+                }}
+                className="mt-0.5 size-3.5 shrink-0 accent-foreground"
+              />
+              <span>
+                This is my own local lab. Let runs reach these loopback or private addresses. Every website in this scope must
+                be localhost or a private IP.
+              </span>
+            </label>
+          ) : null}
+          <div className="flex items-center justify-end gap-3 border-t border-border/60 py-1.5 pr-1.5 pl-2.5">
+            <span className="text-[11px] text-muted-foreground">
+              {plural(sources.length - wildBases.length, live ? "website" : "source")}
+              {wildBases.length ? ` and ${plural(wildBases.length, "subdomain entry", "subdomain entries")}` : ""}, tested as one unit
             </span>
-            <Button size="sm" className="h-7 shrink-0" disabled={busy || (live && !permission)} onClick={save}>
+            <Button size="sm" className="h-7 shrink-0" disabled={busy} onClick={save}>
               Add scope
             </Button>
           </div>

@@ -2,6 +2,9 @@ import type { ReactNode } from "react"
 import { ArrowRight, Check } from "lucide-react"
 import type { Balance, Finding, FindingBase, Proof, Transfer } from "@/lib/types"
 import { formatNum } from "@/lib/format"
+import { formatWei, harmText, type Amount, type Harm } from "@/lib/eth"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { hasBundle } from "@/lib/findings-view"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
 import { Block, CopyButton, ExportReport, Fold, RunDetails, Verdict, WhyItWorks } from "./proof-parts"
@@ -50,19 +53,15 @@ function BalanceDelta({ label, before, after }: Balance) {
 // the proving replay. The +/- in `net` carries the direction, so the figure
 // stays monochrome; the party that ended richer gets weight so the eye lands on
 // where the money went. The address rides along quietly as the ground truth.
-function TransferDelta({ label, address, net, gained }: Transfer) {
+function TransferDelta({ label, address, net, gained, netWei }: Transfer) {
   const shortAddr = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address
+  // From the exact wei when the record has it, so a dust move does not read
+  // as "+0 ETH"; the exact wei is in a tooltip, by pointer or keyboard.
+  const cls = cn("font-mono text-sm tabular-nums", gained ? "font-medium text-foreground" : "text-muted-foreground")
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "font-mono text-sm tabular-nums",
-          gained ? "font-medium text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {net}
-      </span>
+      {netWei ? <ExactAmount amount={formatWei(netWei, true)} className={cls} /> : <span className={cls}>{net}</span>}
       <span className="font-mono text-[11px] text-muted-foreground">{shortAddr}</span>
     </div>
   )
@@ -150,6 +149,9 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
           </ul>
         </Block>
       ) : null}
+
+      {/* What was lost, from the proof gate's own harm record. */}
+      <HarmLine harm={proof.harm} />
 
       {/* What the exploit moved. Preferred source is the engine's structured proof
           delta: the real signed net ETH per address, read straight from the
@@ -252,22 +254,77 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
             </div>
           </Fold>
         ) : null}
+        {proof.testSource ? (
+          <Fold label="Test source" keepMounted>
+            <pre className="overflow-x-auto rounded-md bg-muted p-4 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              {proof.testSource}
+            </pre>
+          </Fold>
+        ) : null}
         {children}
       </div>
     </div>
   )
 }
 
-export function ReplayProof({ finding, children }: { finding: Finding; children?: ReactNode }) {
+export function ReplayProof({
+  finding,
+  children,
+  startBundle = false,
+}: {
+  finding: Finding
+  children?: ReactNode
+  // Start the bundle check at once (the Findings row menu asked for it).
+  startBundle?: boolean
+}) {
   // Every proof kind ends with the same shareable-report action, below the
-  // card's own children, built from this recorded finding's id.
+  // card's own children, built from this recorded finding's id. A proven
+  // finding also offers its replay bundle, except an evidence finding: the
+  // server has no bundle for one, so the control would end in its refusal.
   const footer = (
     <>
       {children}
-      <ExportReport findingId={finding.id} />
+      <ExportReport findingId={finding.id} bundle={hasBundle(finding) ? { start: startBundle } : null} />
     </>
   )
   if (finding.proofKind === "http") return <HttpProofCard finding={finding}>{footer}</HttpProofCard>
   if (finding.proofKind === "evidence") return <EvidenceProofCard finding={finding}>{footer}</EvidenceProofCard>
   return <ForgeProofCard finding={finding}>{footer}</ForgeProofCard>
+}
+
+// What the proof gate says was lost, and how much: an ETH drain (the exact wei
+// on hover), a token drain in the record's raw units, or a control takeover.
+// From the proof record, never from the agent's text. Nothing when the record
+// has no harm.
+export function HarmLine({ harm }: { harm: Harm | null | undefined }) {
+  const line = harmText(harm)
+  if (!line) return null
+  return (
+    <Block title="What was lost">
+      <p className="text-sm leading-relaxed text-foreground">
+        {line.lead}
+        {line.amount ? <ExactAmount amount={line.amount} /> : null}
+        {line.rest}
+      </p>
+    </Block>
+  )
+}
+
+// An amount with the record's exact value in a tooltip. The amount is a Tab
+// stop, so a keyboard reaches the exact value too, not only a pointer. A
+// rounded amount carries its "≈" in the text; the tooltip says it is rounded.
+export function ExactAmount({ amount, className }: { amount: Amount; className?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={<span tabIndex={0} />}
+        data-slot="exact-amount"
+        aria-label={amount.approx ? `${amount.text}, exactly ${amount.exact}` : undefined}
+        className={cn("rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50", className)}
+      >
+        {amount.text}
+      </TooltipTrigger>
+      <TooltipContent>{amount.approx ? `Rounded. Exactly ${amount.exact}` : `Exactly ${amount.exact}`}</TooltipContent>
+    </Tooltip>
+  )
 }

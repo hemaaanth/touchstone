@@ -11,7 +11,7 @@ import type { Finding } from "../src/lib/types"
 // as an object) fails here deterministically, with no agent run and no network.
 // It also proves the shared ExportReport footer renders on all three kinds.
 
-const base = {
+const base: Pick<Finding, "runId" | "severity" | "dismissed" | "decision" | "recorded" | "fuzzScan" | "calls" | "model" | "usage" | "events"> = {
   runId: "run-x",
   severity: "critical",
   dismissed: false,
@@ -22,7 +22,7 @@ const base = {
   model: "ds",
   usage: { usd: 0.42, in: 1200, out: 300, reasoning: null },
   events: [],
-} as const
+}
 
 const forge: Finding = {
   ...base,
@@ -126,7 +126,7 @@ const forgeThin: Finding = {
   ...forge,
   id: "run-x.forge-thin",
   proven: false,
-  stages: { hypothesis: true, reproduced: true, proven: false, accepted: "pending" },
+  stages: { hypothesis: true, reproduced: true, proven: false, accepted: false },
   staticScan: null,
   hypothesis: null,
   explanation: null,
@@ -137,19 +137,19 @@ const httpThin: Finding = {
   ...http,
   id: "run-x.http-thin",
   explanation: null,
-  proof: { kind: "http", pass: false, oracle: { name: "no read", detail: "", passed: false }, exchanges: [], detail: "" },
+  proof: { kind: "http" as const, pass: false, oracle: { name: "no read", detail: "", passed: false }, exchanges: [], detail: "" },
 }
 
 const evidenceThin: Finding = {
   ...evidence,
   id: "run-x.evidence-thin",
   explanation: null,
-  proof: { kind: "evidence", pass: false, check: "absent", snapshotHash: "0", commit: null, cited: [], detail: "" },
+  proof: { kind: "evidence" as const, pass: false, check: "absent", snapshotHash: "0", commit: null, cited: [], detail: "" },
 }
 
 describe("every proof module renders end to end", () => {
   const cases: Array<[string, Finding, string[]]> = [
-    ["forge", forge, ["Proven by replay", "What the exploit moved", "+10 ETH", "Reproduce it yourself"]],
+    ["forge", forge, ["Proven by replay", "What the exploit moved", "+10 ETH", "Reproduce it yourself", "Test source", "contract VaultTest is Test"]],
     ["http", http, ["cross-tenant read", "/api/users/2", "What the oracle checked"]],
     ["evidence", evidence, ["secret present in the pinned snapshot", "REDACTED"]],
     ["forge (thin/unproven)", forgeThin, ["Replay not proven"]],

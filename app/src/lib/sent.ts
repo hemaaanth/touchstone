@@ -2,7 +2,7 @@ import type { RunEvent } from "./types"
 import type { Step } from "./runModel"
 
 // A message the operator sent that the agent has not echoed yet. `base` is
-// the run's event count when it was sent; only later events can settle it.
+// the run's event count when it was sent; only a close after it can lose it.
 // `mode`: still sending, steering the live turn, or starting a follow-up.
 // `restore`: if it is lost, put its text back in the composer.
 export type Sent = { id: string; text: string; base: number; mode: "sending" | "steer" | "follow-up"; restore?: boolean }
@@ -14,21 +14,27 @@ export const LOST = "The agent stopped before it read your message."
 // its reply starts and closes without one. The reply-start check skips the
 // close of the turn before it: a message sent as that turn ended becomes a
 // follow-up. A message still sending is only settled by its echo.
+//
+// The echo and the steer error match by id at any index, not only after
+// `base`. The id is new for each send, so a match is always this message. And
+// `base` is a count of the events this client holds: the live stream adds a
+// `status` (and, for an idle run, a `closed`) that the server never stores,
+// so after a follow-up
+// reloads the server's events, the echo can sit before `base`. Before this,
+// that copy never settled: it stayed at the bottom of the thread as a second
+// copy of the message, under the reply to it.
 export function settleSent(sent: Sent[], events: RunEvent[]): Map<string, string> {
   const out = new Map<string, string>()
   for (const x of sent) {
+    const own = events.find((e) => e.id === x.id && (e.ev === "operator-message" || e.ev === "steer-error"))
+    if (own) {
+      out.set(x.id, own.ev === "operator-message" ? "echoed" : typeof own.error === "string" && own.error ? own.error : LOST)
+      continue
+    }
+    if (x.mode === "sending") continue
     let open = x.mode === "steer"
     for (let i = x.base; i < events.length; i++) {
       const e = events[i]
-      if (e.id === x.id && e.ev === "operator-message") {
-        out.set(x.id, "echoed")
-        break
-      }
-      if (e.id === x.id && e.ev === "steer-error") {
-        out.set(x.id, typeof e.error === "string" && e.error ? e.error : LOST)
-        break
-      }
-      if (x.mode === "sending") continue
       if (e.ev === "reply-start") open = true
       if (e.ev === "closed" && open) {
         out.set(x.id, LOST)

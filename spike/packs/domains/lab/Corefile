@@ -1,3 +1,11 @@
+.:53 {
+  errors
+  file /lab/root.db
+}
+test:53 {
+  errors
+  file /lab/test.db test
+}
 touchstone.test:53 {
   errors
   file /lab/zone.db touchstone.test

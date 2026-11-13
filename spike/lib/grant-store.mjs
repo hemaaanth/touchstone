@@ -23,11 +23,12 @@
 // real only when its proof replays and shows harm. A grant with no live run is
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
+import { isPublicSuffix, sharedWildcardRefusal } from "./public-suffix.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -38,26 +39,402 @@ const grantsFile = () => process.env.TOUCHSTONE_GRANTS_FILE || path.join(DATA_DI
 export const GRANT_KINDS = ["operator-owned", "authorized"];
 
 // One shared console token for every mutating console action — both the live-reach
-// grant routes and the settings-write guard import THIS. TOUCHSTONE_GRANT_TOKEN
-// pins it (tests, or an operator who wants a known value); otherwise one random
-// token is minted per process. Single source => the operator sees and pastes one
+// grant routes and the settings-write guard read it HERE. Single source => one
 // token, never two that happen to share the x-touchstone-grant-token header.
-export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || randomUUID();
+//
+// The token is saved next to the grants file, so it stays the same across server
+// restarts and an open page keeps working. The operator never types it: the dev
+// server writes it into the page it serves. It is saved in a file, NOT in
+// process.env, because the agent child inherits the server's env and must never
+// hold the token. TOUCHSTONE_GRANT_TOKEN pins a known value for tests (it cannot be
+// rotated); TOUCHSTONE_GRANT_TOKEN_FILE moves the file so a test uses a throwaway.
+//
+// consoleToken() reads the file on every call, so a rotate (rotateConsoleToken)
+// takes effect at once in the running server and in every other process that
+// reads it, such as a grant CLI started later. The value is never logged.
+export const consoleTokenFile = () => process.env.TOUCHSTONE_GRANT_TOKEN_FILE || path.join(DATA_DIR, "console-token");
 
-// Read the whole store. A missing file or unparsable JSON yields an empty list,
-// so a hand-edited or absent file degrades to "no grants", never a throw.
+// A token for this process only, used while the file can be neither read nor
+// written (a read-only disk). Without it each call would make a new token.
+let fallbackToken = null;
+
+const readToken = (file) => {
+  try {
+    return readFileSync(file, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+};
+
+export function consoleToken() {
+  if (process.env.TOUCHSTONE_GRANT_TOKEN) return process.env.TOUCHSTONE_GRANT_TOKEN;
+  const file = consoleTokenFile();
+  const saved = readToken(file);
+  if (saved) return saved;
+  if (fallbackToken) return fallbackToken;
+  const token = randomUUID();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    // wx: never write over a token another process saved a moment ago.
+    writeFileSync(file, token + "\n", { mode: 0o600, flag: "wx" });
+    return token;
+  } catch (e) {
+    const theirs = readToken(file);
+    if (theirs) return theirs;
+    // The file is there but holds no token (empty): it is no token, so replace it.
+    if (e?.code === "EEXIST") {
+      try {
+        writeFileSync(file, token + "\n", { mode: 0o600 });
+        return token;
+      } catch {
+        /* fall through */
+      }
+    }
+    fallbackToken = token; // a read-only disk: the token lasts for this process only
+    return token;
+  }
+}
+
+// Same token? The compare takes the same time for every wrong token of the right length.
+export function sameToken(given, token) {
+  if (typeof given !== "string" || typeof token !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(token);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Replace the console token with a new random one. Only the holder of the current
+// token may: `given` must still be the current token at the moment of the swap
+// (the check and the write run in one synchronous step), so of two rotates at
+// once the second is refused and exactly one new token is valid. The write is
+// atomic: a temp file in the same folder (mode 0600), fsync, rename over the
+// old one. Returns the new token, or null when `given` is not the current token.
+// A failed write throws, removes its temp file, and leaves the old token valid.
+// The error never holds a token.
+//
+// Two console processes can rotate at once, so the check and the write run
+// under the store lock of the token file (withStoreLock): the second waits,
+// then finds `given` is no longer current and is refused.
+export function rotateConsoleToken(given) {
+  if (process.env.TOUCHSTONE_GRANT_TOKEN) {
+    throw new Error("The console token is pinned by TOUCHSTONE_GRANT_TOKEN, so it cannot be rotated. Restart the console without it.");
+  }
+  const file = consoleTokenFile();
+  const done = new Set();
+  try {
+    return withStoreLock(file, "console token", () => {
+      try {
+        return rotateLocked(given, file);
+      } finally {
+        done.add("ran");
+      }
+    });
+  } catch (e) {
+    if (done.has("ran")) throw e; // already a sentence from rotateLocked
+    // The lock could not be taken: busy, or the folder refuses it. No token in the message.
+    const why = /is busy/.test(String(e?.message)) ? "another console process is changing it right now" : `its lock could not be taken (${e?.code || "lock failed"})`;
+    throw new Error(`The console token was not changed: ${why}. The old token still works.`);
+  }
+}
+
+function rotateLocked(given, file) {
+  if (!sameToken(given, consoleToken())) return null;
+  const token = randomUUID();
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, token + "\n", { mode: 0o600 });
+    const fd = openSync(tmp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    lockStillOurs(file);
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw new Error(`The console token was not changed: it could not be saved (${e.code || "write failed"}). The old token still works.`);
+  }
+  fallbackToken = null;
+  // The rename is done and the new token works now. Sync the folder so a power
+  // cut cannot bring the old file back. A failed folder sync is not thrown:
+  // the caller would then keep the old, no longer valid token on the page.
+  try {
+    syncFolder(path.dirname(file));
+  } catch {
+    /* durability across a power cut is weaker; the token is valid */
+  }
+  return token;
+}
+
+// One JSON store file: an array of records. The grant store and the scope store
+// both use these two functions.
+//
+// loadStore: a missing file is an empty store. A file that exists but cannot be
+// read, or is not a JSON array, is DAMAGED: this throws. Every mutation loads
+// with it first, so a mutation never writes over a damaged file.
+export function loadStore(file, what) {
+  let raw;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw new Error(`Refused: the ${what} file ${file} exists but cannot be read (${e.code || e.message}). Nothing was changed. Repair the file or move it away, then try again.`);
+  }
+  let arr;
+  try {
+    arr = JSON.parse(raw);
+  } catch {
+    arr = null;
+  }
+  if (!Array.isArray(arr)) throw new Error(`Refused: the ${what} file ${file} is not a valid JSON list. Nothing was changed. Repair the file or move it away, then try again.`);
+  return arr;
+}
+
+// saveStore: write a temp file in the same directory, then rename it over the
+// store. A crash in the middle leaves the old file whole, never a half file.
+export function saveStore(file, arr) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  // Keep the mode the operator gave the file. A new file gets the default mode.
+  let mode = 0o666;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    /* no file yet */
+  }
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(arr, null, 2), { mode });
+    const fd = openSync(tmp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    lockStillOurs(file);
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+  // The rename lives in the folder: fsync the folder too, so a crash right
+  // after this cannot bring the old file back.
+  syncFolder(path.dirname(file));
+}
+
+function syncFolder(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, "r");
+    fsyncSync(fd);
+  } catch (e) {
+    // A system that cannot fsync a folder (EISDIR, EINVAL, EPERM) keeps the old
+    // durability. Any other error is real.
+    if (!["EISDIR", "EINVAL", "EPERM", "EBADF"].includes(e.code)) throw e;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// ---- One writer at a time, across processes -------------------------------
+//
+// The server and the CLI can both write a store. Each mutation reads the whole
+// file, changes it and writes it back, so two at once could lose one update.
+// withStoreLock runs a mutation while it holds "<file>.lock", made with "wx"
+// (only one process can make it). The lock holds the owner's pid, the time and
+// a random token; ownership is the token, never the inode (an inode number can
+// be reused by the next lock).
+//   - The lock path must be a regular file. A link or a folder there is
+//     refused with a sentence and never followed (lstat).
+//   - A lock is STALE when its process is gone, or when it is older than
+//     LOCK_STALE_MS. Breaking a stale lock is serialized by a second file,
+//     "<file>.lock.break", made with "wx": one breaker at a time. Under it the
+//     breaker reads the lock again and removes it only when it is still the
+//     very lock it judged stale (same content, so same token). A lock made in
+//     the meantime is never removed, so a writer is never refused because
+//     another process broke the lock it had just made.
+//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS, default
+//     LOCK_WAIT_MS (300 ms). The wait is synchronous: store calls are
+//     synchronous, and the console server calls them from its request
+//     handlers. A short bound keeps one stuck lock from freezing the console:
+//     the write is refused with a sentence and the operator tries again.
+//   - A writer that held its lock longer than LOCK_STALE_MS can lose it. A
+//     real write takes milliseconds; only a stopped or hung process is that
+//     slow. saveStore checks, just before its rename, that the lock still holds
+//     its token, and refuses if not. Release removes the lock only then too.
+// Re-entrant in one process: a mutation that calls another on the same store
+// does not wait for itself.
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 300;
+const BREAK_STALE_MS = 5_000; // a break takes microseconds
+const heldLocks = new Map(); // lock path -> our token
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// For tests only: called between judging a lock stale and breaking it, so a
+// test can change the lock in that gap or make two processes meet there.
+export const lockTestHooks = { afterStaleJudged: null, beforeBreakUnlink: null };
+
+// What sits at a lock path: null (nothing), { bad: true } (not a regular
+// file), or { raw, token, owner, ageMs }.
+function lockAt(lock) {
+  let st;
+  try {
+    st = lstatSync(lock);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return { bad: true };
+  let raw = "";
+  try {
+    raw = readFileSync(lock, "utf8");
+  } catch {
+    return null; // removed between the lstat and the read
+  }
+  let owner = null;
+  try {
+    owner = JSON.parse(raw);
+  } catch {
+    /* being written right now, or damaged */
+  }
+  return { raw, token: owner?.token ?? null, owner, ageMs: Date.now() - st.mtimeMs };
+}
+
+function isStale(lock, { owner, ageMs }, maxAgeMs) {
+  if (ageMs > maxAgeMs) return true;
+  const pid = Number(owner?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // no owner written yet: give the writer a moment
+  if (pid === process.pid) return !heldLocks.has(lock); // ours but not held: a leftover
+  try {
+    process.kill(pid, 0);
+    return false; // alive (or alive under another user: EPERM below)
+  } catch (e) {
+    return e.code === "ESRCH";
+  }
+}
+
+// Break the stale lock `seen`, one breaker at a time. Removes the lock only
+// when it is still exactly `seen`. Returns the pid of another live breaker
+// when one is at work (the caller waits), else null; the caller tries "wx"
+// again either way.
+//   THE BREAKER FILE "<lock>.break" holds { pid, at, token }. It must be a
+//   regular file: a link or a folder there is refused like one at the lock
+//   path, never followed and never removed. A breaker file is stale when its
+//   process is gone, when it has no owner after 2 s, or when it is older than
+//   BREAK_STALE_MS (a break takes microseconds, so a breaker that old is
+//   stuck); a stale one is removed. A live, young breaker is waited for, inside
+//   the same bound as a live lock.
+function breakStale(what, lock, seen) {
+  const breaker = `${lock}.break`;
+  try {
+    writeFileSync(breaker, JSON.stringify({ pid: process.pid, at: Date.now(), token: randomUUID() }), { flag: "wx", mode: 0o600 });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    // Another process is breaking it now, or crashed while doing so.
+    const b = lockAt(breaker);
+    if (!b) return null; // finished just now
+    if (b.bad) throw notALockFile(what, breaker);
+    if (isStale(breaker, b, BREAK_STALE_MS)) {
+      // Only that very breaker file: the same content it had when judged.
+      if (lockAt(breaker)?.raw === b.raw) rmSync(breaker, { force: true });
+      return null;
+    }
+    return b.owner?.pid ?? "unknown";
+  }
+  try {
+    const now = lockAt(lock);
+    if (now && !now.bad && now.raw === seen.raw && isStale(lock, now, LOCK_STALE_MS)) {
+      lockTestHooks.beforeBreakUnlink?.();
+      unlinkSync(lock);
+    }
+  } finally {
+    rmSync(breaker, { force: true });
+  }
+  return null;
+}
+
+const notALockFile = (what, lock) =>
+  new Error(`Refused: the ${what} lock ${lock} is a link or a folder, not a lock file. Touchstone does not follow it. Nothing was changed. Remove it, then try again.`);
+
+// Every pass of the loop ends at one place: the deadline check, then a short
+// pause. No path tries again without both, so the wait bound holds everywhere.
+export function withStoreLock(file, what, fn) {
+  const lock = `${file}.lock`;
+  if (heldLocks.has(lock)) return fn();
+  mkdirSync(path.dirname(file), { recursive: true });
+  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const token = randomUUID();
+    try {
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { flag: "wx", mode: 0o600 });
+      heldLocks.set(lock, token);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    let holder = "unknown";
+    const seen = lockAt(lock);
+    if (seen?.bad) throw notALockFile(what, lock);
+    if (seen && isStale(lock, seen, LOCK_STALE_MS)) {
+      lockTestHooks.afterStaleJudged?.();
+      holder = breakStale(what, lock, seen) ?? holder;
+    } else if (seen) {
+      holder = seen.owner?.pid ?? holder;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${holder}) is writing it. Nothing was changed. Try again in a moment.`);
+    }
+    pause(seen ? 10 : 1);
+  }
+  try {
+    return fn();
+  } finally {
+    const ours = heldLocks.get(lock);
+    heldLocks.delete(lock);
+    if (lockAt(lock)?.token === ours) rmSync(lock, { force: true });
+  }
+}
+
+// Called by saveStore just before its rename: a writer that holds the lock of
+// this file must still hold it. Throws when another process took it over.
+function lockStillOurs(file) {
+  const lock = `${file}.lock`;
+  if (!heldLocks.has(lock)) return;
+  if (lockAt(lock)?.token !== heldLocks.get(lock)) {
+    throw new Error(`Refused: another process took over the store lock ${lock} during this write (it was held longer than 30 s). Nothing was changed. Try again.`);
+  }
+}
+
+// The grants for a mutation: throws on a damaged file (see loadStore).
+export const loadGrants = () => loadStore(grantsFile(), "grant store");
+
+// A sentence when the grant store file exists but cannot be read, else null.
+// The gate then refuses every live run (readGrants reads it as empty).
+export function grantStoreError() {
+  try {
+    loadGrants();
+    return null;
+  } catch (e) {
+    // Read on a page that changes nothing: no "Nothing was changed".
+    const text = String(e?.message ?? e)
+      .replace(/^Refused: /, "")
+      .replace(/ Nothing was changed\. Repair the file or move it away, then try again\.$/, " Its grants are not shown, and none can be added or changed, until the file is repaired or moved away.");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+}
+
+// Read the whole store for a gate or a list. A missing file is an empty list.
+// A damaged file also reads as "no grants": the gate then refuses every run
+// (fail closed). It is never written over: addGrant and removeGrant refuse it.
 export function readGrants() {
   try {
-    const arr = JSON.parse(readFileSync(grantsFile(), "utf8"));
-    return Array.isArray(arr) ? arr : [];
+    return loadGrants();
   } catch {
     return [];
   }
 }
 
 function writeGrants(arr) {
-  mkdirSync(path.dirname(grantsFile()), { recursive: true });
-  writeFileSync(grantsFile(), JSON.stringify(arr, null, 2));
+  saveStore(grantsFile(), arr);
 }
 
 // One host, normalized to the form the allow-list and the proxy compare on:
@@ -65,48 +442,96 @@ function writeGrants(arr) {
 // hostname, an "example.com:443" host:port, or a full "https://example.com/x"
 // URL and keeps only the hostname. Returns null for anything that is not a
 // usable hostname or IP literal, so a bad entry is dropped, never stored.
+//
+// CANONICAL. An IP literal comes out in one spelling, whatever spelling came
+// in, so every allow/deny decision sees the real address:
+//   - IPv4 in any form the WHATWG URL parser (and so fetch) accepts:
+//     2130706433, 0177.0.0.1 and 0x7f000001 all become 127.0.0.1.
+//   - IPv6 in its compressed form, without brackets: [fd00:0ec2:0:0:0:0:0:254]
+//     and fd00:ec2::0254 both become fd00:ec2::254.
+// The result is idempotent: normalizeHost(normalizeHost(x)) === normalizeHost(x).
+// A bare IPv6 literal is never cut at a ":" as if that were a port.
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 export function normalizeHost(raw) {
   let s = String(raw ?? "").trim().toLowerCase();
   if (!s) return null;
-  // Pull the hostname out of a URL, or a bare "host[:port][/path]".
-  if (s.includes("://")) {
-    try { s = new URL(s).hostname; } catch { return null; }
-  } else {
-    s = s.split("/")[0]; // drop any path
-    // Strip a :port, but keep a bracketed IPv6 literal intact.
-    if (!s.startsWith("[")) s = s.split(":")[0];
-    else s = s.replace(/^\[|\].*$/g, "");
+  // A wildcard entry, "*.example.com": a name pattern, never an address.
+  if (s.startsWith("*.")) {
+    const base = s.slice(2).split("/")[0].split(":")[0].replace(/\.$/, "");
+    if (!HOSTNAME.test(base)) return null;
+    // A base that parses as an IP ("*.0.1") is not a name pattern.
+    let parsed;
+    try { parsed = new URL(`http://${base}/`).hostname; } catch { return null; }
+    return parsed === base && !isIP(base) ? `*.${base}` : null;
   }
-  s = s.replace(/\.$/, ""); // drop a trailing dot (FQDN root)
-  if (!s) return null;
-  // A hostname label set, or an IPv4/IPv6 literal. No spaces, no wildcards here
-  // (a wildcard entry is stored separately as "*.example.com", handled below).
-  const hostname = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
-  const ipv6 = /^[0-9a-f:]+$/;
-  if (hostname.test(s) || ipv6.test(s)) return s;
-  return null;
+  if (isIP(s) === 6) s = `[${s}]`;
+  let host;
+  try {
+    host = new URL(s.includes("://") ? s : `http://${s}`).hostname;
+    // Parse the host again as http, so a host from any scheme is canonical too.
+    host = new URL(`http://${host}/`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.replace(/\.$/, ""); // drop a trailing dot (FQDN root)
+  if (host.startsWith("[")) return host.slice(1, -1); // IPv6, already compressed by URL
+  if (isIP(host) === 4) return host;
+  return HOSTNAME.test(host) ? host : null;
 }
 
-// A short list of public suffixes we refuse to wildcard. A grant for
-// "*.<suffix>" would cover the whole registry (every .com, every .co.uk), which
-// is never a real scope. This is not the full Public Suffix List — it is the
-// common multi-party suffixes a fat-fingered or malicious grant would reach for.
-// A wildcard base must also have at least two labels, so "*.com" is refused on
-// the label count alone; this set catches the two-label public suffixes.
-const PUBLIC_SUFFIXES = new Set([
-  "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
-  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
-  "co.nz", "net.nz", "org.nz", "govt.nz",
-  "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
-  "com.br", "net.br", "org.br", "gov.br",
-  "co.in", "net.in", "org.in", "gov.in", "ac.in",
-  "com.cn", "net.cn", "org.cn", "gov.cn",
-  "co.za", "org.za", "gov.za",
-  "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
-  "github.io", "gitlab.io", "pages.dev", "web.app", "firebaseapp.com",
-  "herokuapp.com", "vercel.app", "netlify.app", "workers.dev", "appspot.com",
-  "s3.amazonaws.com", "cloudfront.net", "azurewebsites.net", "blob.core.windows.net",
-]);
+// "an unspecified address", "a loopback address".
+const article = (word) => (/^[aeiou]/.test(word) ? "an" : "a");
+
+// What kind of address an IP literal is, decided on the PARSED address, never
+// on its spelling. Returns null when the host is not an IP literal. Kinds:
+// "public", "loopback", "private" (RFC 1918, carrier-grade NAT, IPv6 unique-
+// local), "link-local", "metadata" (cloud metadata), "unspecified", "reserved"
+// (multicast and the like). An IPv6 address that carries an IPv4 address
+// (::ffff:a.b.c.d, the NAT64 64:ff9b::/96 prefix, the old ::a.b.c.d form) is
+// the kind of that IPv4 address.
+function v4Kind([a, b, c, d]) {
+  if ((a === 169 && b === 254 && c === 169 && d === 254) || (a === 100 && b === 100 && c === 100 && d === 200)) return "metadata";
+  if (a === 0) return "unspecified";
+  if (a === 127) return "loopback";
+  if (a === 169 && b === 254) return "link-local";
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return "private";
+  if (a >= 224) return "reserved";
+  return "public";
+}
+
+// Eight 16-bit words of a canonical IPv6 literal (as normalizeHost gives it).
+function v6Words(ip) {
+  const [head, tail] = ip.includes("::") ? ip.split("::") : [ip, null];
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const fill = tail === null ? [] : Array(8 - h.length - t.length).fill("0");
+  return [...h, ...fill, ...t].map((x) => parseInt(x, 16));
+}
+
+export function ipKind(raw) {
+  const ip = normalizeHost(raw);
+  if (!ip || !isIP(ip)) return null;
+  if (isIP(ip) === 4) return v4Kind(ip.split(".").map(Number));
+  const w = v6Words(ip);
+  if (w.length !== 8 || w.some((x) => !Number.isInteger(x) || x < 0 || x > 0xffff)) return "reserved";
+  const zero = (from, to) => w.slice(from, to).every((x) => x === 0);
+  const embedded = () => v4Kind([w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255]);
+  if (zero(0, 5) && w[5] === 0xffff) return embedded(); // ::ffff:a.b.c.d
+  if (w[0] === 0x64 && w[1] === 0xff9b && zero(2, 6)) return embedded(); // NAT64
+  if (zero(0, 8)) return "unspecified";
+  if (zero(0, 7) && w[7] === 1) return "loopback";
+  if (zero(0, 6)) return embedded(); // ::a.b.c.d, the old IPv4-compatible form
+  if (w[0] === 0xfd00 && w[1] === 0x0ec2 && zero(2, 7) && w[7] === 0x254) return "metadata";
+  if ((w[0] & 0xffc0) === 0xfe80) return "link-local";
+  if ((w[0] & 0xfe00) === 0xfc00) return "private";
+  if ((w[0] & 0xff00) === 0xff00 || (w[0] & 0xffc0) === 0xfec0) return "reserved"; // multicast, old site-local
+  return "public";
+}
+
+// The public suffixes come from the Public Suffix List (lib/public-suffix.mjs),
+// the one source of truth. This name stays for the Domains CAA walk
+// (packs/domains/tls.mjs), which asks only `.has(name)`.
+export const PUBLIC_SUFFIXES = Object.freeze({ has: (name) => isPublicSuffix(name) });
 
 // True for a hostname that is loopback, unspecified, or an obvious local name
 // (not an IP — those are caught by isIP + isBlockedAddress at grant time). These
@@ -116,40 +541,26 @@ function isLocalName(name) {
   return name === "localhost" || name === "localhost.localdomain" || name.endsWith(".localhost");
 }
 
-// True for an IP literal in a range a run must not reach without opting in:
-// loopback, private LAN, link-local (incl. cloud metadata 169.254.169.254),
-// carrier-grade NAT, unspecified, and the IPv6 equivalents. Same ranges the
-// scope proxy pins against (lib/scope-proxy.mjs) and lib/fetch.mjs refuses.
-function isPrivateIp(addr) {
-  const fam = isIP(addr);
-  if (fam === 4) {
-    const p = addr.split(".").map(Number);
-    const [a, b] = p;
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    return false;
-  }
-  if (fam === 6) {
-    const a = addr.toLowerCase().replace(/^\[|\]$/g, "");
-    if (a === "::" || a === "::1") return true;
-    if (a.startsWith("fe80") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb")) return true;
-    if (a.startsWith("fc") || a.startsWith("fd")) return true;
-    const m = a.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (m) return isPrivateIp(m[1]);
-    return false;
-  }
-  return false;
-}
-
 // Reject a host entry that must not be granted. Returns an error string, or null
 // if the entry is allowed. `allowPrivate` opts a grant into loopback/private
 // space on purpose (the operator's own LAN, or a test). Wildcard bases are
 // checked for label count and public suffixes either way — a "*.com" grant is
 // never a real scope.
 function grantEntryError(entry, allowPrivate) {
+  // A user name or password in the entry would be dropped by normalizeHost
+  // without a word. Refuse it, and name the host only, never the secret.
+  const raw = String(entry ?? "").trim();
+  if (raw.includes("@")) {
+    let u = null;
+    try {
+      u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+    } catch {
+      /* not a URL: normalizeHost decides */
+    }
+    if (u && (u.username || u.password)) {
+      return `the host entry for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a host. Remove it, then add the grant again.`;
+    }
+  }
   const e = normalizeHost(entry);
   // An unusable host is not this guard's concern: it is dropped by normalizeHost
   // and caught downstream by the "at least one valid host" check. This guard only
@@ -160,15 +571,57 @@ function grantEntryError(entry, allowPrivate) {
     const base = e.slice(2);
     const labels = base.split(".").filter(Boolean);
     if (labels.length < 2) return `"${e}" is too broad: a wildcard needs at least two labels after "*." (so "*.example.com", never "*.com").`;
-    if (PUBLIC_SUFFIXES.has(base)) return `"${e}" covers a whole public suffix (${base}); grant the exact subdomains instead.`;
+    // A public suffix, a name with public suffixes under it, or a shared name
+    // the PSL lacks: the wildcard would cover hosts that belong to other people.
+    const shared = sharedWildcardRefusal(base);
+    if (shared) return shared;
     return null;
   }
   if (!allowPrivate) {
     if (isLocalName(e)) return `"${e}" is a loopback name; a grant for it would reach the console's own host. Pass allowPrivate to grant private space on purpose.`;
-    if (isIP(e) && isPrivateIp(e)) return `"${e}" is a loopback/private/link-local address; a grant for it could reach the host or cloud metadata. Pass allowPrivate to grant private space on purpose.`;
-    if (e === "0.0.0.0") return `"0.0.0.0" is the unspecified address and is never a target. Pass allowPrivate to grant private space on purpose.`;
+    // Decided on the parsed address (ipKind), so no spelling of a private
+    // address passes as public.
+    const kind = ipKind(e);
+    if (kind && kind !== "public") return `"${e}" is ${article(kind)} ${kind} address, not a public one; a grant for it could reach the host or cloud metadata. Pass allowPrivate to grant private space on purpose.`;
   }
   return null;
+}
+
+// The stricter rule for a live scope the operator opts into private space (a
+// local lab). Returns an error string, or null if the entry is allowed. The
+// host is parsed first (normalizeHost, ipKind); the decision is on the parsed
+// address, never on the text. Every host in such a scope must be:
+//   - exactly "localhost", or
+//   - an IP literal whose address is loopback or private (RFC 1918, carrier-
+//     grade NAT, IPv6 unique-local).
+// So: no DNS name of any kind, not even localhost.localdomain or *.localhost.
+// An opted-in grant lets the proxy reach private space, so a name in it could
+// be answered with any address, including cloud metadata. No wildcard. No
+// link-local, unspecified, reserved or cloud-metadata address in any spelling.
+// A host that does not parse is refused here, not dropped.
+// The hostname as the operator typed it, before any trailing dot is dropped.
+function typedHostname(entry) {
+  const t = String(entry ?? "").trim();
+  try {
+    return new URL(t.includes("://") ? t : `http://${isIP(t) === 6 ? `[${t}]` : t}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
+export function privateLabHostError(entry) {
+  const e = normalizeHost(entry);
+  if (!e) return `"${String(entry ?? "").trim()}" is not a host. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  if (e.startsWith("*.")) return `"${e}" is a wildcard. A private lab scope names exact hosts.`;
+  // "localhost." is an absolute DNS name: the run is aimed at the name as typed,
+  // and the proxy would ask DNS for it. Only the bare name is a lab.
+  if (typedHostname(entry).endsWith(".")) return `"${String(entry).trim()}" ends in a dot, so it is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  if (e === "localhost") return null;
+  const kind = ipKind(e);
+  if (!kind) return `"${e}" is a DNS name. A private lab scope takes only "localhost" or a loopback/private IP address.`;
+  if (kind === "loopback" || kind === "private") return null;
+  if (kind === "public") return `"${e}" is a public address. A private lab scope takes only loopback or private addresses.`;
+  return `"${e}" is ${article(kind)} ${kind} address and is never a lab.`;
 }
 
 // Does a granted host entry cover a request host? Exact match, or a "*.example
@@ -180,6 +633,8 @@ export function hostCovers(entry, host) {
   const h = normalizeHost(host);
   if (!e || !h) return false;
   if (e.startsWith("*.")) {
+    // An IP address is never a subdomain.
+    if (isIP(h)) return false;
     const base = e.slice(2);
     return h === base ? false : h.endsWith("." + base);
   }
@@ -237,9 +692,11 @@ export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, ex
     // grant for a public host never touches it.
     allowPrivate: priv,
   };
-  const all = readGrants();
-  all.unshift(grant);
-  writeGrants(all);
+  withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    all.unshift(grant);
+    writeGrants(all);
+  });
   return grant;
 }
 
@@ -248,11 +705,13 @@ export function getGrant(id) {
 }
 
 export function removeGrant(id) {
-  const all = readGrants();
-  const next = all.filter((g) => g.id !== id);
-  if (next.length === all.length) return false;
-  writeGrants(next);
-  return true;
+  return withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    const next = all.filter((g) => g.id !== id);
+    if (next.length === all.length) return false;
+    writeGrants(next);
+    return true;
+  });
 }
 
 // Is a grant live right now? A grant with an expiry in the past is inert.

@@ -1,0 +1,109 @@
+{
+  "domain": "example.com",
+  "base_domain": "example.com",
+  "dnssec": true,
+  "soa": {
+    "record": "elliott.ns.cloudflare.com. dns.cloudflare.com. 2418004112 10000 2400 604800 1800",
+    "values": {
+      "primary_nameserver": "elliott.ns.cloudflare.com",
+      "rname_email_address": "dns@cloudflare.com",
+      "serial": 2418004112,
+      "refresh": 10000,
+      "retry": 2400,
+      "expire": 604800,
+      "minimum": 1800
+    }
+  },
+  "ns": {
+    "hostnames": [
+      "hera.ns.cloudflare.com",
+      "elliott.ns.cloudflare.com"
+    ],
+    "warnings": []
+  },
+  "mx": {
+    "hosts": [],
+    "warnings": [
+      "example.com has a null MX record (RFC 7505): the domain explicitly does not accept mail"
+    ]
+  },
+  "mta_sts": {
+    "valid": false,
+    "error": "An MTA-STS DNS record does not exist.",
+    "warnings": []
+  },
+  "spf": {
+    "record": "v=spf1 -all",
+    "valid": true,
+    "dns_lookups": 0,
+    "void_dns_lookups": 0,
+    "warnings": [],
+    "parsed": {
+      "mechanisms": [],
+      "redirect": null,
+      "exp": null,
+      "ra": null,
+      "rp": null,
+      "rr": null,
+      "all": "fail"
+    }
+  },
+  "dmarc": {
+    "record": "v=DMARC1;p=reject;sp=reject;adkim=s;aspf=s",
+    "location": "example.com",
+    "valid": true,
+    "warnings": [
+      "rua tag (destination for aggregate reports) not found."
+    ],
+    "tags": {
+      "v": {
+        "value": "DMARC1",
+        "explicit": true
+      },
+      "p": {
+        "value": "reject",
+        "explicit": true
+      },
+      "sp": {
+        "value": "reject",
+        "explicit": true
+      },
+      "adkim": {
+        "value": "s",
+        "explicit": true
+      },
+      "aspf": {
+        "value": "s",
+        "explicit": true
+      },
+      "fo": {
+        "value": "0",
+        "explicit": false
+      },
+      "psd": {
+        "value": "u",
+        "explicit": false
+      },
+      "t": {
+        "value": "n",
+        "explicit": false
+      },
+      "np": {
+        "value": "reject",
+        "explicit": false
+      }
+    }
+  },
+  "smtp_tls_reporting": {
+    "valid": false,
+    "error": "An SMTP TLS Reporting record does not exist.",
+    "warnings": []
+  },
+  "bimi": {
+    "record": null,
+    "valid": false,
+    "selector": "default",
+    "error": "A BIMI record does not exist at the default selector.",
+    "warnings": []
+  }
+}

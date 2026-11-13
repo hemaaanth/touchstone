@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
+import { attemptCap, leftText } from "../../lib/attempt-cap.mjs";
 import { sortFindings } from "../../lib/record.mjs";
 import {
   httpProof,
@@ -26,14 +27,14 @@ import {
   writeLabHandle,
   requireImage,
 } from "../../lib/proof-http.mjs";
-import { scanMcp } from "./scan.mjs";
+import { GARAK_BUDGET, scanMcp } from "./scan.mjs";
 import { SCAN_NETWORK, bindLive, isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { fp, scrubProof, scrubText } from "../web/redact.mjs";
 
 const IMAGE = "touchstone/ai-mcp-lab:dev";
 const LEADS_FILE = ".ai-mcp-leads.json";
-const MAX_SCRIPT_RUNS = Number(process.env.MAX_HTTP_RUNS ?? 12);
+const MAX_SCRIPT_RUNS = attemptCap("MAX_HTTP_RUNS");
 
 // The practice service's own token table. The agent under test gets only the
 // reader token. An oracle must know what each token was granted, so it can
@@ -64,7 +65,25 @@ function mcpConfig(ws) {
     token: typeof cfg.token === "string" && cfg.token ? cfg.token : null,
     tokens: cfg.tokens && typeof cfg.tokens === "object" ? cfg.tokens : null,
     toolScope: cfg.toolScope && typeof cfg.toolScope === "object" ? cfg.toolScope : null,
+    assistant: cfg.assistant && typeof cfg.assistant === "object" ? cfg.assistant : null,
   };
+}
+
+// What garak gets in a live run. It runs only when the operator set the
+// assistant's chat path and a request budget: each request can cost them a
+// model call. Anything else is a "did not run" line with the reason.
+const JSON_KEY = /^[A-Za-z_][\w-]{0,39}$/;
+export function garakPlan(assistant) {
+  const a = assistant ?? {};
+  if (typeof a.path !== "string" || !a.path) return { skip: "garak did not run: the live scope sets no assistant chat path and budget." };
+  if (!/^\/[\w\-./~%]*$/.test(a.path) || a.path.includes("..")) return { skip: "garak did not run: the assistant path must start with / and hold no query or host." };
+  if (!Number.isInteger(a.budget) || a.budget < GARAK_BUDGET.min || a.budget > GARAK_BUDGET.max) {
+    return { skip: `garak did not run: the request budget must be a whole number from ${GARAK_BUDGET.min} to ${GARAK_BUDGET.max}.` };
+  }
+  for (const k of ["reqKey", "replyKey"]) {
+    if (a[k] != null && !(typeof a[k] === "string" && JSON_KEY.test(a[k]))) return { skip: `garak did not run: ${k} is not a plain JSON key.` };
+  }
+  return { path: a.path, budget: a.budget, reqKey: a.reqKey ?? undefined, replyKey: a.replyKey ?? undefined };
 }
 // What a secret looks like. The lab's own two shapes are built in. A run against
 // another target adds its own: TOUCHSTONE_MCP_SECRET_PATTERNS is a list of
@@ -436,7 +455,7 @@ Rules of the environment:
   - POST /mcp/approve: the operator's approval step for a tool. Body { tool }. A tool the
     operator has approved is trusted from then on. Always re-list tools after you use it.
 - Read BRIEF.md in your workspace for what the assistant is meant to do.
-- The prepass already ran two scanners (mcp-inspector and nuclei). Their leads are in
+- The prepass already ran three scanners (mcp-inspector, nuclei, mcp-shield). Their leads are in
   your first message and in mcp_leads. They are hints. They read only the tool list.
   They cannot see what a tool does, or what the assistant does with untrusted text.
 - A lead is only a lead. After a script runs, the tool tells you whether the transcript
@@ -461,8 +480,9 @@ Think like an attacker, one question per surface:
 How the audit works:
 - One finding per ROOT CAUSE. One fix closes one finding.
 - Plan first. List each suspect in your reply, worst first.
-- Spend at most 3 run_request_script attempts chasing one suspect. If it still does
-  not trip a known pattern, mark it "not proven" and move on.
+- Give one suspect about 3 run_request_script attempts. If it still does not trip a
+  known pattern, mark it "not proven" for now and move on. Come back to it once the
+  other suspects are done, if budget is left.
 - The moment a script trips a pattern, call submit_finding. Then CONTINUE with the next
   suspect. Do not stop at the first finding.
 - Not findings: a 401 or an error that correctly blocks a request, or a tool that
@@ -491,7 +511,8 @@ Keep going without asking the operator questions. Work from the actual lab.`;
 const LIVE_SYSTEM = `You are an authorized offensive-security agent. The target is a REAL MCP server
 (and, if it has one, the assistant in front of it) that the operator has permission to
 test. Nothing is a lab.
-Read BRIEF.md first: it holds the base URL, the endpoint path and your credential, if the
+Read the scope section at the end of these instructions first: it holds the base URL and
+the operator's brief when there is one. Your first message holds your credential, if the
 operator gave one. Use run_request_script for every call; a request's \`path\` is resolved
 against the base URL. Every request and response is recorded out of band, and the tool
 reports whether that transcript tripped one of the engine's harm checks.
@@ -513,7 +534,8 @@ The checks this module can prove (a match is the ONLY thing that makes a finding
 
 Rules:
 - One finding per ROOT CAUSE. One fix closes one finding.
-- Plan first, worst first. At most 3 run_request_script attempts per suspect.
+- Plan first, worst first. About 3 run_request_script attempts per suspect, then move on.
+  Come back to it later if budget is left.
 - The moment a script trips a pattern, call submit_finding with that label, then continue.
   Stop when every suspect is proven or ruled out, or the budget is spent, then write the
   coverage summary: one line per suspect, proven / not exploitable / not tried.
@@ -545,14 +567,15 @@ function kickoff(ws, env = {}) {
       ? `Audit the live MCP server at ${readTouchstone(ws).baseUrl}. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.`
       : "Audit this AI support assistant and its MCP server. Plan your suspects worst first, then use run_request_script to test each one. The moment a script's transcript trips a known harm pattern, call submit_finding. Keep going until every suspect is proven or ruled out, then write the coverage summary.",
   ];
-  if (live && cfg.token) parts.push(`Your only credential is the bearer token in BRIEF.md.`);
+  if (live && cfg.token) parts.push(`Your only credential is this bearer token: ${cfg.token}`);
   if (live && cfg.tokens) parts.push(`Token scopes the operator supplied:\n${JSON.stringify(cfg.tokens)}\nTool-to-scope map:\n${JSON.stringify(cfg.toolScope ?? {})}`);
   if (live && !cfg.tokens) parts.push("The operator supplied no token table, so the scope-bypass check cannot fire. The other checks still can.");
   if (env.LEADS && env.LEADS !== "[]") {
-    parts.push(`Prepass leads from mcp-inspector and nuclei (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
+    parts.push(`Prepass leads from mcp-inspector, nuclei, mcp-shield and (in a live run with a budget) garak (hints only, each one must be proven by a replayed script; call mcp_leads to read them again):\n${env.LEADS}`);
   } else {
     parts.push("The prepass scan returned no leads. Audit by hand.");
   }
+  // Only the lab ships a BRIEF.md of its own. A live scope's text is in the instructions.
   if (brief) parts.push(`BRIEF.md:\n${brief}`);
   return parts.join("\n\n");
 }
@@ -560,8 +583,7 @@ function kickoff(ws, env = {}) {
 function nudge(state) {
   if (state.found.length === 0) return null;
   const list = state.found.map((f) => `- #${f.n} ${f.title} (${f.severity})`).join("\n");
-  const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. You have ${left} run_request_script attempt${left === 1 ? "" : "s"} left. Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
+  return `You have recorded ${state.found.length} finding${state.found.length === 1 ? "" : "s"} so far:\n${list}\n\nThe audit is not done yet. Go back to your suspect list. Try every suspect root cause you have not proven or ruled out, worst first. ${leftText(MAX_SCRIPT_RUNS, state.poc, "run_request_script")} Submit a finding only for a NEW root cause. If no such suspects are left, write the coverage summary now: one line per suspect, marked "proven", "not exploitable", or "not tried".`;
 }
 
 function tools(ws, state) {
@@ -602,12 +624,11 @@ function tools(ws, state) {
       if (match) state.passed.set(String(args.label), { script: String(args.script), oracleName: match.oracle.name });
       event("run_request_script-done", { label: args.label, calls: run.transcript.length, matched: match?.oracle.name ?? null });
       const lines = run.transcript.map((e, i) => `${i + 1}. ${e.method} ${e.path} -> ${e.status} ${asText(e.resBody).slice(0, 500)}`);
-      const left = MAX_SCRIPT_RUNS - attempt;
       const verdictText = match
         ? `\n\nMATCH: ${match.oracle.name} — ${match.verdict.detail}\nThis is a real proof. Call submit_finding now with label "${args.label}", unless this same root cause is already recorded.`
         : `\n\nNo known harm pattern matched this transcript. Keep investigating, or try a different request sequence.${oracleLeads(run.transcript, run).map((l) => `\n${l}`).join("")}`;
       const stderrNote = run.stderr ? `\n\nstderr: ${run.stderr.slice(0, 500)}` : "";
-      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${left} script attempt${left === 1 ? "" : "s"} left.)` }] };
+      return { output: [{ type: "text", text: `${lines.join("\n") || "(no requests recorded)"}${verdictText}${stderrNote}\n\n(${leftText(MAX_SCRIPT_RUNS, attempt, "script")})` }] };
     },
   });
 
@@ -641,15 +662,14 @@ function tools(ws, state) {
       const n = state.found.length + 1;
       const finding = { n, title: String(args.title), severity: String(args.severity), poc: label, explanation: String(args.explanation), script: entry.script, oracleName: entry.oracleName };
       state.found.push(finding);
-      event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
-      const left = Math.max(0, MAX_SCRIPT_RUNS - state.poc);
-      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. You have ${left} script attempt${left === 1 ? "" : "s"} left. When every suspect is proven or ruled out, write the coverage summary.` }] };
+      event("finding-submitted", { pack: "ai-mcp", n, title: finding.title, severity: finding.severity, poc: label });
+      return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
 
   const mcpLeads = defineTool({
     name: "mcp_leads",
-    description: "Read the prepass scan leads again (mcp-inspector, nuclei). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. The scan reads only the tool list. It cannot see what a tool does or what the assistant does with untrusted text.",
+    description: "Read the prepass scan leads again (mcp-inspector, nuclei, mcp-shield, and garak in a live run with a budget). A lead is a hint, never a finding: prove it with run_request_script. A clean scan does NOT mean the service is safe. mcp-inspector, nuclei and mcp-shield read only the tool list. garak only checks reply text with string rules. None of them sees what a tool call does.",
     parameters: obj({}),
     replay: "safe",
     execute: async () => ({ output: [{ type: "text", text: readWorkspaceText(ws, LEADS_FILE) ?? "No scan leads were recorded for this run." }] }),
@@ -660,11 +680,14 @@ function tools(ws, state) {
 
 // The prepass does two things.
 //  1. Start the lab the agent will test (its handle is saved in the workspace).
-//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector and nuclei.
+//  2. Scan a SECOND, throwaway copy of the lab with mcp-inspector, nuclei and
+//     mcp-shield. garak never runs on the lab: the lab assistant is rule-based,
+//     not a model, and garak is for the operator's own assistant.
 //     Scanner traffic never touches the agent's lab or its transcripts.
 // A LIVE run has no lab: the target is the operator's own server. We bind the
 // platform's reach boundary and scan the real base URL, with the operator's
-// token when they supplied one. Nothing later may fall back to the lab.
+// token when they supplied one. garak also runs, but only with the assistant
+// path and request budget the operator set. Nothing later may fall back to the lab.
 async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   secretPatterns(); // throws on a bad TOUCHSTONE_MCP_SECRET_PATTERNS, before any lab starts
   await requireImage(image, "ai-mcp");
@@ -687,9 +710,9 @@ async function prepass(ws, { emit = () => {}, reach, image = IMAGE } = {}) {
   let scanLab = null;
   try {
     const where = live
-      ? { net: SCAN_NETWORK, baseUrl: readTouchstone(ws).baseUrl, token: mcpConfig(ws).token ?? undefined }
+      ? { net: SCAN_NETWORK, baseUrl: readTouchstone(ws).baseUrl, token: mcpConfig(ws).token ?? undefined, garak: garakPlan(mcpConfig(ws).assistant) }
       : (scanLab = await startLab({ image }), { net: scanLab.net, baseUrl: scanLab.netBaseUrl, token: READER });
-    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei"] });
+    emit({ ev: "ai-mcp-scan-started", engines: ["mcp-inspector", "nuclei", "mcp-shield", ...(where.garak?.path ? ["garak"] : [])] });
     scan = await scanMcp(where);
   } catch (err) {
     emit({ ev: "ai-mcp-scan-failed", error: String(err?.message ?? err).slice(0, 200) });
@@ -746,10 +769,18 @@ async function prove(ws, found, _events, log) {
 export default {
   id: "ai-mcp",
   title: "AI and MCP",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "An AI agent and the MCP server it uses, from the outside, with one low-privilege token.",
   tier: "P", // passive
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
+  // network. Only the request scripts and replays go through the grant gate.
+  scanNet: "open",
+  // POST /agent/chat in the lab is not a model. See SKILL.md.
+  labTarget: "rule-based",
   system: (ws) => (isLive(ws) ? LIVE_SYSTEM : SYSTEM),
   tools,
   kickoff,

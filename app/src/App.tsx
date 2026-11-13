@@ -4,21 +4,22 @@ import type {
   RunSummary,
   TargetChoice,
   PackChoice,
-  Playbook,
   RunMode,
 } from "@/lib/types"
-import type { CatalogState } from "@/lib/catalog"
-import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } from "@/lib/api"
+import { isOwnScope, type CatalogState } from "@/lib/catalog"
+import { archiveRun, deleteRun, fetchModels, fetchRuns, fetchStoreErrors, renameRun, startRun } from "@/lib/api"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
-import { RunChat } from "@/components/run-chat"
+import { RunChat, type FocusFinding } from "@/components/run-chat"
+import { FindingsPage } from "@/components/findings-page"
 import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
-import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
+import { ErrorState } from "@/components/assistant-ui/elements/error-state"
+import { onStalePage } from "@/lib/console-token"
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
@@ -26,19 +27,31 @@ export function App() {
   const [packs, setPacks] = useState<PackChoice[]>([])
   // Whether /api/models has answered, so a page can tell "none" from "unknown".
   const [catalog, setCatalog] = useState<CatalogState>("loading")
+  // A store file that cannot be read lists as empty: these sentences say so.
+  const [storeErrors, setStoreErrors] = useState<string[]>([])
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [view, setView] = useState<View | null>(null)
+  // "Open this finding" in the open run (the Findings page's Open in run).
+  const [focus, setFocus] = useState<(FocusFinding & { run: string }) | null>(null)
   const [sidebarWidth, setSidebarWidth, sidebarDefault] = useStoredWidth("ts.sidebarWidth", 256, 208, 480)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  // A write the server refused because this page's console token is old (it was
+  // rotated in another tab). Shown once, with Reload, for every kind of write:
+  // a rename or an archive shows no error of its own.
+  const [stalePage, setStalePage] = useState<string | null>(null)
+  useEffect(() => onStalePage(setStalePage), [])
 
   const refreshModels = useCallback(() => {
+    fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
     fetchModels()
       .then(({ models, targets, packs }) => {
         setModels(models)
-        setTargets(targets)
+        // The operator's own scopes first, newest on top; then the labs that ship with the app.
+        const own = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
+        setTargets([...targets.filter(own).reverse(), ...targets.filter((t) => !own(t))])
         setPacks(packs ?? [])
         setCatalog("ready")
       })
@@ -65,22 +78,36 @@ export function App() {
     }
   }, [refreshModels])
 
+  // ONE run for the whole ticked list: the server builds one workspace with a
+  // part per module, one budget and one grant. A single tick is today's run.
   const onStart = useCallback(
-    (alias: string, targetId?: string, budgetUsd?: number, pack?: string, mode?: RunMode) => {
+    async (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => {
       setBusy(true)
       setStartError(null)
-      startRun(alias, targetId, budgetUsd, pack, mode)
-        .then((run) => {
-          setRuns((prev) => [
-            { id: run.id, alias: run.alias, status: run.status, startedAt: run.startedAt, title: null, severity: null },
-            ...prev.filter((r) => r.id !== run.id),
-          ])
-          setView({ kind: "run", id: run.id })
-          setDialogOpen(false)
-          refreshModels()
-        })
-        .catch((err: unknown) => setStartError(err instanceof Error ? err.message : String(err)))
-        .finally(() => setBusy(false))
+      try {
+        const run = await startRun(alias, targetId, budgetUsd, modules, mode)
+        setRuns((prev) => [
+          {
+            id: run.id,
+            alias: run.alias,
+            status: run.status,
+            startedAt: run.startedAt,
+            title: null,
+            severity: null,
+            packs: run.packs,
+            scopeTitle: run.scope?.title ?? run.target ?? null,
+          },
+          ...prev.filter((r) => r.id !== run.id),
+        ])
+        loadRun(run.id)
+        setView({ kind: "run", id: run.id })
+        setDialogOpen(false)
+      } catch (err: unknown) {
+        setStartError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+        refreshModels()
+      }
     },
     [refreshModels],
   )
@@ -99,6 +126,7 @@ export function App() {
           status: b.status,
           archived: b.archived,
           title: b.pending?.title ?? r.title,
+          scopeTitle: r.scopeTitle ?? b.scope?.title ?? null,
           severity: b.pending?.severity ?? r.severity,
         }
       }),
@@ -107,13 +135,19 @@ export function App() {
 
   // Archive (or bring back) a run from the rail. The run store holds the flag,
   // so the row moves and the composer locks once the run reloads.
+  // A refused rename or archive says why, in the run view's composer line.
+  const [refused, setRefused] = useState<{ run: string; title: string; text: string } | null>(null)
+  const refuse = (run: string, title: string) => (e: unknown) =>
+    setRefused({ run, title, text: e instanceof Error ? e.message : String(e) })
+  const done = (run: string) => setRefused((cur) => (cur?.run === run ? null : cur))
   const onArchive = useCallback((id: string, archived: boolean) => {
     archiveRun(id, archived)
       .then(() => {
         setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, archived } : r)))
         reloadRun(id)
+        done(id)
       })
-      .catch(() => {})
+      .catch(refuse(id, archived ? "Not archived" : "Not restored"))
   }, [])
 
   // Rename a run from the rail or its top bar. The list holds the name, so the
@@ -123,8 +157,14 @@ export function App() {
     const clean = name.replace(/\s+/g, " ").trim().slice(0, 120) || null
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, name: clean } : r)))
     renameRun(id, clean ?? "")
-      .then(() => reloadRun(id))
-      .catch(() => fetchRuns().then(setRuns).catch(() => {}))
+      .then(() => {
+        reloadRun(id)
+        done(id)
+      })
+      .catch((e: unknown) => {
+        refuse(id, "Not renamed")(e)
+        fetchRuns().then(setRuns).catch(() => {})
+      })
   }, [])
 
   // Delete a run from its top bar. The row leaves the list, and the view moves
@@ -148,14 +188,15 @@ export function App() {
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
 
-  // Start a run from a playbook with the same call New run makes.
-  // TODO(backend): startRun takes no module list, so a playbook's pipeline
-  // choice is not sent yet; the server plans the modules from the scope.
-  const onRunPlaybook = useCallback(
-    (p: Playbook) => onStart(p.model ?? models[0]?.alias ?? "", p.targetId, p.budgetUsd ?? undefined, p.pack),
-    [onStart, models],
-  )
-  const openRun = useCallback((id: string) => setView({ kind: "run", id }), [])
+  // Open a run, and with a finding id, land on that finding.
+  const openRun = useCallback((id: string, finding?: string) => {
+    setView({ kind: "run", id })
+    setFocus(finding ? { run: id, finding, at: Date.now() } : null)
+  }, [])
+  const select = useCallback((v: View) => {
+    setFocus(null)
+    setView(v)
+  }, [])
 
   const activeRun = view?.kind === "run" ? rows.find((r) => r.id === view.id) ?? null : null
   const page = view?.kind === "page" ? view.id : null
@@ -167,18 +208,30 @@ export function App() {
         onWidth={setSidebarWidth}
         defaultWidth={sidebarDefault}
         runs={rows}
+        packs={packs}
         view={view}
-        onSelect={setView}
+        onSelect={select}
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
         onArchive={onArchive}
         onRename={onRename}
       />
 
-      <main className="flex h-svh min-w-0 flex-1 flex-col">
+      <main className="relative flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
-          <RunChat key={activeRun.id} run={activeRun} onArchive={onArchive} onRename={onRename} onDelete={onDelete} />
+          <RunChat
+            key={activeRun.id}
+            run={activeRun}
+            onArchive={onArchive}
+            onRename={onRename}
+            onDelete={onDelete}
+            packs={packs}
+            focus={focus?.run === activeRun.id ? focus : null}
+            actionError={refused?.run === activeRun.id ? refused : null}
+          />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
+        ) : page === "findings" ? (
+          <FindingsPage packs={packs} runs={rows} onOpenRun={openRun} />
         ) : page === "modules" ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
         ) : page === "scopes" ? (
@@ -190,23 +243,18 @@ export function App() {
             briefs={briefs}
             onOpenRun={openRun}
             onChanged={refreshModels}
-          />
-        ) : page === "playbooks" ? (
-          <PlaybooksPage
-            packs={packs}
-            targets={targets}
-            runs={rows}
-            briefs={briefs}
-            busy={busy}
-            error={dialogOpen ? null : startError}
-            onOpenRun={openRun}
-            onRun={onRunPlaybook}
+            storeErrors={storeErrors}
           />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
             <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
           </div>
         )}
+        {stalePage ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-50 flex justify-center px-4">
+            <ErrorState className="pointer-events-auto w-full max-w-md" title={stalePage} onRetry={() => window.location.reload()} retryLabel="Reload" />
+          </div>
+        ) : null}
       </main>
 
       <NewRunDialog

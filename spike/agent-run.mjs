@@ -2,7 +2,7 @@
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
 //   ALIAS=ds-abl node agent-run.mjs    pick the model
-//   MAX_POC=20 node agent-run.mjs      raise the PoC attempt budget
+//   MAX_POC=20 node agent-run.mjs      cap PoC attempts (default: no cap; the run budget stops it)
 //
 // The agent gets real tools over a per-run Foundry sandbox: it reads the contract
 // source, writes its own exploit tests, runs them offline in Docker, and must
@@ -15,22 +15,31 @@
 // every submitted test once more and records each finding with its own proof.
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
+import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
+import { readSpendWith } from "./lib/attempt-cap.mjs";
+import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
+import { briefChange, getTarget, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
-import { event } from "./lib/event.mjs";
+import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
+import { leadsFrom } from "./lib/leads.mjs";
+import { afterNudge } from "./lib/nudge.mjs";
+
+// Tools tell the model how much of the run budget is left.
+readSpendWith(runSpend);
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? defaultAlias(activeProvider());
@@ -43,17 +52,14 @@ if (!MODELS[ALIAS]) {
 const TARGET = process.env.TARGET
   ? new URL(process.env.TARGET, import.meta.url).pathname
   : new URL("../lab/vault-reentrancy/", import.meta.url).pathname;
-const DIR = new URL("./results/agent/", import.meta.url).pathname;
+// AGENT_RESULTS_DIR moves the run records (a test sends them to a temp folder).
+const DIR = process.env.AGENT_RESULTS_DIR ? path.join(process.env.AGENT_RESULTS_DIR, "/") : new URL("./results/agent/", import.meta.url).pathname;
 mkdirSync(DIR, { recursive: true });
 
 // Per-process audit state. One run is one process, so plain memory is enough.
 //   poc     run_poc attempts so far
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
-function auditState() {
-  return { poc: 0, passed: new Map(), found: [] };
-}
-
 async function openHarness(db, ws, state) {
   const pack = packFor(readTouchstone(ws));
   // Source navigation is the DEFAULT code-reading layer for any run given a local
@@ -64,10 +70,20 @@ async function openHarness(db, ws, state) {
   // binary actually resolves, so a host without it gets no dead tools and no
   // instruction to use them — the run falls back cleanly to the flat source
   // tools. Navigation never produces a finding; proof is unchanged.
-  const navy = (pack.id === "contracts" || pack.id === "review") && (await resolveCbmBinary()) !== null;
-  const system = pack.system(ws) + (navy ? NAV_SYSTEM : "");
+  // A joined run mounts the layer when ANY of its modules reads code; the index
+  // is built once, over the run's shared tree (the run root).
+  const readsCode = (id) => id === "contracts" || id === "review";
+  const navy = (pack.readsCode === true || readsCode(pack.id)) && (await resolveCbmBinary()) !== null;
+  // The nav prompt names flat tools; the joined pack renames them for the whole
+  // run, so a run reads a name it really has.
+  const navText = navy ? (typeof pack.renameText === "function" ? pack.renameText(ws, NAV_SYSTEM) : NAV_SYSTEM) : "";
+  // The scope's notes and the operator's brief close the instructions, so the
+  // root agent and every fleet child start with them (targets.mjs scopeEnv).
+  const system = pack.system(ws) + navText + scopeInstructions(process.env);
   const registry = createRegistry();
-  const fleet = createFleet({ system, costOf });
+  // A child that a follow-up reopens holds the brief of its spawn. The fleet
+  // gives it the current one with its next message (fleet.mjs createFleet).
+  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "" });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
@@ -89,6 +105,13 @@ async function openHarness(db, ws, state) {
   return { harness, root, reports, pack, fleet };
 }
 
+// The record keeps each assistant text, cut at TEXT_CAP so a long run's record
+// stays small. The last one is the run's final answer, which the run view
+// shows: it is kept whole up to FINAL_CAP. A cut text ends with " …cut", the
+// mark app/src/lib/final-text.ts knows.
+const TEXT_CAP = 4000, FINAL_CAP = 50_000;
+const cutText = (text, cap) => (text.length > cap ? `${text.slice(0, cap)} …cut` : text);
+
 async function summarize(root) {
   const view = await root.context(ctx);
   const calls = [], results = [], assistants = [];
@@ -97,13 +120,14 @@ async function summarize(root) {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       const tc = m.content.filter((b) => b.type === "toolCall");
       tc.forEach((b) => calls.push({ name: b.name, args: b.arguments }));
-      assistants.push({ stop: m.stopReason, text: text.slice(0, 4000), toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
+      assistants.push({ stop: m.stopReason, text, toolCalls: tc.length, error: m.errorMessage?.slice(0, 200) });
     }
     if (m.role === "toolResult") {
       const text = m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
       results.push({ name: m.toolName, isError: !!m.isError, text: text.slice(0, 300) });
     }
   }
+  assistants.forEach((a, i) => { a.text = cutText(a.text, i === assistants.length - 1 ? FINAL_CAP : TEXT_CAP); });
   return { calls, results, assistants, final: assistants.at(-1) };
 }
 
@@ -168,8 +192,10 @@ function readSteers(root) {
 
 // ---- Follow-up worker: one operator message to a finished run. It reopens the
 // run's saved session, so the agent keeps the whole earlier conversation. The
-// workspace is new, so files the agent wrote or fetched before are gone; the
-// message says so. Findings it proves now continue the run's numbering.
+// server keeps the run's workspace too, and the message says so. When the
+// workspace had to be built again, the server sends the true state in
+// WORKSPACE_NOTE instead. Findings it proves now continue the run's numbering.
+const KEPT_NOTE = "Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there.";
 async function chat({ harness, root, reports, state, fleet }) {
   const text = String(process.env.FOLLOWUP ?? "").trim();
   if (!text) throw new Error("FOLLOWUP is empty");
@@ -180,7 +206,8 @@ async function chat({ harness, root, reports, state, fleet }) {
   readSteers(root);
   const sub = await root.submit({
     type: "input", requestId: `followup-${Date.now()}`,
-    content: `${text}\n\n(Operator follow-up. The sandbox was rebuilt since your last turn, so files you wrote or fetched before are gone. Rewrite or refetch any you need.)`,
+    // BRIEF_CHANGE: the scope brief changed since the session started (targets.mjs briefChange).
+    content: `${text}\n\n(${process.env.WORKSPACE_NOTE || KEPT_NOTE})${process.env.BRIEF_CHANGE ? `\n\n${process.env.BRIEF_CHANGE}` : ""}`,
   }, ctx);
   event("operator-message", { text, ...(process.env.FOLLOWUP_ID ? { id: process.env.FOLLOWUP_ID } : {}) });
   let settled = await sub.wait(ctx);
@@ -193,21 +220,27 @@ async function chat({ harness, root, reports, state, fleet }) {
 
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
-  const state = auditState();
+  // The server owns this worker. A closed parent pipe means a restart; do not
+  // keep charging or writing the session while a new server recovers it.
+  if (process.env.TOUCHSTONE_PARENT_PIPE === "1") {
+    process.stdin.on("end", () => process.exit(1));
+    process.stdin.resume();
+  }
+  const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
   const { harness, root, reports, pack, fleet } = await openHarness(db, ws, state);
   event("opened", { mode });
   if (mode === "chat") {
     await chat({ harness, root, reports, state, fleet });
     await fleet?.close();
     await harness.close(ctx);
-    process.exit(0);
+    return exitAfterEvents(0);
   }
   const sub = await root.submit({ type: "input", requestId: "run1", content: pack.kickoff(ws, process.env) }, ctx);
 
   if (mode === "run") {
     // Stream the agent's thinking and prose to the UI for the whole live turn.
     // In CLI mode stdin is /dev/null, so the steer reader never fires.
-    await streamCognition(harness);
+    await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
     readSteers(root);
   }
 
@@ -217,16 +250,19 @@ async function child([, , , mode, db, ws]) {
   // One nudge, owned by the pack: ask a model that stopped early to work the
   // suspects it has not tried. Only after a clean end of turn.
   const more = settled.status === "done" ? pack.nudge(state) : null;
+  const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
+  const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
   if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
   settled = await fleet?.drain(ctx) ?? settled;
 
   const s = await summarize(root);
   flushFinal(s);
+  if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
   const usage = await chargeUsage(harness);
   event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, usage, reports });
   await fleet?.close();
   await harness.close(ctx);
-  process.exit(0);
+  exitAfterEvents(0);
 }
 
 // Spawn a worker; resolve on exit.
@@ -257,47 +293,93 @@ async function main() {
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   // TARGET_ID selects a library target (a live scope included) and prepares it
   // the way the app does; TARGET stays the direct path for a working checkout.
-  const target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  // PACKS=web,domains makes ONE run over several modules of that target: one
+  // workspace, one per module inside it, one grant, one reach decision. One id
+  // in PACKS is the run's one module, the same as the app's `pack`.
+  let target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  const packs = [...new Set(String(process.env.PACKS ?? "").split(",").map((s) => s.trim()).filter(Boolean))];
+  if (packs.length && !target) throw new Error("PACKS needs TARGET_ID: a module is a module of a library target");
+  // pickTarget is the one place that checks a target runs and allows a module,
+  // and it returns the target under that module. One PACKS id takes that path,
+  // so a module the target does not allow is refused here too.
+  if (target && packs.length === 1) target = pickTarget({ id: target.id, pack: packs[0] });
   const reach = target ? await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" }) : null;
-  const ws = target ? await prepareRunWorkspace(target) : makeWorkspace(TARGET);
+  // Several modules: the build checks the target's own list again, so the CLI
+  // and the app refuse the same things.
+  const ws = !target
+    ? makeWorkspace(TARGET)
+    : packs.length > 1
+      ? await prepareMultiWorkspace(target, { packs })
+      : await prepareRunWorkspace(target);
   const pack = packFor(readTouchstone(ws));
-  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events` };
+  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events`, ...(target ? scopeEnv(target, packs) : {}) };
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
-  const prep = await pack.prepass?.(ws, {
-    reach,
-    emit: (ev) => {
-      appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
-      console.log("· " + ev.ev + " " + JSON.stringify(ev));
-    },
-  });
-
-  // One worker runs the whole audit. submit_finding never blocks, so nothing
-  // has to be killed or resumed; the run settles on its own.
-  console.log(`\n== agent run (${ALIAS}) ==`);
-  const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
-  const first = await runChild("run", db, ws, runEnv);
-  const all = first.events;
-  const settled = all.find((e) => e.ev === "settled");
-  const pocRuns = all.filter((e) => e.ev === "run_poc").length;
-
-  // Structured proof delta for EACH finding — the engine's own reading of each
-  // proven exploit. Each finding's exact passing source is replayed once more in
-  // JSON trace mode, so its proof panel shows what the chain DID, not what the
-  // test was written to assert. "Proven" binds to the submitted test only; a
-  // throwaway diagnostic that happens to pass never turns a record green. Runs
-  // before the workspace is torn down below.
-  const findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
-  for (const f of findings) {
-    console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
+  // A pre-pass failure must not sink the run (the app does the same): the
+  // agent can still audit with no leads. The record keeps the reason.
+  let prep = null;
+  let prepassError = null;
+  try {
+    prep = await pack.prepass?.(ws, {
+      reach,
+      emit: (ev) => {
+        appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
+        console.log("· " + ev.ev + " " + JSON.stringify(ev));
+      },
+    });
+  } catch (err) {
+    prepassError = String(err?.message ?? err);
+    console.log("· prepass failed " + prepassError);
   }
+
+  // The record is always written, even when the agent or the proof replay
+  // fails: then it reads as an error with its reason, never as a clean run.
+  let all = [];
+  let settled = null;
+  let findings = [];
+  let error = null;
+  try {
+    // One worker runs the whole audit. submit_finding never blocks, so nothing
+    // has to be killed or resumed; the run settles on its own.
+    console.log(`\n== agent run (${ALIAS}) ==`);
+    const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
+    const first = await runChild("run", db, ws, runEnv);
+    all = first.events;
+    settled = all.find((e) => e.ev === "settled") ?? null;
+    if (!settled) error = `the agent exited before it settled (code ${first.code ?? first.signal}): ${first.stderr.slice(-400)}`;
+    else if (settled.status !== "done") error = `the agent did not finish: ${settled.reason ?? settled.status}`;
+
+    // Structured proof delta for EACH finding — the engine's own reading of each
+    // proven exploit. Each finding's exact passing source is replayed once more in
+    // JSON trace mode, so its proof panel shows what the chain DID, not what the
+    // test was written to assert. "Proven" binds to the submitted test only; a
+    // throwaway diagnostic that happens to pass never turns a record green. Runs
+    // before the workspace is torn down below.
+    findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
+    for (const f of findings) {
+      console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
+    }
+  } catch (err) {
+    error = String(err?.message ?? err);
+    findings = [];
+  }
+  // A run that did not read every GitHub member of its scope is not clean.
+  const sourceCov = sourceCoverage(readTouchstone(ws).links ?? [], all);
+  if (!findings.length && !error) error = coverageFailure(sourceCov)?.message ?? null;
   const worst = findings[0] ?? null;
+  const pocRuns = all.filter((e) => e.ev === "run_poc").length;
 
   const result = {
     alias: ALIAS, approveMode: "auto", ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
+    // How the run ended. An error keeps its reason.
+    outcome: findings.length ? "recorded" : error ? "error" : "no-finding",
+    error: findings.length ? null : error,
+    prepassError,
     ...prep?.record,
+    // Which GitHub members were read (and where) and which were not, with why.
+    sourceCoverage: sourceCov,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real
     // pass/fail, gas, decoded logs, and the signed money-moved table.
@@ -309,6 +391,7 @@ async function main() {
     proof: worst?.proof ?? null,
     decision: findings.length ? "approved" : null,
     recorded: findings.length > 0,
+    leads: leadsFrom(all),
     calls: settled?.summary?.calls?.map((c) => c.name),
     final: settled?.summary?.final?.text?.slice(0, 1200),
     usage: settled?.usage, reports: settled?.reports,

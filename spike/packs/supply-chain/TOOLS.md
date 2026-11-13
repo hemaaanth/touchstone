@@ -3,9 +3,10 @@
 Checked upstream repositories, release tags, licenses, and image manifests on 2026-11-10.
 Sizes below use decimal MB. Selected images use Docker's installed size.
 Unselected images use the amd64 compressed layer size from their manifest.
-The image digest in `scanners.mjs` pins every selected tool.
+The image digest in `scanners.mjs` pins every selected tool. cosign is pinned by digest in `cosign/Dockerfile`.
 All scans and replays use `runTool()` with `--network none`.
-No scanner receives the model key, Docker socket, host home, or other host secrets.
+This is also true for a live GitHub target. Only the capture step uses the network (see "Live GitHub path" below). The tools then read the pinned capture offline.
+No scanner receives the model key, Docker socket, host home, `GITHUB_TOKEN`, or other host secrets.
 
 Research starts at M13 and M14 in `03-capabilities.md`, the supply-chain and secrets rows in `04-crypto-coverage.md`, and `07-gap-5.md` / `07-gap-6.md` in the main checkout's research folder.
 That research folder is not tracked in this worktree.
@@ -23,26 +24,31 @@ That research folder is not tracked in this worktree.
 | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | AGPL-3.0; separate program only | `trufflesecurity/trufflehog:3.99.8`; 117.6 MB | Yes: `filesystem --no-verification --no-update`; network blocked | Snapshot files, not `.git` internals | `--json` JSONL | Detector and file/line; Raw becomes a hash and `[REDACTED]` in memory; drop all other raw fields | `evidence`: repeat detection; never a live credential claim | Found Alchemy where Gitleaks did not; own RPC check corroborates it | No copied AGPL code or rules | Missed the deployer scalar and mnemonic in this lab | **ensemble** with Gitleaks and crypto checks; provider-specific coverage |
 | [Gitleaks](https://github.com/gitleaks/gitleaks) | MIT | `ghcr.io/gitleaks/gitleaks:v8.30.1`; 78.1 MB | Yes: `dir`; no provider verification | Snapshot files | `--report-format json --report-path /dev/stdout` | Rule and file/line; Secret becomes a hash; Match and source excerpts are discarded | `evidence`: rerun detector and secret fingerprint at the line | Found generic wallet key; missed Alchemy and unlabeled `accounts` value | MIT PEM private-key rule and default-rule extension workflow; retained notice | Add EVM key validation/address, BIP-39, keystore and provider URL checks | **ensemble** with TruffleHog; generic and provider-specific coverage differ |
 | [Kingfisher](https://github.com/mongodb/kingfisher) | Apache-2.0 | `ghcr.io/mongodb/kingfisher:2.18.1`; 113.2 MB. Tag has no `v` prefix | Yes: `--no-validate --no-update-check --git-history none`; network blocked | Files / Git | `--format json` emitted a report and a summary as separate JSON lines in this version; `--redact` hashes values | No findings in this lab under its default medium confidence | No retained proof adapter | Compared with Gitleaks and TruffleHog on the same generated lab | No copied rules | Did not add coverage for these planted crypto cases | **skip**; no extra detections in this lab, not a general claim about its quality |
+| [cosign](https://github.com/sigstore/cosign) (Sigstore) | Apache-2.0 | `touchstone-cosign:v3.1.4`, built from `cosign/Dockerfile`: `FROM ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f061548…`; 219.2 MB. Built once with `docker build`; every run uses `--pull=never` | Yes: `verify-blob --key … --bundle … --insecure-ignore-tlog=true`; network blocked. No Rekor, no Fulcio, no TUF fetch. Without the tlog flag cosign tries the TUF CDN and fails, which is an error, not a pass | An operator signing policy: one pinned public key (PEM) and 1–20 artifact paths, from `.touchstone.json` `cosign` or `scan.mjs --cosign-key <file> --cosign-artifacts <paths>`. The bundle is `<artifact>.sigstore.json`, `.sigstore` or `.bundle` next to it in the snapshot. Only the artifact, the bundle and the key are staged, one container per artifact | Exit code and stderr. Only two exact outcomes count: exit 0 with `Verified OK`, and exit 1 with `failed to verify signature: … invalid signature`. Anything else is a gap | `cosign/invalid-signature` (High): the pinned key does not verify those bytes. `artifact-signature-missing` (Medium, Touchstone check): the policy names the artifact and no bundle is next to it. A verified artifact gives no lead | `evidence`: both checks use only the signing policy pinned in `snapshot.json`. `tool:cosign` checks the artifact sha256, bundle sha256 and key sha256 against the pin, then reruns cosign with the pinned key and passes only on invalid signature. `artifact-signature-missing` checks the artifact sha256, that the policy lists it, and that none of its bundles is in the snapshot or skipped | None. No other engine reads release artifacts or signatures. On the lab, no other engine has a lead under `release/` | No copied code. The lab signs bundles in Node, so cosign checks a bundle it did not write | Proves only that the pinned key did not sign those bytes offline. Not who signed, and not what the artifact does | **wrap** (key-based, offline). Keyless and trusted-root verification are not wired |
 
 ## Evaluated, not wrapped (research-named OSS, M13–M14)
 
 The table above lists what this pack runs plus the three it compared and rejected
 (Gato-X, GuardDog, Kingfisher). The M13/M14 research and the coverage audit name
 more OSS tools. Each gets a verdict so a deliberate skip and an un-examined gap
-differ. The driving facts: this pack audits a **pinned offline snapshot** and
-never touches live GitHub settings or an SCM API; workflow security is carried by
-the zizmor + poutine ensemble; Gato-X is already the read-only reference for the
-remote-enumeration class.
+differ. The driving facts: every tool audits a **pinned offline snapshot**.
+The pack now has a live GitHub path (`live: true`, see "Live GitHub path" below).
+It reads committed files through the GitHub API and pins them. It does not read
+repo or org settings, and no tool gets the network or the token. Workflow
+security is carried by the zizmor + poutine ensemble; Gato-X is the read-only
+reference for the remote-enumeration class. A tool that must call the GitHub API
+itself runs only in capture mode (`runCapture()` in `lib/capture.mjs`, see
+"Networked tools (capture mode)" below). Each reason names what it needs and the gap it would close.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
-| OSSF Scorecard | Repo posture scored via GitHub API | skip — not offline | Needs the GitHub API and a token to read live repo settings (branch protection, etc.). This pack explicitly does not scan live GitHub settings. |
+| OSSF Scorecard | Repo posture scored via GitHub API | **wired (file checks)**; API checks fail closed until the token can read the repo | `touchstone/scorecard:5.6.0`, built from `images/scorecard/Dockerfile` (release tarball by SHA-256). Opt-in: `--network-tools scorecard`. Two runs: `--local` on the pinned snapshot with `--network none`, and one API capture in capture mode. On the target it found 3 unpinned Dockerfile lines and no SECURITY.md, dependency-update config or LICENSE. The pack had no Dockerfile or repo-file check before. See "Networked tools". |
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
-| Legitify | GitHub/GitLab org + repo misconfig via API | skip — not offline | Needs an SCM API token for live settings enumeration — the same remote class Gato-X already represents read-only. |
-| chain-bench | CIS supply-chain benchmark against an SCM | skip — not offline | Needs SCM API access to live settings; outside the pinned-snapshot model. |
-| cosign (Sigstore) | Artifact / attestation signing and verification | skip; defer for provenance | A signing/verification tool, not a scanner; verification needs a live transparency log or registry. Wire only if artifact-provenance verification becomes a goal. |
-| octoscan | Static GitHub Actions scanner | skip — overlap | Overlaps the wrapped zizmor + poutine workflow engines; no distinct detection shown to justify a third. |
-| raven | CI/CD pipeline graph scanner | skip — not offline + overlap | Ingests workflows from the GitHub API into a graph DB; its strength is cross-repo scale, like Gato-X, outside the single-snapshot model. |
+| Legitify | GitHub/GitLab org + repo misconfig via API | capture only, fails closed — not wired to leads; needs a classic PAT | Runs in capture mode (`networked-blocked.mjs`, image `touchstone/legitify:1.0.11`). The real capture of the target stopped before any request: Legitify rejects fine-grained tokens. With no real successful output, no lead parser exists, so every run is `unavailable` plus a gap. See "Legitify" below. It would close org and repo settings enumeration. |
+| chain-bench | CIS supply-chain benchmark against an SCM | not wired — token only in argv | chain-bench v0.1.10 takes the token only as the argv flag `-t`. The token rule forbids argv, so the pack never runs it. An opt-in (`--network-tools chain-bench`) gives `unavailable` and a `not-covered-token-in-argv` gap, with no docker call. See "chain-bench" below. It would close live repo settings; a snapshot scan cannot reach them. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | **wrapped** — key-based offline `verify-blob` | Moved to the main table above. Still not covered: keyless bundles (Fulcio certificate + Rekor proof) against a pinned trusted root, attestations (`verify-blob-attestation`), container image signatures, and fetching signatures from a registry or a transparency log. The GitHub path reads committed files, not release assets, so on a live repo cosign sees only bundles that are committed. |
+| octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
+| raven | CI/CD pipeline graph scanner | not wired — token only in argv, a host outside the allow-list, two servers | raven 1.0.9 takes the token only as argv `--token`, reads workflow files from `raw.githubusercontent.com`, and needs Redis plus Neo4j. An opt-in gives `unavailable` and a `not-covered-token-in-argv` gap, with no docker call. See "raven" below. The pack's own capture already reads workflows across an org (up to 10 repos) for zizmor and poutine, so part of its value is covered. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
 
 ## Comparison observed
@@ -72,10 +78,160 @@ Gato-X's README documents a Python package and GitHub API modes, not an offline 
 
 Offline support: [zizmor CLI](https://docs.zizmor.sh/usage/), [poutine README](https://github.com/boostsecurityio/poutine), [OSV offline mode](https://google.github.io/osv-scanner/usage/offline-mode/), [GuardDog README](https://github.com/DataDog/guarddog), [Syft README](https://github.com/anchore/syft), [Grype configuration](https://oss.anchore.com/docs/reference/grype/configuration/), [TruffleHog README](https://github.com/trufflesecurity/trufflehog), [Gitleaks CLI](https://github.com/gitleaks/gitleaks), [Kingfisher usage](https://github.com/mongodb/kingfisher/blob/v2.18.1/docs/USAGE.md).
 
+## Live GitHub path
+
+`scan.mjs --github <owner/repo[@ref]|owner>[,...] --authorized "<who>"` and a supply-chain live scope read a real GitHub repo or org. Code: `github.mjs`, `githubGet()` in `lib/fetch.mjs`.
+
+- The capture runs in the host process, not in a tool. It reads `/repos/{o}/{r}`, the ref's commit SHA, and the recursive tree. Then it reads each file blob at that commit.
+- With no token it reads public repos: file bytes come from `raw.githubusercontent.com/{o}/{r}/{commit}/{path}`. With `GITHUB_TOKEN` it reads blobs from `api.github.com/.../git/blobs/{sha}`. The token lifts the rate limit and opens private repos it can read.
+- Each blob must match its Git object ID from the tree. A mismatch stops the capture.
+- Only `api.github.com` and `raw.githubusercontent.com`. No redirects, no credentials or ports in a URL. 20 s per request, 120 s per capture, 400 files, 10 repos. The byte caps match a local scan.
+- The grant must name the repo or its owner. This is checked in code before the first request. The token is only a request header. It is never written to the snapshot, the record, the workspace, or tool input.
+- The same tools then run offline on the pinned capture. Every lead replays from it.
+
+What each tool does on a live capture:
+
+| Tool | On a live capture |
+|---|---|
+| zizmor | Runs. Real workflows from the repo. |
+| poutine | Runs once per repo when a capture holds several repos. |
+| Gitleaks, TruffleHog | Run on the committed files. No credential verification. |
+| Semgrep | Runs our three rules. Vendored `node_modules/` is read only when the repo commits it. |
+| Syft + Grype | Run on the real manifests and lockfiles, with the full Grype database. This is the real advisory check. |
+| OSV-Scanner | Runs on `package-lock.json` only, against the one-record lab slice. On a real repo this is a narrow check, not an advisory scan. Grype carries the real one. |
+| Touchstone crypto checks | Run on the same files a local scan would read. |
+| cosign | Runs only with `--cosign-key` and `--cosign-artifacts`. It sees committed bundles only, not release assets. When a capture holds several repos, the policy paths need the `owner/repo/` prefix. Not run on a live repo. |
+
+Observed on `actions/hello-world-javascript-action@main` (commit `79ac0da1`): zizmor 41 leads, poutine 2, Gitleaks 0, TruffleHog 0, Semgrep 0, Grype 19, OSV 0. 28 grouped leads, all replays pass. One file (`dist/index.js`) was skipped as too large. The run with no token and the run with `GITHUB_TOKEN` gave the same commit and the same results. The token was in neither output. The test fixture is a real no-token capture of `octokit/request-error.js`.
+
+Live path limits:
+
+- Org mode lists up to 10 repos from the first page of 100, without forks or archived repos. Each limit is a coverage gap in the record. Org mode has no recorded fixture.
+- A truncated tree and the 400-file cap are coverage gaps. Workflows and manifests are read first.
+- It reads one commit. It does not read history, pull requests, Actions run logs, releases, packages, or any setting.
+- The app form cannot make a supply-chain live scope. It turns a GitHub URL into a code scope, and its text says "websites". The server route takes one: `{ kind: "live", pack: "supply-chain", hosts: ["owner/repo"], permission: true }` (`app/server/runs.mjs`). That route was not run end to end. The app was not changed.
+- The capture runs in the run's own process. It does not go through the confine gate. The grant check at run start, the check in code, and the two-host allowlist in `githubGet()` hold it. The web pack's live scan stage is the same: it runs on the plain bridge network (`lib/live.mjs`).
+
+## Networked tools (capture mode)
+
+Four tools call the GitHub API themselves: Scorecard, Legitify, chain-bench and raven. The owner allowed them the network on 2026-11-12, in a capture step only. Code: `networked.mjs`, `lib/capture.mjs`.
+
+How a capture runs:
+
+- Opt-in per run: `.touchstone.json` `networkTools` plus `scopeId`, or `scan.mjs --network-tools <tool> --scope <scope id>`. With no opt-in nothing here runs. `runTool()` (`lib/wrap.mjs`) has no capture path: every `runTool()` call keeps `--network none`. A run started from the console never captures: `targets.mjs` writes neither `networkTools` nor `scopeId`.
+- The gate is `captureGrant()` in `lib/capture.mjs`. `runCapture()` calls it before any container or network exists. It reads the scope from the scopes store by `scopeId`, and its grant from the grant store. It refuses when:
+  - the scope store or the grant store cannot be read (damaged, or not a JSON list). The reason says so. A missing file is an empty store;
+  - there is no `scopeId`, or it is not a saved scope, or the scope is not a live supply-chain scope;
+  - the scope has no active grant of its own (`scope.permission.grantId`), or that grant names another scope. A grant of another scope does not count, even when it covers `api.github.com` (the binding of `lib/reach.mjs`);
+  - the scope's own grant does not cover every host the scope names (`enforceReach`);
+  - a target is not plain `owner/repo` strings, is not a repo the scope lists in `github` (case-folded, exact), or is not in `CAPTURE_TARGETS` (today only `hemaaanth/touchstone`). An owner-wide scope does not cover a repo. Another owner, a fork, a URL or path trick never matches;
+  - a host is not a capture host, or the scope's own grant does not cover it;
+  - a secret is missing or shorter than 24 characters.
+- A refused capture is coverage `unavailable` with reason `not covered: capture refused: <why>` and a `not-covered-capture-refused` gap. No container starts.
+- A reach written into `.touchstone.json` (`reach: { granted: true, … }`) is not a grant for a capture. Only the stores are.
+- The tool runs on a Docker `--internal` network. Its only way out is the scope proxy, which allows `api.github.com` and nothing else. A raw socket has no route. `--pull=never` is always set.
+- The token goes in as `-e <NAME>` (`GITHUB_TOKEN` for Scorecard, `SCM_TOKEN` for Legitify): the name is in argv, the value is only in the docker CLI's environment. Any copy of the value in stdout, stderr or an error is replaced with `[REDACTED]` before it is saved. After that, if the output still holds part of the token (any 12-character piece, a base64 or base64url form, a 24-character piece of the hex form in lower or upper case, or the URL-encoded form), stdout and stderr are both dropped and the capture is `unavailable: output contained part of the token`. A token is at least 24 characters, so a copy split in two (across stdout and stderr, or in one stream) always leaves a 12-character piece that is found.
+- The raw stdout is saved in the snapshot with its SHA-256, before the snapshot is pinned. Leads come from the saved bytes. Replay re-parses those bytes and checks each claim against the pinned files. It never reruns the tool and never uses the network.
+- A claim only the tool can see (a repo setting) never passes replay. It stays a lead with an unproven replay.
+- Fail closed. No grant, no token, no target, a 401, 403 or 404, a rate limit, a timeout, empty or unparsable output, or a wrong tool version gives status `unavailable` and a `networked-tool-unavailable` gap. Never a clean result.
+
+Honest limits of the boundary:
+
+- The proxy limits hosts, not paths. The token can read anything it can read on `api.github.com` while the capture runs. The tools are read-only; the token is the real limit.
+- `codeload.github.com` is not allowed. A supply-chain scope's own grant names only `api.github.com` and `raw.githubusercontent.com` (`GITHUB_HOSTS` in `lib/scopes-store.mjs`). Scorecard fetches the repo tarball through `codeload.github.com`, so its checks that read repo files in API mode fail inside the tool. They become gaps. This was not observed in a real run.
+- A repo rename or transfer on GitHub answers inside `api.github.com`, in the HTTPS tunnel. The proxy cannot see it. The saved Scorecard report must name `github.com/<target>` and the pinned commit, or it is `unavailable`. Legitify output gives no lead at all.
+- The token is visible to anyone who can run `docker inspect` on the short-lived capture container: `docker inspect` shows it in `Config.Env` as `GITHUB_TOKEN=<value>` (or `SCM_TOKEN=<value>`) while the container lives. The container is removed by name at the end and at the timeout. It is not in argv or the host `ps`. An operator who shares the Docker daemon with other users must know this.
+- Known limit of the leak check: a copy of the token cut into three or more short chunks (each under 12 characters) with other text between them is not found. Nor are other encodings (UTF-16, JSON `\u00xx` escapes). The pinned Scorecard and Legitify do not print the token. The pack does not match across a stream.
+- The proxy log counts TLS tunnels, not API requests. Request counts below come from GitHub's `/rate_limit` (it does not count against the limit).
+- Capture runs on local Docker only, never on a Daytona machine.
+
+Target and token, observed 2026-11-12: the target is `hemaaanth/touchstone` (private). The `GITHUB_TOKEN` in `.env.local` is a fine-grained token for user `hemaaanth` with access to public repositories only. `GET /repos/hemaaanth/touchstone` returns 404 with it. So every API capture of the target fails closed today. The fix is the owner's: add the repo to the token's repository access. No new scope is needed for the file and API checks below that list none.
+
+### Scorecard
+
+- Image: `touchstone/scorecard:5.6.0`, Scorecard v5.6.0 binary from the release tarball, `ADD --checksum=sha256:19bde071…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Apache-2.0. The CLI has no write flags. Programs in the image: the `scorecard` binary (Apache-2.0) and the Alpine 3.20 base packages, unchanged: alpine-baselayout, alpine-keys (MIT), apk-tools (GPL-2.0-only), busybox (GPL-2.0-only), ca-certificates-bundle (MPL-2.0 AND MIT), libcrypto3/libssl3 (Apache-2.0), musl and musl-utils (MIT, BSD-2-Clause, GPL-2.0-or-later for utils), scanelf (GPL-2.0-only), ssl_client (GPL-2.0-only), zlib (Zlib). They are run as shipped, not copied into our code.
+- The local run uses `runTool()`'s plain path: `--network none`, cap-drop and limits. A test pins that argv with a PATH docker shim. `--pull=never` on the local run comes from `runTool()`'s shared argv (merged from main), and a test pins it. Removing the container at `timeoutMs` also comes from `runTool()` (merged from main): it names the container `touchstone-tool-<hex>`, and `runDocker()` repeats `docker rm -f` until the CLI exits. Without that, a Go PID 1 does not stop on the docker CLI's signal (seen before the merge: a plain timeout returned after 64 s for a 2 s limit). In this pack a timed-out run is always `unavailable` with reason "timed out". The capture run stops its container by name with its own `runNamed()` in `lib/capture.mjs`, because `runDocker()` may send a call to Daytona and has no way to pass the secret by env only.
+- Exit codes: 0 is a run. 1 is a run only with Scorecard's own pair: stderr says "one or more checks failed during execution" and the JSON has a check with score -1 and an "internal error" reason. Any other code is `unavailable`, even with valid JSON.
+- Each run has units it must answer: the 4 file checks (local) and the 11 API checks (api). A unit with no result, a -1 score, or a score outside 0–10 is a gap. The coverage row then says "N of M checks unchecked: …". All units unchecked, a report with no checks, or no expected check gives `unavailable`. A pin warning for a file not in the snapshot (absolute, `../`, or absent) is a `scorecard-result-outside-snapshot` gap, never a lead. A Pinned-Dependencies `Warn:` line that does not match the pin format, with a score below 10, is a `scorecard-detail-unparsed` gap, and the check counts as unchecked. A file check that scores below 10 and gives no lead and no other gap (for example Pinned-Dependencies 3 with only an `Info:` line) is a `scorecard-detail-unparsed` gap too: the pack cannot say what lost the points. The API run gets `--commit=<pinned commit>` when the snapshot has one; a report for another repo or commit is `unavailable`.
+- `--local=. --format=json --show-details` runs offline on the staged snapshot. The pack keeps leads from four file checks: Pinned-Dependencies, License, Security-Policy and Dependency-Update-Tool. Its workflow checks (Token-Permissions, Dangerous-Workflow) are not used; zizmor and poutine carry those.
+- `--repo=github.com/<o>/<r> [--commit=<sha>] --format=json --show-details` is the capture. Only API checks are taken from it: Branch-Protection, CI-Tests, CII-Best-Practices, Code-Review, Contributors, Maintained, Packaging, SAST, Signed-Releases, Webhooks, Fuzzing.
+- Leads: each `not pinned by hash: <file>:<line>` warning is a Low lead at that file and line. Replay checks the pinned line is still unpinned (a `FROM` without `@sha256`, an `npm install`, a `uses:` without a full SHA, and so on). A file check with score 0 is a repo lead; replay checks the named file is absent from the snapshot and the skip list, and fails when the capture was truncated. An API check with score 0–4 is a Low lead that never passes replay.
+- Real runs on the target (committed files at `7e01a7c`): local 6 leads: `containerImage` at `spike/packs/ai-mcp/Dockerfile.inspector:4` and `spike/packs/ai-mcp/lab/mcp/oracle/Dockerfile:3`, `npmCommand` at `Dockerfile.inspector:5`, no Security-Policy, no Dependency-Update-Tool, no License (Informational). All replay `pass`. A full `scan.mjs <repo> --network-tools scorecard` gave 5 root causes after grouping. The API capture: 1 tunnel to `api.github.com`, 2 core API requests (observed), exit 0 with empty stdout and `repo unreachable: 404` on stderr. That is recorded as `unavailable`.
+- Traps the parser handles (seen in real runs): API mode exits 0 with empty output on an unreachable repo. `--local` exits 1 with valid JSON because Fuzzing errors with no network. Vulnerabilities scores 10 ("0 existing vulnerabilities") with no network, so it is a `scorecard-check-not-trusted` gap, never a result (osv and Grype cover dependencies). Binary-Artifacts only sees the snapshot's text files, so it is a gap too. Local SAST says "no pull requests merged", so SAST comes from the API capture only.
+- Not covered: all API checks on the target (token cannot read the repo). Branch-Protection needs `Administration: read` and Webhooks needs `Webhooks: read`; without them they are a `not-covered-needs-scope` gap. This was not observed on the target, because the repo itself is not readable. Vulnerabilities (needs `api.osv.dev`, outside the allow-list). The 8 MiB snapshot budget skipped 405 files of this repo, so local mode saw 3 of the 18 unpinned Dockerfile lines a full export shows.
+- Fixture: `test/fixtures/supply-chain-networked/scorecard.json` holds both real outputs. Tests: `test/supply-chain-networked.test.mjs`.
+
+### Legitify
+
+- Image: `touchstone/legitify:1.0.11`, Legitify v1.0.11 binary from the release tarball, `ADD --checksum=sha256:90a8df58…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Programs in the image: the `legitify` binary (Apache-2.0) and the same unchanged Alpine 3.20 base packages as the Scorecard image (listed above). They are run as shipped, not copied into our code.
+- Command: `analyze --repo <o>/<r> -n repository -f json --output-scheme flattened --color none --scorecard no`. `analyze` only reads. The pack never uses `gpt-analysis` (it calls OpenAI), `-t` (argv token), `--server-url`, `--ignore-invalid-certificate` or `--scorecard yes`. Only the repository namespace runs: the grant names one repo, and the owner is a user account, not an organization. Host: `api.github.com` only. A test pins this argv.
+- Exit code: only 0 with output is a run. No real run has shown an "issues found" exit, so the pack accepts none: any other code is `unavailable`, even with output. Exit 0 with empty output is "unparsable report: empty output". A timeout is "timed out".
+- No lead parser. The pack has never seen a real successful Legitify result, so a parser would be a guess. A run that prints output saves it with its SHA-256 and is still `unavailable` with a gap. Nothing is derived from it, so there is no result to bind to the target yet.
+- Real capture on the target (2026-11-12): exit 1, empty stdout, stderr "GitHub fine-grained tokens are not supported at this moment, please use classic PAT". Egress log: 0 tunnels. API requests: 0 (observed; it stops before the first call). Recorded as `unavailable` with a `not-covered-needs-token` gap.
+- Not covered: every Legitify policy (branch protection, review rules, actions permissions, secret scanning settings). Needs a classic PAT. The pack does not ask for one. Most repo-settings policies would also need admin read (`repo` scope on a classic PAT, or `Administration: read`); not checked, because no request was made.
+- Fixture: `test/fixtures/supply-chain-networked/legitify.json`. Tests: `test/supply-chain-legitify.test.mjs`.
+
+### chain-bench
+
+- Not wired. The pack never runs it.
+- Why: chain-bench v0.1.10 takes the token only as the argv flag `-t`. In the v0.1.10 source, `internal/commands/scan.go` passes the cobra flag value `accessToken` straight to `clients.FetchClientData`. The config file's token is not used for that call. Env vars do not work (tried: `ACCESS_TOKEN`, `CHAIN_BENCH_ACCESS_TOKEN`, `CHAINBENCH_ACCESS_TOKEN`, `GITHUB_TOKEN`, `SCM_TOKEN`). A token in argv shows in the host `ps` to any local user, so the token rule forbids it. (`docker inspect` shows an env token too, in Config.Env; the rule allows env.) A wrapper inside the container that moves an env var into argv would still show in `ps`, so the pack does not use one.
+- Seen with no token: it calls `GET /user`, then `GET /repos/...`, and stops with "Failed to fetch client data". Those were unauthenticated calls, not counted against the token. No tokened request was ever made.
+- At run time: `--network-tools chain-bench` gives coverage `unavailable` and a `not-covered-token-in-argv` gap. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
+- Image, kept for the record: `touchstone/chain-bench:0.1.10`, the release tarball by `ADD --checksum=sha256:03c73a9d…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Programs: the `chain-bench` binary (Apache-2.0) and the same unchanged Alpine 3.20 base packages as the Scorecard image.
+- Not covered: every CIS benchmark check chain-bench has (source code, build pipelines, dependencies, artifacts, deployment). It would work if chain-bench read its token from an env var or a file. That is an upstream change.
+
+### raven
+
+- Not wired. The pack never runs it, and no image is built.
+- Checked: raven-cycode 1.0.9 from PyPI (Apache-2.0, wheel sha256 `a68275fe…aec75a`). Read, not run.
+- Blocker 1: `raven download` takes the token only as `--token`, and the option is required. The token rule forbids a token in argv.
+- Blocker 2: it fetches each workflow file from its `download_url` on `raw.githubusercontent.com`. That host is outside the capture allow-list (`api.github.com`). Adding it widens what the token can reach during a capture.
+- Blocker 3: it needs a Redis server and a Neo4j server. Neo4j is not a local image here, and Neo4j Community is GPL-3.0. Two more stateful servers per capture is not a reasonable size for one opt-in tool.
+- It also has a Slack reporting option (`slack_token`). The pack would never use it.
+- At run time: `--network-tools raven` gives coverage `unavailable` and a `not-covered-token-in-argv` gap that names the three blockers. No container starts. Test: `test/supply-chain-chain-bench.test.mjs`.
+- Not covered: raven's cross-workflow graph queries. zizmor and poutine on the snapshot cover single-workflow injection and untrusted checkout.
+
+## cosign signature checks
+
+Code: `cosign.mjs` (scan, classify, replay detectors), `cosign-lab.mjs` (lab), `cosign/Dockerfile` (image). Test: `test/supply-chain-cosign.test.mjs`.
+
+The operator gives the trust: one public key and the artifact list. The policy is in `.touchstone.json`, not in the target repo. A key the repo ships itself proves nothing.
+
+Lab (`lab.mjs` calls `makeCosignLab`). Keys are new for each lab. Private keys are never written.
+
+| Artifact | Bundle | Real cosign result | Lead |
+|---|---|---|---|
+| `release/wallet-cli.js` | signed with the pinned key | `Verified OK` | none |
+| `release/install.sh` | none | not run | `artifact-signature-missing` |
+| `release/updater.js` | signed with another key | `invalid signature` | `cosign/invalid-signature` |
+
+Observed: `3 artifacts: 1 verified, 1 invalid signature, 1 unsigned, 0 unchecked`. Both leads replay through the pack's evidence replay. No other engine has a lead under `release/`.
+
+Fail closed:
+
+- A missing image is a gap for each bundled artifact and engine status `gap`. The unsigned leads stay, since they need no tool. The reason names the image that was tried.
+- A timeout, no docker, a bundle cosign cannot parse, a bad key or any other output is a gap for that artifact, never a pass and never a lead.
+- Any unchecked artifact makes the engine status `gap`, with the reason (for example `2 of 3 artifact signatures unchecked (cosign timed out)`) and `timedOut: true` on a timeout. The run view shows it as not run, with that reason, never as "ran". The leads found are kept.
+- A malformed policy is engine status `error` with a `signature-policy-invalid` gap.
+- No policy means cosign does not apply: `applicable: false` with the reason, not "ran". If bundles are in the snapshot, it also gives a `signatures-not-verified` gap.
+- An artifact the snapshot skipped (binary, too large, over budget) or that is not in the snapshot is a gap.
+
+Limits:
+
+- Key-based bundles only, with `--insecure-ignore-tlog=true`. Keyless bundles (Fulcio certificate, Rekor proof) and a pinned `--trusted-root` are not wired.
+- Text artifacts only. The snapshot keeps UTF-8 text files, so a binary release (tarball, executable) is skipped and becomes a gap.
+- The stderr match is tied to cosign v3.1.4. A new cosign version with other wording turns both outcomes into gaps, not into passes. Re-check on upgrade.
+- The pack pins the policy into `snapshot.json` (`signingPolicy`: key sha256, key, artifact paths and their bundle names) before the scan. The replay trusts only that pin. The artifact must be one the policy lists, the bundles must be the policy's own, and cosign reruns with the pinned key. The key in the evidence `where` is shown but never used. A snapshot with no pin replays no cosign lead.
+- The pin is only as good as `.touchstone.json` at capture time. Whoever can write `.touchstone.json` before the pin can choose the key. That is the operator, the same as for the snapshot hash.
+- `touchstone-cosign:v3.1.4` is a local tag. Nothing checks that the image behind the tag was built from `cosign/Dockerfile`. `buildCosignImage` and every run trust any image with that tag. A reviewer checked the local image by hand: cosign v3.1.4, commit `0e48502c`. Rebuild from the Dockerfile if in doubt.
+- The tests never build the image, because a build pulls from a registry. Without the image, the tests that need real cosign skip with "build the image first".
+- The app form cannot set a policy. Only `.touchstone.json` and `scan.mjs` can.
+- A lead shows only that the pinned key did not sign those bytes. It does not show who signed them or what the artifact does.
+
 ## Limits
 
-This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), or a plain folder. Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings, package registries, installed dependency payloads, or container image layers.
-Tools run offline and read a pinned snapshot. `scan.mjs <folder>` runs them on a real repo or folder. There is no credential verification, chain query, transaction, exploit workflow, or network fallback.
+This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), a plain folder, or a GitHub API capture at one commit (see "Live GitHub path"). Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings (except through an opted-in networked tool), package registries, installed dependency payloads, or container image layers.
+Tools run offline and read a pinned snapshot. `scan.mjs <folder>` runs them on a real repo or folder. `scan.mjs --github` captures a real GitHub repo first. There is no credential verification, chain query, transaction, exploit workflow, or network fallback.
 A tool error remains an explicit coverage error. A missing advisory database is not a clean result.
 The bundled advisory record is narrow by design. Other dependencies need a separately supplied and pinned database.
 

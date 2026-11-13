@@ -29,7 +29,8 @@
 //   - The call mounts a host path other than the workspace.
 //   - The call belongs to no run (see Machines above).
 //   - The call uses a docker flag the parser does not know, or a
-//     `--flag=value` form other than `--network=`. Unknown means local.
+//     `--flag=value` form other than `--network=` and `--pull=never`. Unknown
+//     means local.
 //   - A solc version did not install on the machine. Only that call goes local.
 //   - The Daytona API fails. The machine is deleted and the call tries once more
 //     on a new machine. A second failure keeps every call local for 10 minutes.
@@ -51,8 +52,9 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
+import { scrubError, scrubUrl } from "./redact-url.mjs";
 
-const API = "https://app.daytona.io/api";
+export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
 export const DEFAULT_TARGET = "us-west-3";
 const SNAPSHOT_IMAGE = "docker:28.5.1-dind";
@@ -67,16 +69,61 @@ let downUntil = 0;
 // The execution settings, env first, then Settings, then the defaults.
 //   backend   "local" | "daytona"
 //   apiKey    the Daytona key, or "" when none is set
+//   apiUrl    the Daytona server, with no trailing slash
+//   keyHeld   why a key is set but not sent, or null
+// A key is sent only to the host it is bound to, and only over https with no
+// user name, query or #part. A saved key is bound to saved.keyHost (an older
+// key without one: the saved or default URL). DAYTONA_API_KEY is bound to
+// DAYTONA_API_URL, else to the default server.
 export function execConfig(env = process.env, cfg = safeConfig()) {
   const saved = cfg.execution ?? {};
   const pick = String(env.TOUCHSTONE_EXEC || saved.backend || "local").toLowerCase();
+  const apiUrl = String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, "");
+  const host = hostOf(apiUrl);
+  const safe = safeUrl(apiUrl);
+  const keyHost = saved.keyHost || hostOf(saved.apiUrl || DEFAULT_API_URL);
+  const envKeyHost = hostOf(env.DAYTONA_API_URL || DEFAULT_API_URL);
+  const savedKey = safe && saved.apiKey && keyHost === host ? saved.apiKey : "";
+  const envKey = safe && env.DAYTONA_API_KEY && envKeyHost === host ? env.DAYTONA_API_KEY : "";
+  const apiKey = String(savedKey || envKey || "");
+  let keyHeld = null;
+  if (!apiKey && (saved.apiKey || env.DAYTONA_API_KEY)) {
+    if (!safe) keyHeld = `No key is sent to ${host || "the Daytona server"}: its URL must be https, with no user name, query or #part.`;
+    else if (saved.apiKey) keyHeld = `The saved key is for ${keyHost}, not ${host}. Enter the key again.`;
+    else keyHeld = `The key from DAYTONA_API_KEY is only sent to ${envKeyHost}, not ${host}.`;
+  }
   return {
     backend: pick === "daytona" ? "daytona" : "local",
-    apiKey: String(saved.apiKey || env.DAYTONA_API_KEY || ""),
-    keySource: saved.apiKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
+    apiKey,
+    keySource: savedKey ? "settings" : envKey ? "env" : null,
+    keyHeld,
+    // The host DAYTONA_API_KEY is bound to, or null with no env key. A host
+    // name only, so the form can tell if the env key fits a new server.
+    envKeyHost: env.DAYTONA_API_KEY ? envKeyHost : null,
+    apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
   };
+}
+
+// The host and port of a URL, lower case. "" when it is not a URL.
+export function hostOf(url) {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// True when a key may be sent to this URL: https, and no user name, password,
+// query or #part. The same rule as a saved URL (settings.mjs daytonaUrl).
+function safeUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash;
+  } catch {
+    return false;
+  }
 }
 
 function safeConfig() {
@@ -106,9 +153,23 @@ export function daytonaOn(env = process.env) {
 // scope proxy and the grant gate on this host, so it must not leave it.
 // The parser fails safe. A flag it does not know may take a value, so it
 // cannot find the image after it. Such a call stays local. So does any
-// `--flag=value` form except `--network=`, and a second network flag.
-const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
+// `--flag=value` form except `--network=` and `--pull=never`, and a second
+// network flag. `--pull=always` stays local, since the machine would pull.
+// An incoming `--name` is dropped. The remote script names the container
+// itself, and its watchdog kills that name. Docker uses the last `--name`, so
+// a kept one would make the watchdog miss the container on a timeout.
+const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
+
+// The shell guard that runs the container only when the image is there.
+// With --pull=never nothing is fetched; code 199 sends the image up from this
+// host instead, once. Without the flag the machine may pull as before.
+export function imageGuard(args, image, dir) {
+  const inspect = `docker image inspect ${shq(image)} >/dev/null 2>&1`;
+  return args.includes("--pull=never")
+    ? `if ${inspect}; then`
+    : `if ${inspect} || docker pull -q ${shq(image)} >${dir}/pull 2>&1; then`;
+}
 
 export function planRemote(args, ws, remoteWs) {
   if (args[0] !== "run") return { local: "not a docker run", image: null, args };
@@ -134,9 +195,13 @@ export function planRemote(args, ws, remoteWs) {
       } else {
         out.push(a, spec); // a named volume lives on the machine
       }
+    } else if (a === "--name") {
+      i++;
     } else if (VALUE_FLAGS.has(a)) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {
+      out.push(a);
+    } else if (a === "--pull=never") {
       out.push(a);
     } else if (a.startsWith("-")) {
       return stay(`flag ${a.split("=")[0]} is not known to the remote path`);
@@ -157,15 +222,23 @@ export function shq(s) {
 // ---- REST client
 
 function client(c) {
+  const API = c.apiUrl;
   const auth = { Authorization: `Bearer ${c.apiKey}` };
   async function call(method, url, body, { raw = false, timeoutMs = 60_000 } = {}) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
-    const r = await fetch(url, init);
+    // The server URL may hold a user name, password or query: no error,
+    // cause or echoed body keeps it (redact-url.mjs).
+    let r;
+    try {
+      r = await fetch(url, init);
+    } catch (err) {
+      throw scrubError(err, API);
+    }
     if (!r.ok) {
       const text = (await r.text()).slice(0, 300);
-      const e = new Error(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`);
+      const e = new Error(scrubUrl(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`, API));
       e.status = r.status;
       throw e;
     }
@@ -604,10 +677,10 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     remoteWs && rmGone ? `(cd ${remoteWs} && rm -rf -- ${rmGone})` : ":",
     remoteWs && sync.send.length ? `tar -xf /tmp/ts-${cid}.tar -C ${remoteWs} && rm -f /tmp/ts-${cid}.tar` : ":",
     remoteWs ? `chown -R ${shq(own)} ${remoteWs}` : ":",
-    // Pull outside the time limit, as a local warm cache would.
-    // Code 199 means no registry has the image.
+    // Pull outside the time limit, as a local warm cache would, unless the
+    // argv says --pull=never. Code 199 sends the image up from this host.
     `touch ${dir}/stamp`,
-    `if docker image inspect ${shq(plan.image)} >/dev/null 2>&1 || docker pull -q ${shq(plan.image)} >${dir}/pull 2>&1; then`,
+    imageGuard(plan.args, plan.image, dir),
     `touch ${dir}/stamp; sleep 1`,
     // The watchdog checks once a second. Its stdio is closed, so the toolbox
     // does not wait for it.
@@ -661,8 +734,10 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   const timedOut = files.has("meta/timedout");
   const stdout = clip(files.get("meta/out"), maxBuffer);
   const stderr = clip(files.get("meta/err"), maxBuffer);
+  // Like the local path: output above maxBuffer is cut, and the caller must know.
+  const overflow = [files.get("meta/out"), files.get("meta/err")].some((buf) => (buf ? buf.toString("utf8").length : 0) > maxBuffer);
   // A local timeout reports code 1, so this does too.
-  const result = { code: timedOut ? 1 : code, stdout, stderr, timedOut };
+  const result = { code: timedOut ? 1 : code, stdout, stderr, timedOut, overflow };
   event("exec", { backend: "daytona", sandbox: m.id, image: plan.image, code: result.code, ms: Date.now() - t0, synced: sync.send.length });
   return result;
 }
@@ -704,7 +779,7 @@ async function pushImage(m, image) {
 
 // ---- Foundry on the machine
 
-const FOUNDRY_IMG = "ghcr.io/foundry-rs/foundry:latest";
+const FOUNDRY_IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 
 // A solc version we pass to a shell: digits and dots only.
 export const SOLC_VERSION = /^\d+\.\d+\.\d+$/;

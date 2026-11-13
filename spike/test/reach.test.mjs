@@ -13,10 +13,11 @@
 // never touched. A local http server stands in for the granted host. No docker.
 //
 //   node --test spike/test/reach.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -26,9 +27,9 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => rmSync(process.env.TOUCHSTONE_GRANTS_FILE, { force: true }));
 
 // Loaded after the env var is set, so the store reads the throwaway file.
-const { addGrant } = await import("../lib/grant-store.mjs");
+const { addGrant, removeGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, enforceReach, isNetworkKind, openReach, NON_NETWORK_KINDS } = await import("../lib/reach.mjs");
-const { targetSummary, resolveTargetDir, prepareWorkspace, prepareRunWorkspace } = await import("../lib/targets.mjs");
+const { targetSummary, resolveTargetDir, prepareWorkspace, prepareRunWorkspace, scopeEnv } = await import("../lib/targets.mjs");
 const { PACKS } = await import("../packs/index.mjs");
 
 // A local http server stands in for the granted host. Pointed at via the
@@ -135,12 +136,12 @@ test("a live target runs under a live pack and carries its exact origin", async 
   // A live target has no directory; it is never a lab.
   assert.throws(() => resolveTargetDir(live), /not yet runnable: live/);
 
-  // The workspace is a brief naming the origin, and its config carries the base
-  // URL the request tool and the proof replay both read.
+  // The agent's instructions name the origin, and the config carries the base
+  // URL the request tool and the proof replay both read. No file names it.
   const ws = prepareWorkspace(live, { modules: [] });
   try {
-    const brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
-    assert.match(brief, /https:\/\/app\.example\.com:8443/);
+    assert.ok(!existsSync(path.join(ws, "BRIEF.md")));
+    assert.match(scopeEnv(live).SCOPE_NOTES, /https:\/\/app\.example\.com:8443/);
     const cfg = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"));
     assert.equal(cfg.kind, "live");
     assert.deepEqual(cfg.hosts, ["app.example.com"]);
@@ -159,7 +160,24 @@ test("a live target runs under a live pack and carries its exact origin", async 
   }
 });
 
-test("the allow-list is the covering grant's hosts, not every grant in the store", async () => {
+test("a resumed reach gate uses only its original active grant", async () => {
+  const scope = { kind: "live", hosts: ["127.0.0.1"] };
+  const original = addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, allowPrivate: true });
+  const grantIds = enforceReach(scope).grants.map((g) => g.id);
+  addGrant({ hosts: ["127.0.0.1", "unrelated.example.com"], kind: "operator-owned", ownership: true, allowPrivate: true });
+  const handle = await openReach(scope, { grantIds });
+  try {
+    assert.deepEqual(handle.allowedHosts, ["127.0.0.1"]);
+    const blocked = await fetch(handle.proxy.url, { headers: { "x-touchstone-url": "http://unrelated.example.com/x" } });
+    assert.equal(blocked.status, 403);
+  } finally {
+    await handle.stop();
+  }
+  removeGrant(original.id);
+  await assert.rejects(() => openReach(scope, { grantIds }), /saved grant.*missing or expired/);
+});
+
+test("the allow-list is the target's own hosts, not every grant in the store", async () => {
   addGrant({ hosts: ["127.0.0.1"], kind: "operator-owned", ownership: true, allowPrivate: true });
   addGrant({ hosts: ["unrelated.example.com"], kind: "operator-owned", ownership: true });
   const handle = await openReach({ kind: "live", hosts: ["127.0.0.1"] });

@@ -2,15 +2,23 @@
 // { status, json } result, so the same logic works behind Vite's dev
 // middleware now and a standalone http server later (when runs go live).
 import { listFindings, getFinding } from "./findings.mjs"
+import { scopeStoreError } from "../../spike/lib/scopes-store.mjs"
+import { grantStoreError } from "../../spike/lib/grant-store.mjs"
 
 export async function handleApi(url) {
-  const { pathname } = new URL(url, "http://local")
+  const { pathname, searchParams } = new URL(url, "http://local")
+  // A store file that exists but cannot be read lists as empty everywhere, and
+  // every write to it is refused. This says so, so the app can show it.
+  if (pathname === "/api/stores") {
+    return { status: 200, json: { errors: [scopeStoreError(), grantStoreError()].filter(Boolean) } }
+  }
   if (pathname === "/api/findings") {
     return { status: 200, json: { findings: await listFindings() } }
   }
   const match = pathname.match(/^\/api\/findings\/([^/]+)$/)
   if (match) {
-    const finding = await getFinding(decodeURIComponent(match[1]))
+    // ?events=0: the finding without its run's transcript (findings.mjs).
+    const finding = await getFinding(decodeURIComponent(match[1]), { events: searchParams.get("events") !== "0" })
     return finding
       ? { status: 200, json: finding }
       : { status: 404, json: { error: "not found" } }

@@ -1,0 +1,191 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Strix",
+          "informationUri": "https://strix.ai",
+          "rules": [
+            {
+              "id": "strix-coverage/exposed-services-attack-surface",
+              "name": "Exposed services / attack surface",
+              "shortDescription": {
+                "text": "Coverage: Exposed services / attack surface"
+              },
+              "fullDescription": {
+                "text": "Coverage of Exposed services / attack surface across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of Exposed services / attack surface across the assessed attack surface.",
+                "markdown": "Coverage of Exposed services / attack surface across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/xss-secrets-api-discovery-in-js",
+              "name": "XSS / secrets / API discovery in JS",
+              "shortDescription": {
+                "text": "Coverage: XSS / secrets / API discovery in JS"
+              },
+              "fullDescription": {
+                "text": "Coverage of XSS / secrets / API discovery in JS across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of XSS / secrets / API discovery in JS across the assessed attack surface.",
+                "markdown": "Coverage of XSS / secrets / API discovery in JS across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            },
+            {
+              "id": "strix-coverage/hidden-endpoints-sensitive-file-exposure",
+              "name": "Hidden endpoints / sensitive file exposure",
+              "shortDescription": {
+                "text": "Coverage: Hidden endpoints / sensitive file exposure"
+              },
+              "fullDescription": {
+                "text": "Coverage of Hidden endpoints / sensitive file exposure across the assessed attack surface."
+              },
+              "defaultConfiguration": {
+                "level": "none"
+              },
+              "help": {
+                "text": "Coverage of Hidden endpoints / sensitive file exposure across the assessed attack surface.",
+                "markdown": "Coverage of Hidden endpoints / sensitive file exposure across the assessed attack surface."
+              },
+              "properties": {
+                "tags": [
+                  "coverage"
+                ]
+              }
+            }
+          ],
+          "version": "1.7.0"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "strix-coverage/exposed-services-attack-surface",
+          "ruleIndex": 0,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "Exposed services / attack surface — No issue identified: example.com host/ports (80, 443, 8080, 8443)\n\nnaabu top-1000 + direct curl: only 80/443 serve (Cloudflare edge, 200). 8080 unanswered, 8443 returns nginx-style 400 to plain HTTP then TLS stalls."
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "example.com host/ports (80, 443, 8080, 8443)"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "Exposed services / attack surface",
+              "surface": "example.com host/ports (80, 443, 8080, 8443)",
+              "recorded_by": "Recon Mapper",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/xss-secrets-api-discovery-in-js",
+          "ruleIndex": 1,
+          "kind": "pass",
+          "level": "none",
+          "message": {
+            "text": "XSS / secrets / API discovery in JS — No issue identified: / and /s.js static page bundle\n\nReviewed full s.js (1963 B): no fetch/axios/GraphQL/WS, no tokens, no wallet/SIWE refs, no hardcoded keys or endpoints. Only sink is insertAdjacentHTML with literal strings."
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "/ and /s.js static page bundle"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "no_issue_found",
+              "risk_area": "XSS / secrets / API discovery in JS",
+              "surface": "/ and /s.js static page bundle",
+              "recorded_by": "Recon Mapper",
+              "source": "agent_reported"
+            }
+          }
+        },
+        {
+          "ruleId": "strix-coverage/hidden-endpoints-sensitive-file-exposure",
+          "ruleIndex": 2,
+          "kind": "open",
+          "level": "none",
+          "message": {
+            "text": "Hidden endpoints / sensitive file exposure — Requires further review: Catch-all 404 handler + common paths (robots, sitemap, .git, .env, config.json)\n\nEvery path returns the same 577-byte 404 page; katana d3 found only / and /s.js. ffuf wordlist run incomplete (no dirb/SecLists file present in sandbox)."
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "Catch-all 404 handler + common paths (robots, sitemap, .git, .env, config.json)"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "strix": {
+              "coverage_outcome": "needs_follow_up",
+              "risk_area": "Hidden endpoints / sensitive file exposure",
+              "surface": "Catch-all 404 handler + common paths (robots, sitemap, .git, .env, config.json)",
+              "recorded_by": "Recon Mapper",
+              "source": "agent_reported"
+            }
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "executionSuccessful": false,
+          "toolExecutionNotifications": [
+            {
+              "level": "warning",
+              "message": {
+                "text": "The scan ended with status 'interrupted' rather than completing, so coverage reflects only the work finished before it stopped."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "5 agent(s) did not finish cleanly (Cache Poisoning Specialist, Origin 8443 and Desync Specialist, Path and Protocol Discovery Specialist, Proxy Evidence Recorder, Root Agent); any surface they held is under-covered."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "The run terminated via 'user_exit' rather than the root agent finishing, so remaining scope was not reached."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

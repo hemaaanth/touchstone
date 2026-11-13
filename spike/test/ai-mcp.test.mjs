@@ -4,14 +4,15 @@
 // are not built.
 //
 //   node --experimental-test-module-mocks --test test/ai-mcp.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import aiMcp, { ORACLES, matchOracle, oracleLeads, secretPatterns, fetchScopeOracle } from "../packs/ai-mcp/pack.mjs";
-import { mergeLeads, parseInspector, scanMcp } from "../packs/ai-mcp/scan.mjs";
+import { IMAGES, mergeLeads, parseInspector, parseShield, scanMcp } from "../packs/ai-mcp/scan.mjs";
 import { PACKS, packFor } from "../packs/index.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "../lib/sandbox.mjs";
 import { proofView } from "../lib/proof-view.mjs";
@@ -503,26 +504,102 @@ test("mergeLeads sorts worst first, dedupes, and marks two-engine places as corr
   assert.deepEqual(m.map((l) => [l.check, l.corroborated]), [["b", true], ["a", false]]);
 });
 
-test("scanMcp runs both tools, passes the token, and reports a failed tool as unavailable", async () => {
+test("scanMcp runs every tool, passes the token, and reports a failed tool as unavailable", async () => {
   const calls = [];
   const run = async (o) => {
     calls.push(o);
     if (o.image.includes("inspector")) return { code: 0, stdout: TOOLS_LIST, stderr: "", timedOut: false };
     return { code: 1, stdout: "", stderr: "boom", timedOut: false };
   };
-  const out = await scanMcp({ net: "n", baseUrl: "http://lab:8080", token: "tok", run });
-  assert.deepEqual(out.coverage.map((c) => `${c.engine}:${c.status}:${c.leads}`).sort(), ["mcp-inspector:ran:3", "nuclei:unavailable:0"]);
+  const out = await scanMcp({ net: "n", baseUrl: "http://lab:8080", token: "tok", run, hasImage: async () => true });
+  assert.deepEqual(out.coverage.map((c) => `${c.engine}:${c.status}:${c.leads}`).sort(), ["mcp-inspector:ran:3", "mcp-shield:unavailable:0", "nuclei:unavailable:0"]);
   const insp = calls.find((c) => c.image.includes("inspector"));
   assert.ok(insp.cmd.includes("Authorization: Bearer tok"));
   assert.equal(insp.network, "n");
   assert.equal(out.leads.length, 3);
 });
 
+// ---- mcp-shield: real output recorded once (see test/fixtures/mcp-shield/).
+// poisoned.json: run against poisoned-server.mjs on an --internal network.
+// lab.json: run against the ai-mcp lab with the reader token.
+// unauthorized.json: run against the ai-mcp lab with a wrong token.
+const SHIELD_FX = (f) => readFileSync(new URL(`./fixtures/mcp-shield/${f}`, import.meta.url), "utf8");
+
+test("parseShield turns real mcp-shield output into leads and never copies the matched text", () => {
+  const p = parseShield(SHIELD_FX("poisoned.json"));
+  assert.equal(p.ok, true);
+  assert.equal(p.toolCount, 4);
+  const got = p.leads.map((l) => `${l.check}|${l.where}|${l.impact}`).sort();
+  assert.deepEqual(got, [
+    "shield-hidden-instructions|tool add_numbers|High",
+    "shield-sensitive-file-access|tool add_numbers|High",
+    "shield-side-channel-argument|tool add_numbers|High",
+    "shield-side-channel-argument|tool get_weather|Medium",
+    "shield-tool-shadowing|tool send_message|High",
+  ]);
+  assert.ok(p.leads.every((l) => l.engine === "mcp-shield"));
+  const hidden = p.leads.find((l) => l.check === "shield-hidden-instructions");
+  assert.match(hidden.description, /Concealment directive, Instructions tag/);
+  assert.match(p.leads.find((l) => l.where === "tool get_weather").description, /metadata/);
+  // The target's own description text never lands in a lead.
+  const all = JSON.stringify(p.leads);
+  for (const raw of ["id_rsa", "~/.ssh", "Do not mention", "<instructions>", "github tool"]) assert.ok(!all.includes(raw), raw);
+});
+
+test("parseShield: the lab is a clean scan, and an error or garbage is never a clean scan", () => {
+  const lab = parseShield(SHIELD_FX("lab.json"));
+  assert.deepEqual([lab.ok, lab.toolCount, lab.leads.length], [true, 6, 0]);
+  const denied = parseShield(SHIELD_FX("unauthorized.json"));
+  assert.equal(denied.ok, false);
+  assert.match(denied.error, /unauthorized/);
+  for (const bad of ["", "not json", "{}", JSON.stringify({ ok: true })]) assert.equal(parseShield(bad).ok, false, bad);
+});
+
+test("scanMcp: mcp-shield gets the MCP URL, the token in its env, the scan network, and never a model key", async () => {
+  const calls = [];
+  const run = async (o) => {
+    calls.push(o);
+    if (o.image === IMAGES.shield) return { code: 0, stdout: SHIELD_FX("poisoned.json"), stderr: "", timedOut: false };
+    return { code: 0, stdout: "", stderr: "", timedOut: false };
+  };
+  const out = await scanMcp({ net: "bridge", baseUrl: "https://mcp.example.com", token: "tok_live", only: ["mcp-shield"], run, hasImage: async () => true });
+  assert.equal(calls.length, 1);
+  const c = calls[0];
+  assert.match(c.image, /^touchstone\/mcp-shield:1\.0\.4$/);
+  assert.deepEqual(c.cmd, ["https://mcp.example.com/mcp"]);
+  assert.equal(c.network, "bridge");
+  assert.deepEqual(c.env, { MCP_TOKEN: "tok_live" });
+  assert.equal(c.ws, undefined, "mcp-shield needs no workspace mount");
+  assert.doesNotMatch(JSON.stringify(c), /claude|anthropic|api[-_]?key/i);
+  assert.deepEqual(out.coverage, [{ engine: "mcp-shield", status: "ran", code: 0, timedOut: false, leads: 5 }]);
+  assert.equal(out.leads.filter((l) => l.engine === "mcp-shield").length, 5);
+});
+
+test("scanMcp: a missing mcp-shield image or a tool error is a coverage error with a reason", async () => {
+  let ran = false;
+  const missing = await scanMcp({ net: "n", baseUrl: "http://lab:8080", only: ["mcp-shield"], run: async () => { ran = true; return { code: 0, stdout: "", stderr: "" }; }, hasImage: async () => false });
+  assert.equal(ran, false, "a missing local image must never reach docker run (it would try to pull)");
+  assert.equal(missing.coverage[0].status, "unavailable");
+  assert.match(missing.coverage[0].reason, /touchstone\/mcp-shield:1\.0\.4 is not built.*build:labs -- shield/);
+
+  const denied = await scanMcp({ net: "n", baseUrl: "http://lab:8080", only: ["mcp-shield"], run: async () => ({ code: 2, stdout: SHIELD_FX("unauthorized.json"), stderr: "", timedOut: false }), hasImage: async () => true });
+  assert.equal(denied.coverage[0].status, "unavailable");
+  assert.match(denied.coverage[0].reason, /mcp-shield failed: MCP error -32001: unauthorized/);
+
+  // Exit 0 with no JSON (a broken image) is still an error, not a clean scan.
+  const silent = await scanMcp({ net: "n", baseUrl: "http://lab:8080", only: ["mcp-shield"], run: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false }), hasImage: async () => true });
+  assert.equal(silent.coverage[0].status, "unavailable");
+  assert.match(silent.coverage[0].reason, /no JSON result/);
+
+  const slow = await scanMcp({ net: "n", baseUrl: "http://lab:8080", only: ["mcp-shield"], run: async () => ({ code: 1, stdout: "", stderr: "", timedOut: true }), hasImage: async () => true });
+  assert.deepEqual([slow.coverage[0].status, slow.coverage[0].timedOut, slow.coverage[0].reason], ["unavailable", true, "mcp-shield timed out."]);
+});
+
 // ---- smoke: needs Docker and the images. No model spend.
 
 const hasImages = (() => {
   try {
-    for (const i of ["touchstone/ai-mcp-lab:dev", "touchstone/mcp-inspector:0.17.2", "projectdiscovery/nuclei:v3.4.10"]) execFileSync("docker", ["image", "inspect", i], { stdio: "ignore" });
+    for (const i of ["touchstone/ai-mcp-lab:dev", "touchstone/mcp-inspector:0.17.2", "touchstone/mcp-shield:1.0.4", "projectdiscovery/nuclei:v3.4.10"]) execFileSync("docker", ["image", "inspect", i], { stdio: "ignore" });
     return true;
   } catch { return false; }
 })();
@@ -570,7 +647,9 @@ test("ai-mcp smoke: six planted bugs match, are submitted, and prove() replays e
 
     // The scan ran both tools. It sees the risky tool names. It must NOT see
     // the three bugs themselves: a clean scan misses them.
-    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["mcp-inspector:ran", "nuclei:ran"]);
+    assert.deepEqual(prep.record.coverage.map((c) => `${c.engine}:${c.status}`).sort(), ["mcp-inspector:ran", "mcp-shield:ran", "nuclei:ran"]);
+    // mcp-shield's patterns do not match the lab's "IMPORTANT:" poisoning: a clean scan.
+    assert.equal(prep.record.coverage.find((c) => c.engine === "mcp-shield").leads, 0);
     const checks = prep.record.leads.map((l) => l.check);
     assert.ok(checks.includes("tool-sends-data-out"), checks.join(","));
     assert.ok(!checks.some((c) => /inject|scope-bypass|ssrf/i.test(c)), "a clean scan must not name the bugs");

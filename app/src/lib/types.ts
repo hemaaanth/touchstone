@@ -1,3 +1,5 @@
+import type { Harm } from "./eth"
+
 // The shapes the API serves. Every field is derived from a real recorded
 // engine run; see server/findings.mjs.
 
@@ -35,6 +37,15 @@ export interface FindingSummary {
   // The passing test contract this finding names. Lets the transcript match a
   // submitted finding to its recorded (replayed) one. Absent on old records.
   poc?: string
+  // The module id that made it (the finding's own pack, else the run's), the
+  // scope title the run used, and when the run started (ms). The list
+  // (GET /api/findings) sends these; null when the record has none.
+  pack?: string | null
+  scope?: string | null
+  at?: number | null
+  // Which replay proves it, from the finding's own module (the run's `finding`
+  // event). Absent on an older record.
+  proofKind?: ProofKind
 }
 
 export interface PocRun {
@@ -65,6 +76,8 @@ export interface Transfer {
   address: string
   net: string
   gained: boolean
+  // The exact signed wei, when the server passes it (the record has it).
+  netWei?: string
 }
 
 export interface Proof {
@@ -84,6 +97,9 @@ export interface Proof {
   assertions: string[]
   rerunCommand: string | null
   testSource: string | null
+  // What the proof gate says was lost (spike/lib/proof.mjs), when the server
+  // passes it: an ETH or token drain, or a control takeover.
+  harm?: Harm | null
 }
 
 export interface Usage {
@@ -147,6 +163,8 @@ export interface PrepassLead {
   check: string
   impact: string
   where: string
+  // Rule id and CWE, e.g. "10038 · CWE-693". Older records have none.
+  rule?: string
   detail: string
   tools: string[]
   corroborated: boolean
@@ -253,9 +271,14 @@ export interface ModelChoice {
   abliterated: boolean
 }
 
-// Total spent across all runs, and the default budget for one run.
+// Total spent across all runs (the spend ledger), the total spend cap every
+// run stops at, and the default budget for one run. usd and capUsd are null
+// when the ledger or the cap cannot be read; ledgerError then says why, and
+// no new run can start.
 export interface SpendState {
-  usd: number
+  usd: number | null
+  capUsd: number | null
+  ledgerError: string | null
   budgetUsd: number
 }
 
@@ -272,7 +295,8 @@ export interface ProofSurface {
 // scope's pack: "forge" for Solidity under Contracts, else "none".
 export type TargetScopeMember =
   | { kind: "repo"; url: string; proof: string }
-  | { kind: "folder"; name: string; files: number; proof: string }
+  // `path` is set in the scope list for a folder the server reads in place.
+  | { kind: "folder"; name: string; path?: string; files: number; proof: string }
 
 // One scope from the target library. `kind` is lab | local-source | brief |
 // scope (repos and folders mixed, any language);
@@ -288,11 +312,17 @@ export interface TargetScope {
   origins?: string[]
   // The module (pack) this scope belongs to. Absent on a record saved before modules.
   pack?: string
+  // Every module this scope allows. A run picks one of them at start.
+  packs?: string[]
   blurb: string
   entry: string
   files?: string[]
   links?: string[]
   members?: TargetScopeMember[]
+  // The operator's scope brief: text every run of the scope gets in the agent's
+  // instructions. Only the scope list carries it; a run's scope event does not
+  // (a run has its own `brief` event).
+  brief?: string
   signal: string
   proofSurface: ProofSurface
 }
@@ -301,10 +331,29 @@ export interface TargetScope {
 export interface PackChoice {
   id: string
   title: string
+  // What the module tests, in one plain sentence: the pack's own description
+  // (spike/packs/index.mjs packList). Absent when a pack has none.
+  description?: string
   tier?: string
   proof: string
   // The module's tools can be aimed at a real host.
   live?: boolean
+  // What the pack's own lab stands in for. "rule-based" means the lab
+  // assistant is a rule-based stand-in, not a model.
+  labTarget?: string
+  // Where the pack's tools reach. The engine sends each field only when the pack
+  // sets it (spike/packs/index.mjs packList). See spike/packs/README.md.
+  // true: no tool reaches a network.
+  offline?: boolean
+  // What the host fetches for a run: "github" (the scope's GitHub links),
+  // "solc" (the compilers those files pin).
+  fetches?: string[]
+  // "open": a live run's scanners use the open bridge network.
+  scanNet?: string
+  // "github": a live grant names GitHub repos or orgs, not hosts.
+  grants?: string
+  // "cloud-http": one check also gets an HTTP replay on a private practice cloud.
+  extraProof?: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
@@ -341,6 +390,8 @@ export interface RunEvent {
 //   prepass          PrepassView                                  tool scan summary
 //   list_sources     {}                                           listed sources
 //   read_source      { file }                                     read a file
+//   brief            { text }                                     the scope brief the
+//                                                                  agent got ("" = removed)
 //   thinking-delta   { conv, attempt?, text }                     reasoning SNAPSHOT
 //   assistant-delta  { conv, attempt?, text }                     prose SNAPSHOT
 //   say              { conv, attempt?, text }                      finalized prose
@@ -360,6 +411,8 @@ export interface RunEvent {
 //   bulletin-post    { id, author, text, kind?, severity?,        fleet: a Bulletin note
 //                      tags?, lane? }
 //   agent-spend      { id, usd }                                  fleet: child's spend SNAPSHOT
+//   lead             { id, severity, file, line, title, reason,   a recorded lead with its
+//                      proof?, agent? }                           evidence; never proven
 //   finding-submitted { n, title, severity, poc }                 agent submits one of
 //                                                                 many; audit goes on
 //   submit-rejected  { poc, reason }                              not passed / duplicate
@@ -455,6 +508,22 @@ export interface BulletinNote {
   stepKey: string // key of the event that posted it, for linking back
 }
 
+// One lead an agent recorded (Review's record_lead), with its evidence. A lead
+// is not a finding: nothing marks it proven. `author` is a child id or
+// COORDINATOR (the root agent, also a solo run's one agent).
+export interface RunLead {
+  id: string
+  author: string
+  t: number | null
+  severity: Severity | null
+  file: string
+  line: number
+  title: string
+  reason: string
+  proof: string | null
+  stepKey: string
+}
+
 // One operator steer across its two-phase life. "pending" — typed, shown as a
 // chip over the composer, not yet in the turn. "admitted" — the agent took it
 // in; it now reads as a normal operator message. "rejected" — dropped unused.
@@ -510,6 +579,8 @@ export interface PendingApproval {
   severity: Severity
   poc: string
   n?: number
+  // The module the finding came through (the `finding-submitted` event).
+  pack?: string
 }
 
 export interface RunView {
@@ -519,6 +590,9 @@ export interface RunView {
   // A label for back-compat; `scope` carries the structured target descriptor.
   target: string | null
   scope: TargetScope | null
+  // Every module this ONE run covers. One entry for a one-module run and for a
+  // record from before modules existed; the server always sends it.
+  packs: string[]
   status: RunStatus
   startedAt: number
   events: RunEvent[]
@@ -550,6 +624,11 @@ export interface RunSummary {
   name?: string | null
   // The title of the scope the run attacks, for runs with no name or finding.
   scopeTitle?: string | null
+  // Every module the run covers, so a list row can name them all.
+  packs?: string[]
+  // How an error run ended (the server's errorInfo.kind). "cutoff" is a server
+  // restart that cut the run off: it reads Interrupted, not failed.
+  errorKind?: string | null
 }
 
 export type Verdict = "approve" | "deny"
@@ -560,6 +639,10 @@ export interface KeyState {
   source: "settings" | "env" | null
   envName?: string | null
   last4: string | null
+  // Where the provider's env key may go (its built-in base URL), or null.
+  envHome?: string | null
+  // Why an env key is set but not used (the base URL is on another server).
+  held?: string | null
 }
 
 export interface ProviderModel {
@@ -575,6 +658,8 @@ export interface ProviderSetting {
   id: string
   label: string
   baseUrl: string
+  // The server cut a user name, password, query or #part from baseUrl.
+  baseUrlHidden?: boolean
   builtIn: boolean
   saved: boolean
   key: KeyState
@@ -615,25 +700,4 @@ export interface ModulePlanEntry {
   available: boolean
   fixed: boolean
   reason: string | null
-}
-
-// ---- Playbooks. A saved run recipe: a scope plus a module plan, so a proven
-// attack path is one click to repeat.
-// TODO(backend): no server store or route exists for playbooks yet. The
-// Playbooks screen renders against this shape with an empty list. Wire it as
-// GET /api/playbooks -> { playbooks: Playbook[] } and
-// POST /api/playbooks { fromRunId, title } -> Playbook.
-export interface Playbook {
-  id: string
-  title: string
-  // The module (pack) and the scope the recipe runs against.
-  pack: string
-  targetId: string
-  // Which toggleable pipeline steps are on (ModulePlanEntry ids).
-  modules: string[]
-  model: string | null
-  budgetUsd: number | null
-  // The proven run this recipe was saved from, if any.
-  fromRunId: string | null
-  createdAt: number
 }

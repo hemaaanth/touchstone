@@ -1,8 +1,10 @@
 import { useMemo } from "react"
-import { BookMarked, Boxes, FolderGit2, Settings2, ShieldCheck } from "lucide-react"
+import { Boxes, Bug, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
-import type { RunSummary } from "@/lib/types"
-import { ago, DOT, isTerminal, runTitle, statusLabel, statusTone } from "@/lib/format"
+import type { PackChoice, RunSummary } from "@/lib/types"
+import { ago, DOT, isTerminal, runTitle } from "@/lib/format"
+import { joinedModules } from "@/lib/catalog"
+import { runRowStatus } from "@/components/thread-model"
 import {
   Sidebar,
   SidebarContent,
@@ -15,16 +17,17 @@ import {
 } from "@/components/ui/sidebar"
 import { ResizeHandle } from "@/components/resize-handle"
 import { ThreadList, type RunThreadCustom } from "@/components/assistant-ui/elements/thread-list"
+import markRaw from "@/assets/touchstone-mark.svg?raw"
 
 // What the center column is showing. A run, or one of the single-item pages.
 export type View =
   | { kind: "run"; id: string }
-  | { kind: "page"; id: "scopes" | "modules" | "playbooks" | "settings" }
+  | { kind: "page"; id: "findings" | "scopes" | "modules" | "settings" }
 
 const PAGES = [
+  { id: "findings", label: "Findings", icon: Bug },
   { id: "scopes", label: "Scopes", icon: FolderGit2 },
   { id: "modules", label: "Modules", icon: Boxes },
-  { id: "playbooks", label: "Playbooks", icon: BookMarked },
 ] as const
 
 export function AppSidebar({
@@ -37,7 +40,10 @@ export function AppSidebar({
   width,
   onWidth,
   defaultWidth,
+  packs = [],
 }: {
+  // The server's module list: the titles and the order of a joined run's pills.
+  packs?: PackChoice[]
   width: number
   onWidth: (w: number) => void
   defaultWidth: number
@@ -65,8 +71,8 @@ export function AppSidebar({
 
   // The runs list is the assistant-ui thread list element, fed from our runs
   // through an external-store thread list. It has no chat of its own.
-  const threads = useMemo(() => open.map((r) => runThread(r, "regular" as const)), [open])
-  const archivedThreads = useMemo(() => archived.map((r) => runThread(r, "archived" as const)), [archived])
+  const threads = useMemo(() => open.map((r) => runThread(r, "regular" as const, packs)), [open, packs])
+  const archivedThreads = useMemo(() => archived.map((r) => runThread(r, "archived" as const, packs)), [archived, packs])
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: NO_MESSAGES,
     convertMessage: (m) => m,
@@ -87,11 +93,11 @@ export function AppSidebar({
 
   return (
     <Sidebar>
-      <SidebarHeader className="p-3">
+      {/* The same height as the run's top bar (h-12) with the same bottom
+          rule, so the two read as one bar. */}
+      <SidebarHeader className="h-12 shrink-0 justify-center border-b px-3 py-0">
         <div className="flex items-center gap-2 px-1">
-          <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <ShieldCheck className="size-3.5" />
-          </div>
+          <TouchstoneMark />
           <span className="text-sm font-semibold tracking-tight">Touchstone</span>
         </div>
       </SidebarHeader>
@@ -104,7 +110,7 @@ export function AppSidebar({
       </SidebarContent>
 
       {/* Workspace nav + account controls sit together at the base, divided
-          from the runs list above. Scopes / Modules / Playbooks are
+          from the runs list above. Findings / Scopes / Modules are
           destinations you leave the runs for, so they live down here by
           Settings rather than competing with the list. */}
       <SidebarFooter className="gap-0 border-t border-sidebar-border p-2 pb-3">
@@ -140,15 +146,45 @@ export function AppSidebar({
 
 const NO_MESSAGES: ThreadMessageLike[] = []
 
+// The brand mark from src/assets/touchstone-mark.svg. One filled shape in
+// currentColor, so it takes the sidebar foreground in light and in dark.
+const MARK_VIEWBOX = /viewBox="([^"]+)"/.exec(markRaw)?.[1] ?? "0 0 32 32"
+const MARK_PATHS = [...markRaw.replace(/<!--[\s\S]*?-->/g, "").matchAll(/<path\b([^>]*)\/?>/g)].map((m) => {
+  const attrs = m[1]
+  return {
+    d: /d="([^"]*)"/.exec(attrs)?.[1] ?? "",
+    evenodd: /fill-rule="evenodd"/.test(attrs),
+  }
+})
+
+function TouchstoneMark() {
+  return (
+    <svg
+      viewBox={MARK_VIEWBOX}
+      fill="currentColor"
+      aria-hidden="true"
+      className="block size-6 shrink-0 text-sidebar-foreground"
+    >
+      {MARK_PATHS.map((p) => (
+        <path key={p.d} d={p.d} fillRule={p.evenodd ? "evenodd" : undefined} />
+      ))}
+    </svg>
+  )
+}
+
 // One run as a thread list item. `custom` carries what the row shows.
-function runThread<S extends "regular" | "archived">(r: RunSummary, status: S) {
+function runThread<S extends "regular" | "archived">(r: RunSummary, status: S, packs: PackChoice[]) {
   const done = isTerminal(r.status)
+  // A restart's cut-off reads Interrupted with a neutral dot, not as a failure.
+  const row = runRowStatus(r)
   const custom: RunThreadCustom = {
-    dot: DOT[statusTone(r.status)],
-    label: `${statusLabel(r.status)} · ${ago(r.startedAt)}`,
+    dot: DOT[row.tone],
+    label: `${row.word} · ${ago(r.startedAt)}`,
     at: r.startedAt,
     running: !done,
     canArchive: done,
   }
+  const modules = joinedModules(r, packs)
+  if (modules) custom.modules = modules
   return { status, id: r.id, title: runTitle(r), custom }
 }

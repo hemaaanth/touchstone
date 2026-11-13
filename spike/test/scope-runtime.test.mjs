@@ -2,6 +2,7 @@
 // plan, and the Review pack's read-only proof gate.
 //
 //   node --test spike/test/scope-runtime.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -14,7 +15,7 @@ const cleanup = [dir];
 after(() => { for (const d of cleanup) rmSync(d, { recursive: true, force: true }); });
 
 const { addScope } = await import("../lib/scopes-store.mjs");
-const { prepareWorkspace, targetSummary, pickTarget, listTargets } = await import("../lib/targets.mjs");
+const { prepareWorkspace, targetSummary, pickTarget, listTargets, scopeEnv } = await import("../lib/targets.mjs");
 const { planModules, moduleOn } = await import("../lib/modules.mjs");
 const { readTouchstone } = await import("../lib/sandbox.mjs");
 const { PACKS, packFor } = await import("../packs/index.mjs");
@@ -34,12 +35,13 @@ test("a non-Solidity scope runs under Review: no Foundry, replay off, no way to 
   assert.equal(readFileSync(path.join(ws, "src/api/main.go"), "utf8"), "package main\n");
   assert.ok(existsSync(path.join(ws, "src/web/app.ts")));
   assert.ok(!existsSync(path.join(ws, "foundry.toml")));
-  assert.match(readFileSync(path.join(ws, "BRIEF.md"), "utf8"), /github\.com\/acme\/svc/);
+  assert.ok(!existsSync(path.join(ws, "BRIEF.md")), "the scope text is not a workspace file");
+  assert.match(scopeEnv(s).SCOPE_NOTES, /github\.com\/acme\/svc/);
   const cfg = readTouchstone(ws);
   assert.equal(cfg.pack, "review");
   const pack = packFor(cfg);
   const names = pack.tools(ws, {}).map((t) => t.name);
-  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "fetch_source"]);
+  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "record_lead", "fetch_source"]);
   assert.ok(!names.includes("submit_finding") && !names.includes("run_poc"));
   // Even a forged finding list proves nothing.
   assert.deepEqual(await pack.prove(ws, [{ title: "x", severity: "critical", poc: "X" }], [], () => {}), []);
@@ -93,8 +95,7 @@ test("Review reads only allowlisted files inside the workspace; symlinks and sec
   symlinkSync(path.join(outside, "host.ts"), path.join(ws, "src/link.ts"));
   assert.deepEqual(review.listFiles(ws), ["src/ok.rs", "vendor/repo/lib.go"]);
   assert.ok(review.resolveReadable(ws, "src/ok.rs"));
-  assert.ok(review.resolveReadable(ws, "BRIEF.md"));
-  for (const p of ["src/link.ts", "src/id_rsa", "src/logo.png", "vendor/repo/.git/config", ".touchstone.json", "../x", path.join(outside, "host.ts"), "src/../../etc/passwd"]) {
+  for (const p of ["BRIEF.md", "src/link.ts", "src/id_rsa", "src/logo.png", "vendor/repo/.git/config", ".touchstone.json", "../x", path.join(outside, "host.ts"), "src/../../etc/passwd"]) {
     assert.equal(review.resolveReadable(ws, p), null, p);
   }
 });
@@ -110,4 +111,28 @@ test("a fetched clone loses symlinks, hidden files, and secret files", () => {
   assert.equal(pruneClone(d), 4);
   assert.ok(existsSync(path.join(d, "src/a.ts")));
   assert.ok(!existsSync(path.join(d, ".env")) && !existsSync(path.join(d, "src/pw")) && !existsSync(path.join(d, "src/server.pem")));
+});
+
+test("a code scope allows Code review always, and Contracts only with Solidity or a repo", () => {
+  const go = addScope({ title: "go only", members: [folder("api", [["main.go", "package main\n"]])] });
+  assert.deepEqual(targetSummary(go).packs, ["review"]);
+  assert.throws(() => pickTarget({ id: go.id, pack: "contracts" }), /belongs to pack "review"/);
+
+  const sol = addScope({ title: "sol", members: [folder("c", [["src/V.sol", "contract V {}\n"]])] });
+  assert.deepEqual(targetSummary(sol).packs, ["contracts", "review"]);
+  // A run that picks Code review gets that module's proof surface: none.
+  const view = pickTarget({ id: sol.id, pack: "review" });
+  assert.equal(view.pack, "review");
+  assert.equal(view.signal, "agent");
+  assert.equal(targetSummary(view).proofSurface.kind, "none");
+  assert.deepEqual(targetSummary(view).members.map((m) => m.proof), ["none"]);
+  const ws = prepareWorkspace(view, { modules: planModules(view, undefined, PACKS.review) });
+  cleanup.push(ws);
+  assert.equal(readTouchstone(ws).pack, "review");
+  assert.ok(!existsSync(path.join(ws, "foundry.toml")));
+  // With no module named, the scope's own module is the default.
+  assert.equal(pickTarget({ id: sol.id }).pack, "contracts");
+
+  const repo = addScope({ title: "repo", members: [{ kind: "repo", url: "https://github.com/acme/svc" }] });
+  assert.deepEqual(targetSummary(repo).packs, ["review", "contracts"]);
 });

@@ -30,8 +30,14 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `id`      | string                      | The module id. Also the pi-durable extension name. |
 | `title`   | string                      | The name the UI shows. |
 | `tier`    | `"P" \| "S" \| "I" \| "F"`  | The highest tier the pack can reach. See 08-proposed-ui.md §5.4. |
-| `proof`   | `"forge" \| "http" \| "evidence"` | How a finding becomes real. See "Proof kinds". |
+| `proof`   | `"forge" \| "http" \| "evidence" \| "none"` | How a finding becomes real. See "Proof kinds". |
 | `live`    | boolean                     | The tools can be aimed at a real host, so the pack may run a live scope. Without it a live scope under this pack is refused rather than silently scanning the pack's lab. |
+| `offline` | `true`                      | Optional. No tool reaches a network. Only then does the Modules page say the pack runs only in the offline sandbox. |
+| `fetches` | `("github" \| "solc")[]`     | Optional. What the host fetches for a run: the scope's GitHub links, and the Solidity compilers those files pin. |
+| `scanNet` | `"open"`                    | Optional. A live run's scanners use the open bridge network, not the grant gate. |
+| `grants`  | `"github"`                  | Optional. A live grant names GitHub repos or orgs, not hosts. |
+| `extraProof` | `"cloud-http"`           | Optional. One check also gets an HTTP replay on a private practice cloud. |
+| `labTarget` | `"rule-based"`            | Optional. The lab assistant is a rule-based stand-in, not a model. |
 | `system`  | `(ws) => string`            | The system prompt for this run. |
 | `tools`   | `(ws, state) => Tool[]`     | The pi-durable tools. The set must not change during a run. |
 | `kickoff` | `(ws, env) => string`       | The first message. `env` carries the pre-pass leads. |
@@ -142,7 +148,8 @@ node --test spike/test/fleet.test.mjs
 |------------|----------------------------------------------------------------------|---------|
 | `forge`    | its Foundry test replays green offline and shows the harm.           | Contracts, Keys and signing, Chain watch |
 | `http`     | its request script replays against the practice service on a private sandbox network and the oracle sees the harm. | Web and sign-in, APIs, Nodes and RPC, AI and MCP, Infra and cloud (through moto or LocalStack) |
-| `evidence` | its evidence replays against a pinned snapshot and the check still holds. | Supply chain and secrets, Domains and front end, Surface, People and brand |
+| `evidence` | its evidence replays against a pinned snapshot and the check still holds. | Supply chain and secrets, Domains and front end, People and brand |
+| `none`     | never. The run reports leads only. | Surface, Code review |
 
 Only `forge` exists today. The first pack that needs `http` or `evidence`
 builds that replay in `lib/` so the other packs can share it.

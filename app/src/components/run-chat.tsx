@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -7,7 +7,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
-import type { Finding, RunSummary } from "@/lib/types"
+import type { Finding, PackChoice, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
@@ -19,14 +19,13 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { buildMessages, OpenArtifact, waitingMessage } from "@/components/thread-model"
-import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
+import { agentLook, buildMessages, composerNotice, findingTarget, FindingNote, focusActions, MarkedStep, OpenArtifact, runHeadStatus, runInterruption, runStartView, sendCopy, waitingMessage, withCopies, type FocusDone, type HeadTone } from "@/components/thread-model"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { PanelControl, RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
-  AGENT_WORD,
   FleetContext,
   ThreadOwner,
   agentName,
-  dotClass,
   isLiveAgent,
   runEnd,
   runMode,
@@ -76,11 +75,22 @@ export function RunChat({
   onArchive,
   onRename,
   onDelete,
+  packs,
+  focus = null,
+  actionError = null,
 }: {
   run: RunSummary
   onArchive: (id: string, archived: boolean) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => Promise<void>
+  // The server's module list, for the Run Info pills.
+  packs?: PackChoice[]
+  // "Open this finding" (the Findings page): the finding's id. `at` is when it
+  // was asked, so asking again for the same finding jumps again.
+  focus?: FocusFinding | null
+  // A rename or archive of this run that the server refused: what did not
+  // happen, and the server's sentence. It shows in the composer's line.
+  actionError?: { title: string; text: string } | null
 }) {
   const state = useRun(run.id)
   const [renaming, setRenaming] = useState(false)
@@ -164,11 +174,11 @@ export function RunChat({
   // Send one operator message. Live, it steers the worker. Idle, the server
   // starts a follow-up, so fetch the run again to follow the reply.
   //
-  // The message shows at once, as a local copy (`sent`). The real message is
-  // the agent's `operator-message` echo, which comes when the agent reads it.
-  // The echo carries the copy's id, so the copy steps aside the moment it
-  // lands, in the same place. The server stays the only record: the copy is
-  // never saved, and a reload shows only what the agent really got.
+  // Once the server accepts it, the message shows as a local copy (`sent`).
+  // The real message is the agent's `operator-message` echo, which comes when
+  // the agent reads it. The echo carries the copy's id, so the copy steps aside
+  // the moment it lands, in the same place. The server stays the only record:
+  // the copy is never saved, and a reload shows only what the agent really got.
   // If the message does not reach the agent, the copy goes, the error shows,
   // and the text goes back in the composer, unless the operator already
   // started a new one.
@@ -178,28 +188,48 @@ export function RunChat({
   // stays in `sent` until the next send prunes it, so this is pure.
   const events = state?.events
   const outcomes = useMemo(() => settleSent(sent, events ?? []), [sent, events])
+  // The run's setup card, from "starting" to the agent session. A stage cannot
+  // keep running once the run stopped or failed.
+  const startLive = live && status !== "error"
+  const prepass = state?.prepass ?? null
+  const start = useMemo(() => (events ? runStartView(events, prepass, startLive) : null), [events, prepass, startLive])
   const settled = useRef(outcomes)
   useEffect(() => {
     settled.current = outcomes
   })
+  const composerOf = () => runtimeRef.current?.thread.composer
   const giveBack = (text: string) => {
-    const composer = runtimeRef.current?.thread.composer
+    const composer = composerOf()
     if (composer && !composer.getState().text) composer.setText(text)
   }
+  // Nothing enters the thread before the server accepts the message. Until
+  // then the text stays in the composer and Send shows a spinner. A refusal
+  // (spend cap, no saved session) changes only the composer line. An accepted
+  // message appears once, as its copy. The last error stays until a send
+  // succeeds, so it never blinks off and on.
+  const [pending, setPending] = useState(false)
+  const pendingRef = useRef(false)
   const send = async (text: string, restore = true) => {
-    if (!text || !state || archived) return
-    setSendError(null)
-    const id = messageId()
-    const base = state.events.length
-    setSent((xs) => [...xs.filter((x) => !settled.current.has(x.id)), { id, text, base, mode: "sending", restore }])
-    try {
-      const res = await steerRun(run.id, text, id)
-      setSent((xs) => xs.map((x) => (x.id === id ? { ...x, mode: res.followUp ? "follow-up" : "steer" } : x)))
+    // assistant-ui empties the composer before it hands the message over. Put
+    // the text back in the same tick, so the box never blinks empty.
+    const composer = restore ? composerOf() : undefined
+    if (composer && text && !composer.getState().text) composer.setText(text)
+    if (!text || !state || archived || pendingRef.current) return
+    pendingRef.current = true
+    setPending(true)
+    setSent((xs) => xs.filter((x) => !settled.current.has(x.id)))
+    const copy: Sent = { id: messageId(), text, base: state.events.length, mode: "sending", restore }
+    const res = await sendCopy(copy, () => steerRun(run.id, text, copy.id), setSent)
+    pendingRef.current = false
+    setPending(false)
+    if (res.ok) {
+      setSendError(null)
+      // The copy now carries the text. Empty the box, unless the operator
+      // changed it meanwhile.
+      if (composer && composer.getState().text === text) composer.setText("")
       if (res.followUp) reloadRun(run.id)
-    } catch (err) {
-      setSent((xs) => xs.filter((x) => x.id !== id))
-      setSendError(err instanceof Error ? err.message : String(err))
-      if (restore) giveBack(text)
+    } else {
+      setSendError(res.error)
     }
   }
 
@@ -232,28 +262,16 @@ export function RunChat({
 
   // A fleet's main chat is the coordinator's thread. Its "session started"
   // marker says nothing there, so it is left out. A solo run keeps every step.
+  // Each module's proof kind, so a finding's card reads its own module's proof.
+  const packProof = useMemo(() => Object.fromEntries((packs ?? []).map((p) => [p.id, p.proof])), [packs])
   const mainSteps = useMemo(
     () => (state ? (fleet ? threadSteps(state.steps, null).filter((s) => s.kind !== "open") : state.steps) : []),
     [state, fleet],
   )
-  const messages = useMemo(() => {
-    const ms = buildMessages(state, mainSteps, status, live, fleet, null)
-    // The local copies trail the thread until their echoes land. While the
-    // agent owes an answer, a waiting row stands where the answer will go.
-    const copies = sent.filter((x) => !outcomes.has(x.id))
-    const wait = state ? awaitingReply(mainSteps, live, null, copies) : null
-    if (state && wait?.after === "steps") ms.push(waitingMessage(state, wait.id, fleet, null))
-    for (const x of copies) {
-      ms.push({
-        role: "user",
-        id: `sent:${x.id}`,
-        content: [{ type: "text", text: x.text }],
-        metadata: { custom: { queued: x.mode === "steer" } },
-      })
-    }
-    if (state && wait?.after === "copies") ms.push(waitingMessage(state, wait.id, fleet, null))
-    return ms
-  }, [state, mainSteps, status, live, fleet, sent, outcomes])
+  const messages = useMemo(
+    () => withCopies(buildMessages(state, mainSteps, status, live, fleet, null, packProof), state, mainSteps, live, fleet, sent, outcomes),
+    [state, mainSteps, status, live, fleet, sent, outcomes, packProof],
+  )
 
   // assistant-ui blocks Send while a run is live unless the runtime has a
   // queue. The server is the queue here: a message to a live run steers it, and
@@ -306,7 +324,7 @@ export function RunChat({
     // a freshly opened thread scrolls itself to the bottom on mount.
     const go = () =>
       root
-        ?.querySelector(`[data-step-key="${CSS.escape(jump.key)}"]`)
+        ?.querySelector(`[data-step-key~="${CSS.escape(jump.key)}"]`)
         ?.scrollIntoView({ block: "center", behavior: "instant" })
     const a = setTimeout(go, 60)
     const b = setTimeout(go, 260)
@@ -322,6 +340,7 @@ export function RunChat({
       setHighlight(key)
     }
   }
+
   // Escape closes the drawer, unless a menu or dialog inside it takes the key.
   // Focus moves into the drawer when it opens and back to the opener when it
   // closes. The dimmed chat behind it is inert, so Tab stays out of it.
@@ -361,11 +380,11 @@ export function RunChat({
   const peekMessages = useMemo(() => {
     if (!peek || !state) return []
     const steps = threadSteps(state.steps, peek.id)
-    const ms = buildMessages(state, steps, status, peekLive, true, peek.id)
+    const ms = buildMessages(state, steps, status, peekLive, true, peek.id, packProof)
     const wait = awaitingReply(steps, peekLive, peek.id)
     if (wait) ms.push(waitingMessage(state, wait.id, true, peek.id))
     return ms
-  }, [peek, state, status, peekLive])
+  }, [peek, state, status, peekLive, packProof])
   const peekRuntime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: peekMessages,
     isRunning: peekLive,
@@ -377,7 +396,8 @@ export function RunChat({
   // The run panel. It stays as the operator left it, on desktop and phone
   // apart. On a phone it starts folded, and folds again after a pick, since
   // the drawer covers the screen.
-  const [panelOpen, setPanelOpen] = useStoredFlag(isNarrow() ? "ts.panelOpen.phone" : "ts.panelOpen", !isNarrow())
+  const narrow = useNarrow()
+  const [panelOpen, setPanelOpen] = useStoredFlag(narrow ? "ts.panelOpen.phone" : "ts.panelOpen", !narrow)
   const [section, setSection] = useStoredSection()
   const picked = () => {
     if (isNarrow()) setPanelOpen(false)
@@ -388,6 +408,58 @@ export function RunChat({
   const rootRef = useRef<HTMLDivElement>(null)
   const viewWidth = useWidth(rootRef)
   const beside = drawerOpen && viewWidth - drawerWidth >= 340
+  // The panel's width, the same open or folded. Folded, it is one line in the
+  // top bar's right side, so it covers no chat; the title truncates earlier.
+  // Open, it drops down from there over the chat. On a narrow view it shrinks
+  // so the title keeps some room.
+  // Below md (a phone) the folded panel is one small button in the bar, so the
+  // title keeps the bar. Open, the panel drops below the bar across the whole
+  // width. Nothing done there changes the saved desktop width.
+  const [storedPanel, setPanelWidth, panelDefault] = useStoredWidth("ts.panelWidth", 320, 280, 560)
+  const panelWidth = viewWidth ? Math.min(storedPanel, Math.max(200, viewWidth - 240)) : storedPanel
+  const showPanel = !!state && !!mode
+
+  // "Open this finding": once the run has the finding's card, scroll to it and
+  // mark it, and for a proven finding open its replay proof in the drawer, as
+  // a click on the card does. A finding a child agent submitted has its card in
+  // that agent's thread: unproven, the drawer shows that thread at the card. On
+  // a phone the drawer never opens by itself. An id this run does not have does
+  // nothing. A cold load waits: the effect runs again as the stream lands.
+  const target = focus && state ? findingTarget(state, status, focus.finding) : null
+  const targetSig = target ? `${target.key}|${target.agent}|${target.proofId}` : null
+  const focusRef = useRef({ target, openFile, openPeek, setPanelOpen })
+  useEffect(() => {
+    focusRef.current = { target, openFile, openPeek, setPanelOpen }
+  })
+  // What this request already did: the jump to the card and the drawer are
+  // done separately, so a proof that lands after its card still opens once.
+  const focused = useRef<{ focus: FocusFinding; done: FocusDone } | null>(null)
+  // On a phone, the note under a child's spawn row, for this request only.
+  const [note, setNote] = useState<{ focus: FocusFinding; agent: string; key: string | null } | null>(null)
+  useEffect(() => {
+    if (!focus || !targetSig) return
+    const t = setTimeout(() => {
+      const { target: t1, openFile: file, openPeek: peek, setPanelOpen: setOpen } = focusRef.current
+      const prev = focused.current?.focus === focus ? focused.current.done : { jumped: false, opened: false }
+      const act = focusActions(t1, prev, isNarrow())
+      focused.current = { focus, done: act.done }
+      if (act.fold) setOpen(false)
+      if (act.note) setNote({ focus, ...act.note })
+      if (act.jump) {
+        setHighlight(act.jump)
+        setJump({ where: "main", key: act.jump, n: Date.now() })
+      }
+      if (act.proof) file(false)(act.proof)
+      else if (act.peek) peek(act.peek.agent, act.peek.key)
+    }, 0)
+    return () => clearTimeout(t)
+  }, [focus, targetSig])
+  // The note's value for the spawn rows: only while this request stands.
+  const findingNote =
+    note && note.focus === focus && state
+      ? { agent: note.agent, name: agentName(state, note.agent), open: () => openPeek(note.agent, note.key ?? undefined) }
+      : null
+  const controlRef = useRef<HTMLButtonElement>(null)
 
   const back = below ? (
     <BackButton
@@ -401,21 +473,35 @@ export function RunChat({
   ) : null
 
   // Renaming swaps the title's text for an input of the same size, in the
-  // same h1, so nothing in the bar moves.
+  // same h1, so nothing in the bar moves. After Enter or Escape, focus goes
+  // back to the title; after a click away it stays where the click put it.
+  const refocusTitle = useRef(false)
+  const endRename = () => {
+    refocusTitle.current = document.activeElement?.closest("header h1") != null
+    setRenaming(false)
+  }
   const titleNode = renaming ? (
     <h1 className="min-w-0 text-sm font-medium">
       <TitleInput
         value={title}
         onSave={(name) => {
           onRename(run.id, name)
-          setRenaming(false)
+          endRename()
         }}
-        onCancel={() => setRenaming(false)}
+        onCancel={endRename}
       />
     </h1>
   ) : (
     <h1 className="min-w-0 truncate text-sm font-medium">
       <button
+        ref={(el) => {
+          if (el && refocusTitle.current) {
+            refocusTitle.current = false
+            // After the key event ends: a focused button would take the same
+            // Enter as a click and open the editor again.
+            setTimeout(() => el.focus(), 0)
+          }
+        }}
         type="button"
         title="Rename run"
         onClick={() => setRenaming(true)}
@@ -426,16 +512,70 @@ export function RunChat({
     </h1>
   )
 
+  // The panel sits in the top bar's right side, over the room the bar keeps
+  // for it, and opens down over the chat. It stops above the composer. Only
+  // the panel itself takes clicks. On a phone it shows only when open, below
+  // the bar, across the width, and it comes right after the bar in the page,
+  // so Tab goes from its control into it.
+  const panelLayer =
+    showPanel && (!narrow || panelOpen) ? (
+      <div
+        inert={drawerOpen && !beside}
+        className={cn(
+          "pointer-events-none absolute bottom-28 flex items-start justify-end",
+          narrow ? "top-[54px] right-3 left-3" : "top-[7px] right-3",
+          beside ? "z-30" : "z-10",
+        )}
+        style={beside ? { right: drawerWidth + 12 } : undefined}
+      >
+        <RunPanel
+          state={state}
+          live={live}
+          mode={mode}
+          model={run.alias}
+          open={panelOpen}
+          onOpenChange={setPanelOpen}
+          section={section}
+          onSection={setSection}
+          selectedAgent={peek?.id ?? null}
+          onAgent={(id) => {
+            openPeek(id)
+            picked()
+          }}
+          openDoc={openDoc?.id ?? null}
+          openVersion={topFile?.version ?? null}
+          onFile={(id, v) => {
+            openFile(false)(id, v)
+            picked()
+          }}
+          width={panelWidth}
+          onWidth={setPanelWidth}
+          initialWidth={panelDefault}
+          compact={narrow}
+          control={controlRef}
+          packs={packs}
+        />
+      </div>
+    ) : null
+
   return (
     <OpenArtifact.Provider value={openFile(false)}>
+      <MarkedStep.Provider value={highlight}>
+      <FindingNote.Provider value={findingNote}>
       <FleetContext.Provider value={fleetView}>
         <div ref={rootRef} className="relative flex h-full min-w-0 flex-col overflow-hidden">
           <div inert={drawerOpen} className="shrink-0">
             <RunHeader
               state={state}
               status={status}
-              live={live}
               title={titleNode}
+              narrow={narrow}
+              panelWidth={showPanel && !narrow ? panelWidth : null}
+              control={
+                showPanel && narrow ? (
+                  <PanelControl state={state} mode={mode} open={panelOpen} onOpenChange={setPanelOpen} ref={controlRef} />
+                ) : null
+              }
               actions={
                 <RunActions
                   archived={archived}
@@ -447,60 +587,31 @@ export function RunChat({
               }
             />
           </div>
+          {narrow ? panelLayer : null}
 
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>
                 <Thread
-                  empty={messages.length === 0}
-                  prepass={state?.prepass ?? null}
+                  prepass={prepass}
+                  start={start}
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
+                  coverage={status === "recorded" ? state?.coverage ?? null : null}
+                  note={runInterruption(state, status)?.note ?? null}
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
-                  sendError={composerError}
+                  notice={composerNotice(composerError, actionError)}
+                  sending={pending}
                   context={state ? mainContext(state) : null}
                   to={fleet ? "the coordinator" : "the agent"}
                 />
               </AssistantRuntimeProvider>
             </div>
-
-            {/* The panel floats over the chat's top-right corner and stops
-                above the composer. Only the panel itself takes clicks. */}
-            {state && mode ? (
-              <div
-                inert={drawerOpen && !beside}
-                className={cn(
-                  "pointer-events-none absolute top-3 right-3 bottom-28 flex items-start justify-end",
-                  beside ? "z-30" : "z-10",
-                )}
-                style={beside ? { right: drawerWidth + 12 } : undefined}
-              >
-                <RunPanel
-                  state={state}
-                  live={live}
-                  mode={mode}
-                  model={run.alias}
-                  open={panelOpen}
-                  onOpenChange={setPanelOpen}
-                  section={section}
-                  onSection={setSection}
-                  selectedAgent={peek?.id ?? null}
-                  onAgent={(id) => {
-                    openPeek(id)
-                    picked()
-                  }}
-                  openDoc={openDoc?.id ?? null}
-                  openVersion={topFile?.version ?? null}
-                  onFile={(id, v) => {
-                    openFile(false)(id, v)
-                    picked()
-                  }}
-                />
-              </div>
-            ) : null}
           </div>
+
+          {narrow ? null : panelLayer}
 
           {/* The drawer covers the run from the right, over the top bar.
               Nothing under it moves; the chat dims and blurs a little, and a
@@ -538,14 +649,13 @@ export function RunChat({
                         <AssistantRuntimeProvider runtime={peekRuntime}>
                           <Thread
                             key={top.id}
-                            empty={peekMessages.length === 0}
                             prepass={null}
                             error={null}
                             errorInfo={null}
                             onRetry={() => {}}
                             retrying={false}
                             archived={archived}
-                            sendError={null}
+                            notice={null}
                             readOnly
                           />
                         </AssistantRuntimeProvider>
@@ -569,6 +679,8 @@ export function RunChat({
           ) : null}
         </div>
       </FleetContext.Provider>
+      </FindingNote.Provider>
+      </MarkedStep.Provider>
     </OpenArtifact.Provider>
   )
 }
@@ -582,45 +694,71 @@ function messageText(message: AppendMessage): string {
     .trim()
 }
 
+// "Open this finding" from another page: the finding's id, and when it was
+// asked (Date.now()), so a second ask for the same finding jumps again.
+export type FocusFinding = { finding: string; at: number }
+
 // The run's top bar: status dot, title, the status word, and the ⋯ menu.
 // Mode, runtime and spend live in the run panel's Info section. Before the run
 // loads the bar shows the sidebar's status.
 function RunHeader({
   state,
   status,
-  live,
   title,
+  narrow,
+  panelWidth,
+  control,
   actions,
 }: {
   state: RunState | null
   status: RunSummary["status"]
-  live: boolean
   title: React.ReactNode
+  narrow: boolean
+  // The room the folded run panel takes at the bar's right, if it shows.
+  panelWidth: number | null
+  // On a phone: the panel's small button, at the bar's right.
+  control: React.ReactNode
   actions: React.ReactNode
 }) {
-  const running = state ? live : status === "running"
-  // A stop is the newest fact about the run, so it wins over an older failure.
-  const stopped = !!state?.stopped
-  const failed = status === "error" && !stopped
-  const word = running ? "Running" : stopped ? "Stopped" : failed ? "Failed" : "Done"
+  // The dot is the status. The word lives in its tooltip and its accessible
+  // name, so the title never moves when the status changes.
+  const head = runHeadStatus(state, status)
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
+    <header className={cn("flex h-12 shrink-0 items-center border-b px-5 pe-3 max-md:px-3", narrow ? "gap-2" : "gap-2.5")}>
       <SidebarTrigger className="-ml-1 md:hidden" />
-      <span
-        className={cn(
-          "size-[7px] shrink-0 rounded-full max-md:mt-[13px] max-md:self-start",
-          dotClass(running ? "working" : failed ? "failed" : "done"),
-        )}
-      />
-      {/* On a phone the status goes under the title. */}
-      <div className="flex min-w-0 items-baseline gap-2.5 max-md:flex-col max-md:items-stretch max-md:gap-0">
-        {title}
-        <span className="shrink-0 text-xs text-muted-foreground">{word}</span>
-      </div>
-      <span className="ml-auto" />
-      {actions}
+      <TooltipProvider delay={300}>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                tabIndex={0}
+                aria-label={`Status: ${head.word}`}
+                className="-m-1.5 flex size-[19px] shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            }
+          >
+            <span aria-hidden className={cn("size-[7px] rounded-full", HEAD_DOT[head.tone])} />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{head.word}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <div className="flex min-w-0 items-baseline">{title}</div>
+      {narrow ? null : <span className="ml-auto" />}
+      <div className={cn("flex shrink-0", narrow && "ml-auto")}>{actions}</div>
+      {control}
+      {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
     </header>
   )
+}
+
+// The top bar's dot, one tone per state. Green only for a proven run; a live
+// run pulses, and stops pulsing when reduced motion is on.
+const HEAD_DOT: Record<HeadTone, string> = {
+  working: "bg-muted-foreground animate-pulse motion-reduce:animate-none",
+  proven: "bg-ok",
+  failed: "bg-bad",
+  neutral: "bg-muted-foreground/45",
 }
 
 // "‹ Name": back to the drawer page this one was opened from.
@@ -652,14 +790,15 @@ function PeekHeader({
   const a = state.agents.find((n) => n.id === id)
   const from = a?.startedAt ?? runStart(state)
   const to = a?.endedAt ?? runEnd(state)
+  const look = agentLook(state, a)
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3">
       {back}
-      <span className={cn("size-[7px] shrink-0 rounded-full", dotClass(a?.state ?? "working"))} />
+      <span className={cn("size-[7px] shrink-0 rounded-full", look.dot)} />
       <span className="min-w-0 truncate text-sm font-medium">{agentName(state, id)}</span>
       {a ? (
-        <span className={cn("shrink-0 text-xs tabular-nums", a.state === "failed" ? "text-bad" : "text-muted-foreground")}>
-          {AGENT_WORD[a.state]}
+        <span className={cn("shrink-0 text-xs tabular-nums", look.bad ? "text-bad" : "text-muted-foreground")} title={look.reason ?? undefined}>
+          {look.word}
           {from != null && to != null ? ` · ${span(to - from)}` : ""}
         </span>
       ) : null}
@@ -707,11 +846,15 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // Which panel section is open, kept across runs. Null means all folded.
 const SECTION_KEY = "ts.panelSection"
+const SECTIONS = ["info", "agents", "bulletin", "leads", "files", "findings"]
+
 function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => void] {
   const [value, setValue] = useState<PanelSection | null>(() => {
     const saved = localStorage.getItem(SECTION_KEY)
     if (saved === "") return null
-    return saved === "info" || saved === "bulletin" || saved === "files" ? saved : "agents"
+    // "findings" is the Findings & Proofs section on main. The cast keeps this
+    // branch building until PanelSection gains it.
+    return saved && SECTIONS.includes(saved) ? (saved as PanelSection) : "agents"
   })
   const set = (s: PanelSection | null) => {
     setValue(s)
@@ -748,8 +891,19 @@ function storePane(runId: string, fileId: string | null) {
 
 // Read at call time, not from state: the first artifact can land before a
 // hook-based mobile flag has settled. Matches Tailwind's `md` breakpoint.
+const NARROW = "(max-width: 767px)"
 function isNarrow(): boolean {
-  return window.matchMedia("(max-width: 767px)").matches
+  return window.matchMedia(NARROW).matches
+}
+
+// The same test for layout. It changes in the same render the view crosses
+// md, so the bar and the panel never show a mix of both layouts.
+function useNarrow(): boolean {
+  return useSyncExternalStore((change) => {
+    const q = window.matchMedia(NARROW)
+    q.addEventListener("change", change)
+    return () => q.removeEventListener("change", change)
+  }, isNarrow)
 }
 
 
@@ -762,7 +916,9 @@ function useFinding(findingId: string | null): Finding | null {
     setRemote(null)
     if (!findingId) return
     let live = true
-    fetchFinding(findingId)
+    // The drawer shows the finding and its proof, never the run's events:
+    // leave them out (a run's events can be tens of MB).
+    fetchFinding(findingId, { events: false })
       .then((f) => live && setRemote(f))
       .catch(() => {})
     return () => {

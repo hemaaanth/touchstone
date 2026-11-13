@@ -16,7 +16,7 @@ import { readdirSync, readFileSync, mkdtempSync, writeFileSync, copyFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const IMG = "ghcr.io/trailofbits/eth-security-toolbox:nightly";
+export const IMG = "ghcr.io/trailofbits/eth-security-toolbox:nightly@sha256:205f5d7c5f41c8ef4ead6ef5c95fddf0cb69352a547a8b47c3e172e5d01ac35c";
 export const SOLC = "0.8.38"; // match the sandbox replay compiler
 // The reward buffer the harness is funded with, in wei (100 ETH). Echidna reads
 // it as balanceContract; Medusa as targetContractsBalances. Same number, so the

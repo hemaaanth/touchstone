@@ -1,0 +1,62 @@
+# jwt_tool for the Web pack's prepass. jwt_tool is a JWT attack/analysis tool:
+# given a token it can decode it, flag weak configurations, and -- for an
+# HMAC-SHA token -- crack the signing key against a dictionary, entirely
+# offline. The pack uses only that offline crack path, so the tool runs with no
+# network at all (--network none).
+#
+# Source is pinned to a GitHub release tag and verified by SHA-256 before use,
+# so the build fails closed if the artifact ever changes. The build needs
+# network (to fetch the tarball and pip deps); the finished image, and every
+# run of it, do not. jwt_tool is GPL-3.0; it runs here only as a program in its
+# own container (no linking), so it is listed in TOOLS.md, not THIRD_PARTY.md.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+# Pinned release and the SHA-256 of its GitHub source tarball. Bump both
+# together; a mismatch aborts the build rather than installing unverified code.
+ARG JWT_TOOL_VERSION=2.3.0
+ARG JWT_TOOL_SHA256=0f8c32aa9f67cea4312e5df81d48f72dc5daf57f3cc0ce09d67db78e23fbe451
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL -o /tmp/jwt_tool.tar.gz \
+      "https://github.com/ticarpi/jwt_tool/archive/refs/tags/v${JWT_TOOL_VERSION}.tar.gz"; \
+    echo "${JWT_TOOL_SHA256}  /tmp/jwt_tool.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt; \
+    tar -xzf /tmp/jwt_tool.tar.gz -C /opt; \
+    mv "/opt/jwt_tool-${JWT_TOOL_VERSION}" /opt/jwt_tool; \
+    rm /tmp/jwt_tool.tar.gz; \
+    apt-get purge -y curl; \
+    apt-get autoremove -y
+
+# jwt_tool's own runtime deps, pinned. (requirements.txt also lists "cprint",
+# but the code imports cprint FROM termcolor; the separate "cprint" package is
+# unrelated and not needed.)
+RUN pip install --no-cache-dir \
+      termcolor==2.5.0 \
+      pycryptodomex==3.21.0 \
+      requests==2.32.3 \
+      ratelimit==2.2.1
+
+# Run as a non-root user with a fixed home. HOME is baked into the image so it
+# is honoured no matter what uid --user picks at run time.
+ENV HOME=/home/jwt
+RUN useradd -m -u 1000 -d /home/jwt jwt
+USER jwt
+WORKDIR /opt/jwt_tool
+
+# On its very first run jwt_tool writes a config file and exits(1). Trigger that
+# once at build time so a real run never hits that path. This step makes no
+# network calls (it only generates local config + key material).
+RUN python3 /opt/jwt_tool/jwt_tool.py -b seed 2>/dev/null || true
+
+# Make the config reachable and writable by any uid: runTool may run us as the
+# host uid, which will not be 1000. The home dir is created 0700, so other uids
+# cannot even traverse into it -- open it to 0755 -- and the config dir itself
+# goes 0777 because jwt_tool writes a null.txt / logs.txt there on every run.
+USER root
+RUN chmod 0755 /home/jwt && chmod -R 0777 /home/jwt/.jwt_tool
+USER jwt
+
+ENTRYPOINT []
