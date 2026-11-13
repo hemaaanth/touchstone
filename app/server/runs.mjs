@@ -1075,7 +1075,8 @@ function unbindWorkspace(id) {
 
 // ---- The credential of a live AI/MCP scope. The scope library holds it
 // (spike/data/scopes.json, fields mcp.token and mcp.tokens). A run's workspace
-// gets a copy in BRIEF.md and .touchstone.json. A kept workspace must not hold
+// gets a copy in .touchstone.json (the agent gets it in its instructions, see
+// targets.mjs scopeEnv), and the agent may write it into files. A kept workspace must not hold
 // one, so the copies leave when the run ends and come back for a follow-up.
 const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {})])].filter((s) => typeof s === "string" && s)
 function withoutSecrets(target) {
