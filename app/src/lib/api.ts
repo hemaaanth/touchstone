@@ -79,6 +79,9 @@ export function startRun(
 // One member of a scope: a GitHub repo, or a local folder with its files.
 export type ScopeMember =
   | { kind: "repo"; url: string }
+  // A folder on this machine, read in place by the server. Needs the console token.
+  | { kind: "folder"; name?: string; path: string }
+  // The upload fallback: the files themselves.
   | { kind: "folder"; name: string; files: { path: string; content: string }[] }
 
 // One scope per call. `members` is the main shape: repos and folders mixed, in
@@ -90,10 +93,14 @@ export function attachScope(body: {
   kind?: "live"
   hosts?: string[]
   permission?: boolean
+  // The operator's opt-in for a local lab (loopback or private hosts only).
+  allowPrivate?: boolean
   // A live AI/MCP target may carry its own credential and its scopes.
   token?: string
   tokens?: Record<string, { client: string; scopes: string[] }>
   toolScope?: Record<string, string>
+  // The assistant's chat path and request budget for garak (ai-mcp only).
+  assistant?: { path: string; budget: number }
   members?: ScopeMember[]
   pack?: string
   repo?: string

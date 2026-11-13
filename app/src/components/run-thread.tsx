@@ -35,6 +35,8 @@ import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofK
 import { COORDINATOR } from "@/lib/types"
 import type { ContextUse } from "@/components/fleet-view"
 import { PrepassFold } from "@/components/prepass"
+import { StartProgress } from "@/components/assistant-ui/elements/start-progress"
+import type { StartProgress as StartProgressModel } from "@/lib/startup"
 import type { RunFailure, Step } from "@/lib/runModel"
 import { INK, severityTone } from "@/lib/format"
 import { cn } from "cn"
@@ -72,11 +74,25 @@ const ERROR_ICON: Record<RunFailure["kind"], typeof TriangleAlert> = {
   unknown: TriangleAlert,
 }
 
+// One sentence as the card shows it: a capital first letter and an end mark.
+// The server's plain reasons ("the server restarted during this run, so it
+// stopped") are lower case with no period.
+function sentence(text: string): string {
+  const t = text.trim()
+  if (!t) return t
+  const s = t[0].toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(s) ? s : `${s}.`
+}
+
+const same = (a: string, b: string) => sentence(a).toLowerCase() === sentence(b).toLowerCase()
+
 // The run failed before it proved anything. This is the one place the operator
-// learns why — honestly: what went wrong, what it actually cost, and the single
-// next step. A transient fault leads with "Run again"; a billing fault does not
-// pretend retrying helps. The real engine error is folded away, present but not
-// shouting. No red: an error is not a finding.
+// learns why: what went wrong, what it actually cost, and the single next step.
+// Three levels only: the title, one muted line (the reason, then the spend), and
+// the actions. "Technical details" holds only what the card does not already
+// show (the raw engine error and the failure code), so nothing repeats. A
+// transient fault offers "Run again"; a billing fault does not pretend retrying
+// helps. No red: an error is not a finding.
 function RunErrorCard({
   info,
   fallback,
@@ -94,52 +110,62 @@ function RunErrorCard({
   const Icon = ERROR_ICON[kind] ?? TriangleAlert
   const title = info?.title ?? "The run did not complete"
   const hint = info?.hint ?? fallback ?? "Try starting the run again."
-  const detail = info?.detail?.trim() || (info ? null : fallback) || null
   // In a fleet run the agents report their own spend, so the card never says
   // less than the header does.
   const fleet = useContext(FleetContext)
   const spent = Math.max(info?.spentUsd ?? 0, fleet ? fleetSpend(fleet.state) : 0)
+  const cost = spent > 0 ? `About $${spent.toFixed(4)} was spent on the work that did run.` : "Nothing was spent on this run."
+  // The raw error, unless it is the line the card already shows.
+  const raw = [info?.detail, info ? null : fallback]
+    .map((t) => t?.trim())
+    .find((t): t is string => !!t && !same(t, hint) && !same(t, title))
+  const code = info?.reason && info.reason !== "unknown" ? info.reason : null
+  const technical = !!raw || !!code
   const retryable = (info?.retryable ?? true) && !archived
 
   return (
-    <div className={cn(card, "overflow-hidden")}>
-      <div className="flex gap-3 px-4 py-3.5">
-        <Icon className="mt-0.5 size-5 shrink-0 text-warn" />
-        <div className="min-w-0 flex-1 space-y-1.5">
+    <div className={cn(card, "px-4 py-3.5")}>
+      <Collapsible className="flex gap-3">
+        <Icon className="mt-0.5 size-4 shrink-0 text-warn" />
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground">{title}</p>
-          <p className="text-sm leading-relaxed text-muted-foreground">{hint}</p>
-          <p className="text-xs text-muted-foreground/70">
-            {spent > 0
-              ? `About $${spent.toFixed(4)} was spent on the work that did run.`
-              : "Nothing was spent on this run."}
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            {sentence(hint)} {cost}
           </p>
-          {detail ? (
-            <Collapsible>
-              <CollapsibleTrigger className="group flex items-center gap-1 pt-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
-                <ChevronRight className="size-3 transition-transform group-data-[state=open]:rotate-90" />
-                Technical details
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-                  {detail}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
-          ) : null}
-          {retryable ? (
-            <div className="pt-1.5">
-              <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
-                {retrying ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="size-3.5" />
-                )}
-                Run again
-              </Button>
+          {retryable || technical ? (
+            <div className="mt-3 flex items-center gap-3">
+              {retryable ? (
+                <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
+                  {retrying ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                  Run again
+                </Button>
+              ) : null}
+              {technical ? (
+                <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
+                  <ChevronRight className="size-3 transition-transform group-data-[panel-open]:rotate-90" />
+                  Technical details
+                </CollapsibleTrigger>
+              ) : null}
             </div>
           ) : null}
+          {technical ? (
+            <CollapsibleContent>
+              <div className="mt-3 space-y-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                {code ? (
+                  <p>
+                    Code <span className="font-mono text-foreground/80">{code}</span>
+                  </p>
+                ) : null}
+                {raw ? (
+                  <pre className="max-h-40 overflow-auto font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+                    {raw}
+                  </pre>
+                ) : null}
+              </div>
+            </CollapsibleContent>
+          ) : null}
         </div>
-      </div>
+      </Collapsible>
     </div>
   )
 }
@@ -147,6 +173,8 @@ function RunErrorCard({
 export function Thread({
   empty,
   prepass,
+  startup = null,
+  live = true,
   error,
   errorInfo,
   onRetry,
@@ -159,6 +187,11 @@ export function Thread({
 }: {
   empty: boolean
   prepass: PrepassView | null
+  // What the run did before the agent session opened. Shown while the thread
+  // is still empty.
+  startup?: StartProgressModel | null
+  // A worker is running. A stage cannot keep running once this is false.
+  live?: boolean
   error: string | null
   errorInfo: RunFailure | null
   onRetry: () => void
@@ -185,12 +218,7 @@ export function Thread({
         >
           {prepass && !readOnly ? <PrepassFold prepass={prepass} /> : null}
 
-          {empty && !readOnly ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              Starting the agent session…
-            </div>
-          ) : null}
+          {empty && !readOnly && startup ? <StartProgress progress={startup} live={live && !error && !errorInfo} /> : null}
 
           <ThreadPrimitive.Messages components={{ Message }} />
 

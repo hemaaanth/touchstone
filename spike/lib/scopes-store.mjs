@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, readGrants, removeGrant } from "./grant-store.mjs";
+import { addGrant, readGrants, removeGrant, privateLabHostError } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -263,6 +263,46 @@ export function githubRepoUrl(repo) {
   return u.href;
 }
 
+// A GitHub live-scope entry for the supply-chain pack: `owner`, `owner/repo`,
+// `owner/repo@ref`, or a github.com URL (`/owner`, `/owner/repo`,
+// `/owner/repo/tree/<ref>`). Returns { owner, repo, ref }. repo and ref may be null.
+const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const GITHUB_REPO = /^[A-Za-z0-9_.-]{1,100}$/;
+export const GITHUB_REF = /^(?!.*\.\.)(?!\/)[A-Za-z0-9_.\/-]{1,200}$/;
+export function githubTarget(raw) {
+  const text = String(raw ?? "").trim();
+  let owner, repo = null, ref = null;
+  if (/^https?:\/\//i.test(text)) {
+    let u;
+    try { u = new URL(text); } catch { throw new Error(`not a GitHub URL: ${text.slice(0, 100)}`); }
+    if (u.protocol !== "https:" || u.hostname !== "github.com" || u.username || u.password || u.port) throw new Error("Use an HTTPS github.com repo or org URL.");
+    const seg = u.pathname.split("/").filter(Boolean);
+    [owner, repo = null] = seg;
+    if (repo) repo = repo.replace(/\.git$/, "");
+    if (seg.length > 2) {
+      if (seg[2] !== "tree" || seg.length < 4) throw new Error("Use a repo URL, an org URL, or a /tree/<ref> URL.");
+      ref = seg.slice(3).join("/");
+    }
+  } else {
+    const at = text.indexOf("@");
+    const name = at >= 0 ? text.slice(0, at) : text;
+    if (at >= 0) ref = text.slice(at + 1);
+    [owner, repo = null] = name.split("/");
+    if (name.split("/").length > 2) throw new Error(`not owner/repo: ${text.slice(0, 100)}`);
+  }
+  if (!GITHUB_OWNER.test(owner ?? "")) throw new Error(`not a GitHub owner: ${String(owner).slice(0, 60)}`);
+  if (repo !== null && (!GITHUB_REPO.test(repo) || repo === "." || repo === "..")) throw new Error(`not a GitHub repo name: ${String(repo).slice(0, 60)}`);
+  if (ref !== null && (!repo || !GITHUB_REF.test(ref))) throw new Error(`not a usable ref: ${String(ref).slice(0, 60)}`);
+  return { owner, repo, ref };
+}
+
+// The grant's word for a target: "owner/repo" or "owner", lowercase.
+export const githubScopeKey = (t) => (t.repo ? `${t.owner}/${t.repo}` : t.owner).toLowerCase();
+// The stored form of one entry: "owner", "owner/repo" or "owner/repo@ref".
+export const githubEntry = (t) => `${t.repo ? `${t.owner}/${t.repo}` : t.owner}${t.ref ? `@${t.ref}` : ""}`;
+// The only hosts a GitHub live scope may reach. Both are read-only here.
+export const GITHUB_HOSTS = ["api.github.com", "raw.githubusercontent.com"];
+
 const FOLDER_NAME = /^[\w-][\w.-]{0,63}$/;
 
 // Validate a members array. Returns the normalized members.
@@ -285,7 +325,10 @@ export function validateMembers(members) {
       if (seen.has(`folder:${name}`)) throw new Error(`Two folders are named ${name}. Rename one.`);
       seen.add(`folder:${name}`);
       const { files, dropped } = folderFiles(m.files, budget);
-      return { kind: "folder", name, files, dropped };
+      // A folder read in place keeps its absolute path, so a run can read it
+      // fresh (app/server/runs.mjs). The files above are what the server read there.
+      const at = typeof m.path === "string" && path.isAbsolute(m.path) ? { path: m.path } : {};
+      return { kind: "folder", name, ...at, files, dropped };
     }
     throw new Error("A member is a repo { kind: \"repo\", url } or a folder { kind: \"folder\", name, files }.");
   });
@@ -417,40 +460,78 @@ export function siteOrigin(raw) {
 
 // ---- Live sites ------------------------------------------------------------
 //
+// A live AI/MCP scope may name its assistant's chat path and a request budget.
+// garak (ai-mcp pack) runs only when both are set: each request it sends can
+// cost the operator a model call. No path means no garak; a bad value throws.
+export function liveAssistant(a) {
+  if (a == null || a === "") return null;
+  const path = String(a.path ?? "").trim();
+  if (!path && (a.budget == null || a.budget === "")) return null;
+  if (!/^\/[\w\-./~%]*$/.test(path) || path.includes("..")) throw new Error("The assistant chat path must start with / and hold no host or query, for example /agent/chat.");
+  const budget = Number(a.budget);
+  if (!Number.isInteger(budget) || budget < 8 || budget > 200) throw new Error("Set the assistant request budget to a whole number from 8 to 200.");
+  return { path, budget };
+}
+
 // A live scope is one or more real websites the operator wants tested. The
 // operator ticks one box to say they have permission to test them. We record
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
 // (reach.mjs) lets a run reach exactly these hosts. Removing the scope removes
 // its grant. There is no separate grant step.
-export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope } = {}) {
+//
+// `allowPrivate` is the operator's opt-in for a local lab (127.0.0.1, localhost,
+// a private LAN address). Only the exact value `true` opts in. Without it, a
+// loopback or private host is refused, as before. With it, EVERY host must be a
+// loopback name or a loopback/private IP (privateLabHostError), so an opted-in
+// grant never covers a public host. The HTTP route still requires the console
+// grant token for any live scope (runs-http.mjs).
+export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
+  const chat = liveAssistant(assistant);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
+  const priv = allowPrivate === true;
+  if (priv) {
+    for (const h of list) {
+      const err = privateLabHostError(h);
+      if (err) throw new Error(`Refused: ${err}`);
+    }
+  }
   const name = String(title || "").trim();
   if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
   const packId = String(pack || "").trim() || "web";
   if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
-  const origins = [...new Set(list.map(siteOrigin).filter(Boolean))];
+  // A supply-chain live scope names GitHub repos or orgs, not websites. Its grant
+  // covers only the two read-only GitHub hosts. The pack checks each repo
+  // against `github` in code before it reads anything (packs/supply-chain/github.mjs).
+  const github = packId === "supply-chain" ? [...new Set(list.map((h) => githubEntry(githubTarget(h))))] : null;
+  const origins = github ? GITHUB_HOSTS.map((h) => `https://${h}`) : [...new Set(list.map(siteOrigin).filter(Boolean))];
   if (!origins.length) throw new Error("A live scope needs at least one http(s) website.");
   // The grant checks and normalizes each host (no public-suffix wildcards, no
-  // private addresses). It throws before anything is saved.
+  // private addresses unless opted in). It throws before anything is saved.
   const grant = addGrant({
-    hosts: list,
+    hosts: github ? GITHUB_HOSTS : list,
     kind: "authorized",
-    approvedBy: "operator (permission checkbox)",
-    note: "Confirmed when the live scope was added.",
+    approvedBy: priv ? "operator (permission checkbox, private lab opt-in)" : "operator (permission checkbox)",
+    note: github
+      ? `Read-only GitHub capture of ${github.join(", ")}. Confirmed when the live scope was added.`
+      : priv
+        ? "Confirmed when the live scope was added. The operator opted into a private/loopback lab."
+        : "Confirmed when the live scope was added.",
     scopeId: id,
+    allowPrivate: priv,
   });
   const t = name || grant.hosts.join(" + ").slice(0, 120);
   // A live AI/MCP target may carry its own bearer token and what that token may
   // do. Both are the operator's text; nothing is inferred.
-  const mcp = token || tokens || toolScope
+  const mcp = token || tokens || toolScope || chat
     ? {
       ...(String(token ?? "").trim() ? { token: String(token).trim() } : {}),
       ...(tokens && typeof tokens === "object" ? { tokens } : {}),
       ...(toolScope && typeof toolScope === "object" ? { toolScope } : {}),
+      ...(chat ? { assistant: chat } : {}),
     }
     : null;
   const scope = {
@@ -459,17 +540,20 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,
-    entry: grant.hosts[0],
+    entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
+    ...(github ? { github } : {}),
     // Where a run actually sends its requests, in the operator's own scheme and
     // port. `hosts` above is only the gate's allow-list; this is the aim.
     origins,
     ...(mcp ? { mcp } : {}),
-    permission: { confirmedAt: grant.approvedAt, grantId: grant.id },
+    permission: { confirmedAt: grant.approvedAt, grantId: grant.id, ...(priv ? { allowPrivate: true } : {}) },
     proofSurface: {
       kind: "live",
-      note: "Real requests to the websites listed here. You confirmed you have permission to test them.",
+      note: github
+        ? "Read-only GitHub API reads of the repos listed here. Nothing is cloned or run. You confirmed you have permission to test them."
+        : "Real requests to the websites listed here. You confirmed you have permission to test them.",
     },
     createdAt: Date.now(),
   };

@@ -19,9 +19,24 @@ test("an echo before the send returns still settles it", () => {
   assert.equal(one(x, [ev("operator-message", { id: "a", text: "hi" })]), "echoed")
 })
 
-test("an echo with another id, or one before the send, does not", () => {
-  const x: Sent = { id: "a", text: "hi", base: 1, mode: "steer" }
-  assert.equal(one(x, [ev("operator-message", { id: "a" }), ev("operator-message", { id: "b", text: "hi" })]), undefined)
+test("an echo with another id does not", () => {
+  const x: Sent = { id: "a", text: "hi", base: 0, mode: "steer" }
+  assert.equal(one(x, [ev("operator-message", { id: "b", text: "hi" })]), undefined)
+})
+
+// The client counted a stream `status` and `closed` the server never stores,
+// so `base` is 2 past the server's count. The follow-up reloads the server's
+// events, and the echo now sits before `base`. It must still settle, or the
+// copy stays at the bottom as a second copy of the message.
+test("an echo before base still settles it after a reload", () => {
+  const x: Sent = { id: "a", text: "hi", base: 3, mode: "follow-up" }
+  const server = [ev("say"), ev("reply-start"), ev("operator-message", { id: "a", text: "hi" }), ev("say")]
+  assert.equal(one(x, server), "echoed")
+})
+
+test("a close before base does not lose a message", () => {
+  const x: Sent = { id: "a", text: "hi", base: 2, mode: "steer" }
+  assert.equal(one(x, [ev("say"), ev("closed")]), undefined)
 })
 
 test("a steer error gives its message back", () => {

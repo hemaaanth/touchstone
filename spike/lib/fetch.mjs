@@ -33,8 +33,10 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writ
 import path from "node:path";
 import { classifyPath, githubRepoUrl, safeRelPath, secretContent, MAX_BYTES, MAX_FILES, MAX_MEMBERS } from "./scopes-store.mjs";
 
-// The only hosts a fetch ever contacts.
-const ALLOWED_HOSTS = new Set(["github.com", "raw.githubusercontent.com"]);
+// The only hosts a fetch ever contacts. api.github.com serves the read-only
+// GitHub API reads of the supply-chain live path (githubGet below). fetchSource
+// never builds an api.github.com URL, so it cannot reach it.
+const ALLOWED_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "api.github.com"]);
 
 const FILE_CAP = 2 * 1024 * 1024; // 2 MB — a single source file
 const REPO_CAP = 300 * 1024 * 1024; // 300 MB — a cloned repo on disk
@@ -78,7 +80,7 @@ function isBlockedAddress(addr) {
 // against a DNS answer that mixes a public and a private address). A bare IP
 // hostname is checked directly without a lookup.
 async function assertPublicHost(hostname) {
-  if (!ALLOWED_HOSTS.has(hostname)) throw new Error(`refused host ${hostname}: only github.com and raw.githubusercontent.com are fetched`);
+  if (!ALLOWED_HOSTS.has(hostname)) throw new Error(`refused host ${hostname}: only github.com, raw.githubusercontent.com and api.github.com are fetched`);
   if (isIP(hostname)) {
     if (isBlockedAddress(hostname)) throw new Error(`refused non-public address: ${hostname}`);
     return;
@@ -386,6 +388,38 @@ async function httpGet(url, cap) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${u.hostname}`);
     const buf = await readCapped(resp, cap);
     return { buf, contentType: resp.headers.get("content-type") || "" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One read-only GET to api.github.com or raw.githubusercontent.com, with the
+// same guards as every other fetch here: host allowlist, public address, TLS,
+// no redirects, a byte cap, and a time cap. `token` is optional. It is sent only
+// as the Authorization header and never appears in an error or a return value.
+// Returns { status, buf, headers } for 2xx. Throws a short, token-free error
+// otherwise; err.status and err.rateLimited let the caller explain it.
+export async function githubGet(url, { token = null, accept = "application/vnd.github+json", cap = FILE_CAP } = {}) {
+  const u = parseUrl(url);
+  if (u.hostname !== "api.github.com" && u.hostname !== "raw.githubusercontent.com") throw new Error(`refused host ${u.hostname}: githubGet reads only api.github.com and raw.githubusercontent.com`);
+  if (u.username || u.password || u.port) throw new Error("refused a URL with credentials or a port");
+  await assertPublicHost(u.hostname);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const headers = { "user-agent": "touchstone-fetch", accept, ...(u.hostname === "api.github.com" ? { "x-github-api-version": "2022-11-28" } : {}) };
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    let resp;
+    try { resp = await fetch(u.href, { redirect: "manual", signal: ctrl.signal, headers }); }
+    catch (e) { throw new Error(ctrl.signal.aborted ? `timed out after ${FETCH_TIMEOUT_MS / 1000}s reading ${u.hostname}${u.pathname}` : `could not reach ${u.hostname}`); }
+    if (resp.status >= 300 && resp.status < 400) throw Object.assign(new Error(`refused a redirect (${resp.status}) from ${u.hostname}${u.pathname}`), { status: resp.status });
+    if (!resp.ok) {
+      const rateLimited = (resp.status === 403 || resp.status === 429) && (resp.headers.get("x-ratelimit-remaining") === "0" || resp.headers.has("retry-after"));
+      try { await resp.body?.cancel(); } catch {}
+      throw Object.assign(new Error(`HTTP ${resp.status} from ${u.hostname}${u.pathname}${rateLimited ? " (rate limited)" : ""}`), { status: resp.status, rateLimited });
+    }
+    const buf = await readCapped(resp, cap);
+    return { status: resp.status, buf, headers: resp.headers };
   } finally {
     clearTimeout(timer);
   }

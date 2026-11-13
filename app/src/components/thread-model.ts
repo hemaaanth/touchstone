@@ -274,7 +274,7 @@ export function waitingMessage(
 // Match a submitted finding to its recorded one and its replay-proof document.
 // New runs match by test contract name. An old run recorded one finding with no
 // contract name, so its one submission maps to the run's one finding.
-function cardFor(
+export function cardFor(
   state: RunState,
   sub: PendingApproval,
   status: RunStatus,

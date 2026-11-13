@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
+import { Check, Info, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
 import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
 import { getConsoleToken, setConsoleToken, tokenHeaders } from "@/lib/console-token"
@@ -8,6 +8,8 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
 import { ProviderLogo } from "@/components/provider-logo"
 import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<SettingsState | null>(null)
@@ -34,7 +36,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
             <section aria-labelledby="providers-title">
               <div className="mb-2 flex items-center justify-between gap-3 px-2">
                 <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
-                <Button variant="ghost" size="sm" className="-mr-2 text-muted-foreground hover:text-foreground" disabled={editing === "new"} onClick={() => setEditing("new")}>
+                <Button variant="ghost" size="sm" className="-mr-2 text-muted-foreground hover:text-foreground" onClick={() => setEditing("new")}>
                   <Plus /> Add
                 </Button>
               </div>
@@ -71,7 +73,12 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
                   )
                 })}
               </ul>
-              {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
+              <Dialog open={editing === "new"} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+                <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
+                  <DialogTitle className="text-sm font-semibold">Add provider</DialogTitle>
+                  {editing === "new" ? <ProviderEditor onSaved={(s) => { apply(s); setEditing(null) }} onCancel={() => setEditing(null)} /> : null}
+                </DialogContent>
+              </Dialog>
             </section>
             <BudgetSection settings={settings} onSave={(n) => attempt(() => setRunBudget(n))} />
             <ExecutionSection settings={settings} onSave={(body) => attempt(() => setExecution(body))} />
@@ -286,7 +293,7 @@ function ProviderEditor({
     : "Paste the API key"
 
   return (
-    <div className="mt-1 mb-3 flex flex-col gap-4 rounded-lg bg-muted/30 px-3 py-4 sm:pl-12">
+    <div className={cn("mt-1 mb-3 flex flex-col gap-4 rounded-lg bg-muted/30 px-3 py-4", provider && "sm:pl-12")}>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Name</span>
@@ -494,9 +501,19 @@ function ExecutionSection({ settings, onSave }: { settings: SettingsState; onSav
           )
         })}
       </div>
-      <p className="mt-2 px-2 text-xs text-muted-foreground">
-        With Daytona on, offline tools that work on a run's workspace run on Daytona. The workspace is uploaded first. This includes the Solidity analyzers and fuzzers, the keys pack's secret scans, forge builds, and the proof replay. So the target's files, and any keys in them, leave this machine. The proof verdict is read from files built on Daytona and copied back. These stay on local Docker: tools that use a network, the lab chain, image builds, and the supply-chain, infra-cloud and domains scans. Those scans work on a snapshot that belongs to no run. Each run, and each swarm child, gets its own machines. They are deleted when the run ends.
-      </p>
+      <div className="mt-2 flex items-start gap-1 px-2 text-xs text-muted-foreground">
+        <span>Daytona uploads the run workspace, including keys in its files. Networked tools and the lab chain stay local.</span>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger render={<button type="button" aria-label="Daytona execution details" className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" />}>
+              <Info className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm leading-relaxed">
+              Solidity analyzers, fuzzers, secret scans, forge builds, and proof replay run on Daytona. The proof verdict is copied back. Image builds and supply-chain, infra-cloud, and domains scans stay in local Docker on snapshots outside the run. Each run and fleet child gets its own machine, deleted when it ends.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
       <form
         className="mt-2 flex items-center gap-2 py-1.5 pr-1 pl-2"
         onSubmit={(e) => {

@@ -2,7 +2,7 @@
 //
 //   node agent-run.mjs                 run qwen-abl against the planted reentrancy bug
 //   ALIAS=ds-abl node agent-run.mjs    pick the model
-//   MAX_POC=20 node agent-run.mjs      raise the PoC attempt budget
+//   MAX_POC=20 node agent-run.mjs      cap PoC attempts (default: no cap; the run budget stops it)
 //
 // The agent gets real tools over a per-run Foundry sandbox: it reads the contract
 // source, writes its own exploit tests, runs them offline in Docker, and must
@@ -18,7 +18,8 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { MODELS, PROVIDER_ID, costOf, guard, spent } from "./lib/inference.mjs";
+import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
+import { readSpendWith } from "./lib/attempt-cap.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -31,6 +32,9 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+
+// Tools tell the model how much of the run budget is left.
+readSpendWith(runSpend);
 
 const ctx = BACKGROUND_CONTEXT;
 const ALIAS = process.env.ALIAS ?? defaultAlias(activeProvider());
@@ -265,38 +269,64 @@ async function main() {
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 
-  const prep = await pack.prepass?.(ws, {
-    reach,
-    emit: (ev) => {
-      appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
-      console.log("· " + ev.ev + " " + JSON.stringify(ev));
-    },
-  });
+  // A pre-pass failure must not sink the run (the app does the same): the
+  // agent can still audit with no leads. The record keeps the reason.
+  let prep = null;
+  let prepassError = null;
+  try {
+    prep = await pack.prepass?.(ws, {
+      reach,
+      emit: (ev) => {
+        appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
+        console.log("· " + ev.ev + " " + JSON.stringify(ev));
+      },
+    });
+  } catch (err) {
+    prepassError = String(err?.message ?? err);
+    console.log("· prepass failed " + prepassError);
+  }
 
-  // One worker runs the whole audit. submit_finding never blocks, so nothing
-  // has to be killed or resumed; the run settles on its own.
-  console.log(`\n== agent run (${ALIAS}) ==`);
-  const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
-  const first = await runChild("run", db, ws, runEnv);
-  const all = first.events;
-  const settled = all.find((e) => e.ev === "settled");
-  const pocRuns = all.filter((e) => e.ev === "run_poc").length;
+  // The record is always written, even when the agent or the proof replay
+  // fails: then it reads as an error with its reason, never as a clean run.
+  let all = [];
+  let settled = null;
+  let findings = [];
+  let error = null;
+  try {
+    // One worker runs the whole audit. submit_finding never blocks, so nothing
+    // has to be killed or resumed; the run settles on its own.
+    console.log(`\n== agent run (${ALIAS}) ==`);
+    const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
+    const first = await runChild("run", db, ws, runEnv);
+    all = first.events;
+    settled = all.find((e) => e.ev === "settled") ?? null;
+    if (!settled) error = `the agent exited before it settled (code ${first.code ?? first.signal}): ${first.stderr.slice(-400)}`;
+    else if (settled.status !== "done") error = `the agent did not finish: ${settled.reason ?? settled.status}`;
 
-  // Structured proof delta for EACH finding — the engine's own reading of each
-  // proven exploit. Each finding's exact passing source is replayed once more in
-  // JSON trace mode, so its proof panel shows what the chain DID, not what the
-  // test was written to assert. "Proven" binds to the submitted test only; a
-  // throwaway diagnostic that happens to pass never turns a record green. Runs
-  // before the workspace is torn down below.
-  const findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
-  for (const f of findings) {
-    console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
+    // Structured proof delta for EACH finding — the engine's own reading of each
+    // proven exploit. Each finding's exact passing source is replayed once more in
+    // JSON trace mode, so its proof panel shows what the chain DID, not what the
+    // test was written to assert. "Proven" binds to the submitted test only; a
+    // throwaway diagnostic that happens to pass never turns a record green. Runs
+    // before the workspace is torn down below.
+    findings = withProven(await pack.prove?.(ws, settled?.findings ?? [], all, (m) => console.log("· " + m)));
+    for (const f of findings) {
+      console.log("· proof-delta " + JSON.stringify({ poc: f.poc, severity: f.severity, status: f.proof?.status ?? null, transfers: f.proof?.transfers?.map((t) => `${t.label}:${t.net}`) ?? [] }));
+    }
+  } catch (err) {
+    error = String(err?.message ?? err);
+    findings = [];
   }
   const worst = findings[0] ?? null;
+  const pocRuns = all.filter((e) => e.ev === "run_poc").length;
 
   const result = {
     alias: ALIAS, approveMode: "auto", ms: Date.now() - t0,
     status: settled?.status, reason: settled?.reason,
+    // How the run ended. An error keeps its reason.
+    outcome: findings.length ? "recorded" : error ? "error" : "no-finding",
+    error: findings.length ? null : error,
+    prepassError,
     ...prep?.record,
     pocRuns,
     // Every proven finding, worst first, each with its own replay proof: real

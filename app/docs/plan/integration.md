@@ -49,7 +49,7 @@ App                                         (App.tsx — rewritten)
              └─ ReplayProof      (proof / PoC diff / static+fuzz leads)
 ```
 
-`PageStub` stays for Projects/Modules/Playbooks/Settings. `FindingsPanel` (the permanent
+`PageStub` stays for Projects/Modules/Settings. `FindingsPanel` (the permanent
 global right rail) is **deleted** — findings are now per-run (§5).
 
 ---

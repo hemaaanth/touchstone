@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare } from "lucide-react"
-import type { AgentNode, BulletinNote, RunMode } from "@/lib/types"
+import { useEffect, useRef, useState } from "react"
+import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
+import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
+import { cardFor, type CardState } from "@/components/thread-model"
+import { Bump } from "@/components/bump"
+import { useAppear } from "@/lib/motion"
 import {
   AGENT_WORD,
   agentName,
@@ -21,12 +24,15 @@ import {
 
 // The run panel. It floats in the chat's top-right corner on every run, fleet
 // or solo, phone or desktop. It is a stack of sections, like the assistant-ui
-// MCP server panel: Info, Agents, Bulletin, and Files. Each section row shows a count
-// and a short status. One section is open at a time and scrolls inside itself.
-// The top row folds the whole panel to one line, so it never hides the chat
-// for long. A click on an agent or a file opens it in the run drawer.
+// MCP server panel: Info, Agents, Bulletin, Findings & Proofs, and Files. Each
+// section row shows a count and a short status. One section is open at a time
+// and scrolls inside itself. The top row folds the whole panel to one line, so
+// it never hides the chat for long. A click on an agent, a finding's proof or a
+// file opens it in the run drawer.
+// Findings & Proofs holds what the run claims and what its replay showed.
+// Files holds what the run wrote to get there: test files, sources, reports.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "files"
 
 export function RunPanel({
   state,
@@ -60,7 +66,11 @@ export function RunPanel({
 }) {
   const agents = state.agents
   const notes = state.bulletin
-  const docs = state.artifacts
+  // Replay proofs belong to their findings, not to the run's working files.
+  const docs = state.artifacts.filter((d) => d.kind !== "proof")
+  const found = panelFindings(state)
+  const linked = new Set(found.map((f) => f.proofId))
+  const loose = state.artifacts.filter((d) => d.kind === "proof" && !linked.has(d.id))
   // A solo run has no Bulletin tools, so the section shows only if notes exist.
   const showBulletin = mode === "fleet" || notes.length > 0
   const writing = docs.some((d) => d.versions.some((v) => v.writing))
@@ -76,13 +86,13 @@ export function RunPanel({
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
+  // The folded line. Each count bumps when it goes up.
   const summary = [
-    showAgents ? plural(agents.length, "agent") : "Solo",
-    showBulletin ? plural(notes.length, "note") : null,
-    plural(docs.length, "file"),
-  ]
-    .filter(Boolean)
-    .join(" · ")
+    showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
+    showBulletin ? counted(notes.length, "note") : null,
+    counted(found.length, "finding"),
+    counted(docs.length, "file"),
+  ].filter((p) => p != null)
 
   return (
     <div
@@ -97,7 +107,20 @@ export function RunPanel({
         aria-expanded={open}
         className="flex shrink-0 items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
-        <span className="min-w-0 truncate tabular-nums">{summary}</span>
+        <span className="min-w-0 truncate tabular-nums">
+          {summary.map(({ key, n, word }, i) => (
+            <span key={key}>
+              {i ? " · " : null}
+              {n != null ? (
+                <>
+                  <Bump n={n} /> {word}
+                </>
+              ) : (
+                word
+              )}
+            </span>
+          ))}
+        </span>
         {(live && active) || writing ? (
           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" />
         ) : null}
@@ -142,6 +165,23 @@ export function RunPanel({
             </Section>
           ) : null}
           <Section
+            icon={ShieldCheck}
+            label="Findings & Proofs"
+            count={found.length ? null : 0}
+            pills={statePills(found)}
+            status={null}
+            expanded={section === "findings"}
+            onToggle={() => toggle("findings")}
+          >
+            <FindingList
+              items={found}
+              loose={loose}
+              openDoc={openDoc}
+              openVersion={openVersion}
+              onFile={onFile}
+            />
+          </Section>
+          <Section
             icon={Files}
             label="Files"
             count={docs.length}
@@ -157,14 +197,92 @@ export function RunPanel({
   )
 }
 
-const plural = (n: number, word: string) => `${n} ${n === 1 ? word : `${word}s`}`
+// One finding as the panel shows it: what the agent claimed and what the
+// replay made of it. `card` is the same state the finding's chat card shows.
+interface PanelFinding {
+  id: string
+  title: string
+  severity: Severity
+  poc: string | null
+  card: CardState
+  proofId: string | null
+}
+
+// Every finding of the run, in submission order. A submitted finding takes
+// its state from cardFor, so the panel and the chat card never disagree. A
+// recorded finding with no submission in the stream (an older record) still
+// shows: its recorded replay result is its state.
+function panelFindings(state: RunState): PanelFinding[] {
+  const out: PanelFinding[] = state.submitted.map((sub) => {
+    const { card, proofArtifactId } = cardFor(state, sub, state.status)
+    return { id: sub.id, title: sub.title, severity: sub.severity, poc: sub.poc || null, card, proofId: proofArtifactId }
+  })
+  const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
+  const pocs = new Set(state.submitted.map((s) => s.poc))
+  for (const f of state.findings) {
+    if (legacy ? state.submitted.length > 0 : f.poc && pocs.has(f.poc)) continue
+    const proof = f.proven ? state.artifacts.find((a) => a.kind === "proof" && a.findingId === f.id) : undefined
+    out.push({
+      id: f.id,
+      title: f.title,
+      severity: f.severity,
+      poc: f.poc ?? null,
+      card: f.proven ? "proven" : "unproven",
+      proofId: proof?.id ?? null,
+    })
+  }
+  return out
+}
+
+// The word each finding state shows. Same words as the chat's finding card.
+const CARD_WORD: Record<CardState, string> = {
+  proven: "Proven",
+  replaying: "Replaying",
+  waiting: "Awaiting replay",
+  unproven: "Not reproduced",
+  dropped: "Not recorded",
+}
+
+// One header pill per finding state the run has, in ladder order. A state
+// with no findings shows no pill. Only "proven" takes the green accent.
+const PILL_ORDER: CardState[] = ["proven", "replaying", "waiting", "unproven", "dropped"]
+const PILL_WORD: Record<CardState, string> = {
+  proven: "proven",
+  replaying: "replaying",
+  waiting: "awaiting",
+  unproven: "not reproduced",
+  dropped: "not recorded",
+}
+
+function statePills(items: PanelFinding[]): Pill[] {
+  return PILL_ORDER.map((card) => ({ card, n: items.filter((f) => f.card === card).length }))
+    .filter((p) => p.n > 0)
+    .map(({ card, n }) => ({ key: card, n, text: PILL_WORD[card], title: `${n} ${CARD_WORD[card]}`, ok: card === "proven" }))
+}
+
+// One count of the folded line, like "3 files". Its number bumps on its own.
+const counted = (n: number, word: string): { key: string; n: number | null; word: string } => ({
+  key: word,
+  n,
+  word: n === 1 ? word : `${word}s`,
+})
+
+interface Pill {
+  key: string
+  n: number
+  text: string
+  title: string
+  ok: boolean
+}
 
 // One section: a row with a chevron, an icon, a label, a count and a status.
+// A section can show several labelled count pills instead of one count.
 // Open, its body sits under the row and scrolls inside the panel.
 function Section({
   icon: Icon,
   label,
   count,
+  pills,
   status,
   bad = false,
   expanded,
@@ -174,6 +292,7 @@ function Section({
   icon: React.ComponentType<{ className?: string }>
   label: string
   count: number | null
+  pills?: Pill[]
   status: string | null
   bad?: boolean
   expanded: boolean
@@ -190,13 +309,41 @@ function Section({
       >
         <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="font-medium">{label}</span>
+        <span className="shrink-0 font-medium">{label}</span>
         {count != null ? <Count n={count} /> : null}
+        {pills?.length ? (
+          <span className="ml-auto flex min-w-0 flex-wrap justify-end gap-1">
+            {pills.map((p) => (
+              <span
+                key={p.key}
+                title={p.title}
+                className={cn(
+                  "rounded-full px-1.5 py-px text-[11px] leading-[14px] font-medium whitespace-nowrap tabular-nums",
+                  p.ok ? "bg-ok/10 text-ok" : "bg-foreground/[0.07] text-muted-foreground",
+                )}
+              >
+                <Bump n={p.n} /> {p.text}
+              </span>
+            ))}
+          </span>
+        ) : null}
         {status ? (
           <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : "text-muted-foreground")}>{status}</span>
         ) : null}
       </button>
-      {expanded ? <div className="min-h-0 overflow-y-auto pb-1">{children}</div> : null}
+      {expanded ? <SectionBody>{children}</SectionBody> : null}
+    </div>
+  )
+}
+
+// An open section's body. It mounts when the section opens, so the rows already
+// there do not animate. Rows added after that ease in.
+function SectionBody({ children }: { children: React.ReactNode }) {
+  const body = useRef<HTMLDivElement>(null)
+  useAppear(body)
+  return (
+    <div ref={body} className="min-h-0 overflow-y-auto pb-1">
+      {children}
     </div>
   )
 }
@@ -204,7 +351,7 @@ function Section({
 function Count({ n }: { n: number }) {
   return (
     <span className="rounded-full bg-foreground/[0.07] px-1.5 py-px text-[11px] leading-[14px] font-medium text-muted-foreground tabular-nums">
-      {n}
+      <Bump n={n} />
     </span>
   )
 }
@@ -344,6 +491,74 @@ function Row({
           {t2 ? <TierTag /> : null}
         </span>
         {sub ? <span className="truncate text-xs leading-4 text-muted-foreground">{sub}</span> : null}
+      </span>
+    </button>
+  )
+}
+
+// The run's findings, one row each. A proven row opens its replay proof in the
+// drawer. A replay proof that matches no finding row still lists below, so no
+// proof is hidden.
+function FindingList({
+  items,
+  loose,
+  openDoc,
+  openVersion,
+  onFile,
+}: {
+  items: PanelFinding[]
+  loose: ArtifactDoc[]
+  openDoc: string | null
+  openVersion: string | null
+  onFile: (fileId: string, versionId?: string) => void
+}) {
+  if (!items.length && !loose.length) return <p className={empty}>No findings yet.</p>
+  return (
+    <div className="flex flex-col py-1">
+      {items.map((f) => (
+        <FindingRow key={f.id} finding={f} active={f.proofId != null && f.proofId === openDoc} onFile={onFile} />
+      ))}
+      {loose.length ? <FileTree docs={loose} activeId={openDoc} activeVersionId={openVersion} onOpen={onFile} /> : null}
+    </div>
+  )
+}
+
+function FindingRow({
+  finding: f,
+  active,
+  onFile,
+}: {
+  finding: PanelFinding
+  active: boolean
+  onFile: (fileId: string, versionId?: string) => void
+}) {
+  const proven = f.card === "proven"
+  const Icon = proven ? ShieldCheck : Shield
+  const proofId = f.proofId
+  return (
+    <button
+      type="button"
+      disabled={!proofId}
+      onClick={proofId ? () => onFile(proofId) : undefined}
+      aria-current={active || undefined}
+      title={proofId ? "Open the replay proof" : undefined}
+      className={cn(
+        "flex w-full gap-2.5 px-3 py-[7px] text-left transition-colors outline-none enabled:hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03]",
+        active && "bg-foreground/5 enabled:hover:bg-foreground/5",
+      )}
+    >
+      <Icon className={cn("mt-px size-3.5 shrink-0", proven ? "text-ok" : "text-muted-foreground")} />
+      <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-[13px] leading-4 font-semibold">{f.title}</span>
+          <span className={cn("ml-auto shrink-0 text-[11px] leading-[14px]", proven ? "text-ok" : "text-muted-foreground")}>
+            {CARD_WORD[f.card]}
+          </span>
+        </span>
+        <span className="flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
+          <span className="shrink-0 capitalize">{f.severity}</span>
+          {f.poc ? <span className="min-w-0 truncate font-mono text-[11px]">{f.poc}</span> : null}
+        </span>
       </span>
     </button>
   )
