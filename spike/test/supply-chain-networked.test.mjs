@@ -12,7 +12,7 @@
 //   node --experimental-test-module-mocks --test spike/test/supply-chain-networked.test.mjs
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,7 +24,7 @@ process.env.TOUCHSTONE_GRANTS_FILE = join(storeDir, "grants.json");
 process.env.TOUCHSTONE_GRANT_TOKEN = "test-token-not-real";
 after(() => rmSync(storeDir, { recursive: true, force: true }));
 
-const { holdsSecret, runCapture } = await import("../lib/capture.mjs");
+const { holdsSecret, runCapture, LEAK_REASON } = await import("../lib/capture.mjs");
 const { pinSnapshot, replayEvidence, sha256 } = await import("../lib/proof-evidence.mjs");
 const { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } = await import("../packs/supply-chain/networked.mjs");
 const { addLiveScope } = await import("../lib/scopes-store.mjs");
@@ -445,6 +445,55 @@ test("a Warn line that does not parse: below 10 it is a gap and the check is unc
   // A score of 10 has nothing to lose, and the real format gives no such gap.
   assert.ok(!scorecardFrom(withLocal((j) => only(j, 10))).gaps.some((x) => x.kind === "scorecard-detail-unparsed"));
   assert.ok(!scorecardFrom(fixtureSnapshot()).gaps.some((x) => x.kind === "scorecard-detail-unparsed"));
+});
+
+// m2: a file check below 10 with no detail the pack can read used to look clean.
+test("a file check below 10 with no readable detail is a gap and unchecked, never clean (real fixture)", () => {
+  const d = scorecardFrom(withLocal((j) => {
+    const pin = j.checks.find((c) => c.name === "Pinned-Dependencies");
+    pin.score = 3; pin.details = ["Info: 0 out of 2 containerImage dependencies pinned"];
+    const sec = j.checks.find((c) => c.name === "Security-Policy");
+    sec.score = 4; sec.details = null;
+  }));
+  assert.equal(d.leads.filter((l) => /Pinned-Dependencies|Security-Policy/.test(l.check)).length, 0);
+  for (const name of ["Pinned-Dependencies", "Security-Policy"]) {
+    assert.ok(d.gaps.some((g) => g.kind === "scorecard-detail-unparsed" && g.detail.startsWith(`Scorecard ${name} (local) scored`) && /Not a clean result/.test(g.detail)), name);
+  }
+  assert.equal(localRow(d).status, "ok");
+  assert.match(localRow(d).reason, /^2 of 4 checks unchecked: Pinned-Dependencies, Security-Policy$/);
+  // A full score with no detail is clean, and the real fixture's rows do not change.
+  const full = scorecardFrom(withLocal((j) => { const pin = j.checks.find((c) => c.name === "Pinned-Dependencies"); pin.score = 10; pin.details = []; }));
+  assert.ok(!full.gaps.some((g) => g.kind === "scorecard-detail-unparsed" && /Pinned-Dependencies/.test(g.detail)));
+  assert.ok(!scorecardFrom(fixtureSnapshot()).gaps.some((g) => g.kind === "scorecard-detail-unparsed"));
+});
+
+// m4: the second drop, in record(), covers the offline local run. Its stand-in
+// prints a base64 copy of the token, as a scanned file could.
+test("the local run's output is dropped when it holds part of the token", async () => {
+  const b64 = Buffer.from(`x:${FAKE_TOKEN}`).toString("base64");
+  const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, scopeId, token: FAKE_TOKEN,
+    run: async () => ({ code: 0, stdout: `${fx.captures.scorecard.local.text.slice(0, -1)},"x":"${b64}"}`, stderr: "" }) });
+  assert.equal(c.local.text, "");
+  assert.equal(c.local.stderr, "");
+  assert.equal(c.local.status, "unavailable");
+  assert.equal(c.local.reason, LEAK_REASON);
+  assert.equal(c.local.sha256, sha256(""));
+  assert.ok(!holdsSecret(JSON.stringify(c), [FAKE_TOKEN]));
+  // A capture result marked leaked keeps nothing, even text that looks clean.
+  const api = (await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target, scopeId, token: FAKE_TOKEN,
+    run: async () => ({ code: 1, stdout: "", stderr: "" }), capture: async () => ({ code: 0, stdout: '{"checks":[{"name":"x"}]}', stderr: "warn", timedOut: false, leaked: LEAK_REASON }) })).api;
+  assert.deepEqual([api.text, api.stderr, api.status, api.reason, api.sha256], ["", "", "unavailable", LEAK_REASON, sha256("")]);
+});
+
+test("setup manifest: the Scorecard and Legitify images are optional supply-chain builds with a Dockerfile", async () => {
+  const { MANIFEST } = await import("../scripts/setup.mjs");
+  const { LEGITIFY } = await import("../packs/supply-chain/networked-blocked.mjs");
+  for (const tag of [SCORECARD.image, LEGITIFY.image]) {
+    const m = MANIFEST.find((x) => x.tag === tag);
+    assert.ok(m, `${tag} is not in the setup manifest`);
+    assert.deepEqual([m.group, m.kind, m.optional], ["supply-chain", "build", true]);
+    assert.ok(existsSync(new URL(`../../${m.context}/Dockerfile`, import.meta.url)), m.context);
+  }
 });
 
 test("a gap is never shown as clean: -1 scores are gaps, the row counts them, all unchecked is unavailable", () => {
