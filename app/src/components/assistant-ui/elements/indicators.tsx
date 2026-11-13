@@ -41,19 +41,32 @@ export function Hint({
   const ref = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
   const [rowFocus, setRowFocus] = useState(false);
+  const shown = useRef(false);
   // A row can turn from disabled to enabled, so this checks on every render.
+  // Escape while the tip shows closes only the tip: the key is marked as
+  // used, so the panel or drawer around it stays open.
   useEffect(() => {
+    shown.current = open || rowFocus;
     const el = ref.current;
-    const row = el?.parentElement?.closest<HTMLElement>("button:enabled, a[href], [role=button]");
-    if (el) el.tabIndex = row ? -1 : 0;
-    if (!row) return;
-    const on = () => setRowFocus(row.matches(":focus-visible"));
+    if (!el) return;
+    const row = el.parentElement?.closest<HTMLElement>("button:enabled, a[href], [role=button]");
+    el.tabIndex = row ? -1 : 0;
+    const on = () => setRowFocus(!!row?.matches(":focus-visible"));
     const off = () => setRowFocus(false);
-    row.addEventListener("focus", on);
-    row.addEventListener("blur", off);
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !shown.current) return;
+      e.preventDefault();
+      setOpen(false);
+      setRowFocus(false);
+    };
+    const target = row ?? el;
+    target.addEventListener("keydown", key);
+    row?.addEventListener("focus", on);
+    row?.addEventListener("blur", off);
     return () => {
-      row.removeEventListener("focus", on);
-      row.removeEventListener("blur", off);
+      target.removeEventListener("keydown", key);
+      row?.removeEventListener("focus", on);
+      row?.removeEventListener("blur", off);
     };
   });
   const trigger: ReactElement = (
