@@ -3,16 +3,42 @@
 // site that drops "--internal" gives a lab network a route to the host's LAN
 // and the internet, and no Docker test notices (labnet-review Major 1).
 //
-//   node --test spike/test/lab-net-callers.test.mjs
+//   node --experimental-test-module-mocks --test spike/test/lab-net-callers.test.mjs
 //
-// This reads the source of every caller, with no Docker. Each call must pass
-// "--internal", or be listed below with the flag it uses instead and why. A new
-// call site that is not internal fails until it is listed here.
-import { test } from "node:test";
+// Two checks, with no Docker:
+//   1. Source: every createLabNetwork call in lib/ and packs/ passes
+//      "--internal", or is listed below with the flag it uses instead. A new
+//      call site that is not internal fails until it is listed here.
+//   2. Run time: lib/lab-net.mjs is stubbed, and each of the nine callers is
+//      really called. The stub records the flags the caller passes and throws,
+//      so no network or container is made. This checks what the code does, not
+//      only its text (for example a flag built in a variable).
+// The Docker tests (reach-confine, proof-http-lab-net) read .Internal from a
+// real network for two of the callers.
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+// The run-time seam: every importer of lib/lab-net.mjs gets this stub.
+const realLabNet = await import("../lib/lab-net.mjs");
+const made = [];
+// How many creates the stub lets through (it answers code 0) before it throws.
+let letThrough = 0;
+class Stopped extends Error {}
+mock.module("../lib/lab-net.mjs", {
+  exports: {
+    ...realLabNet,
+    createLabNetwork: async (name, args = []) => {
+      made.push({ name, args: [...args] });
+      if (made.length <= letThrough) return { code: 0, stdout: "", stderr: "" };
+      throw new Stopped(`stub: ${name} was not made`);
+    },
+    removeLabNetwork: async () => ({ code: 0, stdout: "", stderr: "" }),
+  },
+});
 
 const SPIKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,4 +100,73 @@ test("the known lab network makers are all found", () => {
   ]) assert.ok(files.includes(f), `${f} is not seen as a caller`);
   // proof-http makes two networks, inner and outer.
   assert.equal(callers.find((c) => c.file === "lib/proof-http.mjs").calls.length, 2);
+});
+
+// Call a caller, and return the flags it passed to createLabNetwork. The stub
+// throws, so each caller stops at its first network. Not every caller cleans
+// its temp folder on that error (startForkLab leaves forklab-*), so each call
+// gets its own TMPDIR, removed after.
+async function flagsOf(start) {
+  made.length = 0;
+  const own = mkdtempSync(path.join(tmpdir(), "lab-net-callers-tmp-"));
+  const prev = process.env.TMPDIR;
+  process.env.TMPDIR = own;
+  try {
+    await Promise.resolve().then(start).catch(() => {});
+  } finally {
+    if (prev === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = prev;
+    rmSync(own, { recursive: true, force: true });
+  }
+  assert.ok(made.length > 0, "the caller made no lab network");
+  return made.map((m) => m.args);
+}
+
+test("at run time, every caller passes --internal (or its listed isolation flag)", async () => {
+  const ws = mkdtempSync(path.join(tmpdir(), "lab-net-callers-"));
+  try {
+    const { confineReach } = await import("../lib/reach-confine.mjs");
+    const { startLab } = await import("../lib/proof-http.mjs");
+    const { startForkLab } = await import("../lib/fork-proof.mjs");
+    const { startWatchLab } = await import("../lib/oz-monitor.mjs");
+    const { startTxLab } = await import("../lib/txreplay-proof.mjs");
+    const { runCloudPosture } = await import("../packs/infra-cloud/cloud.mjs");
+    const { captureSnapshot, makeLabWorkspace } = await import("../packs/infra-cloud/snapshot.mjs");
+    const phishing = await import("../packs/phishing/labctl.mjs");
+    const domains = await import("../packs/domains/labctl.mjs");
+    const cloudWs = makeLabWorkspace();
+    const snapshot = captureSnapshot(cloudWs);
+    rmSync(cloudWs, { recursive: true, force: true });
+    const internal = {
+      "reach-confine client": () => confineReach({ allowedHosts: ["granted.test"], allowPrivate: true, egressNetwork: "none", proxyPort: 8080 }),
+      "proof-http inner": () => startLab({ image: "touchstone/not-started:0" }),
+      "fork-proof": () => startForkLab({ image: "touchstone/not-started:0" }),
+      "oz-monitor": () => startWatchLab(ws),
+      "infra-cloud moto": () => runCloudPosture(snapshot),
+      "phishing lab": () => phishing.startLab(),
+      "domains lab": () => domains.startLab(),
+    };
+    for (const [who, start] of Object.entries(internal)) {
+      const [first] = await flagsOf(start);
+      assert.ok(first.includes("--internal"), `${who} passed ${JSON.stringify(first)}`);
+    }
+    // txreplay-proof publishes a loopback port, so it is the listed exception.
+    const [tx] = await flagsOf(() => startTxLab({ image: "touchstone/not-started:0" }));
+    assert.ok(!tx.includes("--internal") && tx.includes("com.docker.network.bridge.enable_icc=false"), `txreplay passed ${JSON.stringify(tx)}`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("at run time, proof-http's outer network is --internal too", async () => {
+  // Let the inner create through, so startLab goes on to the outer one.
+  const { startLab } = await import("../lib/proof-http.mjs");
+  letThrough = 1;
+  try {
+    const flags = await flagsOf(() => startLab({ image: "touchstone/not-started:0" }));
+    assert.equal(flags.length, 2, "inner, then outer");
+    assert.ok(flags.every((f) => f.includes("--internal")), JSON.stringify(flags));
+  } finally {
+    letThrough = 0;
+  }
 });
