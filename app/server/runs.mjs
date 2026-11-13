@@ -36,7 +36,7 @@ import { sortFindings } from "../../spike/lib/record.mjs"
 import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage.mjs"
 import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
-import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
+import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 import { MULTI_DIR, prepassViewOf } from "../../spike/packs/multi.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
