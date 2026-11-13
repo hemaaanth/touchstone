@@ -143,7 +143,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
   // Start the proxy on the egress network, then connect it to the client network
   // as the gate alias. It is the only container on both; the only bridge.
   const proxyArgs = [
-    "run", "-d", "--name", proxyName,
+    "run", "-d", "--pull=never", "--name", proxyName,
     "--network", egress,
     ...HARDEN,
     "-v", `${LIB_DIR}:/app/lib:ro`,
@@ -181,7 +181,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     // command. Its sole route off-network is the proxy at gateUrl; every other
     // address is unreachable (no route), so a bypass attempt cannot leave.
     runClient: (nodeArgs, { timeoutMs = 20_000 } = {}) =>
-      docker(["run", "--rm", "--network", netClient, ...HARDEN, "--entrypoint", "node", PROXY_IMAGE, ...nodeArgs], { timeoutMs }),
+      docker(["run", "--rm", "--pull=never", "--network", netClient, ...HARDEN, "--entrypoint", "node", PROXY_IMAGE, ...nodeArgs], { timeoutMs }),
 
     // Run a live run's TOOL inside the boundary — the dispatch primitive the
     // targets.mjs doc names as the last missing step. This is the confined
@@ -205,7 +205,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     runConfined: (cmd, { image = PROXY_IMAGE, entrypoint = null, ws = null, user = null, env = {}, timeoutMs = 60_000, maxBuffer = 16 * 1024 * 1024 } = {}) => {
       const gate = gateUrl;
       const args = [
-        "run", "--rm", "--network", netClient, ...HARDEN,
+        "run", "--rm", "--pull=never", "--network", netClient, ...HARDEN,
         ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
         ...(user ? ["--user", user] : []),
         "-e", `HTTP_PROXY=${gate}`, "-e", `http_proxy=${gate}`,

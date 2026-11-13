@@ -108,7 +108,7 @@ function parseMedusa(text) {
 export async function medusaScan(scratch, target, { timeoutMs = 240_000, testLimit = 20_000, root = null } = {}) {
   writeFileSync(join(scratch, "medusa.json"), JSON.stringify(medusaConfig(testLimit), null, 2));
   const args = [
-    "run", "--rm", "--network", "none",
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${scratch}:/work`, "-w", "/work", "--entrypoint", "sh",
     IMG,
     "-c",

@@ -155,7 +155,7 @@ function workDir() {
 // user. Never throws: a dir left behind must not cost the leads already read.
 async function removeWorkDir(dir) {
   try { rmSync(dir, { recursive: true, force: true }); return null; } catch { /* try as the container user */ }
-  await runDocker(["run", "--rm", "--network", "none", "--entrypoint", "sh", "-v", `${dir}:/work`, STRIX_IMAGE, "-c", "rm -rf /work/* /work/.[!.]*"], { timeoutMs: 60_000 });
+  await runDocker(["run", "--rm", "--pull=never", "--network", "none", "--entrypoint", "sh", "-v", `${dir}:/work`, STRIX_IMAGE, "-c", "rm -rf /work/* /work/.[!.]*"], { timeoutMs: 60_000 });
   try { rmSync(dir, { recursive: true, force: true }); return null; } catch (err) {
     return `left ${dir}: ${err?.code ?? cap(err?.message, 80)}`;
   }
@@ -199,7 +199,7 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, ti
   const cwd = work.dir;
   const name = `touchstone-strix-${randomBytes(4).toString("hex")}`;
   const args = [
-    "run", "--rm", "--name", name,
+    "run", "--rm", "--pull=never", "--name", name,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g",
     "-v", "/var/run/docker.sock:/var/run/docker.sock",
