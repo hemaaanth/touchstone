@@ -11,12 +11,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { makeCandidate, priorCandidate } from "../../spike/lib/candidate.mjs"
 
 // The one shape the server stores and sends. makeCandidate sets the fixed
-// fields, so no input can make a candidate proven. The engine already cut the
-// evidence to size; cutting it again would rewrite its "[cut N]" notes.
-export function normalizeCandidate(c) {
-  const { evidence = null, ...rest } = c ?? {}
-  return { ...makeCandidate({ ...rest, evidence: null }), evidence }
-}
+// fields, so no input can make a candidate proven, and cuts the evidence to
+// size. Evidence the engine already cut comes through unchanged.
+export const normalizeCandidate = (c) => makeCandidate(c ?? {})
 
 // The candidates in an event list, in submit order, one per poc, without
 // the ones a later event ended.

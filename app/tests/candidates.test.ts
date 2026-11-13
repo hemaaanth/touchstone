@@ -32,6 +32,20 @@ describe("normalizeCandidate", () => {
   test("keeps the evidence exactly as the engine cut it", () => {
     expect(normalizeCandidate(candidate("a")).evidence).toEqual(EVIDENCE)
   })
+
+  // Review Minor 4: a forged or old event cannot put huge evidence in the record.
+  test("cuts evidence that is too large, and leaves evidence the engine already cut as it is", () => {
+    const huge = { body: "x".repeat(1_000_000), rows: Array.from({ length: 5000 }, (_, i) => i) }
+    const once = normalizeCandidate(candidate("a", { evidence: huge })).evidence
+    expect(once.body).toMatch(/\[cut 996000 chars\]$/)
+    expect(once.rows.length).toBe(61)
+    expect(normalizeCandidate(candidate("a", { evidence: once })).evidence).toEqual(once)
+    const wide = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`k${i}`, "y".repeat(3000)]))
+    const cut = normalizeCandidate(candidate("a", { evidence: wide })).evidence
+    expect(cut.cut).toBe(true)
+    expect(JSON.stringify(cut).length).toBeLessThan(100_000)
+    expect(normalizeCandidate(candidate("a", { evidence: cut })).evidence).toEqual(cut)
+  })
 })
 
 describe("candidatesOf and trackCandidate", () => {

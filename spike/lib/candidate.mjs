@@ -114,16 +114,28 @@ const MAX_STRING = 4000;
 const MAX_ITEMS = 60;
 const MAX_JSON = 96_000;
 
+// Evidence this function already cut: the note after the cut is kept as it is,
+// so a second pass (the server's) changes nothing.
+const CUT_CHARS = /^… \[cut \d{1,12} chars\]$/;
+const CUT_ITEMS = /^… \[cut \d{1,12} items\]$/;
+const wasCut = (v) => v?.cut === true && typeof v.text === "string" && v.text.length <= MAX_JSON && Object.keys(v).length === 2;
+
 // A copy of the evidence small enough to store and send. Long strings and
-// long lists are cut, and say so.
+// long lists are cut, and say so. Running it twice gives the same result.
 export function capEvidence(value, depth = 0) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return String(value);
-  if (typeof value === "string") return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}… [cut ${value.length - MAX_STRING} chars]` : value;
+  if (typeof value === "string") {
+    if (value.length <= MAX_STRING || CUT_CHARS.test(value.slice(MAX_STRING))) return value;
+    return `${value.slice(0, MAX_STRING)}… [cut ${value.length - MAX_STRING} chars]`;
+  }
   if (typeof value !== "object" || depth > 8) return String(value).slice(0, 200);
+  if (wasCut(value)) return { cut: true, text: value.text };
   if (Array.isArray(value)) {
+    const noted = value.length === MAX_ITEMS + 1 && CUT_ITEMS.test(String(value[MAX_ITEMS]));
     const out = value.slice(0, MAX_ITEMS).map((v) => capEvidence(v, depth + 1));
-    if (value.length > MAX_ITEMS) out.push(`… [cut ${value.length - MAX_ITEMS} items]`);
+    if (noted) out.push(value[MAX_ITEMS]);
+    else if (value.length > MAX_ITEMS) out.push(`… [cut ${value.length - MAX_ITEMS} items]`);
     return out;
   }
   const out = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capEvidence(v, depth + 1)]));
