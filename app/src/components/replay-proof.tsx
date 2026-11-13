@@ -2,7 +2,8 @@ import type { ReactNode } from "react"
 import { ArrowRight, Check } from "lucide-react"
 import type { Balance, Finding, FindingBase, Proof, Transfer } from "@/lib/types"
 import { formatNum } from "@/lib/format"
-import { formatWei, harmText, type Harm } from "@/lib/eth"
+import { formatWei, harmText, type Amount, type Harm } from "@/lib/eth"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { hasBundle } from "@/lib/findings-view"
 import { cn } from "cn"
 import { Separator } from "@/components/ui/separator"
@@ -55,20 +56,12 @@ function BalanceDelta({ label, before, after }: Balance) {
 function TransferDelta({ label, address, net, gained, netWei }: Transfer) {
   const shortAddr = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address
   // From the exact wei when the record has it, so a dust move does not read
-  // as "+0 ETH"; the wei itself is in the tooltip.
-  const shown = netWei ? formatWei(netWei, true) : net
+  // as "+0 ETH"; the exact wei is in a tooltip, by pointer or keyboard.
+  const cls = cn("font-mono text-sm tabular-nums", gained ? "font-medium text-foreground" : "text-muted-foreground")
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span
-        title={netWei ? `${netWei} wei` : undefined}
-        className={cn(
-          "font-mono text-sm tabular-nums",
-          gained ? "font-medium text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {shown}
-      </span>
+      {netWei ? <ExactAmount amount={formatWei(netWei, true)} className={cls} /> : <span className={cls}>{net}</span>}
       <span className="font-mono text-[11px] text-muted-foreground">{shortAddr}</span>
     </div>
   )
@@ -308,9 +301,30 @@ export function HarmLine({ harm }: { harm: Harm | null | undefined }) {
   if (!line) return null
   return (
     <Block title="What was lost">
-      <p className="text-sm leading-relaxed text-foreground" title={line.exact ?? undefined}>
-        {line.text}
+      <p className="text-sm leading-relaxed text-foreground">
+        {line.lead}
+        {line.amount ? <ExactAmount amount={line.amount} /> : null}
+        {line.rest}
       </p>
     </Block>
+  )
+}
+
+// An amount with the record's exact value in a tooltip. The amount is a Tab
+// stop, so a keyboard reaches the exact value too, not only a pointer. A
+// rounded amount carries its "≈" in the text; the tooltip says it is rounded.
+export function ExactAmount({ amount, className }: { amount: Amount; className?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={<span tabIndex={0} />}
+        data-slot="exact-amount"
+        aria-label={amount.approx ? `${amount.text}, exactly ${amount.exact}` : undefined}
+        className={cn("rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50", className)}
+      >
+        {amount.text}
+      </TooltipTrigger>
+      <TooltipContent>{amount.approx ? `Rounded. Exactly ${amount.exact}` : `Exactly ${amount.exact}`}</TooltipContent>
+    </Tooltip>
   )
 }
