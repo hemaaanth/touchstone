@@ -107,7 +107,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
-| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`) |
+| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`); reviewed READY (`thr_ck6iq7pe6r`); the author adds two test fixes, then merge |
 | 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
@@ -273,7 +273,7 @@ The review of the base commit found real defects. Most are older than the base c
 
 | # | State | Item |
 |---|-------|------|
-| L1 | review | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). |
+| L1 | review | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). Review: READY. No write reached a handler without the token; the tunnel gives 401 without a bb sign-in. Two test fixes go in before merge (a test fails where `app/dist` exists; a test to pin the `Host` rule). |
 | L2 | review | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
 | L3 | review | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
 | L4 | review | Token compare in constant time. Thread 1g. |
@@ -282,6 +282,8 @@ The review of the base commit found real defects. Most are older than the base c
 | L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
 | L8 | doing | **A tool run can build an image** (Domains). It must fail with "run setup" instead. Thread 1h. |
 | L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
+| L10 | todo | A refused rename or archive shows no message (`app/src/App.tsx:133`, `:144`): the title goes back and nothing explains it. Show the refusal text in the existing error slot. Can fire after a token change, now that these writes are guarded. Also: the Settings refusal line moves the page 36 px. From the 1g review. Wave 2 (with 2c). |
+| L11 | todo | The console token in `spike/data/console-token` never changes. A leaked token stays valid until the file is removed. Add a rotate action or rotate on a schedule. From the 1g review. Wave 3. |
 
 ## Owner decisions (open)
 
