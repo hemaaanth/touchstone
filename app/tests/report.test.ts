@@ -1346,7 +1346,7 @@ describe("report: replay bundle", () => {
       return false
     }
   })()
-  ;(forgeReady ? test : test.skip)("a Foundry bundle re-runs from its own files offline; a data-needing proof makes no claim", async () => {
+  ;(forgeReady ? test : test.skip)("a real offline check makes the vault bundle say re-run-checked; a changed file or a data-needing proof makes no claim", async () => {
     // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace, forgeTest, forgeReplayCommand } = await import("../../spike/lib/sandbox.mjs")
     // @ts-expect-error — plain .mjs module, no types
@@ -1369,22 +1369,36 @@ describe("report: replay bundle", () => {
       return { ws, snap }
     }
     try {
-      // (1) vault-reentrancy: a pure-source proof. verifyForgeReplay (the tested
-      // function) confirms the offline re-run passes from the bundle files; the
-      // shipped bundle makes NO automatic claim, and the README command the test
-      // runs by hand reproduces the pass from the bundle folder alone.
+      // (1) vault-reentrancy: a pure-source proof. The engine's check
+      // (checkReplayRerun: a real offline re-run of a copy of the bundle files,
+      // pinned image, --pull=never, --network none) writes its verdict side
+      // file. The bundle then says "re-run-checked"; the README command, run by
+      // hand, reproduces the pass. One shipped file changed: the claim is gone.
+      // @ts-expect-error — plain .mjs module, no types
+      const { checkReplayRerun, storeReplayFiles: store_ } = await import("../../spike/lib/replay-bundle.mjs")
       const { ws, snap } = await snapLab("lab/vault-reentrancy", "VaultExploit.t.sol", "VaultExploitTest")
       const proof = { kind: "forge", pass: true, test: "t()" }
-      const rerun = await verifyForgeReplay({ replay: snap, proof })
-      expect(rerun.pass).toBe(true)
-      expect(rerun.tree).toMatch(/^[a-f0-9]{64}$/)
+      const storeDir = mkdtempSync(path.join(tmpdir(), "replay-e2e-store-"))
+      const pointer = store_(snap, storeDir)
+      const verdict = await checkReplayRerun({ replay: pointer, proof }, { storeDir })
+      expect(verdict.pass).toBe(true)
+      expect(verdict.tree).toMatch(/^[a-f0-9]{64}$/)
+      const replay = loadReplayFiles(pointer, storeDir)
       const wantCmd = forgeReplayCommand({ matchContract: "VaultExploitTest", solc: snap.solc })
+      const readmeOf = (r: unknown) => {
+        const d = mkdtempSync(path.join(tmpdir(), "replay-e2e-readme-"))
+        try {
+          unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: r, proof, rerunDir: storeDir } }), d)
+          return readFileSync(path.join(d, "README.md"), "utf8")
+        } finally {
+          rmSync(d, { recursive: true, force: true })
+        }
+      }
       const dir = mkdtempSync(path.join(tmpdir(), "replay-e2e-"))
       try {
-        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+        unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay, proof, rerunDir: storeDir } }), dir)
         const readme = readFileSync(path.join(dir, "README.md"), "utf8")
-        expect(readme).not.toContain("RE-RUN CHECKED")
-        expect(readme).toContain("not re-run-checked")
+        expect(readme).toContain("These files were re-run-checked")
         expect(readme).toContain(wantCmd)
         execFileSync("sha256sum", ["-c", "--quiet", "SHA256SUMS"], { cwd: dir, stdio: "ignore" })
         const run = wantCmd.replace("foundry-svm:", `${volume}:`)
@@ -1395,6 +1409,12 @@ describe("report: replay bundle", () => {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
+      // One shipped file changed: another hash, so the README is back to "not re-run-checked".
+      const changed = { ...replay, files: replay.files.map((f: { path: string; text?: string }) => (f.path === "src/Vault.sol" ? { ...f, text: `${f.text}// changed\n` } : f)) }
+      const after = readmeOf(changed)
+      expect(after).not.toContain("These files were re-run-checked")
+      expect(after).toContain("not re-run-checked")
+      rmSync(storeDir, { recursive: true, force: true })
       // (2) a needed source removed from the checked tree: the re-run fails.
       const missing = { ...snap, files: snap.files.filter((x: { path: string; vendored?: unknown }) => x.path !== "src/Vault.sol") }
       const bad = await verifyForgeReplay({ replay: missing, proof })

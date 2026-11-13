@@ -79,9 +79,20 @@ test("pruneReplayStore removes the replay files and blobs no record names, and n
     assert.equal(pruneReplayStore(dir).stopped, "a run record could not be read");
     assert.equal(readdirSync(store).length, 3);
     rmSync(path.join(dir, "run-torn.json"));
-    // The record that named `gone` was deleted: its file and its blob go.
-    assert.deepEqual(pruneReplayStore(dir), { removed: 1, blobs: 1 });
-    assert.deepEqual(readdirSync(store).sort(), [`${keep.store.sha256}.json`, "lib"]);
+    // Re-run verdict side files: one for each store file, a damaged one and a
+    // temp file left by a stopped write.
+    const { writeRerunVerdict } = await import("../lib/replay-bundle.mjs");
+    const { FOUNDRY_IMAGE } = await import("../lib/sandbox.mjs");
+    const verdict = (store_, tree) => ({ version: 1, tree, store: store_, pass: true, image: FOUNDRY_IMAGE, command: "x", at: Date.now() });
+    writeRerunVerdict(store, verdict(keep.store.sha256, "a".repeat(64)));
+    writeRerunVerdict(store, verdict(gone.store.sha256, "b".repeat(64)));
+    writeFileSync(path.join(store, "rerun", "c".repeat(64) + ".json"), "{ not json");
+    writeFileSync(path.join(store, "rerun", "d".repeat(64) + ".json.1.ab.tmp"), "{}");
+    // The record that named `gone` was deleted: its file, its blob and its
+    // verdict go; so do the damaged verdict and the stray temp file.
+    assert.deepEqual(pruneReplayStore(dir), { removed: 1, blobs: 1, verdicts: 3 });
+    assert.deepEqual(readdirSync(store).sort(), [`${keep.store.sha256}.json`, "lib", "rerun"]);
+    assert.deepEqual(readdirSync(path.join(store, "rerun")), ["a".repeat(64) + ".json"]);
     assert.deepEqual(readdirSync(path.join(store, "lib")), []);
     assert.ok(gone.store.sha256 !== keep.store.sha256);
   } finally {
