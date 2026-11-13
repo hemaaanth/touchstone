@@ -14,6 +14,10 @@ const MARK = "[REDACTED]"
 // A whole value that is already a marker: ours, or the engine's own
 // "[REDACTED sha256:…]" fingerprint, which must be kept.
 const MARKER = /^\[REDACTED[^\]\r\n]{0,80}\]$/
+// A value under a secret name that is evidence, not a secret: an empty
+// string, or a 40-hex address such as a token contract.
+const PLAIN_VALUE = /^(?:|(?:0x)?[0-9a-fA-F]{40})$/
+const keepUnder = (v) => MARKER.test(v) || PLAIN_VALUE.test(v)
 
 // Object keys and header-cell names whose value is a credential.
 const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
@@ -120,7 +124,7 @@ function maskHeader(m, lead, name, sep, raw) {
 // authorization value is judged like the header: "Bearer junk" and
 // "Bearer " + t stay.
 function maskPairValue(name, value) {
-  if (!secretName(name) || value === "" || value.startsWith("[REDACTED")) return null
+  if (!secretName(name) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
   return MARK
 }
@@ -183,16 +187,16 @@ function walk(value, key) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "string") {
     if (MARKER.test(value)) return value
-    if (key && secretName(key)) return MARK
+    if (key && secretName(key)) return PLAIN_VALUE.test(value) ? value : MARK
     return redactText(value)
   }
   if (Array.isArray(value)) {
     const blank = key && secretName(key)
-    return value.map((item) => (blank && typeof item === "string" && !MARKER.test(item) ? MARK : walk(item, "")))
+    return value.map((item) => (blank && typeof item === "string" && !keepUnder(item) ? MARK : walk(item, "")))
   }
   if (typeof value !== "object") return value
   if (value.redacted === true && typeof value.sha256 === "string") return copyRedactedCell(value)
-  if (typeof value.name === "string" && typeof value.value === "string" && value.redacted !== true && secretName(value.name)) {
+  if (typeof value.name === "string" && typeof value.value === "string" && value.redacted !== true && secretName(value.name) && !keepUnder(value.value)) {
     const copy = {}
     for (const [k, v] of Object.entries(value)) copy[k] = k === "value" ? MARK : walk(v, k)
     return copy

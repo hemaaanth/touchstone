@@ -272,3 +272,18 @@ describe("redact: an existing marker (review Minor 3)", () => {
     expect(text("[REDACTED] then Authorization: Bearer FAKEtoken1234567")).toBe("[REDACTED] then Authorization: Bearer [REDACTED]")
   })
 })
+
+describe("redact: evidence under a secret name (review Minor 4)", () => {
+  const addr = "0x" + "5fbdb2315678afecb367f032d93f642f64180aa3"
+
+  test("a 40-hex address or an empty string under a secret key stays", () => {
+    expect(redactSecrets({ token: addr, password: "", list: { token: [addr] } })).toEqual({ token: addr, password: "", list: { token: [addr] } })
+    expect(redactSecrets({ name: "token", value: addr })).toEqual({ name: "token", value: addr })
+    expect(text(`{"token":"${addr}","password":""}`)).toBe(`{"token":"${addr}","password":""}`)
+  })
+
+  test("a real secret under the same keys is still masked", () => {
+    expect(redactSecrets({ token: "tk_alice_0a1b2c3d", privateKey: "0x" + "ab".repeat(32) })).toEqual({ token: "[REDACTED]", privateKey: "[REDACTED]" })
+    expect(redactSecrets({ name: "token", value: "tk_alice_0a1b2c3d" })).toEqual({ name: "token", value: "[REDACTED]" })
+  })
+})
