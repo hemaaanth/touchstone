@@ -385,3 +385,21 @@ test('testssl.sh does not run for an endpoint with no checked address', async ()
   assert.match(row.reason, /^Not run: no checked address for example\.com\./);
   assert.match(snapshot.tls[0].error, /no checked address/);
 });
+
+// F2. An exact-host grant skips subdomain discovery. The run view says so.
+test('an exact-host grant says that subdomain discovery was skipped, and names the "*." entry', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  const snapshot = await capture('example.com', live(['example.com']));
+  const row = snapshot.discovery.coverage.find(c => c.engine === 'subdomain-discovery');
+  assert.equal(row.status, 'skipped');
+  assert.match(row.reason, /has no \*\.example\.com entry/);
+  const shown = prepassView({ pack: 'domains', leads: [], coverage: coverageOf(snapshot, []) }).tools.find(t => t.name === 'subdomain-discovery');
+  assert.equal(shown.status, 'unavailable');
+  assert.match(shown.reason, /Add \*\.example\.com to the grant/);
+  // A "*." entry covers the subdomains, and the lab has its own rule: no row.
+  calls = [];
+  const wide = await capture('example.com', live(['example.com', '*.example.com']));
+  assert.equal(wide.discovery.coverage.some(c => c.engine === 'subdomain-discovery'), false);
+  const lab = await capture('touchstone.test', { network: 'touchstone-domains-test', granted: true, scope: ['touchstone.test'] });
+  assert.equal(lab.discovery.coverage.some(c => c.engine === 'subdomain-discovery'), false);
+});

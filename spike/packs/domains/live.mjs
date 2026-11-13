@@ -249,6 +249,8 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     const passive = await run('subfinder', { image: SUBFINDER, env: { ...env, HOME: '/tmp' }, cmd: ['-d', domain, '-silent', '-oJ', '-duc', ...(covered(wild) ? ['-nW'] : []), '-timeout', '5', '-max-time', '1'], timeoutMs: 120000 });
     const found = parseSubfinder(passive.stdout, covered);
     passive.note(found.length);
+    // With an exact-host grant, no generated name is covered. Say so: a quiet skip reads as "no subdomains".
+    if (!lab && !covered(wild)) coverage.push({ engine: 'subdomain-discovery', status: 'skipped', reason: 'Not run: the grant names ' + domain + ' but has no *.' + domain + ' entry, so no subdomain was resolved or probed. Add *.' + domain + ' to the grant to cover them.', leads: 0 });
     // Email authentication is DNS only. It keeps its own evidence key, so a
     // failed run is a coverage gap, never a clean result.
     let email, dnssec;
