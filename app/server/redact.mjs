@@ -15,8 +15,9 @@ const MARK = "[REDACTED]"
 // "[REDACTED sha256:…]" fingerprint, which must be kept.
 const MARKER = /^\[REDACTED[^\]\r\n]{0,80}\]$/
 // A value under a secret name that is evidence, not a secret: an empty
-// string, or a 40-hex address such as a token contract.
-const PLAIN_VALUE = /^(?:|(?:0x)?[0-9a-fA-F]{40})$/
+// string, or a 0x address such as a token contract. A bare 40-hex value is
+// not kept: randomBytes(20).toString("hex") makes tokens of that shape.
+const PLAIN_VALUE = /^(?:|0x[0-9a-fA-F]{40})$/
 const keepUnder = (v) => MARKER.test(v) || PLAIN_VALUE.test(v)
 
 // Object keys and header-cell names whose value is a credential.

@@ -286,4 +286,11 @@ describe("redact: evidence under a secret name (review Minor 4)", () => {
     expect(redactSecrets({ token: "tk_alice_0a1b2c3d", privateKey: "0x" + "ab".repeat(32) })).toEqual({ token: "[REDACTED]", privateKey: "[REDACTED]" })
     expect(redactSecrets({ name: "token", value: "tk_alice_0a1b2c3d" })).toEqual({ name: "token", value: "[REDACTED]" })
   })
+  test("a bare 40-hex token under a secret name is masked (delta review 1)", () => {
+    const hex = "9c2e" + "4f1a".repeat(9)
+    expect(redactSecrets({ token: hex, apiKey: hex, sessionId: hex })).toEqual({ token: "[REDACTED]", apiKey: "[REDACTED]", sessionId: "[REDACTED]" })
+    expect(redactSecrets({ name: "x-api-key", value: hex })).toEqual({ name: "x-api-key", value: "[REDACTED]" })
+    expect(text(`{"token":"${hex}","apiKey":"${hex}"}`)).toBe('{"token":"[REDACTED]","apiKey":"[REDACTED]"}')
+    expect(redactSecrets({ token: [hex, addr] })).toEqual({ token: ["[REDACTED]", addr] })
+  })
 })
