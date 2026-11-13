@@ -23,6 +23,18 @@ once shows nothing. If a block is not needed to decide the next action, fold it.
   confirmed the result. Model output alone is neutral, never green.
 - Everything else is neutral: the `--neutral-1..10` surface steps carry the whole UI.
 
+## Module colors
+
+- **One color per module, the same on every screen.** The map is `src/lib/module-colors.ts`
+  (module id to a `--module-*` token in `src/tokens.css`). Show a module with `ModulePill`
+  (`src/components/module-pill.tsx`). Do not color a module any other way.
+- **A module color only names the module.** It never means a status. No module token is
+  near red or green: those two stay reserved for proof.
+- All module tokens share one lightness and one chroma, so no module is louder than another.
+  The pill is a soft tint of the token with the token as its text. No border.
+- A module the map does not know is neutral gray. It never borrows another module's color.
+  A new pack gets its own line in the map (a unit test fails until it has one).
+
 ## Separation without borders
 
 The theme draws **no native borders** (`border` tokens are 0). Separate blocks three ways,

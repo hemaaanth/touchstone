@@ -20,49 +20,77 @@ import {
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
-// May this request change Settings? A Settings write can repoint a key or a
-// provider baseUrl, so only the operator's own console may send one. The rules
-// match T7's grantMutationAllowed guard. Each rule fails closed.
+// The console guard. Every state-changing request under /api/ passes it before
+// its handler runs: a run create, steer, stop, archive, rename or delete, a
+// finding dismiss, a scope create or delete, a grant change, a Settings write.
+// Only the operator's own console page may send one. Each rule fails closed.
 //   - Origin is required, and its host must equal the Host header. A browser
 //     always sends Origin on a POST or DELETE. A write with no Origin is not
 //     the console, so it is refused. X-Forwarded-Host is not trusted: any
 //     client can set it.
-//   - A POST must say content-type application/json.
+//   - A request with a body (not DELETE) must say content-type
+//     application/json. A cross-site form cannot send that content type.
 //   - The request must carry the console token in x-touchstone-grant-token.
-// Note: the Vite dev server answers CORS preflights for localhost origins. So
-// a page on another localhost port can send a JSON POST. The Origin == Host
-// rule and the token are what refuse it.
-// The token is grant-store.GRANT_TOKEN, the same single token T7's grant routes
-// use. The operator never types it. The dev server writes it into the page it
-// serves (vite.config.ts), and the page sends it back on each write.
+// The token is grant-store.GRANT_TOKEN, one token for every console write. The
+// operator never types it. The dev server writes it into the page it serves
+// (vite.config.ts), and the page sends it back on each write. The token is
+// never written to a log or to a response.
 export const SETTINGS_TOKEN = GRANT_TOKEN
 
-// Why this write is refused, as { status, error }, or null when it may go on.
-export function settingsWriteRefusal(req) {
-  const h = req.headers ?? {}
-  let originHost = null
+// GET and HEAD only read. Every other method is a write and is guarded.
+const READ_METHODS = new Set(["GET", "HEAD"])
+
+// The host of the Origin header, or null when it is absent or not a URL.
+function originHost(headers) {
   try {
-    originHost = h.origin ? new URL(h.origin).host : null
+    return headers.origin ? new URL(headers.origin).host : null
   } catch {
-    originHost = null
+    return null
   }
-  if (!originHost || !h.host || originHost !== h.host) {
-    return { status: 403, error: "Settings can only be changed from the console's own origin" }
+}
+
+// True when the request names an Origin that is not this console. The dev
+// server refuses such a request on every path, reads included.
+export function foreignOrigin(req) {
+  const h = req.headers ?? {}
+  return h.origin !== undefined && (!h.host || originHost(h) !== h.host)
+}
+
+// Does the request carry the console token? A wrong type or a wrong length is
+// refused first. The compare itself takes the same time for every wrong token.
+function tokenMatches(given) {
+  if (typeof given !== "string") return false
+  const a = Buffer.from(given)
+  const b = Buffer.from(SETTINGS_TOKEN)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
+
+// Why this write is refused, as { status, error }, or null when it may go on.
+// A read (GET, HEAD) is never refused here.
+export function consoleWriteRefusal(req) {
+  if (READ_METHODS.has(req.method)) return null
+  const h = req.headers ?? {}
+  const from = originHost(h)
+  if (!from || !h.host || from !== h.host) {
+    return { status: 403, error: "This request did not come from the console's own page. Reload the page and try again." }
   }
-  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
-    return { status: 415, error: "a Settings write must be application/json" }
+  if (req.method !== "DELETE" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
+    return { status: 415, error: "The console sends each change as JSON. Reload the page and try again." }
   }
-  const token = h["x-touchstone-grant-token"]
-  if (!token || token !== SETTINGS_TOKEN) {
-    return { status: 403, error: "this page is out of date. Reload it" }
+  if (!tokenMatches(h["x-touchstone-grant-token"])) {
+    return { status: 403, error: "This page is out of date. Reload the page and try again." }
   }
   return null
 }
 
+// The older names of the guard. Settings code and tests still use them.
+export const settingsWriteRefusal = consoleWriteRefusal
+
 export function settingsWriteAllowed(req) {
-  return settingsWriteRefusal(req) === null
+  return consoleWriteRefusal(req) === null
 }
 
 // The console's default per-run budget when Settings has none saved. The
