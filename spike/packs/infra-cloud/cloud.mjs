@@ -3,6 +3,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
+import { createLabNetwork, removeLabNetwork } from "../../lib/lab-net.mjs";
 import { parseResources } from "./checks.mjs";
 
 export function cloudSeed(snapshot) {
@@ -29,7 +30,8 @@ export async function runCloudPosture(snapshot) {
   try {
     cpSync(new URL("./cloud-seed.py", import.meta.url), join(ws, "cloud-seed.py"));
     writeFileSync(join(ws, "seed.json"), JSON.stringify(seed));
-    docker(["network", "create", "--internal", network]);
+    const made = await createLabNetwork(network, ["--internal"]);
+    if (made.code !== 0) throw new Error(made.stderr);
     networkCreated = true;
     server = runTool({ image: "motoserver/moto:5.2.5@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a", cmd: ["-p", "5000"], network, timeoutMs: 180000, env: { HOME: "/tmp" } });
     let endpoint, ready = false;
@@ -53,7 +55,7 @@ export async function runCloudPosture(snapshot) {
   finally {
     if (container) { try { docker(["stop", container]); } catch {} }
     if (server) await server;
-    if (networkCreated) { try { docker(["network", "rm", network]); } catch {} }
+    if (networkCreated) await removeLabNetwork(network);
     rmSync(ws, { recursive: true, force: true });
   }
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Check, Info, Loader2, Pencil, Plus, RefreshCw, Settings2, Star, Trash2, X } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
 import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setRunBudget } from "@/lib/api"
-import { getConsoleToken, setConsoleToken, tokenHeaders } from "@/lib/console-token"
+import { tokenHeaders } from "@/lib/console-token"
 import { cn } from "@/lib/utils"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
@@ -32,7 +32,6 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
         {!settings ? <p className="p-5 text-sm text-muted-foreground">{error ?? "Loading…"}</p> : (
           <div className="mx-auto max-w-2xl px-5 py-8 md:px-8 md:py-10">
             {error ? <p role="alert" className="mb-4 text-sm">{error}</p> : null}
-            <TokenSection />
             <section aria-labelledby="providers-title">
               <div className="mb-2 flex items-center justify-between gap-3 px-2">
                 <h2 id="providers-title" className="text-sm font-semibold">Providers</h2>
@@ -193,7 +192,31 @@ function BudgetSection({ settings, onSave }: { settings: SettingsState; onSave: 
         </div>
       </form>
       {!valid ? <p role="alert" className="mt-1 px-2 text-xs">Enter $0.01 to $1,000.</p> : null}
+      <TotalCapRow spend={settings.spend} />
     </section>
+  )
+}
+
+// The total spend cap across all runs, read-only. The server sets it
+// (default $50.85; spendCapUsd in the provider config, lowered by SPEND_CAP_USD).
+function TotalCapRow({ spend }: { spend: SettingsState["spend"] }) {
+  const money = (n: number) => `$${n.toFixed(2)}`
+  return (
+    <>
+      <div className="flex items-center justify-between gap-4 py-1.5 pr-1 pl-2">
+        <span className="text-sm">Total spend cap</span>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {spend.usd != null && spend.capUsd != null ? `${money(spend.usd)} spent of ${money(spend.capUsd)}` : spend.capUsd != null ? money(spend.capUsd) : "Unknown"}
+        </span>
+      </div>
+      {spend.ledgerError ? (
+        <p role="alert" className="mt-1 px-2 text-xs">{spend.ledgerError} New runs are refused until this is fixed.</p>
+      ) : spend.usd != null && spend.capUsd != null && spend.usd >= spend.capUsd ? (
+        <p role="alert" className="mt-1 px-2 text-xs">The total spend cap is reached. New runs are refused.</p>
+      ) : (
+        <p className="mt-1 px-2 text-xs text-muted-foreground">All runs together stop at this cap. Set by the server.</p>
+      )}
+    </>
   )
 }
 
@@ -399,28 +422,6 @@ function ProviderEditor({
         ) : null}
       </div>
     </div>
-  )
-}
-
-// ---- Console token: the server prints it once at start. Every Settings write
-// sends it, so a page on another site or port cannot change Settings.
-function TokenSection() {
-  const [token, setToken] = useState(getConsoleToken)
-  const change = (v: string) => { setToken(v.trim()); setConsoleToken(v.trim()) }
-  return (
-    <form className="mb-8 flex items-center gap-2 py-1.5 pr-1 pl-2" onSubmit={(e) => e.preventDefault()}>
-      <label htmlFor="console-token" className="shrink-0 text-sm">Console token</label>
-      <Input
-        id="console-token"
-        type="password"
-        className="text-xs"
-        value={token}
-        onChange={(e) => change(e.target.value)}
-        placeholder="Paste the token the server printed at start. Needed to change Settings."
-        autoComplete="off"
-        spellCheck={false}
-      />
-    </form>
   )
 }
 

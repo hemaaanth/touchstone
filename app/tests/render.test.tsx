@@ -149,7 +149,7 @@ const evidenceThin: Finding = {
 
 describe("every proof module renders end to end", () => {
   const cases: Array<[string, Finding, string[]]> = [
-    ["forge", forge, ["Proven by replay", "What the exploit moved", "+10 ETH", "Reproduce it yourself"]],
+    ["forge", forge, ["Proven by replay", "What the exploit moved", "+10 ETH", "Reproduce it yourself", "Test source", "contract VaultTest is Test"]],
     ["http", http, ["cross-tenant read", "/api/users/2", "What the oracle checked"]],
     ["evidence", evidence, ["secret present in the pinned snapshot", "REDACTED"]],
     ["forge (thin/unproven)", forgeThin, ["Replay not proven"]],

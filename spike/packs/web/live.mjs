@@ -7,8 +7,9 @@ import { requireImage } from "../../lib/proof-http.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { SCAN_NETWORK, bindLive } from "../../lib/live.mjs";
 import { scanWeb, docQueryUrls, mergeLeads } from "./scan.mjs";
-import { runStrix } from "../../lib/strix.mjs";
+import { DEFAULT_BUDGET_USD as STRIX_BUDGET_USD, runStrix } from "../../lib/strix.mjs";
 import { activeProvider, providerKey, readConfig } from "../../lib/providers.mjs";
+import { capGuard, ledgerCharge } from "../../lib/inference.mjs";
 
 const LEADS_FILE = ".web-leads.json";
 
@@ -43,6 +44,10 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
     const key = providerKey(p);
     if (!key) strixGap("no provider key for strix's model calls");
     else {
+      // Strix makes its own model calls with the provider key, so the total
+      // spend cap applies: check before with Strix's budget, charge the ledger
+      // after. Not the run budget: in the app this runs in the server process.
+      capGuard(STRIX_BUDGET_USD);
       strix = await runStrix({
         baseUrl,
         provider: {
@@ -54,6 +59,7 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
         },
         emit,
       });
+      ledgerCharge(`${Object.values(p.models)[0].id} (strix)`, strix.costUsd);
       scan.coverage.push(strix.coverage);
       scan.leads = mergeLeads([...scan.leads, ...strix.leads]);
     }

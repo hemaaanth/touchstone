@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -51,6 +51,62 @@ test("SARIF leads from two engines merge and corroborate in the ensemble", () =>
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
 })();
+
+test("runTool passes --pull=never directly after run --rm", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wrap-args-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const result = await runTool({ image: "example.invalid/tool@sha256:" + "0".repeat(64), cmd: ["true"] });
+    assert.equal(result.code, 0);
+  } finally {
+    process.env.PATH = path;
+  }
+  try {
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    assert.match(args[args.indexOf("--name") + 1], /^touchstone-tool-[0-9a-f]{12}$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a missing image fails without a registry pull", { skip: !hasDocker && "no docker" }, async () => {
+  const result = await runTool({ image: "touchstone-missing@sha256:" + "1".repeat(64), cmd: ["true"] });
+  assert.notEqual(result.code, 0);
+  // A failed pull also says "not found", so match the no-pull error exactly.
+  assert.match(result.stderr, /No such image: touchstone-missing@sha256:1{64}/);
+  assert.doesNotMatch(result.stderr, /Pulling|pull access denied/);
+});
+
+// The tool's PID 1 ignores SIGTERM. A timeout must still stop it and say so.
+test("a timeout removes the container and returns near timeoutMs", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout-" + process.pid;
+  const started = Date.now();
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 2000 });
+  const took = Date.now() - started;
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  // Without the fix this took 25 s. A loaded host has taken 6 s with it.
+  assert(took < 20000, "returned after " + took + " ms");
+  const left = execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Command}}"], { encoding: "utf8" });
+  assert.equal(left.includes(mark), false, "the container is still there");
+});
+
+// A timeout can fire before Docker created the container. No "Created"
+// container may stay behind. The mark is in the command, so ps -a shows it.
+test("a 50 ms timeout leaves no container behind", { skip: !hasDocker && "no docker" }, async () => {
+  const mark = "touchstone-timeout50-" + process.pid;
+  const result = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; sleep 40 # " + mark], timeoutMs: 50 });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+  const left = () => execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Names}} {{.Status}} {{.Command}}"], { encoding: "utf8" }).split("\n").filter((l) => l.includes(mark));
+  assert.deepEqual(left(), [], "a container is left at return");
+  await new Promise((r) => setTimeout(r, 3000));
+  assert.deepEqual(left(), [], "a container appeared after return");
+});
 
 test("runTool mounts the workspace and has no network", { skip: !hasDocker && "no docker" }, async () => {
   const ws = mkdtempSync(join(tmpdir(), "wrap-"));

@@ -44,6 +44,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 
 function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {}) {
   return new Promise((resolveDocker) => {
@@ -154,6 +155,7 @@ export async function startLab({
   env = {},
   readyPath = "/healthz",
   readyTimeoutMs = 20_000,
+  onStart,
 }) {
   const tag = randomBytes(4).toString("hex");
   // Per-lab secret that marks a readiness probe. Known only to the proxy (via
@@ -164,22 +166,17 @@ export async function startLab({
   const netOuter = `touchstone-outer-${tag}`;
   const labName = `touchstone-lab-${tag}`;
   const proxyName = `touchstone-proxy-${tag}`;
-  const nets = [];
+  // Persist the names before Docker creates anything. A restarted prepass can
+  // remove even a half-started lab or network by those exact names.
+  onStart?.({ netInner, netOuter, labName, proxyName });
   let proxyDir = null;
-  const cleanup = async () => {
-    await docker(["rm", "-f", proxyName]);
-    await docker(["rm", "-f", labName]);
-    for (const n of nets) await docker(["network", "rm", n]);
-    if (proxyDir) { try { rmSync(proxyDir, { recursive: true, force: true }); } catch {} }
-  };
+  const cleanup = async () => stopLab({ proxyName, labName, netInner, netOuter, proxyDir });
   const fail = async (msg) => { await cleanup(); throw new Error(`startLab: ${msg}`); };
 
-  const ni = await docker(["network", "create", "--internal", netInner]);
+  const ni = await createLabNetwork(netInner, ["--internal"], { docker });
   if (ni.code !== 0) return fail(`inner network create failed: ${ni.stderr.trim().slice(0, 500)}`);
-  nets.push(netInner);
-  const no = await docker(["network", "create", "--internal", netOuter]);
+  const no = await createLabNetwork(netOuter, ["--internal"], { docker });
   if (no.code !== 0) return fail(`outer network create failed: ${no.stderr.trim().slice(0, 500)}`);
-  nets.push(netOuter);
 
   // Lab on the inner network ONLY. The script never joins this network, so it
   // cannot reach the lab except through the proxy.
@@ -198,6 +195,7 @@ export async function startLab({
   // connect it to the outer network as `alias` (what the script calls). It is
   // the only container on both networks, and the only bridge between them.
   proxyDir = mkdtempSync(join(tmpdir(), "touchstone-proxy-"));
+  onStart?.({ netInner, netOuter, labName, proxyName, proxyDir });
   writeFileSync(join(proxyDir, "recorder.mjs"), RECORDER);
   // mkdtemp makes the dir 0700. The proxy runs node:20-slim as root, and
   // --cap-drop ALL removes CAP_DAC_OVERRIDE, so that root cannot read a dir
@@ -256,8 +254,18 @@ export async function stopLab(handle) {
   if (!handle) return;
   if (handle.proxyName) await docker(["rm", "-f", handle.proxyName], { timeoutMs: 15_000 });
   if (handle.labName) await docker(["rm", "-f", handle.labName], { timeoutMs: 15_000 });
-  if (handle.netOuter) await docker(["network", "rm", handle.netOuter], { timeoutMs: 15_000 });
-  if (handle.netInner) await docker(["network", "rm", handle.netInner], { timeoutMs: 15_000 });
+  // A killed prepass can leave a scanner's `docker run --rm` attached to its
+  // private network. Remove only containers on this lab's unique network.
+  if (handle.netOuter) {
+    const attached = await docker(["network", "inspect", "--format", "{{json .Containers}}", handle.netOuter]);
+    if (attached.code === 0) {
+      try {
+        for (const id of Object.keys(JSON.parse(attached.stdout) ?? {})) await docker(["rm", "-f", id], { timeoutMs: 15_000 });
+      } catch { /* no containers reported */ }
+    }
+    await removeLabNetwork(handle.netOuter, { docker });
+  }
+  if (handle.netInner) await removeLabNetwork(handle.netInner, { docker });
   if (handle.proxyDir) { try { rmSync(handle.proxyDir, { recursive: true, force: true }); } catch {} }
 }
 
@@ -291,6 +299,19 @@ async function readRecords(handle) {
 // in-memory map, so it is correct even if the host process serves several
 // runs at once (the app server can).
 const HANDLE_FILE = ".touchstone-http-lab.json";
+const SCAN_HANDLE_FILE = ".touchstone-http-scan.json";
+
+export function writeScanHandle(ws, handle) {
+  writeFileSync(join(ws, SCAN_HANDLE_FILE), JSON.stringify(handle), { mode: 0o600 });
+}
+
+export async function teardownPersistedScan(ws) {
+  let handle;
+  try { handle = JSON.parse(readFileSync(join(ws, SCAN_HANDLE_FILE), "utf8")); } catch { return; }
+  try { await stopLab(handle); }
+  finally { rmSync(join(ws, SCAN_HANDLE_FILE), { force: true }); }
+}
+
 
 export function writeLabHandle(ws, handle) {
   writeFileSync(join(ws, HANDLE_FILE), JSON.stringify(handle));
@@ -308,6 +329,7 @@ export function readLabHandle(ws) {
 // workspace, then forget it. Safe to call even if nothing was ever started,
 // or the workspace is already gone.
 export async function teardownPersistedLab(ws) {
+  await teardownPersistedScan(ws);
   const handle = readLabHandle(ws);
   if (!handle) return;
   try {

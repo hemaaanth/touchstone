@@ -54,3 +54,4 @@ spike/.review/
 
 # Throwaway Foundry experiments (build output and vendored libs), not the product
 spike-scratch/
+spike/results/agent/trash/

@@ -252,6 +252,13 @@ function ForgeProofCard({ finding, children }: { finding: FindingBase & { proof:
             </div>
           </Fold>
         ) : null}
+        {proof.testSource ? (
+          <Fold label="Test source" keepMounted>
+            <pre className="overflow-x-auto rounded-md bg-muted p-4 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              {proof.testSource}
+            </pre>
+          </Fold>
+        ) : null}
         {children}
       </div>
     </div>
