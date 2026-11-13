@@ -9,7 +9,7 @@
 //   node spike/scripts/setup.mjs --list       # show the manifest, build nothing
 //   node spike/scripts/setup.mjs --dry-run    # show what WOULD run
 //   node spike/scripts/setup.mjs --only web,contracts
-//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory
+//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory, scorecard, legitify
 //   node spike/scripts/setup.mjs --force      # rebuild/repull even if present
 //   node spike/scripts/setup.mjs --daytona    # only the images that reach Daytona
 //
@@ -213,7 +213,7 @@ Flags:
   --dry-run           Print each action that would run, do nothing
   --force             Rebuild/repull even if the image is already present
   --only a,b          Only these groups (${[...new Set(MANIFEST.map((m) => m.group))].join(", ")})
-  --include-optional  Include optional images (garak, observatory, strix)
+  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify)
   --daytona           Only images that reach Daytona on main
   --pull-only         Skip builds
   --build-only        Skip pulls
