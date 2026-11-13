@@ -374,6 +374,18 @@ export function focusActions(
   }
 }
 
+// The one line under the composer: a refused send, else a refused rename or
+// archive of this run (the server's sentence, with what did not happen as the
+// title). Null when there is nothing to say.
+export function composerNotice(
+  sendError: string | null,
+  action: { title: string; text: string } | null,
+): { title: string; detail: string } | null {
+  if (sendError) return { title: "Message not sent", detail: sentence(sendError) }
+  if (action) return { title: action.title, detail: sentence(action.text) }
+  return null
+}
+
 // One sentence as a card or the composer shows it: a capital first letter and
 // an end mark. The server's plain reasons ("no such run", "the server restarted
 // during this run, so it stopped") are lower case with no period.

@@ -93,11 +93,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
 
   return (
     <ListPage title="Settings">
-      {error ? (
-        <p role="alert" className="-mb-2 text-xs leading-relaxed text-bad">
-          {error}
-        </p>
-      ) : null}
+      <SettingsRefusal text={error} />
 
       <ListSection
         title="Providers"
@@ -975,5 +971,23 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
         ) : null}
       </SheetFooter>
     </form>
+  )
+}
+
+// A refused settings write. It floats in the gap under the page title, over
+// the content, so the page never moves when it comes or goes. The box takes no
+// room of its own: its negative margin gives back the gap it adds.
+export function SettingsRefusal({ text }: { text: string | null }) {
+  return (
+    <div className="relative -mt-6 h-0">
+      {text ? (
+        <p
+          role="alert"
+          className="absolute inset-x-0 top-1.5 z-10 rounded-md border bg-background px-3 py-2 text-xs leading-relaxed text-bad shadow-sm"
+        >
+          {text}
+        </p>
+      ) : null}
+    </div>
   )
 }

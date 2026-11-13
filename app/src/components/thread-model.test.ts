@@ -7,7 +7,7 @@ import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
 import { orderModules } from "../lib/module-colors"
-import { agentLook, buildMessages, findingTarget, focusActions, inRunOrder, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { agentLook, buildMessages, composerNotice, findingTarget, focusActions, inRunOrder, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -396,4 +396,11 @@ test("Run Info's module pills follow the run's own order, not the server's list"
   // The pills order by that list, as ModulePills does.
   assert.deepEqual(orderModules(["contracts", "domains", "web"], ordered!.map((p) => p.id)), ["web", "contracts", "domains"])
   assert.equal(inRunOrder(undefined, ["web"]), undefined)
+})
+
+test("a refused rename or archive says why in the composer line; a refused send comes first", () => {
+  const refusal = { title: "Not renamed", text: "this console's token is out of date; reload the page" }
+  assert.deepEqual(composerNotice(null, refusal), { title: "Not renamed", detail: "This console's token is out of date; reload the page." })
+  assert.deepEqual(composerNotice("spend cap reached", refusal), { title: "Message not sent", detail: "Spend cap reached." })
+  assert.equal(composerNotice(null, null), null)
 })
