@@ -7,6 +7,13 @@ import { captureSnapshot, makeLabWorkspace } from "../packs/infra-cloud/snapshot
 import { cloudSeed } from "../packs/infra-cloud/cloud.mjs";
 import { liveSeed, oracle, redactProof } from "../packs/infra-cloud/live-cloud.mjs";
 import { pinSnapshot, replayEvidence } from "../lib/proof-evidence.mjs";
+import { SCANNERS, SELECTED } from "../packs/infra-cloud/scanners.mjs";
+import { pruneOwnedNetworks } from "../lib/docker-nets.mjs";
+import { skipUnlessImages } from "./docker-skip.mjs";
+
+// Lead ids on the full board count scanner rows. Without Trivy and KICS the
+// ids shift and the assertion fails instead of skipping.
+const infraScannerSkip = skipUnlessImages(...SELECTED.map((engine) => SCANNERS[engine].image));
 
 function labSnapshot() {
   const ws = makeLabWorkspace();
@@ -260,7 +267,7 @@ test("the snapshot skips binaries, symlinks and oversized files instead of stopp
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test("the live seed and the board can be read for one lead only", async () => {
+test("the live seed and the board can be read for one lead only", { skip: infraScannerSkip }, async () => {
   const ws = makeLabWorkspace();
   try {
     await (await import("../packs/infra-cloud/pack.mjs")).default.prepass(ws, { emit: () => {} });
@@ -270,5 +277,10 @@ test("the live seed and the board can be read for one lead only", async () => {
     assert.deepEqual(board.map((l) => l.id).sort(), ["47", "9"]);
     assert.ok(board.some((l) => l.check === "iam-role-broad-object-read"));
     assert.ok(JSON.parse((await tools.infrastructure_leads.execute({})).output[0].text).leads.length > 100);
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+    // The moto lab's network is removed by the pack. If that rm loses a race
+    // with a still-attached container, drop only this process's leftover.
+    await pruneOwnedNetworks({ prefixes: [`touchstone-infra-moto-${process.pid}-`], containers: false });
+  }
 });

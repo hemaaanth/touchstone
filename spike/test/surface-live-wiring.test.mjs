@@ -1,7 +1,8 @@
 // katana and jsluice in the live surface path: capture -> pinned snapshot -> inventory leads -> run view.
 // The capture tools are faked with recorded output. No request leaves the machine.
 // The snapshot analyzer is real: it runs in the domains tools image, offline.
-import { test, mock, beforeEach } from 'node:test';
+import { test as nodeTest, mock, beforeEach } from 'node:test';
+import { skipUnlessImages } from './docker-skip.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,7 +41,8 @@ const answers = {
   },
 };
 let current;
-mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
+const namedOf = (ns) => Object.fromEntries(Object.entries(ns).filter(([key]) => key !== 'default'));
+mock.module('../lib/wrap.mjs', { namedExports: { ...namedOf(real), runTool: async opts => {
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
@@ -49,7 +51,7 @@ mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
 const { default: surface } = await import('../packs/surface/pack.mjs');
 const { default: domains } = await import('../packs/domains/pack.mjs');
 const { detectorsFor } = await import('../packs/domains/checks.mjs');
-const { crawlScope, ensureJsluice, jsluiceFile, scriptBodies } = await import('../packs/domains/live.mjs');
+const { crawlScope, ensureJsluice, jsluiceFile, scriptBodies, JSLUICE } = await import('../packs/domains/live.mjs');
 const { replayEvidence } = await import('../lib/proof-evidence.mjs');
 const { prepassView } = await import('../lib/prepass-view.mjs');
 
@@ -68,8 +70,11 @@ beforeEach(() => {
   katana = { code: 0, stdout: recorded };
   jsluice = { urls: 'recorded', secrets: 'recorded' };
 });
-// The capture checks that the jsluice image exists before it runs it.
-assert.equal(ensureJsluice(), null, 'the jsluice image is ready');
+// The capture checks that the jsluice image exists, and the snapshot analyzer
+// image, before any of the faked tools run. Missing either used to fail the file.
+const skip = skipUnlessImages(JSLUICE, 'touchstone-domains-tools:wave2');
+if (!skip) assert.equal(ensureJsluice(), null, 'the jsluice image is ready');
+const test = (name, fn) => nodeTest(name, { skip }, fn);
 
 test('a live surface run crawls with katana and shows the endpoints as leads', async () => {
   jsluice = { urls: { code: 0, stdout: '' }, secrets: { code: 0, stdout: '' } };

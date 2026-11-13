@@ -18,9 +18,10 @@ const calls = [];
 let missing = new Set();
 const realWrap = await import("../lib/wrap.mjs");
 const realProof = await import("../lib/proof-http.mjs");
+const namedOf = (ns) => Object.fromEntries(Object.entries(ns).filter(([key]) => key !== "default"));
 mock.module("../lib/wrap.mjs", {
-  exports: {
-    ...realWrap,
+  namedExports: {
+    ...namedOf(realWrap),
     runTool: async (o) => {
       calls.push(o);
       if (o.image === SHIELD_IMAGE) return { code: 0, stdout: shieldOut, stderr: "", timedOut: false };
@@ -30,8 +31,8 @@ mock.module("../lib/wrap.mjs", {
   },
 });
 mock.module("../lib/proof-http.mjs", {
-  exports: {
-    ...realProof,
+  namedExports: {
+    ...namedOf(realProof),
     requireImage: async (image, target) => {
       if (missing.has(image)) throw new Error(`image ${image} is not built. Build it with: npm run build:labs -- ${target}`);
     },

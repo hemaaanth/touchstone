@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { runDocker, runTool } from "../lib/wrap.mjs";
+import { createOwnedNetwork, removeOwnedNetwork } from "../lib/docker-nets.mjs";
 import { IMAGES, parseShield, scanMcp } from "../packs/ai-mcp/scan.mjs";
 
 // The same digest-pinned base as Dockerfile.shield, so no extra pull.
@@ -25,7 +26,7 @@ const skip = (() => {
 
 before(async () => {
   if (skip) return;
-  const n = await runDocker(["network", "create", "--internal", net]);
+  const n = await createOwnedNetwork(net, ["--internal"]);
   if (n.code !== 0) throw new Error(`network create failed: ${n.stderr}`);
   const s = await runDocker([
     "run", "-d", "--rm", "--name", server, "--network", net, "--network-alias", "poison",
@@ -39,7 +40,7 @@ before(async () => {
 after(async () => {
   if (skip) return;
   await runDocker(["rm", "-f", server]);
-  await runDocker(["network", "rm", net]);
+  await removeOwnedNetwork(net);
 });
 
 const leadKeys = (leads) => leads.map((l) => `${l.check}|${l.where}|${l.impact}`).sort();

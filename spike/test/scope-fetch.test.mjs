@@ -33,12 +33,19 @@ function execFile(cmd, args, opts, cb) {
     cb(null, "", "");
   });
 }
-mock.module("node:child_process", { exports: { ...realChild, default: { ...realChild, execFile }, execFile } });
+const namedOf = (ns) => Object.fromEntries(Object.entries(ns).filter(([key]) => key !== "default"));
+mock.module("node:child_process", {
+  namedExports: { ...namedOf(realChild), execFile },
+  defaultExport: { ...(realChild.default ?? {}), execFile },
+});
 
 let dnsAnswer = [{ address: "140.82.112.3", family: 4 }];
 const dnsCalls = [];
 const lookup = async (host) => { dnsCalls.push(host); return dnsAnswer; };
-mock.module("node:dns/promises", { exports: { ...realDns, default: { ...realDns, lookup }, lookup } });
+mock.module("node:dns/promises", {
+  namedExports: { ...namedOf(realDns), lookup },
+  defaultExport: { ...(realDns.default ?? {}), lookup },
+});
 
 const blobs = new Map(); // raw URL -> body string, or { status }
 const httpCalls = [];

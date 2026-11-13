@@ -2,6 +2,7 @@
 // Record the fixtures again with: RECORD_JSLUICE=1 node --test test/surface-jsluice.test.mjs
 // Record katana first if the lab changed, so both fixtures come from the same lab run.
 import { test } from 'node:test';
+import { skipUnlessImages } from './docker-skip.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -89,7 +90,7 @@ test('jsluice errors on stderr are found, and a failed image build has a reason'
   assert.match(ensureJsluice(fail), /^Could not build the image touchstone-jsluice:0ddfab1 from .*jsluice\/\. .*module lookup failed/);
 });
 
-test('real jsluice reads the lab JavaScript with no network', { timeout: 700000 }, async () => {
+test('real jsluice reads the lab JavaScript with no network', { skip: skipUnlessImages(JSLUICE), timeout: 700000 }, async () => {
   assert.equal(ensureJsluice(), null, 'the jsluice image is ready');
   const ws = mkdtempSync(join(tmpdir(), 'surface-jsluice-'));
   try {

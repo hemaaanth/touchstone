@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { scanSource, scanSources, stripComments } from "../packs/keys/source-checks.mjs";
 import { aderynNote, chainPrepass, hasWorld, sourceFiles, sourceLeads, leadsFor, keysLeads, watchLeads } from "../packs/keys/common.mjs";
 import { prepassView } from "../lib/prepass-view.mjs";
+import { skipUnlessImages } from "./docker-skip.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKS = join(HERE, "..", "packs");
@@ -201,9 +202,7 @@ test("a folder that holds a lab contract has a world", () => {
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-const imageReady = (image) => { try { execFileSync("docker", ["image", "inspect", image], { stdio: "ignore" }); return true; } catch { return false; } };
-
-test("source mode prepass runs Aderyn through runTool and renders in the prepass view", { skip: !imageReady("touchstone/aderyn:0.6.8") }, async () => {
+test("source mode prepass runs Aderyn through runTool and renders in the prepass view", { skip: skipUnlessImages("touchstone/aderyn:0.6.8") }, async () => {
   const ws = folder({
     "foundry.toml": '[profile.default]\nsrc = "src"\nout = "out"\n',
     "src/Vault.sol": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\ncontract Vault {\n  address public owner;\n  function setOwner(address o) external { owner = o; }\n  function ping() external pure returns (uint256) { return 1; }\n}\n",

@@ -1,14 +1,17 @@
-import {before,test} from 'node:test';
+import {before,test as nodeTest} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import surface from '../packs/surface/pack.mjs';
-import {analyzeSnapshot,surfaceLeads,detectorsFor} from '../packs/domains/checks.mjs';
+import {analyzeSnapshot,surfaceLeads,detectorsFor,IMAGE} from '../packs/domains/checks.mjs';
+import {skipUnlessImages} from './docker-skip.mjs';
 import {pinSnapshot,replayEvidence} from '../lib/proof-evidence.mjs';
+const skip = skipUnlessImages(IMAGE);
+const test = (name, fn) => nodeTest(name, { skip }, fn);
 const snapshot=JSON.parse(readFileSync(new URL('../packs/surface/lab/snapshot.json',import.meta.url),'utf8'));
 let analysis;
-before(async()=>{analysis=await analyzeSnapshot(snapshot);});
+before(async()=>{ if (skip) return; analysis=await analyzeSnapshot(snapshot); });
 
 test('inventory distinguishes advertised DNS services from observed HTTP services',()=>{
   const leads=surfaceLeads(snapshot,analysis);

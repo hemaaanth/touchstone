@@ -1,18 +1,21 @@
-import {before,test} from 'node:test';
+import {before,test as nodeTest} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import domains from '../packs/domains/pack.mjs';
-import {analyzeSnapshot,domainLeads,detectorsFor} from '../packs/domains/checks.mjs';
+import {analyzeSnapshot,domainLeads,detectorsFor,IMAGE} from '../packs/domains/checks.mjs';
+import {skipUnlessImages} from './docker-skip.mjs';
 import {pinSnapshot,replayEvidence} from '../lib/proof-evidence.mjs';
 import {proofView} from '../lib/proof-view.mjs';
+const skip = skipUnlessImages(IMAGE);
+const test = (name, fn) => nodeTest(name, { skip }, fn);
 const snapshot=JSON.parse(readFileSync(new URL('../packs/domains/lab/snapshot.json',import.meta.url),'utf8'));
 const leadsOf=async value=>domainLeads(value,await analyzeSnapshot(value));
 const sdk=value=>value.http.find(r=>r.url==='http://cdn.touchstone.test:8080/sdk.js');
 const drainer=leads=>leads.find(l=>l.check==='wallet-drainer-behavior');
 let leads;
-before(async()=>{leads=await leadsOf(snapshot);});
+before(async()=>{ if (skip) return; leads=await leadsOf(snapshot); });
 
 test('the hidden approval is found only by running the page, not by a text pattern',()=>{
   const lead=drainer(leads);
