@@ -42,10 +42,11 @@ const answers = {
 let current;
 // The domains-only tools are never run for real here. Each call is recorded and
 // answered with a refusal, so no request leaves the machine.
+let deepAnswers = {};
 const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
   const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
-  if (deep) { calls.push({ name: deep, ...opts }); return { code: 125, stdout: '', stderr: 'not run in this test', timedOut: false }; }
+  if (deep) { calls.push({ name: deep, ...opts }); return { code: 125, stdout: '', stderr: 'not run in this test', timedOut: false, ...deepAnswers[deep]?.(opts) }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
@@ -70,6 +71,7 @@ async function prepass(pack) {
 }
 beforeEach(() => {
   calls.length = 0;
+  deepAnswers = {};
   katana = { code: 0, stdout: recorded };
   jsluice = { urls: 'recorded', secrets: 'recorded' };
 });
@@ -253,3 +255,23 @@ test('a live surface run does not run the domains-only tools; a domains run does
   assert.equal(record.coverage.find(c => c.engine === 'checkdmarc').status, 'unavailable');
 });
 
+// m3: an incomplete DNSViz assessment must mark the dnsviz rows unavailable in
+// the live capture, not leave them as ran. The answer is the recorded lab
+// assessment with its query answers removed, so the DNSKEY state is unread.
+test('a domains prepass marks the DNSViz rows unavailable for an incomplete assessment', async () => {
+  const doc = JSON.parse(readFileSync(new URL('../packs/domains/fixtures/dnsviz-unsigned.json', import.meta.url), 'utf8'));
+  delete doc['touchstone.test.'].queries;
+  deepAnswers.dnsviz = ({ cmd }) => {
+    if (cmd[0] === 'grok') writeFileSync(join(current, cmd[cmd.indexOf('-o') + 1].replace('/work/', '')), JSON.stringify(doc));
+    return { code: 0, stderr: '' };
+  };
+  const { ws, record } = await prepass(domains);
+  rmSync(ws, { recursive: true, force: true });
+  assert.deepEqual(calls.filter(c => c.name === 'dnsviz').map(c => c.cmd[0]), ['probe', 'grok']);
+  for (const engine of ['dnsviz-probe', 'dnsviz-grok']) {
+    const row = record.coverage.find(c => c.engine === engine);
+    assert.equal(row.status, 'unavailable', engine);
+    assert.equal(row.reason, 'incomplete assessment: no DNSKEY answer', engine);
+  }
+  assert(record.leads.some(l => l.check === 'dnssec-evidence-missing'));
+});
