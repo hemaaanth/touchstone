@@ -12,10 +12,12 @@ const dir = mkdtempSync(join(tmpdir(), "run-candidates-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const EVIDENCE = { kind: "forge-trace", contract: "PauseTest", output: "vault paused by stranger: true", harmCheck: { ok: false, reason: "no ETH moved" } };
+// The saved fixtures claim proof (review Minor 7). The server must still load
+// each as an unproven candidate, so dropping its normalizer fails this file.
 const candidate = (poc) => ({
   n: 1, pack: "contracts", title: `Anyone can pause the vault (${poc})`, severity: "high", poc, evidence: EVIDENCE,
   explanation: "A stranger can lock every user.\nFix: restrict pause().", cites: ["vault paused by stranger: true"], rootCause: `src-${poc}`, evidenceHash: "e1",
-  kind: "candidate", assertedBy: "agent", proven: false, candidate: true, provedBy: null,
+  kind: "finding", assertedBy: "checker", proven: true, candidate: false, provedBy: "oracle",
 });
 const jsonl = (evs) => evs.map((e) => JSON.stringify(e)).join("\n") + "\n";
 
@@ -51,6 +53,7 @@ for (const [id, poc] of [[STREAM, "PauseTest"], [OLD, "OldTest"]]) {
     assert.equal(c.candidate, true);
     assert.equal(c.assertedBy, "agent");
     assert.equal(c.provedBy, null);
+    assert.equal(c.kind, "candidate");
     assert.deepEqual(run.findingIds, []);
     assert.equal(listRuns().find((r) => r.id === id).findings, 0, "a candidate is not in the findings count");
   });
@@ -64,5 +67,9 @@ test("a run the server lost keeps its candidate in the record it gets at load", 
   assert.equal(result.candidates.length, 1);
   assert.deepEqual(result.candidates[0].evidence, EVIDENCE);
   assert.equal(result.candidates[0].proven, false);
-  assert.equal(getRun(LOST).candidates[0].poc, "LostTest");
+  assert.equal(result.candidates[0].provedBy, null);
+  assert.equal(result.candidates[0].kind, "candidate");
+  const lost = getRun(LOST).candidates[0];
+  assert.equal(lost.poc, "LostTest");
+  assert.equal(lost.proven, false);
 });
