@@ -89,7 +89,7 @@ describe("dev server: the token-bearing page", () => {
   test("a request with a foreign Host does not get the page", async () => {
     const port = new URL(base).port
     for (const host of ["evil.example", `evil.example:${port}`]) {
-      for (const headers of [{}, { origin: `http://${host}` }]) {
+      for (const headers of [{}, { origin: `http://${host}` }] as Record<string, string>[]) {
         const where = `Host: ${host}, ${JSON.stringify(headers)}`
         const res = await withHost(host, "/", headers)
         expect(res.status, where).toBe(403)
