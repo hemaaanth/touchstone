@@ -17,7 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -183,9 +183,20 @@ export function readFolderInPlace(dir) {
   let bytes = 0
   const files = keep.map((n) => {
     const full = path.join(root, n)
-    bytes += statSync(full).size
-    if (bytes > MAX_BYTES) throw new Error(`${raw} is over 2 MB of source. Pick a smaller folder.`)
-    return { path: n, content: readFileSync(full, "utf8") }
+    // The walk saw a plain file. If it was swapped for a symlink since, or a
+    // parent folder now points elsewhere, refuse it: O_NOFOLLOW for the file
+    // itself, and its real path must still be inside the root.
+    if (!realpathSync(full).startsWith(root + path.sep)) throw new Error(`${n} is no longer inside ${raw}.`)
+    const fd = openSync(full, fsc.O_RDONLY | fsc.O_NOFOLLOW)
+    try {
+      const st = fstatSync(fd)
+      if (!st.isFile()) throw new Error(`${n} is no longer a file.`)
+      bytes += st.size
+      if (bytes > MAX_BYTES) throw new Error(`${raw} is over 2 MB of source. Pick a smaller folder.`)
+      return { path: n, content: readFileSync(fd, "utf8") }
+    } finally {
+      closeSync(fd)
+    }
   })
   const name = path.basename(root).replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 64) || "folder"
   return { path: root, name, files }

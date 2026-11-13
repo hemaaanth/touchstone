@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 
 // A local folder is read in place by the server: the operator names its path
@@ -37,6 +37,9 @@ beforeEach(() => {
   writeFileSync(path.join(lab, "logo.png"), "x")
   writeFileSync(path.join(lab, "src/key.ts"), "-----BEGIN RSA PRIVATE KEY-----\n")
   symlinkSync(path.join(dir), path.join(lab, "outside"))
+  // A symlinked file that points at a file outside the folder.
+  writeFileSync(path.join(dir, "secret.ts"), "export const secret = 1\n")
+  symlinkSync(path.join(dir, "secret.ts"), path.join(lab, "src/leak.ts"))
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -47,6 +50,17 @@ describe("readFolderInPlace", () => {
     expect(r.name).toBe("My-Lab")
     // key.ts is kept here by name; folderFiles drops it for its content.
     expect(r.files.map((f: { path: string }) => f.path).sort()).toEqual(["src/Vault.sol", "src/key.ts"])
+    expect(r.files.some((f: { content: string }) => f.content.includes("secret"))).toBe(false)
+  })
+
+  test("a folder given through a symlink is read at its real path, and ~ is the home folder", () => {
+    const link = path.join(dir, "lab-link")
+    rmSync(link, { force: true })
+    symlinkSync(lab, link)
+    expect(readFolderInPlace(link).path).toBe(lab)
+    // "~user" is not expanded: it is a relative path and is refused.
+    expect(() => readFolderInPlace("~root/x")).toThrow(/full path/)
+    expect(() => readFolderInPlace("~/" + path.relative(homedir(), path.join(dir, "nope")))).toThrow(/No folder/)
   })
 
   test("refuses a relative path, a missing folder and a file", () => {
