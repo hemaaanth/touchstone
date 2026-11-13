@@ -172,10 +172,21 @@ async function scanHalmos(ws, { timeoutMs = 300_000 } = {}) {
   // Bind the report to this workspace. A suite we did not list is dropped. A
   // listed suite with no entry in the report is a gap.
   const listed = new Set(suites);
-  const dropped = [...new Set([...parsed.results, ...parsed.gaps].map((x) => x.suite).filter((x) => !listed.has(x)))];
+  const foreign = [...parsed.results, ...parsed.gaps].filter((x) => !listed.has(x.suite));
+  const dropped = [...new Set(foreign.map((x) => x.suite))];
   parsed = { results: parsed.results.filter((x) => listed.has(x.suite)), gaps: parsed.gaps.filter((x) => listed.has(x.suite)) };
   const seen = new Set([...parsed.results, ...parsed.gaps].map((x) => x.suite));
   for (const suite of suites) if (!seen.has(suite)) parsed.gaps.push({ suite, reason: "Halmos reported no result for this suite" });
+  // Halmos runs every check_ in the project. A result in a file we did not
+  // list means our source scan missed it (or the report names a file we do
+  // not have). It is never a lead, but it is never silent: each is a gap.
+  for (const x of foreign) {
+    parsed.gaps.push({
+      suite: x.suite,
+      ...(x.name ? { name: x.name } : {}),
+      reason: x.status === "counterexample" ? "Halmos found a counterexample in a file the source scan did not list" : "Halmos reported a check in a file the source scan did not list",
+    });
+  }
   // Each check_ function the suite file declares, with no result in a suite
   // that did report, is a gap. A check_ inherited from another file is not
   // seen here; Halmos still reports it, and it counts.

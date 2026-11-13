@@ -349,10 +349,18 @@ async function scanChimera(ws, { fuzzSecs = 60, testLimit = 50_000, timeoutMs = 
   for (const e of ran) {
     e.tests = e.tests.filter((t) => {
       const fn = t.name.replace(/\(.*$/, "");
-      if ((t.contract ?? ENTRY) === ENTRY && known.has(fn)) return true;
+      const onEntry = (t.contract ?? ENTRY) === ENTRY;
+      if (onEntry && known.has(fn)) return true;
       dropped.push(`${e.engine}: ${t.contract ? `${t.contract}.` : ""}${t.name}`);
       droppedNames.add(fn);
-      gaps.push({ suite, engine: e.engine, name: t.name, reason: `${e.engine} reported a test that is not in this suite` });
+      // The engine saw a CryticTester function that our source scan did not.
+      // Say so: our own parser may have lost it, so it is never silent.
+      const reason = !onEntry
+        ? `${e.engine} reported a test that is not in this suite`
+        : known.size
+          ? `${e.engine} reported a CryticTester test the source scan did not find`
+          : `${e.engine} reported tests, but the source scan found no CryticTester function`;
+      gaps.push({ suite, engine: e.engine, name: t.name, reason });
       return false;
     });
     const seen = new Set(e.tests.map((t) => t.name.replace(/\(.*$/, "")));

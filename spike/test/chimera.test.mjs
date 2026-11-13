@@ -418,8 +418,8 @@ test("a dropped test counts as unchecked in the run view", async () => {
   const echidna = ECHIDNA.replace("vault_withdraw(uint256): passing", "vault_withdraw(uint256): passing\nproperty_drain(): passing");
   await withShim({ echidna }, (scan) => {
     assert.deepEqual(scan.dropped, ["Echidna: property_drain()"]);
-    assert.deepEqual(scan.gaps.map((g) => g.reason), ["Echidna reported a test that is not in this suite"]);
-    assert.equal(scan.reason, "2 of 14 engine checks unchecked (Echidna reported a test that is not in this suite)");
+    assert.deepEqual(scan.gaps.map((g) => g.reason), ["Echidna reported a CryticTester test the source scan did not find"]);
+    assert.equal(scan.reason, "2 of 14 engine checks unchecked (Echidna reported a CryticTester test the source scan did not find)");
     assert.equal(viewOf(scan).reason, scan.reason);
   });
 });
@@ -500,6 +500,27 @@ test("a many-line header with nested, string and struct base arguments keeps eve
     assert.deepEqual(scan.dropped, []);
     assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
     assert.deepEqual(scan.gaps.map((g) => `${g.engine} ${g.name}`).sort(), ["Echidna property_named()", "Echidna property_paired()", "Medusa property_named()", "Medusa property_paired()"]);
+  });
+});
+
+// The guard. When our source scan finds no CryticTester function at all (here
+// an aliased base we do not follow), every result the engines report is a gap
+// with a reason that says the scan found nothing. Never "ran" with no rows.
+test("when the source scan binds no function, every engine result is a gap that says so", async () => {
+  const prep = (ws) => {
+    const ct = join(ws, SUITE);
+    writeFileSync(ct, readFileSync(ct, "utf8")
+      .replace('import {TargetFunctions} from "./TargetFunctions.sol";', 'import {TargetFunctions as TF} from "./TargetFunctions.sol";')
+      .replace("contract CryticTester is TargetFunctions, CryticAsserts {", "contract CryticTester is TF, CryticAsserts {"));
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.applicable, true);
+    assert.deepEqual(scan.leads, []);
+    assert.equal(scan.dropped.length, 12);
+    assert.equal(scan.gaps.length, 12);
+    assert.equal(scan.reason, "12 of 12 engine checks unchecked (Echidna reported tests, but the source scan found no CryticTester function; Medusa reported tests, but the source scan found no CryticTester function)");
+    assert.equal(chimeraRecord(scan).gaps, 12);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "unavailable", reason: scan.reason, leads: 0 });
   });
 });
 

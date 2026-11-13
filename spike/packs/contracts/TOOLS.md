@@ -55,7 +55,10 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   counted, because Halmos cannot run it; a comment marker inside a string is
   not a comment, so it hides nothing); a `test/` we cannot walk (for example
   a symlink loop, ELOOP). A report entry for a suite this
-  workspace does not list is dropped. When any check is a gap, the run view
+  workspace does not list is dropped (`dropped`), never a lead, and each of
+  its results is a gap ("Halmos found a counterexample in a file the source
+  scan did not list"): our scan may have missed it, so it is never silent.
+  When any check is a gap, the run view
   says how many ("1 of 2 checks unchecked (...)"). When no check ran at all,
   the run view shows Halmos as `unavailable`, not `ran`.
 - **Does not cover:** properties the target does not ship. Halmos does not
@@ -131,6 +134,10 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     string continues the string. A contract header runs to the first `{`
     outside parentheses, so a base argument such as
     `Properties(Options({marker: 1}))` keeps every base.
+    A dropped test that the engine reports on `CryticTester` has its own
+    reason: "reported a CryticTester test the source scan did not find", or
+    "the source scan found no CryticTester function" when the scan bound
+    nothing. Our parser may have lost it, so the run view says so.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
     Limits: a base name declared in more than one file gives the union of

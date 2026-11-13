@@ -285,16 +285,22 @@ test("a valid report from a run that exited non-zero is unavailable, with no lea
   }
 });
 
-test("a report for a suite this workspace does not have is dropped, and the listed suite becomes a gap", async () => {
+// A suite we did not list may be one our source scan missed. Its results are
+// never leads, but each one is a gap, so the record never hides them.
+test("a report for a suite this workspace does not list is dropped; each of its results and the listed suite are gaps", async () => {
   const foreign = { exitcode: 1, test_results: { "test/Other.t.sol:SomeOtherTarget": REPORT.test_results[`${SUITE}:ShareVaultSymbolicTest`] } };
   await withShim({ out: JSON.stringify(foreign) }, (scan) => {
     assert.deepEqual(scan.leads, []);
     assert.deepEqual(scan.results, []);
     assert.deepEqual(scan.dropped, ["test/Other.t.sol"]);
-    assert.deepEqual(scan.gaps, [{ suite: SUITE, reason: "Halmos reported no result for this suite" }]);
+    assert.deepEqual(scan.gaps, [
+      { suite: SUITE, reason: "Halmos reported no result for this suite" },
+      { suite: "test/Other.t.sol", name: "check_depositMintsAtMostValue(uint256)", reason: "Halmos reported a check in a file the source scan did not list" },
+      { suite: "test/Other.t.sol", name: "check_withdrawBurnsAtLeastValue(uint256)", reason: "Halmos found a counterexample in a file the source scan did not list" },
+    ]);
     const rec = halmosRecord(scan);
     assert.equal(rec.status, "unavailable");
-    assert.equal(rec.reason, "1 of 1 check unchecked (Halmos reported no result for this suite)");
+    assert.equal(rec.reason, "3 of 3 checks unchecked (Halmos reported no result for this suite; Halmos reported a check in a file the source scan did not list; Halmos found a counterexample in a file the source scan did not list)");
     assert.deepEqual(prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: rec }).tools.find((t) => t.name === "Halmos").status, "unavailable");
   });
 });
