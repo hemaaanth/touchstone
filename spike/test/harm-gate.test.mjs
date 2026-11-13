@@ -960,6 +960,37 @@ contract DelegCtlTest is Test {
   assert.match(f.proof.harm.reason, /impersonated scope target 0x[0-9a-f]{40} \(Owned\)/);
 });
 
+// True positives, review 2: the impersonation rules must not over-fire. A real
+// PoC pranks the ATTACKER (here also as tx.origin). Each shape must still prove
+// the full drain, with the exact value.
+for (const arm of ["vm.prank(address(0xBEEF))", "vm.startPrank(address(0xBEEF))",
+  "vm.prank(address(0xBEEF), address(0xBEEF))", "vm.startPrank(address(0xBEEF), address(0xBEEF))"]) {
+  test(`forge: an attacker drain after ${arm} is STILL proven with its exact value (review 2 TP)`, { skip, timeout: 300_000 }, async () => {
+    const ws = makeWorkspace(LAB); workspaces.push(ws);
+    const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "AttackerPrankTest", `import "../src/Tokens.sol";
+contract AttackerPrankTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100e18); }
+  function test_x() public { ${arm}; vault.withdraw(100e18); assertEq(tok.balanceOf(address(0xBEEF)), 100e18); }
+}
+`);
+    assert.equal(f.forgePassed, true);
+    assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+    assert.equal(f.proof.harm.asset, "token");
+    assert.equal(f.proof.harm.lostUnits, "100000000000000000000");
+    assert.equal(isProven(f), true);
+  });
+}
+
+test("forge: the real lab ETH drain is STILL proven with its exact value (review 2 TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await prove(ws, "VaultExploitTest", readFileSync(path.join(LAB, "oracle/VaultExploit.t.sol"), "utf8"));
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.lostWei, "10000000000000000000"); // the honest deposits: 4 + 3 + 3 ether
+  assert.equal(isProven(f), true);
+});
+
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
 // reverted frame is undone and the gate need not record it. If a forge version
 // ever kept such an etch, the fake drain below would run at the real token's
