@@ -78,21 +78,21 @@ export function ledgerState() {
 // Many processes share the ledger (fleet children, parallel app runs). Each
 // charge is a read-modify-write, so it runs under a lock file, and the new
 // ledger is written to a temp file and renamed over the old one. A reader never
-// sees a half-written file, and no charge is lost. A lock older than
-// LOCK_STALE_MS is left by a dead process and is removed.
-const LOCK_WAIT_MS = 10_000;
-const LOCK_STALE_MS = 30_000;
+// sees a half-written file, and no charge is lost. A lock older than staleMs is
+// left by a dead process and is removed. waitMs is longer than staleMs, so a
+// waiter outlasts a dead lock and still writes its charge. Tests shorten both.
+export const LEDGER_LOCK_MS = { waitMs: 45_000, staleMs: 30_000 };
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 function withLedgerLock(file, fn) {
   const lock = `${file}.lock`;
-  const until = Date.now() + LOCK_WAIT_MS;
+  const until = Date.now() + LEDGER_LOCK_MS.waitMs;
   for (;;) {
     try {
       closeSync(openSync(lock, "wx"));
       break;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock); } catch { /* gone already */ }
+      try { if (Date.now() - statSync(lock).mtimeMs > LEDGER_LOCK_MS.staleMs) unlinkSync(lock); } catch { /* gone already */ }
       if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${OUT} Remove the lock file if no run is active.`);
       sleepMs(2 + Math.random() * 8);
     }
