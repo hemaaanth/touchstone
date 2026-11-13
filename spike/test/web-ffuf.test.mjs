@@ -250,6 +250,8 @@ test("ffuf real run: the full prepass finds /internal/metrics, a route the other
     const onDisk = JSON.parse(readFileSync(join(ws, ".web-leads.json"), "utf8"));
     assert.ok(onDisk.leads.some((l) => l.path === "/internal/metrics"));
   } finally {
-    cleanupWorkspace(ws);
+    // prepass() starts a persisted lab; stop it (lab, proxy, networks) before
+    // the workspace that holds its handle is removed.
+    try { await web.teardown(ws); } finally { cleanupWorkspace(ws); }
   }
 });

@@ -1,5 +1,7 @@
-// The setup manifest is the one list a fresh machine builds from. Each pack
-// image the code runs must be on it, with a recipe that exists.
+// The setup manifest (scripts/setup.mjs) is the one list a fresh machine builds
+// from. Each pack image the code runs must be on it, with a recipe that exists;
+// a Docker tool missing from it cannot be provisioned, so `--dry-run` would not
+// list it and a fresh machine would silently lack it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -11,6 +13,8 @@ import { MANIFEST } from "../scripts/setup.mjs";
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const SETUP = join(ROOT, "spike/scripts/setup.mjs");
 const imageIn = (file) => readFileSync(join(ROOT, file), "utf8").match(/const IMAGE = process\.env\.\w+ \|\| "([^"]+)"/)[1];
+
+// ---- contracts images (Halmos, Chimera)
 
 for (const [name, file, recipe] of [
   ["Halmos", "spike/packs/contracts/halmos.mjs", "Dockerfile.halmos"],
@@ -42,4 +46,26 @@ test("every contracts build in the manifest names a context and Dockerfile that 
     assert.ok(existsSync(join(ROOT, m.context)), `${m.tag}: ${m.context}`);
     assert.ok(existsSync(join(ROOT, m.file ?? join(m.context, "Dockerfile"))), `${m.tag}: ${m.file}`);
   }
+});
+
+// ---- web images (Schemathesis, jwt_tool)
+//
+// `--list` prints the manifest and runs no docker commands, so these tests are
+// hermetic: they assert the list, not the machine's current image state.
+const list = execFileSync(process.execPath, [SETUP, "--list"], { encoding: "utf8" });
+
+test("setup manifest lists the web schemathesis image", () => {
+  assert.match(list, /build touchstone\/web-schemathesis:4\.33\.4/);
+});
+
+test("setup manifest lists the web jwt_tool image", () => {
+  assert.match(list, /build touchstone\/web-jwt-tool:2\.3\.0/);
+});
+
+test("both new web images sit in the web group, as build recipes", () => {
+  const web = list.slice(list.indexOf("\nweb\n"));
+  const nextGroup = web.indexOf("\nai-mcp\n");
+  const webBlock = nextGroup > 0 ? web.slice(0, nextGroup) : web;
+  assert.ok(webBlock.includes("touchstone/web-schemathesis:4.33.4"), "schemathesis in web group");
+  assert.ok(webBlock.includes("touchstone/web-jwt-tool:2.3.0"), "jwt_tool in web group");
 });
