@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const STORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../lib/grant-store.mjs");
 
 function tokenOf(env) {
-  const code = `const m = await import(${JSON.stringify(STORE)}); process.stdout.write(m.GRANT_TOKEN)`;
+  const code = `const m = await import(${JSON.stringify(STORE)}); process.stdout.write(m.consoleToken())`;
   const clean = { ...process.env, ...env };
   if (!("TOUCHSTONE_GRANT_TOKEN" in env)) delete clean.TOUCHSTONE_GRANT_TOKEN;
   return execFileSync(process.execPath, ["--input-type=module", "-e", code], { env: clean, encoding: "utf8" });

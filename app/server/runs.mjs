@@ -39,7 +39,8 @@ import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage
 import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
-import { MULTI_DIR, prepassViewOf } from "../../spike/packs/multi.mjs"
+import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
+import { restoreSource } from "../../spike/lib/fetch.mjs"
 import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -1557,6 +1558,48 @@ function buildWorkspace(run, target, kept) {
   return packs?.length > 1 ? prepareMultiWorkspace(target, { packs, modules }) : prepareRunWorkspace({ ...target }, { modules })
 }
 
+// ---- The sources of a workspace that is built again. The agent fetched them
+// with fetch_source, and each `source-fetch` event of the run names what was
+// read: a repo's commit, or a single file's content hash. A new workspace gets
+// the same code back: the pins go into its config, and each member is fetched
+// at its pin. A pin stays for the rest of the run, so a later fetch_source of
+// that member reads the same code or is refused; it never reads other code in
+// silence. A fetch from before commits were recorded has no pin: that member is
+// not put back, and the run says its code can differ.
+//
+// Returns the three lists for the `workspace` event. Throws when the pins
+// cannot be written: the follow-up must not start without them.
+async function restoreSources(run, ws) {
+  const out = { same: [], missing: [], unpinned: [] }
+  // The last fetch of each member that landed.
+  const before = new Map()
+  for (const e of run.events) if (e.ev === "source-fetch" && e.ok && e.where && typeof e.url === "string") before.set(e.url, e)
+  // A commit or a hash that is in the event is a pin, whatever it holds: the
+  // fetch judges it, and refuses one it cannot read. Only a missing field is "no pin".
+  const pins = {}
+  for (const [url, e] of before) {
+    if (e.commit !== undefined) pins[url] = { commit: e.commit }
+    else if (e.sha256 !== undefined) pins[url] = { sha256: e.sha256 }
+    else out.unpinned.push(`${url} (was in ${e.where})`)
+  }
+  if (!Object.keys(pins).length) return out
+  const file = path.join(ws, ".touchstone.json")
+  const cfg = JSON.parse(readFileSync(file, "utf8"))
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("the config of the new workspace is not a record")
+  writeFileSync(file, JSON.stringify({ ...cfg, pins }, null, 2))
+  for (const [url, pin] of Object.entries(pins)) {
+    try {
+      const report = await restoreSource(ws, url)
+      // A joined run keeps one tree for the run and a copy in each module that reads code.
+      if (run.packs?.length > 1) shareFetched(ws, run.packs, report.where)
+      out.same.push(`${url} (${pin.commit ? `commit ${String(pin.commit).slice(0, 12)}` : "the same file"}, in ${report.where})`)
+    } catch (err) {
+      out.missing.push(`${url}: ${String(err?.message ?? err)}`)
+    }
+  }
+  return out
+}
+
 // Start a follow-up: one operator message to an idle run. The worker reopens
 // the run's saved agent session in the run's own kept workspace, answers, and
 // exits. Any finding it proves is replayed and added to the run record. When
@@ -1723,14 +1766,24 @@ export function followUp(run, text, clientId) {
   // the temp folder at a reboot. Build a new one from the run's scope and say so.
   run.ws = null
   buildWorkspace(run, target, kept).then(
-    (made) => {
+    async (made) => {
       run.ws = made
       bindWorkspace(run, made, target, kept)
-      const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
+      let sources
+      try {
+        sources = await restoreSources(run, made)
+      } catch (err) {
+        // Without the pins a fetch could read other code than before. Do not start.
+        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The workspace of this run is gone, and the new one could not be told which code this run read before: ${String(err?.message ?? err)} So this follow-up did not start. Send the message again to retry.` })
+        await end()
+        return
+      }
       const message = [
         "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
         "Files the agent wrote before are not in it.",
-        lost.length ? `These fetched sources are not in it: ${[...new Set(lost)].join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
+        sources.same.length ? `These fetched sources are in it again, as this run read them before: ${sources.same.join("; ")}.` : "",
+        sources.missing.length ? `These fetched sources could not be put back, so they are not in it: ${sources.missing.join("; ")}.` : "",
+        sources.unpinned.length ? `These fetched sources are not in it: ${sources.unpinned.join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
         target.generated ? "The lab was generated again with new throwaway keys, so it is not the same repository as before." : "",
         noCredential,
       ].filter(Boolean).join(" ")

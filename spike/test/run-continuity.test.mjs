@@ -83,6 +83,10 @@ mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmS
 const realReach = await import("../lib/reach.mjs");
 const openReach = (target, opts) => (target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts));
 mock.module("../lib/reach.mjs", { exports: { ...realReach, openReach } });
+// No DNS: the server's restore of a fetched source asks for github.com's address.
+const realDns = await import("node:dns/promises");
+const lookup = async () => [{ address: "140.82.112.3", family: 4 }];
+mock.module("node:dns/promises", { exports: { ...realDns, default: { ...realDns, lookup }, lookup } });
 // A fetch with no network: it writes the tree the real one would.
 const realFetch = await import("../lib/fetch.mjs");
 const fetchClones = [];
@@ -1403,6 +1407,163 @@ test("a mark that a new workspace already holds does not stop the bind: the run'
     for (const [kind, run] of Object.entries(runsOf)) {
       assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]), [], `${kind}: the boot took the credential out`);
       assert.equal(kept(run.id).ws, run.ws, `${kind}: the run keeps the workspace`);
+    }
+  });
+});
+
+// ---- A6: a workspace that is built again gets the code this run read ------------------
+
+// Local git repos that stand for https://github.com/<owner>/<repo>. Real git, no network.
+const GIT_REMOTE = path.join(dir, "git-remote");
+const gitEnv = { GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: `url.file://${GIT_REMOTE}/.insteadOf`, GIT_CONFIG_VALUE_0: "https://github.com/", GIT_CONFIG_KEY_1: "protocol.file.allow", GIT_CONFIG_VALUE_1: "always" };
+const git = (repo, ...args) => realChild.execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+function gitCommit(repo, files) {
+  if (!existsSync(repo)) {
+    mkdirSync(repo, { recursive: true });
+    git(repo, "init", "-q", "-b", "main");
+  }
+  for (const [rel, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    writeFileSync(path.join(repo, rel), text);
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "change");
+  return git(repo, "rev-parse", "HEAD");
+}
+async function withGit(fn) {
+  Object.assign(process.env, gitEnv);
+  try {
+    await fn();
+  } finally {
+    for (const k of Object.keys(gitEnv)) delete process.env[k];
+  }
+}
+// A finished run on a repo scope whose agent fetched the repo at `commit`.
+async function fetchedAt(url, where, commit, extra = {}) {
+  const pinned = addScope({ title: `Scope ${where}`, members: [{ kind: "repo", url }] });
+  scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [{ ev: "source-fetch", url, ok: true, where, files: 1, ...(commit === undefined ? {} : { commit }) }, done] });
+  const { id } = await createRun({ targetId: pinned.id, pack: "review", mode: "solo", ...extra });
+  await settle(id);
+  return { id, ws: spawns.at(-1).args[4] };
+}
+// A follow-up after the workspace was lost. Returns the new workspace, its event and what the agent was told.
+async function lostAndRebuilt(run, read = () => {}) {
+  rmSync(run.ws, { recursive: true, force: true });
+  const n = closes(run.id);
+  scripts.push({ act: read, events: [done] });
+  steerRun(run.id, "Look again.");
+  const r = await settle(run.id, n);
+  const ws = spawns.at(-1).args[4];
+  made.push(ws);
+  run.ws = ws;
+  return { ws, told: r.events.findLast((e) => e.ev === "workspace"), note: spawns.at(-1).env.WORKSPACE_NOTE, call: spawns.at(-1) };
+}
+const pinsOf = (ws) => JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).pins;
+
+test("A6: a lost workspace is built again with the code this run read, at the same commit, also after the branch moved on", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/pinned";
+    const where = "vendor/acme__pinned";
+    const repo = path.join(GIT_REMOTE, "acme", "pinned.git");
+    const first = gitCommit(repo, { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, where, first);
+    gitCommit(repo, { "src/Lib.ts": "export const v = 2\n" }); // the branch moves on
+    const read = (call) => (call.code = readFileSync(path.join(call.args[4], where, "src", "Lib.ts"), "utf8"));
+    const { ws, told, note, call } = await lostAndRebuilt(run, read);
+    assert.equal(call.code, "export const v = 1\n", "the agent finds the code this run read, not the head of today");
+    assert.equal(told.state, "rebuilt");
+    assert.ok(told.message.includes(`These fetched sources are in it again, as this run read them before: ${url} (commit ${first.slice(0, 12)}, in ${where}).`), told.message);
+    assert.ok(!told.message.includes("newest version"));
+    assert.ok(note.includes(told.message), "the agent reads the same text");
+    // The pin stays in the workspace: a later fetch of the member reads the same commit.
+    assert.deepEqual(pinsOf(ws), { [url]: { commit: first } });
+    assert.equal((await realFetch.restoreSource(ws, url)).commit, first);
+    assert.equal(readFileSync(path.join(ws, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n");
+  });
+});
+
+test("A6: a commit that is gone is named to the operator and the agent, and no other code takes its place", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/moved";
+    const where = "vendor/acme__moved";
+    const repo = path.join(GIT_REMOTE, "acme", "moved.git");
+    const first = gitCommit(repo, { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, where, first);
+    // A force-push: the commit is no longer in the repository.
+    git(repo, "checkout", "-q", "--orphan", "fresh");
+    gitCommit(repo, { "src/Lib.ts": "export const v = 99\n" });
+    git(repo, "branch", "-q", "-M", "main");
+    git(repo, "reflog", "expire", "--expire=now", "--all");
+    git(repo, "gc", "-q", "--prune=now");
+    const { ws, told, note } = await lostAndRebuilt(run);
+    const said = `These fetched sources could not be put back, so they are not in it: ${url}: could not fetch commit ${first.slice(0, 12)} of acme/moved, the commit this run read before: `;
+    assert.ok(told.message.includes(said), told.message);
+    assert.match(told.message, /The fetch is refused, so this run does not read other code in its place\. If the commit is gone \(a force-push, or a deleted repository\), start a new run/);
+    assert.ok(note.includes(told.message), "the agent reads the same text");
+    assert.ok(!existsSync(path.join(ws, where)), "the code of today is not in the workspace");
+    // The follow-up went on, but a fetch of that member stays refused in this run.
+    assert.deepEqual(pinsOf(ws), { [url]: { commit: first } });
+    await assert.rejects(realFetch.restoreSource(ws, url), /could not fetch commit/);
+    assert.ok(!existsSync(path.join(ws, where)));
+  });
+});
+
+test("A6: a run from before commits were recorded is rebuilt as before and says the code can differ; a commit that cannot be read is not 'no commit'", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/older";
+    const where = "vendor/acme__older";
+    gitCommit(path.join(GIT_REMOTE, "acme", "older.git"), { "src/Lib.ts": "export const v = 1\n" });
+    // No commit in the event: an older record.
+    const old = await fetchedAt(url, where, undefined);
+    let got = await lostAndRebuilt(old);
+    assert.ok(got.told.message.includes(`These fetched sources are not in it: ${url} (was in ${where}). A new fetch gets the newest version, which can differ from the one read before.`), got.told.message);
+    assert.equal(pinsOf(got.ws), undefined, "no pin: a new fetch is as before");
+    assert.ok(!existsSync(path.join(got.ws, where)), "the server fetches nothing it cannot pin");
+    // A commit field that is there but is not a commit: refused, not fetched at the head.
+    const bad = await fetchedAt(url, where, "not-a-commit");
+    got = await lostAndRebuilt(bad);
+    assert.ok(got.told.message.includes(`could not be put back, so they are not in it: ${url}: refused ${url}: the record of what this run read before for this source cannot be read`), got.told.message);
+    assert.ok(!got.told.message.includes("newest version"));
+    assert.ok(!existsSync(path.join(got.ws, where)));
+  });
+});
+
+test("A6: when the new workspace cannot take the pins, the follow-up does not start", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/nopins";
+    const first = gitCommit(path.join(GIT_REMOTE, "acme", "nopins.git"), { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, "vendor/acme__nopins", first);
+    rmSync(run.ws, { recursive: true, force: true });
+    const before = spawns.length;
+    const n = closes(run.id);
+    afterBuild = (ws) => {
+      made.push(ws);
+      writeFileSync(path.join(ws, ".touchstone.json"), '{"links":');
+    };
+    try {
+      steerRun(run.id, "Look again.");
+      const r = await settle(run.id, n);
+      assert.equal(spawns.length, before, "no worker started");
+      assert.match(r.events.findLast((e) => e.ev === "reply-error").error, /^The workspace of this run is gone, and the new one could not be told which code this run read before: .* So this follow-up did not start\. Send the message again to retry\.$/);
+      assert.ok(!r.events.some((e) => e.ev === "workspace"));
+    } finally {
+      afterBuild = null;
+    }
+  });
+});
+
+test("A6: a joined run gets the restored code in the run's tree and in each module that reads code", async () => {
+  await withGit(async () => {
+    const url = "https://github.com/acme/joined";
+    const where = "vendor/acme__joined";
+    const repo = path.join(GIT_REMOTE, "acme", "joined.git");
+    const first = gitCommit(repo, { "src/Lib.ts": "export const v = 1\n" });
+    const run = await fetchedAt(url, where, first, { pack: undefined, packs: ["review", "contracts"] });
+    gitCommit(repo, { "src/Lib.ts": "export const v = 2\n" });
+    const { ws, told } = await lostAndRebuilt(run);
+    assert.ok(told.message.includes(`(commit ${first.slice(0, 12)}, in ${where})`), told.message);
+    for (const at of [".", "modules/review", "modules/contracts"]) {
+      assert.equal(readFileSync(path.join(ws, at, where, "src", "Lib.ts"), "utf8"), "export const v = 1\n", at);
     }
   });
 });
