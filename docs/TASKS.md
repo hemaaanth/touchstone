@@ -114,7 +114,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Depends on |
 |--------|-------|-----------|
-| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. Author done at `2bab7ce` (E1 to E4, L12). Coordinator ruling: a change of the Daytona server host drops the saved key; the author adds it, then review. Done at `0f80793`: the key is saved with its host and is never sent to another host. Review running: `thr_8xurh9f9p3` (Claude). |
+| 2a Settings redesign + Daytona settings | E1, E2, E3, E4 | 1b Running: `thr_hy9krv3ri8`, branch `ui/settings`, also L12. Author done at `2bab7ce` (E1 to E4, L12). Coordinator ruling: a change of the Daytona server host drops the saved key; the author adds it, then review. Done at `0f80793`: the key is saved with its host and is never sent to another host. Review running: `thr_8xurh9f9p3` (Claude). Review READY (`thr_8xurh9f9p3`). **Merged** into main `d286037` at head `0f80793`. Minors: L21. |
 | 2b Modules page redesign | E5 | 1b Running: `thr_daurqy4zav`, branch `ui/modules-page`. Author done at `57bd755` (210 app tests). Coordinator ruling: the name showed twice per row; the pill becomes the row's name (one optional `ListRow` prop opened in `page-parts.tsx`). Author repairs before review. Repaired at `c7534e0` (the pill is the row's name; `ListRow` got one optional `name` prop; 213 app tests). Review running: `thr_efvd29q5fv` (codex). Review READY (`thr_efvd29q5fv`). **Merged** into main `a63c224` (213 app tests). |
 | 2c Run Info pills + sidebar rule | B7, B4 | 1b, PR 7 |
 | 2d Scope brief | D2 | 1a, 1b Running: `thr_4tciupwaac`, branch `feat/scope-brief` (worktree `redteam-w1b`, port 5227); also L13 and the `*.` hint from L18. |
@@ -199,11 +199,11 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| E1 | doing | Daytona row: a much shorter description. No region in it (`us-west-3` is hard-coded as a default in `spike/lib/daytona.mjs:58`). Move the access notes into an info icon next to the word "Daytona". No tooltip plus small text at once. |
-| E2 | doing | Daytona needs its server URL and region (target) as settings next to the key. Not every account uses the default server or `us-west-3`. |
-| E3 | doing | Add provider dialog: remove the box inside the box. |
-| E4 | doing | Provider rows and the provider edit form look broken: off layout, the base URL is cut off. Redesign in the C3 pattern. |
-| E5 | doing | Modules page redesign (no "Pipeline", no tool lists, C1 pills, C3 list). Settings page in the same language. Modules page merged `a63c224` (2b). Settings page is 2a, in review. |
+| E1 | done | Daytona row: a much shorter description. No region in it (`us-west-3` is hard-coded as a default in `spike/lib/daytona.mjs:58`). Move the access notes into an info icon next to the word "Daytona". No tooltip plus small text at once. |
+| E2 | done | Daytona needs its server URL and region (target) as settings next to the key. Not every account uses the default server or `us-west-3`. |
+| E3 | done | Add provider dialog: remove the box inside the box. |
+| E4 | done | Provider rows and the provider edit form look broken: off layout, the base URL is cut off. Redesign in the C3 pattern. |
+| E5 | done | Modules page redesign (no "Pipeline", no tool lists, C1 pills, C3 list). Settings page in the same language. Modules page merged `a63c224` (2b). Settings page is 2a, in review. Settings merged `d286037` (2a). |
 
 ## F. Findings page (new)
 
@@ -287,7 +287,7 @@ The review of the base commit found real defects. Most are older than the base c
 | L9 | todo | Setup pins: Foundry uses `latest`, eth-security-toolbox uses `nightly`, other images have a tag but no digest. Pin by digest in the setup script and at run time. Wave 3. |
 | L10 | todo | A refused rename or archive shows no message (`app/src/App.tsx:133`, `:144`): the title goes back and nothing explains it. Show the refusal text in the existing error slot. Can fire after a token change, now that these writes are guarded. Also: the Settings refusal line moves the page 36 px. From the 1g review. Wave 2 (with 2c). |
 | L11 | todo | The console token in `spike/data/console-token` never changes. A leaked token stays valid until the file is removed. Add a rotate action or rotate on a schedule. From the 1g review. Wave 3. |
-| L12 | doing | `TruncatedText` (`app/src/components/page-parts.tsx:323`) cannot take keyboard focus, so a keyboard user cannot open the full-value tooltip. Make an overflowing value focusable; keep fitting text out of the Tab order. From the 1b review. Goes with 2a (Settings URL uses it). |
+| L12 | done | `TruncatedText` (`app/src/components/page-parts.tsx:323`) cannot take keyboard focus, so a keyboard user cannot open the full-value tooltip. Make an overflowing value focusable; keep fitting text out of the Tab order. From the 1b review. Goes with 2a (Settings URL uses it). |
 | L13 | doing | `AddScope` (`new-run-dialog.tsx`) has no `defaultOpen` / `onClose`; the Scopes page clicks it open and watches the DOM. Give it a controlled open API. From the 1b report and review. Wave 2 with 2d. |
 | L14 | todo | `spike/scripts/setup.mjs`: `--only web,contracts` (space form) is not read, only `--only=a,b`; the `strix` entry points to a missing `tools/strix/Dockerfile`; `node:20-slim` is not in the manifest. From the G4 report and the G2 review. Wave 3. |
 | L15 | doing | **Lab containers leak.** 44 pairs of `touchstone-lab-*` / `touchstone-proxy-*` containers (and their `touchstone-inner-*` networks) were running on the host on 2026-11-13, the oldest 6 hours old. Name source: `spike/lib/proof-http.mjs:167` (a PR 8 file). Find which path does not tear the pair down (a killed test, a timeout, a thrown error) and fix it; add a test. Each pair uses about 5 MB, so it is not the memory problem, but the Docker address pool is finite. Removal of the old pairs needs the owner's yes. Wave 3 with K4. Cause found by the G2 reviewer: `prepass()` starts a lab (`spike/packs/web/pack.mjs:621`) and the web tests (`web-schemathesis`, `web-jwt`, `web-arjun`, `web-ffuf`) only call `cleanupWorkspace` in `finally`. The G2 author adds the teardown in all four (repair round 2). |
@@ -296,6 +296,7 @@ The review of the base commit found real defects. Most are older than the base c
 | L18 | doing | With an exact-host grant, subdomain discovery is skipped and nothing says so (1h review F2). Add a `skipped` coverage row that names the `*.` grant entry. Also the stale docs (F3). With G1. The New scope form should also explain `*.` entries (wave 2d). |
 | L19 | todo | Tests that import `grant-store` read or create `spike/data/console-token` at load (1h review F4). Set the token env vars before the import. Wave 3 with 3b. |
 | L20 | todo | Stores, small gaps (1h review F5 to F8): no lock between two processes that write a store; the folder is not fsynced after the rename; a live target with no saved `permission` still uses any covering grant (`reach.mjs:108`); `scriptUrls` checks the host but not the port; a damaged store shows as an empty list in the app. Wave 3. |
+| L21 | doing | 2a review minors: an env Daytona key goes to any host saved in Settings (`spike/lib/daytona.mjs:82`); an `http://` env URL gets the key in clear text; three test gaps (the saved URL is really used); a key held for another host cannot be removed; the budget hint and spend-cap lines turned red (restraint); Save stays enabled after a host change with no new key. With the 2a author `thr_hy9krv3ri8`, branch `ui/settings-minors`. |
 
 ## Owner decisions (open)
 
