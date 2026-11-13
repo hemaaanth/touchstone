@@ -264,7 +264,7 @@ test("the monitor runs from the pinned image with --pull=never, only on the owne
     assert.equal(argv[argv.indexOf("--network") + 1], net, "never bridge, host or none: the lab network");
   }
   assert.deepEqual(monitor.slice(0, 3), ["run", "--rm", "--pull=never"]);
-  assert.equal(monitor[monitor.indexOf("bash") - 1], OZ_MONITOR_DEFAULT_IMAGE);
+  assert.equal(monitor[monitor.indexOf("bash") - 1], "touchstone/oz-monitor:1.7.0", "the pinned tag, not the constant");
   assert.deepEqual(monitor.slice(monitor.indexOf("bash")), ["bash", "/opt/touchstone/run.sh", "5", "5", ...MONITORS]);
   assert.ok(monitor.includes("--cap-drop") && monitor[monitor.indexOf("--cap-drop") + 1] === "ALL");
   assert.ok(calls.some((a) => a[0] === "network" && a[1] === "rm" && a[2] === net), "the network is removed");
