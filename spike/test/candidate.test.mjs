@@ -224,3 +224,27 @@ test("no scrub regex is slow on a 1 MB line", () => {
     assert.ok(ms < 2000, `scrub took ${Math.round(ms)} ms on a 1 MB line of ${JSON.stringify(line.slice(0, 16))}`);
   }
 });
+
+// Review Major 2: a resumed run gets its candidates back, so the cap, the
+// numbering and the duplicate guards hold across a restart.
+test("candidateState saves each new candidate and restores the guards on resume", async () => {
+  const { candidateState } = await import("../lib/candidate.mjs");
+  let disk = null;
+  const save = (list) => { disk = JSON.stringify(list); };
+  const before = { ...fresh(), candidates: candidateState([], save) };
+  for (const poc of ["a1", "a2"]) assert.ok((await checkCandidate({ pack: "web", state: before, lookup, args: args(poc) })).candidate);
+  assert.equal(JSON.parse(disk).length, 2, "each new candidate is saved at once");
+
+  const after = { ...fresh(), candidates: candidateState(JSON.parse(disk), save) };
+  assert.deepEqual(after.candidates.map((c) => [c.n, c.poc, c.proven]), [[1, "a1", false], [2, "a2", false]]);
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a1") })).reason, "duplicate");
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("sameRoot") })).reason, "duplicate-root-cause");
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("same") })).reason, "duplicate-evidence");
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a3") })).candidate.n, 3);
+  assert.equal((await checkCandidate({ pack: "web", state: after, lookup, args: args("a4") })).reason, "cap");
+  assert.equal(JSON.parse(disk).length, 3);
+
+  const forged = candidateState([{ n: 1, poc: "f", proven: true, provedBy: "oracle", kind: "finding" }]);
+  assert.equal(forged[0].proven, false, "a saved file cannot make a candidate proven");
+  assert.equal(forged[0].provedBy, null);
+});

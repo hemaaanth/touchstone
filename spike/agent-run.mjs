@@ -26,6 +26,7 @@ import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.m
 import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event } from "./lib/event.mjs";
+import { candidateState } from "./lib/candidate.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
@@ -57,7 +58,7 @@ mkdirSync(DIR, { recursive: true });
 //   candidates  unproven, agent-asserted results (lib/candidate.mjs)
 //   attempts    attempt id -> what it captured, for submit_candidate
 function auditState() {
-  return { poc: 0, passed: new Map(), found: [], candidates: [], attempts: new Map() };
+  return { poc: 0, passed: new Map(), found: [], candidates: candidateState(), attempts: new Map() };
 }
 
 async function openHarness(db, ws, state) {

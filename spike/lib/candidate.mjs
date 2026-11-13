@@ -141,6 +141,22 @@ export function makeCandidate({ n, pack, title, severity, poc, evidence, explana
   };
 }
 
+// The candidate state a resumed run must get back. The list holds the cap, the
+// numbering and every duplicate guard, so it is all that needs saving. `save`
+// runs after each new candidate; `saved` is what it last wrote. Recorded
+// attempts (state.attempts) stay in memory: after a restart, an attempt from
+// before it cannot be cited, and the agent must run it again.
+export function candidateState(saved = [], save = () => {}) {
+  const list = (Array.isArray(saved) ? saved : []).map((c) => makeCandidate(c ?? {}));
+  const push = list.push.bind(list);
+  list.push = (...items) => {
+    const n = push(...items);
+    save(list);
+    return n;
+  };
+  return list;
+}
+
 export const isCandidate = (r) => r?.candidate === true || r?.kind === "candidate";
 
 // The short form carried to a follow-up worker, so its guards and numbering
