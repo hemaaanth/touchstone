@@ -2,6 +2,9 @@ import { evidenceTools, prepassFor } from '../domains/pack.mjs';
 export default {
   // No submit_finding and prove() returns nothing, so no finding can be proven.
   id:'surface',title:'Surface',tier:'P',proof:'none',
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "The hosts and services in a pinned zone, handed on to Domains and Web.",
   // It reads the same live capture as Domains (domains/live.mjs). That capture filters
   // each tool's input against the scope's own grant. Its crawl goes through the run's
   // scope proxy: prepassFor passes the run's reach.confine into the capture.

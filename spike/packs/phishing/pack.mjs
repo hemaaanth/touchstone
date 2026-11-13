@@ -35,6 +35,9 @@ async function prepass(ws, { emit = () => {} } = {}) {
 export default {
   // Leads only, so no finding can be proven.
   id: 'phishing', title: 'Phishing and brand lookalikes', tier: 'P', proof: 'none',
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "Domains that copy your domain, and whether they are known scams.",
   // It captures DNS for permutations of a granted domain, so it can take a live one.
   // Live capture runs dnstwist on the open bridge network (reach.network from
   // lib/targets.mjs), because DNS over UDP cannot go through the HTTP grant gate.

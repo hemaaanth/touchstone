@@ -93,11 +93,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
 
   return (
     <ListPage title="Settings">
-      {error ? (
-        <p role="alert" className="-mb-2 text-xs leading-relaxed text-bad">
-          {error}
-        </p>
-      ) : null}
+      <SettingsRefusal text={error} />
 
       <ListSection
         title="Providers"
@@ -975,5 +971,21 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
         ) : null}
       </SheetFooter>
     </form>
+  )
+}
+
+// A refused settings write. It is one line in the gap under the page title, so
+// the page never moves when it comes or goes, and it covers nothing. The box
+// takes no room of its own: its negative margin gives back the gap it adds. A
+// long sentence is cut on screen; the tooltip and a screen reader get it whole.
+export function SettingsRefusal({ text }: { text: string | null }) {
+  return (
+    <div className="relative -mt-6 h-0">
+      {text ? (
+        <p role="alert" title={text} className="absolute inset-x-0 top-[3px] truncate text-xs leading-[18px] text-bad">
+          {text}
+        </p>
+      ) : null}
+    </div>
   )
 }

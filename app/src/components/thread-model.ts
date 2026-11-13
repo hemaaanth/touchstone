@@ -59,6 +59,9 @@ export function buildMessages(
   live: boolean,
   fleet = false,
   owner: string | null = null,
+  // Each module's proof kind (PackChoice.proof), for a card whose recorded
+  // finding has not arrived yet.
+  packProof: Record<string, string> = {},
 ): ThreadMessageLike[] {
   if (!state) return []
   const msgs: ThreadMessageLike[] = []
@@ -164,7 +167,7 @@ export function buildMessages(
     // A submitted finding renders its card right where the agent submitted it,
     // so a run with several findings reads in the order they landed.
     if (step.kind === "submitted" && step.finding) {
-      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status)
+      const { card, proofKind, proofArtifactId } = cardFor(state, step.finding, status, packProof)
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
         toolCallId: step.key,
@@ -282,10 +285,19 @@ export function cardFor(
   state: RunState,
   sub: PendingApproval,
   status: RunStatus,
+  packProof: Record<string, string> = {},
 ): { card: CardState; proofKind: ProofKind; proofArtifactId: string | null } {
   const legacy = state.findings.length > 0 && state.findings.every((f) => !f.poc)
   const rec = recordFor(state, sub, status)
-  const proofKind = proofKindOf(state)
+  // The finding's own proof kind: from its record, else from the module it came
+  // through; the run's scope only when neither is known. In a joined run a web
+  // finding is an HTTP replay even when the scope is a Contracts one.
+  // The module: the recorded finding's, else the submitted card's.
+  const known = (pack: string | null | undefined): ProofKind | undefined => {
+    const k = pack ? packProof[pack] : undefined
+    return k === "forge" || k === "http" || k === "evidence" ? k : undefined
+  }
+  const proofKind: ProofKind = rec?.proofKind ?? known(rec?.pack) ?? known(sub.pack) ?? proofKindOf(state)
   if (rec) {
     if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
     const proofs = state.artifacts.filter((a) => a.kind === "proof")
@@ -372,6 +384,18 @@ export function focusActions(
     fold: narrow && !!jump,
     done: { jumped: done.jumped || !!jump || (!!target.agent && !narrow), opened: done.opened || !!proof || !!peek },
   }
+}
+
+// The one line under the composer: a refused send, else a refused rename or
+// archive of this run (the server's sentence, with what did not happen as the
+// title). Null when there is nothing to say.
+export function composerNotice(
+  sendError: string | null,
+  action: { title: string; text: string } | null,
+): { title: string; detail: string } | null {
+  if (sendError) return { title: "Message not sent", detail: sentence(sendError) }
+  if (action) return { title: action.title, detail: sentence(action.text) }
+  return null
 }
 
 // One sentence as a card or the composer shows it: a capital first letter and

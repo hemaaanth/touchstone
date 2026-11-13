@@ -100,3 +100,13 @@ export function sizeText(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+
+// The replay bundle's one action word, in the row menu and the proof view.
+export const BUNDLE_LABEL = "Download replay bundle"
+
+// A finding has a replay bundle when a replay proved it and it is not an
+// evidence finding: the server refuses a bundle for one, so the control would
+// end in that refusal.
+export function hasBundle(f: { stages: { proven: boolean }; proofKind?: string }): boolean {
+  return f.stages.proven === true && f.proofKind !== "evidence"
+}

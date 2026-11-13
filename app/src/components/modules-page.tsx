@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react"
 import { Boxes, PanelRight } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
-import { moduleNote, moduleTests, packOf, proofKind, scopedRuns, type CatalogState, type ScopedRun } from "@/lib/catalog"
+import { moduleNote, packOf, proofKind, scopedRuns, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ModulePill } from "@/components/module-pill"
@@ -52,7 +52,7 @@ export function ModulesPage({
       ) : (
         <ListCard aria-label="Modules">
           {packs.map((p) => {
-            const tests = moduleTests(p.id)
+            const tests = p.description ?? null
             return (
               <ListRow
                 key={p.id}
@@ -105,7 +105,7 @@ function ModuleDetail({
   onOpenRun: (id: string) => void
 }) {
   const proof = proofKind(p)
-  const tests = moduleTests(p.id)
+  const tests = p.description ?? null
   const note = moduleNote(p)
   const runnable = scopes.some((t) => t.runnable)
   return (
