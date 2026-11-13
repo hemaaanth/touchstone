@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 // Unit tests for the report redaction. Every secret here is synthetic. It has
 // the same shape as a value seen in a real record, never the real value.
 // @ts-expect-error — plain .mjs module, no types
-import { redactSecrets, redactOnePass } from "../server/redact.mjs"
+import { redactSecrets, redactOnePass, TEXT_RULES } from "../server/redact.mjs"
 
 const MB = 1 << 20
 const CAP = 64 * 1024
@@ -902,8 +904,9 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
   }
   // The characters a rule's pattern may loop on. A long run of ONE of these
   // goes after a SINGLE trigger; that is the input shape that caught the
-  // earlier quadratics (a long backslash run for JSON_PAIR_DEEP).
-  const LOOP = [" ", "\t", "\\", '"', "'", ".", "-", ":", "=", ";", ",", "/", "`"]
+  // earlier quadratics (a long backslash run for JSON_PAIR_DEEP). "a" and "0"
+  // feed a nested quantifier over letters or digits.
+  const LOOP = [" ", "\t", "\\", '"', "'", ".", "-", ":", "=", ";", ",", "/", "`", "a", "0"]
   // One pathological run for a rule: `prefix` then `unit` repeated to `n`.
   // Cases: the trigger repeated (prefix empty); its first half repeated; each
   // space-separated word repeated (so a command word such as "mysql" with no
@@ -926,23 +929,36 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
     return [core, pad + core, core + pad] // end-of-buffer, start-of-buffer, mid
   }
 
-  test("the rule table is covered", async () => {
-    const mod = await import("../server/redact.mjs")
-    const names = Object.keys((mod as { TEXT_RULES: Record<string, unknown> }).TEXT_RULES)
-    for (const name of names) expect(TRIGGERS[name], `rule ${name} needs a timing trigger`).toBeDefined()
+  test("the rule table is covered", () => {
+    const names = Object.keys(TEXT_RULES as Record<string, unknown>)
+    for (const name of names) expect(TRIGGERS[name], `rule ${name} needs a timing trigger`).not.toBeUndefined()
     expect(names.length).toBeGreaterThanOrEqual(30)
   })
 
   for (const [name, trigger] of Object.entries(TRIGGERS)) {
-    test(`${name} is linear`, () => {
-      for (const [prefix, unit] of cases(trigger)) {
-        for (const s of framed(prefix, unit, 256 * 1024)) expect(timeMs(s)).toBeLessThan(1200)
-        // Linear growth: the one-line run at 64 KB vs 256 KB.
-        const t64 = timeMs(oneLine(prefix, unit, 64 * 1024))
-        const t256 = timeMs(oneLine(prefix, unit, 256 * 1024))
-        expect(t256).toBeLessThan(4.5 * t64 + 40)
-      }
-    })
+    test(
+      `${name} is linear`,
+      () => {
+        for (const [prefix, unit] of cases(trigger)) {
+          for (const s of framed(prefix, unit, 256 * 1024)) expect(timeMs(s)).toBeLessThan(1200)
+          // Linear growth: the one-line run at 64 KB vs 256 KB.
+          const t64 = timeMs(oneLine(prefix, unit, 64 * 1024))
+          const t256 = timeMs(oneLine(prefix, unit, 256 * 1024))
+          expect(t256).toBeLessThan(4.5 * t64 + 40)
+        }
+        // Nested-quantifier catch: the trigger WITHOUT its closing character,
+        // then a long run of a letter or a digit. With no closing delimiter a
+        // nested quantifier such as /(?:[a-z0-9]+)+!/ backtracks. JSC bounds
+        // that to a plateau (~240 ms at any size), far above every linear rule
+        // here (<70 ms at 256 KB), so a 150 ms bound at 8 KB separates them and
+        // fails in well under a second. The 20 s per-test timeout is a backstop.
+        const open = trigger.length > 1 ? trigger.slice(0, -1) : trigger
+        for (const c of ["a", "0"]) {
+          for (const s of framed(open, c, 8 * 1024)) expect(timeMs(s)).toBeLessThan(150)
+        }
+      },
+      20000,
+    )
   }
 })
 
@@ -1045,5 +1061,59 @@ describe("redact: each RPC and CALL fix has a break-once test (H2b repair Minor 
     expect(text(`emit log_named_string("token", "${v}")`)).toBe(`emit log_named_string("token", "${v}")`)
     expect(text(`tokens.set("token", "${v}")`)).toBe(`tokens.set("token", "[REDACTED]")`)
     expect(text(`res.setHeader("Authorization", "Bearer ${v}")`)).toBe(`res.setHeader("Authorization", "Bearer [REDACTED]")`)
+  })
+})
+
+describe("redact: redactText replaces only rules in TEXT_RULES (H2b repair Minor 1 guard)", () => {
+  // The single source for the reset pass and the generated timing test is
+  // TEXT_RULES. A full data-driven refactor of redactText was not a small
+  // change (maskMysql is per-line, the SHAPES loop masks with MARK, and the
+  // three JSON-pair callbacks differ), so this guard stands in: a new
+  // out.replace(RULE, ...) added to redactText with a regex not in TEXT_RULES
+  // would be neither reset nor timed, and this test fails.
+  test("every named regex redactText replaces is in TEXT_RULES", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "server", "redact.mjs"), "utf8")
+    const start = src.indexOf("function redactText")
+    expect(start).toBeGreaterThan(0)
+    const body = src.slice(start, src.indexOf("\n}\n", start))
+    const used = [...body.matchAll(/\breplace\(\s*([A-Z][A-Z0-9_]*)\s*,/g)].map((m) => m[1])
+    expect(used.length).toBeGreaterThan(15)
+    const names = new Set(Object.keys(TEXT_RULES as Record<string, unknown>))
+    for (const u of used) expect(names.has(u), `redactText replaces ${u}, which is not in TEXT_RULES`).toBe(true)
+  })
+})
+
+describe("redact: a value or key that merely contains 'auth' stays (H2b repair item 5)", () => {
+  // Restored after the hygiene branch removed a duplicate object key. A value
+  // with "auth" that is a setting, and a non-secret name, must not be masked.
+  test("auth settings and words stay", () => {
+    for (const s of [
+      `{"storageKey":"auth-state"}`,
+      `{"flow":"oauth-redirect"}`,
+      `{"state":"authenticated"}`,
+      `const mode = "auth-required"`,
+    ]) expect(text(s)).toBe(s)
+    const plain = { storageKey: "auth-state", authFlow: "oauth-redirect" }
+    expect(redactSecrets(plain)).toEqual(plain)
+  })
+})
+
+describe("redact: the non-RPC subdomain list keeps docs and blog hosts (H2b repair Minor 3)", () => {
+  test("a docs, www-blog or blog host path stays", () => {
+    for (const s of [
+      "https://docs.infura.io/api/project-id-2024abc",
+      "https://www.alchemyapi.io/blog/intro2024abcdef",
+      "https://blog.getblock.io/the-2024-guide1-abcdef",
+    ]) expect(text(s)).toBe(s)
+  })
+})
+
+describe("redact: maskMysql treats CR, LF and CRLF as line ends (H2b repair Minor 2)", () => {
+  test("a gcc flag on the line after a mysql line stays", () => {
+    for (const eol of ["\n", "\r\n", "\r"]) {
+      expect(text(`mysql -h db${eol}gcc -pedantic-errors x.c`)).toBe(`mysql -h db${eol}gcc -pedantic-errors x.c`)
+    }
+    // mysql -p on its own line is still masked, after any line end.
+    expect(text("ls -la\rmysql -pS3cretPass1 db")).toBe("ls -la\rmysql -p[REDACTED] db")
   })
 })

@@ -379,13 +379,12 @@ function maskDashP(m, flag, value) {
 
 // Mask mysql -p<value> on each line that holds a mysql-family command. The
 // check runs once per line, so the pass is linear. A text with no such word
-// returns at once. Splitting and joining on "\n" preserves the text exactly.
+// returns at once. A "line" ends at CR, LF or CRLF, so a gcc -p flag on the
+// next line after a mysql line stays. Replacing each run of non-line-end
+// characters keeps every line end exactly.
 function maskMysql(text) {
   if (!MYSQL_CMD.test(text)) return text
-  return text
-    .split("\n")
-    .map((line) => (MYSQL_CMD.test(line) ? line.replace(DASH_P, maskDashP) : line))
-    .join("\n")
+  return text.replace(/[^\r\n]+/g, (line) => (MYSQL_CMD.test(line) ? line.replace(DASH_P, maskDashP) : line))
 }
 
 function maskNamed(m, head, name, mid, value) {
