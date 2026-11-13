@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react"
-import { fetchRun, streamRun } from "./api"
+import { fetchRun, HttpError, streamRun } from "./api"
 import { isTerminal } from "./format"
 import { repairFinalSay } from "./final-text"
 import type {
@@ -807,6 +807,8 @@ interface RunEntry {
   // The open stream, if any. `gen` counts loads: a stream only writes while
   // its load is the latest.
   stop?: () => void
+  retry?: ReturnType<typeof setTimeout>
+  failures: number
   gen: number
 }
 
@@ -860,7 +862,7 @@ function sameBrief(a: RunBrief | undefined, b: RunBrief): boolean {
 function entryFor(id: string): RunEntry {
   let en = entries.get(id)
   if (!en) {
-    en = { events: [], state: null, listeners: new Set(), loading: false, gen: 0 }
+    en = { events: [], state: null, listeners: new Set(), loading: false, failures: 0, gen: 0 }
     entries.set(id, en)
   }
   return en
@@ -905,8 +907,12 @@ function follow(id: string, en: RunEntry) {
     () => {
       if (en.gen !== gen) return
       flush()
-      // The stream dropped before the run closed: load it fresh next time.
-      if (!en.state?.closed) en.loading = false
+      // The server owns the event list. Reload it instead of replaying an old
+      // since= URL; fetch retries while the server is restarting.
+      if (!en.state?.closed) {
+        en.loading = false
+        loadRun(id)
+      }
     },
   )
 }
@@ -916,18 +922,28 @@ export function loadRun(id: string) {
   const en = entryFor(id)
   if (en.loading) return
   en.loading = true
+  const gen = ++en.gen
   fetchRun(id)
     .then((view) => {
+      if (en.gen !== gen) return
       // The snapshot replaces the events. A stream still open from an earlier
       // load would add its events again on top, so stop it first.
-      en.gen++
       en.stop?.()
       en.stop = undefined
+      en.failures = 0
       commit(id, en, view.events ?? [])
       if (!en.state?.closed) follow(id, en)
     })
-    .catch(() => {
+    .catch((err) => {
+      if (en.gen !== gen) return
       en.loading = false
+      if (err instanceof HttpError && err.status === 404) return
+      const delay = Math.min(1000 * 2 ** en.failures, 5000)
+      en.failures = Math.min(en.failures + 1, 3)
+      en.retry = setTimeout(() => {
+        en.retry = undefined
+        loadRun(id)
+      }, delay)
     })
 }
 
@@ -935,11 +951,22 @@ export function loadRun(id: string) {
 // an idle run, or after it is archived: an idle run keeps no stream, so the
 // new events are only in a fresh snapshot.
 export function reloadRun(id: string) {
-  entryFor(id).loading = false
+  const en = entryFor(id)
+  en.gen++
+  en.stop?.()
+  en.stop = undefined
+  clearTimeout(en.retry)
+  en.retry = undefined
+  en.failures = 0
+  en.loading = false
   loadRun(id)
 }
 
 // The reduced state of one run. Null only until its snapshot first loads.
+export function getRunState(id: string): RunState | null {
+  return entries.get(id)?.state ?? null
+}
+
 export function useRun(runId: string | null): RunState | null {
   const subscribe = useCallback(
     (cb: () => void) => {

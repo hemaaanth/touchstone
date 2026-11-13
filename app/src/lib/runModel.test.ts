@@ -2,7 +2,7 @@
 // Runs with `bun test src/lib`.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { reduceEvents } from "./runModel"
+import { getRunState, loadRun, reduceEvents } from "./runModel"
 import type { RunEvent } from "./types"
 
 const ev = (ev: string, extra: Record<string, unknown> = {}): RunEvent => ({ ev, ...extra })
@@ -49,4 +49,110 @@ test("a late tick of the old answer finishes it in place", () => {
 
 test("inside one turn a snapshot that changes still updates in place", () => {
   assert.deepEqual(rows([say(0, "draft"), say(0, "final")]), ["say:final"])
+})
+
+class FakeEventSource {
+  static sources: FakeEventSource[] = []
+  closed = false
+  onmessage: ((event: MessageEvent) => void) | null = null
+  onerror: (() => void) | null = null
+  url: string
+  constructor(url: string) { this.url = url; FakeEventSource.sources.push(this) }
+  close() { this.closed = true }
+  send(event: RunEvent) { if (!this.closed) this.onmessage?.({ data: JSON.stringify(event) } as MessageEvent) }
+  drop() { this.onerror?.() }
+}
+
+async function until(predicate: () => boolean, timeout = 5000) {
+  const start = Date.now()
+  while (!predicate()) {
+    assert.ok(Date.now() - start < timeout, "timed out waiting for the run")
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+test("a dropped stream reloads the exact server events without replay duplicates", async () => {
+  const originalFetch = globalThis.fetch
+  const originalSource = globalThis.EventSource
+  const id = "replay-test"
+  const initial = [ev("opened"), ev("status", { status: "running" })]
+  const live = [ev("say", { text: "one" }), ev("say", { text: "two" })]
+  const canonical = [...initial, ...live, ev("status", { status: "error" }), ev("closed")]
+  let requests = 0
+  FakeEventSource.sources = []
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
+  globalThis.fetch = (async () => Response.json({ events: ++requests === 1 ? initial : canonical })) as typeof fetch
+  try {
+    loadRun(id)
+    await until(() => FakeEventSource.sources.length === 1)
+    const source = FakeEventSource.sources[0]
+    assert.equal(source.url, `/api/runs/${id}/stream?since=2`)
+    for (const event of live) source.send(event)
+    await until(() => getRunState(id)?.events.length === 4)
+    source.drop()
+    // Native EventSource retries the same URL. The server would replay from since=2.
+    for (const event of [...live, ...canonical.slice(4)]) source.send(event)
+    await until(() => getRunState(id)?.closed === true)
+    assert.deepEqual(getRunState(id)?.events, canonical)
+    assert.equal(getRunState(id)?.status, "error")
+    assert.equal(requests, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.EventSource = originalSource
+  }
+})
+
+test("a dropped stream retries snapshots while the server is down, then shows failure", async () => {
+  const originalFetch = globalThis.fetch
+  const originalSource = globalThis.EventSource
+  const id = "restart-test"
+  const initial = [ev("status", { status: "running" })]
+  const failed = [...initial, ev("error", { message: "Server restarted" }), ev("status", { status: "error" }), ev("closed")]
+  let requests = 0
+  FakeEventSource.sources = []
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
+  globalThis.fetch = (async () => {
+    requests++
+    if (requests === 2 || requests === 3) throw new TypeError("server unavailable")
+    return Response.json({ events: requests === 1 ? initial : failed })
+  }) as typeof fetch
+  try {
+    loadRun(id)
+    await until(() => FakeEventSource.sources.length === 1)
+    FakeEventSource.sources[0].drop()
+    await until(() => getRunState(id)?.closed === true, 6000)
+    assert.deepEqual(getRunState(id)?.events, failed)
+    assert.equal(getRunState(id)?.status, "error")
+    assert.equal(requests, 4)
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.EventSource = originalSource
+  }
+})
+
+test("a deleted run stops retrying after a 404 snapshot", async () => {
+  const originalFetch = globalThis.fetch
+  const originalSource = globalThis.EventSource
+  const id = "deleted-test"
+  let requests = 0
+  FakeEventSource.sources = []
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
+  globalThis.fetch = (async () => {
+    requests++
+    return requests === 1
+      ? Response.json({ events: [ev("status", { status: "running" })] })
+      : new Response(null, { status: 404 })
+  }) as typeof fetch
+  try {
+    loadRun(id)
+    await until(() => FakeEventSource.sources.length === 1)
+    FakeEventSource.sources[0].drop()
+    await until(() => requests === 2)
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    assert.equal(requests, 2)
+    assert.equal(FakeEventSource.sources.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.EventSource = originalSource
+  }
 })

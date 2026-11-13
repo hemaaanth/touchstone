@@ -15,9 +15,17 @@ import type {
 } from "./types"
 import { tokenHeaders } from "./console-token"
 
+export class HttpError extends Error {
+  status: number
+  constructor(url: string, status: number) {
+    super(`${url} -> ${status}`)
+    this.status = status
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`)
+  if (!res.ok) throw new HttpError(url, res.status)
   return (await res.json()) as T
 }
 
@@ -184,8 +192,9 @@ export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0,
     onEvent(e)
     if (e.ev === "closed") end()
   }
-  // EventSource reconnects after a server restart; closing it here leaves the
-  // last "running" event on screen forever instead of receiving the new status.
+  // A native reconnect repeats the original since= URL and duplicates live events.
+  // The store reloads the authoritative snapshot after this stream ends.
+  source.onerror = end
   return end
 }
 

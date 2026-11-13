@@ -1,10 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { streamRun } from "./api"
-import { reduceEvents } from "./runModel"
 import type { RunEvent } from "./types"
 
-test("a dropped run stream reconnects and receives the server's failed status", () => {
+test("a dropped run stream closes so the store can reload its snapshot", () => {
   const original = globalThis.EventSource
   class FakeEventSource {
     static instance: FakeEventSource
@@ -22,16 +21,10 @@ test("a dropped run stream reconnects and receives the server's failed status", 
     streamRun("run-1", (event) => events.push(event), 2, () => ended++)
     const source = FakeEventSource.instance
     assert.equal(source.url, "/api/runs/run-1/stream?since=2")
-    source.onerror?.() // The server is restarting. Native EventSource retries unless closed.
-    assert.equal(source.closed, false)
-    assert.equal(ended, 0)
-    source.onmessage?.({ data: JSON.stringify({ ev: "status", status: "error" }) } as MessageEvent)
-    source.onmessage?.({ data: JSON.stringify({ ev: "closed" }) } as MessageEvent)
-    assert.deepEqual(events.map((event) => event.ev), ["status", "closed"])
-    assert.equal(reduceEvents(events).status, "error")
-    assert.equal(reduceEvents(events).closed, true)
+    source.onerror?.() // The store replaces events with a snapshot after this.
     assert.equal(source.closed, true)
     assert.equal(ended, 1)
+    assert.deepEqual(events, [])
   } finally {
     globalThis.EventSource = original
   }
