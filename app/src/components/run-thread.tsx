@@ -35,6 +35,8 @@ import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofK
 import { COORDINATOR } from "@/lib/types"
 import type { ContextUse } from "@/components/fleet-view"
 import { PrepassFold } from "@/components/prepass"
+import { StartProgress } from "@/components/assistant-ui/elements/start-progress"
+import type { StartProgress as StartProgressModel } from "@/lib/startup"
 import type { RunFailure, Step } from "@/lib/runModel"
 import { INK, severityTone } from "@/lib/format"
 import { cn } from "cn"
@@ -147,6 +149,8 @@ function RunErrorCard({
 export function Thread({
   empty,
   prepass,
+  startup = null,
+  live = true,
   error,
   errorInfo,
   onRetry,
@@ -159,6 +163,11 @@ export function Thread({
 }: {
   empty: boolean
   prepass: PrepassView | null
+  // What the run did before the agent session opened. Shown while the thread
+  // is still empty.
+  startup?: StartProgressModel | null
+  // A worker is running. A stage cannot keep running once this is false.
+  live?: boolean
   error: string | null
   errorInfo: RunFailure | null
   onRetry: () => void
@@ -185,12 +194,7 @@ export function Thread({
         >
           {prepass && !readOnly ? <PrepassFold prepass={prepass} /> : null}
 
-          {empty && !readOnly ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              Starting the agent session…
-            </div>
-          ) : null}
+          {empty && !readOnly && startup ? <StartProgress progress={startup} live={live && !error && !errorInfo} /> : null}
 
           <ThreadPrimitive.Messages components={{ Message }} />
 
