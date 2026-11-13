@@ -896,7 +896,7 @@ function forgeReadme({ title, replay, fork, libs = [], haveCommand, cheat }) {
     : "every .sol source in the workspace, the proof test, and the Foundry config";
   // Minor 2: name the cheatcode that reads a file the bundle does not ship.
   const dataLine = cheat
-    ? `This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.`
+    ? `This proof reads a file that is not in the bundle (${cheat}), so it has no re-run command.`
     : "A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked.";
   const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract }) : "";
   return `# Proof source for this finding
@@ -1053,7 +1053,7 @@ function forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked }) {
   // An automatic re-run check does not ship yet, so the bundle makes no re-run
   // claim: it carries the exact command for you to run by hand.
   if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked (an automatic re-run check does not ship yet); the re-run command is in this README for you to run.\n\n`;
-  if (cheat) return `PROVEN: ${head}. This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.\n\n`;
+  if (cheat) return `PROVEN: ${head}. This proof reads a file that is not in the bundle (${cheat}), so it has no re-run command.\n\n`;
   if (forked) return `PROVEN: ${head}. This proof forked a chain, which an offline re-run cannot, so it has no re-run command.\n\n`;
   return `PROVEN: ${head}. This folder holds the proof's source files for reading; it has no re-run command.\n\n`;
 }
@@ -1087,29 +1087,66 @@ const FS_CLASS = (() => {
 })();
 const FILE_READS = ["readFile", "readFileBinary", "readLine", "readDir"];
 const FILE_CHEATS = new Set([...FS_CLASS, ...FILE_READS]);
-const ARTIFACT_CHEATS = new Set(["getCode", "getDeployedCode"]);
-const ARTIFACT_NAME = /^[^"'\s]+\.sol(?::[A-Za-z0-9_$]+)?$/;
+// The artifact family loads code by name. A use counts as safe only when its
+// first argument is a string literal that names a contract the bundle ships:
+// "File.sol", "path/File.sol", "File.sol:Name", or a bare "Name". Any other
+// argument (a variable, a constant, a concatenation, a .json or other path)
+// may read a file the bundle does not hold, so it is a hit: unknown means no
+// command. The family is matched on any receiver and bare (forge-std's
+// StdCheats calls deployCode with no receiver).
+const ARTIFACT_FAMILY = ["getCode", "getDeployedCode", "deployCode", "deployCodeTo"];
+// loadAllocs always reads a JSON file: every use is a hit.
+const ALWAYS_FILE = new Set(["loadAllocs"]);
+const SOL_REF = /^(?:[\w$.\/-]*\/)?([\w$-]+\.sol)(?::([A-Za-z_$][\w$]*))?$/;
+const BARE_NAME = /^[A-Za-z_$][\w$]*$/;
 function firstStringArg(afterParen) {
-  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/.exec(afterParen);
+  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1\s*[,)]/.exec(afterParen);
   return m ? m[2] : null;
 }
 function stripComments(text) {
   return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 }
-// The first file cheatcode a shipped source calls (as `vm.<name>`), or null.
-// Scans the comment-stripped text, on any receiver.
-const CHEAT_CALL = new RegExp("\\.\\s*([A-Za-z]+)\\s*\\(([\\s\\S]{0,160})", "g");
+// The contracts the shipped sources declare, and their file names.
+function shippedNames(sources) {
+  const files = new Set();
+  const contracts = new Set();
+  for (const { path, text } of sources) {
+    files.add(path.split("/").pop());
+    files.add(path);
+    for (const m of stripComments(text).matchAll(/\b(?:abstract\s+)?(?:contract|library)\s+([A-Za-z_$][\w$]*)/g)) contracts.add(m[1]);
+  }
+  return { files, contracts };
+}
+function artifactShipped(arg, names) {
+  const ref = SOL_REF.exec(arg);
+  if (ref) {
+    const fileOk = names.files.has(ref[1]) || names.files.has(arg.split(":")[0]);
+    return fileOk && (!ref[2] || names.contracts.has(ref[2]));
+  }
+  return BARE_NAME.test(arg) && names.contracts.has(arg);
+}
+// The argument text is a lookahead, so a match never consumes the calls after it.
+const CALL = new RegExp("(?<![\\w$])(?:([A-Za-z_$][\\w$]*)\\s*\\.\\s*)?([A-Za-z_$][\\w$]*)\\s*\\((?=([\\s\\S]{0,160}))", "g");
+// The first file read a shipped source makes, as a label ("vm.getCode",
+// "deployCode"), or null. `sources` is [{ path, text }]. Both the raw and the
+// comment-stripped text are scanned, so a "//" inside a string cannot hide a
+// call; a call inside a comment then also counts, which fails closed.
 function fileCheatUsed(sources) {
-  for (const text of sources) {
-    const code = stripComments(text);
-    CHEAT_CALL.lastIndex = 0;
-    let m;
-    while ((m = CHEAT_CALL.exec(code))) {
-      const name = m[1];
-      if (FILE_CHEATS.has(name)) return name;
-      if (ARTIFACT_CHEATS.has(name)) {
-        const arg = firstStringArg(m[2]);
-        if (arg !== null && !ARTIFACT_NAME.test(arg)) return name; // a path, not an artifact
+  const names = shippedNames(sources);
+  for (const { text } of sources) {
+    for (const code of [String(text ?? ""), stripComments(text)]) {
+      CALL.lastIndex = 0;
+      let m;
+      while ((m = CALL.exec(code))) {
+        const [, receiver, name, rest] = m;
+        if (/\bfunction\s+$/.test(code.slice(Math.max(0, m.index - 20), m.index))) continue; // a definition
+        const label = receiver ? `vm.${name}` : name;
+        if (receiver && FILE_CHEATS.has(name)) return label;
+        if (ALWAYS_FILE.has(name)) return label;
+        if (ARTIFACT_FAMILY.includes(name)) {
+          const arg = firstStringArg(rest);
+          if (arg === null || !artifactShipped(arg, names)) return label;
+        }
       }
     }
   }
@@ -1194,7 +1231,10 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   // fork), and must not read a file the bundle does not ship (a file cheatcode).
   // Scan only the proof's own sources, not vendored libraries: forge-std's own
   // code calls ffi/getCode, which does not mean this proof reads a file.
-  const cheat = fileCheatUsed(files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string" && f.vendored !== true).map((f) => f.text));
+  const scanned = files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string" && f.vendored !== true).map((f) => ({ path: f.path, text: f.text }));
+  // The PoC can come from proof.testSource instead of a shipped test/ file.
+  if (testSource && !files.some((f) => f.path.startsWith("test/"))) scanned.push({ path: "test/AgentPoc.t.sol", text: testSource });
+  const cheat = fileCheatUsed(scanned);
   const noCmd = !haveProject ? null : fork.forked ? "forked" : cheat ? cheat : null;
   const haveCommand = !noCmd && haveProject;
   const readme = files.length

@@ -720,6 +720,36 @@ describe("report: replay bundle", () => {
     // A plain proof with no file cheatcode: command stays.
     const plain = bundleReadme("contract PocTest { function t() public {} }\n")
     expect(commands(plain).length).toBeGreaterThanOrEqual(1)
+
+    // Part 1, fail closed: each indirect form gives no command and names the call.
+    const VM = 'interface Vm { function getCode(string calldata) external returns (bytes memory); function getDeployedCode(string calldata) external returns (bytes memory); function loadAllocs(string calldata) external; }\n'
+    const poc = (body: string, extra = "") => `${VM}${extra}contract PocTest {\n  Vm vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function t() public { ${body} }\n}\n`
+    const noCmd: [string, string, string][] = [
+      ["getCode with a path in a variable", poc('string memory p = "lib/safe-artifacts/Safe.json"; vm.getCode(p);'), "vm.getCode"],
+      ["getCode with a path in a constant", poc("vm.getCode(SAFE);", 'string constant SAFE = "lib/safe-artifacts/Safe.json";\n'), "vm.getCode"],
+      ["getCode with a concatenated path", poc('vm.getCode(string.concat("lib/", "Safe.json"));'), "vm.getCode"],
+      ["getDeployedCode on a .json", poc('vm.getDeployedCode("out/Thing.json");'), "vm.getDeployedCode"],
+      ["bare deployCode on a .json (StdCheats)", poc('deployCode("abi/Thing.json");', "function deployCode(string memory) returns (address) {}\n"), "deployCode"],
+      ["deployCodeTo on a .json", poc('deployCodeTo("abi/Thing.json", address(1));', "function deployCodeTo(string memory, address) {}\n"), "deployCodeTo"],
+      ["vm.loadAllocs", poc('vm.loadAllocs("src/allocs.json");'), "vm.loadAllocs"],
+      ["getCode on a contract the bundle does not ship", poc('vm.getCode("Missing.sol:Missing");'), "vm.getCode"],
+      ["a // inside a string cannot hide the call", poc('string memory u = "http://x"; vm.getCode(u);'), "vm.getCode"],
+    ]
+    for (const [what, src, label] of noCmd) {
+      const r = bundleReadme(src)
+      expect([what, commands(r).length]).toEqual([what, 0])
+      expect([what, r.includes(`reads a file that is not in the bundle (${label})`)]).toEqual([what, true])
+    }
+    // The plain forms keep their command: a shipped contract by file, file:Name, or bare name.
+    for (const [what, body] of [
+      ["getCode(\"Vault.sol\")", 'vm.getCode("Vault.sol");'],
+      ["getCode(\"src/Vault.sol:Vault\")", 'vm.getCode("src/Vault.sol:Vault");'],
+      ["getCode(\"Vault\")", 'vm.getCode("Vault");'],
+      ["deployCode(\"Vault.sol:Vault\")", 'deployCode("Vault.sol:Vault");'],
+    ] as [string, string][]) {
+      const r = bundleReadme(poc(body, "function deployCode(string memory) returns (address) {}\n"))
+      expect([what, commands(r).length >= 1]).toEqual([what, true])
+    }
   })
 
   test("README wording: the source line matches the source of the list, and names the test only when the command does", () => {
