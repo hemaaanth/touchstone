@@ -28,13 +28,13 @@ const serverError = (ops) => ({
   type: "ServerError", code: "ST101", title: "Server error",
   severity: "critical", count: ops.length, operations: ops,
 });
-const report = ({ complete = true, tested = 6, exit_code = 1, failures = [], extra = {} } = {}) =>
+const report = ({ complete = true, tested = 6, exit_code = 1, failures = [], errored = 0, errors = [], total, extra = {} } = {}) =>
   JSON.stringify({
     schemathesis_version: "4.33.4",
     complete, exit_code, stop_reason: "completed",
-    operations: { total: tested, selected: tested, tested, errored: 0, skipped: 0 },
+    operations: { total: total ?? tested + errored, selected: tested + errored, tested, errored, skipped: 0 },
     test_cases: { generated: 100, with_failures: failures.length, unique_failures: failures.length },
-    failures, errors: [], ...extra,
+    failures, errors, ...extra,
   });
 
 // ---- report reader (pure) --------------------------------------------------
@@ -135,6 +135,50 @@ test("scanSchemathesis: a clean run (exit 0, no failures) is ran with zero leads
   assert.equal(r.coverage[0].status, "ran");
   assert.equal(r.coverage[0].leads, 0);
   assert.equal(r.leads.length, 0);
+});
+
+test("scanSchemathesis: a partly errored run (exit 1, tested 1, errored 7, no failures) is NOT a clean ran -- it carries a reason and keeps its leads", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(report({ exit_code: 1, tested: 1, errored: 7, total: 8, failures: [] }), 1),
+  });
+  // The run did exercise the API, so it is not "unavailable"...
+  assert.equal(r.coverage[0].status, "ran");
+  // ...but it is not a clean pass: the row carries a reason naming the errors,
+  // which a clean ran never has. 7 of 8 operations never ran.
+  assert.match(r.coverage[0].reason, /7 of 8 operations errored/);
+  assert.equal(r.leads.length, 0, "no failures means no leads, but the row is still flagged");
+});
+
+test("scanSchemathesis: a partly errored run keeps the leads from the operations that did run", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(report({ exit_code: 1, tested: 1, errored: 7, total: 8, failures: [serverError(["GET /api/block/{height}"])] }), 1),
+  });
+  assert.equal(r.coverage[0].status, "ran");
+  assert.match(r.coverage[0].reason, /7 of 8 operations errored/);
+  assert.equal(r.coverage[0].leads, 1);
+  assert.ok(r.leads.some((l) => l.path === "/api/block/{height}"));
+});
+
+test("scanSchemathesis: a mismatched pair (exit 0 while failures are present) is a gap, never a clean ran", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(report({ exit_code: 0, failures: [serverError(["GET /api/block/{height}"])] }), 0),
+  });
+  assert.equal(r.coverage[0].status, "unavailable");
+  assert.equal(r.leads.length, 0);
+  assert.match(r.coverage[0].reason, /disagrees with its report/);
+});
+
+test("scanSchemathesis: a mismatched pair (exit 1 with no failures and no errors) is a gap", async () => {
+  const r = await scanSchemathesis({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(report({ exit_code: 1, failures: [], errored: 0 }), 1),
+  });
+  assert.equal(r.coverage[0].status, "unavailable");
+  assert.equal(r.leads.length, 0);
+  assert.match(r.coverage[0].reason, /disagrees with its report/);
 });
 
 test("scanSchemathesis: a timeout is unavailable with timedOut set, never a clean result", async () => {

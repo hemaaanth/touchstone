@@ -104,11 +104,21 @@ export function parseSchemathesis(report) {
 const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
 // Run Schemathesis against { net, baseUrl } using the pack's openapi.yaml.
-// Always resolves; never throws. Fails closed: a timeout, or a run that left no
-// usable report (missing/non-JSON/not complete/zero operations tested) is
-// reported "unavailable" with a reason, never a clean "found nothing". A
-// completed run that tested the API is "ran" (exit 0 with no failures, or exit
-// 1 with failures -- both are completed runs). Returns { coverage, leads }.
+// Always resolves; never throws. Fails closed on three counts:
+//   - a timeout, or a run that left no usable report (missing/non-JSON/not
+//     complete/zero operations tested), is "unavailable" with a reason.
+//   - the exit code must agree with the report. Schemathesis exits 0 only when
+//     every tested operation passed AND none errored; it exits 1 when a check
+//     failed OR an operation errored. Only those two pairs are trusted
+//     (exit 0 with no failures and no errors; exit 1 with failures or errors).
+//     Any other pair -- exit 0 while failures/errors are present, or exit 1
+//     with neither -- is an inconsistent run we cannot read, so it is a gap.
+//   - a run where some operations errored is NOT a clean pass. The un-run
+//     operations were never exercised, so the absence of a lead on them proves
+//     nothing. Such a run still "ran" and keeps the leads from the operations
+//     that did run, but the coverage row carries a reason ("N of M operations
+//     errored") so it never reads as a clean pass.
+// Returns { coverage, leads }.
 export async function scanSchemathesis({
   net,
   baseUrl,
@@ -146,17 +156,39 @@ export async function scanSchemathesis({
     if (isTimeout(r.code, r.timedOut)) {
       return unavailable(`schemathesis timed out after ~${Math.round(timeoutMs / 1000)}s (exit ${r.code}); no result from a killed run is trustworthy. ${cap(r.stderr, 100)}`);
     }
-    // Exit code alone does not decide here: 0 = no failures, 1 = failures found,
-    // both completed. The report's own `complete`/`tested` is the ground truth.
+    // The report's own `complete`/`tested` is the ground truth that the run
+    // finished and exercised the API.
     const report = schemathesisReport(text);
     if (!report) {
       return unavailable(`schemathesis left no usable report (missing, non-JSON, not complete, or zero operations tested); a gap, not a clean run. exit ${r.code}. ${cap(r.stderr, 120)}`);
     }
+    // Pair the exit code with the report. 0 is clean only if nothing failed and
+    // nothing errored; 1 is a real result only if a failure or an error is
+    // present. Any other pairing is inconsistent -- a gap, not a result.
+    const failures = Array.isArray(report.failures) ? report.failures : [];
+    const erroredRaw = Number(report?.operations?.errored);
+    const errored = Number.isFinite(erroredRaw) && erroredRaw > 0 ? erroredRaw : 0;
+    const errorsLen = Array.isArray(report.errors) ? report.errors.length : 0;
+    const hasFailures = failures.length > 0;
+    const hasErrors = errored > 0 || errorsLen > 0;
+    const clean = r.code === 0 && !hasFailures && !hasErrors;
+    const found = r.code === 1 && (hasFailures || hasErrors);
+    if (!clean && !found) {
+      return unavailable(`schemathesis exit ${r.code} disagrees with its report (failures=${failures.length}, errored=${errored}, errors=${errorsLen}); an inconsistent run is a gap, not a result. ${cap(r.stderr, 100)}`);
+    }
     const leads = parseSchemathesis(report);
-    return {
-      coverage: [{ engine: "schemathesis", status: "ran", code: r.code, timedOut: false, leads: leads.length }],
-      leads,
-    };
+    const row = { engine: "schemathesis", status: "ran", code: r.code, timedOut: false, leads: leads.length };
+    if (hasErrors) {
+      // Partial run: some operations errored and were never exercised. Keep the
+      // leads we did get, but flag the row so it never reads as a clean pass.
+      const totalRaw = Number(report?.operations?.total);
+      const testedRaw = Number(report?.operations?.tested);
+      const total = Number.isFinite(totalRaw) && totalRaw > 0
+        ? totalRaw
+        : (Number.isFinite(testedRaw) ? testedRaw : 0) + errored;
+      row.reason = cap(`${errored} of ${total} operations errored; coverage is partial, not a clean pass. ${cap(r.stderr, 80)}`, 220);
+    }
+    return { coverage: [row], leads };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
