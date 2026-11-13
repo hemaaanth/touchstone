@@ -490,7 +490,7 @@ export function RunChat({
             <div
               inert={drawerOpen && !beside}
               className={cn(
-                "pointer-events-none absolute top-[7px] right-[46px] bottom-28 flex items-start justify-end max-md:right-[50px]",
+                "pointer-events-none absolute top-[7px] right-3 bottom-28 flex items-start justify-end",
                 beside ? "z-30" : "z-10",
               )}
               style={beside ? { right: drawerWidth + 12 } : undefined}
@@ -622,7 +622,7 @@ function RunHeader({
   // name, so the title never moves when the status changes.
   const head = runHeadStatus(state, status)
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
+    <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-3 max-md:px-3">
       <SidebarTrigger className="-ml-1 md:hidden" />
       <TooltipProvider delay={300}>
         <Tooltip>
@@ -643,8 +643,8 @@ function RunHeader({
       </TooltipProvider>
       <div className="flex min-w-0 items-baseline">{title}</div>
       <span className="ml-auto" />
-      {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
       {actions}
+      {panelWidth != null ? <span aria-hidden className="shrink-0" style={{ width: panelWidth }} /> : null}
     </header>
   )
 }
