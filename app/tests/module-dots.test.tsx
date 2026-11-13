@@ -18,6 +18,7 @@ const packs = [
 const html = (ids: string[]) => renderToStaticMarkup(<ModuleDots ids={ids} packs={packs} />)
 const dots = (h: string) => [...h.matchAll(/data-slot="module-dot" data-module="([^"]+)"/g)].map((m) => m[1])
 const label = (h: string) => /aria-label="([^"]*)"/.exec(h)?.[1] ?? null
+const more = (h: string) => (h.match(/data-slot="module-dots-more"/g) ?? []).length
 const width = (h: string) => /^<span[^>]*style="[^"]*width:(\d+)px/.exec(h)?.[1]
 
 describe("ModuleDots", () => {
@@ -51,6 +52,17 @@ describe("ModuleDots", () => {
     const h = html(["new-pack", "web", "web"])
     expect(dots(h)).toEqual(["web", "new-pack"])
     expect(label(h)).toBe("Modules: Web and sign-in, new-pack")
+  })
+  test("more than three: one small grey dot says more, inside the same box", () => {
+    for (const ids of [[], ["web"], ["web", "contracts", "domains"]]) expect(more(html(ids))).toBe(0)
+    for (const n of [4, 7]) {
+      const h = html(packs.slice(0, n).map((p) => p.id))
+      expect(more(h)).toBe(1)
+      expect(dots(h).length).toBe(3)
+      expect(width(h)).toBe(width(html(["web"])))
+      // Neutral, never a module's colour.
+      expect(/data-slot="module-dots-more"[^>]*class="([^"]*)"/.exec(h)?.[1]).toContain("bg-muted-foreground")
+    }
   })
 })
 
