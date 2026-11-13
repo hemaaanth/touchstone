@@ -283,7 +283,11 @@ export function watchFindings(state) {
   return state;
 }
 
-const takesPlace = (f, c) => c.poc === f?.poc || (c.rootCause != null && c.rootCause === f?.rootCause);
+// Same poc or same root cause, in the same module. A joined run lets two
+// modules use one label (multi.mjs), so a finding of one module never ends
+// another module's candidate. A record with no module matches any.
+const samePack = (f, c) => c.pack == null || c.pack === "" || f?.pack == null || c.pack === f.pack;
+const takesPlace = (f, c) => samePack(f, c) && (c.poc === f?.poc || (c.rootCause != null && c.rootCause === f?.rootCause));
 
 // The candidates that proven findings take the place of, after the final
 // proof: [{ poc, by }]. A finding that is not proven takes no place.
