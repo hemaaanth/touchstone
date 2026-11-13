@@ -5,11 +5,11 @@ import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
-import { PLAN_STEP, packOf } from "@/lib/catalog"
+import { PLAN_STEP } from "@/lib/catalog"
 import { ModulePills } from "@/components/module-pill"
 import { ProviderLogo } from "@/components/provider-logo"
 import { TruncatedText } from "@/components/page-parts"
-import { cardFor, type CardState } from "@/components/thread-model"
+import { cardFor, runModules, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
 import { ResizeHandle } from "@/components/resize-handle"
@@ -465,12 +465,6 @@ const empty = "px-3 py-2.5 text-xs text-muted-foreground"
 
 // What the run is: its mode, how long it has run, what it has spent against
 // its budget, the model, the scope, and the pipeline steps it turned on.
-// The run's modules (packs). Today a run has one: its scope's pack. The line
-// takes a list, so a run that holds several shows them all.
-export function runModules(state: RunState): string[] {
-  return state.scope ? [packOf(state.scope)] : []
-}
-
 function RunInfo({
   state,
   live,

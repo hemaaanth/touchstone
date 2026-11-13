@@ -2,6 +2,7 @@ import { createContext } from "react"
 import type { ThreadMessageLike } from "@assistant-ui/react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
 import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
+import { packOf } from "@/lib/catalog"
 import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
 import { isTerminal } from "@/lib/format"
@@ -450,4 +451,10 @@ export async function sendCopy(
     update((xs) => xs.filter((x) => x.id !== copy.id))
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// The run's modules (packs), for Run Info. Today a run has one: its scope's
+// pack. The line takes a list, so a run that holds several shows them all.
+export function runModules(state: RunState): string[] {
+  return state.scope ? [packOf(state.scope)] : []
 }

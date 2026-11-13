@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { buildMessages, runHeadStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { buildMessages, runHeadStatus, runModules, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -216,8 +216,7 @@ test("an old record with only the final text shows it once, before a later turn"
   assert.deepEqual(out, ["Nothing to prove.", "and the router?", "The router is fine."])
 })
 
-test("Run Info's module line is a list: today one entry, the scope's pack", async () => {
-  const { runModules } = await import("./run-panel")
+test("Run Info's module line is a list: today one entry, the scope's pack", () => {
   const scope = { id: "s", title: "S", kind: "lab", blurb: "", entry: "" }
   assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope: { ...scope, pack: "web" } }])), ["web"])
   // A scope saved before modules is a Contracts scope.
