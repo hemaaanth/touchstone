@@ -299,12 +299,22 @@ function scrubFoundryToml(text) {
 // came back as the mark is not code any more, so it is left out.
 const CAP_MARK = /\[REDACTED: text of \d+ characters too long to check\]/;
 export const OVER_CAP = "over 64 KB, so the redactor cannot check it";
+// Prose and config must be fully masked; a data artifact (an ABI/bytecode JSON
+// or a .hex) a re-run reads is not prose, so a mask would corrupt it.
+const PROSE_FILE = /(?:\.sol|foundry\.toml|remappings\.txt)$/i;
 function forgeFileText(path, raw) {
   const text = path === "foundry.toml" ? scrubFoundryToml(raw) : bundleText(raw, { forge: true });
-  // An old record can hold the mark as its text: that is never code either.
-  if (CAP_MARK.test(text)) return { reason: OVER_CAP };
-  const shapes = leakShapes(text);
-  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
+  if (!CAP_MARK.test(text)) {
+    const shapes = leakShapes(text);
+    return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text };
+  }
+  // Over the redactor's 64 KB single-pass cap. A prose/config file is left out:
+  // it must be masked and cannot be. A data artifact is shipped raw only when
+  // the line-wise shape detector (no cap) finds no secret, so no key leaves; it
+  // is marked `data` so its many hex windows do not flood the unjudged count.
+  if (PROSE_FILE.test(path)) return { reason: OVER_CAP };
+  const shapes = leakShapes(raw);
+  return shapes.length ? { reason: `holds ${shapes.join(" and ")} the redactor cannot mask` } : { text: raw, data: true };
 }
 
 // A path the redactor would mask, in whole or in one part, is not shipped:
@@ -412,20 +422,21 @@ function rank(path) {
 
 function keepPath(rel) {
   const base = rel.split("/").pop();
-  if (!base || base.startsWith(".")) return false;
-  if (base === "foundry.toml" || base === "remappings.txt") return !rel.includes("/");
-  return base.endsWith(".sol");
+  // Every regular file the walk reaches except a hidden one; build output
+  // (SKIP_DIRS) and library test suites are already skipped in the walk.
+  return Boolean(base) && !base.startsWith(".");
 }
 
-// Walk the workspace for the files a forge test needs. Dependency tests under
-// lib/ are skipped: they are not imported by the proof, and forge-std's own
-// tests ship sample provider keys.
-// Every .sol source and the top foundry.toml / remappings.txt, worst-rank
-// first. A symbolic link, a hidden name, a skipped folder (SKIP_DIRS) and a
-// library's own test/ are not taken; the bundle makes no re-run claim, so a
-// file the walk does not take is not a defect here. Read errors, binary
-// content, the size limits, a masked path, a secret and the cap mark are left
-// out by snapshotForgeReplay and listed under "Left out".
+// Walk the workspace for every file a re-run can need, so the bundle holds the
+// whole project except build output. A static list of needed files could not
+// close the "claims a re-run it cannot do" class (three review rounds found a
+// new file shape each time: a .hex, a Safe artifact JSON, a cheatcode read); so
+// the bundle ships everything and the re-run check (verifyForgeReplay) is the
+// authority. Skipped by the walk: build output (SKIP_DIRS: out, cache, oracle,
+// …), a symbolic link (it may leave the folder), a hidden name, and a library's
+// own test/ (forge-std's tests ship sample provider keys). A read error, a
+// secret file, the size caps and a masked path are left out by
+// snapshotForgeReplay and listed under "Left out".
 function collectFiles(root) {
   const found = [];
   const walk = (dir, parts) => {
@@ -495,7 +506,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     total += raw.length;
     const out = forgeFileText(rel, raw);
     if (out.reason) omitted.push({ path: rel, reason: out.reason });
-    else files.push({ path: rel, text: out.text });
+    else files.push({ path: rel, text: out.text, ...(out.data ? { data: true } : {}) });
   }
   if (capped) omitted.push({ path: "", reason: `bundle size cap; ${capped} file${capped === 1 ? "" : "s"} left out` });
   let toml = "";
@@ -912,14 +923,16 @@ The lab networks have no internet route. \`rerun.mjs\` writes the new transcript
 `;
 }
 
-function pushFile(entries, name, text, { own = false } = {}) {
+function pushFile(entries, name, text, { own = false, data = false } = {}) {
   const path = zipPath(name);
   if (!path || entries.some((e) => e.name === path)) return;
   if (!own) {
     const shapes = leakShapes(text);
     if (shapes.length) throw new BundleRefused(`No replay bundle: ${path} holds ${shapes.join(" and ")} that the redactor cannot mask, so the zip would leak it.`);
   }
-  entries.push({ name: path, data: Buffer.from(String(text), "utf8"), own });
+  // `dataFile` marks a shipped artifact (bytecode/ABI): leak-checked, but not
+  // window-counted for unjudged values, so its hex does not flood the list.
+  entries.push({ name: path, data: Buffer.from(String(text), "utf8"), own, dataFile: data });
 }
 
 // The README goes first, with the list of values the bundle could not judge.
@@ -928,7 +941,7 @@ function pushFile(entries, name, text, { own = false } = {}) {
 function finish(entries, head) {
   const counts = {};
   unjudgedCounts(head, counts);
-  for (const e of entries) if (!e.own) unjudgedCounts(e.data.toString("utf8"), counts);
+  for (const e of entries) if (!e.own && !e.dataFile) unjudgedCounts(e.data.toString("utf8"), counts);
   const unjudged = unjudgedList(counts);
   const section = unjudged.length
     ? `\n## ${UNJUDGED_NOTE}\n\nThe redactor could not judge these values. Each one may be a secret, or it may be evidence (a transaction hash, a storage slot, an id). They are counted here, not shown:\n\n${unjudged.map((u) => `- ${u.text}`).join("\n")}\n`
@@ -1008,7 +1021,7 @@ function forgeBundle({ finding, recorded, replay, proof }) {
     }
     const out = forgeFileText(f.path, raw);
     if (out.reason) omitted.push({ path: f.path, reason: out.reason });
-    else files.push({ path: f.path, text: out.text });
+    else files.push({ path: f.path, text: out.text, ...(out.data || f.data ? { data: true } : {}) });
   }
   let testSource = proof?.testSource || finding?.proof?.testSource || null;
   if (testSource && !files.some((f) => f.path.startsWith("test/"))) {
@@ -1034,7 +1047,7 @@ ${omittedList(omitted)}`;
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   // A vendored file is the public library as the engine ships it: not
   // checked for leaks and not counted, like the engine's own files.
-  for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true });
+  for (const f of files) pushFile(entries, f.path, f.text, { own: f.vendored === true, data: f.data === true });
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   // The hashes of every file the bundle ships, so a reader can check the folder.
   if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });

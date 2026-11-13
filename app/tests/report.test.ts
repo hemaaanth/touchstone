@@ -474,6 +474,50 @@ describe("report: replay bundle", () => {
     }
   })
 
+  test("the bundle ships every workspace file except build output, including data artifacts, and still refuses a secret file", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-all-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      mkdirSync(path.join(ws, "abi"))
+      mkdirSync(path.join(ws, "out"))
+      mkdirSync(path.join(ws, "cache"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      writeFileSync(path.join(ws, "src", "BytecodeVault.runtime.hex"), "0x60a0" + "ab".repeat(40) + "\n")
+      writeFileSync(path.join(ws, "abi", "Thing.json"), JSON.stringify({ bytecode: { object: "0x" + "60".repeat(2000) } }))
+      // A JSON artifact over the redactor's 64 KB single-pass cap ships raw.
+      writeFileSync(path.join(ws, "abi", "Big.json"), JSON.stringify({ bytecode: { object: "0x" + "ab".repeat(70000) } }))
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest {}\n")
+      // Build output and a secret file never ship.
+      writeFileSync(path.join(ws, "out", "ignore.json"), "{}\n")
+      writeFileSync(path.join(ws, "cache", "ignore.dat"), "x\n")
+      writeFileSync(path.join(ws, "deploy.pem"), "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n")
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      const shipped = snap.files.map((f: { path: string }) => f.path).sort()
+      expect(shipped).toEqual(["abi/Big.json", "abi/Thing.json", "foundry.toml", "src/BytecodeVault.runtime.hex", "src/Vault.sol", "test/AgentPoc.t.sol"])
+      expect(snap.files.find((f: { path: string }) => f.path === "abi/Big.json").data).toBe(true)
+      expect(snap.omitted).toEqual([{ path: "deploy.pem", reason: "secret file" }])
+      // The bundle ships all of them and the big artifact is not window-counted.
+      const proof = { kind: "forge", pass: true, test: "testDrain()", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+      const plan = planReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay: snap, proof } })
+      const dir = mkdtempSync(path.join(tmpdir(), "replay-all-zip-"))
+      try {
+        unzip(plan.zip, dir)
+        const files = readTree(dir)
+        for (const rel of ["abi/Big.json", "abi/Thing.json", "src/BytecodeVault.runtime.hex"]) expect(files.has(rel)).toBe(true)
+        expect(files.get("abi/Big.json")).toBe(JSON.stringify({ bytecode: { object: "0x" + "ab".repeat(70000) } }))
+        expect(files.has("out/ignore.json")).toBe(false)
+        // The big artifact's hex windows do not flood the unjudged count.
+        expect(plan.unjudged.find((u: { shape: string }) => u.shape === "hex64")).toBeUndefined()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
   test("a source file over the redactor's cap, or one left out for a secret, is dropped and named, never shipped", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-overcap-"))
     try {
