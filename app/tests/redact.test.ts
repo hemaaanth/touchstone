@@ -535,3 +535,31 @@ describe("redact: a header quoted inside other quotes (delta review 4)", () => {
     for (const s of [`'a: "b: \`c: `.repeat(MB / 12), `'a: ` + `"b: `.repeat(MB / 4), `"a: 'b: x' `.repeat(MB / 11)]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })
+
+describe("redact: header tuples (delta review 4)", () => {
+  const basic = "Basic dXNlcjpwYXNzd29yZDEyMw=="
+  test("the value of a secret tuple is masked in text", () => {
+    expect(text(`headers: [["x-api-key","tk_live9fakeZ"],["Accept","*/*"]]`)).toBe(`headers: [["x-api-key","[REDACTED]"],["Accept","*/*"]]`)
+    expect(text(`headers=[("Authorization", "${basic}")]`)).toBe(`headers=[("Authorization", "Basic [REDACTED]")]`)
+    expect(text(`new Headers([['x-api-key', 'tk_live9fakeZ']])`)).toBe(`new Headers([['x-api-key', '[REDACTED]']])`)
+  })
+  test("the value of a secret tuple is masked in an object", () => {
+    const out = redactSecrets({ headers: [["x-api-key", "tk_live9fakeZ"], ["Accept", "*/*"]] }) as { headers: string[][] }
+    expect(out.headers).toEqual([["x-api-key", "[REDACTED]"], ["Accept", "*/*"]])
+  })
+  test("a word list and a placeholder tuple stay", () => {
+    for (const s of [`["token", "password"].includes(k)`, `[["token","<your token>"]]`, `[("Authorization", "Bearer junk")]`]) expect(text(s)).toBe(s)
+    const words = { tags: ["token", "reset"] }
+    expect(redactSecrets(words)).toEqual(words)
+  })
+  test("a PoC script with tuples still parses", () => {
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor
+    const out = text(`await fetch(u, { headers: new Headers([["x-api-key", "tk_live9fakeZ"]]) })`)
+    expect(out).not.toContain("tk_live9fakeZ")
+    expect(() => new AsyncFunction(out)).not.toThrow()
+  })
+  test("1 MB of tuples finishes in linear time", () => {
+    const MB = 1 << 20
+    for (const s of ["[" + " ".repeat(MB) + '"a",', '["token","' + "\\".repeat(MB), '[("a", "b"'.repeat(MB / 10)]) expect(timeMs(s)).toBeLessThan(2000)
+  })
+})

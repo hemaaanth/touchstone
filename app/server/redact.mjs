@@ -50,6 +50,11 @@ function namedValue(q, body) {
 const NAMED_VALUE = namedValue('"', String.raw`(?:\\.|[^"\\])*`)
 const NAMED_VALUE_ESC = namedValue(String.raw`\\"`, String.raw`(?:[^"\\]|\\(?!"))*`)
 
+// A header tuple in text: [["x-api-key","tk_…"]] or [("Authorization",
+// "Basic …")]. The pair sits right inside a bracket and closes it, and that
+// bracket is an item of a list, so ["token", "password"] stays.
+const TUPLE = /(?<=[[,][ \t]*[[(][ \t]*)(["'])([A-Za-z][\w-]{0,63})\1([ \t]*,[ \t]*)(["'])((?:\\[^\r\n]|(?!\4)[^\\\r\n])*)\4(?=[ \t]*[\])])/g
+
 // The same pair in JS, Python or a config file: the key is unquoted or in
 // ', ` or " quotes, the separator is ":" or "=", and the value is in ', ` or
 // " quotes. { apiKey: 'tk_…' }, headers={'Authorization': 'Basic …'} and
@@ -259,7 +264,7 @@ function maskEnv(m, name, sep, dq, sq, bare) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -271,6 +276,10 @@ function redactText(text) {
   })
   out = out.replace(NAMED_VALUE, maskNamed)
   out = out.replace(NAMED_VALUE_ESC, maskNamed)
+  out = out.replace(TUPLE, (m, kq, name, sep, q, v) => {
+    const masked = maskCodeValue(name, v)
+    return masked == null ? m : `${kq}${name}${kq}${sep}${q}${masked}${q}`
+  })
   out = out.replace(CODE_PAIR, (m, kq, name, sep, q, v) => {
     const masked = maskCodeValue(name, v)
     return masked == null ? m : `${kq}${name}${kq}${sep}${q}${masked}${q}`
@@ -303,6 +312,8 @@ function copyRedactedCell(value) {
   return copy
 }
 
+const isTuple = (t) => Array.isArray(t) && t.length === 2 && typeof t[0] === "string" && typeof t[1] === "string"
+
 function walk(value, key) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "string") {
@@ -311,6 +322,8 @@ function walk(value, key) {
     return redactText(value)
   }
   if (Array.isArray(value)) {
+    // A list of [name, value] header tuples: [["x-api-key", "tk_…"]].
+    if (value.length && value.every(isTuple)) return value.map(([name, v]) => [name, walk(v, name)])
     const blank = key && secretName(key)
     return value.map((item) => (blank && typeof item === "string" && !keepUnder(item) ? MARK : walk(item, "")))
   }
