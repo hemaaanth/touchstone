@@ -132,14 +132,44 @@ const arrayIn = (src, name) => {
   return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
 };
 
-test("every wildcard the hand lists on main refused is still refused (read from git, depth 1 and 2)", (t) => {
-  const live = oldSource("live-hosts.mjs");
-  const grants = oldSource("grant-store.mjs");
-  if (!live || !grants) return t.skip(`git history with ${BEFORE_PSL} is not available here`);
-  const anyDepth = arrayIn(live, "ANY_DEPTH");
-  const tenant = arrayIn(live, "TENANT");
-  const secondLevel = arrayIn(live, "SECOND_LEVEL");
-  const oldSuffixes = arrayIn(grants, "PUBLIC_SUFFIXES");
+// main's old hand lists. From git when the commit is there; the frozen copy
+// beside this test (fixtures/hand-lists-cc2690d.json, made from that same git
+// show) when it is not, as in a shallow clone or an export. So the floor check
+// always runs; with git, the copy must match git exactly.
+const FROZEN = JSON.parse(readFileSync(new URL("./fixtures/hand-lists-cc2690d.json", import.meta.url), "utf8"));
+export function oldHandLists({ git = !process.env.TOUCHSTONE_TEST_NO_GIT } = {}) {
+  const live = git ? oldSource("live-hosts.mjs") : null;
+  const grants = git ? oldSource("grant-store.mjs") : null;
+  if (!live || !grants) return { source: "frozen copy", ...FROZEN };
+  return {
+    source: "git",
+    ANY_DEPTH: arrayIn(live, "ANY_DEPTH"),
+    TENANT: arrayIn(live, "TENANT"),
+    SECOND_LEVEL: arrayIn(live, "SECOND_LEVEL"),
+    PUBLIC_SUFFIXES: arrayIn(grants, "PUBLIC_SUFFIXES"),
+  };
+}
+
+test("the frozen copy of main's old lists is exactly what git holds (when git has the commit)", (t) => {
+  const fromGit = oldHandLists({ git: true });
+  if (fromGit.source !== "git") return t.diagnostic("no git history here: the frozen copy is used, unchecked");
+  for (const name of ["ANY_DEPTH", "TENANT", "SECOND_LEVEL", "PUBLIC_SUFFIXES"]) assert.deepEqual(FROZEN[name], fromGit[name], name);
+});
+
+test("without git history the floor check still has main's old lists", () => {
+  const lists = oldHandLists({ git: false });
+  assert.equal(lists.source, "frozen copy");
+  assert.ok(lists.ANY_DEPTH.includes("amazonaws.com") && lists.TENANT.includes("wordpress.com") && lists.PUBLIC_SUFFIXES.includes("co.uk"));
+});
+
+
+test("every wildcard the hand lists on main refused is still refused (git or its frozen copy, depth 1 and 2)", (t) => {
+  const lists = oldHandLists();
+  t.diagnostic(`main's old lists from: ${lists.source}`);
+  const anyDepth = lists.ANY_DEPTH;
+  const tenant = lists.TENANT;
+  const secondLevel = lists.SECOND_LEVEL;
+  const oldSuffixes = lists.PUBLIC_SUFFIXES;
   assert.ok(anyDepth.includes("amazonaws.com") && tenant.includes("wordpress.com") && oldSuffixes.includes("co.uk"), "the right lists were read");
   // main's rule, as it was.
   const oldRefused = (b) => {

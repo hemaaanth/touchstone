@@ -1,6 +1,6 @@
 import "./helpers/isolated-env"
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -87,6 +87,33 @@ async function call(method: string, url: string, body?: unknown, headers?: Recor
 }
 
 describe("grant endpoints", () => {
+  test("a host with a user name or password is refused, the secret is never echoed, and nothing is stored", async () => {
+    const before = (await call("GET", "/api/grants")).json.grants.length
+    for (const host of ["https://user:pw-secret-9@example.com", "admin:pw-secret-9@shop.example.com", "https://onlyuser@example.com"]) {
+      const r = await call("POST", "/api/grants", { hosts: ["safe.example.com", host], kind: "authorized", approvedBy: "test" })
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/^Refused: the host entry for (shop\.)?example\.com holds a user name or password\. Touchstone never keeps a credential typed into a host\. Remove it, then add the grant again\.$/)
+      expect(r.json.error).not.toContain("pw-secret-9")
+      expect(r.json.error).not.toContain("onlyuser")
+    }
+    expect((await call("GET", "/api/grants")).json.grants.length).toBe(before)
+  })
+
+  test("a DELETE the store refuses answers 400 with the store's sentence, not 500", async () => {
+    const add = await call("POST", "/api/grants", { hosts: ["delete-me.example.com"], kind: "authorized", approvedBy: "test" })
+    expect(add.status).toBe(201)
+    const lock = `${process.env.TOUCHSTONE_GRANTS_FILE}.lock`
+    mkdirSync(lock) // a folder at the lock path: the store refuses every write
+    try {
+      const r = await call("DELETE", `/api/grants/${add.json.id}`)
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/^Refused: the grant store lock .+ is a link or a folder, not a lock file\./)
+    } finally {
+      rmSync(lock, { recursive: true, force: true })
+    }
+    expect((await call("DELETE", `/api/grants/${add.json.id}`)).status).toBe(200)
+  })
+
   test("a non-grant path is not handled", async () => {
     const { handled } = await call("GET", "/api/runs")
     expect(handled).toBe(false)
