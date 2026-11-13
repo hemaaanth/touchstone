@@ -10,7 +10,7 @@
 //   node --test spike/test/review-leads.test.mjs
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -79,7 +79,15 @@ test("Review offers record_lead; a lead becomes an event with file, line and rea
   assert.match(text({ content: again.output }), new RegExp(e.id));
 
   // Evidence must point at real source: a file the agent may read, a line in it.
-  for (const bad of [{ file: "src/svc/nope.js" }, { file: ".touchstone.json" }, { file: "../etc/passwd" }, { line: 99 }, { line: 0 }, { reason: "" }]) {
+  // Bad files use line 1, which every non-empty file has, so only the path
+  // check can reject them. Two symlinks lead out of the workspace.
+  const outside = mkdtempSync(join(tmpdir(), "review-leads-out-"));
+  dirs.push(outside);
+  writeFileSync(join(outside, "secret.js"), "const key = 'k';\n");
+  symlinkSync(join(outside, "secret.js"), join(ws, "src/svc/secret.js"));
+  symlinkSync("/etc/passwd", join(ws, "src/svc/passwd.js"));
+  const badFiles = ["src/svc/nope.js", ".touchstone.json", "events.jsonl", "../etc/passwd", "/etc/passwd", "src/svc/secret.js", "src/svc/passwd.js"];
+  for (const bad of [...badFiles.map((file) => ({ file, line: 1 })), { line: 99 }, { line: 0 }, { reason: "" }]) {
     const r = await exec(record, { ...lead, ...bad });
     assert.equal(r.isError, true, `rejects ${JSON.stringify(bad)}`);
   }
