@@ -9,6 +9,8 @@ Rule for every code item: one author thread, one separate reviewer thread, at mo
 
 Last update: 2026-11-13.
 
+**Owner instruction, 2026-11-13:** finish every Wave 3 item that is in flight (H1g, H1h, H3b, L31, L32, the A6 restore minors), repair review findings as usual, cut scope before looping. Start no Wave 4 work (I1 to I7, J1, J2) and no new Wave 3 item (G5, G9, G10 stay `todo`). Then: sync local and origin `main`, run the suites once, restart the dev server on 5188 on the final `main`, go idle with no child thread running, and post a final summary.
+
 ---
 
 ## Rules of engagement
