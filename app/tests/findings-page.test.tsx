@@ -372,7 +372,7 @@ describe("a row: red only on a proven finding, green only after a replay", () =>
 
 // ── N2: still columns, and one date range ──────────────────────────────────
 
-const { fromDayRange, parseDay, rangeLabel, toDayRange } = await import("../src/lib/findings-view")
+const { fromDayRange, normaliseDays, parseDay, rangeLabel, toDayRange } = await import("../src/lib/findings-view")
 const { FINDING_ROW_COLS, FindingsLoading } = await import("../src/components/findings-page")
 
 describe("the date range (one picker for the view's two days)", () => {
@@ -419,6 +419,39 @@ describe("the date range (one picker for the view's two days)", () => {
   })
 })
 
+describe("a stored view's days are made safe when read (review m2, m3)", () => {
+  const NOW = new Date(2026, 10, 13)
+  const view = (from: string, to: string) => normaliseDays({ ...DEFAULT_VIEW, from, to })
+
+  test("m2: a 'to' before 'from' (saved by the old two inputs) is dropped: the label reads 'From …', the filter keeps rows", () => {
+    const v = view("2026-09-12", "2026-09-01")
+    expect([v.from, v.to]).toEqual(["2026-09-12", ""])
+    expect(rangeLabel(v.from, v.to, NOW)).toBe("From Sep 12")
+    // Unnormalised, the same view shows an inverted label and filters to nothing.
+    expect(filterFindings(many, { ...DEFAULT_VIEW, from: "2026-09-12", to: "2026-09-01" })).toHaveLength(0)
+    expect(filterFindings(many, v).length).toBeGreaterThan(0)
+  })
+
+  test("m3: a day that is not a real date is no bound, in the label and in the filter", () => {
+    for (const [from, to] of [["bogus", ""], ["", "2026-02-30"], ["2026-13-01", "nope"]]) {
+      const v = view(from, to)
+      expect([v.from, v.to]).toEqual(["", ""])
+      expect(rangeLabel(v.from, v.to, NOW)).toBe("Any date")
+      expect(filterFindings(many, v)).toHaveLength(filterFindings(many, DEFAULT_VIEW).length)
+    }
+    // One bad end, one good end: the good one stays.
+    expect([view("bogus", "2026-09-20").from, view("bogus", "2026-09-20").to]).toEqual(["", "2026-09-20"])
+    // Unnormalised, a bad 'from' drops every dated row (the old filter compared the raw string).
+    expect(filterFindings(many, { ...DEFAULT_VIEW, from: "bogus" })).toHaveLength(0)
+  })
+
+  test("a valid view is returned as it is", () => {
+    const v = { ...DEFAULT_VIEW, from: "2026-09-01", to: "2026-09-12" }
+    expect(normaliseDays(v)).toBe(v)
+    expect(normaliseDays(DEFAULT_VIEW)).toBe(DEFAULT_VIEW)
+  })
+})
+
 describe("still columns: every row has the same tracks, whatever its title, module or state", () => {
   const rows: FindingSummary[] = [
     { ...many[1], title: "A" },
@@ -449,6 +482,31 @@ describe("still columns: every row has the same tracks, whatever its title, modu
   test("each row has its severity and module cells in their own tracks, in the same order, even with no module", () => {
     const cells = html.split('<li data-slot="finding-row"').slice(1).map((li) => [...li.matchAll(/data-col="(\w+)"/g)].map((m) => m[1]))
     expect(cells).toEqual(rows.map(() => ["severity", "module"]))
+  })
+
+  test("the module cell is the sidebar's module dots: one dot in the module's colour, in a fixed 28 px box", () => {
+    const four = ["web", "domains", "surface", "phishing"].map((pack, i) => ({ ...many[10 + i], pack }))
+    const out = renderToStaticMarkup(
+      <ul>
+        {[...four, { ...many[14], pack: "" }].map((f) => (
+          <FindingListRow key={f.id} finding={f} moduleTitle={f.pack ? `${f.pack} title` : "Unknown"} run={undefined} active={false} onOpen={() => {}} onCopy={() => {}} onOpenRun={() => {}} />
+        ))}
+      </ul>,
+    )
+    const cells = out.split('data-col="module"').slice(1).map((c) => c.slice(0, c.indexOf("</li>")))
+    expect(cells).toHaveLength(5)
+    four.forEach((f, i) => {
+      const dots = [...cells[i].matchAll(/data-slot="module-dot" data-module="([\w-]+)"/g)].map((m) => m[1])
+      expect(dots).toEqual([f.pack])
+      expect(cells[i]).toContain(`aria-label="Module: ${f.pack} title"`)
+      expect(cells[i]).toMatch(/data-slot="module-dots"[^>]*style="width:28px"/)
+      expect(cells[i]).not.toContain('data-slot="module-pill"')
+    })
+    // No module: the same empty box, so the column does not move.
+    expect(cells[4]).toMatch(/data-slot="module-dots" aria-hidden="true"[^>]*style="width:28px"/)
+    expect(cells[4]).not.toContain("module-dot\"")
+    // The dot's ring takes the row's fill: the card at rest.
+    expect(out).toContain("[--module-dots-ring:var(--card)]")
   })
 
   test("the loading rows use the same tracks, so the list does not move when the findings arrive", () => {
