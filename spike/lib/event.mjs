@@ -21,3 +21,12 @@ export function event(name, data = {}) {
   console.log("EVENT " + line);
   if (process.env.EVENTS_FILE) appendFileSync(process.env.EVENTS_FILE, line + "\n");
 }
+
+// End the worker, but only after stdout has taken every event. A write to a
+// pipe is asynchronous: process.exit() drops what is still queued, and a long
+// `settled` line was cut that way, so the server never saw the run end.
+export function exitAfterEvents(code = 0) {
+  process.stdout.write("", () => process.exit(code));
+  // A parent that stopped reading must not hold the worker forever.
+  setTimeout(() => process.exit(code), 10_000).unref();
+}

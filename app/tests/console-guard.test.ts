@@ -175,7 +175,7 @@ describe("console guard: the console's own write reaches the handler", () => {
     for (const [action, body] of [["steer", { text: "hello" }], ["stop", {}], ["archive", { archived: true }], ["rename", { name: "x" }], ["delete", {}]] as const) {
       const r = await call(handleRuns, "POST", `/api/runs/no-such-run/${action}`, GOOD, body)
       expect(r.status, action).toBe(409)
-      expect(r.json.error, action).toBe("no such run")
+      expect([r.json.error, GUARD_ERRORS.includes(r.json.error)], action).toEqual([action === "steer" ? "This run was not found. It may have been deleted. Open another run or start a new one." : "no such run", false])
     }
   })
 
