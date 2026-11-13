@@ -19,6 +19,7 @@ import { sha256 } from "./proof-evidence.mjs";
 import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
+import { isProven } from "./proof-view.mjs";
 import { LangEn } from "ethers";
 
 export const CANDIDATE_CAP = 3;
@@ -256,23 +257,47 @@ export function candidateState(saved = [], save = () => {}) {
   return list;
 }
 
-// A finding proven for a candidate's poc or root cause takes its place: the
-// candidate is removed (and saved), and `candidate-superseded` tells the server
-// and the UI. The run never shows both. Wraps state.found.push, so every pack's
-// submit_finding is covered.
+// A finding for a candidate's poc or root cause takes its place once it is
+// proven: the candidate is removed (and saved), and `candidate-superseded`
+// tells the server and the UI. Wraps state.found.push, so every pack's
+// submit_finding is covered. Web, ai-mcp and the evidence packs push a
+// finding only after their own proof passed (oracle match, snapshot replay),
+// so it supersedes at once. Keys and chain-watch push on a passing test, and
+// contracts on a passing test plus one harm replay; for all three, pocProved
+// comes from the final proof. Such a finding is marked with provedLater, and
+// the server supersedes the candidate only after that proof says
+// pocProved: true (supersededBy).
+const LATER = new WeakSet();
+export const provedLater = (f) => {
+  LATER.add(f);
+  return f;
+};
+
 export function watchFindings(state) {
   const push = state.found.push.bind(state.found);
   state.found.push = (...items) => {
     const n = push(...items);
-    for (const f of items) supersede(state, f);
+    for (const f of items) if (!LATER.has(f)) supersede(state, f);
     return n;
   };
   return state;
 }
 
+const takesPlace = (f, c) => c.poc === f?.poc || (c.rootCause != null && c.rootCause === f?.rootCause);
+
+// The candidates that proven findings take the place of, after the final
+// proof: [{ poc, by }]. A finding that is not proven takes no place.
+export function supersededBy(candidates, findings) {
+  const proven = (findings ?? []).filter(isProven);
+  return (candidates ?? []).flatMap((c) => {
+    const f = proven.find((x) => takesPlace(x, c));
+    return f ? [{ poc: c.poc, by: f.poc ?? null }] : [];
+  });
+}
+
 function supersede(state, f) {
   const list = state.candidates ?? [];
-  const gone = list.filter((c) => c.poc === f?.poc || (c.rootCause != null && c.rootCause === f?.rootCause));
+  const gone = list.filter((c) => takesPlace(f, c));
   for (const c of gone) {
     list.splice(list.indexOf(c), 1);
     event("candidate-superseded", { poc: c.poc, by: f.poc ?? null });

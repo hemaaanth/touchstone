@@ -19,6 +19,7 @@ mock.module("../lib/proof.mjs", {
 });
 
 const { default: contracts } = await import("../packs/contracts/pack.mjs");
+const { supersededBy, watchFindings } = await import("../lib/candidate.mjs");
 const { default: keys } = await import("../packs/keys/pack.mjs");
 const { default: chainWatch } = await import("../packs/chain-watch/pack.mjs");
 
@@ -44,11 +45,12 @@ const candidateArgs = (name) => ({
 });
 
 for (const pack of [contracts, keys, chainWatch]) {
-  const setup = () => {
+  const setup = ({ watched = false } = {}) => {
     const ws = mkdtempSync(join(tmpdir(), `cand-${pack.id}-`));
     mkdirSync(join(ws, "src"), { recursive: true });
     writeFileSync(join(ws, "src", "Vault.sol"), "contract Vault {}\n");
-    const state = { poc: 0, passed: new Map(), found: [] };
+    const raw = { poc: 0, passed: new Map(), found: [], candidates: [] };
+    const state = watched ? watchFindings(raw) : raw;
     const tools = Object.fromEntries(pack.tools(ws, state).map((t) => [t.name, t]));
     const runPoc = async (name, passed = true) => {
       forgeResult = { passed: passed ? 1 : 0, failed: passed ? 0 : 1, output: OUTPUT(name), timedOut: false };
@@ -139,6 +141,26 @@ for (const pack of [contracts, keys, chainWatch]) {
       const fourth = await tools.submit_candidate.execute(candidateArgs("PauseD"));
       assert.match(fourth.output[0].text, /already has 3 candidates/);
       assert.equal(state.candidates.length, 3);
+    } finally { done(); }
+  });
+
+  // Delta review Minor 1: a submitted finding for the candidate's test does not
+  // take its place. Only the final proof can, and only with pocProved: true.
+  test(`${pack.id}: a submitted finding leaves the candidate until the final proof proves it`, async () => {
+    const { state, tools, runPoc, done } = setup({ watched: true });
+    try {
+      replay = noHarmDelta;
+      await runPoc("PauseTest");
+      assert.ok(!(await tools.submit_candidate.execute(candidateArgs("PauseTest"))).isError);
+      // contracts runs a harm replay at submit; keys and chain-watch take a pass.
+      replay = fundsDelta;
+      const r = await tools.submit_finding.execute({ title: "Drain", severity: "high", poc_contract: "PauseTest", explanation: "x\nFix: y" });
+      assert.ok(!r.isError, r.output[0].text);
+      assert.equal(state.found.length, 1);
+      assert.deepEqual(state.candidates.map((c) => c.poc), ["PauseTest"], "the candidate stays while the finding is unproven");
+      const f = state.found[0];
+      assert.deepEqual(supersededBy(state.candidates, [{ ...f, pocProved: false, proof: { kind: "forge", pass: true, harm: { ok: false } } }]), []);
+      assert.deepEqual(supersededBy(state.candidates, [{ ...f, pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } }]), [{ poc: "PauseTest", by: "PauseTest" }]);
     } finally { done(); }
   });
 }

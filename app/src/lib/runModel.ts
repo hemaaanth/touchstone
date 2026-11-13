@@ -709,8 +709,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // (`approval-pending`, then a decide phase). Either way the card sits
         // here in the transcript, and `pending` tracks the worst one so far.
         const poc = str(e.poc)
-        // A proven finding takes the place of a candidate with its poc.
-        dropCandidate(poc)
+        // A submitted finding does not end a candidate: only a proven one does,
+        // and the engine or the server then sends candidate-superseded.
         if (submitted.some((f) => f.poc && f.poc === poc)) break
         const n = num(e.n) ?? submitted.length + 1
         const f: PendingApproval = {

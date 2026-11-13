@@ -8,7 +8,7 @@
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { makeCandidate, priorCandidate } from "../../spike/lib/candidate.mjs"
+import { makeCandidate, priorCandidate, supersededBy } from "../../spike/lib/candidate.mjs"
 
 // The one shape the server stores and sends. makeCandidate sets the fixed
 // fields, so no input can make a candidate proven, and cuts the evidence to
@@ -23,9 +23,11 @@ export function candidatesOf(events) {
   return out
 }
 
-// Events that end a candidate: the engine superseded it, or a finding was
-// proven for its poc. A run never shows a candidate beside its finding.
-const ENDS_CANDIDATE = ["candidate-superseded", "finding-submitted", "approval-pending"]
+// The one event that ends a candidate: a proven finding took its place. The
+// engine sends it when a pack's finding is proven at submit; supersedeProven
+// sends it after the final proof. A finding that is only submitted (a keys or
+// chain-watch test that passed) does not end it: its proof may still fail.
+const ENDS_CANDIDATE = ["candidate-superseded"]
 
 // Apply one event to the list: add the candidate it carries if it is a new one,
 // or drop the candidate it ends. Returns true if the list changed.
@@ -47,6 +49,17 @@ export function addCandidate(list, e) {
 export function trackCandidate(run, e) {
   run.candidates ??= []
   return addCandidate(run.candidates, e)
+}
+
+// After the final proof: end each candidate a proven finding takes the place
+// of (same poc or root cause, pocProved: true). Call it before the record is
+// written, so the record holds only the candidates that are left.
+export function supersedeProven(run, findings, send) {
+  for (const { poc, by } of supersededBy(run.candidates ?? [], findings)) {
+    const e = { t: Date.now(), ev: "candidate-superseded", poc, by }
+    trackCandidate(run, e)
+    send(e)
+  }
 }
 
 // What a follow-up worker gets, so its cap, numbering and guards count the

@@ -42,7 +42,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
-import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -1050,6 +1050,7 @@ async function recordRun(run, found) {
     const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
+    supersedeProven(run, findings, (e) => broadcast(run, e))
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
@@ -1900,6 +1901,7 @@ async function recordMore(run, found) {
   const findings = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
     run.stderr += `[proof-delta] ${m}\n`
   }))
+  supersedeProven(run, findings, (e) => broadcast(run, e))
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {

@@ -6,7 +6,7 @@ import path from "node:path"
 // Candidates in the run record: the server keeps the engine's record as it is,
 // forces the fixed fields, and never mixes a candidate into the findings.
 // @ts-expect-error — plain .mjs module, no types
-const { normalizeCandidate, candidatesOf, trackCandidate, priorCandidatesEnv, recordCandidates, writeCandidates, candidateEvents } = await import("../server/candidates.mjs")
+const { normalizeCandidate, candidatesOf, trackCandidate, priorCandidatesEnv, recordCandidates, writeCandidates, candidateEvents, supersedeProven } = await import("../server/candidates.mjs")
 
 const dir = mkdtempSync(path.join(tmpdir(), "candidates-test-"))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -72,22 +72,39 @@ describe("candidatesOf and trackCandidate", () => {
   })
 
   // Review Minor 2: a proven finding takes the candidate's place.
-  test("a superseded candidate, or one whose poc is now a finding, is dropped", () => {
+  // Delta review Minor 1: a finding that is only submitted does not.
+  test("a superseded candidate is dropped; one whose poc is only submitted as a finding stays", () => {
     const list = candidatesOf([
       ev(candidate("a")),
       ev(candidate("b")),
       ev(candidate("c")),
       { t: 2, ev: "candidate-superseded", poc: "a", by: "other" },
-      { t: 3, ev: "finding-submitted", poc: "b", title: "proven b" },
+      { t: 3, ev: "finding-submitted", poc: "b", title: "submitted b" },
+      { t: 4, ev: "approval-pending", poc: "c", title: "old-format c" },
     ])
-    expect(list.map((c: { poc: string }) => c.poc)).toEqual(["c"])
+    expect(list.map((c: { poc: string }) => c.poc)).toEqual(["b", "c"])
     const run: { candidates?: { poc: string }[] } = {}
     trackCandidate(run, ev(candidate("a")))
     trackCandidate(run, ev(candidate("b")))
     expect(trackCandidate(run, { ev: "candidate-superseded", poc: "a" })).toBe(true)
-    expect(trackCandidate(run, { ev: "finding-submitted", poc: "b" })).toBe(true)
-    expect(run.candidates).toEqual([])
-    expect(recordCandidates(run)).toEqual([])
+    expect(trackCandidate(run, { ev: "finding-submitted", poc: "b" })).toBe(false)
+    expect(recordCandidates(run).map((c: { poc: string }) => c.poc)).toEqual(["b"])
+  })
+
+  // Delta review Minor 1: after the final proof, only a finding with
+  // pocProved: true (and a passing harm check) takes a candidate's place.
+  test("supersedeProven ends a candidate only for a proven finding, and says so in an event", () => {
+    const run: { candidates?: { poc: string }[] } = {}
+    for (const p of ["k1", "k2", "k3", "k4"]) trackCandidate(run, ev(candidate(p)))
+    const sent: { ev: string; poc: string; by: string }[] = []
+    supersedeProven(run, [
+      { poc: "k1", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } },
+      { poc: "k2", pocProved: false, proof: { kind: "forge", pass: true, harm: { ok: false, reason: "no ETH left the target" } } },
+      { poc: "k3", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: false } } },
+      { poc: "other", rootCause: "root-k4", pocProved: true, proof: { kind: "forge", pass: true, harm: { ok: true } } },
+    ], (e: { ev: string; poc: string; by: string }) => sent.push(e))
+    expect(sent.map((e) => [e.ev, e.poc, e.by])).toEqual([["candidate-superseded", "k1", "k1"], ["candidate-superseded", "k4", "other"]])
+    expect(recordCandidates(run).map((c: { poc: string }) => c.poc)).toEqual(["k2", "k3"])
   })
 })
 

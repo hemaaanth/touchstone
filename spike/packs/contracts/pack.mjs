@@ -22,7 +22,7 @@ import { proofDelta } from "../../lib/proof.mjs";
 import { halmosBrief, halmosRecord, halmosScan } from "./halmos.mjs";
 import { chimeraBrief, chimeraRecord, chimeraScan } from "./chimera.mjs";
 import { bytecodeFindingsTool, bytecodeKickoff, bytecodePrepass, bytecodeUnits } from "./bytecode/index.mjs";
-import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, recordForge } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, provedLater, recordForge } from "../../lib/candidate.mjs";
 
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
 // set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
@@ -368,7 +368,8 @@ function tools(ws, state) {
         return { output: [{ type: "text", text: `Cannot record this finding: the replay of \`${poc}\` passed but shows no harm (${why}). A proof must call a contract deployed from the audited code and, in that call, move ETH out of it or change its storage. Rewrite the test so it performs the real attack, run it with run_poc, then call submit_finding again. ${CANDIDATE_HINT}` }], isError: true };
       }
       const n = state.found.length + 1;
-      state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
+      // The final replay sets pocProved; a candidate for this test stays until then.
+      state.found.push(provedLater({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source }));
       event("finding-submitted", { pack: "contracts", n, title: args.title, severity: args.severity, poc });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next suspect root cause on your list, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },

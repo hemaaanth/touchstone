@@ -61,16 +61,17 @@ describe("reduceEvents", () => {
   })
 })
 
-// Review Minor 2: a proven finding takes the candidate's place.
-test("reduceEvents drops a candidate once it is superseded or proven", () => {
+// Review Minor 2: a proven finding takes the candidate's place. Delta review
+// Minor 1: a finding that is only submitted (its proof may still fail) does not.
+test("reduceEvents drops a candidate once it is superseded, not when its poc is only submitted", () => {
   const s = reduceEvents([
     ev(cand("a")),
     ev(cand("b")),
     ev(cand("c")),
     { t: 2, ev: "candidate-superseded", poc: "a", by: "other" },
-    { t: 3, ev: "finding-submitted", n: 1, poc: "b", title: "proven b", severity: "high" },
+    { t: 3, ev: "finding-submitted", n: 1, poc: "b", title: "submitted b", severity: "high" },
   ])
-  expect(s.candidates.map((c) => c.poc)).toEqual(["c"])
+  expect(s.candidates.map((c) => c.poc)).toEqual(["b", "c"])
   expect(s.submitted.map((f) => f.poc)).toEqual(["b"])
 })
 

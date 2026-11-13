@@ -34,6 +34,7 @@ import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
+import { supersededBy } from "./lib/candidate.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 import { leadsFrom } from "./lib/leads.mjs";
 import { afterNudge } from "./lib/nudge.mjs";
@@ -388,7 +389,8 @@ async function main() {
     // pass/fail, gas, decoded logs, and the signed money-moved table.
     findings,
     // Unproven, agent-asserted results. Never findings, never counted as one.
-    candidates: settled?.candidates ?? [],
+    // A candidate a proven finding took the place of is left out.
+    candidates: (settled?.candidates ?? []).filter((c) => !supersededBy([c], findings).length),
     // Back-compat single-finding fields: the worst finding.
     findingSubmitted: findings.length > 0,
     finding: worst ? { title: worst.title, severity: worst.severity, poc: worst.poc } : null,

@@ -24,7 +24,7 @@ import { aderynScan } from "../../lib/aderyn.mjs";
 import { slitherLeads, slitherNote } from "../../lib/slither.mjs";
 import { ozMonitorLeads, ozMonitorNote } from "../../lib/oz-monitor.mjs";
 import { labOf, controlChanges } from "./control.mjs";
-import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, recordForge } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, provedLater, recordForge } from "../../lib/candidate.mjs";
 import { scanSources } from "./source-checks.mjs";
 
 export const IMAGE = "touchstone-chain-tools:wave1";
@@ -446,7 +446,9 @@ export function chainTools(ws, state, spec) {
         return text(`\`${poc}\` is already recorded as finding #${dup.n}. Each finding needs its own test contract.`, true);
       }
       const n = state.found.length + 1;
-      state.found.push({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source });
+      // A passing test is not yet a proof: the final replay judges the harm.
+      // A candidate for this test stays until that replay proves it.
+      state.found.push(provedLater({ n, title: args.title, severity: args.severity, poc, explanation: args.explanation, source }));
       event("finding-submitted", { n, title: args.title, severity: args.severity, poc });
       return text(`Recorded finding #${n}: ${args.title} (${args.severity}). Do NOT stop. Continue with the next lead, worst first. Skip anything this finding's fix would also stop. ${leftText(MAX_POC, state.poc, "run_poc")}`);
     },
