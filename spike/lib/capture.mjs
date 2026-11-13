@@ -31,9 +31,9 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { confineReach } from "./reach-confine.mjs";
-import { getGrant, grantActive, hostCovers } from "./grant-store.mjs";
+import { getGrant, grantActive, hostCovers, loadGrants } from "./grant-store.mjs";
 import { enforceReach } from "./reach.mjs";
-import { getUserScope, githubTarget, githubScopeKey } from "./scopes-store.mjs";
+import { getUserScope, githubTarget, githubScopeKey, loadScopes } from "./scopes-store.mjs";
 
 // The GitHub hosts a capture may reach. A supply-chain scope's own grant names
 // api.github.com and raw.githubusercontent.com (scopes-store.mjs GITHUB_HOSTS).
@@ -55,6 +55,11 @@ export const isCaptureTarget = (t) => t?.repo != null && CAPTURE_TARGETS.include
 //   hosts    the egress allow-list the tool asks for
 export function captureGrant(scopeId, targets, hosts, { now = Date.now() } = {}) {
   if (typeof scopeId !== "string" || !scopeId) throw new Error("A capture needs the run's own saved scope (scopeId).");
+  // A damaged store reads as empty in the lookups below. Say what is wrong.
+  // A missing file is an empty store, not damage.
+  for (const [load, what] of [[loadScopes, "scope"], [loadGrants, "grant"]]) {
+    try { load(); } catch { throw new Error(`the ${what} store cannot be read (damaged or not a JSON list); repair it, then run again`); }
+  }
   const scope = getUserScope(scopeId);
   if (!scope) throw new Error(`scope ${scopeId.slice(0, 80)} is not a saved scope`);
   if (scope.kind !== "live" || scope.pack !== "supply-chain" || !Array.isArray(scope.github)) throw new Error("the scope is not a live supply-chain scope");
@@ -118,8 +123,11 @@ export function scrub(text, values) {
 
 // What a scrub cannot see: a part of the secret, or the secret encoded. These
 // are every 12-character piece of the value, its base64 and base64url forms
-// (at each of the 3 byte offsets, and every 16-character piece of those), and
-// its URL-encoded form. A tool that prints any of them has its output dropped.
+// (at each of the 3 byte offsets, and every 16-character piece of those), every
+// 24-character piece of its hex form (lower and upper case), and its
+// URL-encoded form. A tool that prints any of them has its output dropped.
+// Known limit: a copy cut into three or more short chunks (each under 12
+// characters) with other text between them is not found.
 export const PIECE = 12;
 // A secret must be at least two pieces long. Then a copy split in two (across
 // stdout and stderr, or two chunks of one stream) has one part of 12 or more
@@ -136,6 +144,8 @@ export function secretForms(v) {
       for (let i = 0; i + 16 <= core.length; i++) forms.add(core.slice(i, i + 16));
     }
   }
+  const hex = Buffer.from(v).toString("hex");
+  for (const h of [hex, hex.toUpperCase()]) for (let i = 0; i + 2 * PIECE <= h.length; i += 2) forms.add(h.slice(i, i + 2 * PIECE));
   return [...forms];
 }
 export function holdsSecret(text, values) {

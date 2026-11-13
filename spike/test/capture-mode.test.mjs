@@ -207,6 +207,23 @@ test("gate: a secret that is missing or shorter than SECRET_MIN is refused", asy
   assert.equal((await runCapture({ ...cap({ secrets: { GITHUB_TOKEN: "x".repeat(SECRET_MIN) } }), confine: s.confine, exec: s.exec })).refused, undefined);
 });
 
+// A damaged store still refuses, and the reason says the store cannot be read
+// (not "not a saved scope" or "no grant of its own"). A missing file is an
+// empty store, so that case still says the scope is not saved.
+test("gate: a damaged scope store or grant store refuses with a reason that says so", async () => {
+  for (const [file, what] of [[process.env.TOUCHSTONE_SCOPES_FILE, "scope"], [process.env.TOUCHSTONE_GRANTS_FILE, "grant"]]) {
+    const saved = readFileSync(file, "utf8");
+    try {
+      for (const junk of ["{not json", "{}", "null", ""]) {
+        writeFileSync(file, junk);
+        await refused({}, new RegExp(`the ${what} store cannot be read`));
+      }
+    } finally { writeFileSync(file, saved); }
+  }
+  const s = seams({ print: "{}" });
+  assert.equal((await runCapture({ ...cap(), confine: s.confine, exec: s.exec })).refused, undefined, "the restored stores work again");
+});
+
 test("captureGrant returns the scope and its own grant", () => {
   const { scope, grant } = captureGrant(scopeId, targets, ["api.github.com"]);
   assert.equal(scope.id, scopeId);
@@ -304,6 +321,16 @@ test("leak check: base64, base64url, split and URL-encoded copies of the token a
   assert.deepEqual(cleanOutput({ stdout: `a ${FAKE_TOKEN}`, stderr: "" }, [FAKE_TOKEN]), { stdout: "a [REDACTED]", stderr: "" });
 });
 
+test("leak check: hex copies (lower and upper case), whole or in part, are caught", () => {
+  const hex = Buffer.from(FAKE_TOKEN).toString("hex");
+  for (const h of [hex, hex.toUpperCase(), hex.slice(6, 6 + 2 * 12), hex.toUpperCase().slice(10, 10 + 2 * 12)]) {
+    assert.equal(holdsSecret(`dump: ${h} end`, [FAKE_TOKEN]), true, h);
+  }
+  assert.equal(cleanOutput({ stdout: `0x${hex}`, stderr: "" }, [FAKE_TOKEN]).leaked, LEAK_REASON);
+  // 11 bytes of hex (22 characters) is too short to be sure, the same rule as a plain piece.
+  assert.equal(holdsSecret(hex.slice(0, 22), [FAKE_TOKEN]), false);
+});
+
 // The two chunks are the two streams the tool writes. At every split point one
 // side holds SECRET_MIN / 2 = 12 or more characters, so the drop always fires.
 test("a token split across stdout and stderr is caught at every split point", () => {
@@ -325,6 +352,8 @@ test("runCapture drops all output when a part of the token is left after the scr
   const forms = [
     [FAKE_TOKEN, (t) => ({ stdout: Buffer.from(t).toString("base64"), stderr: "" })],
     [FAKE_TOKEN, (t) => ({ stdout: Buffer.from(`x-access-token:${t}`).toString("base64url"), stderr: "" })],
+    [FAKE_TOKEN, (t) => ({ stdout: Buffer.from(t).toString("hex"), stderr: "" })],
+    [FAKE_TOKEN, (t) => ({ stdout: "", stderr: Buffer.from(t).toString("hex").toUpperCase() })],
     [ODD, (t) => ({ stdout: `GET /?t=${encodeURIComponent(t)}`, stderr: "" })],
     [FAKE_TOKEN, (t) => ({ stdout: `ok ${t.slice(0, half)}\n${t.slice(half)}`, stderr: "" })],
     [FAKE_TOKEN, (t) => ({ stdout: `{"a":"${t.slice(0, 9)}`, stderr: `${t.slice(9)}"}` })],
