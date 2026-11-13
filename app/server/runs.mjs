@@ -19,14 +19,15 @@
 import { spawn } from "node:child_process"
 import { DatabaseSync } from "node:sqlite"
 import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
+import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
@@ -643,7 +644,10 @@ function engineEvents(run) {
     if (e.ev === "settled") {
       // Internal: carries the summary and every finding with its passing
       // source. Persistence reads it on exit; it is not a UI step.
+      // The exit path may have read this same event from the engine's file.
+      if (run.settled && run.settled.t === e.t) return
       run.settled = {
+        t: e.t ?? null,
         final: e.summary?.final?.text ?? null,
         status: e.status ?? null,
         reason: e.reason ?? null,
@@ -671,6 +675,23 @@ function engineEvents(run) {
       broadcast(run, { ev: "status", status: run.status, pending: run.pending })
     }
   }
+}
+
+// The engine writes each event to its own file before it writes it to stdout.
+// A `settled` that did not arrive on stdout (the pipe was cut at the worker's
+// exit) is still in that file. Read it, so a finished turn is never shown as a
+// crash. `since` is when this worker started: an older turn's settle is not its.
+function recoverSettled(run, since) {
+  if (run.settled || !run.eventsFile || !existsSync(run.eventsFile)) return
+  const e = readJsonl(run.eventsFile).findLast((x) => x.ev === "settled" && !x.agent && x.t >= since)
+  if (e) engineEvents(run)(e)
+}
+
+// How a worker process ended, in plain words, for the card or the reply error.
+function exitWords(code, signal) {
+  if (signal) return `it was killed by the signal ${signal}`
+  if (code) return `it exited with the code ${code}`
+  return "it exited without an error code"
 }
 
 // Fleet runs split the scope across children; solo runs have one agent. A run
@@ -841,6 +862,7 @@ function spawnAgent(run, leads) {
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
+  const since = Date.now()
   const child = spawn(process.execPath, [ENGINE, "child", "run", run.db, run.ws], {
     cwd: SPIKE,
     env,
@@ -855,8 +877,9 @@ function spawnAgent(run, leads) {
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
-  child.on("exit", async () => {
+  child.on("exit", async (code, signal) => {
     if (run.status !== "running" && run.status !== "starting") return
+    if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
     if (run.stopping) {
       await endWorkspace(run)
@@ -895,16 +918,17 @@ function spawnAgent(run, leads) {
       run.error = info.message
       setRunStatus(run, "error")
     } else {
-      // The worker died before it settled anything. The tail of its stderr is
-      // the best evidence; present it as an unexpected-crash card.
+      // The worker died before it settled anything, on stdout or in its own
+      // file. Say how the process ended; the tail of its stderr is the evidence.
+      const how = `The engine process ended before it reported a result: ${exitWords(code, signal)}.`
       const tail = run.stderr.slice(-800).trim()
       run.errorInfo = {
         kind: "crash", retryable: true, reason: "no-settle",
         spentUsd: Number(run.events.findLast((e) => e.ev === "spend")?.usd ?? 0),
-        detail: tail,
+        detail: tail ? `${how}\n\n${tail}` : how,
         title: "The run stopped unexpectedly",
-        hint: "The engine exited before it could report a result. Start the run again; if it keeps happening, the error output below is the place to look.",
-        message: tail || "the agent exited before proving a finding",
+        hint: "Press Run again to continue in this chat. The run keeps its history and its files. If it keeps happening, the error output below is the place to look.",
+        message: tail || how,
       }
       run.error = run.errorInfo.message
       setRunStatus(run, "error")
@@ -971,8 +995,77 @@ async function recordRun(run, found) {
   }
 }
 
-// Delete a run's workspace. First let the pack stop what its pre-pass left
-// running there (the web lab's container), or that would outlive the run.
+// ---- Kept workspaces. A run's workspace outlives the run, so a follow-up
+// finds the files the agent wrote and the sources it fetched. One small record
+// names the workspace and holds the run's own scope snapshot. It survives a
+// restart, and it moves to the trash with the run's other files.
+const workspaceFile = (id) => path.join(RESULTS_DIR, `run-${id}.workspace.json`)
+function readWorkspace(id) {
+  try {
+    return JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+// The workspace is a directory this user owns. The temp folder is shared: a
+// path someone else made there is not the run's workspace.
+function workspaceAlive(ws) {
+  try {
+    const st = statSync(ws)
+    return st.isDirectory() && st.uid === (process.getuid?.() ?? st.uid)
+  } catch {
+    return false
+  }
+}
+
+// Delete a kept workspace. The path comes from a record file, so delete only a
+// run directory inside the temp folder, never some other path.
+function removeKept(ws) {
+  if (ws && workspaceAlive(ws) && path.resolve(ws).startsWith(path.resolve(tmpdir()) + path.sep)) rmSync(ws, { recursive: true, force: true })
+}
+
+// Keep the workspace of a run that has an agent session: only that run can take
+// a follow-up. Returns false when there is nothing to keep.
+function keepWorkspace(run, ws) {
+  if (!run?.id || !workspaceAlive(ws) || !existsSync(path.join(RESULTS_DIR, `run-${run.id}.sqlite`))) return false
+  try {
+    const target = run.target ?? (run.saved ? run.saved.target : null) ?? readWorkspace(run.id)?.target ?? null
+    const file = workspaceFile(run.id)
+    writeFileSync(`${file}.tmp`, JSON.stringify({ ws, target, modules: run.modules ?? [] }), { mode: 0o600 })
+    renameSync(`${file}.tmp`, file)
+  } catch {
+    return false // no record, no way back to the files: remove them as before
+  }
+  pruneWorkspaces()
+  return true
+}
+
+// shortcut: only the number of kept workspaces is capped, and they stay in the
+// temp folder (RAM on some hosts, emptied at a reboot). Cap bytes or move them
+// to a disk folder when runs get large. A run that lost its workspace this way
+// still takes a follow-up: it gets a new workspace and is told so.
+function pruneWorkspaces() {
+  const keep = Number(process.env.TOUCHSTONE_KEEP_WORKSPACES) || 8
+  try {
+    const kept = readdirSync(RESULTS_DIR)
+      .map((f) => /^run-(.+)\.workspace\.json$/.exec(f))
+      .filter(Boolean)
+      .map((m) => ({ id: m[1], at: statSync(path.join(RESULTS_DIR, m[0])).mtimeMs }))
+      .sort((a, b) => b.at - a.at)
+    for (const { id } of kept.slice(keep)) {
+      const run = runs.get(id)
+      if (run && !idle(run)) continue
+      removeKept(readWorkspace(id)?.ws)
+    }
+  } catch {
+    // Best effort: a failed prune must not fail the run that just ended.
+  }
+}
+
+// End a run's use of its workspace. First let the pack stop what its pre-pass
+// left running there (the web lab's container), or that would outlive the run.
+// The files stay when the run can take a follow-up; otherwise they are deleted.
 async function endWorkspace(run) {
   const ws = run?.ws ?? run
   try {
@@ -988,6 +1081,11 @@ async function endWorkspace(run) {
   } catch {
     // already closed
   }
+  if (keepWorkspace(run, ws)) {
+    // The files stay. The run's Daytona machines do not: they open again on demand.
+    if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {})
+    return
+  }
   await cleanupWorkspace(ws)
 }
 
@@ -998,14 +1096,14 @@ async function endWorkspace(run) {
 // worker that reopens the saved session. Only an archived run refuses.
 export function steerRun(id, text, clientId) {
   const run = runs.get(id)
-  if (!run) throw new Error("no such run")
-  if (run.archived) throw new Error("this run is archived")
+  if (!run) throw new Error("This run was not found. It may have been deleted. Open another run or start a new one.")
+  if (run.archived) throw new Error("This run is archived. Unarchive it to send it a message.")
   const msg = typeof text === "string" ? text.trim() : ""
-  if (!msg) throw new Error("empty message")
+  if (!msg) throw new Error("The message is empty. Type a message and send it again.")
   // The UI's id for the message. The echo carries it back unchanged.
   const tag = typeof clientId === "string" && /^[\w-]{1,64}$/.test(clientId) ? clientId : undefined
   if (idle(run)) return followUp(run, msg, tag)
-  if (!run.child?.stdin?.writable) throw new Error(`the run is ${run.status}; try again in a moment`)
+  if (!run.child?.stdin?.writable) throw new Error(`The run cannot take a message at this moment (its status is "${run.status}"). Wait a moment and send the message again.`)
   run.child.stdin.write(JSON.stringify({ text: msg, id: tag }) + "\n")
   return { ok: true }
 }
@@ -1056,31 +1154,28 @@ function ensureFiles(run) {
 }
 
 // Start a follow-up: one operator message to an idle run. The worker reopens
-// the run's saved agent session in a fresh workspace, answers, and exits. Any
-// finding it proves is replayed and added to the run record.
+// the run's saved agent session in the run's own kept workspace, answers, and
+// exits. Any finding it proves is replayed and added to the run record. When
+// the workspace is gone, a new one is built from the run's scope, and one
+// `workspace` event tells the operator and the agent the same true thing.
 export function followUp(run, text, clientId) {
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
-  if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
+  if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error(`This run has spent its budget of $${money.RUN_BUDGET_USD}. Start a new run with a higher budget to continue the work.`)
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
-  // An older run saved no target. Its scope may allow several modules now, so
-  // it comes back under the module this run used.
-  const saved = run.target ? null : run.scope?.id ? getTarget(run.scope.id) : null
-  const target = run.target ?? (saved ? withPack(saved, run.scope.pack ?? saved.pack) : null)
-  if (!target) throw new Error("this run's scope is no longer in the library")
-  run.target = target
-  // A generated lab is new on every run, with its own throwaway keys, so a reopened
-  // session would meet a different repository than the one it audited.
-  if (target.generated) throw new Error("this run's lab was generated for that run only, so it cannot be reopened for a follow-up")
-  if (!own(run)) throw new Error("another server is already answering this run; try again when it finishes")
-  try {
-    run.ws = prepareWorkspace(target, { modules: run.modules ?? [] })
-  } catch (err) {
-    release(run)
-    throw err
-  }
+  // The run's own snapshot comes first. Never replace it with a newer, wider
+  // scope from the library. Only a run from before workspaces were kept has no
+  // snapshot; its scope may allow several modules now, so it comes back under
+  // the module this run used.
+  const kept = readWorkspace(run.id)
+  const ws = kept?.ws && workspaceAlive(kept.ws) ? kept.ws : null
+  const library = run.target || kept?.target ? null : run.scope?.id ? getTarget(run.scope.id) : null
+  const target = run.target ?? kept?.target ?? (library ? withPack(library, run.scope.pack ?? library.pack) : null)
+  if (!ws && !target) throw new Error("The workspace of this run is gone and its scope is no longer in the library, so the workspace cannot be built again. Start a new run on the scope you want.")
+  if (target) run.target = target
+  if (!own(run)) throw new Error("Another server is already answering this run. Wait until it finishes, then send the message again.")
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
   run.error = null
@@ -1089,57 +1184,97 @@ export function followUp(run, text, clientId) {
   run.replying = true
   broadcast(run, { t: Date.now(), ev: "reply-start" })
 
-  const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
-    cwd: SPIKE,
-    env: {
-      ...process.env,
-      TOUCHSTONE_PARENT_PIPE: "1",
-      PROVIDER: runProvider(run),
-      ALIAS: run.alias,
-      EVENTS_FILE: run.eventsFile,
-      RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
-      ...money,
-      ...fleetEnv(run),
-      FOLLOWUP: text,
-      ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
-      PRIOR_FOUND: JSON.stringify(prior),
-      ATTEMPT_BASE: attemptBase(run),
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  })
-  child.stdin.on("error", () => {})
-  run.child = child
-  pipeEvents(child, engineEvents(run), (line) => {
-    run.stderr += line + "\n"
-  })
-  child.stderr.on("data", (d) => {
-    run.stderr += d
-  })
-  child.on("exit", async () => {
-    const s = run.settled
-    try {
-      if (s?.findings?.length) await recordMore(run, s.findings)
-      else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
-      else if (!s) broadcast(run, { t: Date.now(), ev: "reply-error", error: run.stderr.slice(-800) || "the follow-up worker exited early" })
-      // A failed run that a follow-up retried: if the reply finished, or the
-      // operator stopped it, the old failure no longer describes the run —
-      // unless part of the scope is still unread.
-      if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
-        run.error = null
-        run.errorInfo = null
-        setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
-        finalize(run)
+  const end = async () => {
+    if (run.ws) await endWorkspace(run).catch(() => {})
+    run.child = null
+    run.stopping = false
+    run.replying = false
+    broadcast(run, { t: Date.now(), ev: "closed" })
+  }
+  const start = (note) => {
+    const since = Date.now()
+    const errFrom = run.stderr.length // the card must not quote an earlier worker's output
+    const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
+      cwd: SPIKE,
+      // No reach env: a follow-up gets no route to a live target, as before.
+      env: {
+        ...process.env,
+        TOUCHSTONE_PARENT_PIPE: "1",
+        PROVIDER: runProvider(run),
+        ALIAS: run.alias,
+        EVENTS_FILE: run.eventsFile,
+        RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
+        ...money,
+        ...fleetEnv(run),
+        FOLLOWUP: text,
+        ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
+        ...(note ? { WORKSPACE_NOTE: note } : {}),
+        PRIOR_FOUND: JSON.stringify(prior),
+        ATTEMPT_BASE: attemptBase(run),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    child.stdin.on("error", () => {})
+    run.child = child
+    pipeEvents(child, engineEvents(run), (line) => {
+      run.stderr += line + "\n"
+    })
+    child.stderr.on("data", (d) => {
+      run.stderr += d
+    })
+    child.on("exit", async (code, signal) => {
+      if (!run.stopping) recoverSettled(run, since)
+      const s = run.settled
+      try {
+        if (s?.findings?.length) await recordMore(run, s.findings)
+        else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
+        else if (!s) {
+          const tail = run.stderr.slice(errFrom).slice(-800).trim()
+          broadcast(run, { t: Date.now(), ev: "reply-error", error: `The agent process ended before it gave an answer: ${exitWords(code, signal)}. Send the message again to retry.${tail ? `\n\n${tail}` : ""}` })
+        }
+        // A failed run that a follow-up retried: if the reply finished, or the
+        // operator stopped it, the old failure no longer describes the run —
+        // unless part of the scope is still unread.
+        if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
+          run.error = null
+          run.errorInfo = null
+          setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
+          finalize(run)
+        }
+      } catch (err) {
+        broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved: ${String(err?.message ?? err)} Send the message again to retry.` })
+      } finally {
+        await end()
       }
-    } catch (err) {
-      broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
-    } finally {
-      await endWorkspace(run)
-      run.child = null
-      run.stopping = false
-      run.replying = false
-      broadcast(run, { t: Date.now(), ev: "closed" })
-    }
-  })
+    })
+  }
+
+  if (ws) {
+    run.ws = ws
+    start(null)
+    return { ok: true, followUp: true }
+  }
+  // The workspace is gone: deleted, or left on another machine, or lost with
+  // the temp folder at a reboot. Build a new one from the run's scope and say so.
+  run.ws = null
+  prepareRunWorkspace(target, { modules: run.modules ?? kept?.modules ?? [] }).then(
+    (made) => {
+      run.ws = made
+      const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
+      const message = [
+        "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
+        "Files the agent wrote before are not in it.",
+        lost.length ? `These fetched sources are not in it: ${[...new Set(lost)].join("; ")}. A new fetch gets the newest version, which can differ from the one read before.` : "",
+        target.generated ? "The lab was generated again with new throwaway keys, so it is not the same repository as before." : "",
+      ].filter(Boolean).join(" ")
+      broadcast(run, { t: Date.now(), ev: "workspace", state: "rebuilt", message })
+      start(`Operator follow-up. ${message} Write or fetch again what you need.`)
+    },
+    async (err) => {
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: `The workspace of this run is gone, and a new one could not be built: ${String(err?.message ?? err)} Fix the cause, then send the message again.` })
+      await end()
+    },
+  )
   return { ok: true, followUp: true }
 }
 
@@ -1217,6 +1352,8 @@ export function deleteRun(id) {
   const run = runs.get(id)
   if (!run) throw new Error("no such run")
   if (!idle(run)) throw new Error("the agent is still working; delete it once it stops")
+  // The kept workspace goes with the run. Its record moves to the trash below.
+  removeKept(readWorkspace(id)?.ws)
   const trash = path.join(RESULTS_DIR, "trash")
   mkdirSync(trash, { recursive: true })
   const prefix = `run-${id}.`
@@ -1455,7 +1592,7 @@ function savedRun(id, events, mtime) {
   // Same for a follow-up the restart cut off: it started after the last close.
   const lastClose = events.findLastIndex((e) => e.ev === "closed")
   if (events.findLastIndex((e) => e.ev === "reply-start") > lastClose) {
-    events.push({ t: Date.now(), ev: "reply-error", error: "the server restarted during this reply, so it stopped" })
+    events.push({ t: Date.now(), ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
     events.push({ t: Date.now(), ev: "closed" })
   }
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: Date.now(), ev: "closed" })
