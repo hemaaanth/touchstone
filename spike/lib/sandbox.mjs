@@ -224,12 +224,21 @@ export function warmFor(ws) {
   return [...out];
 }
 
+// The most forge output we read, on both paths. A replay JSON above it is cut,
+// and a cut trace is never judged: the call reports `overflow` and the proof
+// says why (see proofDelta). Measured on the pinned image (H1c): a replay of a
+// small token drain is about 0.4 MiB; the same drain with one forge-std
+// deal(token, …) in the test BODY is about 10 MiB, with two deals or
+// deal(…, true) about 20 MiB. The same deal in setUp() stays at 0.4 MiB. So the
+// cap stays, and the refusal tells the agent to move deal into setUp().
+export const FORGE_OUTPUT_CAP = 8 * 1024 * 1024;
+
 // Run forge on Daytona when it is on, else in local Docker. The files forge
 // writes come back, as they would locally. The proof gate needs them: it reads
 // the build artifacts in out/ (see scopeCode in proof.mjs).
 async function forgeRun(ws, args, timeoutMs) {
   if (daytonaOn()) {
-    const r = await remoteDocker(args, { ws, timeoutMs, maxBuffer: 8 * 1024 * 1024, owner: "1000:1000", warm: warmFor(ws) });
+    const r = await remoteDocker(args, { ws, timeoutMs, maxBuffer: FORGE_OUTPUT_CAP, owner: "1000:1000", warm: warmFor(ws) });
     if (r) return r;
   }
   return run(args, timeoutMs);
@@ -237,8 +246,10 @@ async function forgeRun(ws, args, timeoutMs) {
 
 const run = (args, timeoutMs) =>
   new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0 });
+    execFile("docker", args, { timeout: timeoutMs, maxBuffer: FORGE_OUTPUT_CAP }, (err, stdout, stderr) => {
+      // Above maxBuffer, node kills the child and keeps only the first bytes.
+      const overflow = err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      resolve({ stdout: String(stdout), stderr: String(stderr), timedOut: err?.killed === true, code: err?.code ?? 0, overflow });
     });
   });
 
@@ -280,6 +291,8 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
     IMG, cmd,
   ];
   const r = await forgeRun(ws, args, timeoutMs);
+  // A cut output is never parsed: raw is empty and `overflow` says why.
+  if (r.overflow) return { raw: "", stderr: String(r.stderr).trim(), timedOut: r.timedOut, overflow: true };
   // forge prints the JSON object on stdout; warnings/errors go to stderr.
-  return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut };
+  return { raw: String(r.stdout).trim(), stderr: String(r.stderr).trim(), timedOut: r.timedOut, overflow: false };
 }

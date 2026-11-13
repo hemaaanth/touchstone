@@ -117,6 +117,22 @@ test("harm gate: a target the test etched over is no longer a target", () => {
   assert.match(verdict(traces).reason, /deployed no contract from the audited scope/);
 });
 
+// H1d n2: the gate drops the target also for an etch in a frame that reverted.
+// It does not trust that forge undid the code (fail closed). The ETH loss after
+// it would prove if the etch were ignored.
+test("harm gate: a target etched in a reverted frame is no longer a target (fail closed)", () => {
+  const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
+  const traces = [setup(), exec(
+    node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }),
+    node(1, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: etch }),
+    node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" }),
+    node(3, { kind: "CALL", address: ATTACKER, caller: VAULT, value: ONE }),
+  )];
+  const harm = verdict(traces);
+  assert.equal(harm.ok, false);
+  assert.match(harm.reason, /deployed no contract from the audited scope/);
+});
+
 test("harm gate: a target the test etched over in setUp() is no longer a target either", () => {
   const etch = "0xb4d6c782" + VAULT.slice(2).padStart(64, "0") + "40".padStart(64, "0") + "1".padStart(64, "0") + "00".padEnd(64, "0");
   const traces = [setup(
@@ -458,6 +474,21 @@ test("harm gate: a net-zero logged flow with a balance-slot drop is not a token 
   ] }]];
   const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
   assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+// H1d n3: the impersonation text must not hide the true cause. The test pranks
+// scope target TOKEN (not the victim) and calls VAULT, which moves nothing. The
+// reason names the prank AND keeps the base reason.
+test("harm gate: the impersonation reason keeps the base reason after it (H1d n3)", () => {
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    prankNode(TOKEN),
+    callVault(),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, new RegExp(`impersonated scope target ${TOKEN}`));
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
@@ -991,6 +1022,42 @@ test("forge: the real lab ETH drain is STILL proven with its exact value (review
   assert.equal(isProven(f), true);
 });
 
+// H1c: a forge-std deal(token, …) in the test BODY makes a replay trace above the
+// 8 MiB cap (about 10 MiB on the pinned image). The cut trace is never judged; the
+// proof fails and the reason tells the agent to move deal into setUp(). The same
+// drain with deal in setUp() stays small and is proven with its exact value.
+const DEAL_DRAIN = (poc, setupDeal) => `import "../src/Tokens.sol";
+contract ${poc} is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); ${setupDeal ? "deal(address(tok), address(vault), 100e18);" : ""} }
+  function test_x() public {
+    ${setupDeal ? "" : "deal(address(tok), address(vault), 100e18);"}
+    vm.prank(address(0xBEEF)); vault.withdraw(100e18);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100e18);
+  }
+}
+`;
+test("forge: a deal() in the test body makes a trace above the cap; it is not judged and the reason says use setUp() (H1c)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealBodyTest", DEAL_DRAIN("DealBodyTest", false));
+  assert.equal(f.forgePassed, true);
+  assert.ok(f.proof, "a cut trace still gives a failed proof with a reason, not null");
+  assert.equal(f.proof.pass, false);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*call deal in setUp\(\)/);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: the same drain with deal() in setUp() is STILL proven with its exact value (H1c TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealSetupTest", DEAL_DRAIN("DealSetupTest", true));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.asset, "token");
+  assert.equal(f.proof.harm.lostUnits, "100000000000000000000");
+  assert.equal(isProven(f), true);
+});
+
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
 // reverted frame is undone and the gate need not record it. If a forge version
 // ever kept such an etch, the fake drain below would run at the real token's
@@ -1309,5 +1376,263 @@ contract PayTest is Test {
 `);
   assert.equal(f.proof.harm.ok, true);
   assert.equal(f.proof.harm.kind, "control");
+  assert.equal(isProven(f), true);
+});
+
+// ---- H1b: the open tamper class (vm.store / vm.mockCall on a scope target) ---
+//
+// Each case below makes the replay show a loss of a scope target that only the
+// cheatcode produced: a storage write with vm.store that grants an allowance or
+// the owner slot, or a faked answer with vm.mockCall. Forge passes and the gate
+// still says PROVEN, so these are `todo`: the finding is not in the diff. The
+// reviewer ran them in a scratch copy (`pr4-rereview2-result.md`, "Check 5");
+// this pins them. Each case is followed by an HONEST twin that must stay proven:
+// the same real loss where the store is a fixture in setUp() on a contract that
+// is NOT a scope target, and a mockCall on a contract OUTSIDE the scope.
+//
+// vm.store and vm.mockCall write the state DB directly, so they leave no SSTORE
+// step in the trace (control.test.mjs pins that): the gate sees the effect only,
+// never the writer. That is why the cheatcode itself is invisible today.
+
+const STORE_TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;   // slot 0
+  mapping(address => mapping(address => uint256)) public allowance; // slot 1
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function mint(address to, uint256 a) external { balanceOf[to] += a; emit Transfer(address(0), to, a); }
+  function transfer(address to, uint256 a) public returns (bool) {
+    balanceOf[msg.sender] -= a; balanceOf[to] += a;
+    emit Transfer(msg.sender, to, a); return true;
+  }
+  function transferFrom(address from, address to, uint256 a) public returns (bool) {
+    allowance[from][msg.sender] -= a;
+    balanceOf[from] -= a; balanceOf[to] += a;
+    emit Transfer(from, to, a); return true;
+  }
+}
+contract TokVault { Tok public tok; constructor(Tok t) { tok = t; } }
+`;
+
+// storeallow: the vault never approved anyone, the test writes the allowance
+// slot of the scope token with vm.store, then pulls the vault's real balance
+// with transferFrom. Today: proven, funds/token, lostUnits 100. The allowance is
+// the only cheatcode: without the store the transferFrom underflows.
+test("forge: an allowance written with vm.store on the scope token is NOT proven (H1b, storeallow)", { skip, todo: "H1b: vm.store on a scope target is not modelled; the gate reports the real balance-slot drop it enabled", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": STORE_TOKENS }, "StoreAllowTest", `import "../src/Tokens.sol";
+contract StoreAllowTest is Test {
+  Tok tok; TokVault vault;
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100); }
+  function test_x() public {
+    bytes32 inner = keccak256(abi.encode(address(vault), uint256(1)));
+    bytes32 slot = keccak256(abi.encode(address(0xBEEF), inner));
+    vm.store(address(tok), slot, bytes32(uint256(100)));
+    vm.prank(address(0xBEEF));
+    tok.transferFrom(address(vault), address(0xBEEF), 100);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100);
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// Honest twin: the store is a setUp() fixture on `Credit`, a contract defined in
+// the test file and therefore no scope target. The vault's sweep still moves its
+// real token balance, so this is a real drain and must stay proven.
+const STORE_CREDIT = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function mint(address to, uint256 a) external { balanceOf[to] += a; emit Transfer(address(0), to, a); }
+  function transfer(address to, uint256 a) public returns (bool) {
+    balanceOf[msg.sender] -= a; balanceOf[to] += a;
+    emit Transfer(msg.sender, to, a); return true;
+  }
+}
+interface ICredit { function bal(address) external view returns (uint256); }
+contract TokVault {
+  Tok public tok; ICredit public credit;
+  constructor(Tok t, ICredit c) { tok = t; credit = c; }
+  function sweep(uint256 a) external {
+    require(credit.bal(msg.sender) >= a, "credit");
+    tok.transfer(msg.sender, a);
+  }
+}
+`;
+
+test("forge: a vm.store setUp() fixture on a NON-scope contract keeps a real drain proven (H1b storeallow TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": STORE_CREDIT }, "StoreSetupTest", `import "../src/Tokens.sol";
+contract Credit is ICredit { mapping(address => uint256) public bal; }
+contract StoreSetupTest is Test {
+  Tok tok; Credit credit; TokVault vault;
+  function setUp() public {
+    tok = new Tok(); credit = new Credit(); vault = new TokVault(tok, credit);
+    tok.mint(address(vault), 100);
+    vm.store(address(credit), keccak256(abi.encode(address(0xBEEF), uint256(0))), bytes32(uint256(100)));
+  }
+  function test_x() public {
+    vm.prank(address(0xBEEF));
+    vault.sweep(100);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100);
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.asset, "token");
+  assert.equal(f.proof.harm.lostUnits, "100");
+  assert.equal(isProven(f), true);
+});
+
+const STORE_OWNED = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Owned {
+  address public owner; // slot 0
+  constructor() { owner = msg.sender; }
+  function hello() external pure returns (uint256) { return 1; }
+  function setOwner(address x) external { owner = x; }
+  function drain(address payable to) external {
+    require(msg.sender == owner, "owner");
+    to.transfer(address(this).balance);
+  }
+}
+`;
+
+// storeowner: the fixture owner is another address, the test writes slot 0 of
+// the scope contract with vm.store, then drains the ETH AS the stored attacker
+// through the owner-gated function. The store is the only way in. Today:
+// proven, funds, lostWei 1e18.
+test("forge: an owner written with vm.store on the scope contract is NOT proven (H1b, storeowner)", { skip, todo: "H1b: a vm.store of a control slot leaves no SSTORE step; the gate accepts the ETH the stored owner then drains", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Owned.sol": STORE_OWNED }, "StoreOwnerTest", `import "../src/Owned.sol";
+contract StoreOwnerTest is Test {
+  Owned o;
+  function setUp() public {
+    o = new Owned();
+    vm.deal(address(o), 1 ether);
+    vm.prank(address(0xA11CE));
+    o.setOwner(address(0xA11CE));
+  }
+  function test_x() public {
+    o.hello();
+    vm.store(address(o), bytes32(0), bytes32(uint256(uint160(address(0xBEEF)))));
+    vm.prank(address(0xBEEF));
+    o.drain(payable(address(0xBEEF)));
+    require(address(0xBEEF).balance == 1 ether, "paid");
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// Honest twin: the owner drain is real and the store only writes the payout
+// amount into `Cfg`, a test-file contract and so no scope target. Must stay proven.
+const STORE_TREASURY = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+interface ICfg { function amount() external view returns (uint256); }
+contract Treasury {
+  ICfg public cfg;
+  address public owner;
+  constructor(ICfg c) { cfg = c; owner = msg.sender; }
+  function pay(address payable to) external { require(msg.sender == owner, "owner"); to.transfer(cfg.amount()); }
+}
+`;
+
+test("forge: a vm.store setUp() fixture on a NON-scope contract keeps a real owner drain proven (H1b storeowner TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Treasury.sol": STORE_TREASURY }, "TreasuryTest", `import "../src/Treasury.sol";
+contract Cfg is ICfg { uint256 public amount; }
+contract TreasuryTest is Test {
+  Treasury t; Cfg c;
+  function setUp() public {
+    c = new Cfg(); t = new Treasury(c);
+    vm.deal(address(t), 1 ether);
+    vm.store(address(c), bytes32(0), bytes32(uint256(1 ether)));
+  }
+  function test_x() public {
+    t.pay(payable(address(0xBEEF)));
+    require(address(0xBEEF).balance == 1 ether, "paid");
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.lostWei, "1000000000000000000");
+  assert.equal(isProven(f), true);
+});
+
+const MOCK_BANK = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Bank {
+  mapping(address => uint256) public owed;
+  function claim() external {
+    uint256 a = this.owed(msg.sender); // an external self-call, so a mockCall can answer it
+    require(a > 0, "nothing");
+    require(address(this).balance >= a, "empty");
+    payable(msg.sender).transfer(a);
+  }
+}
+`;
+
+// mockcall: nothing is owed to the attacker, the test fakes the answer of the
+// scope contract's own getter with vm.mockCall, and claim() then pays real ETH.
+// Today: proven, funds, lostWei 1e18. The mock is the only cheatcode.
+test("forge: an answer faked with vm.mockCall on the scope contract is NOT proven (H1b, mockcall)", { skip, todo: "H1b: a mocked answer of a scope target is judged as the real one; the gate accepts the ETH the faked credit pays", timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Bank.sol": MOCK_BANK }, "MockCallTest", `import "../src/Bank.sol";
+contract MockCallTest is Test {
+  Bank b;
+  function setUp() public { b = new Bank(); vm.deal(address(b), 1 ether); }
+  function test_x() public {
+    b.owed(address(0xBEEF));
+    vm.mockCall(address(b), abi.encodeWithSignature("owed(address)", address(0xBEEF)), abi.encode(uint256(1 ether)));
+    vm.prank(address(0xBEEF));
+    b.claim();
+    require(address(0xBEEF).balance == 1 ether, "paid");
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// Honest twin: the mock is on `Feed`, a price feed outside the scope that the
+// test does not attack. The vault pays real ETH, so this must stay proven.
+const MOCK_BANK_FEED = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+interface IFeed { function price() external view returns (uint256); }
+contract Bank {
+  IFeed public feed;
+  constructor(IFeed f) { feed = f; }
+  function withdraw() external { require(feed.price() == 1 ether, "price"); payable(msg.sender).transfer(address(this).balance); }
+}
+`;
+
+test("forge: a vm.mockCall on a contract OUTSIDE the scope keeps a real drain proven (H1b mockcall TP)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Bank.sol": MOCK_BANK_FEED }, "MockFeedTest", `import "../src/Bank.sol";
+contract Feed is IFeed { function price() external pure returns (uint256) { return 2 ether; } }
+contract MockFeedTest is Test {
+  Bank b; Feed f;
+  function setUp() public { f = new Feed(); b = new Bank(f); vm.deal(address(b), 1 ether); }
+  function test_x() public {
+    vm.mockCall(address(f), abi.encodeWithSignature("price()"), abi.encode(uint256(1 ether)));
+    vm.prank(address(0xBEEF));
+    b.withdraw();
+    require(address(0xBEEF).balance == 1 ether, "paid");
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.lostWei, "1000000000000000000");
   assert.equal(isProven(f), true);
 });
