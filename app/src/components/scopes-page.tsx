@@ -1,17 +1,22 @@
-import { useMemo, useState } from "react"
-import { ChevronRight, Folder, FolderGit2, Globe, Trash2 } from "lucide-react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Folder, FolderGit2, Globe, Loader2, PanelRight, Plus, Trash2 } from "lucide-react"
 import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
 import type { RunBrief } from "@/lib/runModel"
 import { removeScope } from "@/lib/api"
-import { isOwnScope, packOf, plural, scopedRuns, scopeMeta, type CatalogState, type ScopedRun } from "@/lib/catalog"
+import { isOwnScope, packOf, plural, SCOPE_KIND, scopedRuns, scopeMeta, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { ModulePills } from "@/components/module-pill"
 import { AddScope, ScopeIcon } from "@/components/new-run-dialog"
-import { Empty, Label, PageBody, PageHeader, RunLinks } from "@/components/page-parts"
+import { Label, ListCard, ListEmpty, ListLoading, ListPage, ListRow, RowMenu, RowMenuItem, RowMenuSeparator, RunLinks, TruncatedText } from "@/components/page-parts"
 
 // A scope the operator added. The rest are the labs that ship with the app.
 const isOwn = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
+
+// The modules a scope allows. A scope saved before it could hold several has one.
+const modulesOf = (t: TargetChoice) => t.packs ?? [packOf(t)]
 
 // What is in a scope: its websites, its GitHub repos, its local folders.
 // A lab has none of these; it shows its entry file.
@@ -32,10 +37,14 @@ function contents(t: TargetChoice): Item[] {
   return entry ? [{ kind: "file", text: entry }] : []
 }
 
+const demoBadge = <Badge variant="outline" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
+const blockedBadge = <Badge variant="secondary" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Cannot run now</Badge>
+
 // The scopes: everything a run can test. One flat list, in the order App.tsx
 // gives: the operator's own scopes first, then the labs that ship with the
-// app, each tagged Demo. A row shows the scope's name, what is in it, and the
-// modules it allows. A run picks its modules from those in New run.
+// app, each tagged Demo. Every row has the same parts and the same menu. A
+// click on a row opens its detail in a sheet at the right, so the list never
+// moves. A run picks its modules from the scope's modules in New run.
 export function ScopesPage({
   catalog,
   packs,
@@ -53,134 +62,314 @@ export function ScopesPage({
   onOpenRun: (id: string) => void
   onChanged: () => void
 }) {
-  const [error, setError] = useState<string | null>(null)
   const { scoped } = useMemo(() => scopedRuns(runs, briefs), [runs, briefs])
+  const runsOf = (t: TargetChoice) => scoped.filter((r) => r.brief.scope?.id === t.id)
 
-  const onRemove = (t: TargetChoice) => {
-    if (!window.confirm(`Remove ${t.title}? Runs against it stay in the sidebar.`)) return
-    setError(null)
-    removeScope(t.id).then(onChanged, (e: Error) => setError(e.message))
-  }
+  const [adding, setAdding] = useState(false)
+  // The sheet keeps its scope while it slides out, so `open` is its own flag.
+  const [detail, setDetail] = useState<{ id: string; open: boolean } | null>(null)
+  const [removing, setRemoving] = useState<{ scope: TargetChoice; open: boolean } | null>(null)
+
+  const shown = detail ? targets.find((t) => t.id === detail.id) : undefined
+  // The sheet takes the focus itself. The first control in it can be "Remove
+  // scope", and Enter must not land there.
+  const sheet = useRef<HTMLDivElement>(null)
+  const openDetail = (t: TargetChoice) => setDetail({ id: t.id, open: true })
+  const askRemove = (t: TargetChoice) => setRemoving({ scope: t, open: true })
+
+  const add = (
+    <Button size="sm" onClick={() => setAdding(true)}>
+      <Plus /> Add scope
+    </Button>
+  )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PageHeader icon={FolderGit2} title="Scopes" />
-      <PageBody>
-        {error ? <p role="alert" className="mb-4 text-xs text-bad">{error}</p> : null}
-        {catalog === "loading" ? (
-          <Empty>Loading…</Empty>
-        ) : catalog === "error" && targets.length === 0 ? (
-          <Empty>The server did not answer, so the scope list is unknown.</Empty>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div className="-mx-2.5">
-              <AddScope packs={packs} onAttached={() => { setError(null); onChanged() }} onError={setError} />
-            </div>
-            {targets.length === 0 ? (
-              <Empty>No scopes yet. Add a GitHub repository, a website, or a local folder.</Empty>
-            ) : (
-              <ul className="divide-y border-y">
-                {targets.map((t) => (
-                  <li key={t.id}>
-                    <ScopeRow
-                      target={t}
-                      modules={(t.packs ?? [packOf(t)]).map((id) => packs.find((p) => p.id === id)?.title ?? id)}
-                      runs={scoped.filter((r) => r.brief.scope?.id === t.id)}
-                      onOpenRun={onOpenRun}
-                      onRemove={isOwn(t) ? () => onRemove(t) : undefined}
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </PageBody>
-    </div>
+    <ListPage
+      title="Scopes"
+      description="What a run may test: a website, a GitHub repository or a local folder. A run picks one scope and some of its modules."
+      action={catalog === "loading" || (catalog === "error" && targets.length === 0) ? null : add}
+    >
+      {catalog === "loading" ? (
+        <ListLoading label="Loading scopes…" />
+      ) : catalog === "error" && targets.length === 0 ? (
+        <ListEmpty title="The scope list is unknown">The server did not answer. Reload the page to ask again.</ListEmpty>
+      ) : targets.length === 0 ? (
+        <ListEmpty icon={FolderGit2} title="No scopes yet" action={add}>
+          Add a GitHub repository, a website, or a local folder.
+        </ListEmpty>
+      ) : (
+        <ListCard aria-label="Scopes">
+          {targets.map((t) => {
+            const own = isOwn(t)
+            const items = contents(t)
+            const mine = runsOf(t)
+            const proven = mine.reduce((n, r) => n + r.brief.proven, 0)
+            return (
+              <ListRow
+                key={t.id}
+                icon={<ScopeIcon target={t} />}
+                title={t.title}
+                badges={
+                  own && t.runnable ? null : (
+                    <>
+                      {own ? null : demoBadge}
+                      {t.runnable ? null : blockedBadge}
+                    </>
+                  )
+                }
+                meta={[
+                  items.length ? (
+                    <TruncatedText key="contents" mono middle={items.length === 1} text={items.map((i) => i.text).join(", ")} />
+                  ) : null,
+                  plural(mine.length, "run"),
+                  proven > 0 ? <span key="proven" className="shrink-0 whitespace-nowrap text-ok tabular-nums">{proven} proven</span> : null,
+                ]}
+                trailing={<ModulePills ids={modulesOf(t)} packs={packs} compact max={2} className="@xl:flex-nowrap @xl:justify-end" />}
+                menu={
+                  <RowMenu label={`Actions for ${t.title}`}>
+                    <RowMenuItem onClick={() => openDetail(t)}>
+                      <PanelRight /> View details
+                    </RowMenuItem>
+                    <RowMenuSeparator />
+                    <RowMenuItem variant="destructive" disabled={!own} onClick={() => askRemove(t)}>
+                      <Trash2 /> Remove scope
+                    </RowMenuItem>
+                    {own ? null : <p className="px-1.5 pt-0.5 pb-1 text-[11px] leading-snug text-muted-foreground">A demo scope ships with the app.</p>}
+                  </RowMenu>
+                }
+                onOpen={() => openDetail(t)}
+                active={detail?.open === true && detail.id === t.id}
+              />
+            )
+          })}
+        </ListCard>
+      )}
+
+      <Sheet open={detail?.open === true && !!shown} onOpenChange={(open) => setDetail((d) => (d ? { ...d, open } : d))}>
+        <SheetContent ref={sheet} initialFocus={sheet} className="gap-0 outline-none data-[side=right]:w-full data-[side=right]:sm:max-w-md">
+          {shown ? (
+            <ScopeDetail
+              target={shown}
+              own={isOwn(shown)}
+              packs={packs}
+              runs={runsOf(shown)}
+              onOpenRun={onOpenRun}
+              onRemove={() => askRemove(shown)}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      <Dialog open={adding} onOpenChange={setAdding}>
+        <DialogContent className="max-h-[calc(100svh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add scope</DialogTitle>
+            <DialogDescription>Type a GitHub URL, a website address or a folder path, then press Enter. One scope holds code or websites, not both.</DialogDescription>
+          </DialogHeader>
+          <AddScopeForm
+            packs={packs}
+            onClose={() => setAdding(false)}
+            onAttached={() => {
+              setAdding(false)
+              onChanged()
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <RemoveScopeDialog
+        scope={removing?.scope ?? null}
+        open={removing?.open === true}
+        onOpenChange={(open) => setRemoving((r) => (r ? { ...r, open } : r))}
+        onRemoved={() => {
+          setRemoving((r) => (r ? { ...r, open: false } : r))
+          setDetail((d) => (d ? { ...d, open: false } : d))
+          onChanged()
+        }}
+      />
+    </ListPage>
   )
 }
 
-function ScopeRow({
+// One scope, in the sheet. Every scope shows the same blocks in the same order.
+function ScopeDetail({
   target: t,
-  modules,
+  own,
+  packs,
   runs,
   onOpenRun,
   onRemove,
 }: {
   target: TargetChoice
-  modules: string[]
+  own: boolean
+  packs: PackChoice[]
   runs: ScopedRun[]
   onOpenRun: (id: string) => void
-  // Set for the operator's own scopes. A demo scope cannot be removed.
-  onRemove?: () => void
+  onRemove: () => void
 }) {
-  const proven = runs.reduce((n, r) => n + r.brief.proven, 0)
   const items = contents(t)
-
   return (
-    <Collapsible>
-      <CollapsibleTrigger className="group flex w-full items-start gap-3 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-        <ChevronRight className="mt-[3px] size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[panel-open]:rotate-90" />
-        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground [&_svg]:size-4">
+    <>
+      <SheetHeader className="flex-row items-start gap-3 pr-12">
+        <span aria-hidden className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
           <ScopeIcon target={t} />
         </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium">{t.title}</span>
-            {onRemove ? null : <Badge variant="outline" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>}
-          </span>
-          {items.length ? <span className="truncate font-mono text-[11px] text-muted-foreground group-data-[panel-open]:hidden">{items.map((i) => i.text).join(", ")}</span> : null}
-          <span className="text-[11px] text-muted-foreground">{modules.join(" · ")}</span>
+        <div className="flex min-w-0 flex-col gap-1">
+          <SheetTitle className="leading-snug wrap-anywhere">{t.title}</SheetTitle>
+          <SheetDescription className="flex flex-wrap items-center gap-1.5 text-xs">
+            {SCOPE_KIND[t.kind]}
+            {own ? null : demoBadge}
+            {t.runnable ? null : blockedBadge}
+          </SheetDescription>
         </div>
-        <div className="mt-0.5 flex shrink-0 flex-col items-end gap-1 text-[11px] text-muted-foreground tabular-nums sm:flex-row sm:gap-3">
-          {!t.runnable ? <span>Cannot run now</span> : null}
-          <span>{plural(runs.length, "run")}</span>
-          {proven > 0 ? <span className="text-ok">{proven} proven</span> : null}
-        </div>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="flex flex-col gap-5 pb-5 pl-[54px]">
-          {t.blurb ? <p className="text-xs leading-relaxed">{t.blurb}</p> : null}
+      </SheetHeader>
 
-          {items.length ? (
-            <div className="flex flex-col gap-1.5">
-              <Label>In this scope</Label>
-              <ul className="flex flex-col gap-1">
-                {items.map((i) => (
-                  <li key={i.text} className="flex items-center gap-2 text-muted-foreground [&_svg]:size-3.5 [&_svg]:shrink-0">
-                    {i.kind === "site" ? <Globe /> : i.kind === "repo" ? <FolderGit2 /> : i.kind === "folder" ? <Folder /> : <ScopeIcon target={t} />}
-                    {i.href ? (
-                      <a href={i.href} target="_blank" rel="noreferrer" className="truncate font-mono text-[11px] underline-offset-2 hover:text-foreground hover:underline">
-                        {i.text}
-                      </a>
-                    ) : (
-                      <span className="truncate font-mono text-[11px]">{i.text}</span>
-                    )}
-                    {i.note ? <span className="shrink-0 text-[11px] tabular-nums">{i.note}</span> : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-4 pt-1 pb-6">
+        {t.blurb ? <p className="text-[13px] leading-relaxed">{t.blurb}</p> : null}
 
-          <div className="flex flex-col gap-1.5">
-            <Label>Runs</Label>
-            {runs.length ? (
-              <RunLinks runs={runs} onOpen={onOpenRun} />
-            ) : (
-              <p className="text-xs text-muted-foreground">{t.runnable ? "No runs yet. Pick it in New run." : "No runs yet."}</p>
-            )}
-          </div>
+        <section className="flex flex-col gap-2">
+          <Label>Modules</Label>
+          <ModulePills ids={modulesOf(t)} packs={packs} className="gap-1.5" />
+        </section>
 
-          {onRemove ? (
-            <div>
-              <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground hover:text-destructive" onClick={onRemove}>
-                <Trash2 /> Remove scope
-              </Button>
-            </div>
-          ) : null}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+        {/* BRIEF SLOT. The editable "Brief" field of this scope goes here: one
+            <section> like the others, with <Label>Brief</Label> over the field.
+            It sits between Modules and "In this scope". */}
+
+        {items.length ? (
+          <section className="flex flex-col gap-2">
+            <Label>In this scope</Label>
+            <ul className="flex flex-col gap-1.5">
+              {items.map((i) => (
+                <li key={i.text} className="flex items-start gap-2 text-muted-foreground [&_svg]:mt-0.5 [&_svg]:size-3.5 [&_svg]:shrink-0">
+                  {i.kind === "site" ? <Globe /> : i.kind === "repo" ? <FolderGit2 /> : i.kind === "folder" ? <Folder /> : <ScopeIcon target={t} />}
+                  {i.href ? (
+                    <a
+                      href={i.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 rounded-sm font-mono text-[11.5px] leading-[18px] break-all underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+                    >
+                      {i.text}
+                    </a>
+                  ) : (
+                    <span className="min-w-0 font-mono text-[11.5px] leading-[18px] break-all">{i.text}</span>
+                  )}
+                  {i.note ? <span className="ml-auto shrink-0 text-[11px] leading-[18px] tabular-nums">{i.note}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        <section className="flex flex-col gap-2">
+          <Label>Runs</Label>
+          {runs.length ? (
+            <RunLinks runs={runs} onOpen={onOpenRun} />
+          ) : (
+            <p className="text-xs text-muted-foreground">{t.runnable ? "No runs yet. Pick it in New run." : "No runs yet."}</p>
+          )}
+        </section>
+      </div>
+
+      <SheetFooter className="border-t">
+        {own ? (
+          <Button variant="outline" size="sm" className="self-start text-muted-foreground hover:text-destructive" onClick={onRemove}>
+            <Trash2 /> Remove scope
+          </Button>
+        ) : (
+          <p className="text-xs leading-relaxed text-muted-foreground">A demo scope ships with the app. It cannot be removed.</p>
+        )}
+      </SheetFooter>
+    </>
+  )
+}
+
+// The add form, inside the Add scope dialog. `AddScope` (new-run-dialog.tsx)
+// has no "start open" prop and no "closed" callback yet. Until it has them,
+// this wrapper opens the form at once, and closes the dialog when the form
+// closes itself (Esc in a field, or a saved scope).
+function AddScopeForm({ packs, onAttached, onClose }: { packs: PackChoice[]; onAttached: () => void; onClose: () => void }) {
+  const [error, setError] = useState<string | null>(null)
+  const box = useRef<HTMLDivElement>(null)
+  const close = useRef(onClose)
+  useLayoutEffect(() => {
+    close.current = onClose
+  })
+
+  useLayoutEffect(() => {
+    const root = box.current
+    if (!root) return
+    // Closed, `AddScope` is one button. Open, it is the form.
+    const closed = () => root.firstElementChild instanceof HTMLButtonElement
+    let wasOpen = !closed()
+    if (!wasOpen) (root.firstElementChild as HTMLButtonElement).click()
+    const watch = new MutationObserver(() => {
+      if (!closed()) wasOpen = true
+      else if (wasOpen) close.current()
+    })
+    watch.observe(root, { childList: true })
+    return () => watch.disconnect()
+  }, [])
+
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {/* The dialog has its own close button, so the form's is hidden. So is
+          the closed-state button, which would flash while the dialog fades. */}
+      <div ref={box} className="[&_button[aria-label=Cancel]]:hidden [&>button]:hidden [&>div]:mt-0">
+        <AddScope packs={packs} onAttached={onAttached} onError={setError} />
+      </div>
+      {error ? <p role="alert" className="text-xs leading-relaxed text-bad">{error}</p> : null}
+    </div>
+  )
+}
+
+function RemoveScopeDialog({
+  scope,
+  open,
+  onOpenChange,
+  onRemoved,
+}: {
+  scope: TargetChoice | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onRemoved: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const remove = () => {
+    if (!scope) return
+    setBusy(true)
+    setError(null)
+    removeScope(scope.id)
+      .then(onRemoved, (e: Error) => setError(e.message))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (busy) return
+        if (next) setError(null)
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Remove this scope?</DialogTitle>
+          <DialogDescription>
+            <span className="font-medium text-foreground wrap-anywhere">{scope?.title}</span> leaves the list. Runs against it stay in the sidebar.
+          </DialogDescription>
+        </DialogHeader>
+        {error ? <p role="alert" className="text-xs text-bad">{error}</p> : null}
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
+          <Button variant="destructive" disabled={busy} onClick={remove}>
+            {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            Remove
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
