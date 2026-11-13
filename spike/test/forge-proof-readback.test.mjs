@@ -224,3 +224,31 @@ test("an older forge record with a passing root run_poc and no harm field stays 
     rmSync(file, { force: true })
   }
 })
+
+// Records from before the recorder stored `source`: the proof is the child's
+// replay of the finding's own test, but the root's last run_poc tried a
+// different contract. That other test must not stand in as this proof.
+test("a proof-only finding does not show the root's last run_poc of another contract", async () => {
+  const stamp = "zz-forge-readback-0000000000-5"
+  const zeroBurn = "contract RescueZeroBurnTest is Test {\n  function test_zero() public {\n    vault.deposit{value: 10 ether}();\n    assertEq(address(vault).balance, 0);\n    assertGt(attacker.balance, 0);\n  }\n}\n"
+  const { source, ...noSource } = passing
+  const file = writeRun(stamp, [{ ...noSource, poc: "RescueAccountingTest" }], {
+    calls: [{ name: "run_poc", args: { contract_name: "RescueZeroBurnTest", test_source: zeroBurn } }],
+    results: [{ name: "run_poc", text: "Solc 0.8.20\n[FAIL] test_zero() (gas: 10)\nSuite result: FAILED. 0 passed; 1 failed" }],
+  })
+  try {
+    const found = await getFinding(`${stamp}.1`)
+    assert.equal(found.stages.proven, true)
+    assert.equal(found.proof.pass, true)
+    assert.equal(found.proof.testSource, null)
+    assert.deepEqual(found.proof.assertions, [])
+    assert.deepEqual(found.proof.balances, [])
+    assert.equal(found.proof.transfers[0].net, "+1 ETH")
+    const html = renderReportHtml(buildReport(found))
+    // The attempt may still be listed by name under runs; its code may not show.
+    assert.equal(html.includes("contract RescueZeroBurnTest"), false)
+    assert.equal(html.includes("assertGt"), false)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})

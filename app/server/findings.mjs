@@ -154,16 +154,6 @@ function normalize(raw, { id, runId, finding }) {
   // transfers array so a malformed or null delta falls back to the source parse.
   const engineProof = finding.proof && Array.isArray(finding.proof.transfers) ? finding.proof : null
 
-  // The exploit source is the test the recorder replayed (`finding.source`).
-  // A fleet child runs the PoC, and summarize() keeps only the root conversation,
-  // so that call is often missing here. The transcript's own proving call is the
-  // fallback for older records; the last attempt is what was tried when nothing
-  // proved. proof.source is the replay label ("engine-replay"), never the Solidity.
-  const submittedSource = typeof finding.source === "string" && finding.source.trim() ? finding.source : null
-  const transcriptSource = provingIndex >= 0 ? pocCalls[provingIndex]?.args?.test_source ?? null : null
-  const lastAttempt = pocCalls.length ? pocCalls[pocCalls.length - 1]?.args?.test_source ?? null : null
-  const testSource = submittedSource || transcriptSource || lastAttempt || null
-
   // A forge finding stays proven when its recorded proof passed the harm gate,
   // even with no root-transcript run_poc. isProven already refuses a failed
   // replay or a harm verdict that is not ok, so a failing or absent proof
@@ -172,6 +162,19 @@ function normalize(raw, { id, runId, finding }) {
   const harmOk = finding.proof?.pass === true && finding.proof?.harm?.ok === true
   const transcriptPass = Boolean(proving && proving.pass)
   const forgeProven = isProven(finding) && (transcriptPass || harmOk)
+
+  // The exploit source is the test the recorder replayed (`finding.source`).
+  // A fleet child runs the PoC, and summarize() keeps only the root conversation,
+  // so that call is often missing here. The transcript's own proving call is the
+  // fallback for older records; the last attempt is what was tried when nothing
+  // proved. A finding proven only by its stored proof never falls back to the
+  // last attempt: that call may be another contract, and its source, assertions
+  // and balance rows would stand in for a test that was not replayed.
+  // proof.source is the replay label ("engine-replay"), never the Solidity.
+  const submittedSource = typeof finding.source === "string" && finding.source.trim() ? finding.source : null
+  const transcriptSource = provingIndex >= 0 ? pocCalls[provingIndex]?.args?.test_source ?? null : null
+  const lastAttempt = pocCalls.length ? pocCalls[pocCalls.length - 1]?.args?.test_source ?? null : null
+  const testSource = submittedSource || transcriptSource || (forgeProven ? null : lastAttempt) || null
 
   // The write-up is this finding's own submit_finding call. A run can submit
   // several findings, so match on the test contract it names.
