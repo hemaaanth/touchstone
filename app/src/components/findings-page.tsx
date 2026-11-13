@@ -1,9 +1,9 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { Bot, Bug, CalendarDays, Check, ChevronRight, FileArchive, FileText, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
-import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
+import { fetchFinding, fetchFindingText, fetchFindingsAndCandidates } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, fromDayRange, isFiltered, moduleOf, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, candidateRow, filterFindings, fromDayRange, isFiltered, moduleOf, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -16,6 +16,7 @@ import { ProofIcon, SeverityMark } from "@/components/assistant-ui/elements/indi
 import { StatusMark } from "@/components/assistant-ui/elements/surfaces"
 import { ModulePill } from "@/components/module-pill"
 import { ReplayProof } from "@/components/replay-proof"
+import { CandidateListRow } from "@/components/candidate-row"
 import { Label, ListCard, ListEmpty, ListPage, RowMenu, RowMenuItem, RowMenuSeparator, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
 import { LIST_CARD_CLASS, rowClass } from "@/components/page-parts-style"
 
@@ -136,8 +137,9 @@ export function FindingsPage({
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let live = true
-    fetchFindings().then(
-      (rows) => live && setLoad({ state: "ready", rows }),
+    // Candidates are listed beside the findings, as rows of their own state (N3).
+    fetchFindingsAndCandidates().then(
+      ({ findings, candidates }) => live && setLoad({ state: "ready", rows: [...findings, ...candidates.map(candidateRow)] }),
       () => live && setLoad({ state: "error" }),
     )
     return () => {
@@ -173,6 +175,9 @@ export function FindingsPage({
   )
 
   const proven = shown.filter((f) => f.proven).length
+  // Candidates are counted apart: "N findings" never includes one.
+  const candidates = shown.filter((f) => f.candidate).length
+  const allCandidates = all.filter((f) => f.candidate).length
   // Dismissed findings are hidden by default; the count line says how many.
   const hiddenDismissed = view.dismissed === "hide" ? all.filter((f) => f.dismissed).length : 0
   // Clear filters keeps the sort and the dismissed choice.
@@ -213,8 +218,9 @@ export function FindingsPage({
 
           <div className="-mt-3 flex min-h-5 items-center gap-3 text-xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">
-              {isFiltered(view) ? `${shown.length} of ${all.length - hiddenDismissed} findings` : `${shown.length} findings`}
+              {isFiltered(view) ? `${shown.length - candidates} of ${all.length - hiddenDismissed - allCandidates} findings` : `${shown.length - candidates} findings`}
               {proven ? <span className="text-ok"> · {proven} proven</span> : null}
+              {candidates ? ` · ${candidates} ${candidates === 1 ? "candidate" : "candidates"}` : null}
               {hiddenDismissed ? ` · ${hiddenDismissed} dismissed, hidden` : null}
             </span>
             {/* Here, not in the filter rows, so showing it moves nothing. */}
@@ -250,7 +256,17 @@ export function FindingsPage({
             />
           ) : (
             <ListCard aria-label="Findings">
-              {shown.map((f) => (
+              {shown.map((f) =>
+                f.candidate ? (
+                  <CandidateListRow
+                    key={f.id}
+                    finding={f}
+                    cols={FINDING_ROW_COLS}
+                    moduleTitle={packTitle(moduleOf(f)) ?? f.module}
+                    run={runOf(f)}
+                    onOpenRun={onOpenRun}
+                  />
+                ) : (
                 <FindingListRow
                   key={f.id}
                   finding={f}
@@ -262,7 +278,8 @@ export function FindingsPage({
                   onOpenRun={onOpenRun}
                   evidence={packs.find((p) => p.id === moduleOf(f))?.proof === "evidence"}
                 />
-              ))}
+                ),
+              )}
             </ListCard>
           )}
         </>
@@ -376,6 +393,7 @@ function Filters({
             { value: "all", label: "Any state" },
             { value: "proven", label: "Proven" },
             { value: "unproven", label: "Not proven" },
+            { value: "candidate", label: "Candidate" },
           ]}
           onChange={(v) => set("state", v as StateFilter)}
         />

@@ -1,7 +1,7 @@
 // Framework-agnostic API router. Given a request URL it returns a plain
 // { status, json } result, so the same logic works behind Vite's dev
 // middleware now and a standalone http server later (when runs go live).
-import { listFindings, getFinding } from "./findings.mjs"
+import { listCandidates, listFindings, getFinding } from "./findings.mjs"
 import { scopeStoreError } from "../../spike/lib/scopes-store.mjs"
 import { grantStoreError } from "../../spike/lib/grant-store.mjs"
 
@@ -13,7 +13,9 @@ export async function handleApi(url) {
     return { status: 200, json: { errors: [scopeStoreError(), grantStoreError()].filter(Boolean) } }
   }
   if (pathname === "/api/findings") {
-    return { status: 200, json: { findings: await listFindings() } }
+    // Candidates sit beside the findings, never among them (N3): the page lists
+    // them under their own state, neutral, and they have no report.
+    return { status: 200, json: { findings: await listFindings(), candidates: await listCandidates() } }
   }
   const match = pathname.match(/^\/api\/findings\/([^/]+)$/)
   if (match) {

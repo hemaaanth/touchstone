@@ -20,8 +20,28 @@ export interface FindingStages {
   accepted: AcceptedState
 }
 
+// A candidate as the Findings page lists it (server/findings.mjs
+// listCandidates). Never proven, no report, no bundle.
+export interface CandidateSummary {
+  id: string
+  runId: string
+  kind: "candidate"
+  title: string | null
+  severity: Severity
+  module: string
+  pack: string | null
+  target: string
+  scope: string | null
+  at: number | null
+  origin: "agent" | "measured"
+  measured: { reason: "repeated" | "no-effect" | "harm-not-judged" | "unknown"; words: string; count: number; check: string | null } | null
+  proven: false
+}
+
 export interface FindingSummary {
   id: string
+  // Set only on a candidate row (the page lists candidates in the same grid).
+  candidate?: CandidateSummary
   // The run that produced this finding. Lets findings be scoped to their own
   // run instead of a global rail. Optional for back-compat with recorded
   // findings written before the engine stamped it (server/findings.mjs).

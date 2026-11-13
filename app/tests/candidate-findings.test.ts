@@ -77,3 +77,15 @@ describe("the Findings page never holds a candidate", () => {
     expect((await call("/api/findings/cand-ledger-1.1/report?format=md")).status).toBe(200)
   })
 })
+
+// N3: the Findings page lists candidates beside the findings, as their own state.
+describe("the list API and the page list candidates apart (N3)", () => {
+  test("/api/findings sends the candidates beside the findings, never among them", async () => {
+    // @ts-expect-error — plain .mjs module, no types
+    const { handleApi } = await import("../server/api.mjs")
+    const { json } = await handleApi("/api/findings")
+    expect(json.findings.some((f: { id: string }) => f.id.includes(".c"))).toBe(false)
+    const own = json.candidates.filter((c: { runId: string }) => c.runId === "cand-ledger-1")
+    expect(own.map((c: { id: string; origin: string; proven: boolean }) => [c.id, c.origin, c.proven])).toEqual([["cand-ledger-1.c1", "agent", false]])
+  })
+})

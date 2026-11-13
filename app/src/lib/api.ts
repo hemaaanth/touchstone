@@ -1,4 +1,5 @@
 import type {
+  CandidateSummary,
   DiscoveredModel,
   Finding,
   FindingSummary,
@@ -78,6 +79,12 @@ export async function rotateConsoleToken(): Promise<void> {
 export async function fetchFindings(): Promise<FindingSummary[]> {
   const data = await getJson<{ findings: FindingSummary[] }>("/api/findings")
   return data.findings
+}
+
+// The Findings page's list: the findings, and the candidates beside them.
+export async function fetchFindingsAndCandidates(): Promise<{ findings: FindingSummary[]; candidates: CandidateSummary[] }> {
+  const data = await getJson<{ findings: FindingSummary[]; candidates?: CandidateSummary[] }>("/api/findings")
+  return { findings: data.findings, candidates: data.candidates ?? [] }
 }
 
 // `events: false` asks for the finding without its run's transcript
