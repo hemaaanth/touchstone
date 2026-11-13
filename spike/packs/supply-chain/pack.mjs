@@ -114,7 +114,8 @@ function tools(ws, state) {
       event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, continue: "Check the next root cause." });
     } }),
-    candidateTool({ pack: "supply-chain", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC }),
+    // No model prose here either: the candidate text comes from the lead.
+    candidateTool({ pack: "supply-chain", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC, packText: true }),
   ];
 }
 

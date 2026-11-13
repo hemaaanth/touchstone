@@ -169,7 +169,9 @@ const squash = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const text = (value, isError = false) => ({ output: [{ type: "text", text: value }], ...(isError ? { isError: true } : {}) });
 
 // The checks, in order. Returns { refused } or { candidate }.
-export async function checkCandidate({ pack, state, lookup, args, scrub = scrubValue, scrubLine = scrubText }) {
+// `packText`: the pack writes the title and write-up from the attempt
+// (attempt.packText), and the agent's prose is never stored.
+export async function checkCandidate({ pack, state, lookup, args, scrub = scrubValue, scrubLine = scrubText, packText = false }) {
   state.candidates ??= [];
   const poc = String(args.poc ?? "").trim();
   const refuse = (reason, message) => {
@@ -199,8 +201,10 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   if (sameEvidence) return refuse("duplicate-evidence", `This evidence is already recorded as candidate #${sameEvidence.n} ("${sameEvidence.title}").`);
   const severity = String(args.severity ?? "").trim().toLowerCase();
   if (!SEVERITIES.includes(severity)) return refuse("bad-input", `Severity must be one of: ${SEVERITIES.join(", ")}.`);
-  const explanation = String(args.explanation ?? "");
-  if (!/\bFix:/.test(explanation)) return refuse("bad-input", "The write-up must end with a line starting \"Fix:\".");
+  const own = packText ? attempt.packText : null;
+  if (packText && !own) return refuse("no-evidence", `Cannot record this candidate: the attempt "${poc}" has no text from the pack.`);
+  const explanation = own ? String(own.explanation ?? "") : String(args.explanation ?? "");
+  if (!own && !/\bFix:/.test(explanation)) return refuse("bad-input", "The write-up must end with a line starting \"Fix:\".");
   const cites = (Array.isArray(args.evidence_lines) ? args.evidence_lines : []).map((l) => String(l).trim()).filter(Boolean);
   if (cites.length === 0 || cites.length > 6) return refuse("bad-input", "Cite 1 to 6 exact lines from the attempt's output in evidence_lines.");
   const haystack = squash(attempt.text);
@@ -211,7 +215,7 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   const line = (t) => scrubText(scrubLine(String(t ?? "")));
   const candidate = makeCandidate({
     n, pack, poc, severity, rootCause, evidenceHash,
-    title: line(args.title),
+    title: line(own ? own.title : args.title),
     explanation: line(explanation),
     cites: cites.map(line),
     evidence: scrubValue(scrub(attempt.evidence)),
@@ -223,20 +227,23 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
 
 // The submit_candidate tool. `poc` names the pack's attempt id (label, test
 // contract or lead id) and how to describe it to the agent.
-export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine }) {
+export function candidateTool({ pack, state, lookup, poc, scrub, scrubLine, packText = false }) {
+  const prose = packText ? {} : {
+    title: str({ description: "short title" }),
+    explanation: str({ description: "plain-language write-up: what happened, why it is harmful, why the checks miss it, ending with a line starting \"Fix:\"" }),
+  };
   return defineTool({
     name: "submit_candidate",
     description: `Record a CANDIDATE: a serious problem your own attempt showed, that this pack's proof checks do not cover. It is stored as unproven and agent-asserted, and queued for human review. It never counts as a finding. Use it only after an attempt that captured evidence but did not prove. If the attempt proved, use submit_finding. At most ${CANDIDATE_CAP} per run.`,
     parameters: obj({
-      title: str({ description: "short title" }),
+      ...prose,
       severity: str({ description: "critical | high | medium | low | informational" }),
       poc: str({ description: poc }),
       evidence_lines: arr(str(), { description: "1 to 6 exact lines copied from that attempt's output that show the harm" }),
-      explanation: str({ description: "plain-language write-up: what happened, why it is harmful, why the checks miss it, ending with a line starting \"Fix:\"" }),
     }),
     replay: "safe",
     execute: async (args) => {
-      const r = await checkCandidate({ pack, state, lookup, args, scrub, scrubLine });
+      const r = await checkCandidate({ pack, state, lookup, args, scrub, scrubLine, packText });
       if (r.refused) return text(r.refused, true);
       const c = r.candidate;
       return text(`Recorded candidate #${c.n}: ${c.title} (${c.severity}). It is UNPROVEN and queued for human review. It is not a finding. Keep auditing for proven findings.`);
@@ -324,6 +331,8 @@ export function evidenceLookup(state) {
       // line copied from either tool output matches.
       text: `${JSON.stringify(lead)}\n${JSON.stringify(proof)}`,
       rootCause: lead.rootCause ?? `lead:${lead.id}`,
+      // For a pack that keeps no model prose (supply-chain), as submit_finding.
+      packText: { title: lead.check, explanation: lead.description },
     };
   };
 }

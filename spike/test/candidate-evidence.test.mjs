@@ -144,6 +144,28 @@ for (const { pack, report, finding } of SPECS) {
   });
 }
 
+// Review design decision: supply-chain keeps no model prose (pack.mjs "Do not
+// retain model prose"). Its candidate text comes from the lead, as
+// submit_finding's does. The other evidence packs keep the agent's write-up.
+test("supply-chain: the candidate title and write-up come from the lead, never the agent", async () => {
+  pass.clear();
+  const ws = mkdtempSync(join(tmpdir(), "cand-sc-prose-"));
+  writeFileSync(join(ws, "supply-chain-leads.json"), JSON.stringify({ leads: LEADS }));
+  try {
+    const state = { poc: 0, passed: new Map(), found: [] };
+    const tools = Object.fromEntries(supplyChain.tools(ws, state).map((t) => [t.name, t]));
+    const props = Object.keys(tools.submit_candidate.parameters.properties ?? {});
+    assert.ok(!props.includes("title") && !props.includes("explanation"), "the tool asks for no prose");
+    await tools.check_evidence.execute({ lead_id: "L1" });
+    const r = await tools.submit_candidate.execute({ ...candidateArgs("L1"), title: "The key is funded", explanation: "It holds 40 ETH." });
+    assert.ok(!r.isError, r.output[0].text);
+    const c = state.candidates[0];
+    assert.equal(c.title, "rule-L1");
+    assert.equal(c.explanation, "lead L1");
+    assert.ok(!JSON.stringify(c).includes("funded") && !JSON.stringify(c).includes("40 ETH"));
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
 test("surface shares the domains tools but gets no submit_candidate", () => {
   const ws = mkdtempSync(join(tmpdir(), "cand-surface-"));
   try {
