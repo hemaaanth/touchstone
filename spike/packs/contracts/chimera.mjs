@@ -151,6 +151,70 @@ function solFiles(ws) {
   return out;
 }
 
+// The parts of a contract header, the text between the name and the body.
+// In solc 0.8.38 a contract header holds at most one inheritance list
+// "is A, B(args), lib.C" and at most one storage layout "layout at <expr>", in
+// either order. "is" is reserved; "layout" and "at" are not, so a base may be
+// named either. Returns { bases, complete }; complete is false when a part is
+// not one of these, so the caller knows its binding may be short.
+function headerParts(h) {
+  const bases = [];
+  let complete = true;
+  let i = 0;
+  const space = () => {
+    while (i < h.length && /\s/.test(h[i])) i++;
+  };
+  const word = () => {
+    const m = /^\w+/.exec(h.slice(i));
+    if (!m) return null;
+    i += m[0].length;
+    return m[0];
+  };
+  const skipParens = () => {
+    for (let depth = 0; i < h.length; i++) {
+      if (h[i] === "(") depth++;
+      else if (h[i] === ")" && --depth === 0) return void i++;
+    }
+  };
+  // A keyword at i: the word itself, not part of a longer name.
+  const keyword = (k) => h.startsWith(k, i) && !/\w/.test(h[i - 1] ?? "") && !/\w/.test(h[i + k.length] ?? "");
+  for (space(); i < h.length; space()) {
+    if (keyword("is")) {
+      i += 2;
+      // identifierPath callArgs? ("," identifierPath callArgs?)*
+      for (;;) {
+        space();
+        let name = word();
+        if (!name) { complete = false; break; }
+        for (space(); h[i] === "."; space()) {
+          i++;
+          space();
+          name = word() ?? name;
+        }
+        bases.push(name);
+        if (h[i] === "(") { skipParens(); space(); }
+        if (h[i] !== ",") break;
+        i++;
+      }
+    } else if (keyword("layout") && /^\s*at\b/.test(h.slice(i + 6))) {
+      i += 6;
+      space();
+      i += 2;
+      // The expression runs to a top-level "is" or to the end of the header.
+      for (let depth = 0; i < h.length; i++) {
+        if (h[i] === "(") depth++;
+        else if (h[i] === ")") depth--;
+        else if (depth === 0 && keyword("is")) break;
+      }
+    } else {
+      // Not a header part we know. Skip it, and say the binding may be short.
+      complete = false;
+      if (!word()) i++;
+    }
+  }
+  return { bases, complete };
+}
+
 // Each contract or interface in code-only text: { name, bases, fns }.
 // The header runs from the name to the first "{" outside parentheses, because
 // a base argument such as Properties(Options({marker: 1})) holds braces. The
@@ -171,10 +235,7 @@ function contractsIn(code) {
     const from = i + 1;
     let j = from;
     for (let depth = 1; j < code.length && depth; j++) depth += code[j] === "{" ? 1 : code[j] === "}" ? -1 : 0;
-    // "is A, B(1, f(2)), lib.C" -> ["A", "B", "C"]
-    let heritage = header.match(/^\s*is\b([\s\S]*)$/)?.[1] ?? "";
-    for (let prev = ""; prev !== heritage; ) [prev, heritage] = [heritage, heritage.replace(/\([^()]*\)/g, "")];
-    const bases = heritage.split(",").map((b) => b.trim().split(".").pop().trim()).filter((b) => /^\w+$/.test(b));
+    const { bases } = headerParts(header);
     const fns = [...code.slice(from, j - 1).matchAll(FNS)].filter((f) => !/\b(internal|private)\b/.test(f[2])).map((f) => f[1]);
     out.push({ name: m[1], bases, fns });
     // A contract body holds no other contract, so go on after it.

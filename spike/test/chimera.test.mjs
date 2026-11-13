@@ -524,6 +524,64 @@ test("when the source scan binds no function, every engine result is a gap that 
   });
 });
 
+// A "layout at" clause, in both places solc 0.8.38 allows it. Real Echidna
+// 2.3.3 and Medusa 1.5.1 build each form and break property_solvent; their raw
+// output is the fixture. The inherited lead must survive, bound, with no drop.
+for (const [form, header] of [
+  ["before", "contract CryticTester layout at 42 is TargetFunctions, CryticAsserts {"],
+  ["after", "contract CryticTester is CryticAsserts, TargetFunctions layout at 42 {"],
+]) {
+  test(`a "layout at" clause ${form} the base list keeps the inherited lead from both engines`, async () => {
+    const prep = (ws) => {
+      const ct = join(ws, SUITE);
+      const src = readFileSync(ct, "utf8");
+      assert.ok(src.includes("contract CryticTester is TargetFunctions, CryticAsserts {"));
+      writeFileSync(ct, src.replace("contract CryticTester is TargetFunctions, CryticAsserts {", header));
+    };
+    const echidna = fixture(`echidna-2.3.3-vault-shares-layout-${form}.txt`);
+    const medusa = fixture(`medusa-1.5.1-vault-shares-layout-${form}.txt`);
+    await withShim({ echidna, medusa, prep }, (scan) => {
+      assert.equal(scan.available, true, scan.reason);
+      assert.deepEqual(scan.dropped, []);
+      assert.deepEqual(scan.gaps, []);
+      assert.equal(scan.results.length, 6);
+      assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join(), l.bound]), [["CryticTester.property_solvent", "Echidna,Medusa", undefined]]);
+      assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: null, leads: 1 });
+    });
+  });
+}
+
+// The neighbours of "layout at", each a form solc 0.8.38 compiles: an
+// expression with parentheses and operators, a call with a string that holds
+// a brace, a comment between "layout" and "at", "at(" with no space, and bases
+// named "layout" and "at" (contextual keywords, valid names). The two extra
+// bases each add a property the engines did not report, so one gap per engine
+// for each proves both were bound.
+test('"layout at" with a parenthesised expression, and bases named layout and at, keep every base', async () => {
+  const headers = [
+    "contract CryticTester layout at (2 ** 8) * (3 + 1) is TargetFunctions, layout, at {",
+    'contract CryticTester is layout, at, TargetFunctions(), CryticAsserts layout /* the slot */ at erc7201("ns.{(") {',
+    "contract CryticTester is\n    TargetFunctions,\n    layout,\n    at\n    layout at(5)\n{",
+  ];
+  for (const header of headers) {
+    const prep = (ws) => {
+      writeFileSync(join(ws, "test/recon/Keywords.sol"), [
+        "abstract contract layout { function property_layout() public {} }",
+        "abstract contract at { function property_at() public {} }",
+        "",
+      ].join("\n"));
+      const ct = join(ws, SUITE);
+      writeFileSync(ct, readFileSync(ct, "utf8").replace("contract CryticTester is TargetFunctions, CryticAsserts {", header));
+    };
+    await withShim({ prep }, (scan) => {
+      assert.equal(scan.available, true, scan.reason);
+      assert.deepEqual(scan.dropped, [], header);
+      assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join(), l.bound]), [["CryticTester.property_solvent", "Echidna,Medusa", undefined]], header);
+      assert.deepEqual(scan.gaps.map((g) => `${g.engine} ${g.name}`).sort(), ["Echidna property_at()", "Echidna property_layout()", "Medusa property_at()", "Medusa property_layout()"], header);
+    });
+  }
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";

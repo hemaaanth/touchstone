@@ -133,7 +133,10 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     then the file does not compile.) A backslash before a line end inside a
     string continues the string. A contract header runs to the first `{`
     outside parentheses, so a base argument such as
-    `Properties(Options({marker: 1}))` keeps every base.
+    `Properties(Options({marker: 1}))` keeps every base. The header is read
+    by its parts, as solc 0.8.38 allows them: at most one `is` list and at
+    most one `layout at <expression>`, in either order. `layout` and `at` are
+    also valid base names.
     A dropped test that the engine reports on `CryticTester` has its own
     reason: "reported a CryticTester test the source scan did not find", or
     "the source scan found no CryticTester function" when the scan bound
