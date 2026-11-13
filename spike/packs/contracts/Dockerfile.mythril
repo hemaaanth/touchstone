@@ -1,0 +1,11 @@
+# Mythril 0.24.8 (ConsenSys), MIT license. Symbolic execution of EVM bytecode.
+# The upstream release image, pinned by digest. Build-time network only.
+# At run time the pack starts it through runTool(): --network none, --pull=never.
+# We pass runtime bytecode only (`-f <hex> --bin-runtime`), so Mythril never
+# needs solc and never fetches one. Online signature lookup stays off (default).
+# Build: docker build -f spike/packs/contracts/Dockerfile.mythril -t touchstone/mythril:0.24.8 spike/packs/contracts
+FROM mythril/myth:0.24.8@sha256:49e11758e359d0b410f648df5bbcba28a52e091a78e4772b5c02b9043666b4ff
+# Mythril writes its signature cache under $HOME/.mythril. runTool runs as the
+# host user, who has no home in the image, so point HOME at a writable dir.
+ENV HOME=/tmp
+ENTRYPOINT ["myth"]

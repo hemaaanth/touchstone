@@ -29,9 +29,10 @@
 import { execFile } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { classifyPath, githubRepoUrl, safeRelPath, secretContent, MAX_BYTES, MAX_FILES, MAX_MEMBERS } from "./scopes-store.mjs";
+import { event } from "./event.mjs";
 
 // The only hosts a fetch ever contacts. api.github.com serves the read-only
 // GitHub API reads of the supply-chain live path (githubGet below). fetchSource
@@ -112,8 +113,12 @@ function parseUrl(raw) {
 
 // Recognize the GitHub URLs we support and pull out the parts we need:
 //   https://github.com/<owner>/<repo>                       -> repo (default branch)
-//   https://github.com/<owner>/<repo>/tree/<ref>[/...]      -> repo at ref
+//   https://github.com/<owner>/<repo>/tree/<ref>            -> repo at ref
+//   https://github.com/<owner>/<repo>/tree/<ref>/<folder>   -> one folder of the repo at ref
 //   https://github.com/<owner>/<repo>/blob/<ref>/<path>     -> single file
+// A folder URL is how an operator audits a large repo in parts: only that folder
+// is kept, and only it counts toward the scope caps. A ref that holds a "/"
+// cannot be told apart from a folder, so the first segment after tree/ is the ref.
 // Anything else is refused.
 function parseGithub(u) {
   if (u.hostname !== "github.com") return null;
@@ -123,7 +128,13 @@ function parseGithub(u) {
   const repo = repoRaw.replace(/\.git$/, "");
   if (seg.length === 2) return { kind: "repo", owner, repo, ref: null };
   const kind = seg[2];
-  if (kind === "tree" && seg.length >= 4) return { kind: "repo", owner, repo, ref: seg[3] };
+  if (kind === "tree" && seg.length >= 4) {
+    let subPath = null;
+    if (seg.length > 4) {
+      try { subPath = decodeURIComponent(seg.slice(4).join("/")); } catch { subPath = seg.slice(4).join("/"); }
+    }
+    return { kind: "repo", owner, repo, ref: seg[3], ...(subPath ? { subPath } : {}) };
+  }
   if (kind === "blob" && seg.length >= 5) {
     const ref = seg[3];
     const filePath = seg.slice(4).join("/");
@@ -159,8 +170,10 @@ const SEGMENT = /^[A-Za-z0-9_][\w.-]*$/;
 
 // Where a member lands, relative to the workspace. Named by full owner/repo and
 // ref, so two members that share a repo name or a file name never collide:
-//   repo  -> vendor/<owner>__<repo>[@<ref>]
-//   blob  -> vendor/files/<owner>__<repo>[@<ref>]/<path in the repo>
+//   repo   -> vendor/<owner>__<repo>[@<ref>]
+//   folder -> vendor/<owner>__<repo>@<ref>/<folder in the repo>
+//   blob   -> vendor/files/<owner>__<repo>[@<ref>]/<path in the repo>
+// Two folder members of one repo and ref land side by side in one slot.
 // GitHub owners have no "_" and repo names have no "@", so the name is unique.
 export function memberDest(gh) {
   for (const part of [gh.owner, gh.repo, ...(gh.ref ? [gh.ref] : [])]) {
@@ -170,6 +183,10 @@ export function memberDest(gh) {
   if (gh.kind === "blob") {
     if (!safeRelPath(gh.filePath)) throw new Error(`refused an unsafe file path: ${gh.filePath}`);
     return path.posix.join("vendor", "files", slot, gh.filePath);
+  }
+  if (gh.subPath != null) {
+    if (!safeRelPath(gh.subPath)) throw new Error(`refused an unsafe folder path: ${gh.subPath}`);
+    return path.posix.join("vendor", slot, gh.subPath);
   }
   return path.posix.join("vendor", slot);
 }
@@ -268,13 +285,71 @@ export function scopeUsage(ws) {
   return use;
 }
 
+// How many files sit under a directory (a file counts as 1). Never follows a link.
+function countFiles(dir) {
+  let n = 0;
+  const walk = (d) => {
+    let st;
+    try { st = lstatSync(d); } catch { return; }
+    if (st.isFile()) { n++; return; }
+    if (!st.isDirectory()) return;
+    for (const name of readdirSync(d)) walk(path.join(d, name));
+  };
+  walk(dir);
+  return n;
+}
+
+// The folders of a fetched tree that an operator could list as separate folder
+// members, largest first. A folder over the file cap is split into its own
+// subfolders (a few levels deep), so the list names parts that can fit.
+function largestFolders(root, limit = 5) {
+  const subdirs = (rel) => {
+    try {
+      return readdirSync(path.join(root, rel)).map((n) => (rel ? `${rel}/${n}` : n)).filter((r) => lstatSync(path.join(root, r)).isDirectory());
+    } catch { return []; }
+  };
+  let rows = subdirs("").map((rel) => ({ rel, files: countFiles(path.join(root, rel)) }));
+  for (let depth = 0; depth < 4; depth++) {
+    const next = rows.flatMap((r) => {
+      if (r.files <= MAX_FILES) return [r];
+      const kids = subdirs(r.rel).map((rel) => ({ rel, files: countFiles(path.join(root, rel)) })).filter((k) => k.files > 0);
+      return kids.length ? kids : [r];
+    });
+    if (next.length === rows.length) break;
+    rows = next;
+  }
+  return rows.filter((r) => r.files > 0).sort((a, b) => b.files - a.files || a.rel.localeCompare(b.rel)).slice(0, limit);
+}
+
+// The known limit of folder URLs (see parseGithub), said in every refusal
+// that asks for one.
+const REF_SLASH = 'A branch or tag name that holds "/" cannot be used in a folder URL: the first part after tree/ is read as the branch, so use a branch or tag whose name has no "/".';
+
+// What an operator can do about a repo or folder that is over the caps: the
+// member's own file count, its largest folders, and folder URLs to use instead.
+function splitAdvice(dest, gh, over = "files") {
+  const own = countFiles(dest);
+  const base = gh.subPath ? `${gh.subPath}/` : "";
+  const ref = gh.ref ?? gh.headRef ?? "<branch>";
+  const top = largestFolders(dest);
+  const lines = [`This member alone has ${own} source file${own === 1 ? "" : "s"} after filtering.`];
+  if (top.length) lines.push(`Largest folders: ${top.map((r) => `${base}${r.rel} (${r.files})`).join(", ")}.`);
+  const example = top.find((r) => r.files <= MAX_FILES)?.rel ?? top[0]?.rel ?? "<folder>";
+  const limit = over === "files" ? `${MAX_FILES} source files` : `${MAX_BYTES / 1024 / 1024} MB of source`;
+  lines.push(`The whole scope (every member together) must stay under ${limit}. To audit it, edit the scope and replace this member with folder URLs that together fit, for example https://github.com/${gh.owner}/${gh.repo}/tree/${ref}/${base}${example} — each folder URL is fetched on its own, and a folder still over the cap must be split further.`);
+  lines.push(REF_SLASH);
+  return lines.join(" ");
+}
+
 // Refuse (and remove) a fetch that pushes the scope over the upload caps.
-function enforceCaps(ws, dest, label) {
+// `advice` is extra text that says what the operator can do.
+function enforceCaps(ws, dest, label, advice = null) {
   const use = scopeUsage(ws);
   if (use.files > MAX_FILES || use.bytes > MAX_BYTES) {
+    const tip = advice ? ` ${advice(use.files > MAX_FILES ? "files" : "bytes")}` : "";
     rmSync(dest, { recursive: true, force: true });
     const what = use.files > MAX_FILES ? `${use.files} source files (the cap is ${MAX_FILES})` : `${(use.bytes / 1024 / 1024).toFixed(1)} MB of source (the cap is ${MAX_BYTES / 1024 / 1024} MB)`;
-    throw new Error(`${label} would bring this scope to ${what} after filtering — refused`);
+    throw new Error(`${label} would bring this scope to ${what} after filtering — refused.${tip}`);
   }
 }
 
@@ -312,48 +387,94 @@ function reportSolFiles(ws, dir, cap = 200) {
 
 // --- the fetchers ------------------------------------------------------------
 
+// The branch a clone checked out, from .git/HEAD, or null. Used only in advice text.
+function headBranch(clone) {
+  try {
+    const m = readFileSync(path.join(clone, ".git", "HEAD"), "utf8").match(/^ref: refs\/heads\/(\S+)/);
+    return m && SEGMENT.test(m[1]) ? m[1] : null;
+  } catch { return null; }
+}
+
+// Clone a repo into a temporary folder in the workspace, keep the whole tree or
+// only the member's folder, prune it, and move it into place. The temporary
+// folder is hidden and outside src/ and vendor/, so the agent never sees it and
+// the caps never count it, and it is always removed.
 async function fetchRepo(ws, gh) {
   await assertPublicHost("github.com");
-  const dest = path.join(ws, memberDest(gh));
-  rmSync(dest, { recursive: true, force: true });
+  const rel = memberDest(gh);
+  const dest = path.join(ws, rel);
+  const label = `${gh.owner}/${gh.repo}${gh.subPath ? `/tree/${gh.ref}/${gh.subPath}` : ""}`;
   const cloneUrl = `https://github.com/${gh.owner}/${gh.repo}.git`;
-  const args = [
-    "-c", "protocol.allow=never",
-    "-c", "protocol.https.allow=always",
-    "-c", "core.hooksPath=/dev/null",
-    "-c", "http.followRedirects=false",
-    "clone", "--depth", "1", "--no-tags", "--single-branch",
-  ];
-  if (gh.ref) args.push("--branch", gh.ref);
-  args.push(cloneUrl, dest);
-  const r = await execFileP("git", args, {
-    timeout: CLONE_TIMEOUT_MS,
-    maxBuffer: 4 * 1024 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", HOME: ws },
-  });
-  if (r.err) {
-    rmSync(dest, { recursive: true, force: true });
-    const why = r.timedOut ? "clone timed out" : r.stderr.trim().split("\n").slice(-1)[0] || "clone failed";
-    throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why}`);
+  const tmp = mkdtempSync(path.join(ws, ".fetch-"));
+  const clone = path.join(tmp, "repo");
+  let dropped;
+  try {
+    const args = [
+      "-c", "protocol.allow=never",
+      "-c", "protocol.https.allow=always",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "http.followRedirects=false",
+      "clone", "--depth", "1", "--no-tags", "--single-branch",
+    ];
+    if (gh.ref) args.push("--branch", gh.ref);
+    args.push(cloneUrl, clone);
+    const r = await execFileP("git", args, {
+      timeout: CLONE_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", HOME: ws },
+    });
+    if (r.err) {
+      const why = r.timedOut ? "clone timed out" : r.stderr.trim().split("\n").slice(-1)[0] || "clone failed";
+      throw new Error(`could not clone ${gh.owner}/${gh.repo}: ${why}`);
+    }
+    gh = { ...gh, headRef: headBranch(clone) };
+    // Drop .git first — we keep the tree, not its history. A raw clone over the
+    // disk cap is refused before we read it.
+    rmSync(path.join(clone, ".git"), { recursive: true, force: true });
+    if (dirSizeOver(clone, REPO_CAP)) throw new Error(`clone of ${gh.owner}/${gh.repo} exceeds the ${Math.round(REPO_CAP / 1024 / 1024)}MB cap — refused`);
+    // A folder member keeps only its folder. Every part of the path must be a
+    // real folder, never a link, so a link cannot pull in a path outside it.
+    let keep = clone;
+    if (gh.subPath) {
+      for (const part of gh.subPath.split("/")) {
+        keep = path.join(keep, part);
+        let st = null;
+        try { st = lstatSync(keep); } catch {}
+        if (!st?.isDirectory()) throw new Error(`refused ${label}: ${gh.subPath} is not a folder in ${gh.owner}/${gh.repo} at ${gh.ref} (it does not exist, or it is a file or a symlink). Check the folder URL. ${REF_SLASH}`);
+      }
+    }
+    // Prune it like an uploaded folder, then put it in place. An earlier copy
+    // at dest (which can hold another member's folder) is set aside, and put
+    // back if the caps refuse the new copy.
+    dropped = pruneClone(keep);
+    const old = path.join(tmp, "old");
+    if (existsSync(dest)) renameSync(dest, old);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    renameSync(keep, dest);
+    // Hold the scope to the upload caps.
+    try {
+      enforceCaps(ws, dest, label, (over) => splitAdvice(dest, gh, over));
+    } catch (e) {
+      if (existsSync(old)) renameSync(old, dest);
+      // A refused new folder member leaves its parent folders empty; remove
+      // them up to vendor/, and stop at the first one that holds something.
+      const top = path.join(ws, "vendor");
+      for (let d = path.dirname(dest); d.startsWith(top + path.sep) && !existsSync(dest); d = path.dirname(d)) {
+        try { if (readdirSync(d).length) break; rmdirSync(d); } catch { break; }
+      }
+      throw e;
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
-  // Drop .git first — we keep the tree, not its history. A raw clone over the
-  // disk cap is refused before we read it. Then prune it like an uploaded folder
-  // and hold the scope to the upload caps.
-  rmSync(path.join(dest, ".git"), { recursive: true, force: true });
-  if (dirSizeOver(dest, REPO_CAP)) {
-    rmSync(dest, { recursive: true, force: true });
-    throw new Error(`clone of ${gh.owner}/${gh.repo} exceeds the ${Math.round(REPO_CAP / 1024 / 1024)}MB cap — refused`);
-  }
-  const dropped = pruneClone(dest);
-  enforceCaps(ws, dest, `${gh.owner}/${gh.repo}`);
   const files = reportSolFiles(ws, dest);
   return {
     kind: "repo",
-    where: path.relative(ws, dest),
+    where: rel,
     ref: gh.ref ?? "default branch",
     files,
     dropped,
-    note: `Cloned ${gh.owner}/${gh.repo} into ${path.relative(ws, dest)}/ (${files.length} Solidity file${files.length === 1 ? "" : "s"}; ${dropped} dependency, build, non-source or secret entr${dropped === 1 ? "y" : "ies"} dropped).`,
+    note: `Cloned ${label} into ${rel}/ (${files.length} Solidity file${files.length === 1 ? "" : "s"}; ${dropped} dependency, build, non-source or secret entr${dropped === 1 ? "y" : "ies"} dropped).`,
   };
 }
 
@@ -435,8 +556,15 @@ async function fetchBlob(ws, gh) {
   if (body.includes("\u0000") || secretContent(body)) throw new Error(`refused to save ${base}: its content is binary or looks like a secret`);
   const dest = path.join(ws, rel);
   mkdirSync(path.dirname(dest), { recursive: true });
+  // A refused refetch puts the earlier copy back, like fetchRepo does.
+  const before = existsSync(dest) ? readFileSync(dest) : null;
   writeFileSync(dest, body);
-  enforceCaps(ws, dest, gh.filePath);
+  try {
+    enforceCaps(ws, dest, gh.filePath);
+  } catch (e) {
+    if (before) writeFileSync(dest, before);
+    throw e;
+  }
   const pragmas = gh.filePath.endsWith(".sol") ? pragmaVersions(body) : [];
   return {
     kind: "file",
@@ -451,7 +579,24 @@ async function fetchBlob(ws, gh) {
 // any network call. A GitHub repo or tree URL is cloned; a blob URL is saved as
 // one file. Returns a small report the caller turns into a tool result. Throws
 // on a refused or failed fetch; the caller surfaces that to the agent.
+//
+// Every call emits one `source-fetch` event: the member URL, whether it landed,
+// where, how many files, or the refusal text. The run reads these to tell a
+// scope it read from one it did not (lib/source-coverage.mjs), so a refused
+// fetch can never end as a clean run.
 export async function fetchSource(ws, url) {
+  const member = memberUrl(url) ?? String(url).slice(0, 200);
+  try {
+    const report = await fetchMember(ws, url);
+    event("source-fetch", { url: member, ok: true, where: report.where ?? null, files: report.where ? countFiles(path.join(ws, report.where)) : 0 });
+    return report;
+  } catch (e) {
+    event("source-fetch", { url: member, ok: false, error: String(e?.message ?? e).slice(0, 1500) });
+    throw e;
+  }
+}
+
+async function fetchMember(ws, url) {
   const want = memberUrl(url);
   if (!want) throw new Error(`refused ${String(url).slice(0, 200)}: only GitHub repo, tree or file URLs that this scope lists are fetched`);
   if (!memberLinks(ws).includes(want)) throw new Error(`refused ${want}: it is not one of this scope's members. Fetch only a URL BRIEF.md lists`);
