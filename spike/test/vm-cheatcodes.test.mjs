@@ -6,6 +6,15 @@
 //
 //   node --experimental-test-module-mocks --test test/vm-cheatcodes.test.mjs
 //
+// The dangerous direction is a state-changing cheatcode sitting in `read` or
+// `control`. Two checks close it: every entry carries the declaration's own
+// `mutability`, and a `read`/`control` entry is only accepted when that
+// mutability is `view` or `pure`, or when its name is in the allow-list below:
+// `nonpayable` functions that the doc comment shows cannot change an account's
+// state, code, balance or nonce, the caller identity, a call's answer, or what
+// the chain sees later. A new `nonpayable` function from an upgrade fails until
+// someone allow-lists it on purpose. Stricter is always allowed.
+//
 // The table also carries a few selectors the pinned file does not declare but
 // the harm gate already names (newer-forge bool and bytes4 overloads). They are
 // flagged `extra` and the check below keeps that flag honest: the extras must be
@@ -28,9 +37,93 @@ const CANONICAL_VM_SOL = vmSol("vault-reentrancy");
 const TABLE = JSON.parse(readFileSync(join(ROOT, "spike/lib/vm-cheatcodes.json"), "utf8"));
 const CONTROL_TRACE = readFileSync(join(ROOT, "spike/lib/control-trace.mjs"), "utf8");
 
-const CLASSES = new Set(["read", "control", "time", "account", "mock", "fork", "fs"]);
+const CLASSES = new Set(["read", "control", "time", "account", "mock", "fork", "fs", "state"]);
+const MUTABILITIES = new Set(["view", "pure", "nonpayable"]);
 const SIG = /^[A-Za-z_]\w*\([0-9A-Za-z,[\]()]*\)$/;
 const bySelector = new Map(TABLE.map((e) => [e.selector, e]));
+
+// Read/control on a `nonpayable` declaration is accepted only for these names,
+// keyed `<iface>:<name>`, each with the reason the call still cannot change what
+// an account is or holds. Only one overload has to be nonpayable for the name to
+// need an entry; a name whose overloads are all `view`/`pure` needs none.
+const ALLOWED = new Map([
+  // Vm, control: expectations, snapshots and skips live in the inspector.
+  ["Vm:allowCheatcodes", "grants cheatcode access to an address on a fork; no account state"],
+  ["Vm:deleteSnapshot", "removes a snapshot id from the inspector"],
+  ["Vm:deleteSnapshots", "removes all snapshot ids from the inspector"],
+  ["Vm:deleteStateSnapshot", "removes one snapshot id from the inspector"],
+  ["Vm:deleteStateSnapshots", "removes all snapshot ids from the inspector"],
+  ["Vm:expectCall", "sets the next-call expectation; no account state"],
+  ["Vm:expectCallMinGas", "sets the next-call expectation and a gas floor"],
+  ["Vm:expectEmit", "sets the next-log expectation"],
+  ["Vm:expectEmitAnonymous", "sets the next anonymous-log expectation"],
+  ["Vm:expectPartialRevert", "sets the next-revert expectation"],
+  ["Vm:expectRevert", "sets the next-revert expectation"],
+  ["Vm:expectSafeMemory", "sets the allowed memory window"],
+  ["Vm:expectSafeMemoryCall", "sets the allowed memory window of the next subcontext"],
+  ["Vm:stopExpectSafeMemory", "clears the allowed memory window"],
+  ["Vm:skip", "marks the test skipped"],
+  ["Vm:snapshot", "stores a snapshot id in the inspector"],
+  ["Vm:snapshotGasLastCall", "stores a gas counter under a snapshot name"],
+  ["Vm:snapshotState", "stores a snapshot id in the inspector"],
+  ["Vm:snapshotValue", "stores a named value in the inspector"],
+  ["Vm:startSnapshotGas", "starts a named gas counter"],
+  ["Vm:stopSnapshotGas", "stops a named gas counter"],
+  // VmSafe, control: runner flags and the terminal.
+  ["VmSafe:pauseGasMetering", "sets the gas meter flag"],
+  ["VmSafe:resetGasMetering", "sets the gas meter counter"],
+  ["VmSafe:resumeGasMetering", "clears the gas meter flag"],
+  ["VmSafe:setEnv", "writes the runner's process env"],
+  ["VmSafe:sleep", "sleeps the test thread"],
+  ["VmSafe:startDebugTraceRecording", "sets the debug trace flag"],
+  ["VmSafe:startMappingRecording", "sets the mapping record flag"],
+  ["VmSafe:startStateDiffRecording", "sets the state diff record flag"],
+  ["VmSafe:stopAndReturnDebugTraceRecording", "clears the debug trace flag"],
+  ["VmSafe:stopAndReturnStateDiff", "clears the state diff record flag"],
+  ["VmSafe:stopMappingRecording", "clears the mapping record flag"],
+  // Vm, read: prank state.
+  ["Vm:readCallers", "reads the active caller modification"],
+  // VmSafe, read: record sessions, disk stats, local wallet, in-memory JSON.
+  ["VmSafe:accesses", "reads the record session"],
+  ["VmSafe:closeFile", "resets a file read offset"],
+  ["VmSafe:createWallet", "adds a key to the local wallet and labels it"],
+  ["VmSafe:exists", "stats the disk"],
+  ["VmSafe:getMappingKeyAndParentOf", "reads the mapping record session"],
+  ["VmSafe:getMappingLength", "reads the mapping record session"],
+  ["VmSafe:getMappingSlotAt", "reads the mapping record session"],
+  ["VmSafe:getNonce", "reads a nonce"],
+  ["VmSafe:getRecordedLogs", "reads the log record session"],
+  ["VmSafe:getScriptWallets", "lists local wallet addresses"],
+  ["VmSafe:getWallets", "lists local wallet addresses"],
+  ["VmSafe:isDir", "stats the disk"],
+  ["VmSafe:isFile", "stats the disk"],
+  ["VmSafe:label", "sets a trace label"],
+  ["VmSafe:prompt", "reads a value from the terminal"],
+  ["VmSafe:promptAddress", "reads a value from the terminal"],
+  ["VmSafe:promptSecret", "reads a value from the terminal"],
+  ["VmSafe:promptSecretUint", "reads a value from the terminal"],
+  ["VmSafe:promptUint", "reads a value from the terminal"],
+  ["VmSafe:randomAddress", "generates a value"],
+  ["VmSafe:randomUint", "generates a value"],
+  ["VmSafe:record", "sets the storage record flag"],
+  ["VmSafe:recordLogs", "sets the log record flag"],
+  ["VmSafe:rememberKey", "adds a key to the local wallet"],
+  ["VmSafe:rememberKeys", "adds keys to the local wallet"],
+  ["VmSafe:serializeAddress", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeBool", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeBytes", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeBytes32", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeInt", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeJson", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeJsonType", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeString", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeUint", "writes the in-memory JSON buffer"],
+  ["VmSafe:serializeUintToHex", "writes the in-memory JSON buffer"],
+  ["VmSafe:sign", "signs with a wallet or key; no EVM state"],
+  ["VmSafe:signCompact", "signs with a wallet or key; no EVM state"],
+  ["VmSafe:unixTime", "reads the wall clock"],
+]);
+
 const signatures = (source, from, to) => {
   const slice = source.slice(source.indexOf(from), source.indexOf(to, source.indexOf(from)));
   return [...slice.matchAll(/"([^"\n]+)"/g)].map((m) => m[1]).filter((s) => SIG.test(s));
@@ -78,6 +171,7 @@ test("the table matches the vendored Vm.sol, function for function", () => {
     assert.equal(entry.name, row.name, `changed name for ${row.selector}`);
     assert.equal(entry.signature, row.signature, `changed signature for ${row.selector}`);
     assert.equal(entry.iface, row.iface, `changed interface for ${row.signature}`);
+    assert.equal(entry.mutability, row.mutability, `changed mutability for ${row.signature}`);
     assert.ok(!entry.extra, `${row.signature} is in Vm.sol but flagged extra`);
   }
 
@@ -86,6 +180,9 @@ test("the table matches the vendored Vm.sol, function for function", () => {
   const gateOnly = GATE.filter((s) => !parsedBySelector.has(s));
   const extras = TABLE.filter((e) => e.extra).map((e) => e.selector);
   assert.deepEqual([...extras].sort(), [...gateOnly].sort());
+  for (const entry of TABLE.filter((e) => e.extra)) {
+    assert.equal(entry.mutability, "nonpayable", `${entry.signature}: an extra must be nonpayable`);
+  }
   for (const entry of TABLE) {
     if (entry.extra) continue;
     assert.ok(parsedBySelector.has(entry.selector), `extra entry ${entry.signature} that the gate does not name`);
@@ -98,6 +195,7 @@ test("every entry has a valid class and a self-consistent selector", () => {
     assert.ok(CLASSES.has(entry.class), `${entry.signature}: class ${entry.class}`);
     assert.ok(entry.iface === "VmSafe" || entry.iface === "Vm", `${entry.signature}: iface ${entry.iface}`);
     assert.match(entry.signature, SIG, `${entry.signature}: not a canonical signature`);
+    assert.ok(MUTABILITIES.has(entry.mutability), `${entry.signature}: mutability ${entry.mutability}`);
     assert.ok(!/\s|calldata|memory|storage|payable/.test(entry.signature), `${entry.signature}: word left in`);
     assert.equal(selectorOf(entry.signature), entry.selector, `${entry.signature}: selector`);
     assert.equal(entry.name, entry.signature.slice(0, entry.signature.indexOf("(")), `${entry.signature}: name`);
@@ -139,6 +237,79 @@ test("every selector control-trace.mjs names is classed account or mock", () => 
     assert.ok(
       entry.class === "account" || entry.class === "mock",
       `control-trace names ${entry.signature} as ${entry.class}`,
+    );
+  }
+});
+
+// (f) the class is backed, not just asserted. `read` and `control` are the two
+// classes a state-changing function can hide in; only a `view`/`pure`
+// declaration, or a deliberate allow-list entry, may claim them.
+test("a read or control class is proved by view/pure or an allow-list entry", () => {
+  for (const entry of TABLE) {
+    if (entry.class !== "read" && entry.class !== "control") continue;
+    if (entry.mutability !== "nonpayable") continue;
+    assert.ok(
+      ALLOWED.get(`${entry.iface}:${entry.name}`),
+      `${entry.signature} is nonpayable classed ${entry.class}: allow-list it with a reason, or class it stricter`,
+    );
+  }
+});
+
+// The allow-list itself must stay tight: every entry is used by a live
+// read/control overload, and no entry outlives its name.
+test("the allow-list has no stale or unused entry", () => {
+  for (const [key, reason] of ALLOWED) {
+    const entries = TABLE.filter((e) => `${e.iface}:${e.name}` === key);
+    assert.ok(entries.length > 0, `${key} is allow-listed but absent from the table`);
+    assert.ok(reason.trim().length > 0, `${key} has no reason`);
+    assert.ok(
+      entries.some((e) => (e.class === "read" || e.class === "control") && e.mutability === "nonpayable"),
+      `${key} is allow-listed but no nonpayable read/control overload uses it`,
+    );
+  }
+});
+
+// (g) the reviewer's pin list: whatever else moves, these never drop back to
+// `read` or `control`. Names are matched as patterns so every overload and the
+// deprecated aliases in each family are covered.
+test("state-changing names never class as read or control", () => {
+  const pinned = [
+    /prank/i,
+    /broadcast/i,
+    /^mock/,
+    /^clearMockedCalls$/,
+    /^revertTo/,
+    ...[
+      "deal",
+      "setNonce",
+      "setNonceUnsafe",
+      "resetNonce",
+      "etch",
+      "store",
+      "copyStorage",
+      "setArbitraryStorage",
+      "loadAllocs",
+      "cloneAccount",
+      "deployCode",
+      "createFork",
+      "createSelectFork",
+      "selectFork",
+      "rollFork",
+      "makePersistent",
+      "revokePersistent",
+      "transact",
+      "rpc",
+    ].map((n) => new RegExp(`^${n}$`)),
+  ];
+  const hit = TABLE.filter((e) => pinned.some((re) => re.test(e.name)));
+  assert.ok(hit.length >= 40, `only ${hit.length} pinned functions matched`);
+  for (const name of ["deal", "etch", "store"]) {
+    assert.ok(TABLE.some((e) => e.name === name), `${name} vanished from the table`);
+  }
+  for (const entry of hit) {
+    assert.ok(
+      entry.class !== "read" && entry.class !== "control",
+      `${entry.signature} is pinned state-changing but classed ${entry.class}`,
     );
   }
 });

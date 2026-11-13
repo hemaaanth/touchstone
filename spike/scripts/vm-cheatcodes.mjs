@@ -123,9 +123,14 @@ export function parseVmSol(source) {
     const head = /^\s*function\s+(\w+)\s*\(([^)]*)\)/.exec(decl);
     if (!head) throw new Error(`unparsed declaration: ${decl}`);
 
+
     const params = splitParams(head[2]).map((p) => paramType(p, types));
     const signature = `${head[1]}(${params.join(",")})`;
-    out.push({ name: head[1], signature, selector: selectorOf(signature), iface, doc });
+    // `view` and `pure` prove a call cannot change EVM state; anything else is
+    // `nonpayable`. The class rule in the test leans on that, so the value is
+    // read from the declaration, never guessed.
+    const mutability = /\b(pure)\b/.test(decl) ? "pure" : /\b(view)\b/.test(decl) ? "view" : "nonpayable";
+    out.push({ name: head[1], signature, selector: selectorOf(signature), iface, doc, mutability });
   }
   return out;
 }
@@ -138,9 +143,11 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const path = process.argv[2] ?? DEFAULT_VM_SOL;
   const rows = parseFile(path);
-  process.stdout.write(`iface\tselector\tsignature\tname\tdoc\n`);
+  process.stdout.write(`iface\tselector\tsignature\tmutability\tname\tdoc\n`);
   for (const r of rows) {
-    process.stdout.write(`${r.iface}\t${r.selector}\t${r.signature}\t${r.name}\t${r.doc.replace(/\t/g, " ")}\n`);
+    process.stdout.write(
+      `${r.iface}\t${r.selector}\t${r.signature}\t${r.mutability}\t${r.name}\t${r.doc.replace(/\t/g, " ")}\n`,
+    );
   }
   process.stderr.write(`${rows.length} functions in ${path}\n`);
 }
