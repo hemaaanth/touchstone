@@ -357,6 +357,29 @@ test("a commented-out, internal or private property_ function is not a gap", asy
   });
 });
 
+// The reviewer's case on the lab. A "/*" and a "*/" inside two strings must not
+// hide property_solvent between them, so its lead survives. A property_ written
+// inside a string is not code, so it is not a gap.
+test("a comment marker inside a string hides no property; a property_ inside a string is not a gap", async () => {
+  const file = "test/recon/Properties.sol";
+  const prep = (ws) => {
+    let src = readFileSync(join(ws, file), "utf8");
+    src = src.replace("    /// The vault holds at least", '    string constant OPEN = "/*";\n    /// The vault holds at least');
+    src = src.replace("    /// The tester is the only holder", '    string constant CLOSE = "*/";\n    string constant FAKE = "function property_fake() public {}";\n    string constant ESC = \'it\\\'s // not a comment\';\n    /// The tester is the only holder');
+    writeFileSync(join(ws, file), src);
+    // A CryticTester only in a comment or a string is not a second suite.
+    writeFileSync(join(ws, "test/Old.sol"), 'import {Asserts} from "@chimera/Asserts.sol";\n// contract CryticTester is Asserts {}\ncontract Old { string s = "contract CryticTester"; }\n');
+    assert.deepEqual(chimeraSuites(ws), [SUITE]);
+  };
+  await withShim({ prep }, (scan) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.deepEqual(scan.dropped ?? [], []);
+    assert.deepEqual(scan.gaps, []);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna,Medusa"]]);
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: null, leads: 1 });
+  });
+});
+
 test("two CryticTester suites are ambiguous: unavailable with a gap per suite, and no engine runs", async () => {
   const a = "test/recon/CryticTester.sol";
   const b = "test/recon/CryticTester2.sol";

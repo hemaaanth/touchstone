@@ -26,6 +26,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
+import { codeOnly } from "./solidity-source.mjs";
 import { suiteTrust } from "./suite-trust.mjs";
 
 const IMAGE = process.env.CHIMERA_IMAGE || "touchstone/chimera:e2.3.3-m1.5.1";
@@ -97,7 +98,9 @@ export function chimeraSuites(ws) {
       if (st.isDirectory()) walk(p);
       else if (name.endsWith(".sol")) {
         const src = readFileSync(p, "utf8");
-        if (TESTER.test(src) && USES_CHIMERA.test(src)) out.push(relative(ws, p));
+        // The contract name is read from code only; the import path is a
+        // string, so it is read with the strings kept and the comments gone.
+        if (TESTER.test(codeOnly(src)) && USES_CHIMERA.test(codeOnly(src, { keepStrings: true }))) out.push(relative(ws, p));
       }
     }
   };
@@ -106,10 +109,9 @@ export function chimeraSuites(ws) {
 }
 
 // Function names declared in the .sol files under dir (recursive): only those
-// in the code, not in a comment, and not internal or private, because the
+// in the code (not in a comment or a string) and not internal or private, because the
 // engines call only ABI functions. So a commented-out property_ is not a gap.
 const FNS = /\bfunction\s+(\w+)\s*\([^)]*\)([^{;]*)/g;
-const uncommented = (src) => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 function declared(dir) {
   const names = new Set();
   const walk = (d) => {
@@ -118,7 +120,7 @@ function declared(dir) {
       const p = join(d, n);
       if (statSync(p).isDirectory()) walk(p);
       else if (n.endsWith(".sol")) {
-        for (const m of uncommented(readFileSync(p, "utf8")).matchAll(FNS)) if (!/\b(internal|private)\b/.test(m[2])) names.add(m[1]);
+        for (const m of codeOnly(readFileSync(p, "utf8")).matchAll(FNS)) if (!/\b(internal|private)\b/.test(m[2])) names.add(m[1]);
       }
     }
   };

@@ -20,6 +20,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
+import { codeOnly } from "./solidity-source.mjs";
 import { suiteTrust } from "./suite-trust.mjs";
 
 const IMAGE = process.env.HALMOS_IMAGE || "touchstone/halmos:0.3.3";
@@ -43,12 +44,12 @@ const scanCmd = (secs) => [
   `if [ "$rc" != 137 ] && [ -s /tmp/h.json ]; then cat /tmp/h.json; else echo ${NO_JSON} >&2; tail -c 4000 /tmp/h.log >&2; fi`,
 ].join(" ");
 
-// The check_ functions Halmos can run: those in the code, not in a comment,
-// and not internal or private (Halmos runs only ABI functions). The name list
-// is read from the source text, so a commented-out check_ is not a gap.
+// The check_ functions Halmos can run: those in the code, not in a comment or
+// a string, and not internal or private (Halmos runs only ABI functions). The
+// name list is read from the source text through codeOnly(), so a check_ in a
+// comment or a string is not a gap, and a "/*" in a string hides nothing.
 const CHECK_FNS = /\bfunction\s+(check_\w+)\s*\([^)]*\)([^{;]*)/g;
-const uncommented = (src) => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
-const checkFns = (src) => [...uncommented(src).matchAll(CHECK_FNS)].filter((m) => !/\b(internal|private)\b/.test(m[2])).map((m) => m[1]);
+const checkFns = (src) => [...codeOnly(src).matchAll(CHECK_FNS)].filter((m) => !/\b(internal|private)\b/.test(m[2])).map((m) => m[1]);
 const bare = (name) => String(name).replace(/\(.*$/, "");
 
 // The test files that hold at least one check_ function, relative to ws.

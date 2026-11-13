@@ -51,8 +51,9 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   reports an empty list); a solver timeout on one test (exit 2); and a listed
   suite with no entry in the report; a `check_` function the suite file
   declares with no result (one inherited from another file is not checked
-  this way; one in a comment, or `internal` or `private`, is not counted,
-  because Halmos cannot run it); a `test/` we cannot walk (for example
+  this way; one in a comment or a string, or `internal` or `private`, is not
+  counted, because Halmos cannot run it; a comment marker inside a string is
+  not a comment, so it hides nothing); a `test/` we cannot walk (for example
   a symlink loop, ELOOP). A report entry for a suite this
   workspace does not list is dropped. When any check is a gap, the run view
   says how many ("1 of 2 checks unchecked (...)"). When no check ran at all,
@@ -116,8 +117,10 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
     or a function not declared in a `.sol` file under the suite's folder, is
     dropped (`dropped`) and is a gap, never a lead. Each `property_*` function
     declared there that an engine did not report is a gap for that engine.
-    One in a comment, or `internal` or `private`, is not counted, because
-    the engines call only ABI functions.
+    One in a comment or a string, or `internal` or `private`, is not counted,
+    because the engines call only ABI functions. A comment marker inside a
+    string is not a comment, so it hides nothing. Both adapters read the
+    source through one scanner, `solidity-source.mjs`.
     `property_` is a naming convention, so a property with another name is
     checked only if an engine reports it.
   - **Run view.** Any gap puts a reason on the "Chimera" row, for example

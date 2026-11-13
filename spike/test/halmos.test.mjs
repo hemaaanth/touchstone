@@ -339,6 +339,41 @@ test("a commented-out or internal check_ function is not a gap, and a file with 
   });
 });
 
+// The reviewer's case. A "/*" and a "*/" inside two strings must not hide the
+// real check_ between them. A check_ written inside a string is not code, and
+// a "//" inside a string does not hide the rest of its line.
+test("a comment marker inside a string hides no check_; a check_ inside a string is not a gap", async () => {
+  const HIDDEN = [
+    "// SPDX-License-Identifier: MIT",
+    "pragma solidity ^0.8.20;",
+    "contract Hidden {",
+    '    string constant a = "/*";',
+    "    function check_bug() public { assert(false); }",
+    '    string constant b = "*/";',
+    "    string constant c = 'function check_fake() public {}'; string constant u = \"http://x\\\"//\"; function check_after() public {}",
+    "}",
+    "",
+  ].join("\n");
+  const report = { exitcode: 1, test_results: {
+    ...REPORT.test_results,
+    "test/Hidden.t.sol:Hidden": [
+      { name: "check_bug()", exitcode: 1, num_models: 1, models: [{ model: {}, is_valid: true }], num_paths: [1, 1, 0], time: [0.1, 0, 0.1], num_bounded_loops: 0 },
+      { name: "check_after()", exitcode: 0, num_models: 0, models: [], num_paths: [1, 1, 0], time: [0.1, 0, 0.1], num_bounded_loops: 0 },
+    ],
+  } };
+  const edit = (ws) => {
+    writeFileSync(join(ws, "test/Hidden.t.sol"), HIDDEN);
+    assert.deepEqual(symbolicSuites(ws), ["test/Hidden.t.sol", SUITE]);
+  };
+  await withShim({ out: JSON.stringify(report), edit }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.dropped ?? [], []);
+    assert.deepEqual(scan.gaps, []);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.property]).sort(), [["Hidden.check_bug", "check_bug()"], ["ShareVaultSymbolicTest.check_withdrawBurnsAtLeastValue", "check_withdrawBurnsAtLeastValue(uint256)"]]);
+    assert.deepEqual(scan.results.filter((x) => x.suite === "test/Hidden.t.sol").map((x) => [x.name, x.status]), [["check_bug()", "counterexample"], ["check_after()", "pass"]]);
+  });
+});
+
 test("an empty report is unavailable, not clean", async () => {
   await withShim({ out: JSON.stringify({ exitcode: 0, test_results: {} }) }, (scan) => {
     assert.equal(scan.available, false);
