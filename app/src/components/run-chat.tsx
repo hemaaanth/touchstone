@@ -9,6 +9,7 @@ import {
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
 import type { Finding, RunSummary } from "@/lib/types"
 import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
+import { startProgress } from "@/lib/startup"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
@@ -178,6 +179,8 @@ export function RunChat({
   // stays in `sent` until the next send prunes it, so this is pure.
   const events = state?.events
   const outcomes = useMemo(() => settleSent(sent, events ?? []), [sent, events])
+  // What the run did before the agent session opened. Read while the thread is empty.
+  const startup = useMemo(() => (events ? startProgress(events) : null), [events])
   const settled = useRef(outcomes)
   useEffect(() => {
     settled.current = outcomes
@@ -454,6 +457,8 @@ export function RunChat({
                 <Thread
                   empty={messages.length === 0}
                   prepass={state?.prepass ?? null}
+                  startup={startup}
+                  live={live}
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
                   onRetry={onRetry}
