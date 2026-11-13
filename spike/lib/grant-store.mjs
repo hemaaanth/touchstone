@@ -23,7 +23,7 @@
 // real only when its proof replays and shows harm. A grant with no live run is
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,20 +66,73 @@ function savedToken() {
 }
 export const GRANT_TOKEN = process.env.TOUCHSTONE_GRANT_TOKEN || savedToken();
 
-// Read the whole store. A missing file or unparsable JSON yields an empty list,
-// so a hand-edited or absent file degrades to "no grants", never a throw.
+// One JSON store file: an array of records. The grant store and the scope store
+// both use these two functions.
+//
+// loadStore: a missing file is an empty store. A file that exists but cannot be
+// read, or is not a JSON array, is DAMAGED: this throws. Every mutation loads
+// with it first, so a mutation never writes over a damaged file.
+export function loadStore(file, what) {
+  let raw;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw new Error(`Refused: the ${what} file ${file} exists but cannot be read (${e.code || e.message}). Nothing was changed. Repair the file or move it away, then try again.`);
+  }
+  let arr;
+  try {
+    arr = JSON.parse(raw);
+  } catch {
+    arr = null;
+  }
+  if (!Array.isArray(arr)) throw new Error(`Refused: the ${what} file ${file} is not a valid JSON list. Nothing was changed. Repair the file or move it away, then try again.`);
+  return arr;
+}
+
+// saveStore: write a temp file in the same directory, then rename it over the
+// store. A crash in the middle leaves the old file whole, never a half file.
+export function saveStore(file, arr) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  // Keep the mode the operator gave the file. A new file gets the default mode.
+  let mode = 0o666;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    /* no file yet */
+  }
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(arr, null, 2), { mode });
+    const fd = openSync(tmp, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+// The grants for a mutation: throws on a damaged file (see loadStore).
+export const loadGrants = () => loadStore(grantsFile(), "grant store");
+
+// Read the whole store for a gate or a list. A missing file is an empty list.
+// A damaged file also reads as "no grants": the gate then refuses every run
+// (fail closed). It is never written over: addGrant and removeGrant refuse it.
 export function readGrants() {
   try {
-    const arr = JSON.parse(readFileSync(grantsFile(), "utf8"));
-    return Array.isArray(arr) ? arr : [];
+    return loadGrants();
   } catch {
     return [];
   }
 }
 
 function writeGrants(arr) {
-  mkdirSync(path.dirname(grantsFile()), { recursive: true });
-  writeFileSync(grantsFile(), JSON.stringify(arr, null, 2));
+  saveStore(grantsFile(), arr);
 }
 
 // One host, normalized to the form the allow-list and the proxy compare on:
@@ -336,7 +389,7 @@ export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, ex
     // grant for a public host never touches it.
     allowPrivate: priv,
   };
-  const all = readGrants();
+  const all = loadGrants();
   all.unshift(grant);
   writeGrants(all);
   return grant;
@@ -347,7 +400,7 @@ export function getGrant(id) {
 }
 
 export function removeGrant(id) {
-  const all = readGrants();
+  const all = loadGrants();
   const next = all.filter((g) => g.id !== id);
   if (next.length === all.length) return false;
   writeGrants(next);
