@@ -204,3 +204,15 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 // Whether GET /api/models has answered yet. "error" with lists already loaded
 // means a later refresh failed; the pages keep showing the last answer.
 export type CatalogState = "loading" | "ready" | "error"
+
+// A joined run's modules, in the order of the server's module list, with
+// their titles. Null for a run with one module: its row stays one line.
+export function joinedModules(r: Pick<RunSummary, "packs">, packs: PackChoice[]): { id: string; title: string }[] | null {
+  const ids = [...new Set(r.packs ?? [])]
+  if (ids.length < 2) return null
+  const at = (id: string) => {
+    const i = packs.findIndex((p) => p.id === id)
+    return i < 0 ? packs.length : i
+  }
+  return ids.sort((a, b) => at(a) - at(b)).map((id) => ({ id, title: packs.find((p) => p.id === id)?.title ?? id }))
+}

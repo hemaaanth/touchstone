@@ -14,6 +14,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { ModulePill } from "@/components/module-pill";
 import {
   AuiIf,
   ThreadListItemMorePrimitive,
@@ -55,7 +56,13 @@ export type RunThreadCustom = {
   running: boolean;
   // A live run cannot be archived; it would cut the agent off.
   canArchive: boolean;
+  // A joined run's modules (two or more), shown as pills under the title.
+  modules?: { id: string; title: string }[];
 };
+
+// At most three pills, then "+N". The row is a button, so the rest are named
+// in plain text (a tooltip trigger may not sit inside a button).
+const MAX_PILLS = 3;
 
 const runCustom = (custom: Record<string, unknown> | undefined) =>
   custom as RunThreadCustom | undefined;
@@ -364,6 +371,8 @@ const ThreadListSkeleton: FC = () => {
 
 export const ThreadListItem: FC = () => {
   const run = useAuiState((s) => runCustom(s.threadListItem.custom));
+  const modules = run?.modules && run.modules.length > 1 ? run.modules : null;
+  const rest = modules ? modules.slice(MAX_PILLS) : [];
   const [isRenaming, setIsRenaming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef(false);
@@ -377,7 +386,10 @@ export const ThreadListItem: FC = () => {
   return (
     <ThreadListItemPrimitive.Root
       data-slot="aui_thread-list-item"
-      className="group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none"
+      className={cn(
+        "group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex items-center rounded-md transition-colors focus-visible:outline-none",
+        modules ? "min-h-8 py-1" : "h-8",
+      )}
     >
       {isRenaming ? (
         <ThreadListItemRename
@@ -391,27 +403,52 @@ export const ThreadListItem: FC = () => {
           ref={triggerRef}
           data-slot="aui_thread-list-item-trigger"
           title={run?.label}
-          className="focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
+          className={cn(
+            "focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 gap-2 rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1",
+            // A joined run's dot sits on the title line, above its pills
+            // (the margin on the dot and the spinner below).
+            // A joined row always keeps room for the "…" button, so hover never reflows its pills.
+            modules ? "items-start pe-9" : "items-center",
+          )}
         >
           {run?.running ? (
             <Loader2Icon
               aria-hidden
               data-slot="aui_thread-list-item-running"
-              className="text-muted-foreground size-3.5 shrink-0 animate-spin"
+              className={cn("text-muted-foreground size-3.5 shrink-0 animate-spin", modules && "mt-[3px]")}
             />
           ) : run ? (
             <span
               aria-hidden
               data-slot="aui_thread-list-item-status"
-              className={cn("size-1.5 shrink-0 rounded-full", run.dot)}
+              className={cn("size-1.5 shrink-0 rounded-full", run.dot, modules && "mt-[7px]")}
             />
           ) : null}
-          <span
-            data-slot="aui_thread-list-item-title"
-            className="min-w-0 flex-1 truncate"
-          >
-            <ThreadListItemPrimitive.Title fallback="Untitled run" />
-          </span>
+          {modules ? (
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <span data-slot="aui_thread-list-item-title" className="min-w-0 truncate">
+                <ThreadListItemPrimitive.Title fallback="Untitled run" />
+              </span>
+              <span data-slot="aui_thread-list-item-modules" className="flex min-w-0 flex-wrap items-center gap-1">
+                {modules.slice(0, MAX_PILLS).map((m) => (
+                  <ModulePill key={m.id} id={m.id} label={m.title} compact />
+                ))}
+                {rest.length ? (
+                  <span title={rest.map((m) => m.title).join(", ")} className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
+                    +{rest.length}
+                    <span className="sr-only"> more: {rest.map((m) => m.title).join(", ")}</span>
+                  </span>
+                ) : null}
+              </span>
+            </span>
+          ) : (
+            <span
+              data-slot="aui_thread-list-item-title"
+              className="min-w-0 flex-1 truncate"
+            >
+              <ThreadListItemPrimitive.Title fallback="Untitled run" />
+            </span>
+          )}
           {run && <span className="sr-only">{run.label}</span>}
         </ThreadListItemPrimitive.Trigger>
       )}

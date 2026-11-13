@@ -70,6 +70,40 @@ export async function fetchFindingText(id: string, format: "md" | "agent"): Prom
   return res.text()
 }
 
+// A finding's replay bundle, asked about before the download (H3c). The server
+// builds the zip and answers what it holds (`bundle-check`), or refuses it with
+// one sentence (409): a finding that is not proven, an evidence finding, or a
+// bundle that would hold a secret it can name.
+export type BundleCheck =
+  | {
+      ok: true
+      bytes: number
+      // The values the zip could not judge, counted by class. Never a value.
+      unjudged: { shape: string; count: number; text: string }[]
+      // "Check these before you share the bundle" when `unjudged` has counts.
+      note: string | null
+      // What the bundle is, in its README's own first words.
+      about: string | null
+    }
+  | { ok: false; error: string }
+
+export async function fetchBundleCheck(id: string): Promise<BundleCheck> {
+  const url = `/api/findings/${encodeURIComponent(id)}/report?format=bundle-check`
+  const res = await fetch(url)
+  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (res.status === 409) return { ok: false, error: typeof json.error === "string" ? json.error : "The server refused this bundle." }
+  if (!res.ok) throw new HttpError(url, res.status)
+  return {
+    ok: true,
+    bytes: Number(json.bytes) || 0,
+    unjudged: Array.isArray(json.unjudged) ? (json.unjudged as { shape: string; count: number; text: string }[]) : [],
+    note: typeof json.note === "string" ? json.note : null,
+    about: typeof json.about === "string" ? json.about : null,
+  }
+}
+
+export const bundleUrl = (id: string) => `/api/findings/${encodeURIComponent(id)}/report?format=bundle`
+
 // ---- Live runs.
 
 export async function fetchModels(): Promise<{
