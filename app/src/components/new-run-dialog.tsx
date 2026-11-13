@@ -208,7 +208,7 @@ export function NewRunDialog({
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
           <Button onClick={submit} disabled={!canStart}>
             {busy ? <Loader2 className="animate-spin" /> : null}
-            {modules.length > 1 ? `Start ${modules.length} runs` : "Start run"}
+            {modules.length > 1 ? "Start one run" : "Start run"}
           </Button>
         </div>
       </DialogContent>

@@ -412,6 +412,8 @@ export function listRuns() {
       // The target this run audits — its stable headline, so the sidebar shows a
       // real name from the first second instead of the model alias.
       target: scopeOf(r)?.title ?? null,
+      // The modules the run covers, so a list row can name them all.
+      packs: r.packs?.length ? r.packs : [scopeOf(r)?.pack ?? "contracts"],
       severity: r.pending?.severity ?? null,
       findings: r.submitted.length,
     }))
