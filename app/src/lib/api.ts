@@ -40,6 +40,15 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return json as T
 }
 
+// A DELETE carries no body. It still carries the console token: the server
+// refuses every write without it.
+async function deleteJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: "DELETE", headers: tokenHeaders() })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error((json as { error?: string }).error ?? `${url} -> ${res.status}`)
+  return json as T
+}
+
 export async function fetchFindings(): Promise<FindingSummary[]> {
   const data = await getJson<{ findings: FindingSummary[] }>("/api/findings")
   return data.findings
@@ -110,7 +119,8 @@ export function attachScope(body: {
   // The assistant's chat path and request budget for garak (ai-mcp only).
   assistant?: { path: string; budget: number }
   members?: ScopeMember[]
-  pack?: string
+  // A live scope takes the list of modules the operator ticked.
+  pack?: string | string[]
   repo?: string
   brief?: string
   files?: { path: string; content: string }[]
@@ -119,8 +129,7 @@ export function attachScope(body: {
 }
 
 export async function removeScope(id: string): Promise<void> {
-  const res = await fetch(`/api/scopes/${encodeURIComponent(id)}`, { method: "DELETE" })
-  if (!res.ok) throw new Error(`delete -> ${res.status}`)
+  await deleteJson(`/api/scopes/${encodeURIComponent(id)}`)
 }
 
 // Message a run. While the agent works, the text is injected into its current
@@ -214,11 +223,8 @@ export function saveProvider(body: {
   return postJson<SettingsState>("/api/settings/providers", body)
 }
 
-export async function deleteProvider(id: string): Promise<SettingsState> {
-  const res = await fetch(`/api/settings/providers/${encodeURIComponent(id)}`, { method: "DELETE", headers: tokenHeaders() })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `delete -> ${res.status}`)
-  return json as SettingsState
+export function deleteProvider(id: string): Promise<SettingsState> {
+  return deleteJson<SettingsState>(`/api/settings/providers/${encodeURIComponent(id)}`)
 }
 
 export function discoverModels(body: { id?: string; baseUrl: string; apiKey?: string }): Promise<{ models: DiscoveredModel[]; keyUsed: boolean }> {

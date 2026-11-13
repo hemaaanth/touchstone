@@ -17,60 +17,80 @@ import {
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
-import { spent } from "../../spike/lib/inference.mjs"
+import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
-// May this request change Settings? A Settings write can repoint a key or a
-// provider baseUrl, so only the operator's own console may send one. The rules
-// match T7's grantMutationAllowed guard. Each rule fails closed.
+// The console guard. Every state-changing request under /api/ passes it before
+// its handler runs: a run create, steer, stop, archive, rename or delete, a
+// finding dismiss, a scope create or delete, a grant change, a Settings write.
+// Only the operator's own console page may send one. Each rule fails closed.
 //   - Origin is required, and its host must equal the Host header. A browser
 //     always sends Origin on a POST or DELETE. A write with no Origin is not
 //     the console, so it is refused. X-Forwarded-Host is not trusted: any
 //     client can set it.
-//   - A POST must say content-type application/json.
+//   - A request with a body (not DELETE) must say content-type
+//     application/json. A cross-site form cannot send that content type.
 //   - The request must carry the console token in x-touchstone-grant-token.
-// Note: the Vite dev server answers CORS preflights for localhost origins. So
-// a page on another localhost port can send a JSON POST. The Origin == Host
-// rule and the token are what refuse it.
-// The token is TOUCHSTONE_GRANT_TOKEN, else a random one printed once to the
-// server terminal. It is the same env var and header T7's grant routes use.
-// The same single token T7's grant routes use (grant-store.GRANT_TOKEN), so the
-// operator has exactly one console token for every mutating console action.
+// The token is grant-store.GRANT_TOKEN, one token for every console write. The
+// operator never types it. The dev server writes it into the page it serves
+// (vite.config.ts), and the page sends it back on each write. The token is
+// never written to a log or to a response.
 export const SETTINGS_TOKEN = GRANT_TOKEN
-let tokenAnnounced = false
-function announceToken() {
-  if (tokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
-  tokenAnnounced = true
-  process.stderr.write(`[settings] to change Settings, paste this console token on the Settings page (header x-touchstone-grant-token): ${SETTINGS_TOKEN}\n`)
+
+// GET and HEAD only read. Every other method is a write and is guarded.
+const READ_METHODS = new Set(["GET", "HEAD"])
+
+// The host of the Origin header, or null when it is absent or not a URL.
+function originHost(headers) {
+  try {
+    return headers.origin ? new URL(headers.origin).host : null
+  } catch {
+    return null
+  }
 }
-announceToken()
+
+// True when the request names an Origin that is not this console. The dev
+// server refuses such a request on every path, reads included.
+export function foreignOrigin(req) {
+  const h = req.headers ?? {}
+  return h.origin !== undefined && (!h.host || originHost(h) !== h.host)
+}
+
+// Does the request carry the console token? A wrong type or a wrong length is
+// refused first. The compare itself takes the same time for every wrong token.
+function tokenMatches(given) {
+  if (typeof given !== "string") return false
+  const a = Buffer.from(given)
+  const b = Buffer.from(SETTINGS_TOKEN)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
+}
 
 // Why this write is refused, as { status, error }, or null when it may go on.
-export function settingsWriteRefusal(req) {
+// A read (GET, HEAD) is never refused here.
+export function consoleWriteRefusal(req) {
+  if (READ_METHODS.has(req.method)) return null
   const h = req.headers ?? {}
-  let originHost = null
-  try {
-    originHost = h.origin ? new URL(h.origin).host : null
-  } catch {
-    originHost = null
+  const from = originHost(h)
+  if (!from || !h.host || from !== h.host) {
+    return { status: 403, error: "This request did not come from the console's own page. Reload the page and try again." }
   }
-  if (!originHost || !h.host || originHost !== h.host) {
-    return { status: 403, error: "Settings can only be changed from the console's own origin" }
+  if (req.method !== "DELETE" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
+    return { status: 415, error: "The console sends each change as JSON. Reload the page and try again." }
   }
-  if (req.method === "POST" && !/^application\/json\b/i.test(String(h["content-type"] ?? ""))) {
-    return { status: 415, error: "a Settings write must be application/json" }
-  }
-  const token = h["x-touchstone-grant-token"]
-  if (!token || token !== SETTINGS_TOKEN) {
-    return { status: 403, error: "missing or wrong console token. Paste the token the server printed at start" }
+  if (!tokenMatches(h["x-touchstone-grant-token"])) {
+    return { status: 403, error: "This page is out of date. Reload the page and try again." }
   }
   return null
 }
 
+// The older names of the guard. Settings code and tests still use them.
+export const settingsWriteRefusal = consoleWriteRefusal
+
 export function settingsWriteAllowed(req) {
-  return settingsWriteRefusal(req) === null
+  return consoleWriteRefusal(req) === null
 }
 
 // The console's default per-run budget when Settings has none saved. The
@@ -80,6 +100,47 @@ export const APP_DEFAULT_RUN_BUDGET_USD = 5
 
 export function appRunBudgetUsd(cfg = readConfig()) {
   return cfg.runBudgetUsd == null ? APP_DEFAULT_RUN_BUDGET_USD : runBudgetUsd(cfg)
+}
+
+// The total spend cap: every app run stops once the shared ledger
+// (spike/spend.json, or SPEND_LEDGER) reaches it. The owner's default is $50.85.
+// providers.json may set spendCapUsd. SPEND_CAP_USD in the server's env can
+// only lower the cap, never raise it. A value that is not a positive dollar
+// amount throws, so the cap is never "no limit". Read-only in the console.
+export const APP_DEFAULT_SPEND_CAP_USD = DEFAULT_SPEND_CAP_USD
+export function appSpendCapUsd(cfg = readConfig()) {
+  return spendCapUsd(cfg)
+}
+
+// Why a new run (or a follow-up) may not start under the total cap, or null.
+// Fails closed: an unreadable ledger or an unusable cap refuses the run.
+export function spendCapRefusal(cfg = readConfig()) {
+  let capUsd
+  try {
+    capUsd = appSpendCapUsd(cfg)
+  } catch (err) {
+    return `Run refused: ${err.message}`
+  }
+  const ledger = ledgerState()
+  if (ledger.error) return `Run refused: ${ledger.error}`
+  if (ledger.usd >= capUsd) {
+    return `Run refused: the total spend cap is reached. The spend ledger shows $${ledger.usd.toFixed(2)} of the $${capUsd.toFixed(2)} total cap. Raise the total cap (spendCapUsd or SPEND_CAP_USD) to start new runs.`
+  }
+  return null
+}
+
+// The ledger total and the total cap for screens. Never throws: a broken
+// ledger or cap shows as an error line instead of a number.
+export function totalSpendState(cfg = readConfig()) {
+  const ledger = ledgerState()
+  let capUsd = null
+  let capError = null
+  try {
+    capUsd = appSpendCapUsd(cfg)
+  } catch (err) {
+    capError = err.message
+  }
+  return { usd: ledger.usd, capUsd, ledgerError: ledger.error ?? capError }
 }
 
 function keyState(p) {
@@ -118,7 +179,7 @@ export function getSettings() {
     default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
-    spend: { usd: spent(), budgetUsd: appRunBudgetUsd(cfg) },
+    spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
   }

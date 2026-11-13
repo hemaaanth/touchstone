@@ -6,6 +6,8 @@ import { defineConfig, type Plugin } from 'vite'
 import { handleApi } from './server/api.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
 import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings, handleGrants } from './server/runs-http.mjs'
+// @ts-expect-error — plain .mjs module, no types needed
+import { SETTINGS_TOKEN, consoleWriteRefusal, foreignOrigin } from './server/settings.mjs'
 
 // The whole backend, in-process inside Vite's dev server. The Vite dev server
 // is a real long-lived Node process, so it can spawn the agent engine, hold an
@@ -18,9 +20,27 @@ import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings,
 function touchstoneApi(): Plugin {
   return {
     name: 'touchstone-api',
+    // The dev server writes the console token into the page, and the page sends
+    // it back on each write (src/lib/console-token.ts). The operator never sees
+    // it. Only the dev server does this (ctx.server): a build output never
+    // holds the token. A page on another origin cannot read this page: CORS is
+    // off (server.cors below) and the middleware refuses a foreign Origin.
+    transformIndexHtml: (_html, ctx) => (ctx.server ? [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: SETTINGS_TOKEN }, injectTo: 'head' }] : []),
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        const refuse = (status: number, error: string) => {
+          res.statusCode = status
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ error }))
+        }
+        // The page, its modules and the API answer only the console's own
+        // origin. This covers reads too.
+        if (foreignOrigin(req)) return refuse(403, 'This console answers only its own page. Open the console in its own tab.')
         if (!req.url || !req.url.startsWith('/api/')) return next()
+        // The console guard, before dispatch, for every write under /api/. A
+        // route with no handler of its own is covered too.
+        const refusal: { status: number; error: string } | null = consoleWriteRefusal(req)
+        if (refusal) return refuse(refusal.status, refusal.error)
         Promise.resolve()
           .then(async () => {
             if (handleModels(req, res)) return
@@ -59,5 +79,7 @@ export default defineConfig({
   // Bind IPv4 loopback so the bb Connect tunnel (which dials 127.0.0.1) can
   // reach it — vite's default "localhost" resolves to IPv6 ::1 only.
   // allowedHosts lets the getbb.app share host through vite's host check.
-  server: { host: '127.0.0.1', allowedHosts: ['.getbb.app'] },
+  // cors is off: Vite's default lets a page on any localhost port read this
+  // server's answers, the token-bearing page included.
+  server: { host: '127.0.0.1', allowedHosts: ['.getbb.app'], cors: false },
 })

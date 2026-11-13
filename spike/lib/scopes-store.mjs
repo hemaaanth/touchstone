@@ -12,11 +12,11 @@
 // is the whole store; we read and rewrite it in full on each change. There is
 // one long-lived Node process (the Vite dev server), so there is no concurrent
 // writer to coordinate with.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, readGrants, removeGrant, privateLabHostError } from "./grant-store.mjs";
+import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -32,21 +32,24 @@ const SANDBOX_FOUNDRY = {
   note: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
 };
 
-// Read the whole store. Missing file or unparsable JSON yields an empty list, so
-// a hand-edited or absent file degrades to "no user scopes" instead of throwing.
+// The scopes for a mutation. A missing file is an empty store. A file that
+// exists but cannot be read or parsed throws, so a mutation never writes over it.
+const loadScopes = () => loadStore(scopesFile(), "scope store");
+
+// Read the whole store for a list or a lookup. A missing file is an empty list.
+// A damaged file also reads as "no user scopes", so the list still renders. It
+// is never written over: every add and remove refuses it (loadScopes).
 export function readScopes() {
   try {
-    const raw = readFileSync(scopesFile(), "utf8");
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    return loadScopes();
   } catch {
     return [];
   }
 }
 
+// Temp file in the same directory, then rename (see saveStore).
 function writeScopes(arr) {
-  mkdirSync(path.dirname(scopesFile()), { recursive: true });
-  writeFileSync(scopesFile(), JSON.stringify(arr, null, 2));
+  saveStore(scopesFile(), arr);
 }
 
 // A short url-safe slug from a title, for a readable scope id. Falls back to
@@ -104,7 +107,7 @@ export function addBriefScope({ title, brief, blurb } = {}) {
     proofSurface: SANDBOX_FOUNDRY,
     createdAt: Date.now(),
   };
-  const all = readScopes();
+  const all = loadScopes();
   all.unshift(scope);
   writeScopes(all);
   return scope;
@@ -422,7 +425,7 @@ export function addScope({ title, members, pack: declared, blurb } = {}) {
     proofSurface: SCOPE_PACKS[pack],
     createdAt: Date.now(),
   };
-  const all = readScopes();
+  const all = loadScopes();
   all.unshift(scope);
   writeScopes(all);
   return scope;
@@ -500,8 +503,14 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   }
   const name = String(title || "").trim();
   if (name.length > 120) throw new Error("Use a scope name of 1 to 120 characters.");
-  const packId = String(pack || "").trim() || "web";
-  if (!/^[a-z][a-z0-9-]{0,39}$/.test(packId)) throw new Error(`unknown module: ${packId}`);
+  // `pack` is one module or a list: the modules the operator ticked for these
+  // websites. The first is the scope's default. targets.mjs (eligiblePacks) adds
+  // the modules every website allows.
+  const ids = [...new Set([pack].flat().map((p) => String(p ?? "").trim()).filter(Boolean))];
+  if (!ids.length) ids.push("web");
+  for (const p of ids) if (!/^[a-z][a-z0-9-]{0,39}$/.test(p)) throw new Error(`unknown module: ${p}`);
+  const packId = ids[0];
+  if (ids.length > 1 && ids.includes("supply-chain")) throw new Error("The supply-chain module takes GitHub repos, not websites. Add it as its own scope.");
   const id = `live-${slugify(name || list[0])}-${randomUUID().slice(0, 8)}`;
   // A supply-chain live scope names GitHub repos or orgs, not websites. Its grant
   // covers only the two read-only GitHub hosts. The pack checks each repo
@@ -540,6 +549,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
     title: t,
     blurb: String(blurb || "").trim(),
     pack: packId,
+    ...(github ? {} : { packs: ids }),
     entry: github ? github[0] : grant.hosts[0],
     signal: "agent",
     hosts: grant.hosts,
@@ -560,7 +570,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   // A grant with no scope would let runs reach the hosts with nothing in the
   // UI to remove it. Roll it back if the scope cannot be saved.
   try {
-    const all = readScopes();
+    const all = loadScopes();
     all.unshift(scope);
     writeScopes(all);
   } catch (err) {
@@ -576,12 +586,14 @@ export function getUserScope(id) {
 
 // Remove a scope by id. Returns true if one was removed.
 export function removeScope(id) {
-  const all = readScopes();
+  const all = loadScopes();
   const next = all.filter((s) => s.id !== id);
   if (next.length === all.length) return false;
+  // Read the grants first: a damaged grant store refuses the removal before the scope is gone.
+  const grants = loadGrants();
   writeScopes(next);
   // A live scope's permission goes with it.
-  for (const g of readGrants()) if (g.scopeId === id) removeGrant(g.id);
+  for (const g of grants) if (g.scopeId === id) removeGrant(g.id);
   return true;
 }
 
