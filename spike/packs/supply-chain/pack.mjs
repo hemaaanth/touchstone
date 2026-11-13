@@ -70,7 +70,7 @@ export async function prepass(ws, { emit = () => {} } = {}) {
     } else groups.set(root, { ...lead, rootCause: root, evidence, commit: snapshot.commit, engines: [lead.engine], corroborated: false, support: [] });
   }
   const leads = [...groups.values()].map((l, i) => ({ ...l, id: String(i + 1) }));
-  const coverage = scans.map(({ engine, status, code, timedOut, reason, leads }) => ({ engine, status, code, timedOut, ...(reason ? { reason } : {}), leads: leads.length }));
+  const coverage = scans.map(({ engine, status, code, timedOut, reason, applicable, leads }) => ({ engine, status, code, timedOut, ...(applicable === false ? { applicable } : {}), ...(reason ? { reason } : {}), leads: leads.length }));
   const skipped = snapshot.skipped ?? [];
   const summary = skipSummary(skipped);
   const gaps = [...coverageGaps(snapshot, summary), ...scans.flatMap((s) => s.gaps ?? [])];

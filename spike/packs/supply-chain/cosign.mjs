@@ -94,7 +94,8 @@ export async function cosignScan(snapshot, rawPolicy, opts = {}) {
   catch (e) { return { engine, status: "error", reason: e.message, leads: [], gaps: [{ kind: "signature-policy-invalid", detail: `${e.message}. No artifact signature was checked.` }] }; }
   if (!policy) {
     const gaps = bundlesInRepo.length ? [{ kind: "signatures-not-verified", detail: `${bundlesInRepo.length} signature bundles are in the snapshot, but no operator signing policy pins a key. They were not verified.`, sample: bundlesInRepo.slice(0, 10) }] : [];
-    return { engine, status: "ok", reason: "no signing policy (pinned key and artifact list)", leads: [], gaps };
+    // Nothing was checked, so this is "does not apply", never "ran".
+    return { engine, status: "not-applicable", applicable: false, reason: "No signing policy (pinned key and artifact list). No signature was checked.", leads: [], gaps };
   }
   const skipped = new Set((snapshot.skipped ?? []).map((s) => s.file));
   const leads = [], gaps = [], tally = { verified: 0, invalid: 0, unsigned: 0, gap: 0 };

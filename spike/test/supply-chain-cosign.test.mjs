@@ -133,10 +133,24 @@ test("policy problems are explicit: a bad policy is an error, no policy leaves b
     assert.equal(r.status, "error", JSON.stringify(bad).slice(0, 60));
     assert.equal(r.gaps[0].kind, "signature-policy-invalid");
   }
+  // No policy: the check does not apply. The pack's coverage row and the run view must not say "ran".
   const none = await cosignScan(snapshot, undefined);
-  assert.equal(none.status, "ok");
-  assert.match(none.reason, /no signing policy/);
+  assert.equal(none.status, "not-applicable");
+  assert.equal(none.applicable, false);
+  assert.match(none.reason, /^No signing policy/);
   assert.equal(none.gaps[0].kind, "signatures-not-verified");
+  const ws = temp();
+  try {
+    makeCosignLab(ws);
+    const { record } = await pack.prepass(ws, {});
+    const row = record.coverage.find((c) => c.engine === "cosign");
+    assert.equal(row.applicable, false);
+    assert.equal(record.coverage.filter((c) => c.engine !== "cosign" && "applicable" in c).length, 0);
+    const view = prepassView(record).tools.find((t) => t.name === "cosign");
+    assert.equal(view.status, "unavailable");
+    assert.match(view.reason, /^No signing policy/);
+    assert.ok(record.gaps.some((g) => g.kind === "signatures-not-verified"));
+  } finally { remove(ws); }
   const big = { ...snapshot, files: { ...snapshot.files }, skipped: [{ file: "release/app.tar.gz", reason: "binary-or-not-utf8" }] };
   const r = await cosignScan(big, { ...policy, artifacts: ["release/app.tar.gz", "release/gone.js"] });
   assert.equal(r.status, "gap");
