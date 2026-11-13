@@ -19,14 +19,14 @@ process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
 const { captureDomain } = await import('../packs/domains/live.mjs');
 let lab, ws, snapshot, leads, snapshotHash;
 before(async () => {
-  lab = startLab();
+  lab = await startLab();
   ws = mkdtempSync(join(tmpdir(), 'domains-live-tools-'));
   snapshot = await captureDomain({ ws, domain: 'touchstone.test', reach: { network: lab.network, resolver: lab.resolver, ports: [{ scheme: 'http', port: 8080 }, { scheme: 'https', port: 8443 }], granted: true, scope: lab.scope } });
   snapshotHash = pinSnapshot(ws, snapshot);
   leads = domainLeads(snapshot, await analyzeSnapshot(snapshot));
 });
-after(() => {
-  lab?.stop();
+after(async () => {
+  await lab?.stop();
   if (ws) rmSync(ws, { recursive: true, force: true });
 });
 
