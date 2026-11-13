@@ -3,7 +3,7 @@
 Checked upstream repositories, release tags, licenses, and image manifests on 2026-11-10.
 Sizes below use decimal MB. Selected images use Docker's installed size.
 Unselected images use the amd64 compressed layer size from their manifest.
-The image digest in `scanners.mjs` pins every selected tool.
+The image digest in `scanners.mjs` pins every selected tool. cosign is pinned by digest in `cosign/Dockerfile`.
 All scans and replays use `runTool()` with `--network none`.
 This is also true for a live GitHub target. Only the capture step uses the network (see "Live GitHub path" below). The tools then read the pinned capture offline.
 No scanner receives the model key, Docker socket, host home, `GITHUB_TOKEN`, or other host secrets.
@@ -24,6 +24,7 @@ That research folder is not tracked in this worktree.
 | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | AGPL-3.0; separate program only | `trufflesecurity/trufflehog:3.99.8`; 117.6 MB | Yes: `filesystem --no-verification --no-update`; network blocked | Snapshot files, not `.git` internals | `--json` JSONL | Detector and file/line; Raw becomes a hash and `[REDACTED]` in memory; drop all other raw fields | `evidence`: repeat detection; never a live credential claim | Found Alchemy where Gitleaks did not; own RPC check corroborates it | No copied AGPL code or rules | Missed the deployer scalar and mnemonic in this lab | **ensemble** with Gitleaks and crypto checks; provider-specific coverage |
 | [Gitleaks](https://github.com/gitleaks/gitleaks) | MIT | `ghcr.io/gitleaks/gitleaks:v8.30.1`; 78.1 MB | Yes: `dir`; no provider verification | Snapshot files | `--report-format json --report-path /dev/stdout` | Rule and file/line; Secret becomes a hash; Match and source excerpts are discarded | `evidence`: rerun detector and secret fingerprint at the line | Found generic wallet key; missed Alchemy and unlabeled `accounts` value | MIT PEM private-key rule and default-rule extension workflow; retained notice | Add EVM key validation/address, BIP-39, keystore and provider URL checks | **ensemble** with TruffleHog; generic and provider-specific coverage differ |
 | [Kingfisher](https://github.com/mongodb/kingfisher) | Apache-2.0 | `ghcr.io/mongodb/kingfisher:2.18.1`; 113.2 MB. Tag has no `v` prefix | Yes: `--no-validate --no-update-check --git-history none`; network blocked | Files / Git | `--format json` emitted a report and a summary as separate JSON lines in this version; `--redact` hashes values | No findings in this lab under its default medium confidence | No retained proof adapter | Compared with Gitleaks and TruffleHog on the same generated lab | No copied rules | Did not add coverage for these planted crypto cases | **skip**; no extra detections in this lab, not a general claim about its quality |
+| [cosign](https://github.com/sigstore/cosign) (Sigstore) | Apache-2.0 | `touchstone-cosign:v3.1.4`, built from `cosign/Dockerfile`: `FROM ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f061548…`; 219.2 MB. Built once with `docker build`; every run uses `--pull=never` | Yes: `verify-blob --key … --bundle … --insecure-ignore-tlog=true`; network blocked. No Rekor, no Fulcio, no TUF fetch. Without the tlog flag cosign tries the TUF CDN and fails, which is an error, not a pass | An operator signing policy: one pinned public key (PEM) and 1–20 artifact paths, from `.touchstone.json` `cosign` or `scan.mjs --cosign-key <file> --cosign-artifacts <paths>`. The bundle is `<artifact>.sigstore.json`, `.sigstore` or `.bundle` next to it in the snapshot. Only the artifact, the bundle and the key are staged, one container per artifact | Exit code and stderr. Only two exact outcomes count: exit 0 with `Verified OK`, and exit 1 with `failed to verify signature: … invalid signature`. Anything else is a gap | `cosign/invalid-signature` (High): the pinned key does not verify those bytes. `artifact-signature-missing` (Medium, Touchstone check): the policy names the artifact and no bundle is next to it. A verified artifact gives no lead | `evidence`: `tool:cosign` checks the artifact sha256, bundle sha256 and key sha256 against the pinned snapshot, then reruns cosign and passes only on invalid signature. `artifact-signature-missing` checks the artifact sha256 and that no candidate bundle is in the snapshot or skipped | None. No other engine reads release artifacts or signatures. On the lab, no other engine has a lead under `release/` | No copied code. The lab signs bundles in Node, so cosign checks a bundle it did not write | Proves only that the pinned key did not sign those bytes offline. Not who signed, and not what the artifact does | **wrap** (key-based, offline). Keyless and trusted-root verification are not wired |
 
 ## Evaluated, not wrapped (research-named OSS, M13–M14)
 
@@ -46,7 +47,7 @@ would close.
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
 | Legitify | GitHub/GitLab org + repo misconfig via API | blocked — needs a networked tool run and admin-read scopes | Reads org and repo settings through the API from inside the tool, so it needs a networked `runTool()` run with the token. Most settings also need admin-read scopes that the read-only token does not have. Same remote class as Gato-X, which stays the read-only reference. It would close org and repo settings enumeration. |
 | chain-bench | CIS supply-chain benchmark against an SCM | blocked — needs a networked tool run and admin-read scopes | Same need as Legitify: API calls from inside the tool, and settings scopes beyond the read-only token. It would close live org settings; a snapshot scan cannot reach them. |
-| cosign (Sigstore) | Artifact / attestation signing and verification | backlog — artifact provenance | A signing and verification tool, not a scanner. It can verify offline: `--offline` with a local image, a saved signature or bundle, and trust material. The work is the image, a verifier adapter, a trust policy from the operator, and tests. The GitHub path reads source files, not release artifacts or signatures, so it does not close this. Fetching signatures from a registry or a transparency log needs its own live path. |
+| cosign (Sigstore) | Artifact / attestation signing and verification | **wrapped** — key-based offline `verify-blob` | Moved to the main table above. Still not covered: keyless bundles (Fulcio certificate + Rekor proof) against a pinned trusted root, attestations (`verify-blob-attestation`), container image signatures, and fetching signatures from a registry or a transparency log. The GitHub path reads committed files, not release assets, so on a live repo cosign sees only bundles that are committed. |
 | octoscan | Static GitHub Actions scanner | skip — overlap (assumed, not tested) | Assumed to overlap the wrapped zizmor + poutine workflow engines. No distinct detection was shown, so a third engine was not justified. |
 | raven | CI/CD pipeline graph scanner | blocked — needs a networked tool run | Ingests workflows from the GitHub API into a graph DB from inside the tool, so it needs a networked `runTool()` run with the token. The pack's own capture already reads workflows across an org (up to 10 repos) for zizmor and poutine, so part of its value is covered. Its strength is cross-repo scale, like Gato-X. Overlap with Gato-X is assumed, not tested. |
 | actionlint | GitHub Actions workflow linter | skip — out of model | A correctness/style linter, not a security scanner; the security-relevant workflow checks are carried by zizmor + poutine, and a lint warning is not harm. |
@@ -100,6 +101,7 @@ What each tool does on a live capture:
 | Syft + Grype | Run on the real manifests and lockfiles, with the full Grype database. This is the real advisory check. |
 | OSV-Scanner | Runs on `package-lock.json` only, against the one-record lab slice. On a real repo this is a narrow check, not an advisory scan. Grype carries the real one. |
 | Touchstone crypto checks | Run on the same files a local scan would read. |
+| cosign | Runs only with `--cosign-key` and `--cosign-artifacts`. It sees committed bundles only, not release assets. When a capture holds several repos, the policy paths need the `owner/repo/` prefix. Not run on a live repo. |
 
 Observed on `actions/hello-world-javascript-action@main` (commit `79ac0da1`): zizmor 41 leads, poutine 2, Gitleaks 0, TruffleHog 0, Semgrep 0, Grype 19, OSV 0. 28 grouped leads, all replays pass. One file (`dist/index.js`) was skipped as too large. The run with no token and the run with `GITHUB_TOKEN` gave the same commit and the same results. The token was in neither output. The test fixture is a real no-token capture of `octokit/request-error.js`.
 
@@ -110,6 +112,39 @@ Live path limits:
 - It reads one commit. It does not read history, pull requests, Actions run logs, releases, packages, or any setting.
 - The app form cannot make a supply-chain live scope. It turns a GitHub URL into a code scope, and its text says "websites". The server route takes one: `{ kind: "live", pack: "supply-chain", hosts: ["owner/repo"], permission: true }` (`app/server/runs.mjs`). That route was not run end to end. The app was not changed.
 - The capture runs in the run's own process. It does not go through the confine gate. The grant check at run start, the check in code, and the two-host allowlist in `githubGet()` hold it. The web pack's live scan stage is the same: it runs on the plain bridge network (`lib/live.mjs`).
+
+## cosign signature checks
+
+Code: `cosign.mjs` (scan, classify, replay detectors), `cosign-lab.mjs` (lab), `cosign/Dockerfile` (image). Test: `test/supply-chain-cosign.test.mjs`.
+
+The operator gives the trust: one public key and the artifact list. The policy is in `.touchstone.json`, not in the target repo. A key the repo ships itself proves nothing.
+
+Lab (`lab.mjs` calls `makeCosignLab`). Keys are new for each lab. Private keys are never written.
+
+| Artifact | Bundle | Real cosign result | Lead |
+|---|---|---|---|
+| `release/wallet-cli.js` | signed with the pinned key | `Verified OK` | none |
+| `release/install.sh` | none | not run | `artifact-signature-missing` |
+| `release/updater.js` | signed with another key | `invalid signature` | `cosign/invalid-signature` |
+
+Observed: `3 artifacts: 1 verified, 1 invalid signature, 1 unsigned, 0 unchecked`. Both leads replay through the pack's evidence replay. No other engine has a lead under `release/`.
+
+Fail closed:
+
+- A missing image is a gap for each bundled artifact and engine status `gap`. The unsigned leads stay, since they need no tool.
+- A timeout, a bundle cosign cannot parse, a bad key or any other output is a gap for that artifact, never a pass and never a lead.
+- A malformed policy is engine status `error` with a `signature-policy-invalid` gap.
+- No policy while bundles are in the snapshot gives a `signatures-not-verified` gap.
+- An artifact the snapshot skipped (binary, too large, over budget) or that is not in the snapshot is a gap.
+
+Limits:
+
+- Key-based bundles only, with `--insecure-ignore-tlog=true`. Keyless bundles (Fulcio certificate, Rekor proof) and a pinned `--trusted-root` are not wired.
+- Text artifacts only. The snapshot keeps UTF-8 text files, so a binary release (tarball, executable) is skipped and becomes a gap.
+- The stderr match is tied to cosign v3.1.4. A new cosign version with other wording turns both outcomes into gaps, not into passes. Re-check on upgrade.
+- The evidence `where` holds the public key PEM so the replay can rerun. It is a public key, not a secret.
+- The app form cannot set a policy. Only `.touchstone.json` and `scan.mjs` can.
+- A lead shows only that the pinned key did not sign those bytes. It does not show who signed them or what the artifact does.
 
 ## Limits
 
