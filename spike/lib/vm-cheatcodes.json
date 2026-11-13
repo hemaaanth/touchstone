@@ -3800,5 +3800,1415 @@
     "iface": "VmSafe",
     "class": "read",
     "mutability": "pure"
+  },
+  {
+    "selector": "0x002cb687",
+    "name": "deployCode",
+    "signature": "deployCode(string,uint256,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0x016155bf",
+    "name": "deployCode",
+    "signature": "deployCode(string,bytes,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0x031661fc",
+    "name": "ecMulProjective",
+    "signature": "ecMulProjective(uint256,uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x04eedcdf",
+    "name": "snapshotGasLastFrame",
+    "signature": "snapshotGasLastFrame(string,string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x0af6a701",
+    "name": "deployCode",
+    "signature": "deployCode(string,uint256)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0x0d0d2f41",
+    "name": "ffiString",
+    "signature": "ffiString(string[])",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x0debd5d6",
+    "name": "getDeployment",
+    "signature": "getDeployment(string,uint64)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x10cb385c",
+    "name": "attachBlob",
+    "signature": "attachBlob(bytes)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x12d14123",
+    "name": "registerMappingSstoreHook",
+    "signature": "registerMappingSstoreHook(address,bytes32,bytes4)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x13d5a709",
+    "name": "getSelectors",
+    "signature": "getSelectors(string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x14ae3519",
+    "name": "attachDelegation",
+    "signature": "attachDelegation((uint8,bytes32,bytes32,uint64,address))",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x17a5dbab",
+    "name": "isIsolateMode",
+    "signature": "isIsolateMode()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x17ab1d79",
+    "name": "deployCode",
+    "signature": "deployCode(string,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0x18fb6406",
+    "name": "eip712HashType",
+    "signature": "eip712HashType(string,string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x1af9eefc",
+    "name": "ecAddAffine",
+    "signature": "ecAddAffine(uint256,uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x1e1d8b63",
+    "name": "fromRlp",
+    "signature": "fromRlp(bytes)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x1ef3f27a",
+    "name": "createEd25519Key",
+    "signature": "createEd25519Key(bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x1ff5f952",
+    "name": "expectRevert",
+    "signature": "expectRevert(address,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0x2012783a",
+    "name": "signWithNonceUnsafe",
+    "signature": "signWithNonceUnsafe(uint256,bytes32,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x238ad778",
+    "name": "noAccessList",
+    "signature": "noAccessList()",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x256edb36",
+    "name": "setLogoURI",
+    "signature": "setLogoURI(address,string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x273b74f8",
+    "name": "rpcJson",
+    "signature": "rpcJson(string,string,string)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x27f44236",
+    "name": "publicKeyEd25519",
+    "signature": "publicKeyEd25519(bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x2899b1d0",
+    "name": "getStorageAccesses",
+    "signature": "getStorageAccesses()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x2c667606",
+    "name": "getRawBlockHeader",
+    "signature": "getRawBlockHeader(uint256)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3040e515",
+    "name": "expectKeychainVerified",
+    "signature": "expectKeychainVerified(address,bytes32,bytes)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x32730d81",
+    "name": "ffiBytes",
+    "signature": "ffiBytes(string[])",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3408e470",
+    "name": "getChainId",
+    "signature": "getChainId()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x36ad14a2",
+    "name": "parseTomlBytes32Array",
+    "signature": "parseTomlBytes32Array(string,string,bytes32[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBytes32Array; class read like its sibling parseTomlBytes32Array(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x37c7cf5e",
+    "name": "registerSloadHook",
+    "signature": "registerSloadHook(address,bytes4)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3aa773ea",
+    "name": "deployCode",
+    "signature": "deployCode(string,bytes,uint256,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0x3b171111",
+    "name": "getRecordedLogsJson",
+    "signature": "getRecordedLogsJson()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3d6ac1e7",
+    "name": "expectDelegateCall",
+    "signature": "expectDelegateCall(address,bytes)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3dc90cb3",
+    "name": "getBroadcast",
+    "signature": "getBroadcast(string,uint64,uint8)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x3fb18aec",
+    "name": "contains",
+    "signature": "contains(string,string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x40ff9f21",
+    "name": "cool",
+    "signature": "cool(address)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x43179f5a",
+    "name": "setEvmVersion",
+    "signature": "setEvmVersion(string)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x45b12879",
+    "name": "ecAddProjective",
+    "signature": "ecAddProjective(uint256,uint256,uint256,uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x4994c273",
+    "name": "expectRevert",
+    "signature": "expectRevert(bytes,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0x4c74a335",
+    "name": "expectEmit",
+    "signature": "expectEmit(uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "control",
+    "note": "forge 1.9.0 overload of expectEmit; class control like its sibling expectEmit()",
+    "extra": true
+  },
+  {
+    "selector": "0x4cc1c2bb",
+    "name": "getChain",
+    "signature": "getChain(string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x4e134a2c",
+    "name": "expectTip20LogoURIUpdated",
+    "signature": "expectTip20LogoURIUpdated(address,address,string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x4ee38244",
+    "name": "expectRevert",
+    "signature": "expectRevert(uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0x50ddbb4e",
+    "name": "parseTomlBoolArray",
+    "signature": "parseTomlBoolArray(string,string,bool[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBoolArray; class read like its sibling parseTomlBoolArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x54f1469c",
+    "name": "shuffle",
+    "signature": "shuffle(uint256[])",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x5804c690",
+    "name": "signKeychain",
+    "signature": "signKeychain(uint256,address,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x586afa51",
+    "name": "parseJsonAddressArray",
+    "signature": "parseJsonAddressArray(string,string,address[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonAddressArray; class read like its sibling parseJsonAddressArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x5a6c1eed",
+    "name": "bound",
+    "signature": "bound(uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x5b593c7b",
+    "name": "signDelegation",
+    "signature": "signDelegation(address,uint256)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x5e1d1c33",
+    "name": "expectEmit",
+    "signature": "expectEmit(bool,bool,bool,bool,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "control",
+    "note": "forge 1.9.0 overload of expectEmit; class control like its sibling expectEmit()",
+    "extra": true
+  },
+  {
+    "selector": "0x5fc56675",
+    "name": "parseTomlUintArray",
+    "signature": "parseTomlUintArray(string,string,uint256[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlUintArray; class read like its sibling parseTomlUintArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x6248be1f",
+    "name": "foundryVersionAtLeast",
+    "signature": "foundryVersionAtLeast(string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x6792e9e2",
+    "name": "eip712HashType",
+    "signature": "eip712HashType(string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x69fd765a",
+    "name": "loadTransient",
+    "signature": "loadTransient(address,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x6be16ce7",
+    "name": "parseTomlStringArray",
+    "signature": "parseTomlStringArray(string,string,string[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlStringArray; class read like its sibling parseTomlStringArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x6c254276",
+    "name": "parseTomlBool",
+    "signature": "parseTomlBool(string,string,bool)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBool; class read like its sibling parseTomlBool(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x6d06c57c",
+    "name": "eip712HashStruct",
+    "signature": "eip712HashStruct(string,string,bytes)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x73317cb5",
+    "name": "parseTomlUint",
+    "signature": "parseTomlUint(string,string,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlUint; class read like its sibling parseTomlUint(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x73cdce36",
+    "name": "expectCreate",
+    "signature": "expectCreate(bytes,address)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x743e4cb7",
+    "name": "accessList",
+    "signature": "accessList((address,bytes32[])[])",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x74e133dd",
+    "name": "getDeployments",
+    "signature": "getDeployments(string,uint64)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x7c8cd6d2",
+    "name": "assumeImplicitApproval",
+    "signature": "assumeImplicitApproval(address)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x7daa5e28",
+    "name": "parseTomlBytesArray",
+    "signature": "parseTomlBytesArray(string,string,bytes[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBytesArray; class read like its sibling parseTomlBytesArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x80db71c1",
+    "name": "parseTomlAddress",
+    "signature": "parseTomlAddress(string,string,address)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlAddress; class read like its sibling parseTomlAddress(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x80df01cc",
+    "name": "getStateDiff",
+    "signature": "getStateDiff()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x838653c7",
+    "name": "interceptInitcode",
+    "signature": "interceptInitcode()",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x887da112",
+    "name": "parseTomlInt",
+    "signature": "parseTomlInt(string,string,int256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlInt; class read like its sibling parseTomlInt(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x88b70aff",
+    "name": "parseJsonStringArray",
+    "signature": "parseJsonStringArray(string,string,string[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonStringArray; class read like its sibling parseJsonStringArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x88d60faa",
+    "name": "parseTomlBytes32",
+    "signature": "parseTomlBytes32(string,string,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBytes32; class read like its sibling parseTomlBytes32(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x89b5a4cd",
+    "name": "storeTransient",
+    "signature": "storeTransient(address,bytes32,bytes32)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x8a4592cc",
+    "name": "assumeNoRevert",
+    "signature": "assumeNoRevert((address,bool,bytes)[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of assumeNoRevert; class read like its sibling assumeNoRevert()",
+    "extra": true
+  },
+  {
+    "selector": "0x8c78e654",
+    "name": "coolSlot",
+    "signature": "coolSlot(address,bytes32)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x8d792033",
+    "name": "parseJsonBytes32",
+    "signature": "parseJsonBytes32(string,string,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBytes32; class read like its sibling parseJsonBytes32(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x8f48fc07",
+    "name": "bound",
+    "signature": "bound(int256,int256,int256)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x943d7209",
+    "name": "executeTransaction",
+    "signature": "executeTransaction(bytes)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x9519f228",
+    "name": "rpcJson",
+    "signature": "rpcJson(string,string)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x995d5b03",
+    "name": "lastFrameGas",
+    "signature": "lastFrameGas()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x996be76d",
+    "name": "stopRecord",
+    "signature": "stopRecord()",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x9b45555c",
+    "name": "currentFilePath",
+    "signature": "currentFilePath()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0x9d7824a8",
+    "name": "parseJsonString",
+    "signature": "parseJsonString(string,string,string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonString; class read like its sibling parseJsonString(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0x9ec8b026",
+    "name": "sort",
+    "signature": "sort(uint256[])",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xa50d337b",
+    "name": "getSlotNumber",
+    "signature": "getSlotNumber()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xa7b8152a",
+    "name": "parseJsonUintArray",
+    "signature": "parseJsonUintArray(string,string,uint256[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonUintArray; class read like its sibling parseJsonUintArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xa7ed3885",
+    "name": "toRlp",
+    "signature": "toRlp(bytes[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xa8091d97",
+    "name": "getDeployment",
+    "signature": "getDeployment(string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xa8da6aa7",
+    "name": "isImplicitlyApproved",
+    "signature": "isImplicitlyApproved(address)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xaa2bb222",
+    "name": "getEvmVersion",
+    "signature": "getEvmVersion()",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xaedeaebc",
+    "name": "eip712HashStruct",
+    "signature": "eip712HashStruct(string,bytes)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xb0762d73",
+    "name": "expectRevert",
+    "signature": "expectRevert(bytes4,address,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0xb23184cf",
+    "name": "warmSlot",
+    "signature": "warmSlot(address,bytes32)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xb3d931af",
+    "name": "parseJsonBytes",
+    "signature": "parseJsonBytes(string,string,bytes)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBytes; class read like its sibling parseJsonBytes(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xb43aece3",
+    "name": "expectEmit",
+    "signature": "expectEmit(address,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "control",
+    "note": "forge 1.9.0 overload of expectEmit; class control like its sibling expectEmit()",
+    "extra": true
+  },
+  {
+    "selector": "0xb452dc23",
+    "name": "setTip20LogoURI",
+    "signature": "setTip20LogoURI(address,string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xb4bc5617",
+    "name": "mockCall",
+    "signature": "mockCall(address,bytes,bytes,bool)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "mock",
+    "note": "forge 1.9.0 overload of mockCall; class mock like its sibling mockCall(address,bytes4,bytes)",
+    "extra": true
+  },
+  {
+    "selector": "0xb6791ad4",
+    "name": "getChain",
+    "signature": "getChain(uint256)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xb95207cc",
+    "name": "snapshotGasLastFrame",
+    "signature": "snapshotGasLastFrame(string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xbc5fb2f7",
+    "name": "signKeychainAdmin",
+    "signature": "signKeychainAdmin(uint256,address,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xbeb87f44",
+    "name": "parseJsonUint",
+    "signature": "parseJsonUint(string,string,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonUint; class read like its sibling parseJsonUint(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xc1290181",
+    "name": "ecAffineToProjective",
+    "signature": "ecAffineToProjective(uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xc32a50f9",
+    "name": "setSeed",
+    "signature": "setSeed(uint256)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xc32ef60d",
+    "name": "parseTomlString",
+    "signature": "parseTomlString(string,string,string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlString; class read like its sibling parseTomlString(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xc339d02c",
+    "name": "expectEmit",
+    "signature": "expectEmit(bool,bool,bool,bool,address,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "control",
+    "note": "forge 1.9.0 overload of expectEmit; class control like its sibling expectEmit()",
+    "extra": true
+  },
+  {
+    "selector": "0xc37b8f00",
+    "name": "parseTomlBytes",
+    "signature": "parseTomlBytes(string,string,bytes)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlBytes; class read like its sibling parseTomlBytes(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xc74ca094",
+    "name": "ecMulAffine",
+    "signature": "ecMulAffine(uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xc7fa7288",
+    "name": "signAndAttachDelegation",
+    "signature": "signAndAttachDelegation(address,uint256)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xca7b0a09",
+    "name": "foundryVersionCmp",
+    "signature": "foundryVersionCmp(string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcbe45e4f",
+    "name": "expectKeychainAdminVerified",
+    "signature": "expectKeychainAdminVerified(address,bytes32,bytes)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcbfdcaa6",
+    "name": "parseTomlAddressArray",
+    "signature": "parseTomlAddressArray(string,string,address[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlAddressArray; class read like its sibling parseTomlAddressArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xcc9d6da5",
+    "name": "parseJsonBoolArray",
+    "signature": "parseJsonBoolArray(string,string,bool[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBoolArray; class read like its sibling parseJsonBoolArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xcd502c82",
+    "name": "eth_getProof",
+    "signature": "eth_getProof(address,bytes32[],uint256)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcdb6e4ac",
+    "name": "parseJsonArrayLength",
+    "signature": "parseJsonArrayLength(string,string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcdd7563d",
+    "name": "signDelegation",
+    "signature": "signDelegation(address,uint256,bool)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcde3e5be",
+    "name": "signAndAttachDelegation",
+    "signature": "signAndAttachDelegation(address,uint256,uint64)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xcdf7c6c4",
+    "name": "ffiUint",
+    "signature": "ffiUint(string[])",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xceba2ec3",
+    "name": "signDelegation",
+    "signature": "signDelegation(address,uint256,uint64)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xd08c2888",
+    "name": "verifyEd25519",
+    "signature": "verifyEd25519(bytes,bytes,bytes,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xd1422c93",
+    "name": "parseJsonBytesArray",
+    "signature": "parseJsonBytesArray(string,string,bytes[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBytesArray; class read like its sibling parseJsonBytesArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xd345fb1f",
+    "name": "expectRevert",
+    "signature": "expectRevert(bytes,address,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0xd450e23a",
+    "name": "expectLogoURIUpdated",
+    "signature": "expectLogoURIUpdated(address,address,string)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xd503fb9e",
+    "name": "parseJsonBytes32Array",
+    "signature": "parseJsonBytes32Array(string,string,bytes32[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBytes32Array; class read like its sibling parseJsonBytes32Array(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xd8591eeb",
+    "name": "assumeNoRevert",
+    "signature": "assumeNoRevert((address,bool,bytes))",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of assumeNoRevert; class read like its sibling assumeNoRevert()",
+    "extra": true
+  },
+  {
+    "selector": "0xd936e146",
+    "name": "signAndAttachDelegation",
+    "signature": "signAndAttachDelegation(address,uint256,bool)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xddd2128d",
+    "name": "resolveEnv",
+    "signature": "resolveEnv(string)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xddeecb75",
+    "name": "parseJsonAddress",
+    "signature": "parseJsonAddress(string,string,address)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonAddress; class read like its sibling parseJsonAddress(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xe0c3bdd9",
+    "name": "registerSstoreHook",
+    "signature": "registerSstoreHook(address,bytes4)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xe45ca72d",
+    "name": "expectRevert",
+    "signature": "expectRevert(bytes4,uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "outcome",
+    "note": "forge 1.9.0 overload of expectRevert; class outcome like its sibling expectRevert(bytes4,address)",
+    "extra": true
+  },
+  {
+    "selector": "0xe6be5995",
+    "name": "ecProjectiveToAffine",
+    "signature": "ecProjectiveToAffine(uint256,uint256,uint256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xea1f44aa",
+    "name": "parseJsonIntArray",
+    "signature": "parseJsonIntArray(string,string,int256[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonIntArray; class read like its sibling parseJsonIntArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xea25e615",
+    "name": "eip712HashTypedData",
+    "signature": "eip712HashTypedData(string)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xea54a472",
+    "name": "expectCreate2",
+    "signature": "expectCreate2(bytes,address)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xef609c65",
+    "name": "signEd25519",
+    "signature": "signEd25519(bytes,bytes,bytes32)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xefa136d9",
+    "name": "getStorageSlots",
+    "signature": "getStorageSlots(address,string)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xf147484e",
+    "name": "parseJsonBool",
+    "signature": "parseJsonBool(string,string,bool)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonBool; class read like its sibling parseJsonBool(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xf2fa4a26",
+    "name": "getBroadcasts",
+    "signature": "getBroadcasts(string,uint64)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xf4460d34",
+    "name": "attachDelegation",
+    "signature": "attachDelegation((uint8,bytes32,bytes32,uint64,address),bool)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xf53fbdc4",
+    "name": "rollSlot",
+    "signature": "rollSlot(uint64)",
+    "iface": "Vm",
+    "mutability": "nonpayable",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xf54fe009",
+    "name": "getStateDiffJson",
+    "signature": "getStateDiffJson()",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xf7afe919",
+    "name": "getBroadcasts",
+    "signature": "getBroadcasts(string,uint64,uint8)",
+    "iface": "VmSafe",
+    "mutability": "view",
+    "class": "state",
+    "note": "forge 1.9.0 adds this; no sibling overload in forge-std 1.9.4, not yet judged — refused until classified",
+    "extra": true
+  },
+  {
+    "selector": "0xfa78931b",
+    "name": "parseJsonInt",
+    "signature": "parseJsonInt(string,string,int256)",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseJsonInt; class read like its sibling parseJsonInt(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xfcc0379f",
+    "name": "parseTomlIntArray",
+    "signature": "parseTomlIntArray(string,string,int256[])",
+    "iface": "VmSafe",
+    "mutability": "pure",
+    "class": "read",
+    "note": "forge 1.9.0 overload of parseTomlIntArray; class read like its sibling parseTomlIntArray(string,string)",
+    "extra": true
+  },
+  {
+    "selector": "0xff5d64e4",
+    "name": "deployCode",
+    "signature": "deployCode(string,bytes,uint256)",
+    "iface": "VmSafe",
+    "mutability": "nonpayable",
+    "class": "account",
+    "note": "forge 1.9.0 overload of deployCode; class account like its sibling deployCode(string,bytes)",
+    "extra": true
   }
 ]
