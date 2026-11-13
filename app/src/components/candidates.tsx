@@ -120,30 +120,40 @@ export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
   )
 }
 
-// What the engine measured: the check, where it fired (each folded place),
-// and the pin of the snapshot or the oracle its replay read.
+// What the engine measured: the check and its rule, where it fired (each
+// folded place as file:line or host:port), and the pin of the snapshot or the
+// oracle its replay read. Rows fold only for the same check and rule
+// (spike/lib/candidate.mjs splitMeasured), so the places differ by where only.
+type Item = { title?: string | null; file?: string | null; lines?: unknown; where?: unknown }
+function placeOf(i: Item): string | null {
+  const w = i.where && typeof i.where === "object" ? (i.where as Record<string, unknown>) : {}
+  const file = typeof i.file === "string" ? i.file : typeof w.file === "string" ? w.file : null
+  const line = Array.isArray(i.lines) && typeof i.lines[0] === "number" ? i.lines[0] : typeof w.line === "number" ? w.line : null
+  if (file) return line != null ? `${file}:${line}` : file
+  const host = [w.host, w.url, w.name, w.domain].find((v) => typeof v === "string") as string | undefined
+  if (host) return typeof w.port === "number" || typeof w.port === "string" ? `${host}:${w.port}` : host
+  return null
+}
+
 function MeasuredFacts({ candidate: c }: { candidate: Candidate }) {
   const m = c.measured!
-  const items = (((c.evidence as { items?: unknown } | null)?.items ?? []) as { title?: string | null; file?: string | null; where?: unknown }[]).slice(0, 12)
-  const place = (i: { file?: string | null; where?: unknown }) => {
-    if (i.file) return i.file
-    const w = i.where && typeof i.where === "object" ? (i.where as Record<string, unknown>) : null
-    const v = w ? (w.host ?? w.url ?? w.name ?? w.file ?? w.domain) : null
-    return typeof v === "string" ? v : null
-  }
+  const items = (((c.evidence as { items?: unknown } | null)?.items ?? []) as Item[]).slice(0, 12)
   return (
     <>
       {m.check ? (
-        <Field label="Check">
-          <span className="font-mono text-[11px] break-all">{m.check}</span>
+        <Field label={m.rule ? "Check and rule" : "Check"}>
+          <span className="font-mono text-[11px] break-all">
+            {m.check}
+            {m.rule ? ` · ${m.rule}` : ""}
+          </span>
         </Field>
       ) : null}
-      {items.length > 1 ? (
-        <Field label={`Fired at ${m.count} places`}>
+      {items.length ? (
+        <Field label={items.length > 1 ? `Fired at ${m.count} places` : "Where"}>
           <ul className="flex flex-col gap-0.5">
             {items.map((i, k) => (
               <li key={k} className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-                {place(i) ?? i.title ?? `place ${k + 1}`}
+                {placeOf(i) ?? i.title ?? `place ${k + 1}`}
               </li>
             ))}
           </ul>

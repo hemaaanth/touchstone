@@ -8,6 +8,7 @@ export interface Measured {
   words: string
   repeated: boolean
   check: string | null
+  rule: string | null
   snapshotHash: string | null
   oracle: string | null
   count: number
@@ -85,6 +86,7 @@ function measuredFrom(v: unknown): Measured {
     words: WORDS[reason],
     repeated: m.repeated === true,
     check: str(m.check) || null,
+    rule: str(m.rule) || null,
     snapshotHash: /^[0-9a-f]{64}$/.test(str(m.snapshotHash)) ? str(m.snapshotHash) : null,
     oracle: str(m.oracle) || null,
     count: Math.max(1, Number(m.count) || 1),

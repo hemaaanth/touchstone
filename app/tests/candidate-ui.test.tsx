@@ -289,3 +289,17 @@ describe("candidates in the run view, repair 1", () => {
     expect(candidateGroupLabel(notes)).toBe("Recorded 2 candidates (unproven, some need review)")
   })
 })
+
+// Repair 1 (UI M1): the fold names the rule, and each place as file:line.
+test("a measured fold shows its check and rule, and each place as file:line or host", () => {
+  const scan = candidateFrom(ev(measured({
+    measured: { reason: "repeated", repeated: true, check: "tool:zizmor", rule: "zizmor/unpinned-uses", count: 2 },
+    evidence: { kind: "measured", check: "tool:zizmor", items: [{ poc: "z2", file: ".github/workflows/deploy.yml", lines: [8] }, { poc: "z4", file: ".github/workflows/deploy.yml", lines: [12] }] },
+  })))!
+  const fold = renderToStaticMarkup(<CandidateDetail candidate={scan} />)
+  expect(fold).toContain("Check and rule")
+  expect(fold).toContain("tool:zizmor · zizmor/unpinned-uses")
+  expect(fold).toContain(".github/workflows/deploy.yml:8")
+  expect(fold).toContain(".github/workflows/deploy.yml:12")
+  expect(renderToStaticMarkup(<CandidateDetail candidate={candidateFrom(ev(measured()))!} />)).toContain("a.test")
+})
