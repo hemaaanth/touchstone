@@ -8,10 +8,23 @@ import { readTouchstone } from "../../lib/sandbox.mjs";
 import { SCAN_NETWORK, bindLive } from "../../lib/live.mjs";
 import { scanWeb, docQueryUrls, mergeLeads } from "./scan.mjs";
 import { DEFAULT_BUDGET_USD as STRIX_BUDGET_USD, runStrix } from "../../lib/strix.mjs";
-import { activeProvider, providerKey, readConfig } from "../../lib/providers.mjs";
+import { FALLBACK_PRICE, activeProvider, providerKey, readConfig } from "../../lib/providers.mjs";
 import { capGuard, ledgerCharge } from "../../lib/inference.mjs";
 
 const LEADS_FILE = ".web-leads.json";
+
+// The most one Strix scan can spend. Strix checks its budget only after each
+// model response, so the last turn can start just under the budget and add one
+// full turn: the model's whole context window read, its largest answer written.
+// Prices are per 1M tokens. A model with no published window, answer size or
+// price counts as 1M tokens in, 65536 out, at FALLBACK_PRICE, so an unknown
+// model is not cheap.
+export function strixWorstUsd(model, budgetUsd = STRIX_BUDGET_USD) {
+  const inTok = model.context ?? 1_000_000;
+  const outTok = model.maxOut ?? 65_536;
+  const usd = inTok * (model.input ?? FALLBACK_PRICE.input) + outTok * (model.output ?? FALLBACK_PRICE.output);
+  return budgetUsd + usd / 1e6;
+}
 
 // The live prepass: bind the boundary the platform opened, then scan the site
 // for leads. No lab is started.
@@ -45,21 +58,22 @@ export async function livePrepass(ws, { emit = () => {}, reach } = {}) {
     if (!key) strixGap("no provider key for strix's model calls");
     else {
       // Strix makes its own model calls with the provider key, so the total
-      // spend cap applies: check before with Strix's budget, charge the ledger
-      // after. Not the run budget: in the app this runs in the server process.
-      capGuard(STRIX_BUDGET_USD);
+      // spend cap applies: check before, charge the ledger after. Not the run
+      // budget: in the app this runs in the server process.
+      const m = Object.values(p.models)[0];
+      capGuard(strixWorstUsd(m));
       strix = await runStrix({
         baseUrl,
         provider: {
           baseUrl: p.baseUrl,
           key,
-          model: Object.values(p.models)[0].id,
-          inputCost: Object.values(p.models)[0].input,
-          outputCost: Object.values(p.models)[0].output,
+          model: m.id,
+          inputCost: m.input,
+          outputCost: m.output,
         },
         emit,
       });
-      ledgerCharge(`${Object.values(p.models)[0].id} (strix)`, strix.costUsd);
+      ledgerCharge(`${m.id} (strix)`, strix.costUsd);
       scan.coverage.push(strix.coverage);
       scan.leads = mergeLeads([...scan.leads, ...strix.leads]);
     }
