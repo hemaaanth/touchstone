@@ -315,6 +315,9 @@ function writeConfig(dir, config) {
 const LAB_NET = /^touchstone-ozmon-[0-9a-f]{8}$/;
 export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
   if (!LAB_NET.test(String(handle?.net))) return { available: false, reason: `not an owned lab network: ${String(handle?.net).slice(0, 60)}`, leads: [] };
+  // Ask Docker again here: a caller can pass any handle, not only one from startWatchLab.
+  const internal = await docker(["network", "inspect", "-f", "{{.Internal}}", handle.net]);
+  if (internal.stdout.trim() !== "true") return { available: false, reason: `network ${handle.net} is not --internal`, leads: [] };
   const obs = handle.obs;
   const range = blockRange(obs);
   if (!range || !obs.address || !obs.snapshots?.[0]?.owner || !obs.canary?.address) {

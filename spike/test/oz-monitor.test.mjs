@@ -214,7 +214,7 @@ const fs = require("node:fs"), path = require("node:path");
 const dir = __dirname, args = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, "calls"), JSON.stringify(args) + "\\n");
 const cfg = JSON.parse(fs.readFileSync(path.join(dir, "cfg.json"), "utf8"));
-if (args[0] === "network" && args[1] === "inspect") console.log("true");
+if (args[0] === "network" && args[1] === "inspect") console.log(cfg.internal);
 else if (args[0] === "inspect") console.log("true");
 else if (args[0] === "run" && args.includes("-d")) {
   const ws = args[args.findIndex((a) => a.endsWith(":/work"))].slice(0, -":/work".length);
@@ -226,9 +226,9 @@ else if (args[0] === "run" && args.includes("-d")) {
   setTimeout(() => process.exit(cfg.code), cfg.sleepMs || 0);
 }
 `;
-const withDockerShim = async ({ out, code = 0, sleepMs = 0, ignoreTerm = false }, fn) => {
+const withDockerShim = async ({ out, code = 0, sleepMs = 0, ignoreTerm = false, internal = "true" }, fn) => {
   const dir = mkdtempSync(join(tmpdir(), "ozmon-shim-"));
-  writeFileSync(join(dir, "cfg.json"), JSON.stringify({ obs: OBS, out, code, sleepMs, ignoreTerm }));
+  writeFileSync(join(dir, "cfg.json"), JSON.stringify({ obs: OBS, out, code, sleepMs, ignoreTerm, internal }));
   writeFileSync(join(dir, "docker"), SHIM, { mode: 0o755 });
   const path = process.env.PATH;
   process.env.PATH = `${dir}:${path}`;
@@ -277,6 +277,21 @@ test("runMonitors refuses a network that is not an owned lab network", async () 
     assert.match(result.reason, /not an owned lab network/);
     assert.ok(!calls.some((a) => a[0] === "run"), "no container is started");
   }
+});
+
+test("runMonitors refuses an owned lab network that Docker says is not internal", async () => {
+  for (const internal of ["false", ""]) {
+    const { result, calls } = await withDockerShim({ out: SHIM_OUT, internal }, () => runMonitors({ net: `touchstone-ozmon-${newTag()}`, obs: OBS }));
+    assert.equal(result.available, false, JSON.stringify(internal));
+    assert.match(result.reason, /is not --internal/);
+    assert.ok(!calls.some((a) => a[0] === "run"), "no container is started");
+  }
+  const tag = newTag();
+  const { result, calls } = await withDockerShim({ out: SHIM_OUT, internal: "false" }, () => ozMonitorLeads(CHAIN_LAB, { tag }));
+  assert.equal(result.available, false);
+  assert.match(result.reason, /is not --internal/);
+  assert.ok(!calls.some((a) => a[0] === "run"), "startWatchLab starts no lab on it");
+  assert.ok(calls.some((a) => a[0] === "network" && a[1] === "rm" && a[2] === `touchstone-ozmon-${tag}`), "the network is removed");
 });
 
 test("a monitor run that exits non-zero is unavailable, even with valid output", async () => {
