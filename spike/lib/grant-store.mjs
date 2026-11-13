@@ -116,10 +116,116 @@ export function saveStore(file, arr) {
     rmSync(tmp, { force: true });
     throw e;
   }
+  // The rename lives in the folder: fsync the folder too, so a crash right
+  // after this cannot bring the old file back.
+  syncFolder(path.dirname(file));
+}
+
+function syncFolder(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, "r");
+    fsyncSync(fd);
+  } catch (e) {
+    // A system that cannot fsync a folder (EISDIR, EINVAL, EPERM) keeps the old
+    // durability. Any other error is real.
+    if (!["EISDIR", "EINVAL", "EPERM", "EBADF"].includes(e.code)) throw e;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// ---- One writer at a time, across processes -------------------------------
+//
+// The server and the CLI can both write a store. Each mutation reads the whole
+// file, changes it and writes it back, so two at once could lose one update.
+// withStoreLock runs a mutation while it holds "<file>.lock", made with "wx"
+// (only one process can make it). The lock holds the owner's pid and the time.
+// A lock is STALE when its process is gone, or when it is older than
+// LOCK_STALE_MS (a writer takes milliseconds); a stale lock is removed. A live
+// lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS (default 5 s); then
+// the mutation is refused with a sentence and nothing is written.
+// Re-entrant in one process: a mutation that calls another on the same store
+// (removeScope -> removeGrant uses the other store) does not wait for itself.
+const LOCK_STALE_MS = 30_000;
+const heldLocks = new Set();
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function lockOwner(lock) {
+  try {
+    const st = statSync(lock);
+    let owner = null;
+    try {
+      owner = JSON.parse(readFileSync(lock, "utf8"));
+    } catch {
+      /* being written right now, or damaged */
+    }
+    return { owner, ageMs: Date.now() - st.mtimeMs };
+  } catch {
+    return null; // gone already
+  }
+}
+
+function lockIsStale(lock, { owner, ageMs }) {
+  if (ageMs > LOCK_STALE_MS) return true;
+  const pid = Number(owner?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // a lock with no owner yet: give the writer a moment
+  if (pid === process.pid) return !heldLocks.has(lock); // ours but not held: a leftover
+  try {
+    process.kill(pid, 0);
+    return false; // alive (or alive under another user: EPERM below)
+  } catch (e) {
+    return e.code === "ESRCH";
+  }
+}
+
+export function withStoreLock(file, what, fn) {
+  const lock = `${file}.lock`;
+  if (heldLocks.has(lock)) return fn();
+  mkdirSync(path.dirname(file), { recursive: true });
+  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || 5_000;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    const seen = lockOwner(lock);
+    if (seen && lockIsStale(lock, seen)) {
+      // shortcut: two processes can judge the same stale lock at once; one may
+      // remove the other's fresh lock. The window is one stat and one unlink.
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen?.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
+    }
+    pause(20);
+  }
+  heldLocks.add(lock);
+  try {
+    return fn();
+  } finally {
+    heldLocks.delete(lock);
+    rmSync(lock, { force: true });
+  }
 }
 
 // The grants for a mutation: throws on a damaged file (see loadStore).
 export const loadGrants = () => loadStore(grantsFile(), "grant store");
+
+// A sentence when the grant store file exists but cannot be read, else null.
+// The gate then refuses every live run (readGrants reads it as empty).
+export function grantStoreError() {
+  try {
+    loadGrants();
+    return null;
+  } catch (e) {
+    return String(e?.message ?? e).replace(/^Refused: /, "");
+  }
+}
 
 // Read the whole store for a gate or a list. A missing file is an empty list.
 // A damaged file also reads as "no grants": the gate then refuses every run
@@ -377,9 +483,11 @@ export function addGrant({ hosts, kind, ownership, approvedBy, note, scopeId, ex
     // grant for a public host never touches it.
     allowPrivate: priv,
   };
-  const all = loadGrants();
-  all.unshift(grant);
-  writeGrants(all);
+  withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    all.unshift(grant);
+    writeGrants(all);
+  });
   return grant;
 }
 
@@ -388,11 +496,13 @@ export function getGrant(id) {
 }
 
 export function removeGrant(id) {
-  const all = loadGrants();
-  const next = all.filter((g) => g.id !== id);
-  if (next.length === all.length) return false;
-  writeGrants(next);
-  return true;
+  return withStoreLock(grantsFile(), "grant store", () => {
+    const all = loadGrants();
+    const next = all.filter((g) => g.id !== id);
+    if (next.length === all.length) return false;
+    writeGrants(next);
+    return true;
+  });
 }
 
 // Is a grant live right now? A grant with an expiry in the past is inert.

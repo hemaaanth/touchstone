@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError } from "./grant-store.mjs";
+import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -51,6 +51,26 @@ export function readScopes() {
 // Temp file in the same directory, then rename (see saveStore).
 function writeScopes(arr) {
   saveStore(scopesFile(), arr);
+}
+
+// Add one new scope on top, under the store lock (grant-store withStoreLock).
+function addToStore(scope) {
+  withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    all.unshift(scope);
+    writeScopes(all);
+  });
+}
+
+// A sentence when the scope store file exists but cannot be read, else null.
+// The list then reads as empty (readScopes); the app shows this sentence.
+export function scopeStoreError() {
+  try {
+    loadScopes();
+    return null;
+  } catch (e) {
+    return String(e?.message ?? e).replace(/^Refused: /, "");
+  }
 }
 
 // A short url-safe slug from a title, for a readable scope id. Falls back to
@@ -109,9 +129,7 @@ export function addBriefScope({ title, brief, blurb } = {}) {
     proofSurface: SANDBOX_FOUNDRY,
     createdAt: Date.now(),
   };
-  const all = loadScopes();
-  all.unshift(scope);
-  writeScopes(all);
+  addToStore(scope);
   return scope;
 }
 
@@ -428,9 +446,7 @@ export function addScope({ title, members, pack: declared, blurb } = {}) {
     proofSurface: SCOPE_PACKS[pack],
     createdAt: Date.now(),
   };
-  const all = loadScopes();
-  all.unshift(scope);
-  writeScopes(all);
+  addToStore(scope);
   return scope;
 }
 
@@ -573,9 +589,7 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   // A grant with no scope would let runs reach the hosts with nothing in the
   // UI to remove it. Roll it back if the scope cannot be saved.
   try {
-    const all = loadScopes();
-    all.unshift(scope);
-    writeScopes(all);
+    addToStore(scope);
   } catch (err) {
     removeGrant(grant.id);
     throw err;
@@ -607,13 +621,15 @@ export function checkBrief(text) {
 // brief removes the field, so the record looks like one that never had a brief.
 export function setScopeBrief(id, text) {
   const brief = checkBrief(text);
-  const all = loadScopes();
-  const scope = all.find((s) => s.id === id);
-  if (!scope) throw new Error(`unknown scope: ${id}`);
-  if (brief) scope.brief = brief;
-  else delete scope.brief;
-  writeScopes(all);
-  return scope;
+  return withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    const scope = all.find((s) => s.id === id);
+    if (!scope) throw new Error(`unknown scope: ${id}`);
+    if (brief) scope.brief = brief;
+    else delete scope.brief;
+    writeScopes(all);
+    return scope;
+  });
 }
 
 export function getUserScope(id) {
@@ -622,15 +638,17 @@ export function getUserScope(id) {
 
 // Remove a scope by id. Returns true if one was removed.
 export function removeScope(id) {
-  const all = loadScopes();
-  const next = all.filter((s) => s.id !== id);
-  if (next.length === all.length) return false;
-  // Read the grants first: a damaged grant store refuses the removal before the scope is gone.
-  const grants = loadGrants();
-  writeScopes(next);
-  // A live scope's permission goes with it.
-  for (const g of grants) if (g.scopeId === id) removeGrant(g.id);
-  return true;
+  return withStoreLock(scopesFile(), "scope store", () => {
+    const all = loadScopes();
+    const next = all.filter((s) => s.id !== id);
+    if (next.length === all.length) return false;
+    // Read the grants first: a damaged grant store refuses the removal before the scope is gone.
+    const grants = loadGrants();
+    writeScopes(next);
+    // A live scope's permission goes with it.
+    for (const g of grants) if (g.scopeId === id) removeGrant(g.id);
+    return true;
+  });
 }
 
 export function hasScopesFile() {
