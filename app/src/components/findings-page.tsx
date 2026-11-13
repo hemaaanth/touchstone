@@ -1,11 +1,10 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, Bug, ChevronRight, FileText, PanelRight, Search, X } from "lucide-react"
+import { Bot, Bug, Check, ChevronRight, FileText, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
 import { runTitle } from "@/lib/format"
 import { ALL, DEFAULT_VIEW, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -37,6 +36,7 @@ function readView(): FindingsView {
       if (typeof saved[k] === "string") (view as Record<string, string>)[k] = saved[k]
     }
     if (!SORTS.some((s) => s.value === view.sort)) view.sort = DEFAULT_VIEW.sort
+    if (view.dismissed !== "show") view.dismissed = "hide"
     return view
   } catch {
     return { ...DEFAULT_VIEW }
@@ -71,30 +71,49 @@ async function copyFinding(id: string, format: CopyFormat): Promise<{ tooLong: b
   return { tooLong: TOO_LONG.test(await text) }
 }
 
-type CopyNote = { tone: "done" | "error"; text: string } | null
+// A copy's result, kept for the finding it was copied from. The list's count
+// line shows a short word for a moment; the sheet of that finding shows the
+// full line, until another finding opens or another copy starts.
+type CopyNote = { id: string; format: CopyFormat; result: "done" | "too-long" | "error" }
+const WHAT: Record<CopyFormat, string> = { md: "the report", agent: "the agent brief" }
+const shortNote = (n: CopyNote) =>
+  n.result === "error" ? "Could not copy." : n.result === "too-long" ? "Copied, with a part left out." : `Copied ${WHAT[n.format]}.`
+const fullNote = (n: CopyNote) =>
+  n.result === "error"
+    ? "Could not copy. The server did not answer, or the browser blocked the clipboard."
+    : n.result === "too-long"
+      ? `Copied ${WHAT[n.format]}. A part over 64 KB could not be checked for secrets, so it was left out.`
+      : `Copied ${WHAT[n.format]}.`
 
-function useCopy() {
-  const [note, setNote] = useState<CopyNote>(null)
+// `onTooLong` opens the finding's sheet: the line that says a part was left
+// out is shown there in full, never cut in the count line.
+function useCopy(onTooLong: (id: string) => void) {
+  const [note, setNote] = useState<CopyNote | null>(null)
+  const [flash, setFlash] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
+  const tooLong = useRef(onTooLong)
+  useEffect(() => {
+    tooLong.current = onTooLong
+  })
   // Stable, so a memoised row does not render again when the note changes.
   const copy = useCallback((f: FindingSummary, format: CopyFormat) => {
     clearTimeout(timer.current)
+    setNote(null)
+    const done = (result: CopyNote["result"]) => {
+      setNote({ id: f.id, format, result })
+      setFlash(true)
+      if (result === "too-long") tooLong.current(f.id)
+      timer.current = setTimeout(() => setFlash(false), 5000)
+    }
     copyFinding(f.id, format).then(
-      ({ tooLong }) => {
-        const what = format === "md" ? "the report" : "the agent brief"
-        setNote({
-          tone: "done",
-          text: tooLong
-            ? `Copied ${what}. A part over 64 KB could not be checked for secrets, so it was left out.`
-            : `Copied ${what} for “${f.title}”.`,
-        })
-        if (!tooLong) timer.current = setTimeout(() => setNote(null), 4000)
-      },
-      () => setNote({ tone: "error", text: "Could not copy. The server did not answer, or the browser blocked the clipboard." }),
+      ({ tooLong }) => done(tooLong ? "too-long" : "done"),
+      () => done("error"),
     )
   }, [])
-  return { note, copy }
+  // Opening another finding drops the note of the last one.
+  const keepOnly = useCallback((id: string) => setNote((n) => (n?.id === id ? n : null)), [])
+  return { note, flash: flash ? note : null, copy, keepOnly }
 }
 
 // ── The page ────────────────────────────────────────────────────────────────
@@ -108,7 +127,7 @@ export function FindingsPage({
 }: {
   packs: PackChoice[]
   runs: RunSummary[]
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const [load, setLoad] = useState<Load>({ state: "loading" })
   const [attempt, setAttempt] = useState(0)
@@ -139,11 +158,20 @@ export function FindingsPage({
   const [detail, setDetail] = useState<{ id: string; open: boolean } | null>(null)
   const open = detail ? all.find((f) => f.id === detail.id) : undefined
   const sheet = useRef<HTMLDivElement>(null)
-  const openDetail = useCallback((f: FindingSummary) => setDetail({ id: f.id, open: true }), [])
+  const { note, flash, copy, keepOnly } = useCopy((id) => setDetail({ id, open: true }))
+  const openDetail = useCallback(
+    (f: FindingSummary) => {
+      keepOnly(f.id)
+      setDetail({ id: f.id, open: true })
+    },
+    [keepOnly],
+  )
 
-  const { note, copy } = useCopy()
   const proven = shown.filter((f) => f.proven).length
-  const clear = () => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort }))
+  // Dismissed findings are hidden by default; the count line says how many.
+  const hiddenDismissed = view.dismissed === "hide" ? all.filter((f) => f.dismissed).length : 0
+  // Clear filters keeps the sort and the dismissed choice.
+  const clear = () => setView((v) => ({ ...DEFAULT_VIEW, sort: v.sort, dismissed: v.dismissed }))
 
   return (
     <ListPage
@@ -180,8 +208,9 @@ export function FindingsPage({
 
           <div className="-mt-3 flex min-h-5 items-center gap-3 text-xs text-muted-foreground">
             <span className="shrink-0 tabular-nums">
-              {isFiltered(view) ? `${shown.length} of ${all.length} findings` : `${all.length} findings`}
+              {isFiltered(view) ? `${shown.length} of ${all.length - hiddenDismissed} findings` : `${shown.length} findings`}
               {proven ? <span className="text-ok"> · {proven} proven</span> : null}
+              {hiddenDismissed ? ` · ${hiddenDismissed} dismissed, hidden` : null}
             </span>
             {/* Here, not in the filter rows, so showing it moves nothing. */}
             {isFiltered(view) && shown.length > 0 ? (
@@ -189,12 +218,22 @@ export function FindingsPage({
                 <X /> Clear filters
               </Button>
             ) : null}
-            <span role="status" className={cn("ml-auto min-w-0 truncate text-right", note?.tone === "error" && "text-foreground")} title={note?.text}>
-              {note?.text}
+            <span role="status" className={cn("ml-auto min-w-0 truncate text-right", flash?.result === "error" && "text-foreground")}>
+              {flash ? shortNote(flash) : null}
             </span>
           </div>
 
-          {shown.length === 0 ? (
+          {shown.length === 0 && !isFiltered(view) && hiddenDismissed ? (
+            <ListEmpty
+              icon={Bug}
+              title="Every finding is dismissed"
+              action={
+                <Button size="sm" variant="outline" onClick={() => set("dismissed", "show")}>
+                  Show dismissed
+                </Button>
+              }
+            />
+          ) : shown.length === 0 ? (
             <ListEmpty
               icon={Search}
               title="No finding matches these filters"
@@ -230,7 +269,7 @@ export function FindingsPage({
               finding={open}
               moduleTitle={packTitle(moduleOf(open)) ?? open.module}
               run={runOf(open)}
-              note={note}
+              note={note?.id === open.id ? note : null}
               onCopy={(format) => copy(open, format)}
               onOpenRun={onOpenRun}
             />
@@ -290,6 +329,7 @@ function Filters({
     for (const f of rows) if (moduleOf(f) && !seen.has(moduleOf(f))) seen.set(moduleOf(f), f.module)
     return [...seen].map(([id, title]) => ({ value: id, label: packTitle(id) ?? title })).sort((a, b) => a.label.localeCompare(b.label))
   }, [rows, packTitle])
+  const hasDismissed = useMemo(() => rows.some((f) => f.dismissed), [rows])
   const severities = useMemo(() => {
     const has = new Set(rows.map((f) => (f.severity ?? "").toLowerCase()))
     return SEVERITIES.filter((s) => has.has(s))
@@ -330,6 +370,18 @@ function Filters({
           ]}
           onChange={(v) => set("state", v as StateFilter)}
         />
+        {/* Shown only when some finding is dismissed, so it never sits there dead. */}
+        {hasDismissed ? (
+          <Button
+            variant="outline"
+            aria-pressed={view.dismissed === "show"}
+            onClick={() => set("dismissed", view.dismissed === "show" ? "hide" : "show")}
+            className="text-[13px] font-normal aria-pressed:bg-muted"
+          >
+            {view.dismissed === "show" ? <Check /> : null}
+            Show dismissed
+          </Button>
+        ) : null}
         <FilterSelect
           label="Sort by"
           value={view.sort}
@@ -359,7 +411,7 @@ export const FindingListRow = memo(function FindingListRow({
   active: boolean
   onOpen: (f: FindingSummary) => void
   onCopy: (f: FindingSummary, format: CopyFormat) => void
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const open = () => onOpen(f)
   return (
@@ -369,10 +421,11 @@ export const FindingListRow = memo(function FindingListRow({
       badges={
         <>
           <SeverityMark severity={f.severity} proven={f.proven} />
-          {f.dismissed ? <Badge variant="outline" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Dismissed</Badge> : null}
         </>
       }
       meta={[
+        // A dismissed finding says so first; its proof state stays true.
+        f.dismissed ? <span key="dismissed" className="shrink-0 whitespace-nowrap font-medium text-foreground">Dismissed</span> : null,
         f.proven ? (
           <span key="state" className="shrink-0 whitespace-nowrap text-ok">Proven</span>
         ) : (
@@ -387,7 +440,7 @@ export const FindingListRow = memo(function FindingListRow({
           <RowMenuItem onClick={open}>
             <PanelRight /> View details
           </RowMenuItem>
-          <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id)}>
+          <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id, f.id)}>
             <ChevronRight /> Open in run
           </RowMenuItem>
           <RowMenuSeparator />
@@ -401,19 +454,20 @@ export const FindingListRow = memo(function FindingListRow({
       }
       onOpen={open}
       active={active}
+      className={f.dismissed ? "[&_[data-row-main]]:text-muted-foreground" : undefined}
     />
   )
 })
 
 // ── The sheet ───────────────────────────────────────────────────────────────
 
-// The full record, fetched when the sheet opens. The proof and the narrative
+// The full record without the run's events, fetched when the sheet opens. The proof and the narrative
 // render through the run view's own ReplayProof, so there is one renderer.
 function useFullFinding(id: string) {
   const [got, setGot] = useState<{ id: string; finding: Finding | null; failed: boolean } | null>(null)
   useEffect(() => {
     let live = true
-    fetchFinding(id).then(
+    fetchFinding(id, { events: false }).then(
       (finding) => live && setGot({ id, finding, failed: false }),
       () => live && setGot({ id, finding: null, failed: true }),
     )
@@ -435,9 +489,9 @@ function FindingDetail({
   finding: FindingSummary
   moduleTitle: string
   run: RunSummary | undefined
-  note: CopyNote
+  note: CopyNote | null
   onCopy: (format: CopyFormat) => void
-  onOpenRun: (id: string) => void
+  onOpenRun: (id: string, findingId?: string) => void
 }) {
   const full = useFullFinding(f.id)
   return (
@@ -450,12 +504,14 @@ function FindingDetail({
         </div>
         <SheetTitle className="leading-snug text-pretty wrap-anywhere">{f.title || "Untitled finding"}</SheetTitle>
         <SheetDescription className="text-xs">
+          {f.dismissed ? "Dismissed by the operator. " : ""}
           {cap(f.severity ?? "unrated")} severity · {f.proven ? "Proven by a replay." : "Not proven. A lead, not a replayed proof."}
-          {f.dismissed ? " Dismissed by the operator." : ""}
         </SheetDescription>
       </SheetHeader>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-4 pt-1 pb-6">
+      {/* min-w-0 and wrap-anywhere: one long unbroken string (a key, a URL)
+          wraps instead of making the sheet scroll sideways. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-x-hidden overflow-y-auto px-4 pt-1 pb-6 wrap-anywhere">
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-2.5 text-[13px]">
           <dt><Label>Scope</Label></dt>
           <dd className="min-w-0 wrap-anywhere">{scopeOf(f)}</dd>
@@ -472,7 +528,7 @@ function FindingDetail({
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {run ? (
-              <Button size="sm" onClick={() => onOpenRun(run.id)}>
+              <Button size="sm" onClick={() => onOpenRun(run.id, f.id)}>
                 Open in run <ChevronRight />
               </Button>
             ) : null}
@@ -484,7 +540,7 @@ function FindingDetail({
             </Button>
           </div>
           {run ? null : <p className="text-xs text-muted-foreground">This finding came from a run outside the console, so it has no run view.</p>}
-          {note ? <p className="text-xs leading-relaxed text-muted-foreground">{note.text}</p> : null}
+          {note ? <p role="status" className="text-xs leading-relaxed text-muted-foreground">{fullNote(note)}</p> : null}
         </div>
 
         {full === null ? (

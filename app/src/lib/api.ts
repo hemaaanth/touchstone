@@ -54,8 +54,10 @@ export async function fetchFindings(): Promise<FindingSummary[]> {
   return data.findings
 }
 
-export function fetchFinding(id: string): Promise<Finding> {
-  return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}`)
+// `events: false` asks for the finding without its run's transcript
+// (`events` is then []). A run's events can be tens of MB.
+export function fetchFinding(id: string, { events = true }: { events?: boolean } = {}): Promise<Finding> {
+  return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}${events ? "" : "?events=0"}`)
 }
 
 // A finding's report as text, built and redacted by the server (report.mjs):
