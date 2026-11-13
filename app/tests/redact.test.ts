@@ -221,3 +221,32 @@ describe("redact: an Authorization value with several parts", () => {
     expect(out).not.toContain("nonceFAKE")
   })
 })
+
+describe("redact: secrets in commands and URLs (review Minor 1)", () => {
+  test("a ?key= query value is masked", () => {
+    expect(text("GET /v1/x?key=AIzaSyFAKEfake1234&q=1")).toBe("GET /v1/x?key=[REDACTED]&q=1")
+  })
+
+  test("a URL password is masked; a placeholder or a port trick stays", () => {
+    expect(text("clone https://alice:s3cretFAKE99@git.lab/x")).toBe("clone https://alice:[REDACTED]@git.lab/x")
+    for (const keep of ["accepts `http://user:pass@host`. Fine.", "- `http://metadata.ens.domains:80@evil...` fine."]) expect(text(keep)).toBe(keep)
+  })
+
+  test("curl -u and curl -b values are masked", () => {
+    expect(text("curl -u alice:s3cretFAKE99 https://x")).toBe("curl -u alice:[REDACTED] https://x")
+    expect(text("curl --user 'alice:s3cretFAKE99' https://x")).toBe("curl --user 'alice:[REDACTED]' https://x")
+    expect(text(`curl -b "sid=s3ssionFAKE9; theme=dark" https://x`)).toBe(`curl -b "[REDACTED]" https://x`)
+    expect(text("curl --cookie sid=s3ssionFAKE9 https://x")).toBe("curl --cookie [REDACTED] https://x")
+  })
+
+  test("a secret env assignment is masked; a variable reference stays", () => {
+    const cmd = `DB_PASSWORD=hunt3r2 AWS_SECRET_ACCESS_KEY="wJalrFAKEKEY/K7MDENG/bPxRfiCYFAKEKEY" node x.js`
+    expect(text(cmd)).toBe(`DB_PASSWORD=[REDACTED] AWS_SECRET_ACCESS_KEY="[REDACTED]" node x.js`)
+    expect(text("DB_PASSWORD=$DB_PASSWORD node x.js")).toBe("DB_PASSWORD=$DB_PASSWORD node x.js")
+  })
+
+  test("a mnemonic under its own key is masked", () => {
+    expect(redactSecrets({ mnemonic: "test test test test test test test test test test test junk" }).mnemonic).toBe("[REDACTED]")
+    expect(text(`{"mnemonic":"test test test test test test test test test test test junk"}`)).toBe(`{"mnemonic":"[REDACTED]"}`)
+  })
+})

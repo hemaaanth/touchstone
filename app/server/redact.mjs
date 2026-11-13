@@ -13,7 +13,7 @@
 const MARK = "[REDACTED]"
 
 // Object keys and header-cell names whose value is a credential.
-const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|cookie|set-cookie))$/i
+const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
 // Any other name that ends in a secret word: x-goog-api-key, x-csrf-token,
 // PRIVATE-TOKEN, DB_PASSWORD, signerPrivateKey. A bare "key" or "signature"
 // is not enough; prose says "Key:" and a SIWE body carries its signature.
@@ -54,7 +54,15 @@ const QUOTE_HEADER = new RegExp(String.raw`(["'` + "`" + String.raw`])` + HEADER
 const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})/gi
 // The value stops at a quote, backtick, bracket, comma or backslash, so
 // "`?token=`," keeps its backtick and comma.
-const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token)=)([^&\s#"'`,;()[\]{}<>\\]+)/gi
+const QUERY = /([?&#](?:access_token|refresh_token|id_token|api_key|apikey|client_secret|password|token|key)=)([^&\s#"'`,;()[\]{}<>\\]+)/gi
+
+// A password in a URL (https://user:pass@host), a curl -u user:pass, a
+// curl -b cookie list, and an env assignment such as DB_PASSWORD=… whose
+// name passes secretName. Only the secret part is masked.
+const URL_USERINFO = /(\/\/[^\s\/:@"'`]{1,64}:)([^\s\/@"'`]{1,256})(?=@)/g
+const CURL_USER = /((?:^|\s)(?:-u|--user)[ =]?["']?[^\s:"'@]{1,64}:)([^\s"']{1,256})/g
+const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s"']+))/g
+const ENV_ASSIGN = /\b([A-Z][A-Z0-9_]{1,63})=(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"'`;&|]+))/g
 
 // Shapes that are a secret wherever they sit. Deliberately not bare hex:
 // snapshot hashes and commits are 40/64 hex and the proof needs them.
@@ -120,9 +128,22 @@ function maskQuery(m, head, value) {
   return secretish(v, 6) ? head + MARK + value.slice(v.length) : m
 }
 
+function maskCookieArg(m, head, q, quoted, bare) {
+  const v = quoted ?? bare
+  if (!v.includes("=") || /^[\[$<{]/.test(v)) return m
+  return q ? `${head}${q}${MARK}${q}` : head + MARK
+}
+
+function maskEnv(m, name, dq, sq, bare) {
+  const v = dq ?? sq ?? bare
+  if (!secretName(name) || !secretish(v, 6)) return m
+  const q = dq != null ? '"' : sq != null ? "'" : ""
+  return `${name}=${q}${MARK}${q}`
+}
+
 function redactText(text) {
   if (!text || text.startsWith(MARK)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -136,6 +157,10 @@ function redactText(text) {
   out = out.replace(QUOTE_HEADER, maskHeader)
   out = out.replace(BEARER, (m, tok) => (secretish(tok) ? `Bearer ${MARK}` : m))
   out = out.replace(QUERY, maskQuery)
+  out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
+  out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
+  out = out.replace(CURL_COOKIE, maskCookieArg)
+  out = out.replace(ENV_ASSIGN, maskEnv)
   for (const re of SHAPES) out = out.replace(re, MARK)
   return out
 }
