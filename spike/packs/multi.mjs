@@ -11,9 +11,17 @@
 //   - Its own proof. Every finding a module's tool records carries `pack` (the
 //     module id). Only that module's prove() replays it. The proven gate after
 //     prove() is unchanged.
+//   - ONE fetched source tree. The scope's links are fetched once, into the run
+//     root's `vendor/`, and copied into every module that reads code, so each
+//     module's read tools work on its own paths and the coverage count sees one
+//     `source-fetch` per link, not one per module.
 // A run with one module never comes here: packFor returns that module's pack.
 import path from "node:path";
+import { cpSync, readdirSync } from "node:fs";
 import { prepassView } from "../lib/prepass-view.mjs";
+import { fetchSource } from "../lib/fetch.mjs";
+import { concreteSolc, warmSolc } from "../lib/sandbox.mjs";
+import { event } from "../lib/event.mjs";
 
 export const MULTI = "multi";
 export const MULTI_DIR = "modules";
@@ -166,10 +174,79 @@ export function multiPack(members) {
 
   const section = (p, text) => `## Module: ${p.title ?? p.id} (${p.id})\n\n${text}`;
 
+  // The modules that read code (and get the fetched tree copied in). A run of
+  // capture modules only fetches nothing and the members' own tool is left alone.
+  const codeMembers = members.filter((p) => p.id === "contracts" || p.id === "review");
+  const fetched = new Map(); // url -> report, once the one clone is done
+  let queue = Promise.resolve();
+
+  // ONE clone per link for the run, into the root's vendor/ (the run's shared
+  // tree), serialized and shared: a second caller of the same link waits for the
+  // first and gets its report. The tree is then copied into every code member, so
+  // each module's own read tools work on its own paths.
+  function ensureFetch(ws, url) {
+    if (fetched.has(url)) return Promise.resolve(fetched.get(url));
+    // Serialized, and the cache is checked again once this call reaches the head of
+    // the queue: a second caller of the same link that was waiting finds the first
+    // caller's report instead of cloning. The queue survives a refusal, so one
+    // wrong URL cannot poison the run.
+    const run = queue.catch(() => {}).then(async () => {
+      if (fetched.has(url)) return fetched.get(url);
+      const report = await fetchSource(ws, url);
+      fetched.set(url, report);
+      return report;
+    });
+    queue = run;
+    return run;
+  }
+
+  // What a module's fetch does around the shared clone: the module's text, and,
+  // when the run has a Contracts member, the solc warm and the Solidity list that
+  // the module with `run_poc` needs (whichever member's tool was called). The warm
+  // runs once per fetch, not once per caller. `source-fetch` stays the run's one;
+  // `fetch_source` is emitted by the caller, once per call.
+  async function completeFetch(ws, url, report, already) {
+    const where = report?.where;
+    if (where) {
+      for (const other of codeMembers) {
+        try {
+          cpSync(path.join(ws, where), path.join(memberDir(ws, other.id), where), { recursive: true, force: true });
+        } catch {
+          // one module's copy must not fail the fetch
+        }
+      }
+    }
+    const solid = (report?.files ?? []).map((f) => f.path ?? f).filter((f) => /\.sol$/i.test(String(f)));
+    const warmed = [];
+    const warms = codeMembers.some((m) => m.id === "contracts");
+    if (warms && !already) {
+      const versions = new Set();
+      for (const f of report?.files ?? []) for (const pragma of f.pragmas ?? []) { const v = concreteSolc(pragma); if (v) versions.add(v); }
+      for (const v of versions) { const w = await warmSolc(v); warmed.push(`${w.version}${w.ok ? "" : " (warm failed)"}`); }
+    }
+    let n = 0;
+    if (where) {
+      try {
+        n = [...readdirSync(path.join(ws, where), { recursive: true, withFileTypes: true })].filter((e) => e.isFile()).length;
+      } catch {
+        n = 0;
+      }
+    }
+    event("fetch_source-done", { url, ok: true, kind: report?.kind, files: n, ...(warmed.length ? { warmed } : {}) });
+    const lines = [already ? `Already fetched for this run: ${where ?? url}` : `Fetched ${url} into ${where ?? "(not saved)"}`, ""];
+    if (solid.length) lines.push("Solidity files now available:", ...solid.map((f) => `  ${f}`), "");
+    lines.push(`Use list_sources to see all ${n} file${n === 1 ? "" : "s"}, then read_source.`);
+    if (warmed.length) lines.push(`Compiler versions prepared: ${warmed.join(", ")}.`);
+    return { output: [{ type: "text", text: lines.join("\n") }] };
+  }
+
   return {
     id: MULTI,
     title: titles.join(" + "),
     packs: ids,
+    // Some module here reads source, so the engine mounts the index layer over
+    // the run's shared tree (agent-run.mjs).
+    readsCode: ids.some((id) => id === "contracts" || id === "review"),
     members,
 
     system(ws) {
@@ -195,7 +272,24 @@ export function multiPack(members) {
           name: rename(t.name),
           description: rename(t.description),
           ...(t.parameters ? { parameters: renameSchema(t.parameters, rename) } : {}),
-          execute: async (...args) => renameResult(await t.execute(...args), rename),
+          // A fetch brings the tree in once, for the run, and hands every module
+          // that reads code its own copy: a scope is read, not re-cloned.
+          execute: async (...args) => {
+            if (t.name !== "fetch_source" || !codeMembers.length) return renameResult(await t.execute(...args), rename);
+            const url = String(args?.[0]?.url ?? "").trim().replace(/\/+$/, "");
+            const again = fetched.has(url);
+            event("fetch_source", { url });
+            let report;
+            try {
+              report = await ensureFetch(ws, url);
+            } catch (err) {
+              const why = String(err?.message ?? err);
+              event("fetch_source-done", { url, ok: false, error: why.slice(0, 200) });
+              return { output: [{ type: "text", text: rename(`Could not fetch ${url}: ${why}`) }], isError: true };
+            }
+            // The primary caller's own work is done here too, identically.
+            return renameResult(await completeFetch(ws, url, report, again), rename);
+          },
         }));
       });
       // The registry routes a call by name. Two tools with one name would send a
@@ -214,6 +308,26 @@ export function multiPack(members) {
     // out of `env` here and every other module's key goes. A plain key of
     // another module would otherwise read as its own (`LEADS`); real environment
     // (PATH and the rest) passes through untouched.
+    // Text the engine appends outside a module's own prompt (the nav layer): its
+    // tool names get the same forms, joined with "or" because it speaks for the
+    // whole run.
+    // The name one module's tool really has in this run (for tests and callers
+    // that hold a pack's own name).
+    nameFor(ws, id, name) {
+      return renameFor(ws, id)(name);
+    },
+
+    renameText(ws, text) {
+      const owners = new Map();
+      for (const p of members) for (const t of p.tools?.(memberDir(ws, p.id), scratchState()) ?? []) owners.set(t.name, [...(owners.get(t.name) ?? []), p.id]);
+      let out = text;
+      for (const [name, who] of owners) {
+        const forms = who.length > 1 ? who.map((id) => `${name}_${slug(id)}`).join(" or ") : name;
+        out = out.replace(new RegExp(`\\b${escape(name)}\\b`, "g"), forms);
+      }
+      return out;
+    },
+
     kickoff(ws, env = {}) {
       const prefixes = members.map((p) => [p.id, envKey(p.id, "")]);
       const produced = new Set((env[PRODUCED] ?? "").split(",").filter(Boolean));

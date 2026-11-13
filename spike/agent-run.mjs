@@ -70,10 +70,16 @@ async function openHarness(db, ws, state) {
   // binary actually resolves, so a host without it gets no dead tools and no
   // instruction to use them — the run falls back cleanly to the flat source
   // tools. Navigation never produces a finding; proof is unchanged.
-  const navy = (pack.id === "contracts" || pack.id === "review") && (await resolveCbmBinary()) !== null;
+  // A joined run mounts the layer when ANY of its modules reads code; the index
+  // is built once, over the run's shared tree (the run root).
+  const readsCode = (id) => id === "contracts" || id === "review";
+  const navy = (pack.readsCode === true || readsCode(pack.id)) && (await resolveCbmBinary()) !== null;
+  // The nav prompt names flat tools; the joined pack renames them for the whole
+  // run, so a run reads a name it really has.
+  const navText = navy ? (typeof pack.renameText === "function" ? pack.renameText(ws, NAV_SYSTEM) : NAV_SYSTEM) : "";
   // The scope's notes and the operator's brief close the instructions, so the
   // root agent and every fleet child start with them (targets.mjs scopeEnv).
-  const system = pack.system(ws) + (navy ? NAV_SYSTEM : "") + scopeInstructions(process.env);
+  const system = pack.system(ws) + navText + scopeInstructions(process.env);
   const registry = createRegistry();
   const fleet = createFleet({ system, costOf });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];

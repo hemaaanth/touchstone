@@ -49,6 +49,32 @@ export function planModules(target, requested, pack, chosen) {
 
   mods.push({ id: "agent", on: true, fixed: true, available: true, reason: "The agent always runs." });
 
+  // A joined run plans the UNION of what each of its modules gets alone on this
+  // target: the fetched sources when any member fetches, the Solidity engines when
+  // Contracts is a member and there is local source, replay only when a member has
+  // a replay (a review-only list must not turn it on). The reason lines are the
+  // same as the one-module branches below.
+  if (all) {
+    if (all.includes("contracts")) {
+      if (local) {
+        mods.push({ id: "static", on: want("static", true), available: true, reason: null });
+        mods.push({ id: "fuzz", on: want("fuzz", true), available: true, reason: null });
+      } else {
+        mods.push({ id: "static", on: false, available: false, reason: "no local source at start — a static analyzer has nothing to scan until the brief's code is fetched" });
+        mods.push({ id: "fuzz", on: false, available: false, reason: "no local source at start — there is nothing to fuzz until the brief's code is fetched" });
+      }
+    }
+    if (fetches(target) && all.some((id) => id === "contracts" || id === "review")) {
+      mods.push({ id: "fetch", on: true, available: true, reason: target.kind === "scope" ? "fetches the scope's repos into the workspace" : "fetches the brief's linked sources into the workspace" });
+    }
+    if (pack?.proof === "none") {
+      mods.push({ id: "replay", on: false, fixed: true, available: false, reason: "No module of this run has a replay oracle that fits this code, so no finding can be proven. The run reports leads only." });
+    } else {
+      mods.push({ id: "replay", on: true, fixed: true, available: true, reason: "The replay of the module that recorded a finding is the only thing that makes it real." });
+    }
+    return mods;
+  }
+
   // A pack other than Contracts brings its own tools and its own proof. The
   // Solidity static and fuzz engines do not apply, so the plan is just the agent
   // and the pack's proof step. Pack tools that run before the agent report on
