@@ -24,7 +24,17 @@ function Pre({ node, ...p }: ComponentProps<"pre"> & ExtraProps) {
   const start = node?.position?.start.offset
   const end = node?.position?.end.offset
   const closed = start != null && end != null && fenceClosed(text.slice(start, end))
-  return <MermaidBlock source={source} closed={closed} fallback={plain} />
+  // One worst-case diagram blocks the page for about 95 ms, so a message draws
+  // at most MAX_DIAGRAMS by itself; the rest wait for a "Draw diagram" press.
+  const deferred = start != null && mermaidFencesBefore(text, start) >= MAX_DIAGRAMS
+  return <MermaidBlock source={source} closed={closed} fallback={plain} deferred={deferred} />
+}
+
+export const MAX_DIAGRAMS = 10
+
+// How many mermaid fences open before `offset` in this text.
+function mermaidFencesBefore(text: string, offset: number): number {
+  return (text.slice(0, offset).match(/^[ \t>]*(`{3,}|~{3,})[ \t]*mermaid\b/gm) ?? []).length
 }
 
 // Agent text is Markdown: headings, lists, tables, bold, inline code. This

@@ -39,6 +39,14 @@ describe("a mermaid fence in a finding's write-up", () => {
     expect(line).not.toContain("```")
   })
 
+  test("the one-line agent export drops a ~~~ fence too", () => {
+    const tilde = { ...finding, explanation: "The vault pays first.\n\n~~~mermaid\nflowchart LR\n  A --> V\n~~~\n\nThen it lowers the balance." }
+    const line = renderReportAgent(buildReport(tilde))
+    expect(line).toContain("What is wrong: The vault pays first. Then it lowers the balance.")
+    expect(line).not.toContain("~~~")
+    expect(line).not.toContain("flowchart")
+  })
+
   test("the HTML export shows it escaped, with nothing live", () => {
     const html = renderReportHtml(buildReport(finding))
     expect(html).toContain('<pre class="code">flowchart LR')

@@ -1,45 +1,77 @@
 // Mermaid diagrams in agent text, drawn by Pele (https://pele.run, MIT).
 //
 // Agent text can carry text from a hostile target, so the diagram source is
-// untrusted. The rules here follow Pele's security page:
+// untrusted. The rules here follow Pele's security page, and one more:
 // - The options are fixed in this file. The diagram source never sets them.
 // - No links and no images (an image makes a network request when shown).
+//   No math and no icons (no resolver is given).
 // - Pele's default size limits stay (50,000 characters of source, 4,000,000
 //   of SVG, 5,000 edges).
-// - The SVG that goes into the page is only Pele's output, after
-//   `quietColors`. An error is shown as React text, never as HTML.
+// - Pele's SVG goes through one allow-list pass (lib/svg-allow.ts) before the
+//   page sees it. Only that pass's output reaches `dangerouslySetInnerHTML`.
+//   When the pass leaves nothing, the source shows as code.
+// - An error is shown as React text, never as HTML.
 //
 // Pele loads lazily (`pele/lazy`, by a dynamic import), so the first page load
 // does not grow. Each diagram type loads on first use.
+import { allowSvg, type SvgNode } from "@/lib/svg-allow"
 
-export type Drawn = { ok: true; svg: string; width: number; height: number } | { ok: false; error: string }
+export type Drawn =
+  | { ok: true; svg: string; width: number; height: number; type: string }
+  | { ok: false; error: string }
+
+export type DrawOptions = {
+  maxWidth?: number
+  fontFamily?: string
+  fontFamilyMono?: string
+  // Tests only: bun has no DOMParser, and a failed chunk load is faked. The
+  // page always uses the browser's DOMParser and the real lazy import.
+  parse?: (svg: string) => SvgNode | null
+  load?: () => Promise<Pick<typeof import("pele/lazy"), "renderAsync" | "PeleError">>
+}
 
 // The fixed render options. Only the app sets fontFamily, maxWidth and idPrefix.
 const FIXED = { links: false, images: false, responsive: true, fontSize: 14 } as const
+
+// The exact options Pele gets for one source. Exported for the tests, which
+// compare the pass's output with Pele's own.
+export function peleOptions(source: string, opts: DrawOptions = {}) {
+  return {
+    ...FIXED,
+    maxWidth: opts.maxWidth && opts.maxWidth > 0 ? opts.maxWidth : undefined,
+    fontFamily: opts.fontFamily || undefined,
+    fontFamilyMono: opts.fontFamilyMono || undefined,
+    // One prefix per source: two different diagrams on a page never share an
+    // id, and the same diagram twice has the same ids.
+    idPrefix: `m${hash(cacheKey(source, opts))}`,
+  }
+}
+
+const cacheKey = (source: string, opts: DrawOptions) =>
+  `${opts.maxWidth ?? 0}\n${opts.fontFamily ?? ""}\n${opts.fontFamilyMono ?? ""}\n${source}`
 
 const CACHE_MAX = 64
 const cache = new Map<string, Promise<Drawn>>()
 
 // Draws one source at one width. The result is cached, so a streamed snapshot
-// that re-renders the same closed block draws it once.
-export function drawMermaid(source: string, opts: { maxWidth?: number; fontFamily?: string; fontFamilyMono?: string } = {}): Promise<Drawn> {
-  const key = `${opts.maxWidth ?? 0}\n${opts.fontFamily ?? ""}\n${opts.fontFamilyMono ?? ""}\n${source}`
+// that re-renders the same closed block draws it once. A failure that is not
+// the source's fault (a chunk that did not load) is not kept, so the next try
+// loads again.
+export function drawMermaid(source: string, opts: DrawOptions = {}): Promise<Drawn> {
+  const key = cacheKey(source, opts)
   const hit = cache.get(key)
   if (hit) return hit
-  const run = (async (): Promise<Drawn> => {
+  let run: Promise<Drawn> | null = null
+  run = (async (): Promise<Drawn> => {
+    let lazy: Pick<typeof import("pele/lazy"), "renderAsync" | "PeleError"> | null = null
     try {
-      const { renderAsync } = await import("pele/lazy")
-      const r = await renderAsync(source, {
-        ...FIXED,
-        maxWidth: opts.maxWidth && opts.maxWidth > 0 ? opts.maxWidth : undefined,
-        fontFamily: opts.fontFamily || undefined,
-        fontFamilyMono: opts.fontFamilyMono || undefined,
-        // One prefix per source: two different diagrams on a page never share
-        // a marker id, and the same diagram twice has the same defs.
-        idPrefix: `m${hash(key)}`,
-      })
-      return { ok: true, svg: quietColors(r.svg), width: r.width, height: r.height }
+      lazy = await (opts.load ?? (() => import("pele/lazy")))()
+      const r = await lazy.renderAsync(source, peleOptions(source, opts))
+      const svg = allowSvg(r.svg, opts.parse)
+      if (!svg) return { ok: false, error: "This diagram has nothing this view can draw safely." }
+      return { ok: true, svg, width: r.width, height: r.height, type: r.type }
     } catch (err) {
+      if (!(lazy && err instanceof lazy.PeleError) && cache.get(key) === run) cache.delete(key)
       return { ok: false, error: errorText(err) }
     }
   })()
@@ -57,36 +89,6 @@ function errorText(err: unknown): string {
   const first = lines[0] ?? "The diagram could not be drawn."
   const last = lines.length > 1 ? lines[lines.length - 1] : ""
   return (last && !last.startsWith("-") ? `${first} ${last}` : first).slice(0, 200)
-}
-
-const COLOR_PROPS = new Set(["fill", "stroke", "color", "stop-color", "flood-color", "lighting-color", "background", "background-color"])
-const TOKEN_VALUE = /^\s*(var\(|none\b|transparent\b|currentcolor\b|inherit\b)/i
-
-// A diagram's own `style`, `classDef`, `linkStyle`, `rect <colour>` and
-// `box <colour>` set fixed colours. The app shows only its theme tokens (no red,
-// no green: app/docs/restraint.md), so those colours are dropped:
-// - In a `style` attribute, a colour declaration that is not a `var(...)` goes.
-//   Pele keeps its token colour on the element's own attribute
-//   (`fill="var(--_s)"`), so the element falls back to it.
-// - A colour attribute with a fixed value (an arrowhead coloured by
-//   `linkStyle`) becomes the line token.
-export function quietColors(svg: string): string {
-  return svg
-    .replace(/\sstyle="([^"]*)"/g, (_m, body: string) => {
-      const kept = body
-        .split(";")
-        .filter((decl) => {
-          const i = decl.indexOf(":")
-          if (i < 0) return decl.trim() !== ""
-          const prop = decl.slice(0, i).trim().toLowerCase()
-          return !COLOR_PROPS.has(prop) || TOKEN_VALUE.test(decl.slice(i + 1))
-        })
-        .join(";")
-      return kept.trim() ? ` style="${kept}"` : ""
-    })
-    .replace(/\s(fill|stroke|color|stop-color)="([^"]*)"/g, (m, prop: string, value: string) =>
-      TOKEN_VALUE.test(value) ? m : ` ${prop}="var(--_l)"`,
-    )
 }
 
 // True when a fenced block in Markdown has its closing fence. `raw` is the

@@ -9,18 +9,34 @@ import { CopyButton } from "@/components/proof-parts"
 //   source does not parse, it shows `fallback`: the normal code block. Nothing
 //   flashes and nothing jumps on each streamed tick.
 // - When the closed source parses, the diagram replaces the code block.
-// - When a newer snapshot fails, the last good diagram stays.
+// - When a newer snapshot fails, the last good diagram stays, with a quiet note.
 // - A closed source that never parsed stays a code block, with Pele's reason
 //   under it as plain text.
+// - `deferred` (past the per-message cap, components/markdown.tsx): the code
+//   block with a "Draw diagram" button; nothing is drawn until it is pressed.
 // - "Diagram | Source" switches between the picture and its text; Copy copies
 //   the source.
-export function MermaidBlock({ source, closed, fallback }: { source: string; closed: boolean; fallback: ReactNode }) {
+export function MermaidBlock({
+  source,
+  closed,
+  fallback,
+  deferred = false,
+}: {
+  source: string
+  closed: boolean
+  fallback: ReactNode
+  deferred?: boolean
+}) {
   const box = useRef<HTMLDivElement>(null)
+  const frame = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [font, setFont] = useState<{ sans: string; mono: string } | null>(null)
-  const [good, setGood] = useState<{ source: string; svg: string; width: number } | null>(null)
+  const [good, setGood] = useState<{ source: string; svg: string; width: number; type: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<"diagram" | "source">("diagram")
+  const [asked, setAsked] = useState(false)
+  const [more, setMore] = useState(false)
+  const draw = closed && (!deferred || asked)
 
   // The column width, in 16px steps so a small resize does not redraw.
   useLayoutEffect(() => {
@@ -49,23 +65,31 @@ export function MermaidBlock({ source, closed, fallback }: { source: string; clo
   }, [])
 
   useEffect(() => {
-    if (!closed || !width || !font) return
+    if (!draw || !width || !font) return
     let live = true
     // The frame has 12px of padding on each side.
     void drawMermaid(source, { maxWidth: width - 24, fontFamily: font.sans, fontFamilyMono: font.mono }).then((r) => {
       if (!live) return
       if (r.ok) {
-        setGood({ source, svg: r.svg, width: r.width })
+        setGood({ source, svg: r.svg, width: r.width, type: r.type })
         setError(null)
       } else setError(r.error)
     })
     return () => {
       live = false
     }
-  }, [source, closed, width, font])
+  }, [source, draw, width, font])
+
+  // A diagram wider than the frame scrolls sideways. A soft right edge says so
+  // until the reader reaches the end.
+  const readMore = () => {
+    const el = frame.current
+    setMore(!!el && el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+  }
+  useLayoutEffect(readMore, [good, width, view])
 
   return (
-    <div ref={box} className="my-2 min-w-0 first:mt-0 last:mb-0">
+    <div ref={box} data-mermaid="" className="my-2 min-w-0 first:mt-0 last:mb-0">
       {good ? (
         <div className="overflow-hidden rounded-lg bg-muted/60">
           <div className="flex items-center gap-1 px-2 pt-1 text-xs text-muted-foreground">
@@ -88,13 +112,22 @@ export function MermaidBlock({ source, closed, fallback }: { source: string; clo
             </span>
           </div>
           {view === "diagram" ? (
-            <div className="mermaid-frame overflow-x-auto px-3 pt-1 pb-3">
+            <div
+              ref={frame}
+              onScroll={readMore}
+              className={cn(
+                "mermaid-frame overflow-x-auto px-3 pt-1 pb-3",
+                more && "[mask-image:linear-gradient(to_right,black_85%,transparent)]",
+              )}
+            >
               {/* A diagram shrinks to fit down to 70% of its size; a wider one
                   scrolls sideways instead of turning its text unreadable. */}
               <div
+                role="img"
+                aria-label={`Diagram: ${good.type}`}
                 className="flex justify-center [&>svg]:h-auto [&>svg]:min-w-0 [&>svg]:max-w-full"
                 style={{ minWidth: Math.round(good.width * 0.7) }}
-                // Pele's own output only, after quietColors (src/lib/mermaid.ts).
+                // Only the allow-list pass's output (lib/svg-allow.ts).
                 dangerouslySetInnerHTML={{ __html: good.svg }}
               />
             </div>
@@ -103,11 +136,23 @@ export function MermaidBlock({ source, closed, fallback }: { source: string; clo
               <code>{source}</code>
             </pre>
           )}
+          {error && good.source !== source ? (
+            <p className="px-3 pb-2 text-xs text-muted-foreground">Showing the last version that drew.</p>
+          ) : null}
         </div>
       ) : (
         <>
           {fallback}
-          {closed && error ? <p className="-mt-1 mb-2 text-xs text-muted-foreground">Not drawn: {error}</p> : null}
+          {draw && error ? <p className="-mt-1 mb-2 text-xs text-muted-foreground">Not drawn: {error}</p> : null}
+          {closed && deferred && !asked ? (
+            <button
+              type="button"
+              onClick={() => setAsked(true)}
+              className="focus-ring -mt-1 mb-2 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Draw diagram
+            </button>
+          ) : null}
         </>
       )}
     </div>
