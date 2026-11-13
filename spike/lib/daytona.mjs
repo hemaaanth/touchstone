@@ -29,7 +29,8 @@
 //   - The call mounts a host path other than the workspace.
 //   - The call belongs to no run (see Machines above).
 //   - The call uses a docker flag the parser does not know, or a
-//     `--flag=value` form other than `--network=`. Unknown means local.
+//     `--flag=value` form other than `--network=` and `--pull=never`. Unknown
+//     means local.
 //   - A solc version did not install on the machine. Only that call goes local.
 //   - The Daytona API fails. The machine is deleted and the call tries once more
 //     on a new machine. A second failure keeps every call local for 10 minutes.
@@ -106,9 +107,20 @@ export function daytonaOn(env = process.env) {
 // scope proxy and the grant gate on this host, so it must not leave it.
 // The parser fails safe. A flag it does not know may take a value, so it
 // cannot find the image after it. Such a call stays local. So does any
-// `--flag=value` form except `--network=`, and a second network flag.
+// `--flag=value` form except `--network=` and `--pull=never`, and a second
+// network flag. `--pull=always` stays local, since the machine would pull.
 const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
+
+// The shell guard that runs the container only when the image is there.
+// With --pull=never nothing is fetched; code 199 sends the image up from this
+// host instead, once. Without the flag the machine may pull as before.
+export function imageGuard(args, image, dir) {
+  const inspect = `docker image inspect ${shq(image)} >/dev/null 2>&1`;
+  return args.includes("--pull=never")
+    ? `if ${inspect} then`
+    : `if ${inspect} || docker pull -q ${shq(image)} >${dir}/pull 2>&1; then`;
+}
 
 export function planRemote(args, ws, remoteWs) {
   if (args[0] !== "run") return { local: "not a docker run", image: null, args };
@@ -138,7 +150,7 @@ export function planRemote(args, ws, remoteWs) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {
       out.push(a);
-    } else if (/^--pull(?:=|$)/.test(a)) {
+    } else if (a === "--pull=never") {
       out.push(a);
     } else if (a.startsWith("-")) {
       return stay(`flag ${a.split("=")[0]} is not known to the remote path`);
@@ -606,10 +618,10 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     remoteWs && rmGone ? `(cd ${remoteWs} && rm -rf -- ${rmGone})` : ":",
     remoteWs && sync.send.length ? `tar -xf /tmp/ts-${cid}.tar -C ${remoteWs} && rm -f /tmp/ts-${cid}.tar` : ":",
     remoteWs ? `chown -R ${shq(own)} ${remoteWs}` : ":",
-    // Pull outside the time limit, as a local warm cache would.
-    // Code 199 means no registry has the image.
+    // Pull outside the time limit, as a local warm cache would, unless the
+    // argv says --pull=never. Code 199 sends the image up from this host.
     `touch ${dir}/stamp`,
-    `if docker image inspect ${shq(plan.image)} >/dev/null 2>&1 || docker pull -q ${shq(plan.image)} >${dir}/pull 2>&1; then`,
+    imageGuard(plan.args, plan.image, dir),
     `touch ${dir}/stamp; sleep 1`,
     // The watchdog checks once a second. Its stdio is closed, so the toolbox
     // does not wait for it.
