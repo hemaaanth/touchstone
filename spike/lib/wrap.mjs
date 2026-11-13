@@ -6,6 +6,7 @@
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
@@ -16,6 +17,10 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 //   network  "none" unless the pack's TOOLS.md says the tool needs more
 //   user     runs as the host user by default, so it can read the workspace
 //            with no capabilities and its output files stay ours
+//   addHosts [[name, ip], ...] pins each name to an address the caller checked
+//            (--add-host). The container's resolver then points at an address
+//            where nothing listens (--dns 127.0.0.1), so any other name fails.
+//            A name must be a plain host name and an ip must parse; else it throws.
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
 // Each container gets its own name, so a timeout can remove it. The tool's
 // PID 1 ignores the SIGTERM the docker client forwards, so killing the client
@@ -24,18 +29,36 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [] }) {
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
+  const pins = hostPins(addHosts);
   const args = [
     "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     "--name", name,
+    ...pins,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
   return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user, name });
+}
+
+// The docker flags for addHosts. Daytona's parser does not know --add-host or
+// --dns, so a call that carries them always runs on local Docker.
+const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+export function hostPins(addHosts) {
+  if (!Array.isArray(addHosts)) throw new Error("addHosts must be a list of [name, ip] pairs");
+  if (!addHosts.length) return [];
+  const out = [];
+  for (const pair of addHosts) {
+    const [host, ip] = Array.isArray(pair) ? pair : [];
+    if (typeof host !== "string" || !HOST_NAME.test(host) || isIP(host)) throw new Error("addHosts: not a plain host name: " + String(host).slice(0, 80));
+    if (typeof ip !== "string" || !isIP(ip)) throw new Error("addHosts: not an IP address: " + String(ip).slice(0, 80));
+    out.push("--add-host", host + ":" + ip);
+  }
+  return [...out, "--dns", "127.0.0.1"];
 }
 
 // Run one `docker run` argv on the chosen backend: a Daytona machine when
