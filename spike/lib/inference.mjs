@@ -126,6 +126,12 @@ export function spendCapMessage(usd, cap) {
 }
 export function guard(estimateUsd = 0) {
   budget.guard(estimateUsd);
+  capGuard(estimateUsd);
+}
+// The total cap alone. For spend outside this process's run budget, such as a
+// Strix scan, which in the app runs inside the long-lived server process.
+export function capGuard(estimateUsd = 0) {
+  if (!Number.isFinite(estimateUsd) || estimateUsd < 0) throw new Error(`Invalid call estimate: ${estimateUsd}. ${OUT}`);
   const cap = spendCapUsd();
   const usd = spent();
   if (usd >= cap || usd + estimateUsd > cap) throw new Error(spendCapMessage(usd, cap));
@@ -144,17 +150,18 @@ export function charge(modelId, usage) {
   const inTok = usage?.prompt_tokens ?? usage?.input ?? 0;
   const outTok = usage?.completion_tokens ?? usage?.output ?? 0;
   const usd = costOf(modelId, inTok, outTok);
+  budget.charge(usd);
   record(modelId, usd, inTok, outTok);
   return usd;
 }
-// Spend priced elsewhere, such as an outside engine's own model calls (Strix).
-export function chargeUsd(modelId, usd) {
+// Spend priced elsewhere, such as Strix's own model calls. The ledger only:
+// it is not this process's run spend (see capGuard).
+export function ledgerCharge(modelId, usd) {
   if (!(usd > 0)) return 0;
   record(modelId, usd, 0, 0);
   return usd;
 }
 function record(modelId, usd, inTok, outTok) {
-  budget.charge(usd);
   const file = ledgerPath();
   withLedgerLock(file, () => {
     const l = readLedger();

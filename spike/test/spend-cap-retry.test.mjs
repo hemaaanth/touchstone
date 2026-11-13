@@ -26,7 +26,7 @@ const LEDGER = join(dir, "spend.json");
 process.env.SPEND_LEDGER = LEDGER;
 process.env.RUN_BUDGET_USD = "1000";
 process.env.SPEND_CAP_USD = "50.85";
-const { guard, charge, chargeUsd, spent, spendCapUsd, spendCapMessage, DEFAULT_SPEND_CAP_USD } = await import("../lib/inference.mjs");
+const { guard, charge, ledgerCharge, runSpend, spent, spendCapUsd, spendCapMessage, DEFAULT_SPEND_CAP_USD } = await import("../lib/inference.mjs");
 const { budgetedApi } = await import("../lib/provider.mjs");
 
 const ledger = (totalUsd) => writeFileSync(LEDGER, JSON.stringify({ totalUsd, calls: 0, byModel: {} }));
@@ -239,11 +239,13 @@ test("total cap: with SPEND_CAP_USD unset the config cap or the default applies"
   assert.doesNotThrow(() => guard());
 });
 
-test("total cap: chargeUsd puts outside spend on the ledger once", () => {
+test("total cap: ledgerCharge puts outside spend on the ledger once, not on the run budget", () => {
   ledger(1);
-  assert.equal(chargeUsd("m (strix)", 0.25), 0.25);
-  assert.equal(chargeUsd("m (strix)", 0), 0);
-  assert.equal(chargeUsd("m (strix)", Number.NaN), 0);
+  const before = runSpend().usd;
+  assert.equal(ledgerCharge("m (strix)", 0.25), 0.25);
+  assert.equal(ledgerCharge("m (strix)", 0), 0);
+  assert.equal(ledgerCharge("m (strix)", Number.NaN), 0);
+  assert.equal(runSpend().usd, before);
   const l = JSON.parse(readFileSync(LEDGER, "utf8"));
   assert.ok(Math.abs(l.totalUsd - 1.25) < 1e-9);
   assert.equal(l.calls, 1);

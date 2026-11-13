@@ -46,7 +46,7 @@ export const STRIX_IMAGE = "touchstone/strix:1.7.0";
 // The budget is checked after each model response, so a large prompt can
 // overshoot it. Observed on a long DAST target: 25 turns cost about $4.30. Keep
 // the turn count low; that is the real brake.
-const DEFAULT_BUDGET_USD = Number(process.env.STRIX_BUDGET_USD ?? 0.5);
+export const DEFAULT_BUDGET_USD = Number(process.env.STRIX_BUDGET_USD ?? 0.5);
 const DEFAULT_TURNS = Number(process.env.STRIX_TURNS ?? 15);
 const DEFAULT_TIMEOUT_MS = Number(process.env.STRIX_TIMEOUT_MS ?? 8 * 60_000);
 
