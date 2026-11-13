@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ModuleDots } from "@/components/module-dots";
 import { RunStatusMark } from "@/components/assistant-ui/elements/indicators";
-import type { RunMarkKind } from "@/components/thread-model";
+import { dateGroups, startMs, type RunMarkKind } from "@/components/thread-model";
 import {
   AuiIf,
   ThreadListItemMorePrimitive,
@@ -143,16 +143,6 @@ export const ThreadListItems: FC<
   );
 };
 
-const dateGroupLabel = (
-  time: number | undefined,
-  startOfToday: number,
-  startOfYesterday: number,
-): string => {
-  if (!time || time >= startOfToday) return "Today";
-  if (time >= startOfYesterday) return "Yesterday";
-  return "Earlier";
-};
-
 const startOfLocalDay = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
@@ -211,28 +201,13 @@ const useThreadListGroups = (searchQuery = "") => {
       .map(({ index }) => index);
     if (
       startOfToday === undefined ||
-      !filteredIndices.some((index) => times[index])
+      !filteredIndices.some((index) => startMs(times[index]) !== undefined)
     ) {
       return { threadIds, filteredIndices, groups: null };
     }
 
-    const yesterday = new Date(startOfToday);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const startOfYesterday = yesterday.getTime();
-    const time = (index: number) => times[index] ?? Number.MAX_SAFE_INTEGER;
-    const sorted = [...filteredIndices].sort((a, b) => time(b) - time(a));
-
-    const result: ThreadListGroup[] = [];
-    for (const index of sorted) {
-      const label = dateGroupLabel(times[index], startOfToday, startOfYesterday);
-      const lastGroup = result[result.length - 1];
-      if (lastGroup?.label === label) {
-        lastGroup.indices.push(index);
-      } else {
-        result.push({ label, indices: [index] });
-      }
-    }
-    return { threadIds, filteredIndices, groups: result };
+    const groups: ThreadListGroup[] = dateGroups(times, filteredIndices, startOfToday);
+    return { threadIds, filteredIndices, groups };
   }, [threadIds, threadItems, query, startOfToday]);
 };
 
