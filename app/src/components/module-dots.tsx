@@ -23,6 +23,9 @@ const REST = 5
 const OPEN = 10
 // The box fits three open dots, so the spread stays inside it.
 const WIDTH = DOT + OPEN * (SHOWN - 1)
+// Hover opens the names sooner than the app's other tooltips (300 ms): the dots
+// say little on their own. Focus opens them at once.
+const REVEAL_DELAY = 120
 
 type Side = ComponentProps<typeof TooltipContent>["side"]
 
@@ -59,6 +62,7 @@ export function ModuleDots({
     <Tooltip open={open} onOpenChange={setOpen}>
       <TooltipTrigger
         render={<span />}
+        delay={REVEAL_DELAY}
         data-slot="module-dots"
         data-open={open || undefined}
         tabIndex={0}

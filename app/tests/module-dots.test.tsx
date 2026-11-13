@@ -76,6 +76,9 @@ function tooltipProps(props: Parameters<typeof ModuleDots>[0]) {
 }
 
 describe("ModuleDots reveal", () => {
+  test("hover opens the names in about 120 ms, not the app's 300", () => {
+    expect(tooltipProps({ ids: ["web"] }).trigger?.delay).toBe(120)
+  })
   test("the side is a prop: top by default, the sidebar's right past the rail", () => {
     expect(tooltipProps({ ids: ["web"] }).content?.side).toBe("top")
     const right = tooltipProps({ ids: ["web"], side: "right", sideOffset: 27 }).content
