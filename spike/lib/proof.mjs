@@ -727,10 +727,17 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 //   selfdestruct by a test contract does the same for every target, because the
 //   trace does not name its beneficiary.
 // Returns [{ victim, lostWei, gross }] for every target the old measure saw lose ETH.
-function ethLosses(traces, targets, net, controlTrace) {
+const TEST_PARTY = "the test";
+// The party an address belongs to: the test contract and every non-scope contract
+// it deployed are one party; every other address is its own.
+function partyOf(traces, targets) {
   const { testContract, created } = replayParties(traces);
-  const TEST = "the test";
-  const side = (a) => (a && (a === testContract || (created.has(a) && !targets.has(a))) ? TEST : a);
+  return { testContract, side: (a) => (a && (a === testContract || (created.has(a) && !targets.has(a))) ? TEST_PARTY : a) };
+}
+
+function ethLosses(traces, targets, net, controlTrace) {
+  const TEST = TEST_PARTY;
+  const { side } = partyOf(traces, targets);
   const flows = new Map(); // target -> Map(party -> put in minus took out)
   const bump = (target, party, wei) => {
     const m = flows.get(target) ?? new Map();
@@ -772,6 +779,67 @@ function ethLosses(traces, targets, net, controlTrace) {
   return out.sort((a, b) => (a.lostWei > b.lostWei ? -1 : a.lostWei < b.lostWei ? 1 : 0));
 }
 
+// The token channels, net per counterparty (H1f B). A drain is a real drop of a
+// holder's balance slot; the storage channel does not know where the tokens went.
+// The recipient comes from the token's authenticated Transfer logs (the emitter is
+// the scope token itself, as in tokenDrains), read from setUp() AND the body:
+// - `bodyOut`: the units the body's logs moved out of the holder. The part of the
+//   drop they do not cover has no recipient: it stays counted, as before (the drop
+//   is real; a token that logs nothing keeps the old measure).
+// - The covered part counts only as the per-party excess: what a party took out of
+//   the holder over what it put in, across both traces. The test is one party (see
+//   partyOf), and tokens an exempt funding store put on the holder are the test's own.
+// The result is never more than the drop, so a loss can only shrink.
+function netTokenDrains(drains, traces, targets, funded) {
+  if (!drains.length) return drains;
+  const { testContract, side } = partyOf(traces, targets);
+  const rec = new Map(); // "token:holder" -> { parties: Map(party -> put in minus took out), bodyOut }
+  const get = (k) => { let r = rec.get(k); if (!r) { r = { parties: new Map(), bodyOut: 0n }; rec.set(k, r); } return r; };
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const label = Array.isArray(entry) ? entry[0] : null;
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      if (!ok(i)) return;
+      const t = node?.trace ?? {};
+      const token = (t.kind === "DELEGATECALL" || t.kind === "CALLCODE") ? lc(t.caller) : lc(t.address);
+      if (!token || token === testContract || !targets.has(token)) return;
+      for (const log of node?.logs ?? []) {
+        const raw = log?.raw_log ?? log;
+        const topics = raw?.topics;
+        if (!Array.isArray(topics) || topics.length < 3 || lc(topics[0]) !== TRANSFER_TOPIC) continue;
+        let amount = 0n;
+        try { amount = BigInt(raw.data ?? "0x0"); } catch { amount = 0n; }
+        if (amount <= 0n) continue;
+        const from = topicAddr(topics[1]), to = topicAddr(topics[2]);
+        if (to && targets.has(to)) { const r = get(`${token}:${to}`); r.parties.set(side(from), (r.parties.get(side(from)) ?? 0n) + amount); }
+        if (from && targets.has(from)) {
+          const r = get(`${token}:${from}`);
+          r.parties.set(side(to), (r.parties.get(side(to)) ?? 0n) - amount);
+          if (label === "Execution") r.bodyOut += amount;
+        }
+      }
+    });
+  }
+  const out = drains.map((d) => {
+    const key = `${d.token}:${d.victim}`;
+    const r = rec.get(key);
+    const drop = BigInt(d.lostUnits);
+    if (!r) return d;
+    const unmatched = drop > r.bodyOut ? drop - r.bodyOut : 0n;
+    let excess = 0n;
+    for (const [party, v] of r.parties) {
+      if (v >= 0n || (party === TEST_PARTY && funded.has(key))) continue;
+      excess += -v;
+    }
+    let lost = unmatched + (excess < r.bodyOut ? excess : r.bodyOut);
+    if (lost > drop) lost = drop;
+    return { ...d, lostUnits: lost.toString() };
+  });
+  return out.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : BigInt(a.lostUnits) < BigInt(b.lostUnits) ? 1 : 0));
+}
+
 // The scope targets the test tampered with: address -> "0x… (Name) via vm.how[, vm.how]".
 // One store is exempt: a write of a scope token's balance slot, at a base the
 // compiled layout names, for a holder that is itself a scope target. That is how
@@ -779,13 +847,17 @@ function ethLosses(traces, targets, net, controlTrace) {
 // sets what the victim holds, and the gate measures the loss from that value.
 // A balance written for any other holder (the attacker, the test) is refused:
 // in a share token it would be a forged claim on the victim's assets.
-function tamperedTargets(controlTrace, targets, balances) {
+function tamperedTargets(controlTrace, targets, balances, funded = new Set()) {
   const out = new Map();
   const scope = [...targets.keys()];
+  // `funded` gets "token:holder" for every exempt store: tokens the test put on
+  // that holder (see netTokenDrains).
   const funding = (t) => {
     if (t.how !== "store" || !t.slot) return false;
     const bases = balances?.get(targets.get(lc(t.target)) ?? "") ?? [];
-    return bases.some((base) => scope.some((holder) => mappingSlot(holder, base) === word(t.slot)));
+    const holder = scope.find((h) => bases.some((base) => mappingSlot(h, base) === word(t.slot)));
+    if (holder) funded.add(`${lc(t.target)}:${holder}`);
+    return Boolean(holder);
   };
   for (const t of controlTrace?.tampers ?? []) {
     const hit = t.target === "*" ? scope : [lc(t.target)].filter((a) => targets.has(a));
@@ -819,7 +891,8 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   // mockCalls, mockCallRevert), cannot be the source of proven harm: the loss may be
   // what the cheatcode granted (an allowance, an owner slot, a credit). Kept or not,
   // in setUp() or the body: fail closed, like an etch.
-  const tampered = tamperedTargets(controlTrace, targets, balances);
+  const funded = new Set();
+  const tampered = tamperedTargets(controlTrace, targets, balances, funded);
   for (const a of tampered.keys()) targets.delete(a);
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
   // Not proven. When the test impersonated or tampered with a target, say so first,
@@ -846,13 +919,17 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   // token the layout does not cover (a real external ERC-20, or a balance under
   // a name we don't track). The fallback still requires the balance slot to have
   // moved in that token — a log on its own is not a drain.
+  // Then net each drop per counterparty (H1f B), after the channel is chosen, so
+  // the choice is the same as before and a loss can only shrink.
   const storageDrains = balanceDrains(controlTrace, targets, balances);
-  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances);
+  const netted = netTokenDrains(storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances), traces, targets, funded);
+  const drains = netted.filter((d) => BigInt(d.lostUnits) > 0n);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
+  for (const d of netted) returned.push(`${d.victim} (${targets.get(d.victim)}, token ${d.token})`);
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
-  if (returned.length) return refuse(`ETH left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct counts as the test's own). Taking back a deposit is not a drain: show an address that takes out more than it put in. It took over none of its control slots either`);
+  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: show an address that takes out more than it put in. It took over none of its control slots either`);
   return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }

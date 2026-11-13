@@ -185,6 +185,12 @@ The forge replay proves a funds finding when a scope target loses value in the t
   are one party. ETH the test put on a target with vm.deal, vm.coinbase or a selfdestruct is the
   test's own. So a setUp() deposit and the same address's own withdraw is not a drain. The loss
   is never more than the target's net ETH change in the body.
+- Tokens: the same rule. Each drop of a scope holder's balance slot takes its recipient from the
+  token's own Transfer logs (setUp() and body), and is netted against what that recipient put in.
+  Tokens a funding deal() put on the holder are the test's own. The part of a drop that no
+  Transfer log covers has no recipient, so it stays counted as before. So a token that emits no
+  Transfer event keeps the old measure: there, a deposit and its own withdraw can still read as a
+  drain.
 - Every other address (a pranked EOA, a makeAddr user) is its own party. The replay cannot tell
   the attacker's addresses from honest users: both are pranked addresses.
 

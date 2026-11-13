@@ -541,6 +541,55 @@ for (const [sig, args] of TAMPER_CASES) {
   });
 }
 
+// H1f B: tokens an exempt funding store put on the victim are the test's own. A
+// take by the test side is not a loss; a take by the attacker EOA still is (below).
+test("harm gate: tokens a funding deal() put on the vault, taken back by the test, are not a loss (H1f B)", () => {
+  const traces = tamperDrain(storeData(TOKEN, balSlot(VAULT)));
+  traces[1][1].arena.at(-1).logs = [transferLog(VAULT, TEST, ONE)];
+  const h = judgeTamper(traces);
+  assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, /no address took out more than it had put in/);
+});
+
+// A drop the body's logs do not cover has no recipient: it stays counted. Here the
+// slot drops by 2 ether and the only body log returns 1 ether to ALICE, who put 1
+// in during setUp(): the matched ether nets to 0, the unmatched ether counts.
+test("harm gate: the part of a balance drop no Transfer log covers stays counted (H1f B)", () => {
+  const traces = [setup(createToken(), logged(0, { kind: "CALL", address: TOKEN, caller: TEST }, [transferLog(ALICE, VAULT, ONE)])), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), TWO, "0x0")] }, [transferLog(VAULT, ALICE, ONE)]),
+  ] }]];
+  const h = judgeTamper(traces);
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.lostUnits, "1000000000000000000");
+});
+
+test("harm gate: the netted token loss is never more than the balance drop (H1f B)", () => {
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [transferLog(VAULT, BOB, TWO)]),
+  ] }]];
+  const h = judgeTamper(traces);
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.lostUnits, "1000000000000000000");
+});
+
+test("harm gate: a token deposit log in a reverted frame puts nothing in (H1f B)", () => {
+  const traces = [setup(createToken(),
+    node(0, { kind: "CALL", address: TEST, caller: TEST, success: false }),
+    logged(3, { kind: "CALL", address: TOKEN, caller: TEST }, [transferLog(ALICE, VAULT, ONE)]),
+  ), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [transferLog(VAULT, ALICE, ONE)]),
+  ] }]];
+  const h = judgeTamper(traces);
+  assert.equal(h.ok, true, JSON.stringify(h));
+  assert.equal(h.lostUnits, "1000000000000000000");
+});
+
 // The one exempt store: forge-std deal(token, holder, x) writes the token's
 // balance slot for `holder`. When the holder is a scope target (it funds the
 // victim), the drain stays proven. Every other holder, or a token with no known
@@ -571,7 +620,7 @@ const TWO = "0x1bc16d674ec80000"; // 2 ether
 const pay = (parent, to, value) => node(parent, { kind: "CALL", address: to, caller: VAULT, value });
 const withdrawCall = () => node(0, { kind: "CALL", address: VAULT, caller: TEST, data: "0x3ccfd60b" });
 const vmCall = (sig, args) => node(0, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST, data: id(sig).slice(0, 10) + args });
-const returnedReason = /ETH left scope target 0x[0-9a-f]{40} \(\w+\) in the test body, but no address took out more than it had put in/;
+const returnedReason = /ETH or tokens left scope target 0x[0-9a-f]{40} \(\w+\) in the test body, but no address took out more than it had put in/;
 
 test("harm gate: a setUp() deposit by A and a withdraw paid to B counts: pranked addresses are separate parties (H1f)", () => {
   // The gate cannot tell an attacker address from an honest user. It assumes two
@@ -1300,7 +1349,7 @@ contract StdStoreFixTest is Test {
 // of the vault, and the old body-only net read it as a drain. Now a loss counts
 // only as what an address took out beyond what it put in, across setUp() and the
 // body. Honest shapes only: none of these is an attack.
-const RETURN_REASON = /ETH left scope target 0x[0-9a-f]{40} \(Vault\) in the test body, but no address took out more than it had put in.*Taking back a deposit is not a drain/;
+const RETURN_REASON = /ETH or tokens left scope target 0x[0-9a-f]{40} \(Vault\) in the test body, but no address took out more than it had put in.*Taking back a deposit is not a drain/;
 
 test("forge: a setUp() deposit and the same user's own withdraw in the body is NOT proven (H1f)", { skip, timeout: 300_000 }, async () => {
   const f = await proveScope(makeWs(), { "Vault.sol": LAB_VAULT }, "OwnWithdrawTest", `import "../src/Vault.sol";
@@ -1361,6 +1410,71 @@ contract SplitReentryTest is Test {
   assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
   assert.equal(f.proof.harm.kind, "funds");
   assert.equal(f.proof.harm.lostWei, "10000000000000000000");
+  assert.equal(isProven(f), true);
+});
+
+// ---- H1f (B): the token loss is net per counterparty -----------------------------
+// Each balance-slot drop gets its recipient from the token's own Transfer logs and
+// is netted against what that recipient put in, across setUp() and the body.
+const DEPOSIT_TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  mapping(address => mapping(address => uint256)) public allowance;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function mint(address to, uint256 a) external { balanceOf[to] += a; emit Transfer(address(0), to, a); }
+  function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+  function transfer(address to, uint256 a) public returns (bool) { balanceOf[msg.sender] -= a; balanceOf[to] += a; emit Transfer(msg.sender, to, a); return true; }
+  function transferFrom(address f, address to, uint256 a) public returns (bool) {
+    allowance[f][msg.sender] -= a; balanceOf[f] -= a; balanceOf[to] += a; emit Transfer(f, to, a); return true;
+  }
+}
+contract TokVault {
+  Tok public tok; mapping(address => uint256) public credit;
+  constructor(Tok t) { tok = t; }
+  function deposit(uint256 a) external { tok.transferFrom(msg.sender, address(this), a); credit[msg.sender] += a; }
+  // BUG: checks that the caller has a credit, not that it covers the amount.
+  function withdraw(uint256 a) external { require(credit[msg.sender] > 0, "none"); credit[msg.sender] = 0; tok.transfer(msg.sender, a); }
+}
+`;
+const TOKEN_RETURNED = /ETH or tokens left scope target 0x[0-9a-f]{40} \(TokVault, token 0x[0-9a-f]{40}\) in the test body, but no address took out more than it had put in/;
+const depositTest = (poc, body) => `import "../src/Tokens.sol";
+contract ${poc} is Test {
+  Tok tok; TokVault vault;
+  address alice = makeAddr("alice"); address bob = makeAddr("bob");
+  function put(address who, uint256 a) internal { tok.mint(who, a); vm.startPrank(who); tok.approve(address(vault), a); vault.deposit(a); vm.stopPrank(); }
+  ${body}
+}
+`;
+
+test("forge: a user's own token deposit in setUp() and its own withdraw is NOT proven (H1f B)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Tokens.sol": DEPOSIT_TOKENS }, "OwnTokenTest", depositTest("OwnTokenTest", `
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); put(alice, 100); }
+  function test_x() public { vm.prank(alice); vault.withdraw(100); assertEq(tok.balanceOf(alice), 100); }`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, TOKEN_RETURNED);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: the test contract's own token deposit and withdraw is NOT proven (H1f B)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Tokens.sol": DEPOSIT_TOKENS }, "SelfTokenTest", depositTest("SelfTokenTest", `
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); tok.mint(address(this), 100); tok.approve(address(vault), 100); vault.deposit(100); }
+  function test_x() public { vault.withdraw(100); assertEq(tok.balanceOf(address(this)), 100); }`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, TOKEN_RETURNED);
+  assert.equal(isProven(f), false);
+});
+
+test("forge: a token depositor that takes out more than it put in loses only the excess (H1f B TP)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Tokens.sol": DEPOSIT_TOKENS }, "OverTokenTest", depositTest("OverTokenTest", `
+  function setUp() public { tok = new Tok(); vault = new TokVault(tok); put(alice, 100); put(bob, 100); }
+  function test_x() public { vm.prank(alice); vault.withdraw(200); assertEq(tok.balanceOf(alice), 200); }`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.asset, "token");
+  assert.equal(f.proof.harm.lostUnits, "100");
   assert.equal(isProven(f), true);
 });
 
