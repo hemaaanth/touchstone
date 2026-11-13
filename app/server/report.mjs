@@ -477,3 +477,7 @@ export function renderReportMarkdown(report) {
   out.push("", `---`, `Touchstone report · run ${r.runId || ""} · finding ${r.id || ""} · generated ${new Date(r.meta.generatedAt).toISOString()}`);
   return out.join("\n");
 }
+
+// The replayable export (format=bundle on the report route). The zip builder
+// lives next to this file so the narrative renderers stay as they are.
+export { buildReplayBundle } from "./replay-bundle.mjs"

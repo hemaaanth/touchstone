@@ -7,6 +7,7 @@
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, namesLocalPath } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { buildReplayBundle, loadRecordedReplay } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive, GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, settingsWriteRefusal } from "./settings.mjs"
 
@@ -170,11 +171,13 @@ export async function handleFindings(req, res) {
     return true
   }
 
-  // GET /api/findings/:id/report?format=html|md|json — the shareable report of a
-  // finished run's finding (the finding, its proof, the harm, the fix). json is
-  // the structured report the UI renders; html is one self-contained page to
-  // share; md is for a README or an issue. The report invents nothing: the fix
-  // is shown only when the run stated one (report.mjs).
+  // GET /api/findings/:id/report?format=html|md|json|bundle — the shareable report
+  // of a finished run's finding (the finding, its proof, the harm, the fix).
+  // json is the structured report the UI renders; html is one self-contained
+  // page to share; md is for a README or an issue. bundle is a zip a judge can
+  // unzip and rerun: the proof sources, foundry config, proof JSON, and fork
+  // parameters, with one command in README.md. The report invents nothing: the
+  // fix is shown only when the run stated one (report.mjs).
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
@@ -184,20 +187,28 @@ export async function handleFindings(req, res) {
         send(res, 404, { error: "no such finding" })
         return true
       }
-      const report = buildReport(finding)
       const slug = String(id).replace(/[^\w.-]+/g, "-")
-      if (format === "html") {
+      if (format === "bundle" || format === "zip") {
+        const recorded = loadRecordedReplay(id)
+        const zip = buildReplayBundle({ finding, recorded })
+        res.statusCode = 200
+        res.setHeader("content-type", "application/zip")
+        res.setHeader("content-disposition", `attachment; filename="touchstone-replay-${slug}.zip"`)
+        res.end(zip)
+      } else if (format === "html") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/html; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.html"`)
         res.end(renderReportHtml(report))
       } else if (format === "md" || format === "markdown") {
+        const report = buildReport(finding)
         res.statusCode = 200
         res.setHeader("content-type", "text/markdown; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
         res.end(renderReportMarkdown(report))
       } else {
-        send(res, 200, report)
+        send(res, 200, buildReport(finding))
       }
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })

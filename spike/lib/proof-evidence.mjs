@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { evidenceReplay } from "./replay-bundle.mjs";
 
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -79,7 +80,14 @@ export async function proveFindings(ws, found, events, log = () => {}, { detecto
     let proof;
     try { proof = await confirmEvidence(pinned, finding.evidence, detectors); } catch { proof = failed(); }
     log(`Evidence replay: ${proof.status}`);
-    if (proof.status === "pass") out.push({ ...finding, proof, proven: true });
+    if (proof.status === "pass") {
+      // Keep the pinned bytes with the proof. The workspace, and snapshot.json
+      // in it, is deleted after record. The detector itself is pack code and is
+      // not copied; the bundle says so.
+      let replay = null;
+      try { replay = evidenceReplay(pinned); } catch { replay = null; }
+      out.push({ ...finding, proof: replay ? { ...proof, replay } : proof, proven: true });
+    }
   }
   const rank = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
   return out.sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9));
