@@ -173,7 +173,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.evidence, dnssec, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
+    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.entries, dnssec, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.

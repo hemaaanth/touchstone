@@ -38,23 +38,29 @@ const report = (endpoint, doc) => {
 export function parseTestssl(text, endpoint) {
   const doc = JSON.parse(text);
   if (!Array.isArray(doc?.scanResult) || !doc.scanResult.length) throw new Error('testssl.sh scanned no address for ' + endpoint.origin);
+  // A scan row with no measured address or no grade is not a result.
+  for (const scan of doc.scanResult) {
+    if (!scan?.ip || !scan?.port || !scan?.targetHost) throw new Error('testssl.sh returned no measured address for ' + endpoint.origin);
+    if (!(scan.rating ?? []).some(f => f.id === 'overall_grade')) throw new Error('testssl.sh returned no grade for ' + endpoint.origin);
+  }
   return report(endpoint, doc);
 }
 
 // `run` is the caller's coverage-wrapped runTool. Each endpoint gets one file.
 // A failed endpoint and an unparsable answer both come back as an error.
 export async function captureTls(run, ws, targets, ipOf) {
-  const runs = [], evidence = [], errors = [];
+  const runs = [], entries = [], evidence = [], errors = [];
   for (const [i, endpoint] of targets.entries()) {
     const file = '/work/.live/tls-' + i + '.json';
     const ip = ipOf(endpoint.host);
     const engine = 'testssl:' + endpoint.host + ':' + endpoint.port;
     const result = await run(engine, { image: TESTSSL, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', ...(ip ? ['--ip', ip] : []), endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
-    if (result.code || result.timedOut) { const error = result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code); runs.push({ engine, error }); errors.push(error); continue; }
-    try { const report = parseTestssl(readFileSync(join(ws, '.live', 'tls-' + i + '.json'), 'utf8'), endpoint); runs.push({ engine, report }); evidence.push(report); }
-    catch (error) { runs.push({ engine, error: error.message }); errors.push(error.message); }
+    const gap = error => { runs.push({ engine, error }); entries.push({ url: endpoint.origin, host: endpoint.host, port: Number(endpoint.port), error }); errors.push(error); };
+    if (result.code || result.timedOut) { gap(result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code)); continue; }
+    try { const report = parseTestssl(readFileSync(join(ws, '.live', 'tls-' + i + '.json'), 'utf8'), endpoint); runs.push({ engine, report }); entries.push(report); evidence.push(report); }
+    catch (error) { gap(error.message); }
   }
-  return { runs, evidence, errors };
+  return { runs, entries, evidence, errors };
 }
 
 const checkOf = id => 'tls-' + (id.toLowerCase().replace(/\s*<[^>]*>/g, '').replace(/[^a-z0-9_.-]+/g, '-') || 'finding');
@@ -73,6 +79,9 @@ export function tlsLeads(snapshot) {
   }
   const leads = [];
   for (const endpoint of snapshot.tls) {
+    // An endpoint that was not measured keeps its own gap lead.
+    if (endpoint.error) leads.push({ check: 'tls-evidence-missing', where: endpoint.url, severity: 'informational', description: 'The TLS handshake for ' + endpoint.url + ' was not measured: ' + endpoint.error + '. The other endpoints are unaffected. This does not prove the endpoint is clean.' });
+    if (endpoint.error) continue;
     const seen = new Set();
     for (const scan of endpoint.scans) for (const finding of scan.findings) {
       const check = checkOf(finding.id);

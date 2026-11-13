@@ -30,9 +30,25 @@ test('the lab self-signed answer grades the chain as critical', () => {
   assert.deepEqual(report.scans[0].findings.map(f => f.id).filter(id => id.startsWith('cert_chain')), ['cert_chain_of_trust']);
 });
 
-test('the parser refuses an answer with no scan', () => {
+test('the parser refuses an answer with no measured scan or no grade', () => {
   assert.throws(() => parseTestssl('{"scanResult":[]}', endpoint), /scanned no address/);
+  assert.throws(() => parseTestssl('{"scanResult":[{}]}', endpoint), /no measured address/);
+  const noGrade = JSON.parse(real);
+  delete noGrade.scanResult[0].rating;
+  assert.throws(() => parseTestssl(JSON.stringify(noGrade), endpoint), /no grade/);
   assert.throws(() => parseTestssl('not json', endpoint));
+});
+
+test('a failed endpoint of two keeps its own missing-evidence lead', () => {
+  const good = parseTestssl(real, endpoint);
+  const leads = tlsLeads({ root: 'example.com', tls: [good, { url: 'https://b.example.com', host: 'b.example.com', port: 443, error: 'exit code 124' }] });
+  const gap = leads.filter(l => l.check === 'tls-evidence-missing');
+  assert.deepEqual(gap.map(l => l.where), ['https://b.example.com']);
+  assert.match(gap[0].description, /exit code 124/);
+  assert(leads.some(l => l.where === 'https://example.com'));
+  const both = tlsLeads({ root: 'example.com', tls: [{ url: 'https://a.test', error: 'timed out' }, { url: 'https://b.test', error: 'exit code 1' }] });
+  assert.deepEqual(both.map(l => l.where).sort(), ['https://a.test', 'https://b.test']);
+  assert(both.every(l => l.check === 'tls-evidence-missing'));
 });
 
 test('leads keep one row per check and drop OK and INFO', () => {
@@ -66,6 +82,8 @@ test('a tool error and an unparsable answer are collected per endpoint', async (
   assert.match(result.errors[0], /manifest unknown/);
   const unparsable = await captureTls(async () => ({ code: 0, stderr: '', timedOut: false }), null, [{ ...endpoint }], () => null);
   assert.equal(unparsable.errors.length, 1);
+  assert.equal(unparsable.entries[0].error, unparsable.errors[0]);
+  assert.equal(unparsable.entries[0].url, 'https://example.com');
   assert.equal(typeof empty, 'function');
 });
 
@@ -85,7 +103,7 @@ test('tls checks replay from the pinned snapshot, unknown ones do not', async ()
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test('the pinned image scans example.com through runTool', { timeout: 400000 }, async () => {
+test('the pinned image scans example.com through runTool (TOUCHSTONE_LIVE=1)', { skip: process.env.TOUCHSTONE_LIVE ? false : 'set TOUCHSTONE_LIVE=1 to scan example.com', timeout: 400000 }, async () => {
   const ws = mkdtempSync(join(tmpdir(), 'domain-tls-live-'));
   mkdirSync(join(ws, '.live'));
   const coverage = [];
