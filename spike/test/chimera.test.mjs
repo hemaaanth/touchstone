@@ -20,6 +20,8 @@ const SUITE = "test/recon/CryticTester.sol";
 const IMAGE = "touchstone/chimera:e2.3.3-m1.5.1";
 const has = (img) => { try { execFileSync("docker", ["image", "inspect", img], { stdio: "ignore" }); return true; } catch { return false; } };
 const hasChimera = has(IMAGE);
+// An image that runs but has no echidna or medusa: alpine, or else the Halmos image.
+const NO_ENGINES = ["alpine:latest", "touchstone/halmos:0.3.3"].find(has);
 const hasOthers = has("touchstone/halmos:0.3.3") && has("touchstone/slither:0.11.6") && has("touchstone/aderyn:0.6.8");
 // Real stdout from both engines on lab/vault-shares, captured with this image.
 const fixture = (name) => readFileSync(new URL(`./fixtures/chimera/${name}`, import.meta.url), "utf8");
@@ -99,9 +101,9 @@ test("Chimera reports unavailable with a gap, not clean, when the image is missi
   } finally { delete process.env.CHIMERA_IMAGE; await cleanupWorkspace(ws); }
 });
 
-test("Chimera reports unavailable when the image runs but writes no report", { skip: !has("alpine:latest") && "alpine not local" }, async () => {
-  // alpine has no echidna or medusa: both runs produce nothing.
-  process.env.CHIMERA_IMAGE = "alpine:latest";
+test("Chimera reports unavailable when the image runs but writes no report", { skip: !NO_ENGINES && "no local image without echidna and medusa" }, async () => {
+  // The image has no echidna or medusa: both runs produce nothing.
+  process.env.CHIMERA_IMAGE = NO_ENGINES;
   const ws = makeWorkspace(LAB);
   try {
     const mod = await import("../packs/contracts/chimera.mjs?noreport");

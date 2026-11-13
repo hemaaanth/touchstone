@@ -17,6 +17,8 @@ const LAB = new URL("../../lab/vault-shares", import.meta.url).pathname;
 const SUITE = "test/halmos/ShareVaultSymbolic.t.sol";
 const has = (img) => { try { execFileSync("docker", ["image", "inspect", img], { stdio: "ignore" }); return true; } catch { return false; } };
 const hasHalmos = has("touchstone/halmos:0.3.3");
+// An image that runs but has no halmos binary: alpine, or else the Chimera image.
+const NO_HALMOS = ["alpine:latest", "touchstone/chimera:e2.3.3-m1.5.1"].find(has);
 const hasStatic = has("touchstone/slither:0.11.6") && has("touchstone/aderyn:0.6.8");
 
 // Every file under dir, with size, so a write anywhere shows up.
@@ -107,9 +109,9 @@ test("Halmos reports unavailable with a gap per suite, not clean, when the image
   } finally { delete process.env.HALMOS_IMAGE; await cleanupWorkspace(ws); }
 });
 
-test("Halmos reports unavailable when the image runs but writes no report", { skip: !has("alpine:latest") && "alpine not local" }, async () => {
-  // alpine has no halmos binary: the scan runs and produces no JSON.
-  process.env.HALMOS_IMAGE = "alpine:latest";
+test("Halmos reports unavailable when the image runs but writes no report", { skip: !NO_HALMOS && "no local image without halmos" }, async () => {
+  // The image has no halmos binary: the scan runs and produces no JSON.
+  process.env.HALMOS_IMAGE = NO_HALMOS;
   const ws = makeWorkspace(LAB);
   try {
     const mod = await import("../packs/contracts/halmos.mjs?noreport");
