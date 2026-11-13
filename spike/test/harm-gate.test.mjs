@@ -1732,22 +1732,53 @@ for (const [channel, body, sig] of [
 
 // Known loss, pinned until the cheatcode table decides it. The pinned forge links a
 // scope contract dynamically and rewrites `new X{value: v}()` into the cheatcode
-// deployCode(string,uint256) (selector 0x0af6a701). That overload is in the forge
-// binary but not in forge-std 1.9.4's Vm.sol, so it is not in the table and the
-// backstop refuses it as unknown. Measured: 1 of 18 proven recorded PoCs, 28 of 159
-// PoCs. When the table classifies 0x0af6a701, this test fails: then flip it.
-test("forge: new ScopeContract{value: …}() is refused as the unknown cheatcode 0x0af6a701 (known loss, waits for the table)", { skip, timeout: 300_000 }, async () => {
-  assert.ok(!CHEAT_ROWS.some((r) => r.selector === "0x0af6a701"), "the table does not have deployCode(string,uint256) yet");
-  const f = await proveScope(makeWs(), { "Late.sol": LATE }, "LateTest", `import "../src/Late.sol";
-contract LateTest is Test {
-  Payer p;
-  function setUp() public { vm.deal(address(this), 1 ether); p = new Payer{value: 1 ether}(); }
-  function test_x() public { assertEq(address(p).balance, 1 ether); }
+// H1h: forge rewrites `new X{value: v}()` of a scope contract into the cheatcode
+// deployCode(string,uint256) (0x0af6a701). The forge 1.9.0 spec declares it (and its
+// bytes/salt forms), so the completed table classes it account, trusted: the child
+// CREATE carries the value and has the test as its caller, so ethLosses credits it
+// to the test party. It is no longer refused as unknown. A test-side take of that
+// ETH is not a drain; a pranked attacker's take still is.
+test("forge: new ScopeContract{value: …}() is NOT refused, and a test-side take of that ETH is not proven (H1h deployCode)", { skip, timeout: 300_000 }, async () => {
+  assert.ok(CHEAT_ROWS.some((r) => r.selector === "0x0af6a701"), "the table now classifies deployCode(string,uint256)");
+  const f = await proveScope(makeWs(), { "Pay.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Pay { constructor() payable {} function take(address payable to) external { to.transfer(address(this).balance); } }
+` }, "DeployValTest", `import "../src/Pay.sol";
+contract Sink { receive() external payable {} }
+contract DeployValTest is Test {
+  Pay p; Sink s;
+  function setUp() public { vm.deal(address(this), 1 ether); p = new Pay{value: 1 ether}(); s = new Sink(); }
+  function test_x() public { p.take(payable(address(s))); assertEq(address(s).balance, 1 ether); }
 }
 `);
   assert.equal(f.forgePassed, true);
-  assert.equal(f.proof.harm.ok, false);
-  assert.match(f.proof.harm.reason, /the unknown cheatcode 0x0af6a701 \(in setUp\)/);
+  // Not refused by the backstop: the reason is a harm reason, not an unknown cheatcode.
+  assert.ok(!/unknown cheatcode|no scope target counts/.test(f.proof.harm.reason), f.proof.harm.reason);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
+// The value is credited to the test party, not dropped wholesale: a pranked attacker
+// draining the deployed contract is still proven. This also pins that deployCode with
+// value is trusted (no backstop refusal).
+test("forge: a pranked attacker draining a new X{value: …}() scope contract is proven (H1h deployCode)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Pay.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Pay { constructor() payable {} function take(address payable to) external { to.transfer(address(this).balance); } }
+` }, "DeployAtkTest", `import "../src/Pay.sol";
+contract DeployAtkTest is Test {
+  Pay p;
+  function setUp() public { vm.deal(address(this), 1 ether); p = new Pay{value: 1 ether}(); }
+  function test_x() public { vm.prank(address(0xBEEF)); p.take(payable(address(0xBEEF))); assertEq(address(0xBEEF).balance, 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  // deployCode(string,uint256) in setUp is trusted (not refused); a pranked attacker
+  // (a separate party) draining the contract is still proven.
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.lostWei, "1000000000000000000");
+  assert.equal(isProven(f), true);
 });
 
 // Minor 4 and the guard's depth limit, on real forge (the reviewer's probes 2 and 3;
@@ -1782,6 +1813,15 @@ test("forge: expectRevert directly on new ScopeContract(bad) is refused, and the
   assert.equal(f.forgePassed, true);
   assert.equal(f.proof.harm.ok, false);
   assert.match(f.proof.harm.reason, /vm\.expectRevert \(in body\) on the creation of a contract \(new X\(…\)\)\. Forge makes that creation a cheatcode call \(deployCode\).*external helper call.*try\/catch/);
+});
+
+// G1 review (b): a vm.prank between expectRevert and new X(0) must not hide the
+// creation shape — the reason still names the creation, not the generic one.
+test("forge: a vm.prank between expectRevert and new ScopeContract(bad) still gets the creation reason (H1e minor 4)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Needs.sol": NEEDS }, "NeedsTest", needsTest(`vm.expectRevert(bytes("zero")); vm.prank(address(0xBEEF)); new Needs(0);`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /on the creation of a contract \(new X\(…\)\)\. Forge makes that creation a cheatcode call \(deployCode\)/);
 });
 
 // The common real shape (13 of the 14 recorded proofs that use expectRevert): a real

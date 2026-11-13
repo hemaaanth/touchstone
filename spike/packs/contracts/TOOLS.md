@@ -206,6 +206,10 @@ So these honest shapes still read as a drain: a router or zap that forwards the 
 (the user paid the router, not the vault); and `depositFor(B)` paid by A (B takes out of the vault
 and never paid it). `main` proves these too, at a larger value.
 
+For tokens, a funding `deal()` of a scope token's balance drops the test party's whole take from that
+holder, where the ETH rule credits only the dealt amount; so a test-side take beyond a token `deal()`
+is still not proven (ETH is stricter here, by design).
+
 ## Harm gate: cheatcodes (the backstop)
 
 The gate reads the classified table `spike/lib/vm-cheatcodes.json`: every cheatcode of the pinned
@@ -239,13 +243,19 @@ One guard stays: the call an expectation was armed for must be a reverted frame 
 call is the first later non-VM call at most as deep as the cheatcode call. If that call succeeded, or
 no call followed, every scope target is unusable.
 
-**Known gap (waits for the table).** The pinned forge rewrites `new X{value: v}()` of a scope
-contract into `deployCode(string,uint256)` (`0x0af6a701`). That overload is in the forge binary but
-not in forge-std 1.9.4's Vm.sol, so the backstop refuses it as unknown. Measured: 1 of 18 proven
-PoCs, 28 of 159 PoCs (17 times in setUp(), 8 in a test function). The workaround for a PoC: deploy
-with `new X()` and fund the victim through a pranked user's deposit, then drain it with a pranked
-attacker address. Do NOT fund with `vm.deal`, `deal()` or a constructor value: those count as the
-test's own, so a loss of them is not proven.
+**The table is complete to the forge binary.** The classes come from forge-std 1.9.4's `Vm.sol`; the
+pinned forge binary (1.9.0, commit `6056c584`) is a newer series with more cheatcodes. The gate reads
+the trace of that binary, so the table is completed to the binary's own spec, vendored at the image's
+commit (`spike/vendor/foundry/cheatcodes-1.9.0.json`). A cheatcode the binary has and the table lacks
+is refused as unknown; a forge upgrade that adds one fails `vm-cheatcodes.test.mjs` until someone
+classifies it. Binary-only overloads of a known cheatcode take their sibling's class; a binary-only
+cheatcode with no sibling gets class `state` (refused) and a note "not yet judged".
+
+`new X{value: v}()` of a scope contract is one such overload: forge rewrites it to
+`deployCode(string,uint256)`. The binary declares it (and its bytes and salt forms), so the table
+classes it `account`, trusted — the child CREATE carries the value and has the test as its caller, so
+the value is credited to the test party. After completing the table, the backstop refuses 0 of the
+264 recorded PoC sources (0 of 18 proven), down from 28 of 159 for this overload before.
 
 ## Gaps in our wrapping
 

@@ -159,7 +159,20 @@ test("every lab carries the same pinned Vm.sol", () => {
   for (const lab of LABS) assert.equal(digest(lab), reference, `lab/${lab} carries a different Vm.sol`);
 });
 
-// (a) the table is exactly the vendored file, plus exactly the gate's extras.
+// The forge binary's own cheatcode spec, vendored at the pinned image's commit.
+// The table is the union: every cheatcode of forge-std Vm.sol, plus the forge
+// binary's extras (flagged `extra`). The gate reads the trace of the pinned
+// binary, so the binary's spec is the authority on what may appear; a cheatcode
+// the binary has and the table lacks would pass in silence.
+const FORGE = JSON.parse(readFileSync(join(ROOT, "spike/vendor/foundry/cheatcodes-1.9.0.json"), "utf8"));
+const FORGE_BY_SELECTOR = new Map(
+  FORGE.cheatcodes
+    .filter((c) => c.func?.selector && c.status !== "internal")
+    .map((c) => [c.func.selector.toLowerCase(), c.func.signature]),
+);
+
+// (a) the table is exactly the vendored Vm.sol, plus binary-only extras that the
+// pinned forge binary declares.
 test("the table matches the vendored Vm.sol, function for function", () => {
   const parsed = parseFile(CANONICAL_VM_SOL);
   assert.ok(parsed.length > 400, `parsed only ${parsed.length} functions`);
@@ -175,18 +188,29 @@ test("the table matches the vendored Vm.sol, function for function", () => {
     assert.ok(!entry.extra, `${row.signature} is in Vm.sol but flagged extra`);
   }
 
-  // An entry that Vm.sol lacks must be a selector the gate names, and the flagged
-  // extras must be exactly those: no silent extras, none of the gate's dropped.
-  const gateOnly = GATE.filter((s) => !parsedBySelector.has(s));
-  const extras = TABLE.filter((e) => e.extra).map((e) => e.selector);
-  assert.deepEqual([...extras].sort(), [...gateOnly].sort());
-  for (const entry of TABLE.filter((e) => e.extra)) {
-    assert.equal(entry.mutability, "nonpayable", `${entry.signature}: an extra must be nonpayable`);
-  }
+  // Every non-Vm.sol entry is flagged `extra` and is a cheatcode the pinned forge
+  // binary declares, by selector and canonical signature. No silent extra.
   for (const entry of TABLE) {
-    if (entry.extra) continue;
-    assert.ok(parsedBySelector.has(entry.selector), `extra entry ${entry.signature} that the gate does not name`);
+    if (parsedBySelector.has(entry.selector)) continue;
+    assert.ok(entry.extra, `${entry.signature} is not in Vm.sol but not flagged extra`);
+    const sig = FORGE_BY_SELECTOR.get(entry.selector.toLowerCase());
+    assert.equal(sig, entry.signature, `extra ${entry.signature} (${entry.selector}) is not a forge 1.9.0 cheatcode`);
   }
+
+  // Completeness to the binary: every cheatcode the pinned forge binary has is in
+  // the table. A forge upgrade that adds one fails here until someone classifies it.
+  for (const [selector, signature] of FORGE_BY_SELECTOR) {
+    assert.ok(bySelector.get(selector), `the pinned forge binary has ${signature} (${selector}); the table lacks it`);
+  }
+});
+
+// The vendored forge spec is the file the comment names (digest pinned, like the
+// Public Suffix List). A new image means a new spec: re-vendor and re-classify.
+test("the vendored forge cheatcode spec is the pinned one", () => {
+  const file = join(ROOT, "spike/vendor/foundry/cheatcodes-1.9.0.json");
+  const sha = createHash("sha256").update(readFileSync(file)).digest("hex");
+  const src = readFileSync(join(ROOT, "spike/lib/control-trace.mjs"), "utf8");
+  assert.ok(src.includes(sha), `control-trace.mjs records the sha256 of the vendored forge spec (${sha})`);
 });
 
 // (b) a known class, and a signature that really produces the selector.
