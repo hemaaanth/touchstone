@@ -25,7 +25,7 @@ import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
+import { getTarget, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
@@ -71,7 +71,9 @@ async function openHarness(db, ws, state) {
   // instruction to use them — the run falls back cleanly to the flat source
   // tools. Navigation never produces a finding; proof is unchanged.
   const navy = (pack.id === "contracts" || pack.id === "review") && (await resolveCbmBinary()) !== null;
-  const system = pack.system(ws) + (navy ? NAV_SYSTEM : "");
+  // The scope's notes and the operator's brief close the instructions, so the
+  // root agent and every fleet child start with them (targets.mjs scopeEnv).
+  const system = pack.system(ws) + (navy ? NAV_SYSTEM : "") + scopeInstructions(process.env);
   const registry = createRegistry();
   const fleet = createFleet({ system, costOf });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
@@ -188,7 +190,8 @@ async function chat({ harness, root, reports, state, fleet }) {
   readSteers(root);
   const sub = await root.submit({
     type: "input", requestId: `followup-${Date.now()}`,
-    content: `${text}\n\n(${process.env.WORKSPACE_NOTE || KEPT_NOTE})`,
+    // BRIEF_CHANGE: the scope brief changed since the session started (targets.mjs briefChange).
+    content: `${text}\n\n(${process.env.WORKSPACE_NOTE || KEPT_NOTE})${process.env.BRIEF_CHANGE ? `\n\n${process.env.BRIEF_CHANGE}` : ""}`,
   }, ctx);
   event("operator-message", { text, ...(process.env.FOLLOWUP_ID ? { id: process.env.FOLLOWUP_ID } : {}) });
   let settled = await sub.wait(ctx);
@@ -278,7 +281,7 @@ async function main() {
   const reach = target ? await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" }) : null;
   const ws = target ? await prepareRunWorkspace(target) : makeWorkspace(TARGET);
   const pack = packFor(readTouchstone(ws));
-  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events` };
+  const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events`, ...(target ? scopeEnv(target) : {}) };
   rmSync(env.EVENTS_FILE, { force: true });
   const t0 = Date.now();
 

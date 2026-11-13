@@ -99,7 +99,8 @@ export function makeWorkspace(targetDir) {
 // of the target — a vendored forge-std and a foundry.toml whose libs include
 // vendor/, so a PoC can import both forge-std and the fetched code. src/ is left
 // empty; a brief's "source" is whatever gets fetched under vendor/. The caller
-// writes BRIEF.md and the .touchstone.json config.
+// writes the .touchstone.json config. The scope text reaches the agent in its
+// instructions (targets.mjs scopeEnv), not as a file here.
 export function makeBriefWorkspace() {
   const ws = mkdtempSync(join(tmpdir(), "redteam-run-"));
   mkdirSync(join(ws, "src"), { recursive: true });

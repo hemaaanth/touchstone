@@ -6,7 +6,7 @@
 // `domain` plus a reach block instead. No network, no Docker here.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ process.env.TOUCHSTONE_SCOPES_FILE = join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = join(dir, "grants.json");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
-const { prepareWorkspace, listTargets } = await import("../lib/targets.mjs");
+const { prepareWorkspace, listTargets, scopeEnv } = await import("../lib/targets.mjs");
 const { addLiveScope } = await import("../lib/scopes-store.mjs");
 
 const live = (host, pack) => ({
@@ -33,18 +33,21 @@ test("the web lane stores the base URL and nothing lab-shaped", () => {
   const cfg = cfgOf(ws);
   assert.equal(cfg.kind, "live");
   assert.equal(cfg.baseUrl, "https://app.example.com");
-  assert.match(readFileSync(join(ws, "BRIEF.md"), "utf8"), /https:\/\/app\.example\.com/);
+  // The agent learns the site from its instructions, not from a file.
+  assert.ok(!existsSync(join(ws, "BRIEF.md")));
+  assert.match(scopeEnv(live("app.example.com", "web")).SCOPE_NOTES, /Base URL for every request: https:\/\/app\.example\.com/);
   // bindLive fills these at prepass time; prepare alone must not invent them.
   assert.equal(cfg.live, undefined);
 });
 
-test("an AI/MCP target carries its token into the brief and the config", () => {
+test("an AI/MCP target carries its token into the agent's instructions and the config", () => {
   const target = { ...live("mcp.example.com", "ai-mcp"), mcp: { token: "tok_live_1" } };
   const ws = build(target);
   const cfg = cfgOf(ws);
   assert.equal(cfg.baseUrl, "https://mcp.example.com");
   assert.equal(cfg.mcp.token, "tok_live_1");
-  assert.match(readFileSync(join(ws, "BRIEF.md"), "utf8"), /Bearer token: tok_live_1/);
+  assert.ok(!existsSync(join(ws, "BRIEF.md")));
+  assert.match(scopeEnv(target).SCOPE_NOTES, /Bearer token: tok_live_1/);
 });
 
 test("a domain capture gets the root domain and a governed reach block", () => {

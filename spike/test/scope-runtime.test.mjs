@@ -14,7 +14,7 @@ const cleanup = [dir];
 after(() => { for (const d of cleanup) rmSync(d, { recursive: true, force: true }); });
 
 const { addScope } = await import("../lib/scopes-store.mjs");
-const { prepareWorkspace, targetSummary, pickTarget, listTargets } = await import("../lib/targets.mjs");
+const { prepareWorkspace, targetSummary, pickTarget, listTargets, scopeEnv } = await import("../lib/targets.mjs");
 const { planModules, moduleOn } = await import("../lib/modules.mjs");
 const { readTouchstone } = await import("../lib/sandbox.mjs");
 const { PACKS, packFor } = await import("../packs/index.mjs");
@@ -34,7 +34,8 @@ test("a non-Solidity scope runs under Review: no Foundry, replay off, no way to 
   assert.equal(readFileSync(path.join(ws, "src/api/main.go"), "utf8"), "package main\n");
   assert.ok(existsSync(path.join(ws, "src/web/app.ts")));
   assert.ok(!existsSync(path.join(ws, "foundry.toml")));
-  assert.match(readFileSync(path.join(ws, "BRIEF.md"), "utf8"), /github\.com\/acme\/svc/);
+  assert.ok(!existsSync(path.join(ws, "BRIEF.md")), "the scope text is not a workspace file");
+  assert.match(scopeEnv(s).SCOPE_NOTES, /github\.com\/acme\/svc/);
   const cfg = readTouchstone(ws);
   assert.equal(cfg.pack, "review");
   const pack = packFor(cfg);
@@ -93,8 +94,7 @@ test("Review reads only allowlisted files inside the workspace; symlinks and sec
   symlinkSync(path.join(outside, "host.ts"), path.join(ws, "src/link.ts"));
   assert.deepEqual(review.listFiles(ws), ["src/ok.rs", "vendor/repo/lib.go"]);
   assert.ok(review.resolveReadable(ws, "src/ok.rs"));
-  assert.ok(review.resolveReadable(ws, "BRIEF.md"));
-  for (const p of ["src/link.ts", "src/id_rsa", "src/logo.png", "vendor/repo/.git/config", ".touchstone.json", "../x", path.join(outside, "host.ts"), "src/../../etc/passwd"]) {
+  for (const p of ["BRIEF.md", "src/link.ts", "src/id_rsa", "src/logo.png", "vendor/repo/.git/config", ".touchstone.json", "../x", path.join(outside, "host.ts"), "src/../../etc/passwd"]) {
     assert.equal(review.resolveReadable(ws, p), null, p);
   }
 });

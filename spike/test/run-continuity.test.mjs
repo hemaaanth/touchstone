@@ -365,7 +365,8 @@ test("safety: after a restart the run keeps its workspace and its own scope, eve
   assert.equal(r.events.filter((e) => e.ev === "workspace").length, 1);
   assert.ok(!r.events.some((e) => e.ev === "reply-error"));
   assert.equal(kept(id).target.id, own.id);
-  assert.ok(existsSync(path.join(spawns.at(-1).args[4], "BRIEF.md")), "the new workspace is the same scope's brief");
+  assert.ok(!existsSync(path.join(spawns.at(-1).args[4], "BRIEF.md")), "the scope text is not a workspace file");
+  assert.match(spawns.at(-1).env.SCOPE_NOTES, /Acme lib, soon deleted/, "the new worker gets the same scope");
 });
 
 test("safety: kept workspaces are capped; a run that lost its workspace this way still takes a follow-up", async () => {
@@ -526,10 +527,12 @@ const TOKEN = "synthetic-reader-token-0001";
 const ADMIN = "synthetic-admin-token-0002";
 const GONE = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.";
 const liveScope = () => addLiveScope({ title: "MCP lab", hosts: ["127.0.0.1"], pack: "ai-mcp", permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
-// What the agent can read when a worker starts.
+// What the agent can read when a worker starts. The scope text is in its
+// instructions (SCOPE_NOTES), not in a workspace file.
 const read = (call) => {
   const ws = call.args[4];
-  call.brief = readFileSync(path.join(ws, "BRIEF.md"), "utf8");
+  assert.ok(!existsSync(path.join(ws, "BRIEF.md")));
+  call.brief = call.env.SCOPE_NOTES ?? "";
   call.mcp = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8")).mcp;
   call.note = existsSync(path.join(ws, "notes.md")) ? readFileSync(path.join(ws, "notes.md"), "utf8") : null;
 };
@@ -649,7 +652,7 @@ async function stoppedMidTurn(server) {
   const run = await liveEnded(server);
   scripts.push({ hang: true });
   server.steerRun(run.id, "Go on.");
-  assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]).sort(), [".touchstone.json", "BRIEF.md", "notes.md"], "the turn has the credential");
+  assert.deepEqual(holding(run.ws, [TOKEN, ADMIN]).sort(), [".touchstone.json", "notes.md"], "the turn has the credential");
   assert.equal(kept(run.id).restored, true, "and the record says so");
   return { ...run, lock: lockOf(run.id) };
 }
@@ -695,7 +698,7 @@ test("safety: a follow-up that finds a restored credential does not hand it on: 
     const b = await stoppedMidTurn(server);
     // The old server still runs at the boot, so the boot leaves both runs alone.
     server = await restart();
-    assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+    assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2); // .touchstone.json and notes.md; no BRIEF.md any more
     removeScope(a.live.id);
     assert.throws(() => server.steerRun(a.id, "Go on."), /Another server is already answering this run/);
     assert.ok(existsSync(a.ws), "a run that another server answers keeps its workspace");

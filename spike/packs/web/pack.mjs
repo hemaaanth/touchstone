@@ -723,7 +723,8 @@ expects. The two well-known test key pairs are available when the site accepts t
 signPersonal(key, message) and buildSiwe(fields) are injected. If the site needs an
 account you have no key for, say so; never invent one.
 
-BRIEF.md names the site and its base URL. Read it first. The prepass scanners (zap,
+The scope section at the end of these instructions names the site and its base URL,
+and holds the operator's brief when there is one. Read it first. The prepass scanners (zap,
 nuclei, dalfox) ran against the real host; their leads are in your first message and in
 web_leads. Leads are hints. They cannot sign in, so they miss session and authorization
 bugs.
