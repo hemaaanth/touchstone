@@ -954,9 +954,15 @@ function harmNoun(harm) {
   if (harm.kind === "control") return "a control takeover";
   return `the recorded harm`;
 }
-// The run's own date (UTC), from the normalized finding or the record, or null.
-function provenDate({ finding, recorded } = {}) {
-  const at = [finding?.at, finding?.ms, recorded?.at, recorded?.ms].find((v) => Number.isFinite(v) && v > 0);
+// A real wall-clock date for the proof (UTC YYYY-MM-DD), or null. Only a true
+// time counts: the proof's own time if a record ever holds one, else the run's
+// start time (findings.mjs getFinding sends it as `at`). The run's `ms` is a
+// DURATION in milliseconds, never a date, so it is never read here. A time
+// before 2020 or in the future is not a believable record date and is dropped.
+const MIN_PROVEN_MS = Date.UTC(2020, 0, 1);
+export function provenDate({ finding, recorded } = {}) {
+  const proof = recorded?.proof || finding?.proof || null;
+  const at = [proof?.at, recorded?.at, finding?.at].find((v) => Number.isFinite(v) && v >= MIN_PROVEN_MS && v <= Date.now());
   if (!at) return null;
   try { return new Date(at).toISOString().slice(0, 10); } catch { return null; }
 }
