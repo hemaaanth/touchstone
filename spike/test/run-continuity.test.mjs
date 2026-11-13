@@ -19,6 +19,7 @@ import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as realFs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -63,6 +64,18 @@ function spawn(cmd, args, opts = {}) {
   return child;
 }
 mock.module("node:child_process", { exports: { ...realChild, default: { ...realChild, spawn }, spawn } });
+// rmSync with one extra: a test can act at the moment a delete fails part way, as
+// a process that still runs in the workspace could.
+let onRmFail = null;
+const rmSyncHooked = (target, opts) => {
+  try {
+    return realFs.rmSync(target, opts);
+  } catch (err) {
+    onRmFail?.(target);
+    throw err;
+  }
+};
+mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmSync: rmSyncHooked }, rmSync: rmSyncHooked } });
 // A live run opens a Docker boundary. These tests have no live target, so a live
 // scope gets an inert gate. Every other scope keeps the real one.
 const realReach = await import("../lib/reach.mjs");
@@ -759,6 +772,92 @@ test("safety: a credential that cannot be put back gives one reply error and no 
     assert.equal(kept(id).restored, true, "the record was marked before the first file was written");
     assert.ok(!existsSync(ws), "the scrub failed too, so the workspace is deleted");
   });
+});
+
+test("safety: a scope store that cannot be read is not a scope that is gone: the boot leaves a marked workspace alone, and a follow-up is refused and changes nothing", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    const a = await stoppedMidTurn(server); // marked: the token is in its files
+    const c = await liveEnded(server); // kept and clean
+    a.lock.close();
+    const store = process.env.TOUCHSTONE_SCOPES_FILE;
+    const good = readFileSync(store);
+    writeFileSync(store, "{ this is not a list");
+    try {
+      server = await restart();
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3, "the boot leaves the workspace alone");
+      assert.equal(kept(a.id).restored, true, "and the mark stays for the next boot");
+      const before = spawns.length;
+      const refused = (run) => {
+        const rec = readFileSync(record(run.id), "utf8");
+        const events = server.getRun(run.id).events.length;
+        assert.throws(() => server.steerRun(run.id, "Go on."), { message: "The scope library cannot be read, so this follow-up did not start. Repair the scope store file, then send the message again." });
+        assert.equal(readFileSync(record(run.id), "utf8"), rec, "the record is not changed");
+        assert.equal(server.getRun(run.id).events.length, events, "the chat gets no event");
+      };
+      refused(a);
+      refused(c);
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 3);
+      assert.ok(existsSync(path.join(c.ws, "notes.md")), "no workspace is deleted");
+      rmSync(c.ws, { recursive: true, force: true });
+      refused(c); // also when the record names a path that fails the check
+      assert.equal(spawns.length, before, "no worker started");
+    } finally {
+      writeFileSync(store, good);
+    }
+    // The store is repaired: the next boot scrubs, and a follow-up has the token again.
+    server = await restart();
+    assert.deepEqual(holding(a.ws, [TOKEN, ADMIN]), []);
+    assert.equal(kept(a.id).restored, undefined);
+    scripts.push({ act: read, events: [done] });
+    server.steerRun(a.id, "Go on.");
+    await settle(a.id, closes(a.id, server), server);
+    assert.ok(spawns.at(-1).brief.includes(TOKEN));
+  });
+});
+
+test("safety: the boot clean-up does not touch a workspace that is not the run's own, with the scope present or gone", async () => {
+  await withLivePack(async () => {
+    let server = await restart();
+    const a = await stoppedMidTurn(server); // its scope stays
+    const g = await stoppedMidTurn(server); // its scope goes
+    const b = await liveEnded(server);
+    const canary = path.join(b.ws, "canary.txt");
+    writeFileSync(canary, `run B's own file: ${TOKEN}`); // a scrub would change it
+    point(a.id, b.ws);
+    point(g.id, b.ws);
+    assert.equal(kept(a.id).restored, true);
+    removeScope(g.live.id);
+    a.lock.close();
+    g.lock.close();
+    server = await restart();
+    assert.equal(readFileSync(canary, "utf8"), `run B's own file: ${TOKEN}`, "not scrubbed");
+    assert.ok(existsSync(path.join(b.ws, "notes.md")), "not deleted");
+    for (const run of [a, g]) assert.deepEqual([kept(run.id).ws, kept(run.id).restored], [undefined, undefined], "the path leaves the record");
+  });
+});
+
+test("safety: the mark put back after a failed delete does not write through a link", async () => {
+  const a = await finished();
+  const ws = a.call.args[4];
+  const locked = path.join(ws, "locked");
+  mkdirSync(locked);
+  writeFileSync(path.join(locked, "file"), "x");
+  chmodSync(locked, 0o500); // the delete fails part way
+  const victim = path.join(dir, "victim.txt");
+  writeFileSync(victim, "untouched");
+  // At that moment a link stands where the mark was.
+  onRmFail = (folder) => {
+    rmSync(path.join(folder, ".touchstone-run"), { force: true });
+    symlinkSync(victim, path.join(folder, ".touchstone-run"));
+  };
+  try {
+    assert.throws(() => deleteRun(a.id));
+    assert.equal(readFileSync(victim, "utf8"), "untouched");
+  } finally {
+    onRmFail = null;
+    chmodSync(locked, 0o700);
+  }
 });
 
 test("safety: a workspace whose record says it holds a credential that nobody knows is not kept", async () => {
