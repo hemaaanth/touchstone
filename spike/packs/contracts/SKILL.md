@@ -4,7 +4,7 @@ description: Audit Solidity contracts and prove each bug with an offline Foundry
 tier: P
 proof: forge
 tools: [list_sources, read_source, static_findings, fuzz_findings, fetch_source, run_poc, submit_finding]
-labs: [lab/vault-reentrancy, lab/vault-accounting, lab/vault-multi]
+labs: [lab/vault-reentrancy, lab/vault-accounting, lab/vault-multi, lab/vault-bytecode]
 ---
 
 # Contracts
