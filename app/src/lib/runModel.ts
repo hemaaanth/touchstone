@@ -120,6 +120,12 @@ export interface RunFailure {
   reason?: string
 }
 
+// The step label of one read_source call.
+function readLabel(file: string, scope: TargetScope | null): string {
+  if (file.replace(/^\.\//, "") !== "BRIEF.md") return `Read ${file || "a source file"}`
+  return scope && ["brief", "scope", "live"].includes(scope.kind) ? "Read the scope brief" : "Looked for a BRIEF.md file"
+}
+
 export interface RunState {
   events: RunEvent[]
   steps: Step[]
@@ -127,6 +133,9 @@ export interface RunState {
   // until it arrives (or on an old run that predates the event). The header
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
+  // The operator's scope brief the agent got, from the last `brief` event.
+  // Null when the run had none or it was removed in a later follow-up.
+  brief: string | null
   status: RunStatus
   // The worst finding submitted so far (null until the first one).
   pending: PendingApproval | null
@@ -213,6 +222,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
+  let brief: string | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
@@ -285,6 +295,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "brief":
+        // The scope brief went into the agent's instructions. Run Info shows it;
+        // it is not a step. "" means a follow-up removed it.
+        brief = str(e.text) || null
+        break
       case "provider":
         // The provider and model the run started with. No step.
         if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
@@ -333,7 +348,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "list", phase, label: "Listed the contract sources" })
         break
       case "read_source":
-        steps.push({ key, kind: "read", phase, label: `Read ${str(e.file) || "a source file"}` })
+        // Older runs of a scope got its text as a BRIEF.md file that Touchstone
+        // wrote; it was never a file of the repo. A lab never had one (the two
+        // labs that ship a BRIEF.md hand it over in the first message), so there
+        // the agent only looked for it.
+        steps.push({ key, kind: "read", phase, label: readLabel(str(e.file), scope) })
         break
       case "run_poc":
         steps.push({
@@ -845,6 +864,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     events,
     steps,
     scope,
+    brief,
     status,
     pending,
     submitted,

@@ -128,6 +128,12 @@ export function attachScope(body: {
   return postJson<TargetChoice>("/api/scopes", body)
 }
 
+// Set or clear a scope's brief (at most 8,000 characters; the server refuses more
+// with a sentence). Every run of the scope gets it in the agent's instructions.
+export function saveScopeBrief(id: string, brief: string): Promise<{ id: string; brief: string }> {
+  return postJson<{ id: string; brief: string }>(`/api/scopes/${encodeURIComponent(id)}/brief`, { brief })
+}
+
 export async function removeScope(id: string): Promise<void> {
   await deleteJson(`/api/scopes/${encodeURIComponent(id)}`)
 }
