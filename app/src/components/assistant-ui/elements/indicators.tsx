@@ -2,18 +2,21 @@
 
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
+  CheckIcon,
   ClockIcon,
   Loader2Icon,
+  MinusIcon,
+  PauseIcon,
   ShieldCheckIcon,
   ShieldIcon,
   ShieldMinusIcon,
   ShieldXIcon,
+  XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { INK, severityTone } from "@/lib/format";
 import type { Severity } from "@/lib/types";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { DotMatrix, type DotMatrixState } from "@/components/ui/dot-matrix";
 import type { RunMarkKind } from "@/components/thread-model";
 
 // Small marks that replace a second status word. Each one is an icon with a
@@ -176,24 +179,23 @@ export function ProofMark({
   );
 }
 
-// The run's status as one mark, the assistant-ui dot-matrix element, in one
-// box of one size for every state: the title beside it never moves when a
-// run starts, finishes or fails. A live state moves (the dots sweep); a
-// settled state is a still glyph; reduced motion stills them all. Colour
-// follows docs/restraint.md: working is neutral, green only for a proven
-// finding, red only for a failure.
-const RUN_MARK: Record<RunMarkKind, { state: DotMatrixState; ink: string }> = {
-  starting: { state: "connecting", ink: "text-muted-foreground" },
-  working: { state: "thinking", ink: "text-muted-foreground" },
-  replaying: { state: "loading", ink: "text-muted-foreground" },
-  paused: { state: "paused", ink: "text-muted-foreground" },
-  proven: { state: "success", ink: "text-ok" },
-  done: { state: "idle", ink: "text-muted-foreground" },
-  failed: { state: "error", ink: "text-bad" },
+// The run's status as one mark, in one 14 px box for every state: the title
+// beside it never moves when a run starts, finishes or fails. The shapes are the
+// state indicator of the assistant-ui agent-status element (elements-agent-status
+// in https://r.assistant-ui.com): a soft pulsing dot while it works, a ring while
+// it waits, a check when done, a cross when it fails. Touchstone adds a pause and
+// a dash. Colour follows docs/restraint.md: working is neutral, green only for a
+// proven finding, an error is the warning tone and never red. Reduced motion
+// stills the dot; no other state is a solid dot, so it still reads.
+const RUN_MARK: Record<RunMarkKind, ReactNode> = {
+  starting: <span className="border-muted-foreground size-1.5 rounded-full border" />,
+  working: <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full motion-reduce:animate-none" />,
+  replaying: <span className="bg-muted-foreground size-1.5 animate-pulse rounded-full motion-reduce:animate-none" />,
+  paused: <PauseIcon className="text-muted-foreground size-2.5 fill-current" strokeWidth={1.5} />,
+  proven: <CheckIcon className="text-ok size-3" strokeWidth={2.5} />,
+  done: <MinusIcon className="text-muted-foreground size-3" strokeWidth={2.5} />,
+  failed: <XIcon className="text-warn size-3" strokeWidth={2.5} />,
 };
-
-// The box every state shares.
-const RUN_MARK_BOX = "size-3.5";
 
 export function RunStatusMark({
   kind,
@@ -208,16 +210,16 @@ export function RunStatusMark({
   /** Hide it when the row already says the status in its own text. */
   "aria-hidden"?: boolean;
 }) {
-  const mark = RUN_MARK[kind];
   return (
-    <DotMatrix
-      state={mark.state}
-      label={label}
-      role="img"
+    <span
+      data-slot="run-status-mark"
+      data-mark={kind}
+      role={hidden ? undefined : "img"}
       aria-label={hidden ? undefined : label}
       aria-hidden={hidden || undefined}
-      data-mark={kind}
-      className={cn(RUN_MARK_BOX, mark.ink, className)}
-    />
+      className={cn("inline-flex size-3.5 shrink-0 items-center justify-center", className)}
+    >
+      {RUN_MARK[kind]}
+    </span>
   );
 }

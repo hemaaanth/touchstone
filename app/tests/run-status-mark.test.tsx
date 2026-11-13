@@ -7,24 +7,37 @@ import { headMarkKind, runMarkKind, type RunMarkKind } from "../src/components/t
 const KINDS: RunMarkKind[] = ["starting", "working", "replaying", "paused", "proven", "done", "failed"]
 const html = (kind: RunMarkKind) => renderToStaticMarkup(<RunStatusMark kind={kind} label="x" />)
 // The size class of the mark's outer box.
-const box = (h: string) => /<span[^>]*data-slot="dot-matrix"[^>]*class="([^"]*)"|<span[^>]*class="([^"]*)"[^>]*data-slot="dot-matrix"/.exec(h)?.slice(1).find(Boolean)?.split(" ").filter((c) => /^size-/.test(c))
+const box = (h: string) => /^<span[^>]*class="([^"]*)"/.exec(h)?.[1]?.split(" ").filter((c) => /^size-/.test(c))
 
 describe("RunStatusMark", () => {
   test("every state renders the same box", () => {
-    const boxes = KINDS.map((k) => box(html(k)))
-    for (const b of boxes) expect(b).toEqual(["size-3.5"])
+    for (const k of KINDS) {
+      expect(html(k)).toContain('data-slot="run-status-mark"')
+      expect(box(html(k))).toEqual(["size-3.5"])
+    }
   })
 
-  test("each state is the dot-matrix element, with restraint's colours", () => {
-    expect(html("working")).toContain('data-state="thinking"')
-    expect(html("proven")).toContain("text-ok")
-    expect(html("failed")).toContain("text-bad")
-    // Working, starting and replaying are neutral: no red or green.
-    for (const k of ["working", "starting", "replaying", "paused", "done"] as RunMarkKind[]) {
-      expect(html(k)).not.toMatch(/text-(ok|bad)\b/)
+  test("each state has its own simple shape, in restraint's colours", () => {
+    // Working moves, quietly; reduced motion stills it.
+    expect(html("working")).toContain("animate-pulse")
+    expect(html("working")).toContain("motion-reduce:animate-none")
+    // Settled states hold still.
+    for (const k of ["starting", "paused", "proven", "done", "failed"] as RunMarkKind[]) {
+      expect(html(k)).not.toContain("animate-")
     }
-    // Under reduced motion the dots hold still.
-    expect(html("working")).toContain("motion-reduce:[animation-name:none]")
+    // Green only for proven. An error is the warning tone, never red.
+    expect(html("proven")).toContain("text-ok")
+    expect(html("failed")).toContain("text-warn")
+    for (const k of KINDS) expect(html(k)).not.toMatch(/(text|bg|border)-(bad|destructive|red-)/)
+    for (const k of KINDS.filter((k) => k !== "proven")) expect(html(k)).not.toContain("text-ok")
+    // Shapes a reader can tell apart: the working dot is the only solid dot.
+    const shapes = new Set(["starting", "working", "paused", "proven", "done", "failed"].map((k) => html(k as RunMarkKind).replace(/ animate-pulse| motion-reduce:animate-none|data-mark="[a-z]+"/g, "")))
+    expect(shapes.size).toBe(6)
+  })
+
+  test("it names the state for a screen reader, unless hidden", () => {
+    expect(html("proven")).toContain('aria-label="x"')
+    expect(renderToStaticMarkup(<RunStatusMark aria-hidden kind="proven" label="x" />)).not.toContain("aria-label")
   })
 
   test("a run's status maps to one mark", () => {
