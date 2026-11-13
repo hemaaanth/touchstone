@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Check, Cloud, Container, Info, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
+import { Check, Cloud, Container, Info, KeyRound, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
-import { deleteProvider, discoverModels, fetchSettings, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
+import { deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Label, ListCard, ListLoading, ListPage, ListRow, ListSection, RowMenu, RowMenuItem, RowMenuSeparator, TruncatedText } from "@/components/page-parts"
 
-// Settings: three short lists. Providers, Run budget, Execution. A row never
+// Settings: four short lists. Providers, Run budget, Execution, Console. A row never
 // expands in place: a provider and Daytona open in a sheet, a new provider in
 // a dialog. Keys go up once and never come back; the server returns only a
 // masked state.
@@ -159,6 +159,8 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
           onOpenDaytona={(use) => setDaytona({ open: true, use })}
         />
       ) : null}
+
+      <ConsoleSection />
 
       <Sheet open={editing?.open === true && !!shown} onOpenChange={(open) => setEditing((d) => (d ? { ...d, open } : d))}>
         <SheetContent ref={sheet} initialFocus={sheet} className="gap-0 outline-none data-[side=right]:w-full data-[side=right]:sm:max-w-md">
@@ -733,6 +735,71 @@ function RemoveProviderDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ---- Console: rotate the console token. The token itself is never shown.
+
+function ConsoleSection() {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [rotated, setRotated] = useState(false)
+  const rotate = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await rotateConsoleToken()
+      setRotated(true)
+      setOpen(false)
+    } catch (e) {
+      setError(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <ListSection title="Console">
+      <ListCard aria-label="Console">
+        <ListRow
+          icon={<KeyRound />}
+          title="Console token"
+          meta={[rotated ? "Rotated. Other open console tabs need a reload." : "Every change from the console carries it"]}
+          trailing={
+            <Button variant="outline" size="sm" onClick={() => { setError(null); setOpen(true) }}>
+              Rotate
+            </Button>
+          }
+        />
+      </ListCard>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (busy) return
+          if (next) setError(null)
+          setOpen(next)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="pr-6">Rotate the console token?</DialogTitle>
+            <DialogDescription>The old token stops working at once. This page keeps working; other open console tabs need a reload.</DialogDescription>
+          </DialogHeader>
+          {error ? (
+            <p role="alert" className="text-xs text-bad">
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
+            <Button variant="destructive" disabled={busy} onClick={rotate}>
+              {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}
+              Rotate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </ListSection>
   )
 }
 

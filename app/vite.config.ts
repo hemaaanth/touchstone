@@ -7,7 +7,7 @@ import { handleApi } from './server/api.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
 import { handleRuns, handleModels, handleFindings, handleScopes, handleSettings, handleGrants } from './server/runs-http.mjs'
 // @ts-expect-error — plain .mjs module, no types needed
-import { SETTINGS_TOKEN, consoleWriteRefusal, foreignOrigin } from './server/settings.mjs'
+import { consoleToken, consoleWriteRefusal, foreignOrigin, handleConsoleToken } from './server/settings.mjs'
 
 // The whole backend, in-process inside Vite's dev server. The Vite dev server
 // is a real long-lived Node process, so it can spawn the agent engine, hold an
@@ -25,7 +25,9 @@ function touchstoneApi(): Plugin {
     // it. Only the dev server does this (ctx.server): a build output never
     // holds the token. A page on another origin cannot read this page: CORS is
     // off (server.cors below) and the middleware refuses a foreign Origin.
-    transformIndexHtml: (_html, ctx) => (ctx.server ? [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: SETTINGS_TOKEN }, injectTo: 'head' }] : []),
+    // The token is read when the page is served, so a page loaded after a rotate
+    // gets the new one.
+    transformIndexHtml: (_html, ctx) => (ctx.server ? [{ tag: 'meta', attrs: { name: 'touchstone-console-token', content: consoleToken() }, injectTo: 'head' }] : []),
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const refuse = (status: number, error: string) => {
@@ -44,6 +46,7 @@ function touchstoneApi(): Plugin {
         Promise.resolve()
           .then(async () => {
             if (handleModels(req, res)) return
+            if (handleConsoleToken(req, res)) return
             if (await handleRuns(req, res)) return
             if (await handleScopes(req, res)) return
             if (await handleGrants(req, res)) return

@@ -22,8 +22,9 @@ import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
 import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
-import crypto from "node:crypto"
-import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
+import { consoleToken, rotateConsoleToken, sameToken } from "../../spike/lib/grant-store.mjs"
+// The page gets the token from here (vite.config.ts), read at serve time.
+export { consoleToken }
 
 // The console guard. Every state-changing request under /api/ passes it before
 // its handler runs: a run create, steer, stop, archive, rename or delete, a
@@ -36,11 +37,12 @@ import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 //   - A request with a body (not DELETE) must say content-type
 //     application/json. A cross-site form cannot send that content type.
 //   - The request must carry the console token in x-touchstone-grant-token.
-// The token is grant-store.GRANT_TOKEN, one token for every console write. The
+// The token is grant-store's consoleToken(), one token for every console write,
+// read from its file on each check, so a rotate takes effect at once. The
 // operator never types it. The dev server writes it into the page it serves
 // (vite.config.ts), and the page sends it back on each write. The token is
-// never written to a log or to a response.
-export const SETTINGS_TOKEN = GRANT_TOKEN
+// never written to a log. The only response that holds it is the rotate answer,
+// to the page that rotated it (handleConsoleToken).
 
 // GET and HEAD only read. Every other method is a write and is guarded.
 const READ_METHODS = new Set(["GET", "HEAD"])
@@ -61,14 +63,14 @@ export function foreignOrigin(req) {
   return h.origin !== undefined && (!h.host || originHost(h) !== h.host)
 }
 
-// Does the request carry the console token? A wrong type or a wrong length is
-// refused first. The compare itself takes the same time for every wrong token.
+// Does the request carry the current console token? A wrong type or a wrong
+// length is refused first. The compare takes the same time for every wrong token.
 function tokenMatches(given) {
-  if (typeof given !== "string") return false
-  const a = Buffer.from(given)
-  const b = Buffer.from(SETTINGS_TOKEN)
-  return a.length === b.length && crypto.timingSafeEqual(a, b)
+  return sameToken(given, consoleToken())
 }
+
+// The refusal a page with an old token gets. The console shows it as it is.
+export const STALE_PAGE = "This page is out of date. Reload the page and try again."
 
 // Why this write is refused, as { status, error }, or null when it may go on.
 // A read (GET, HEAD) is never refused here.
@@ -83,9 +85,38 @@ export function consoleWriteRefusal(req) {
     return { status: 415, error: "The console sends each change as JSON. Reload the page and try again." }
   }
   if (!tokenMatches(h["x-touchstone-grant-token"])) {
-    return { status: 403, error: "This page is out of date. Reload the page and try again." }
+    return { status: 403, error: STALE_PAGE }
   }
   return null
+}
+
+// Rotate the console token: POST /api/console-token/rotate. The console guard has
+// already checked Origin, content type and the token (vite.config.ts); it runs
+// here again, so the route is safe on its own. The swap itself checks the token
+// once more, so of two rotates at once the second gets the same 403 as a stale
+// page. The answer gives the new token to the page that asked, and only to it
+// (no-store); every other open page holds the old token and gets 403 on its
+// next write. Returns true when it answered.
+export function handleConsoleToken(req, res) {
+  const path = new URL(req.url ?? "/", "http://localhost").pathname
+  if (path !== "/api/console-token/rotate") return false
+  const send = (status, json) => {
+    res.statusCode = status
+    res.setHeader("content-type", "application/json")
+    res.setHeader("cache-control", "no-store")
+    res.end(JSON.stringify(json))
+  }
+  if (req.method !== "POST") return send(405, { error: "Rotate the console token with POST." }), true
+  const refusal = consoleWriteRefusal(req)
+  if (refusal) return send(refusal.status, { error: refusal.error }), true
+  let token
+  try {
+    token = rotateConsoleToken(req.headers?.["x-touchstone-grant-token"])
+  } catch (err) {
+    return send(500, { error: String(err?.message ?? err) }), true
+  }
+  if (!token) return send(403, { error: STALE_PAGE }), true
+  return send(200, { token }), true
 }
 
 // The older names of the guard. Settings code and tests still use them.
