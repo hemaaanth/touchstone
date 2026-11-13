@@ -280,6 +280,25 @@ test("harm gate: an authenticated token drain (log and balance slot) is funds ha
   assert.equal(h.lostUnits, "1000000000000000000");
 });
 
+test("harm gate: a Transfer log cannot inflate the loss past the balance-slot write (Minor)", () => {
+  // The log claims 5e18 left the vault, but the token's balance slot only fell
+  // by 1e18 in the body. The storage write is the ground truth, so the reported
+  // loss is the smaller of the two. A mutant that reports the logged amount
+  // would say 5e18 here.
+  const FIVE = "0x4563918244f40000"; // 5 ether
+  const log = transferLog(VAULT, ATTACKER, FIVE);
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, true);
+  assert.equal(h.asset, "token");
+  assert.equal(h.victim, VAULT);
+  assert.equal(h.lostUnits, "1000000000000000000");
+});
+
 test("harm gate: a setUp-funded vault drained in the test body is still a token drain", () => {
   // The mint happened in setUp, so it is not an execution write. The body's
   // SSTORE still carries the funded balance as its old value (100 -> 0). No
