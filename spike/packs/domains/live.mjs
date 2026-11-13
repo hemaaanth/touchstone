@@ -12,6 +12,7 @@ import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { IMAGE, ensureImage } from './checks.mjs';
 import { checkEmail, emailLeads } from './email.mjs';
 import { captureTls, testsslTargets, tlsLeads } from './tls.mjs';
+import { captureDnssec, dnssecLeads } from './dnssec.mjs';
 import { assertInternal } from './labctl.mjs';
 
 const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec';
@@ -111,6 +112,13 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
     const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
     if (email) emailCoverage.leads = emailLeads({ root: domain, email }).length;
     else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
+    // The DNSSEC chain is probed through the granted resolver. A failed chain
+    // read is a coverage gap, not an unsigned zone.
+    const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);
+    const dnssec = dnssecCheck.evidence;
+    const dnssecCoverage = coverage.find(c => c.engine === 'dnsviz-probe');
+    if (dnssec) dnssecCoverage.leads = dnssecLeads({ root: domain, dnssec }).length;
+    else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
     const wild = 'touchstone-nx-' + Math.random().toString(36).slice(2, 10) + '.' + domain;
     const candidates = [...new Set([domain, ...wordlist.map(w => w + '.' + domain), ...found, wild])];
     put('hosts.txt', candidates);
@@ -163,7 +171,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.evidence, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
+    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.evidence, dnssec, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.

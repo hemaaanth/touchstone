@@ -7,6 +7,7 @@ import { runTool } from '../../lib/wrap.mjs';
 import { sha256, loadSnapshot } from '../../lib/proof-evidence.mjs';
 import { emailLeads } from './email.mjs';
 import { tlsLeads } from './tls.mjs';
+import { dnssecLeads } from './dnssec.mjs';
 
 export const IMAGE = 'touchstone-domains-tools:wave2';
 // Build the tools image from this folder when it is missing. This builds our own image. It runs no third-party code.
@@ -128,7 +129,8 @@ export function domainLeads(snapshot, analysis) {
   for (const lead of emailLeads(snapshot)) add(lead.check, lead.where, lead.severity, lead.description, 'checkdmarc');
   // TLS evidence. Each lead is the tool's grade on a measured handshake, stored in the pin.
   for (const lead of tlsLeads(snapshot)) add(lead.check, lead.where, lead.severity, lead.description, 'testssl');
-  if (!snapshot.dnssec?.validatedChain) add('dnssec-evidence-missing',root,'informational','The snapshot has no validated DNSSEC chain. This does not prove DNSSEC is disabled.');
+  // DNSSEC chain evidence. The chain assessment is stored in the pin.
+  for (const lead of dnssecLeads(snapshot)) add(lead.check, lead.where, lead.severity, lead.description, 'dnsviz');
   if (!snapshot.rdap?.status?.some(s => /server.*(?:transfer|update|delete).*prohibited/i.test(s.replaceAll(' ','')))) add('registry-lock-evidence-missing',root,'informational','The snapshot has no RDAP evidence of a registry lock. A registrar transfer lock alone is not a registry lock.');
   if (snapshot.contenthash && (!snapshot.contenthash.value?.startsWith('ipfs://') || !snapshot.contenthash.pinnedCid || snapshot.contenthash.value.slice(7) !== snapshot.contenthash.pinnedCid)) add('frontend-content-pin-missing',snapshot.contenthash.name,'informational','The captured ENS/IPFS configuration has no matching immutable content CID and pin receipt. This proves missing evidence, not lost content.');
   const rank = { critical: 0, high: 1, medium: 2, low: 3, informational: 4 };
@@ -180,7 +182,7 @@ export async function scanSnapshot(ws, id = 'domains') {
 
 export function detectorsFor(id = 'domains') {
   const cache = new WeakMap();
-  const checks = id === 'surface' ? ['discovered-host','discovered-service'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','email-auth-evidence-missing','email-dmarc-missing','email-dmarc-policy-none','email-dmarc-no-reporting','email-spf-missing','email-spf-allows-all','tls-evidence-missing','dnssec-evidence-missing','registry-lock-evidence-missing','frontend-content-pin-missing'];
+  const checks = id === 'surface' ? ['discovered-host','discovered-service'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','email-auth-evidence-missing','email-dmarc-missing','email-dmarc-policy-none','email-dmarc-no-reporting','email-spf-missing','email-spf-allows-all','tls-evidence-missing','dnssec-evidence-missing','dnssec-unsigned','dnssec-broken-chain','dnssec-warning','registry-lock-evidence-missing','frontend-content-pin-missing'];
   const base = Object.fromEntries(checks.map(check => [check,async(snapshot,where) => {
     if (!cache.has(snapshot)) cache.set(snapshot,analyzeSnapshot(snapshot));
     const analysis = await cache.get(snapshot);

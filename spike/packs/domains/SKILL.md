@@ -35,6 +35,11 @@ A `tls-*` lead is one handshake testssl.sh measured. Its severity is the tool's
 grade, not proof of exploit. The where cell is the endpoint. Say that a person
 must confirm exposure. No exploit is run and only one handshake is measured.
 
+A `dnssec-*` lead is the chain state DNSViz measured through the granted
+resolver. `dnssec-unsigned` means no DNSKEY and no usable DS. That alone does
+not let anyone spoof the name, because a resolver must be reached first. A
+broken chain only affects clients that validate. Say which case it is.
+
 The drainer check is behavior. The analyzer ran the captured scripts in a fake
 wallet and clicked each connect, claim, airdrop, mint or verify control. A lead
 `wallet-drainer-behavior` means that click asked the wallet for an unlimited
@@ -80,7 +85,7 @@ itself on first use when it is missing.
 A scope names a domain. `.touchstone.json` holds `domain` and `reach`. The
 platform grant fills `reach`: `network`, `granted`, `scope`, and optionally
 `resolver`, `ports` and `env`. The prepass then captures the domain through
-`runTool()` (subfinder, checkdmarc, dnsx, httpx, testssl.sh, nuclei), pins the snapshot, and
+`runTool()` (subfinder, checkdmarc, dnsviz, dnsx, httpx, testssl.sh, nuclei), pins the snapshot, and
 the checks run on the pin. Live capture refuses a domain that is not covered by
 `reach.scope`. With no grant it stops before any tool runs. A network name is
 never a grant. A lab network must also be `--internal` in Docker, and the tools

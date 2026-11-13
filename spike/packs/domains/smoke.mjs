@@ -65,6 +65,9 @@ try {
       assert(checks.has('tls-cert_chain_of_trust'),'live capture must grade the self-signed chain');
       const tlsProof=await replayEvidence(live,{check:'tls-cert_chain_of_trust',where:snap.tls[0].url,snapshotHash:liveRun.record.snapshotHash},{detectors:detectorsFor('domains')});
       assert.equal(tlsProof.status,'pass');
+      // The lab zone is unsigned. The chain must be read as insecure, not as unread.
+      assert(checks.has('dnssec-unsigned'),'live capture must report the unsigned lab zone');
+      assert.equal(checks.has('dnssec-evidence-missing'),false);
       assert.deepEqual(liveRun.record.leads.find(l=>l.check==='subdomain-takeover-fingerprint').engines,['touchstone','nuclei']);
       const lead=liveRun.record.leads.find(l=>l.check==='wallet-drainer-behavior');
       const proof=await replayEvidence(live,{check:lead.check,where:lead.where,snapshotHash:liveRun.record.snapshotHash},{detectors:detectorsFor('domains')});

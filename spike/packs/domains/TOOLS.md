@@ -16,8 +16,8 @@ is enforced in code here, and the captured snapshot is what later steps read.
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| [dnsx](https://github.com/projectdiscovery/dnsx/tree/v1.2.2) | [MIT](https://github.com/projectdiscovery/dnsx/blob/v1.2.2/LICENSE.md) | projectdiscovery/dnsx:v1.2.2; digest in tools.mjs; 82.8 MiB | Lab: local resolver only. Live: the resolver the grant allows. -duc; no ASN/CDN enrichment | Wordlist and subfinder hosts, then CNAME targets | -json JSONL | Resolution and CNAME records become snapshot evidence; NXDOMAIN rows are dropped except for CNAME targets | evidence; CNAME plus target A and AAAA NXDOMAIN | dnsReaper and Nuclei: compare below | JSONL capture workflow; no code copied | Missing DNSSEC and registry-lock evidence | wrap; small resolver with explicit local DNS |
-| [httpx](https://github.com/projectdiscovery/httpx/tree/v1.7.1) | [MIT](https://github.com/projectdiscovery/httpx/blob/v1.7.1/LICENSE.md) | projectdiscovery/httpx:v1.7.1; digest in tools.mjs; 917.4 MiB | Lab: local DNS and HTTP only. Live: scope hosts only. -duc; no redirects, cloud, headless or enrichment | URLs of live hosts, then in-scope script URLs from their pages | -json -irr -irh (body and raw_header fields) | HTTP service, headers, body | evidence; captured bytes and control detector | HTTP capture complements DNS; not a takeover verdict | Structured response capture workflow | Wallet CDN integrity and approval patterns | wrap; gives service leads and raw responses |
+| [dnsx](https://github.com/projectdiscovery/dnsx/tree/v1.2.2) | [MIT](https://github.com/projectdiscovery/dnsx/blob/v1.2.2/LICENSE.md) | projectdiscovery/dnsx:v1.2.2; digest in tools.mjs; 82.8 MiB | Lab: local resolver only. Live: the resolver the grant allows. -duc; no ASN/CDN enrichment | Wordlist and subfinder hosts, then CNAME targets | -json JSONL | Resolution and CNAME records become snapshot evidence; NXDOMAIN rows are dropped except for CNAME targets | evidence; CNAME plus target A and AAAA NXDOMAIN | dnsReaper and Nuclei: compare below | JSONL capture workflow; no code copied | Registry-lock evidence. The DNSSEC chain comes from DNSViz | wrap; small resolver with explicit local DNS |
+| [httpx](https://github.com/projectdiscovery/httpx/tree/v1.7.1) | [MIT](https://github.com/projectdiscovery/httpx/blob/v1.7.1/LICENSE.md) | projectdiscovery/httpx:v1.7.1; digest in tools.mjs; 917.4 MiB | Lab: local DNS and HTTP only. Live: scope hosts only. -duc; no redirects, cloud, headless or enrichment | URLs of live hosts, then in-scope script URLs from their pages | -json -irr -irh (body and raw_header fields) | HTTP service, headers, body | evidence; captured bytes and control detector | HTTP capture complements DNS; not a takeover verdict | Structured response capture workflow | Wallet CDN integrity and approval patterns. The TLS handshake comes from testssl.sh | wrap; gives service leads and raw responses |
 | [subfinder](https://github.com/projectdiscovery/subfinder/tree/v2.6.8) | [MIT](https://github.com/projectdiscovery/subfinder/blob/v2.6.8/LICENSE.md) | projectdiscovery/subfinder:v2.6.8; digest in live.mjs; HOME=/tmp | No. Passive sources need the internet. In the lab it runs and finds nothing | Root domain | -oJ JSONL; flags -silent -duc -nW -timeout 5 -max-time 1 | In-scope host candidates become inputs to dnsx. Not a lead by themselves | evidence; only hosts that dnsx and httpx confirm enter the snapshot | Wordlist brute force finds names subfinder does not know. Both run, and the snapshot records which found each host | None | Cannot see private or unlisted names | wrap; passive discovery for live domains. Hosts out of scope are dropped |
 | [CSP Evaluator](https://github.com/google/csp-evaluator) | [Apache-2.0](https://github.com/google/csp-evaluator/blob/master/LICENSE) | csp_evaluator 1.1.5 in local touchstone-domains-tools:wave2; 249.1 MiB | Yes; pure policy evaluation | Enforcing CSP header | JSON from CspEvaluator.evaluate | weak-csp at captured page | evidence; rerun evaluator on pinned header | MDN Observatory also grades CSP; evaluator works on saved headers | Upstream parser/evaluator workflow and installed bypass rules; no rule text pasted | Does not inspect wallet scripts | wrap; use upstream rules, not a home-grown CSP parser |
 | [Retire.js](https://github.com/RetireJS/retire.js/tree/5.2.5) | [Apache-2.0](https://github.com/RetireJS/retire.js/blob/5.2.5/LICENSE.md) | retire 5.2.5 in the same image | Yes; --jsrepo points at baked data; no remote refresh | Captured JS bodies | --outputformat json | known-vulnerable-js by response URL | evidence; rerun version detector with pinned advisories | Dependency scanners read manifests; this reads served code | Unchanged 5.2.5 advisory data; SHA-256 b6fe6651ee3597dd09ef4cc65ee69329e2f9fb53cc9f23c710669548a83a2277 | Does not prove a wallet approval is malicious | wrap; covers served JS absent from manifests |
@@ -46,7 +46,7 @@ live-only tool needs a grant, not a new mode.
 | subzy, subjack | Takeover fingerprint scanners | skip — overlap (assumed, not tested) | Identical fingerprint space to Nuclei takeover templates, which already serve as the second corroborating engine. Neither was run; no new detection was shown. |
 | testssl.sh 3.2.5 | Full TLS / cipher audit | wrap — TLS handshake evidence | Was `backlog — TLS findings`; wrapped and green in the lab run. Fills the "Missing TLS" crypto gap flagged on the dnsx and httpx rows. License re-checked on 2026-11-12: GPLv2, from the upstream script header and `LICENSE.txt`; runs as a separate process, no code copied. Image `drwetter/testssl.sh:3.2@sha256:64bab3c1…7e29` (77.8 MiB), digest in `tls.mjs`. `captureTls()` runs it through `runTool()` with the pack limits on each https origin the capture found (max 2), passes the captured A record with `--ip`, and writes `--jsonfile-pretty` with `--severity LOW`. `--phone-out` stays off, so no CRL or OCSP fetch is made. Protocol, cipher, forward-secrecy, certificate, header, vulnerability and grade findings are stored in `snapshot.tls`; per-cipher detail is dropped. Each stored finding below OK becomes a `tls-<id>` lead with the tool's grade as severity. All replay from the pin. Proves the measured handshake and the tool's grade; no exploit is attempted and only one handshake is measured. The lab serves TLS with a committed self-signed cert; on 2026-11-12 the tool graded that chain CRITICAL and the handshake T. |
 | SSLyze, tlsx | TLS scan / cert capture | skip — overlap (assumed, not tested) | Assumed to overlap testssl.sh for TLS findings; nothing was run. Pick one TLS engine (testssl.sh) rather than ensemble three. tlsx may return later purely as snapshot cert/SAN capture, not as a finding source. |
-| DNSViz | DNSSEC validation | backlog — DNSSEC evidence | Fills the "Missing DNSSEC evidence" gap named on the dnsx row; `checks.mjs:125` reports it as `dnssec-evidence-missing`. DNSSEC is not captured today: `live.mjs:109` asks dnsx for A, AAAA and CNAME only. The work is to add chain capture in `live.mjs`, store the chain in the snapshot, add a replay check, and ship the image, `runTool()` call and parser. The grant covers the domain; nothing else exists. |
+| DNSViz | DNSSEC chain validation | wrap — DNSSEC chain evidence | Was `backlog — DNSSEC evidence`; wrapped and green in the lab run. Fills the "Missing DNSSEC evidence" gap named on the dnsx row; `checks.mjs` reported it as `dnssec-evidence-missing`. License re-checked on 2026-11-12: GPLv2, upstream `LICENSE`; two separate processes, no code copied. Image `dnsviz/dnsviz@sha256:5a4c5e82…65932` (463.1 MiB), digest in `dnssec.mjs`. `captureDnssec()` runs `probe` through the granted resolver and then `grok` offline, both through `runTool()` with the pack limits. The `grok` assessment is stored in `snapshot.dnssec` as the chain verdict (`SECURE`, `INSECURE`, bogus), signing state, errors and warnings. Leads: `dnssec-broken-chain` (high), `dnssec-unsigned` (low), `dnssec-warning` (low). All replay from the pin; a signed and valid chain raises no lead. The lab now serves a root and `test` zone, so the offline chain is readable; the lab zone is unsigned and the tool reports `INSECURE`. Proves the measured chain state, not that a resolver can be spoofed. No signature is validated by us: DNSViz does that. No algorithm rollover or key-size check is reported. |
 | Zonemaster | DNS / DNSSEC conformance suite | skip — overlap (assumed, not tested) + scope | Assumed to overlap DNSViz for the DNSSEC evidence we would prove; no comparison was run. The rest is broad conformance testing outside this pack's two proof models. |
 | checkdmarc 6.0.3 | SPF / DMARC record evaluation | wrap — email-auth record evidence | Was `backlog — email-auth findings`; wrapped and green in the lab run. Fills the email-authentication gap in M2. License re-checked on 2026-11-12: Apache-2.0, upstream `LICENSE`; runs as a separate process, no code copied. Image `letiemble/checkdmarc:6.0.3@sha256:be9d7e82…c90cd` (amd64, 66.9 MiB), digest in `email.mjs`. `checkEmail()` calls it through `runTool()` with the pack limits and `-t 5 --retries 1`; the lab resolver or the grant resolver is passed with `-n`. `parseCheckdmarc()` narrows the JSON to the SPF record and its `all` mechanism, the DMARC record, policy, `rua` presence, MX and DNSSEC flag, and stores it in `snapshot.email`. Leads: `email-dmarc-missing` (medium), `email-dmarc-policy-none`, `email-dmarc-no-reporting`, `email-spf-missing`, `email-spf-allows-all` (low). All replay from the pin. Proves the published records; does not prove a spoofed message reaches an inbox, a DKIM selector, or a receiver's filter decision. A null MX is stored but raises no lead. A tool error is a coverage error and raises `email-auth-evidence-missing`. |
 | parsedmarc | Parses DMARC aggregate reports | skip — not a scan | Consumes mailbox aggregate reports, not a scan of the target. It is outside the capture-then-replay pipeline entirely. |
@@ -66,13 +66,16 @@ live-only tool needs a grant, not a new mode.
 - The lab TLS cert and key (`lab/tls-cert.pem`, `lab/tls-key.pem`) are our own
   self-signed files, generated 2026-11-12 for ten years. The key is public and
   covers no real host.
+- The lab root and `test` zones (`lab/root.db`, `lab/test.db`) are ours. They
+  let DNSViz walk a chain with no internet. Both are unsigned.
 
 ## Comparison on the same lab
 
 Run `node spike/packs/domains/smoke.mjs --lab`. It starts CoreDNS and a small
 web server on an internal network: plain HTTP on 8080 and the same host over TLS
-on 8443 with a committed self-signed cert. It creates no published ports. It
-removes its own services and network when it ends.
+on 8443 with a committed self-signed cert. CoreDNS also serves a root zone and a
+`test` zone, so an offline DNSSEC chain can be walked. It creates no published
+ports. It removes its own services and network when it ends.
 
 The lab plants four things a clean scan misses.
 
@@ -104,6 +107,9 @@ What each tool did on this lab.
 - testssl.sh measured the lab handshake. It graded the self-signed chain
   CRITICAL, the certificate lifetime HIGH and the handshake T. The grade is the
   tool's opinion of the lab cert, not a defect in the pack.
+- DNSViz walked the lab chain through the lab resolver and reported `INSECURE`:
+  the zone publishes no DNSKEY and `test` has no DS. That is the unsigned path,
+  not a broken one.
 
 The smoke also runs the live path on the lab. A scope with `domain` and `reach`
 and no snapshot makes the prepass capture the domain with the real tools and
@@ -132,8 +138,9 @@ Nothing is signed and nothing is sent.
 
 An NXDOMAIN result proves dangling DNS, not that a provider will let someone
 claim the target. Missing DNSSEC or RDAP evidence does not prove a disabled
-control. A registry lock is not the same as a registrar transfer lock. No DNS
-change, resource registration, wallet signature, or transaction is attempted.
+control, and an unsigned zone proves only that resolvers cannot validate it. A
+registry lock is not the same as a registrar transfer lock. No DNS change,
+resource registration, wallet signature, or transaction is attempted.
 
 Email-authentication leads prove the published record only. A valid SPF or
 DMARC record does not prove a spoofed message reaches an inbox, and no DKIM
@@ -143,3 +150,8 @@ A TLS lead is the tool's grade of one measured handshake. No exploit is run.
 The grade is a judgement, not proof that a weakness is exploitable. CRL and
 OCSP are not fetched, so revocation shows as unscanned. At most two https
 origins are measured per capture.
+
+A DNSSEC lead is the chain state DNSViz measured once. An unsigned zone is not
+spoofable by itself: a resolver must be reached or poisoned first. A bogus chain
+only hurts clients that validate. Signatures are checked by DNSViz, not by this
+pack.
