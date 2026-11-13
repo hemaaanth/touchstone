@@ -57,6 +57,18 @@ const maskUnder = (name, value) => SECRET_KEY.test(name) || (secretish(value) &&
 // as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
 const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
+// The same pair escaped two or more levels deep, as in a JSON string that
+// holds a JSON string that holds JSON. Each JSON.stringify doubles the
+// backslashes, so the run before every quote is 1, 3, 7, 15 … characters.
+// JSON_PAIR and JSON_PAIR_ESC handle depth 0 and 1; this one run of 3 or more
+// backslashes (\\{3,}), tied across the four quotes by the backreference,
+// handles every deeper level in one rule, not one rule per depth. The run is
+// a single greedy group, so it is linear. The name and the value are plain
+// text at any depth (a value with its own escaped quote is a rare edge the
+// run does not reach into).
+// The (?<!\\) anchors the match to the START of the backslash run, so the
+// rule does not retry at every backslash of a long run (that was quadratic).
+const JSON_PAIR_DEEP = /(?<!\\)(\\{3,})"([^"\\\r\n]{1,64})\1"(\s*:\s*)\1"([^"\\\r\n]*)\1"/g
 // A HAR or app header cell held as text: {"name":"Authorization",
 // "value":"Basic …"}, maybe with short fields between them, such as
 // "redacted":false. The value is judged under the name. The second form is
@@ -99,9 +111,14 @@ const CODE_PAIR_ESC = /(?<![\w$"'`\\])([A-Za-z_$][\w$-]{0,63})([ \t]*[:=][ \t]*)
 const HEADER_NAME = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:[ \t]*)`
 const LINE_VALUE = String.raw`((?:=(?:"[^"\\\r\n]*"|\\"[^"\\\r\n]*\\")|\[REDACTED[^\]\r\n]{0,80}\]|[^\r\n\\"'` + "`" + String.raw`()\[\]{}<>]|\\[^rn"\r\n])+)`
 const QUOTE_VALUE = String.raw`((?:=\\"[^"\\\r\n]*\\"|(?!\1)[^\\\r\n]|\\(?![rn]|\1)[^\r\n])+)`
-// The lead may also be a list mark ("- ", "* "), a table bar ("| "), or a
-// tab or ", " inside a log line: "Host: lab, Authorization: Basic …".
-const LINE_HEADER = new RegExp(String.raw`((?<=^|[\r\n]|\\n)[ \t]*(?:[<>*-] |\| )?|(?<=\t|, ))` + HEADER_NAME + LINE_VALUE, "g")
+// The lead may also be a list mark ("- ", "* ", "+ "), an ordered-list mark
+// ("1. ", "2) "), a table bar ("| "), a bold open ("**Authorization:**"), or
+// a tab or ", " inside a log line: "Host: lab, Authorization: Basic …".
+// The bold form closes with "**" right after the colon, so the separator may
+// hold up to two stars (":** ").
+const LINE_LEAD = String.raw`(?<=^|[\r\n]|\\n)[ \t]*(?:[<>*+-] |\d{1,3}[.)] |\| |\*\*)?|(?<=\t|, )`
+const LINE_NAME_SEP = String.raw`([A-Za-z][\w-]{0,63})([ \t]*:\*{0,2}[ \t]*)`
+const LINE_HEADER = new RegExp(String.raw`(${LINE_LEAD})` + LINE_NAME_SEP + LINE_VALUE, "g")
 // A markdown table row: "| Authorization | Basic … |". The value cell
 // stops at the next bar.
 const TABLE_HEADER = /((?<=^|[\r\n]|\\n)[ \t]*\|[ \t]*)([A-Za-z][\w-]{0,63})([ \t]*\|[ \t]*)([^|\r\n\\`]+)/g
@@ -116,7 +133,43 @@ const BEARER = /\bBearer\s+(?:token(?:\s*[:=]\s*|\s+))?([A-Za-z0-9\-._~+/=]{8,})
 // X-Amz-Security-Token), and so do a few short names that are secret only
 // in a URL: key, sig, code (an OAuth code) and auth.
 const QUERY = /([?&#]([A-Za-z][\w.-]{0,63})=)([^&\s#"'`,;()[\]{}<>\\]+)/g
-const QUERY_NAME = /^(?:key|sig|code|auth)$/i
+const QUERY_NAME = /^(?:key|sig|code|auth|jwt|sid)$/i
+
+// An RPC or API key in a URL path on a known provider host:
+// https://eth-mainnet.g.alchemy.com/v2/<key>, https://mainnet.infura.io/v3/<key>,
+// https://rpc.ankr.com/eth/<key>. The host and the fixed path parts (/v2/) stay;
+// a path segment that looks like a key becomes the mark. The Goldsky form
+// (…?key=<key>) is a query, so QUERY already masks it.
+const RPC_URL = new RegExp(String.raw`(https?:\/\/([a-zA-Z0-9.-]+))((?:\/[^\s"'\`\\?#]*)+)`, "gi")
+// The host must be one of the providers' real RPC host names, matched as a
+// whole domain suffix. A marketing or docs apex (moralis.io, ankr.com), a
+// dashboard (dashboard.tenderly.co, only gateway.tenderly.co is RPC) and a
+// word that merely contains a provider name (bankrate.com) are not RPC hosts,
+// so a tx link, a blog slug and a doc path stay. NON_RPC_SUB drops a www/docs
+// subdomain of a listed domain too.
+const RPC_HOSTS = /(?:^|\.)(?:g\.alchemy\.com|alchemyapi\.io|infura\.io|rpc\.ankr\.com|qui(?:k|ck)node\.pro|blastapi\.io|core\.chainstack\.com|getblock\.io|nodereal\.io|drpc\.org|gateway\.tenderly\.co|moralis-nodes\.com|blockpi\.network|pokt\.network)$/i
+const NON_RPC_SUB = /^(?:dashboard|docs|www|blog|app|support|status|explorer)\./i
+const isRpcHost = (h) => RPC_HOSTS.test(h) && !NON_RPC_SUB.test(h)
+// A URL path segment is a key when it is long and mixes letters and digits.
+// This runs ONLY on a real RPC host (isRpcHost), where a key may hold a "-"
+// (an Alchemy key) or be a uuid (a Blast project id), so those are masked. A
+// 0x value is a hash or an address (evidence) and stays. The host-label and
+// non-RPC-subdomain gates in isRpcHost are what keep a tx link, a blog slug
+// and bankrate.com; keySegment does not repeat them. A placeholder
+// (${RPC_KEY}) or an already-redacted part stays.
+const keySegment = (seg) =>
+  seg.length >= 16 &&
+  /[0-9]/.test(seg) &&
+  /[A-Za-z]/.test(seg) &&
+  !seg.startsWith("${") &&
+  !seg.startsWith("[REDACTED") &&
+  !/^0x[0-9a-fA-F]+$/.test(seg)
+function maskRpcUrl(m, host, hostname, path) {
+  if (!isRpcHost(hostname)) return m
+  let hit = false
+  const out = path.replace(/[^/?#]+/g, (seg) => (keySegment(seg) ? ((hit = true), MARK) : seg))
+  return hit ? host + out : m
+}
 
 // A password in a URL (https://user:pass@host), a curl -u user:pass, a
 // curl -b cookie list, and an env assignment such as DB_PASSWORD=… whose
@@ -124,6 +177,26 @@ const QUERY_NAME = /^(?:key|sig|code|auth)$/i
 const URL_USERINFO = /(\/\/[^\s/:@"'`]{1,64}:)([^\s/@"'`]{1,256})(?=@)/g
 const CURL_USER = /((?:^|\s)(?:-u|--user)[ =]?["']?[^\s:"'@]{1,64}:)([^\s"']{1,256})/g
 const CURL_COOKIE = /((?:^|\s)(?:-b|--cookie)[ =]?)(?:(["'])([^"'\r\n]*)\2|([^\s"']+))/g
+// A header set by a bracket index or a header-setter call:
+//   h["X-API-Key"] = "v"   and   headers.set("X-API-Key", "v").
+// The name must be a secret header name and the value must look like a
+// credential, judged by maskHeaderValue, so ordinary code stays:
+// new MockERC20("Token", "TKN"), map.set("session", "active"),
+// config["timeout"] = "30" are all kept. The call form is limited to a
+// header setter method (.set/.append/.setHeader/.header), not any call, so
+// console.log("token", "x") and abi.encodePacked("token", "USDC") stay.
+// Only a quoted value is touched, so a bare variable (res.set("X-Api-Key",
+// tok)) stays.
+const BRACKET_PAIR = /(\[[ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*\][ \t]*=[ \t]*)(["'`])([^"'`\r\n]*)\4/g
+const CALL_PAIR = /(\.(?:set|append|setHeader|setRequestHeader|addHeader|header)[ \t]*\([ \t]*(["'`])([A-Za-z][\w-]{0,63})\2[ \t]*,[ \t]*)(["'`])([^"'`\r\n]*)\4/g
+// MySQL joins -p to its value: mysql -psecret. A mysql-family command must be
+// on the SAME line, so gcc -pedantic, docker run -p127.0.0.1:…, -port=8080 and
+// -pretty-print all stay. The value is masked only when it looks like a secret
+// (secretish, 8+), so a port (-p3306) stays too. The line test runs once per
+// line (maskMysql), not once per "mysql" word, so the rule is linear: an
+// earlier version scanned to the end of the line from every "mysql".
+const MYSQL_CMD = /\b(?:mysql|mysqldump|mysqladmin|mariadb)\b/
+const DASH_P = /(?<![\w-])(-p)([^\s"'`;&|()<>]+)/g
 // A command-line flag whose name passes secretName: cast send
 // --private-key 0x…, --api-key=…, --token "…".
 const CLI_FLAG = /(?<![\w-])(--([A-Za-z][\w-]{0,63})(?:=|[ \t]+))(?:(["'])([^"'\r\n]*)\3|([^\s"'`;&|()<>]+))/g
@@ -140,8 +213,25 @@ const ENV_ASSIGN = /(?<![\w$.?&#/-])([A-Za-z_][\w]{1,63})([ \t]*=[ \t]*)(?:"([^"
 // A code reference such as settings.API_KEY or res.body.token, not a value.
 const MEMBER_PATH = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/
 
-// Shapes that are a secret wherever they sit. Deliberately not bare hex:
-// snapshot hashes and commits are 40/64 hex and the proof needs them.
+// Shapes that are a secret wherever they sit: in prose, in a file name, in a
+// path segment. Each is a vendor prefix plus the vendor's own length and
+// alphabet, so the prefix alone is not enough to fire. A match starts at a
+// non-identifier boundary (\b or a lookbehind), so "file_ghp_x" (one
+// identifier) stays and "/x/ghp_x" (a path segment) is masked.
+// Deliberately NOT bare hex: a snapshot hash or a commit is 40/64 hex and the
+// proof needs it. pk_live_/pk_test_ (Stripe PUBLISHABLE keys) are public and
+// are not here, so they stay.
+// Sources for the format of each (prefix, length, alphabet):
+//   AKIA/ASIA + 16 upper base32   AWS, "IAM identifiers" docs
+//   gh[pousr]_ + 36 base62        GitHub, "token formats" (ghp/gho/ghu/ghs/ghr)
+//   github_pat_ + base62/_        GitHub, fine-grained PAT
+//   glpat- + 20                   GitLab, personal access token
+//   xox[baprs]- + 10              Slack, "token types and scopes"
+//   (sk|rk)_(live|test)_ + 10     Stripe, "API keys" (secret/restricted)
+//   sk- + 20                      OpenAI, "API keys"
+//   eyJ + "." + "." parts           JWT, RFC 7519 (base64url header.payload.sig)
+//   npm_ + 36 base62              npm, "about access tokens"
+//   tk_<name>_<hex>               this project's lab token (oracle lab dapp)
 const SHAPES = [
   // The body is bounded: an unended BEGIN must not rescan the rest of the text.
   /-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY-----[\s\S]{0,10000}?-----END [A-Z0-9 ]{0,32}PRIVATE KEY-----/g,
@@ -154,6 +244,10 @@ const SHAPES = [
   /\bsk-[A-Za-z0-9-]{20,}\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\bnpm_[A-Za-z0-9]{36,}\b/g,
+  // The lab token is tk_<name>_<suffix>: tk_alice_9f1c4a2e, tk_live_<20 hex>.
+  // The real records use an 8-hex suffix; the suffix is 8+ hex, so a plain word
+  // (tk_live_run) and a 6-hex CSS class (tk_btn_ff00aa) stay.
+  /\btk_[a-z][a-z0-9]*_[0-9a-fA-F]{8,}\b/g,
 ]
 
 // True when one word looks like a credential and not like a lab placeholder
@@ -269,13 +363,47 @@ function maskCodeValue(name, value) {
   return maskPairValue(name, value)
 }
 
+// A bracket-index or header-setter pair: keep the head (name and the quote),
+// mask the value only when the name is a secret header name and the value is
+// credential-shaped (maskHeaderValue), so ordinary two-string code stays.
+function maskBracketPair(m, head, nq, name, q, value) {
+  const masked = maskHeaderValue(name, value)
+  return masked == null ? m : `${head}${q}${masked}${q}`
+}
+
+// -p<value> after a mysql-family command: mask only a value that looks like a
+// secret. Called only on a line that holds a mysql-family word.
+function maskDashP(m, flag, value) {
+  return secretish(value, 8) && !keepUnder(value) ? flag + MARK : m
+}
+
+// Mask mysql -p<value> on each line that holds a mysql-family command. The
+// check runs once per line, so the pass is linear. A text with no such word
+// returns at once. A "line" ends at CR, LF or CRLF, so a gcc -p flag on the
+// next line after a mysql line stays. Replacing each run of non-line-end
+// characters keeps every line end exactly.
+function maskMysql(text) {
+  if (!MYSQL_CMD.test(text)) return text
+  return text.replace(/[^\r\n]+/g, (line) => (MYSQL_CMD.test(line) ? line.replace(DASH_P, maskDashP) : line))
+}
+
 function maskNamed(m, head, name, mid, value) {
   const masked = maskCodeValue(name, value)
   return masked == null ? m : `${head}${name}${mid}${masked}${m.slice(head.length + name.length + mid.length + value.length)}`
 }
 
+// Names that are a secret only under a JSON or code pair, not in prose. A bare
+// "Key:" line or the word "key" in a sentence is common, so these are kept by
+// the header and prose paths (maskHeaderValue); here, under a quoted/assigned
+// name, they are judged by value like a suffix name (maskUnder).
+const PAIR_SECRET = /^(?:key|jwt|passphrase)$/i
+
 function maskPairValue(name, value) {
-  if (!secretName(name) || keepUnder(value)) return null
+  if ((!secretName(name) && !PAIR_SECRET.test(name)) || keepUnder(value)) return null
+  // A 0x-hex value under key/jwt/passphrase is a storage slot or a proof key,
+  // not a credential (eth_getProof storageProof[].key). A bare 0x-hex value is
+  // evidence, as in PR 7, so it stays.
+  if (PAIR_SECRET.test(name) && /^0x[0-9a-fA-F]+$/.test(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
   if (/cookie$/i.test(name) && value.includes("=")) return maskCookie(value)
   return maskUnder(name, value) ? MARK : null
@@ -318,9 +446,23 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
   return `${name}${sep}${q}${MARK}${q}${rest}`
 }
 
+// Every global regex a text pass uses, named. This is the single list: the
+// reset loop below and the generated timing test both read it, so a new rule
+// added here is reset and timed automatically (the timing test fails until it
+// has a trigger). maskMysql is driven by DASH_P, which is in the list.
+export const TEXT_RULES = {
+  JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC,
+  TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER,
+  BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, BRACKET_PAIR,
+  CALL_PAIR, DASH_P, CLI_FLAG, ENV_ASSIGN,
+  SHAPE_PEM: SHAPES[0], SHAPE_AWS: SHAPES[1], SHAPE_GH: SHAPES[2], SHAPE_GHPAT: SHAPES[3],
+  SHAPE_GLPAT: SHAPES[4], SHAPE_SLACK: SHAPES[5], SHAPE_STRIPE: SHAPES[6], SHAPE_OPENAI: SHAPES[7],
+  SHAPE_JWT: SHAPES[8], SHAPE_NPM: SHAPES[9], SHAPE_LAB: SHAPES[10],
+}
+
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of Object.values(TEXT_RULES)) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -329,6 +471,10 @@ function redactText(text) {
   out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
     return masked == null ? m : `\\"${name}\\"${sep}\\"${masked}\\"`
+  })
+  out = out.replace(JSON_PAIR_DEEP, (m, bs, name, sep, v) => {
+    const masked = maskPairValue(name, v)
+    return masked == null ? m : `${bs}"${name}${bs}"${sep}${bs}"${masked}${bs}"`
   })
   out = out.replace(NAMED_VALUE, maskNamed)
   out = out.replace(NAMED_VALUE_ESC, maskNamed)
@@ -349,9 +495,13 @@ function redactText(text) {
   out = out.replace(QUOTE_HEADER, maskQuoteHeader)
   out = out.replace(BEARER, maskBearer)
   out = out.replace(QUERY, maskQuery)
+  out = out.replace(RPC_URL, maskRpcUrl)
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_USER, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
   out = out.replace(CURL_COOKIE, maskCookieArg)
+  out = out.replace(BRACKET_PAIR, maskBracketPair)
+  out = out.replace(CALL_PAIR, maskBracketPair)
+  out = maskMysql(out)
   out = out.replace(CLI_FLAG, maskFlag)
   out = out.replace(ENV_ASSIGN, maskEnv)
   for (const re of SHAPES) out = out.replace(re, MARK)

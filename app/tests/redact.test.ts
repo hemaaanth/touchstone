@@ -1,18 +1,35 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 // Unit tests for the report redaction. Every secret here is synthetic. It has
 // the same shape as a value seen in a real record, never the real value.
 // @ts-expect-error — plain .mjs module, no types
-import { redactSecrets } from "../server/redact.mjs"
+import { redactSecrets, redactOnePass, TEXT_RULES } from "../server/redact.mjs"
 
 const MB = 1 << 20
+const CAP = 64 * 1024
 const text = (s: string): string => redactSecrets({ explanation: s }).explanation
 
-// Time one redaction of a 1 MB string. A linear regex finishes in well under
-// a second; a quadratic one takes minutes.
+// Time one redaction. It MUST run every rule on the whole input: redactSecrets
+// replaces any text over the 64 KB cap with a mark before a single rule runs,
+// so a timing test routed through the cap would measure 0 ms and hide a
+// quadratic rule. The helper guards itself: if its output holds the cap mark,
+// the input was capped (the helper was routed through redactSecrets), and it
+// throws, so a timing case can never pass by being capped. redactOnePass runs
+// every rule with no cap, so its output never holds the mark unless the input
+// literally does.
+const TOO_LONG = "too long to check"
+function redactTimed(input: string): string {
+  // The one redactor a timing test may use. Change this to redactSecrets and
+  // every >cap timing case throws below (the M1 guard; proven by mutation).
+  return redactOnePass(input) as string
+}
 function timeMs(input: string): number {
   const t0 = performance.now()
-  redactSecrets({ explanation: input })
-  return performance.now() - t0
+  const out = redactTimed(input)
+  const dt = performance.now() - t0
+  if (out.includes(TOO_LONG)) throw new Error("timeMs: the input was capped, so the rules did not run")
+  return dt
 }
 
 describe("redact: big inputs finish in linear time", () => {
@@ -314,13 +331,16 @@ describe("redact: a secret pair in JS or Python code (delta review 2)", () => {
   })
 
   test("comparisons, templates, variables and plain names stay", () => {
+    // A value that is secretish by the generic rule but is not a vendor or lab
+    // token shape, so only the name or the "===" decides whether it is masked.
+    const opaque = "s3cretVALUE9f3a9c2e1"
     for (const s of [
-      `if (token === "${key}") ok()`,
+      `if (token === "${opaque}") ok()`,
       "const token = `${t1}`",
       'const apiKey = "$API_KEY"',
       `{ authorization: "Bearer " + t1 }`,
-      `{ title: '${key}' }`,
-      `{ publicKey: '${key}' }`,
+      `{ title: '${opaque}' }`,
+      `{ publicKey: '${opaque}' }`,
       `{ token: '0x5fbdb2315678afecb367f032d93f642f64180aa3' }`,
     ]) expect(text(s)).toBe(s)
   })
@@ -699,5 +719,401 @@ describe("redact: an assignment keeps a short setting like the JSON pair (final 
     for (const s of [`const sortKey = "created_at";`, "CACHE_KEY=user_profile"]) expect(text(s)).toBe(s)
     expect(text(`const dbPassword = "letmein-please";`)).toBe(`const dbPassword = "[REDACTED]";`)
     expect(text("DB_PASSWORD=abc123 node x")).toBe("DB_PASSWORD=[REDACTED] node x")
+  })
+})
+
+describe("redact: a bare vendor or lab token in prose or a path (H2b item 1)", () => {
+  // Synthetic values with the published length and alphabet of each vendor.
+  const g36 = "ab12CD34ef56GH78ij90KL12mn34OP56qr78"
+  test("each vendor prefix is masked in prose and inside a path", () => {
+    const cases: [string, string][] = [
+      [`returned token tk_live_9f8e7d6c5b4a39281706 to the caller`, "tk_live_9f8e7d6c5b4a39281706"],
+      [`the lab key tk_alice_9f1c4a2e was used`, "tk_alice_9f1c4a2e"],
+      [`saved to /var/log/tk_bob_77ab0e31.json`, "tk_bob_77ab0e31"],
+      [`secret sk_live_${g36.slice(0, 24)} here`, `sk_live_${g36.slice(0, 24)}`],
+      [`token ghp_${g36} leaked`, `ghp_${g36}`],
+      [`see /tmp/ghp_${g36}.txt`, `ghp_${g36}`],
+      [`gho_${g36} oauth`, `gho_${g36}`],
+      [`github_pat_11ABCDE0y${g36.slice(0, 20)} fine`, `github_pat_11ABCDE0y${g36.slice(0, 20)}`],
+      [`slack xoxb-111111111-222222222-${g36.slice(0, 24)} ok`, `xoxb-111111111-222222222-${g36.slice(0, 24)}`],
+      [`key id AKIAFAKEFAKEFAKE1234 rotated`, "AKIAFAKEFAKEFAKE1234"],
+      [`glpat-${g36.slice(0, 20)} token`, `glpat-${g36.slice(0, 20)}`],
+      [`npm_${g36} registry`, `npm_${g36}`],
+    ]
+    for (const [s, secret] of cases) {
+      expect(text(s)).not.toContain(secret)
+      expect(text(s)).toContain("[REDACTED]")
+    }
+  })
+  test("a publishable key, an embedded identifier and a short label stay", () => {
+    for (const s of [
+      `pk_live_${g36.slice(0, 24)} is publishable`,
+      `var file_ghp_${g36} = 1`,
+      "tk_live_run is a label",
+      "tk_x_1 short",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a lab token in the middle of 1 MB finishes in linear time", () => {
+    expect(timeMs("tk_live_" + "9".repeat(MB) + " tail")).toBeLessThan(2000)
+    expect(timeMs("ghp_" + "a".repeat(MB) + " tail")).toBeLessThan(2000)
+  })
+})
+
+describe("redact: an RPC or API key in a URL path (H2b item 2)", () => {
+  const K = "FAKE0fake1FAKE2fake3FAKE4fake5fa"
+  test("the key in a provider URL path is masked, the host stays", () => {
+    const cases: [string, string][] = [
+      [`rpc https://eth-mainnet.g.alchemy.com/v2/${K} call`, "rpc https://eth-mainnet.g.alchemy.com/v2/[REDACTED] call"],
+      [`https://mainnet.infura.io/v3/${K}`, "https://mainnet.infura.io/v3/[REDACTED]"],
+      [`https://rpc.ankr.com/eth/${K}`, "https://rpc.ankr.com/eth/[REDACTED]"],
+      [`https://nd-1.quiknode.pro/${K}/`, "https://nd-1.quiknode.pro/[REDACTED]/"],
+      [`https://edge.goldsky.com/standard/evm/1?key=${K}`, "https://edge.goldsky.com/standard/evm/1?key=[REDACTED]"],
+    ]
+    for (const [s, want] of cases) expect(text(s)).toBe(want)
+  })
+  test("a provider host with no key, a placeholder and a doc path stay", () => {
+    for (const s of [
+      "https://polygon-rpc.com/",
+      "https://eth.llamarpc.com/eth",
+      "https://eth-mainnet.g.alchemy.com/v2/${RPC_KEY}",
+      "https://docs.alchemy.com/reference/eth-getbalance",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a provider URL with a 1 MB path finishes in linear time", () => {
+    expect(timeMs("https://rpc.ankr.com/eth/" + "a1".repeat(MB / 2) + " x")).toBeLessThan(2000)
+    expect(timeMs("https://x.alchemy.com" + "/seg".repeat(MB / 4) + " x")).toBeLessThan(2000)
+  })
+})
+
+describe("redact: JSON escaped three or more times (H2b item 3)", () => {
+  // Build the value at escape depth d: each JSON.stringify doubles backslashes.
+  const atDepth = (obj: object, d: number): string => {
+    let s = JSON.stringify(obj)
+    for (let i = 0; i < d; i++) s = JSON.stringify(s).slice(1, -1)
+    return s
+  }
+  test("a value under a secret name is masked at depth 2, 3 and 4", () => {
+    const V = "correct-horse-battery-staple"
+    for (let d = 2; d <= 4; d++) {
+      const s = atDepth({ password: V }, d)
+      expect(s).toContain("\\\\\\") // it really is deeply escaped
+      expect(text(s)).not.toContain(V)
+    }
+  })
+  test("a setting and a 0x address stay at depth 3", () => {
+    expect(text(atDepth({ sort_key: "created_at" }, 3))).toContain("created_at")
+    const addr = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+    expect(text(atDepth({ token: addr }, 3))).toContain(addr)
+  })
+  test("a deep pair with a 1 MB backslash run finishes in linear time", () => {
+    expect(timeMs('{\\\\\\"token\\\\\\":\\\\\\"a' + "\\\\".repeat(MB) + 'b\\\\\\"}')).toBeLessThan(2000)
+    expect(timeMs("x" + "\\\\".repeat(MB) + '"token":"v"')).toBeLessThan(2000)
+  })
+})
+
+describe("redact: cheap Minor 5 shapes (H2b item 4)", () => {
+  const B = "Basic dXNlcjpwYXNzMTIzNA=="
+  const V = "s3cretVALUE9f3a9c2e1"
+  test("a header after a list mark, an ordered mark or a bold wrapper is masked", () => {
+    expect(text(`1. Authorization: ${B}`)).toBe("1. Authorization: Basic [REDACTED]")
+    expect(text(`2) X-Api-Key: ${V}`)).toBe("2) X-Api-Key: [REDACTED]")
+    expect(text(`+ X-Api-Key: ${V}`)).toBe("+ X-Api-Key: [REDACTED]")
+    expect(text(`**Authorization:** ${B}`)).toBe("**Authorization:** Basic [REDACTED]")
+  })
+  test("a header set by a call or a bracket index is masked", () => {
+    expect(text(`headers.set("X-API-Key","${V}")`)).toBe(`headers.set("X-API-Key","[REDACTED]")`)
+    expect(text(`headers.set("X-API-Key", "${V}")`)).toBe(`headers.set("X-API-Key", "[REDACTED]")`)
+    expect(text(`h["X-API-Key"] = "${V}"`)).toBe(`h["X-API-Key"] = "[REDACTED]"`)
+  })
+  test("a secret query name is masked", () => {
+    expect(text(`/cb?jwt=${V}`)).toBe("/cb?jwt=[REDACTED]")
+    expect(text(`/p?sid=${V}`)).toBe("/p?sid=[REDACTED]")
+  })
+  test("the keys key, jwt and passphrase under a JSON name are masked", () => {
+    for (const k of ["key", "jwt", "passphrase"]) expect(text(`{"${k}":"${V}"}`)).toBe(`{"${k}":"[REDACTED]"}`)
+  })
+  test("mysql -p<value> is masked", () => {
+    expect(text(`mysql -p${V} -h db`)).toBe("mysql -p[REDACTED] -h db")
+  })
+  test("evidence and plain shapes stay", () => {
+    for (const s of [
+      "Key: the API key is stored in the vault", // prose, not a header value
+      "**Note:** see the run log for the trace",
+      `{"key":"created_at"}`, // a setting
+      `res.set("X-Api-Key", token)`, // a bare variable, not a literal
+      "psql -p5432 -h db", // a port, not secretish
+      "ps -p1234", // a pid
+      `config["timeout"] = "30"`, // a non-secret bracket index
+      `t("Accept", "application/json")`, // a non-secret call pair
+    ]) expect(text(s)).toBe(s)
+  })
+  test("the new shapes are linear in time with the run in the middle", () => {
+    expect(timeMs(`h["X-API-Key"] = "` + "a".repeat(MB) + `"`)).toBeLessThan(2000)
+    expect(timeMs(`set("X-API-Key","` + "a".repeat(MB) + `")`)).toBeLessThan(2000)
+    expect(timeMs("mysql -p" + "a1".repeat(MB / 2) + " x")).toBeLessThan(2000)
+    expect(timeMs("**Authorization:** Basic " + " ".repeat(MB) + "x")).toBeLessThan(2000)
+    expect(timeMs("1. X-Api-Key: " + "a".repeat(MB))).toBeLessThan(2000)
+  })
+})
+
+describe("redact: every rule in the table is linear (generated, H2b repair item 3)", () => {
+  // One generated test over the rule table (server/redact.mjs TEXT_RULES), so a
+  // new rule is covered without a new hand case. A rule with no trigger here
+  // fails. For each rule the test times redactOnePass (via timeMs, which throws
+  // if the input is capped) on: the trigger repeated; its first half repeated;
+  // and the trigger followed by a long run of each character the rule can loop
+  // on. Each is built at 64 KB and 256 KB, placed at the start, the middle and
+  // the end of the buffer, and as ONE line with no line end (the shape that
+  // hid the quadratic MYSQL_PW). The bound is linear growth: 256 KB under
+  // 4.5x the 64 KB time plus 40 ms, and under an absolute 1200 ms.
+  // A short trigger text per rule, each a string the rule matches.
+  const TRIGGERS: Record<string, string> = {
+    JSON_PAIR: '"token":"vv"',
+    JSON_PAIR_ESC: '\\"token\\":\\"vv\\"',
+    JSON_PAIR_DEEP: '\\\\\\"token\\\\\\":\\\\\\"vv\\\\\\"',
+    NAMED_VALUE: '{"name":"x-api-key","value":"vv"}',
+    NAMED_VALUE_ESC: '{\\"name\\":\\"x-api-key\\",\\"value\\":\\"vv\\"}',
+    TUPLE: '[["x-api-key","vv"]]',
+    CODE_PAIR: `token: "vv"`,
+    CODE_PAIR_ESC: `token: \\"vv\\"`,
+    LINE_HEADER: "X-Api-Key: vv\n",
+    TABLE_HEADER: "| token | vv |\n",
+    QUOTE_HEADER: `"X-Api-Key: vv"`,
+    BEARER: "Bearer abcdefghij",
+    QUERY: "?token=vvvvvvvv",
+    RPC_URL: "https://rpc.ankr.com/eth/vvvvvvvvvvvvvvvv",
+    URL_USERINFO: "//user:password@h",
+    CURL_USER: "curl -u user:password",
+    CURL_COOKIE: "curl -b sid=vvvvvvvv",
+    BRACKET_PAIR: `h["X-API-Key"] = "vv"`,
+    CALL_PAIR: `.set("X-API-Key", "vv")`,
+    DASH_P: "mysql -pvvvvvvvv",
+    CLI_FLAG: "--token vvvvvvvv",
+    ENV_ASSIGN: "TOKEN=vvvvvvvv",
+    SHAPE_PEM: "-----BEGIN PRIVATE KEY-----\nvvvv\n-----END PRIVATE KEY-----",
+    SHAPE_AWS: "AKIAFAKEFAKEFAKE1234",
+    SHAPE_GH: "ghp_" + "a".repeat(36),
+    SHAPE_GHPAT: "github_pat_" + "a".repeat(22),
+    SHAPE_GLPAT: "glpat-" + "a".repeat(20),
+    SHAPE_SLACK: "xoxb-1-2-" + "a".repeat(10),
+    SHAPE_STRIPE: "sk_live_" + "a".repeat(12),
+    SHAPE_OPENAI: "sk-" + "a".repeat(22),
+    SHAPE_JWT: "eyJhbGci.eyJzdWIi.c2ln" + "a".repeat(4),
+    SHAPE_NPM: "npm_" + "a".repeat(36),
+    SHAPE_LAB: "tk_live_9f1c4a2e",
+  }
+  // The characters a rule's pattern may loop on. A long run of ONE of these
+  // goes after a SINGLE trigger; that is the input shape that caught the
+  // earlier quadratics (a long backslash run for JSON_PAIR_DEEP). "a" and "0"
+  // feed a nested quantifier over letters or digits.
+  const LOOP = [" ", "\t", "\\", '"', "'", ".", "-", ":", "=", ";", ",", "/", "`", "a", "0"]
+  // One pathological run for a rule: `prefix` then `unit` repeated to `n`.
+  // Cases: the trigger repeated (prefix empty); its first half repeated; each
+  // space-separated word repeated (so a command word such as "mysql" with no
+  // "-p" after it reproduces the quadratic MYSQL case); and one trigger then a
+  // long run of each loop character.
+  const cases = (trigger: string): [string, string][] => [
+    ["", trigger],
+    ["", trigger.slice(0, Math.max(1, trigger.length >> 1))],
+    ...trigger.split(" ").filter(Boolean).map((w) => ["", w + " "] as [string, string]),
+    ...LOOP.map((c) => [trigger, c] as [string, string]),
+  ]
+  // prefix + unit repeated so the whole is about n characters, as ONE line
+  // (no line end), framed with neutral pad at start / middle / end.
+  const PAD = (n: number): string => "the lab did not check the caller here. ".repeat(Math.ceil((n / 4) / 39))
+  const oneLine = (prefix: string, unit: string, n: number): string =>
+    prefix + unit.repeat(Math.max(1, Math.ceil((n - prefix.length) / unit.length)))
+  const framed = (prefix: string, unit: string, n: number): string[] => {
+    const core = oneLine(prefix, unit, n)
+    const pad = PAD(n)
+    return [core, pad + core, core + pad] // end-of-buffer, start-of-buffer, mid
+  }
+
+  test("the rule table is covered", () => {
+    const names = Object.keys(TEXT_RULES as Record<string, unknown>)
+    for (const name of names) expect(TRIGGERS[name], `rule ${name} needs a timing trigger`).not.toBeUndefined()
+    expect(names.length).toBeGreaterThanOrEqual(30)
+  })
+
+  for (const [name, trigger] of Object.entries(TRIGGERS)) {
+    test(
+      `${name} is linear`,
+      () => {
+        for (const [prefix, unit] of cases(trigger)) {
+          for (const s of framed(prefix, unit, 256 * 1024)) expect(timeMs(s)).toBeLessThan(1200)
+          // Linear growth: the one-line run at 64 KB vs 256 KB.
+          const t64 = timeMs(oneLine(prefix, unit, 64 * 1024))
+          const t256 = timeMs(oneLine(prefix, unit, 256 * 1024))
+          expect(t256).toBeLessThan(4.5 * t64 + 40)
+        }
+        // Nested-quantifier catch: the trigger WITHOUT its closing character,
+        // then a long run of a letter or a digit. With no closing delimiter a
+        // nested quantifier such as /(?:[a-z0-9]+)+!/ backtracks. JSC bounds
+        // that to a plateau (~240 ms at any size), far above every linear rule
+        // here (<70 ms at 256 KB), so a 150 ms bound at 8 KB separates them and
+        // fails in well under a second. The 20 s per-test timeout is a backstop.
+        const open = trigger.length > 1 ? trigger.slice(0, -1) : trigger
+        for (const c of ["a", "0"]) {
+          for (const s of framed(open, c, 8 * 1024)) expect(timeMs(s)).toBeLessThan(150)
+        }
+      },
+      20000,
+    )
+  }
+})
+
+describe("redact: a timing input over the cap must go through one pass (H2b repair B1 guard)", () => {
+  // The guard that `timeMs` carries: it mirrors the helper's own check, so a
+  // reviewer who routes `redactTimed` through `redactSecrets` makes timeMs
+  // throw on every >cap case. Proven by mutation: changing redactTimed to
+  // `redactSecrets({ x: input }).x` makes these and the whole timing suite fail.
+  const guard = (out: string): number => {
+    if (out.includes(TOO_LONG)) throw new Error("capped")
+    return 0
+  }
+  test("the cap fires on a large input, so a capped timing run would throw", () => {
+    const big = "X-Api-Key: " + "a".repeat(CAP)
+    expect(big.length).toBeGreaterThan(CAP)
+    // redactSecrets caps it (what a mis-routed timeMs would see) -> guard throws.
+    expect(() => guard(redactSecrets({ x: big }).x)).toThrow()
+    // redactOnePass runs the rules (what timeMs actually uses) -> guard passes.
+    expect(() => guard(redactOnePass(big))).not.toThrow()
+  })
+  test("timeMs runs the rule on a 256 KB input and stays fast", () => {
+    expect(timeMs("\\".repeat(256 * 1024) + '"token":"v"')).toBeLessThan(2000)
+  })
+})
+
+describe("redact: false positives from real PoC and tool-output shapes (H2b repair)", () => {
+  // Secret-free samples modelled on lines in the real records (read-only) that
+  // hold each changed rule's trigger word. Each must stay byte-identical.
+  test("Solidity and JS call shapes stay (CALL_PAIR, B2)", () => {
+    for (const s of [
+      `new MockERC20("Token", "TKN", 18);`,
+      `new ERC20("Mock USDC", "USDC");`,
+      `emit log_named_string("token", "transferred");`,
+      `console.log("token", "balance after");`,
+      `keccak256(abi.encodePacked("token", "USDC"))`,
+      `vm.label(address(token), "Token");`,
+      `map.set("session", "active");`,
+      `headers.set("Accept", "application/json");`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("provider-name mentions and non-RPC URLs stay (RPC_URL, B3)", () => {
+    for (const s of [
+      "https://dashboard.tenderly.co/tx/mainnet/0x" + "a".repeat(64),
+      "https://www.bankrate.com/mortgages/rates2024abcdefgh12",
+      "https://moralis.io/blog/how-to-get-erc20-balances-2024",
+      "The lab uses an Alchemy RPC in the fork config.",
+      "see docs.alchemy.com/reference/eth-getbalance for the method",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("command lines with -p that are not mysql stay (MYSQL_PW, B4)", () => {
+    for (const s of [
+      "gcc -Wall -pedantic-errors main.c",
+      "docker run -p127.0.0.1:8545:8545 foundry",
+      "forge test -vvv --match-path test/Exploit.t.sol",
+      "anvil --port 8545 --fork-url $RPC",
+      "psql -p5432 -h db -U readonly",
+    ]) expect(text(s)).toBe(s)
+  })
+  test("storage keys and proofs stay (PAIR_SECRET 0x, Minor 1)", () => {
+    const slot = "0x" + "0".repeat(63) + "2"
+    for (const s of [
+      `{"key":"${slot}","value":"0x01"}`,
+      `{"jwt":"${slot}"}`,
+      `"storageProof":[{"key":"${slot}","value":"0x0"}]`,
+    ]) expect(text(s)).toBe(s)
+  })
+  test("a CSS-like lab identifier stays (SHAPES, Minor 3)", () => {
+    for (const s of [`class="tk_btn_ff00aa"`, `--tk_gap_12: 4px;`]) expect(text(s)).toBe(s)
+  })
+})
+
+describe("redact: each RPC and CALL fix has a break-once test (H2b repair Minor 2)", () => {
+  const K = "FAKE0fake1FAKE2fake3FAKE4fake5fa" // 32, mixed, no dash
+  const uuid = "3f5c2f7a-1b2c-4d5e-8f90-a1b2c3d4e5f6"
+  const hex64 = "0x" + "a".repeat(64)
+  test("provider name as a substring is not an RPC host (bankrate)", () => {
+    // Fails if RPC_HOSTS matched the provider name anywhere in the host.
+    expect(text(`https://www.bankrate.com/mortgages/rates2024abcdefgh12`)).toBe(`https://www.bankrate.com/mortgages/rates2024abcdefgh12`)
+  })
+  test("a dashboard host is not an RPC host; the gateway host is (tenderly)", () => {
+    // Fails if the dashboard host were treated as RPC.
+    expect(text(`https://dashboard.tenderly.co/tx/mainnet/${hex64}`)).toBe(`https://dashboard.tenderly.co/tx/mainnet/${hex64}`)
+    expect(text(`https://mainnet.gateway.tenderly.co/${K}`)).toBe("https://mainnet.gateway.tenderly.co/[REDACTED]")
+  })
+  test("a 0x segment on an RPC host stays (0x exclusion)", () => {
+    expect(text(`https://rpc.ankr.com/eth/${hex64}`)).toBe(`https://rpc.ankr.com/eth/${hex64}`)
+  })
+  test("a uuid key masks on an RPC host, stays off it (Minor 1)", () => {
+    expect(text(`https://eth-mainnet.blastapi.io/${uuid}`)).toBe("https://eth-mainnet.blastapi.io/[REDACTED]")
+    expect(text(`https://dashboard.tenderly.co/x/simulator/${uuid}`)).toBe(`https://dashboard.tenderly.co/x/simulator/${uuid}`)
+    // an Alchemy key with a dash masks on its RPC host
+    expect(text(`https://eth-mainnet.g.alchemy.com/v2/Ab3dEf-Gh5jKlMn0pQrSt7uVwXyZ12`)).toBe("https://eth-mainnet.g.alchemy.com/v2/[REDACTED]")
+  })
+  test("CALL_PAIR masks only a header setter, even with a credential value", () => {
+    // A credential-shaped value that no SHAPES rule matches, so only the pair
+    // rule could mask it. A non-setter call stays; a setter masks. Fails if
+    // CALL_PAIR matched any call.
+    const v = "S3cretPasswordXY"
+    expect(text(`console.log("token", "${v}")`)).toBe(`console.log("token", "${v}")`)
+    expect(text(`emit log_named_string("token", "${v}")`)).toBe(`emit log_named_string("token", "${v}")`)
+    expect(text(`tokens.set("token", "${v}")`)).toBe(`tokens.set("token", "[REDACTED]")`)
+    expect(text(`res.setHeader("Authorization", "Bearer ${v}")`)).toBe(`res.setHeader("Authorization", "Bearer [REDACTED]")`)
+  })
+})
+
+describe("redact: redactText replaces only rules in TEXT_RULES (H2b repair Minor 1 guard)", () => {
+  // The single source for the reset pass and the generated timing test is
+  // TEXT_RULES. A full data-driven refactor of redactText was not a small
+  // change (maskMysql is per-line, the SHAPES loop masks with MARK, and the
+  // three JSON-pair callbacks differ), so this guard stands in: a new
+  // out.replace(RULE, ...) added to redactText with a regex not in TEXT_RULES
+  // would be neither reset nor timed, and this test fails.
+  test("every named regex redactText replaces is in TEXT_RULES", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "server", "redact.mjs"), "utf8")
+    const start = src.indexOf("function redactText")
+    expect(start).toBeGreaterThan(0)
+    const body = src.slice(start, src.indexOf("\n}\n", start))
+    const used = [...body.matchAll(/\breplace\(\s*([A-Z][A-Z0-9_]*)\s*,/g)].map((m) => m[1])
+    expect(used.length).toBeGreaterThan(15)
+    const names = new Set(Object.keys(TEXT_RULES as Record<string, unknown>))
+    for (const u of used) expect(names.has(u), `redactText replaces ${u}, which is not in TEXT_RULES`).toBe(true)
+  })
+})
+
+describe("redact: a value or key that merely contains 'auth' stays (H2b repair item 5)", () => {
+  // Restored after the hygiene branch removed a duplicate object key. A value
+  // with "auth" that is a setting, and a non-secret name, must not be masked.
+  test("auth settings and words stay", () => {
+    for (const s of [
+      `{"storageKey":"auth-state"}`,
+      `{"flow":"oauth-redirect"}`,
+      `{"state":"authenticated"}`,
+      `const mode = "auth-required"`,
+    ]) expect(text(s)).toBe(s)
+    const plain = { storageKey: "auth-state", authFlow: "oauth-redirect" }
+    expect(redactSecrets(plain)).toEqual(plain)
+  })
+})
+
+describe("redact: the non-RPC subdomain list keeps docs and blog hosts (H2b repair Minor 3)", () => {
+  test("a docs, www-blog or blog host path stays", () => {
+    for (const s of [
+      "https://docs.infura.io/api/project-id-2024abc",
+      "https://www.alchemyapi.io/blog/intro2024abcdef",
+      "https://blog.getblock.io/the-2024-guide1-abcdef",
+    ]) expect(text(s)).toBe(s)
+  })
+})
+
+describe("redact: maskMysql treats CR, LF and CRLF as line ends (H2b repair Minor 2)", () => {
+  test("a gcc flag on the line after a mysql line stays", () => {
+    for (const eol of ["\n", "\r\n", "\r"]) {
+      expect(text(`mysql -h db${eol}gcc -pedantic-errors x.c`)).toBe(`mysql -h db${eol}gcc -pedantic-errors x.c`)
+    }
+    // mysql -p on its own line is still masked, after any line end.
+    expect(text("ls -la\rmysql -pS3cretPass1 db")).toBe("ls -la\rmysql -p[REDACTED] db")
   })
 })
