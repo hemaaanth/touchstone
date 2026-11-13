@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 
@@ -15,7 +15,7 @@ const TOKEN = "test-grant-token"
 process.env.TOUCHSTONE_GRANT_TOKEN = TOKEN
 
 // @ts-expect-error — plain .mjs module, no types
-const { readFolderInPlace, addScope, withFreshFolders } = await import("../server/runs.mjs")
+const { readFolderInPlace, openedInside, addScope, withFreshFolders } = await import("../server/runs.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { handleScopes } = await import("../server/runs-http.mjs")
 // @ts-expect-error — plain .mjs module, no types
@@ -71,6 +71,29 @@ describe("readFolderInPlace", () => {
     }
     expect(() => readFolderInPlace(lab, { beforeOpen: swap })).toThrow(/no longer inside/)
     expect(swapped).toBe(true)
+  })
+
+  test("missing proc descriptor proof refuses an outside file without reading it", () => {
+    const outside = path.join(dir, "outside-proof.ts")
+    writeFileSync(outside, "export const OUTSIDE_ROOT = true\n")
+    const fd = openSync(outside, "r")
+    let reads = 0
+    try {
+      // Simulate a platform without /proc (or a failed readlink). The opened
+      // descriptor points outside, while the claimed path is inside the lab.
+      const readIfProven = () => {
+        if (openedInside(fd, fstatSync(fd), path.join(lab, "src/proof.ts"), lab, () => {
+          throw new Error("/proc/self/fd unavailable")
+        })) {
+          reads++
+          return readFileSync(fd, "utf8")
+        }
+      }
+      expect(readIfProven).toThrow(/Cannot prove this file is inside the scope root/)
+      expect(reads).toBe(0)
+    } finally {
+      closeSync(fd)
+    }
   })
 
   test("a folder given through a symlink is read at its real path, and ~ is the home folder", () => {

@@ -17,7 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, lstatSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -153,26 +153,16 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
 const MAX_SCAN = 20000
 
 // Is the open file `fd` inside `root`? On Linux, /proc/self/fd/<fd> names the
-// file the descriptor really points at. Elsewhere, the file at the path's real
-// location (inside the root) must be the same file (device and inode) as the
-// open one; a swap after the open changes the inode, so it is refused too.
-function openedInside(fd, st, full, root) {
-  let where = null
+// file the descriptor really points at. If this descriptor-anchored proof is
+// unavailable, refuse the read: checking the path again can race a symlink swap.
+export function openedInside(fd, _st, _full, root, readDescriptorPath = readlinkSync) {
+  let where
   try {
-    where = readlinkSync(`/proc/self/fd/${fd}`)
+    where = readDescriptorPath(`/proc/self/fd/${fd}`)
   } catch {
-    // no /proc: fall back to the device and inode check
+    throw new Error("Cannot prove this file is inside the scope root on this platform.")
   }
-  if (where !== null) return where.startsWith(root + path.sep)
-  let real
-  try {
-    real = realpathSync(full)
-  } catch {
-    return false
-  }
-  if (!real.startsWith(root + path.sep)) return false
-  const now = lstatSync(real)
-  return now.dev === st.dev && now.ino === st.ino
+  return where.startsWith(root + path.sep)
 }
 
 // `hooks.beforeOpen(relPath)` runs just before each file is opened. Tests use
