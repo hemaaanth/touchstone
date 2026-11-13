@@ -398,12 +398,15 @@ test("an unreachable lab RPC gives unavailable, not a clean result", { skip: nee
 
 // runDocker removes the timed-out container before it returns (main 44ba808). Before
 // that fix the monitor container was still on the network here. That the call returns
-// near timeoutMs is pinned in test/wrap.test.mjs with a 40 s tool; the monitor's full
-// run takes only about 9 s, so a time bound here cannot tell the two apart.
+// near timeoutMs is pinned in test/wrap.test.mjs with a 40 s tool.
+// The lab chain is paused, so every RPC call of the monitor hangs and the run cannot
+// finish (more than 90 s measured). A healthy run takes under 1.5 s on a fast host, so
+// without the pause the timeout would not fire and the test would depend on host speed.
 test("a monitor run that times out gives unavailable and leaves no monitor container before cleanup", { skip: needs, timeout: 300_000 }, async () => {
   const tag = newTag();
   const handle = await startWatchLab(CHAIN_LAB, { tag });
   try {
+    execFileSync("docker", ["pause", handle.name], { stdio: "ignore" }); // stopWatchLab's rm -f removes a paused container
     const r = await runMonitors(handle, { timeoutMs: 1500 });
     assert.equal(r.available, false);
     assert.equal(r.reason, "timed out");
