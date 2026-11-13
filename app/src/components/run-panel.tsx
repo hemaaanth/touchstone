@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
-import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
+import { Bot, ChevronDown, ChevronRight, Files, Flag, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
+import type { AgentNode, ArtifactDoc, BulletinNote, RunLead, RunMode, Severity } from "@/lib/types"
+import { INK, severityTone } from "@/lib/format"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
 import { Markdown } from "@/components/markdown"
@@ -24,15 +25,17 @@ import {
 
 // The run panel. It floats in the chat's top-right corner on every run, fleet
 // or solo, phone or desktop. It is a stack of sections, like the assistant-ui
-// MCP server panel: Info, Agents, Bulletin, Findings & Proofs, and Files. Each
+// MCP server panel: Info, Agents, Bulletin, Leads, Findings & Proofs, and Files. Each
 // section row shows a count and a short status. One section is open at a time
 // and scrolls inside itself. The top row folds the whole panel to one line, so
 // it never hides the chat for long. A click on an agent, a finding's proof or a
 // file opens it in the run drawer.
 // Findings & Proofs holds what the run claims and what its replay showed.
 // Files holds what the run wrote to get there: test files, sources, reports.
+// Leads holds what the agents recorded with record_lead: each lead's file, line
+// and reason. A lead is never proven, so it never shows in Findings & Proofs.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "leads" | "findings" | "files"
 
 export function RunPanel({
   state,
@@ -84,12 +87,16 @@ export function RunPanel({
   const held = notes.filter((n) => n.lane === "evidence").length
   const leads = notes.filter((n) => n.lane !== "evidence" && n.kind === "lead").length
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
+  // Recorded leads. A Review run always shows the section, so "0" is visible.
+  const recordedLeads = state.leads
+  const showLeads = recordedLeads.length > 0 || state.scope?.pack === "review"
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
   // The folded line. Each count bumps when it goes up.
   const summary = [
     showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
     showBulletin ? counted(notes.length, "note") : null,
+    showLeads ? counted(recordedLeads.length, "lead") : null,
     counted(found.length, "finding"),
     counted(docs.length, "file"),
   ].filter((p) => p != null)
@@ -162,6 +169,18 @@ export function RunPanel({
               onToggle={() => toggle("bulletin")}
             >
               <BulletinList state={state} onAgent={onAgent} />
+            </Section>
+          ) : null}
+          {showLeads ? (
+            <Section
+              icon={Flag}
+              label="Leads"
+              count={recordedLeads.length}
+              status={recordedLeads.length ? "Not proven" : null}
+              expanded={section === "leads"}
+              onToggle={() => toggle("leads")}
+            >
+              <LeadList leads={recordedLeads} state={state} onAgent={onAgent} />
             </Section>
           ) : null}
           <Section
@@ -576,6 +595,45 @@ export function TierTag({ tier = "T2", className }: { tier?: "T1" | "T2"; classN
     >
       {tier} · {tier === "T2" ? "untrusted" : "trusted"}
     </span>
+  )
+}
+
+// The leads the agents recorded, worst first. Each shows its severity, where it
+// is (file:line), what an attacker does, why the agent thinks it holds, and what
+// would prove it. Every lead reads "not proven": nothing in this run proves it.
+function LeadList({ leads, state, onAgent }: { leads: RunLead[]; state: RunState; onAgent: (id: string) => void }) {
+  if (!leads.length) return <p className={empty}>No leads recorded yet.</p>
+  return (
+    <div className="flex flex-col pb-2">
+      {leads.map((l) => {
+        const child = state.agents.some((a) => a.id === l.author)
+        return (
+          <div key={l.id} className="flex flex-col gap-1 px-3 py-2">
+            <p className="flex items-baseline gap-2 text-[11px] leading-[14px]">
+              <span className={cn("capitalize", l.severity ? INK[severityTone(l.severity)] : "text-muted-foreground")}>
+                {l.severity ?? "unrated"}
+              </span>
+              <span className="text-muted-foreground">Lead · not proven</span>
+              {child ? (
+                <button
+                  type="button"
+                  className="ml-auto rounded-sm text-muted-foreground outline-none hover:text-foreground hover:underline"
+                  onClick={() => onAgent(l.author)}
+                >
+                  {agentName(state, l.author)}
+                </button>
+              ) : null}
+            </p>
+            <p className="text-[13px] leading-4 font-semibold">{l.title || "Untitled lead"}</p>
+            <p className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted-foreground" title={`${l.file}:${l.line}`}>
+              {l.file}:{l.line}
+            </p>
+            {l.reason ? <p className="text-xs whitespace-pre-wrap text-muted-foreground">{l.reason}</p> : null}
+            {l.proof ? <p className="text-xs whitespace-pre-wrap text-muted-foreground">Would prove it: {l.proof}</p> : null}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 

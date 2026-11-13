@@ -39,7 +39,7 @@ test("a non-Solidity scope runs under Review: no Foundry, replay off, no way to 
   assert.equal(cfg.pack, "review");
   const pack = packFor(cfg);
   const names = pack.tools(ws, {}).map((t) => t.name);
-  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "fetch_source"]);
+  assert.deepEqual(names, ["list_sources", "read_source", "search_source", "record_lead", "fetch_source"]);
   assert.ok(!names.includes("submit_finding") && !names.includes("run_poc"));
   // Even a forged finding list proves nothing.
   assert.deepEqual(await pack.prove(ws, [{ title: "x", severity: "critical", poc: "X" }], [], () => {}), []);
