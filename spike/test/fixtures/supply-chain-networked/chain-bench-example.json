@@ -1,0 +1,84 @@
+{
+  "_note": "Synthetic fixture in chain-bench v0.1.10's report shape. Not a real scan.",
+  "metadata": {
+    "date": "2026-01-01T00:00:00Z",
+    "scan_id": "00000000-0000-4000-8000-000000000000",
+    "statistics": {
+      "passed": 1,
+      "failed": 1,
+      "unknown": 5,
+      "total": 7
+    },
+    "url": "https://github.com/example-org/example-repo"
+  },
+  "results": [
+    {
+      "id": "1.1.13",
+      "name": "Ensure linear history is required",
+      "description": "CIS software supply chain benchmark rule 1.1.13.",
+      "remediation": "See rule 1.1.13.",
+      "severity": "Low",
+      "result": "Passed",
+      "url": "https://example.org/chain-bench/rules/1.1.13"
+    },
+    {
+      "id": "1.1.14",
+      "name": "Ensure branch protection rules are enforced on administrators",
+      "description": "CIS software supply chain benchmark rule 1.1.14.",
+      "remediation": "See rule 1.1.14.",
+      "severity": "High",
+      "result": "Unknown",
+      "url": "https://example.org/chain-bench/rules/1.1.14",
+      "reason": "Repository is missing minimal permissions"
+    },
+    {
+      "id": "1.1.15",
+      "name": "Ensure pushing of new code is restricted to specific individuals or teams",
+      "description": "CIS software supply chain benchmark rule 1.1.15.",
+      "remediation": "See rule 1.1.15.",
+      "severity": "Critical",
+      "result": "Unknown",
+      "url": "https://example.org/chain-bench/rules/1.1.15",
+      "reason": "Repository is missing minimal permissions"
+    },
+    {
+      "id": "1.1.16",
+      "name": "Ensure force pushes code to branches is denied",
+      "description": "CIS software supply chain benchmark rule 1.1.16.",
+      "remediation": "See rule 1.1.16.",
+      "severity": "Critical",
+      "result": "Failed",
+      "url": "https://example.org/chain-bench/rules/1.1.16"
+    },
+    {
+      "id": "1.3.3",
+      "name": "Ensure minimum admins are set for the organization",
+      "description": "CIS software supply chain benchmark rule 1.3.3.",
+      "remediation": "See rule 1.3.3.",
+      "severity": "High",
+      "result": "Unknown",
+      "url": "https://example.org/chain-bench/rules/1.3.3",
+      "reason": "Organization is not fetched"
+    },
+    {
+      "id": "2.3.1",
+      "name": "Ensure all build steps are defined as code",
+      "description": "CIS software supply chain benchmark rule 2.3.1.",
+      "remediation": "See rule 2.3.1.",
+      "severity": "High",
+      "result": "Unknown",
+      "url": "https://example.org/chain-bench/rules/2.3.1",
+      "reason": "No pipelines were found"
+    },
+    {
+      "id": "4.2.5",
+      "name": "Ensure anonymous access to artifacts is revoked",
+      "description": "CIS software supply chain benchmark rule 4.2.5.",
+      "remediation": "See rule 4.2.5.",
+      "severity": "Critical",
+      "result": "Unknown",
+      "url": "https://example.org/chain-bench/rules/4.2.5",
+      "reason": "Registry is not fetched"
+    }
+  ]
+}
