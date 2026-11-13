@@ -84,6 +84,39 @@ export function scrub(text, values) {
   return out;
 }
 
+// What a scrub cannot see: a part of the secret, or the secret encoded. These
+// are every 12-character piece of the value, its base64 and base64url forms
+// (at each of the 3 byte offsets, and every 16-character piece of those), and
+// its URL-encoded form. A tool that prints any of them has its output dropped.
+export const PIECE = 12;
+export function secretForms(v) {
+  const forms = new Set([encodeURIComponent(v)]);
+  for (let i = 0; i + PIECE <= v.length; i++) forms.add(v.slice(i, i + PIECE));
+  for (let k = 0; k < 3; k++) {
+    const b = Buffer.from(v.slice(k));
+    for (const enc of ["base64", "base64url"]) {
+      // Only whole 3-byte groups: the tail depends on the bytes that follow.
+      const core = b.toString(enc).slice(0, Math.floor(b.length / 3) * 4);
+      for (let i = 0; i + 16 <= core.length; i++) forms.add(core.slice(i, i + 16));
+    }
+  }
+  return [...forms];
+}
+export function holdsSecret(text, values) {
+  const t = String(text ?? "");
+  return values.some((v) => v && secretForms(v).some((f) => t.includes(f)));
+}
+export const LEAK_REASON = "output contained part of the token";
+
+// Scrub stdout and stderr. If any part of a secret is still there, drop both.
+export function cleanOutput(r, values) {
+  const stdout = scrub(r.stdout, values), stderr = scrub(r.stderr, values);
+  if (holdsSecret(stdout, values) || holdsSecret(stderr, values)) return { stdout: "", stderr: "", leaked: LEAK_REASON };
+  return { stdout, stderr };
+}
+// An error message is saved too. Same rule: scrub, and drop it if a part is left.
+export const cleanError = (msg, values) => { const m = scrub(msg, values).slice(0, 300); return holdsSecret(m, values) ? `error text dropped: ${LEAK_REASON}` : m; };
+
 function execDocker(args, { env, timeoutMs, maxBuffer }) {
   return new Promise((resolve) => {
     execFile("docker", args, { env, timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
@@ -129,7 +162,8 @@ export function egressSummary(logText) {
 }
 
 // Run one tool with the network, confined. Resolves (never rejects) with
-//   { code, stdout, stderr, timedOut, egress, refused? }
+//   { code, stdout, stderr, timedOut, egress, refused?, leaked? }
+// leaked: the output held part of a secret, so stdout and stderr are empty.
 // A refusal (no grant, bad hosts, a missing secret) starts nothing.
 //   reach, targets   the grant and what this call reads
 //   hosts            egress allow-list, a subset of GITHUB_CAPTURE_HOSTS
@@ -147,16 +181,17 @@ export async function runCapture({ image, cmd, ws = null, user, env = {}, timeou
   const name = `touchstone-capture-${randomBytes(4).toString("hex")}`;
   let box;
   try { box = await confine({ allowedHosts: hosts }); }
-  catch (err) { return refuse(`could not build the egress boundary: ${scrub(err.message, values).slice(0, 300)}`); }
+  catch (err) { return refuse(`could not build the egress boundary: ${cleanError(err.message, values)}`); }
   try {
     const args = captureArgs({ name, image, cmd, ws, network: box.netClient, gate: box.gateUrl, user, env, secretNames: Object.keys(secrets) });
     // Secrets live only in the docker CLI's environment. The CLI copies a
     // `-e NAME` with no value from there into the container.
     const r = await runNamed(args, name, { env: { ...process.env, ...secrets }, timeoutMs, maxBuffer, exec });
     const logs = box.proxyName ? await exec(["logs", box.proxyName], { env: process.env, timeoutMs: 15_000, maxBuffer: 16 * 1024 * 1024 }) : { stdout: "", stderr: "" };
-    return { code: r.code, stdout: scrub(r.stdout, values), stderr: scrub(r.stderr, values), timedOut: r.timedOut, egress: egressSummary(`${logs.stdout}\n${logs.stderr}`) };
+    const out = cleanOutput(r, values);
+    return { code: r.code, ...out, timedOut: r.timedOut, egress: egressSummary(`${logs.stdout}\n${logs.stderr}`) };
   } catch (err) {
-    return refuse(scrub(err.message, values).slice(0, 300));
+    return refuse(cleanError(err.message, values));
   } finally {
     try { await box.stop(); } catch { /* already gone */ }
   }

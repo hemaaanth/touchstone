@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runTool } from "../lib/wrap.mjs";
+import { holdsSecret } from "../lib/capture.mjs";
 import { sha256 } from "../lib/proof-evidence.mjs";
 import { LEGITIFY, captureLegitify, blockedFrom, legitifyReason } from "../packs/supply-chain/networked-blocked.mjs";
 import { prepareNetworkedSnapshot, networkedResults, NETWORKED_TOOLS } from "../packs/supply-chain/networked.mjs";
@@ -97,6 +98,19 @@ test("fail closed: no target, no token, no grant, timeout, empty success, an und
   assert.match(legRow(d).reason, /no lead parser has been checked against a real legitify result/);
   // A saved output that does not match its pin is reported as such.
   assert.match(legRow(blockedFrom({ captures: { legitify: { ...c, text: c.text + "x" } } })).reason, /does not match its SHA-256/);
+});
+
+test("a base64 copy of the token from Legitify: unavailable, and the snapshot holds no part of it", async () => {
+  const exec = async (args, { env }) => ({ code: 0, stdout: `{"auth":"${Buffer.from(`x:${env.SCM_TOKEN}`).toString("base64")}"}`, stderr: "", timedOut: false });
+  const ws = mkdtempSync(join(tmpdir(), "touchstone-legit-leak-"));
+  try {
+    const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
+    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["legitify"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run: seam(exec), base });
+    assert.equal(snapshot.captures.legitify.status, "unavailable");
+    assert.equal(snapshot.captures.legitify.reason, "output contained part of the token");
+    for (const f of readdirSync(ws)) assert.ok(!holdsSecret(readFileSync(join(ws, f), "utf8"), [FAKE_TOKEN]), `${f} holds part of the token`);
+    assert.equal(legRow(networkedResults(snapshot)).status, "unavailable");
+  } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
 test("the token value appears nowhere in the pinned snapshot, even when Legitify prints it", async () => {

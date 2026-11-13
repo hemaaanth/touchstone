@@ -8,7 +8,7 @@
 // so a parser would be a guess. A run that prints output is still a gap.
 import { execFileSync } from "node:child_process";
 import { runTool } from "../../lib/wrap.mjs";
-import { scrub } from "../../lib/capture.mjs";
+import { cleanOutput } from "../../lib/capture.mjs";
 import { sha256 } from "../../lib/proof-evidence.mjs";
 
 // Legitify v1.0.11, built locally from the release tarball checked by SHA-256
@@ -71,11 +71,14 @@ export async function captureLegitify({ target = null, reach, token = process.en
   const cmd = LEGITIFY.cmd(target);
   const r = await run({ image: LEGITIFY.image, cmd, env: { HOME: "/tmp" }, timeoutMs: 300_000,
     capture: { reach, targets: [{ owner: target.owner, repo: target.repo }], hosts: LEGITIFY.hosts, secrets: { [LEGITIFY.secret]: token } } });
-  const text = scrub(r.stdout, [token]);
+  // Output that still holds part of the token after the scrub is dropped.
+  const c = cleanOutput(r, [token]);
+  const leaked = r.leaked ?? c.leaked;
+  const text = leaked ? "" : c.stdout;
   // Only exit 0 with output is a run. No real run has shown an "issues found" exit.
-  const ran = !r.refused && !r.timedOut && r.code === 0 && text.trim().length > 0;
+  const ran = !leaked && !r.refused && !r.timedOut && r.code === 0 && text.trim().length > 0;
   return { tool: "legitify", mode: "api", image: LEGITIFY.image, imageId: imageId(LEGITIFY.image), cmd, status: ran ? "ran" : "unavailable", code: r.code, timedOut: Boolean(r.timedOut),
-    sha256: sha256(text), text, stderr: scrub(r.stderr, [token]).slice(0, 8192), ...(ran ? {} : { reason: legitifyReason(r) }), ...(r.egress ? { egress: r.egress } : {}),
+    sha256: sha256(text), text, stderr: leaked ? "" : c.stderr.slice(0, 8192), ...(ran ? {} : { reason: leaked ?? legitifyReason({ ...r, stderr: c.stderr }) }), ...(r.egress ? { egress: r.egress } : {}),
     capturedAt: now(), target: `${target.owner}/${target.repo}` };
 }
 

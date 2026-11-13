@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 
 import { runTool } from "../lib/wrap.mjs";
-import { captureArgs, assertCaptureReach, egressSummary, scrub, runNamed, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
+import { captureArgs, assertCaptureReach, egressSummary, scrub, runNamed, runCapture, holdsSecret, cleanOutput, LEAK_REASON, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
 
 const FAKE_TOKEN = "ghp_FAKEtokenFAKEtokenFAKEtokenFAKE1234";
 const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
@@ -146,6 +146,41 @@ test("grant check, egress parse and scrub", () => {
   assert.deepEqual(GITHUB_CAPTURE_HOSTS, ["api.github.com", "codeload.github.com"]);
   assert.deepEqual(egressSummary("junk\n__TOUCHSTONE_SCOPE__ {bad\n"), { tunnels: {}, blocked: {} });
   assert.equal(scrub("a SECRETVALUE b SECRETVALUE", ["SECRETVALUE"]), "a [REDACTED] b [REDACTED]");
+});
+
+// A scrub only replaces the whole value. Encoded or split copies must still be
+// caught, and then the whole output is dropped.
+test("leak check: base64, base64url, split and URL-encoded copies of the token are caught", () => {
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const half = FAKE_TOKEN.length >> 1;
+  const leaks = [
+    b64(FAKE_TOKEN),
+    Buffer.from(FAKE_TOKEN).toString("base64url"),
+    b64(`x-access-token:${FAKE_TOKEN}`), b64(`a:${FAKE_TOKEN}`), b64(`ab:${FAKE_TOKEN}`),
+    `${FAKE_TOKEN.slice(0, half)}\n${FAKE_TOKEN.slice(half)}`,
+    FAKE_TOKEN.slice(5, 17),
+  ];
+  for (const l of leaks) assert.equal(holdsSecret(`out ${l} end`, [FAKE_TOKEN]), true, l);
+  const odd = "tok/en+with=chars&more";
+  assert.equal(holdsSecret(`?t=${encodeURIComponent(odd)}`, [odd]), true);
+  assert.equal(holdsSecret('{"ok":true,"score":7} [REDACTED]', [FAKE_TOKEN]), false);
+  assert.equal(holdsSecret(FAKE_TOKEN.slice(0, 11), [FAKE_TOKEN]), false, "an 11-character piece is too short to be sure");
+  const c = cleanOutput({ stdout: `fine\n${b64(FAKE_TOKEN)}`, stderr: "x" }, [FAKE_TOKEN]);
+  assert.deepEqual(c, { stdout: "", stderr: "", leaked: LEAK_REASON });
+  assert.deepEqual(cleanOutput({ stdout: `a ${FAKE_TOKEN}`, stderr: "" }, [FAKE_TOKEN]), { stdout: "a [REDACTED]", stderr: "" });
+});
+
+test("runCapture drops all output when a part of the token is left after the scrub", async () => {
+  const half = FAKE_TOKEN.length >> 1;
+  for (const print of [Buffer.from("$TOKEN").toString("base64"), `ok ${FAKE_TOKEN.slice(0, half)}\n${FAKE_TOKEN.slice(half)}`]) {
+    const s = seams({ printErr: "" });
+    const exec = async (args, o) => (args[0] === "run" ? { code: 0, stdout: print === Buffer.from("$TOKEN").toString("base64") ? Buffer.from(o.env.GITHUB_TOKEN).toString("base64") : print, stderr: "", timedOut: false } : s.exec(args, o));
+    const r = await runCapture({ image: "i:1", cmd: [], user: "1:1", reach, targets, hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec });
+    assert.equal(r.leaked, LEAK_REASON);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, "");
+    assert.ok(!holdsSecret(JSON.stringify(r), [FAKE_TOKEN]));
+  }
 });
 
 const hasDocker = (() => {

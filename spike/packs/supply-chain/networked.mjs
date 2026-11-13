@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTool } from "../../lib/wrap.mjs";
-import { scrub } from "../../lib/capture.mjs";
+import { cleanOutput, cleanError } from "../../lib/capture.mjs";
 import { loadSnapshot, pinSnapshot, sha256 } from "../../lib/proof-evidence.mjs";
 import { githubTarget } from "../../lib/scopes-store.mjs";
 import { captureSnapshot } from "./snapshot.mjs";
@@ -98,11 +98,14 @@ export function scorecardExitOk(code, stderr, json) {
 
 // hide: secret values to strip from anything saved. Capture mode already scrubs
 // its own output; this also covers the offline run, which never gets the token.
+// Output that still holds part of a secret after the scrub is dropped.
 function record(mode, cmd, image, r, extra = {}, hide = []) {
-  const text = scrub(r.stdout, hide);
-  const ran = !r.refused && !r.timedOut && text.trim().length > 0 && scorecardExitOk(r.code, r.stderr, parse(text));
+  const c = cleanOutput(r, hide.filter(Boolean));
+  const leaked = r.leaked ?? c.leaked;
+  const text = leaked ? "" : c.stdout;
+  const ran = !leaked && !r.refused && !r.timedOut && text.trim().length > 0 && scorecardExitOk(r.code, c.stderr, parse(text));
   return { tool: "scorecard", mode, image, imageId: imageId(image), cmd, status: ran ? "ran" : "unavailable", code: r.code, timedOut: Boolean(r.timedOut),
-    sha256: sha256(text), text, stderr: scrub(r.stderr, hide).slice(0, 8192), ...(ran ? {} : { reason: scorecardReason(r) }), ...(r.egress ? { egress: r.egress } : {}), capturedAt: now(), ...extra };
+    sha256: sha256(text), text, stderr: leaked ? "" : c.stderr.slice(0, 8192), ...(ran ? {} : { reason: leaked ?? scorecardReason(r) }), ...(r.egress ? { egress: r.egress } : {}), capturedAt: now(), ...extra };
 }
 const unavailable = (mode, reason) => ({ tool: "scorecard", mode, status: "unavailable", reason, sha256: sha256(""), text: "", capturedAt: now() });
 
@@ -119,7 +122,7 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
     // runTool's plain path: `--network none`. A timeout is `unavailable`.
     const r = await run({ image: SCORECARD.image, cmd: SCORECARD.local, ws: dir, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp" }, timeoutMs: 180_000 });
     local = record("local", SCORECARD.local, SCORECARD.image, r, {}, [token]);
-  } catch (err) { local = unavailable("local", `local run failed: ${scrub(err.message, [token]).slice(0, 200)}`); }
+  } catch (err) { local = unavailable("local", `local run failed: ${cleanError(err.message, [token]).slice(0, 200)}`); }
   finally { if (dir) rmSync(dir, { recursive: true, force: true }); }
 
   let api;

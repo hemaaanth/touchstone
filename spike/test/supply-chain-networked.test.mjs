@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 import { execFileSync } from "node:child_process";
 import { runTool } from "../lib/wrap.mjs";
+import { holdsSecret } from "../lib/capture.mjs";
 import { pinSnapshot, replayEvidence, sha256 } from "../lib/proof-evidence.mjs";
 import { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } from "../packs/supply-chain/networked.mjs";
 
@@ -248,6 +249,28 @@ test("the token value appears nowhere in the pinned snapshot, even when the tool
     assert.equal(reran, false);
   } finally { rmSync(ws, { recursive: true, force: true }); }
   assert.ok(!/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/.test(JSON.stringify(fx)), "the saved real fixture holds no token");
+});
+
+test("an encoded or split copy of the token: the capture is unavailable and the snapshot holds no part of it", async () => {
+  const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
+  const half = FAKE_TOKEN.length >> 1;
+  for (const leak of [(t) => Buffer.from(t).toString("base64"), (t) => `${t.slice(0, half)}\n${t.slice(half)}`]) {
+    const exec = async (args, { env }) => ({ code: 0, stdout: `{"checks":[],"note":"${leak(env.GITHUB_TOKEN)}"}`, stderr: "", timedOut: false });
+    const run = async (o) => (o.capture ? runTool({ ...o, capture: { ...o.capture, confine, exec } }) : { code: 1, stdout: "", stderr: "" });
+    const ws = mkdtempSync(join(tmpdir(), "touchstone-net-leak-"));
+    try {
+      const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
+      const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run, base });
+      const api = snapshot.captures.scorecard.api;
+      assert.equal(api.status, "unavailable");
+      assert.equal(api.reason, "output contained part of the token");
+      assert.equal(api.text, "");
+      for (const f of readdirSync(ws)) assert.ok(!holdsSecret(readFileSync(join(ws, f), "utf8"), [FAKE_TOKEN]), `${f} holds part of the token`);
+      const d = networkedResults(snapshot);
+      assert.ok(d.gaps.some((g) => /part of the token/.test(JSON.stringify(g))), "the drop is a gap");
+      assert.equal(d.leads.filter((l) => l.engine === "scorecard-api").length, 0);
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+  }
 });
 
 test("no opt-in: a snapshot without captures gives no networked leads, coverage or gaps", async () => {
