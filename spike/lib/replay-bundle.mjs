@@ -643,6 +643,55 @@ export function storeReplayFiles(replay, dir = replayStoreDir()) {
   }
 }
 
+// After a run delete: remove each replay file that no run record in
+// resultsDir names any more, then each vendored blob that no kept replay
+// file names. A record that cannot be read stops the prune: it may be one
+// that is being written, and its files must stay. Returns the counts.
+const RECORD = /^run-.+\.json$/;
+const HASH_FIELD = /"sha256"\s*:\s*"([a-f0-9]{64})"/g;
+export function pruneReplayStore(resultsDir) {
+  const dir = join(resultsDir, "replay");
+  if (!existsSync(dir)) return { removed: 0, blobs: 0 };
+  const named = new Set();
+  try {
+    for (const f of readdirSync(resultsDir)) {
+      if (!RECORD.test(f)) continue;
+      const text = readFileSync(join(resultsDir, f), "utf8");
+      JSON.parse(text);
+      for (const m of text.matchAll(HASH_FIELD)) named.add(m[1]);
+    }
+  } catch {
+    return { removed: 0, blobs: 0, stopped: "a run record could not be read" };
+  }
+  let removed = 0;
+  const libs = new Set();
+  for (const f of readdirSync(dir)) {
+    const m = /^([a-f0-9]{64})\.json$/.exec(f);
+    if (!m) continue;
+    if (!named.has(m[1])) {
+      rmSync(join(dir, f), { force: true });
+      removed++;
+      continue;
+    }
+    try {
+      for (const v of readFileSync(join(dir, f), "utf8").matchAll(HASH_FIELD)) libs.add(v[1]);
+    } catch {
+      return { removed, blobs: 0, stopped: "a replay file could not be read" };
+    }
+  }
+  let blobs = 0;
+  const lib = join(dir, "lib");
+  if (existsSync(lib)) {
+    for (const f of readdirSync(lib)) {
+      if (STORE_HASH.test(f) && !libs.has(f)) {
+        rmSync(join(lib, f), { force: true });
+        blobs++;
+      }
+    }
+  }
+  return { removed, blobs };
+}
+
 // The replay with its files back. An old record kept the text inline: it is
 // returned as it is. A store file that is gone or does not match its hash
 // gives no files and a reason; the bundle names it and has no command.

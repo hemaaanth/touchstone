@@ -57,3 +57,31 @@ test("under node --test with no results folder set, the store goes to a temp fol
     if (keep.a !== undefined) process.env.AGENT_RESULTS_DIR = keep.a;
   }
 });
+
+test("pruneReplayStore removes the replay files and blobs no record names, and nothing when a record cannot be read", async () => {
+  const { pruneReplayStore, storeReplayFiles } = await import("../lib/replay-bundle.mjs");
+  const dir = mkdtempSync(path.join(tmpdir(), "replay-prune-"));
+  try {
+    const store = path.join(dir, "replay");
+    const lib = path.join(process.cwd(), "..", "lab", "vault-reentrancy", "lib", "forge-std", "src", "Vm.sol");
+    const { vendoredFile } = await import("../lib/replay-bundle.mjs");
+    const vm = vendoredFile("lib/forge-std/src/Vm.sol", readFileSync(lib));
+    assert.ok(vm, "Vm.sol is a vendored file");
+    const keep = storeReplayFiles({ kind: "forge", files: [{ path: "src/A.sol", text: "contract A {}\n" }] }, store);
+    const gone = storeReplayFiles({ kind: "forge", files: [{ path: "src/B.sol", text: "contract B {}\n" }, { path: "lib/forge-std/src/Vm.sol", vendored: vm }] }, store);
+    assert.deepEqual(readdirSync(path.join(store, "lib")), [vm.sha256]);
+    writeFileSync(path.join(dir, "run-keep.json"), JSON.stringify({ result: { findings: [{ proof: { replay: keep } }] } }, null, 2));
+    // A torn record stops the prune: nothing is removed.
+    writeFileSync(path.join(dir, "run-torn.json"), '{"result": ');
+    assert.equal(pruneReplayStore(dir).stopped, "a run record could not be read");
+    assert.equal(readdirSync(store).length, 3);
+    rmSync(path.join(dir, "run-torn.json"));
+    // The record that named `gone` was deleted: its file and its blob go.
+    assert.deepEqual(pruneReplayStore(dir), { removed: 1, blobs: 1 });
+    assert.deepEqual(readdirSync(store).sort(), [`${keep.store.sha256}.json`, "lib"]);
+    assert.deepEqual(readdirSync(path.join(store, "lib")), []);
+    assert.ok(gone.store.sha256 !== keep.store.sha256);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
