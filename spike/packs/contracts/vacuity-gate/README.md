@@ -3,15 +3,14 @@
 A passing invariant suite can be dead. For example, a handler can catch every
 failed deposit and leave the vault empty. This fixture-specific gate rejects that
 case. It compares every `invariant_*` function of the test file on a healthy
-reference, fixed mutants, and (with `--known-bug`) the planted `rescue`
-access-control bug.
+reference, fixed mutants, and the planted `rescue` access-control bug.
 
 ## Run
 
 ```sh
 node spike/packs/contracts/vacuity-gate/gate.mjs \
   --project spike/packs/contracts/vacuity-gate/fixtures/property-spike \
-  --test test/ReviewProof.t.sol --known-bug
+  --test test/ReviewProof.t.sol [--min-kill-rate 0.5]
 node --experimental-test-module-mocks --test \
   spike/packs/contracts/vacuity-gate/gate.test.mjs
 ```
@@ -19,21 +18,28 @@ node --experimental-test-module-mocks --test \
 The input project is never edited. The gate rejects symlinks, copies the project
 to a temp directory, and writes only inside that copy. `--keep` retains the
 copies for inspection. It emits one JSON verdict; exit 0 means `pass: true`.
+`--known-bug` is still accepted for old command lines; the known-bug check
+always runs.
 
 The Forge image is pinned to
 `ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39`.
 Install that exact digest and populate a `foundry-svm` or
 `touchstone_svm_cache` volume **before** running. Every Forge invocation,
-including `forge inspect`, uses `runDocker()` with `--pull=never`,
-`--network none`, memory/PID/timeout limits, capability drop, and
-`no-new-privileges`. A missing image or cache is an offline prerequisite error.
+including `forge inspect`, goes through `runTool()` (`spike/lib/wrap.mjs`) with
+`--pull=never`, `--network none`, memory/PID/timeout limits, capability drop,
+and `no-new-privileges`. The pinned forge-std is a read-only extra mount and
+the solc cache a named volume (`runTool`'s `mounts`). The host-path mount keeps
+a Daytona run on this host. A missing image or cache is an offline prerequisite error.
 
 ## Gate-owned environment
 
 - The gate copies only `.sol` files. It ignores the project's `foundry.toml`,
   `remappings.txt` and `lib/forge-std`, and writes its own `foundry.toml` for
   every run: `ffi = false`, `fs_permissions = []`, `libs = []`, no
-  auto-detected remappings, optimizer off, `solc 0.8.38`, offline.
+  auto-detected remappings, optimizer off, `solc 0.8.38`, offline. The verdict's
+  `environment` fields (`ffi`, `fs_permissions`, `offline`, `solc`,
+  `dynamic_test_linking`) are read back from that written file, and the gate
+  fails closed unless `ffi = false`, `fs_permissions = []` and `offline = true`.
 - `forge-std/` resolves only to the pinned, read-only copy in
   `vendor/forge-std/src` (forge-std 1.9.4, tree sha256
   `bc3cf851aeea54c57710b26436641a985a599ba4d1eaa98fba7317773c3194ca`). The gate
@@ -114,17 +120,30 @@ and fails closed if they disagree with Forge's aggregate status.
 ## What counts
 
 - **Healthy control:** every selected invariant must run and succeed on the
-  unmutated healthy source. `--known-bug` repairs `FeeVault.rescue` with
+  unmutated healthy source. The gate always repairs `FeeVault.rescue` with
   `onlyOwner` in the healthy copy; the input source is the planted-bug copy.
   The repair must match exactly once. An already-failing control cannot score.
-- **Known bug:** at least one invariant must newly fail on the buggy copy.
-  A unit test, `setUp()` failure, skipped test, compiler error, or timeout is
-  not a detected invariant bug.
+  There is no mode without the repair: the target is pinned to this one file,
+  so its bug is always present, and an honest suite that catches it would
+  otherwise fail its own control.
+- **Known bug (always required):** at least one invariant must newly fail on
+  the buggy copy. A unit test, `setUp()` failure, skipped test, compiler error,
+  or timeout is not a detected invariant bug. `ReviewNoRescue.t.sol` kills the
+  fee mutants but never calls `rescue`; the gate refuses it with
+  `known-bug: no new invariant Failure`.
 - **Mutation kill:** at least one invariant must newly fail on a compiled
   mutant compared with the successful healthy control. The six fixed edits
   include deposit/withdraw guards, rescue transfer failure, fee divisor, fee
   accumulation, and withdraw write order. A kill is credited only for an
   explicit invariant `Failure`, not another test or `Skipped` result.
+- **Kill-rate bar:** the gate passes only when at least one mutant is killed
+  and `killed / scored >= --min-kill-rate`. The default is `0` (the
+  `MIN_KILL_RATE` constant in `gate.mjs`), so the default bar is "at least one
+  kill". The owner may raise it. The verdict always reports `killRate`,
+  `minKillRate`, `survivingMutants` (each scored mutant no invariant killed) and
+  `unscoredMutants`, so a narrow suite is visible even when it passes.
+  `ReviewProof` kills 2 of 6 (0.3333): it passes the default bar and is refused
+  at `--min-kill-rate 0.5`.
 - **Liveness:** handler-call metrics must match the execution traces per
   handler method. Forge may append one replay action, which is excluded from
   state scoring. Calls under reverted actions cannot count as successes. A
@@ -184,7 +203,7 @@ assertions are behavioral. Known gaps:
 - The repair and mutants are written for this `FeeVault` source only.
 
 Negative fixtures `FeeVaultInvariants`, `ReviewFail`, `ReviewGreen`, `ReviewSkip`, `ReviewRollback`,
-`ReviewSample`, `ReviewRoundTrip`, `ReviewSetup`, `ReviewHiddenHash`, and the
+`ReviewSample`, `ReviewRoundTrip`, `ReviewSetup`, `ReviewHiddenHash`, `ReviewNoRescue`, and the
 review-finding fixtures B1–M5 each exercise a former false pass.
 `ReviewRawCheat` reads the artifact size through a raw cheatcode call that the
 scan cannot see; the old gate accepted it, and only build B rejects it. The test also

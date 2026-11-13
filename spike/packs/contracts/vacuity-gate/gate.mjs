@@ -7,13 +7,19 @@
 //   3. control      - the invariant passes on the healthy FeeVault, also in a strong campaign
 //   4. differential - it also passes on build B: same behavior, different bytes
 //   5. liveness     - the handler reaches src/FeeVault.sol and changes its state
-//   6. mutants      - at least one small defect in src/FeeVault.sol is killed
-//   7. known bug    - with --known-bug, the invariant fails on the planted bug
+//   6. known bug    - an invariant fails on the planted rescue() bug
+//   7. mutants      - at least one small defect in src/FeeVault.sol is killed,
+//                     and the kill rate is at least --min-kill-rate
+//
+// The healthy reference is always src/FeeVault.sol with rescue() repaired, and
+// the known-bug check always runs. The target is pinned to one file whose one
+// planted bug is known, so there is no run where the bug is absent.
 //
 // The gate always works on throwaway copies. It never edits the project.
 //
 // Usage:
-//   node gate.mjs --project <dir> --test <test/File.t.sol> [--known-bug] [--keep]
+//   node gate.mjs --project <dir> --test <test/File.t.sol> [--min-kill-rate <0..1>] [--keep]
+//   --known-bug is still accepted, for old command lines. It changes nothing.
 //
 // stdout is one JSON verdict. Progress goes to stderr.
 import crypto from "node:crypto";
@@ -22,14 +28,16 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runDocker } from "../../../lib/wrap.mjs";
+import { runTool } from "../../../lib/wrap.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
-const USER = `${process.getuid()}:${process.getgid()}`;
 // One fixed seed for every run: healthy A, healthy B, known bug, each mutant.
 const SEED = "0x7661637569747921";
+// The kill-rate bar. The gate passes only when at least one mutant is killed
+// and killed / scored >= this. The owner may raise it; --min-kill-rate overrides.
+const MIN_KILL_RATE = 0;
 const CAMPAIGN = {
   score: { runs: 32, depth: 32 }, // A, B, known bug and mutants are compared with this
   strong: { runs: 256, depth: 32 }, // healthy A only, no --debug
@@ -117,13 +125,17 @@ function log(msg) {
 const sha256 = (data) => crypto.createHash("sha256").update(data).digest("hex");
 
 function parseArgs(argv) {
-  const out = { knownBug: false, keep: false };
+  const out = { keep: false, minKillRate: MIN_KILL_RATE };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--project") out.project = argv[++i];
     else if (a === "--test") out.test = argv[++i];
-    else if (a === "--known-bug") out.knownBug = true;
-    else if (a === "--keep") out.keep = true;
+    else if (a === "--known-bug") continue; // always on; kept for old command lines
+    else if (a === "--min-kill-rate") {
+      const v = argv[++i];
+      out.minKillRate = /^(0(\.\d+)?|1(\.0+)?)$/.test(v ?? "") ? Number(v) : NaN;
+      if (!(out.minKillRate >= 0 && out.minKillRate <= 1)) throw new Error(`--min-kill-rate must be a number from 0 to 1: ${v}`);
+    } else if (a === "--keep") out.keep = true;
     else throw new Error(`unknown argument: ${a}`);
   }
   if (!out.project || !out.test) throw new Error("--project and --test are required");
@@ -236,6 +248,24 @@ function writeConfig(ws) {
   fs.writeFileSync(path.join(ws, "foundry.toml"), gateConfig());
 }
 
+// The facts the verdict reports, read back from a written foundry.toml.
+function configFacts(file) {
+  const keys = new Map();
+  let section = null;
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    const head = line.match(/^\[(.+)\]$/);
+    if (head) section = head[1];
+    const kv = line.match(/^(\w+) = (.*)$/);
+    if (kv && section === "profile.default") keys.set(kv[1], kv[2]);
+  }
+  const json = (v) => { try { return JSON.parse(v); } catch { return v ?? null; } };
+  return {
+    ffi: json(keys.get("ffi")), fs_permissions: json(keys.get("fs_permissions")),
+    offline: json(keys.get("offline")), dynamic_test_linking: json(keys.get("dynamic_test_linking")),
+    solc: json(keys.get("solc")),
+  };
+}
+
 function svmVolume() {
   for (const name of ["foundry-svm", "touchstone_svm_cache"]) {
     try {
@@ -248,19 +278,17 @@ function svmVolume() {
 
 let forgeStdMount = null; // verified host copy of the pinned forge-std, mounted read-only
 
+// Every forge call goes through runTool: pinned image, --pull=never,
+// --network none, no capabilities, host user. The pinned forge-std is a
+// read-only extra mount; the solc cache is a named volume. The host-path
+// mount keeps a Daytona call on this host (planRemote), which is intended.
 async function forge(ws, argv, { runs = CAMPAIGN.score.runs, depth = CAMPAIGN.score.depth, timeoutMs = 300_000 } = {}) {
   const volume = svmVolume();
-  const args = [
-    "run", "--rm", "--pull=never", "--network", "none",
-    "-e", `FOUNDRY_INVARIANT_RUNS=${runs}`, "-e", `FOUNDRY_INVARIANT_DEPTH=${depth}`,
-    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-    "--pids-limit", "512", "--memory", "2g", "--user", USER,
-    "-v", `${ws}:/work`, "-w", "/work",
-    "-v", `${forgeStdMount}:${FORGE_STD.mount}:ro`,
-    ...(volume ? ["-v", `${volume}:/home/foundry/.svm`] : []),
-    "--entrypoint", "forge", IMAGE, ...argv,
-  ];
-  return runDocker(args, { ws, timeoutMs });
+  return runTool({
+    image: IMAGE, entrypoint: "forge", cmd: argv, ws, network: "none", timeoutMs,
+    env: { FOUNDRY_INVARIANT_RUNS: runs, FOUNDRY_INVARIANT_DEPTH: depth },
+    mounts: [[forgeStdMount, FORGE_STD.mount, "ro"], ...(volume ? [[volume, "/home/foundry/.svm"]] : [])],
+  });
 }
 
 function compilerErrors(run) {
@@ -882,8 +910,9 @@ async function main() {
   const verdict = {
     pass: false,
     environment: {
-      image: IMAGE, solc: SOLC, seed: SEED, campaign: CAMPAIGN,
-      ffi: false, fs_permissions: [], dynamic_test_linking: false,
+      image: IMAGE, seed: SEED, campaign: CAMPAIGN,
+      // Filled from the foundry.toml the gate writes into the workspace.
+      ffi: null, fs_permissions: null, offline: null, dynamic_test_linking: null, solc: null,
       projectConfig: "ignored (foundry.toml, remappings.txt and lib/forge-std are not copied)",
       forgeStd: { version: FORGE_STD.version, treeSha256: null, mount: `${FORGE_STD.mount} (read-only)` },
     },
@@ -894,7 +923,10 @@ async function main() {
     liveness: { pass: false, reasons: [] },
     mutants: [],
     killRate: 0,
-    knownBug: { planted: opts.knownBug, detected: false, failingInvariants: [] },
+    minKillRate: opts.minKillRate,
+    survivingMutants: [],
+    unscoredMutants: [],
+    knownBug: { planted: "rescue() without onlyOwner", detected: false, failingInvariants: [] },
     reasons: [],
   };
   const fail = (reason) => {
@@ -939,12 +971,14 @@ async function main() {
       fs.copyFileSync(path.join(stage, rel), path.join(ws, rel));
     }
     writeConfig(ws);
-    let healthyText = pinnedText;
-    if (opts.knownBug) {
-      if (pinnedText.split(REPAIR.find).length !== 2) return fail("known-bug: reference repair pattern must occur exactly once");
-      healthyText = pinnedText.replace(REPAIR.find, REPAIR.replace);
-      fs.writeFileSync(path.join(ws, TARGET.path), healthyText);
+    Object.assign(verdict.environment, configFacts(path.join(ws, "foundry.toml")));
+    const env = verdict.environment;
+    if (env.ffi !== false || !Array.isArray(env.fs_permissions) || env.fs_permissions.length || env.offline !== true) {
+      return fail("environment: the gate config must set ffi = false, fs_permissions = [] and offline = true");
     }
+    if (pinnedText.split(REPAIR.find).length !== 2) return fail("known-bug: reference repair pattern must occur exactly once");
+    const healthyText = pinnedText.replace(REPAIR.find, REPAIR.replace);
+    fs.writeFileSync(path.join(ws, TARGET.path), healthyText);
     const full = await buildInfo(ws);
     if (full.error) return fail(full.error);
     const fullBad = checkSources(full.sources);
@@ -976,7 +1010,7 @@ async function main() {
       return fail(`differential: could not verify B is behavior-equal: ${e.message}`);
     }
     verdict.differential.builds = [
-      { name: "A", description: `healthy ${TARGET.path}${opts.knownBug ? " (rescue repaired with onlyOwner)" : ""}`, ...artifactSummary(A) },
+      { name: "A", description: `healthy ${TARGET.path} (rescue repaired with onlyOwner)`, ...artifactSummary(A) },
       { name: "B", description: "A with tabs for indentation, a random trailing comment, and 1-3 never-taken `assembly { if lt(0x<random>, 0) { invalid() } }` pads at the start of every function and receive body",
         pads: B.pads.length, ...artifactSummary(B.artifact) },
     ];
@@ -1047,17 +1081,15 @@ async function main() {
       const failing = failures(run.statuses).filter((n) => healthy.get(n) === "Success");
       return { killed: Boolean(run.statuses && run.code === 1 && !run.timedOut && failing.length), failing, runtimeHash: artifactSummary(built.artifact).runtimeHash };
     };
-    if (opts.knownBug) {
-      try {
-        const r = await scored("buggy", pinnedText);
-        verdict.knownBug.failingInvariants = r.failing;
-        verdict.knownBug.detected = r.killed;
-        verdict.knownBug.runtimeHash = r.runtimeHash;
-      } catch (e) {
-        verdict.knownBug.error = e.message;
-      }
-      if (!verdict.knownBug.detected) verdict.reasons.push("known-bug: no new invariant Failure against the repaired reference");
+    try {
+      const r = await scored("buggy", pinnedText);
+      verdict.knownBug.failingInvariants = r.failing;
+      verdict.knownBug.detected = r.killed;
+      verdict.knownBug.runtimeHash = r.runtimeHash;
+    } catch (e) {
+      verdict.knownBug.error = e.message;
     }
+    if (!verdict.knownBug.detected) verdict.reasons.push("known-bug: no new invariant Failure against the repaired reference");
     log(`mutants: ${MUTANTS.length} against ${TARGET.path}`);
     for (const mutant of MUTANTS) {
       const hits = healthyText.split(mutant.find).length - 1;
@@ -1074,11 +1106,18 @@ async function main() {
     }
     const applied = verdict.mutants.filter((m) => m.applied && m.compiled);
     const killed = applied.filter((m) => m.killed);
-    verdict.killRate = applied.length ? Number((killed.length / applied.length).toFixed(4)) : 0;
+    const rate = applied.length ? killed.length / applied.length : 0;
+    verdict.killRate = Number(rate.toFixed(4));
+    verdict.survivingMutants = applied.filter((m) => !m.killed).map((m) => m.id);
+    verdict.unscoredMutants = verdict.mutants.filter((m) => !(m.applied && m.compiled)).map((m) => m.id);
+    const survived = verdict.survivingMutants.length ? ` (survived: ${verdict.survivingMutants.join(", ")})` : "";
     if (killed.length === 0) verdict.reasons.push(`mutants: killed 0 of ${applied.length} applied mutants`);
+    else if (rate < opts.minKillRate) {
+      verdict.reasons.push(`mutants: kill rate ${verdict.killRate} (${killed.length} of ${applied.length}) is below --min-kill-rate ${opts.minKillRate}${survived}`);
+    }
 
-    verdict.pass = verdict.liveness.pass && verdict.differential.pass && verdict.killRate > 0 &&
-      (!opts.knownBug || verdict.knownBug.detected) && verdict.reasons.length === 0;
+    verdict.pass = verdict.liveness.pass && verdict.differential.pass && killed.length > 0 && rate >= opts.minKillRate &&
+      verdict.knownBug.detected && verdict.reasons.length === 0;
     return verdict;
   } finally {
     if (opts.keep) log(`kept ${base}`);

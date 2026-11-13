@@ -152,10 +152,17 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     assert.notEqual(verdict.differential.builds[0].runtimeHash, verdict.differential.builds[1].runtimeHash);
   });
 
-  it("ReviewProof accepts behavioral control and new mutant failures", { skip }, async () => {
-    const { status, verdict } = await gate("ReviewProof", ["--known-bug"]);
+  // No flags: the known-bug check always runs against the repaired reference,
+  // and the default kill-rate bar is "at least one kill". This pins that default.
+  it("ReviewProof passes the default bar, with the known bug always checked", { skip }, async () => {
+    const { status, verdict } = await gate("ReviewProof");
     assert.equal(status, 0, JSON.stringify(verdict.reasons));
     assert.equal(verdict.pass, true);
+    assert.equal(verdict.minKillRate, 0);
+    assert.equal(verdict.killRate, 0.3333);
+    assert.equal(verdict.survivingMutants.length, 4);
+    assert.ok(verdict.survivingMutants.includes("withdraw-write-after-call"));
+    assert.deepEqual(verdict.unscoredMutants, []);
     assert.ok(verdict.liveness.storageChanges > 0 || verdict.liveness.balanceChanges > 0);
     assert.equal(verdict.knownBug.detected, true);
     assert.ok(verdict.mutants.some((m) => m.killed && m.failingInvariants.includes("invariant_behaviour()")));
@@ -165,8 +172,41 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     assert.notEqual(verdict.differential.builds[0].runtimeHash, verdict.differential.builds[1].runtimeHash);
     assert.equal(verdict.target.path, "src/FeeVault.sol");
     assert.equal(verdict.environment.ffi, false);
+    assert.deepEqual(verdict.environment.fs_permissions, []);
+    assert.equal(verdict.environment.offline, true);
+    assert.equal(verdict.environment.dynamic_test_linking, false);
     assert.match(String(verdict.environment.seed), /^0x[0-9a-f]+$/);
     console.log(`ReviewProof killRate ${verdict.killRate}`);
+  });
+
+  // A higher bar refuses the narrow suite and names what survived.
+  it("ReviewProof is refused at --min-kill-rate 0.5 and the survivors are named", { skip }, async () => {
+    const { status, verdict } = await gate("ReviewProof", ["--min-kill-rate", "0.5"]);
+    rejected(status, verdict, /mutants: kill rate 0\.3333 \(2 of 6\) is below --min-kill-rate 0\.5 \(survived: .*withdraw-write-after-call/);
+    assert.equal(verdict.reasons.length, 1, JSON.stringify(verdict.reasons));
+    assert.equal(verdict.knownBug.detected, true);
+    assert.equal(verdict.minKillRate, 0.5);
+    assert.equal(verdict.survivingMutants.length, 4);
+  });
+
+  // Known-bug guard: a live suite that kills the fee mutants but never calls
+  // rescue() passes every other check; only the known-bug rule refuses it.
+  it("ReviewNoRescue: kills mutants but misses the known bug, so it is refused", { skip }, async () => {
+    const { status, verdict } = await gate("ReviewNoRescue");
+    rejected(status, verdict, /known-bug: no new invariant Failure/);
+    assert.deepEqual(verdict.reasons, ["known-bug: no new invariant Failure against the repaired reference"]);
+    assert.equal(verdict.knownBug.detected, false);
+    assert.ok(verdict.killRate > 0);
+    assert.equal(verdict.liveness.pass, true);
+    assert.equal(verdict.differential.pass, true);
+  });
+
+  it("--min-kill-rate outside 0..1 is refused before any run", async () => {
+    for (const bad of ["2", "-0.1", "x", "0.5x", ""]) {
+      const { status, verdict } = await gate("ReviewProof", ["--min-kill-rate", bad]);
+      assert.equal(status, 1);
+      assert.match(verdict.error, /--min-kill-rate must be a number from 0 to 1/);
+    }
   });
 
   // Honest suite: ghost variables, bounded actors, and rescue() called only by
