@@ -430,11 +430,15 @@ async function readEvents(id) {
   }
 }
 
-export async function getFinding(id) {
+// `events: false` leaves the run's transcript out (events: []). The Findings
+// page's sheet shows only the finding and its proof, and a run's events can
+// be tens of MB.
+export async function getFinding(id, { events: withEvents = true } = {}) {
   const all = await readRuns()
   const found = all.find((f) => f.id === id) || null
   if (!found) return null
   const { _index, ...finding } = found
+  if (!withEvents) return { ...finding, events: [] }
   // The transcript belongs to the run, which may hold several findings.
   const events = await readEvents(finding.runId)
   // Replay the opening `scope` and `modules` events a live run streams but the

@@ -2,7 +2,6 @@ import { createContext } from "react"
 import type { ThreadMessageLike } from "@assistant-ui/react"
 import type { AgentNode, ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind, RunEvent, RunStatus } from "@/lib/types"
 import { isRunningNow, type RunState, type Step } from "@/lib/runModel"
-import { packOf } from "@/lib/catalog"
 import { startProgress } from "@/lib/startup"
 import type { Mark } from "@/components/assistant-ui/elements/surfaces"
 import { isTerminal, statusLabel, statusTone, type Tone } from "@/lib/format"
@@ -512,10 +511,11 @@ export async function sendCopy(
   }
 }
 
-// The run's modules (packs), for Run Info. Today a run has one: its scope's
-// pack. The line takes a list, so a run that holds several shows them all.
+// The run's modules (packs), for Run Info. A joined run holds several: the
+// `packs` event says which, and the model falls back to the scope's own pack on
+// an old record. Nothing here needs to guess.
 export function runModules(state: RunState): string[] {
-  return state.scope ? [packOf(state.scope)] : []
+  return state.packs
 }
 
 // A run row's word and dot tone in the run list. A run a restart cut off reads

@@ -14,6 +14,7 @@ import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
 import phishing from "./phishing/pack.mjs";
 
+import { multiPack, multiPacks } from "./multi.mjs";
 // NOTE: source navigation is NOT a selectable pack. It is the default code-reading
 // layer every Contracts and Review run mounts on top of its own tools — see
 // agent-run.mjs, which imports sourceNavTools / NAV_SYSTEM from source-nav/pack.mjs
@@ -29,6 +30,12 @@ export const PACKS = {
 };
 
 export function packFor(cfg = {}) {
+  const ids = multiPacks(cfg);
+  if (ids) return multiPack(ids.map((id) => {
+    const member = PACKS[id];
+    if (!member) throw new Error(`Unknown pack "${id}". Known: ${Object.keys(PACKS).join(", ")}`);
+    return member;
+  }));
   const id = cfg.pack ?? "contracts";
   const pack = PACKS[id];
   if (!pack) throw new Error(`Unknown pack "${id}". Known: ${Object.keys(PACKS).join(", ")}`);

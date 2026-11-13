@@ -20,7 +20,7 @@ export function evidenceTools(ws,state,id) {
       if(proof.status !== 'pass') return {...text(proof),isError:true};
       const finding={n:state.found.length+1,title:lead.check,severity:lead.severity,poc:lead.id,explanation:args.explanation,evidence};
       state.found.push(finding);
-      event('finding-submitted',{n:finding.n,title:finding.title,severity:finding.severity,poc:finding.poc});
+      event('finding-submitted',{pack:id,n:finding.n,title:finding.title,severity:finding.severity,poc:finding.poc});
       return text({recorded:finding.n,proof});
     }})];
 }
