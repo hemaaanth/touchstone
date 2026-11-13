@@ -73,6 +73,15 @@ test('live capture refuses to run without a grant that covers the domain', async
   assert.equal(calls.length, 0, 'no tool ran');
 });
 
+test('M-B: a live phishing target must carry an explicit owned list; [] means none', () => {
+  const base = { id: 'live-phishing', title: 't', kind: 'live', pack: 'phishing', hosts: ['brand.example'], origins: ['https://brand.example'] };
+  assert.throws(() => prepareWorkspace(base, { modules: [] }), /needs an owned list/);
+  assert.throws(() => prepareWorkspace({ ...base, owned: 'brand-app.example' }, { modules: [] }), /needs an owned list/);
+  const ws = prepareWorkspace({ ...base, owned: [] }, { modules: [] });
+  try { assert.deepEqual(JSON.parse(readFileSync(join(ws, '.touchstone.json'), 'utf8')).owned, []); }
+  finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
 test('M3: a live phishing target gets domain, reach and owned, and its prepass pins instead of throwing', async () => {
   const ws = prepareWorkspace({ id: 'live-phishing', title: 't', kind: 'live', pack: 'phishing', hosts: ['brand.example'], origins: ['https://brand.example'], owned: ['brand-app.example'] }, { modules: [] });
   try {
