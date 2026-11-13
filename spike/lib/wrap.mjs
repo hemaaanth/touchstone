@@ -33,10 +33,15 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 //               default entrypoint is another tool). A plain binary name or an
 //               absolute path only; anything with shell text throws. Omitted
 //               (the default) means the argv is exactly as before.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [], entrypoint = null }) {
+//   mounts      extra mounts after the workspace: [[source, target, "ro"?], ...].
+//               source is an absolute host path or a named volume; target is an
+//               absolute container path. See mountFlags. A host path other than
+//               ws keeps a Daytona call on this host (planRemote).
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [], entrypoint = null, mounts = [] }) {
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
   const pins = hostPins(addHosts);
   const entry = entrypointFlag(entrypoint);
+  const extra = mountFlags(mounts);
   const args = [
     "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -45,6 +50,7 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
     ...pins,
     ...entry,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
+    ...extra,
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
@@ -62,6 +68,24 @@ export function entrypointFlag(entrypoint) {
   if (entrypoint == null) return [];
   if (typeof entrypoint !== "string" || !ENTRYPOINT.test(entrypoint)) throw new Error("runTool: entrypoint must be a plain binary name or absolute path: " + String(entrypoint).slice(0, 80));
   return ["--entrypoint", entrypoint];
+}
+
+// The -v flags for runTool's mounts, or []. A source is an absolute host path or
+// a plain volume name; a target is an absolute path; neither holds ":" or ","
+// or a "." / ".." segment, so a value cannot add a mount option or a docker word.
+// The third item may only be "ro".
+const MOUNT_PATH = /^(?:\/[A-Za-z0-9_.@+-]+)+$/;
+const VOLUME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+export function mountFlags(mounts) {
+  if (!Array.isArray(mounts)) throw new Error("mounts must be a list of [source, target, mode?]");
+  return mounts.flatMap((m) => {
+    const [src, dst, mode, ...rest] = Array.isArray(m) ? m : [];
+    const ok = (p) => typeof p === "string" && MOUNT_PATH.test(p) && !p.split("/").some((seg) => seg === "." || seg === "..");
+    if (!(ok(src) || (typeof src === "string" && VOLUME.test(src)))) throw new Error("mounts: bad source: " + String(src).slice(0, 80));
+    if (!ok(dst)) throw new Error("mounts: bad target: " + String(dst).slice(0, 80));
+    if (rest.length || (mode !== undefined && mode !== "ro")) throw new Error("mounts: mode may only be \"ro\"");
+    return ["-v", `${src}:${dst}${mode ? ":ro" : ""}`];
+  });
 }
 
 // The docker flags for addHosts. Daytona's parser does not know --add-host or

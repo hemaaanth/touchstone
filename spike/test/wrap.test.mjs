@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { entrypointFlag, hostPins, runTool, sarifLeads } from "../lib/wrap.mjs";
+import { entrypointFlag, hostPins, mountFlags, runTool, sarifLeads } from "../lib/wrap.mjs";
 import { planRemote } from "../lib/daytona.mjs";
 import { mergeStatic } from "../lib/ensemble.mjs";
 
@@ -182,6 +182,33 @@ test("entrypoint adds --entrypoint before the image, checks its input, and no op
     assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
     // A bad entrypoint throws before any docker call.
     await assert.rejects(runTool({ image, cmd: [], entrypoint: "a;b" }), /entrypoint/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mounts adds checked -v flags after the workspace, and no option means the old argv", async () => {
+  assert.deepEqual(mountFlags([]), []);
+  assert.deepEqual(mountFlags([["/h/.cache/std", "/forge-std/src", "ro"], ["foundry-svm", "/home/foundry/.svm"]]),
+    ["-v", "/h/.cache/std:/forge-std/src:ro", "-v", "foundry-svm:/home/foundry/.svm"]);
+  for (const bad of [[["/a:/b", "/c"]], [["/a", "/c,ro"]], [["/a/../b", "/c"]], [["/a", "/c", "rw"]], [["/a", "c"]],
+    [["-v", "/c"]], [["", "/c"]], [["/a", "/c", "ro", "x"]], [["/a"]], ["/a:/c"], "x"]) {
+    assert.throws(() => mountFlags(bad), /mounts/, JSON.stringify(bad));
+  }
+  const dir = mkdtempSync(join(tmpdir(), "wrap-mounts-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const image = "example.invalid/tool@sha256:" + "0".repeat(64);
+    await runTool({ image, cmd: ["x"], ws: dir, mounts: [["/opt/std", "/std", "ro"]] });
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    const work = args.indexOf(`${dir}:/work`), extra = args.indexOf("/opt/std:/std:ro");
+    assert(work > 0 && extra > work && extra < args.indexOf(image), "the extra mount follows the workspace, before the image");
+    assert.deepEqual(args.slice(0, 5), ["run", "--rm", "--pull=never", "--network", "none"]);
+    await assert.rejects(runTool({ image, cmd: [], mounts: [["/a:/b", "/c"]] }), /mounts/);
   } finally {
     process.env.PATH = path;
     rmSync(dir, { recursive: true, force: true });
