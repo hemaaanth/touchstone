@@ -82,6 +82,17 @@ export function rangeLabel(from: string, to: string, now = new Date()): string {
   return "Any date"
 }
 
+// A stored view's days, made safe once when it is read (a view saved by an
+// older version, or edited by hand): a day that is not a real "YYYY-MM-DD" is
+// no bound, and a `to` before `from` is dropped (the start the operator set
+// first stays). Then the label and the filter see the same two days.
+export function normaliseDays<V extends { from: string; to: string }>(v: V): V {
+  const from = parseDay(v.from) ? v.from : ""
+  let to = parseDay(v.to) ? v.to : ""
+  if (from && to && to < from) to = ""
+  return from === v.from && to === v.to ? v : { ...v, from, to }
+}
+
 export function isFiltered(v: FindingsView): boolean {
   return v.q.trim() !== "" || v.scope !== ALL || v.module !== ALL || v.severity !== ALL || v.state !== "all" || v.from !== "" || v.to !== ""
 }

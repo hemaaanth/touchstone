@@ -4,7 +4,7 @@ import type { FindingSummary, RunSummary } from "@/lib/types"
 import { candidateState, scopeOf } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { SeverityMark } from "@/components/assistant-ui/elements/indicators"
-import { ModulePill } from "@/components/module-pill"
+import { ModuleDots } from "@/components/module-dots"
 import { RowMenu, RowMenuItem, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
 import { rowClass } from "@/components/page-parts-style"
 
@@ -22,7 +22,8 @@ export const CandidateListRow = memo(function CandidateListRow({
   onOpenRun,
 }: {
   finding: FindingSummary
-  // The findings' grid columns (findings-page.tsx FINDING_ROW_COLS).
+  // The findings' grid columns and the dots' ring colour (findings-page.tsx
+  // FINDING_ROW_COLS, DOTS_RING), so the row lines up with a finding row.
   cols: string
   moduleTitle: string
   run: RunSummary | undefined
@@ -49,12 +50,10 @@ export const CandidateListRow = memo(function CandidateListRow({
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={false} />
       </span>
-      <span data-col="module" className="flex min-w-0 justify-end overflow-hidden">
-        {pack ? (
-          <span title={moduleTitle} className="flex max-w-full">
-            <ModulePill id={pack} label={moduleTitle} compact className="[&>span:last-child]:sr-only" />
-          </span>
-        ) : null}
+      {/* The module as one dot in the same 28 px box as the finding row. No
+          module keeps the empty box. */}
+      <span data-col="module" className="flex justify-end">
+        <ModuleDots ids={[pack]} packs={[{ id: pack, title: moduleTitle }]} />
       </span>
       <RowMenu label={`Actions for ${f.title}`}>
         <RowMenuItem disabled={!run} onClick={open}>

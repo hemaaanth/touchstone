@@ -3,7 +3,7 @@ import { Bot, Bug, CalendarDays, Check, ChevronRight, FileArchive, FileText, Pan
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindingsAndCandidates } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, candidateRow, filterFindings, fromDayRange, isFiltered, moduleOf, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, candidateRow, filterFindings, fromDayRange, isFiltered, moduleOf, normaliseDays, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ProofIcon, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { StatusMark } from "@/components/assistant-ui/elements/surfaces"
 import { ModulePill } from "@/components/module-pill"
+import { ModuleDots } from "@/components/module-dots"
 import { ReplayProof } from "@/components/replay-proof"
 import { CandidateListRow } from "@/components/candidate-row"
 import { Label, ListCard, ListEmpty, ListPage, RowMenu, RowMenuItem, RowMenuSeparator, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
@@ -41,7 +42,7 @@ function readView(): FindingsView {
     }
     if (!SORTS.some((s) => s.value === view.sort)) view.sort = DEFAULT_VIEW.sort
     if (view.dismissed !== "show") view.dismissed = "hide"
-    return view
+    return normaliseDays(view)
   } catch {
     return { ...DEFAULT_VIEW }
   }
@@ -265,7 +266,7 @@ export function FindingsPage({
                   <CandidateListRow
                     key={f.id}
                     finding={f}
-                    cols={FINDING_ROW_COLS}
+                    cols={cn(FINDING_ROW_COLS, DOTS_RING)}
                     moduleTitle={packTitle(moduleOf(f)) ?? f.module}
                     run={runOf(f)}
                     onOpenRun={onOpenRun}
@@ -448,12 +449,12 @@ function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onC
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        render={<Button variant="outline" aria-label={`Run date: ${label}`} className={cn("shrink-0 text-[13px] font-normal", !set && "text-muted-foreground")} />}
+        render={<Button variant="outline" aria-label={`Run date: ${label}`} className="shrink-0 text-[13px] font-normal" />}
       >
         <CalendarDays aria-hidden className="text-muted-foreground" />
         <span className="tabular-nums">{label}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" initialFocus={firstFocus} className="w-auto gap-0 p-0">
+      <PopoverContent align="end" initialFocus={firstFocus} aria-label="Filter by run date" className="w-auto gap-0 p-0">
         <div ref={box}>
           {/* autoFocus gives the calendar its focused day, so the arrow keys move; the popover's
               initialFocus puts the DOM focus on that same day. */}
@@ -509,6 +510,12 @@ export function FindingsLoading() {
   )
 }
 
+// The module dot's ring takes the row's own fill: the card, or the card under
+// muted/50 when the row is hovered, open or has keyboard focus.
+// (Tailwind reads class names as written, so each one is spelled out.)
+const DOTS_RING =
+  "[--module-dots-ring:var(--card)] hover:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))] data-active:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))] has-[[data-row-main]:focus-visible]:[--module-dots-ring:color-mix(in_oklab,var(--muted)_50%,var(--card))]"
+
 export const FindingListRow = memo(function FindingListRow({
   finding: f,
   moduleTitle,
@@ -535,7 +542,7 @@ export const FindingListRow = memo(function FindingListRow({
       data-slot="finding-row"
       data-active={active || undefined}
       onClick={open}
-      className={cn(FINDING_ROW_COLS, rowClass(true), f.dismissed && "[&_[data-row-main]]:text-muted-foreground")}
+      className={cn(FINDING_ROW_COLS, rowClass(true), DOTS_RING, f.dismissed && "[&_[data-row-main]]:text-muted-foreground")}
     >
       <span aria-hidden className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
         <ProofIcon state={f.proven ? "proven" : "unproven"} className="size-4" />
@@ -559,15 +566,10 @@ export const FindingListRow = memo(function FindingListRow({
       <span data-col="severity" className="flex justify-center">
         <SeverityMark severity={f.severity} proven={f.proven} />
       </span>
-      {/* The module in a fixed 28 px box. Until the sidebar's module dots land
-          here, the compact pill shows its icon only; the name stays for a
-          screen reader and in the pill's title. */}
-      <span data-col="module" className="flex min-w-0 justify-end overflow-hidden">
-        {moduleOf(f) ? (
-          <span title={moduleTitle} className="flex max-w-full">
-            <ModulePill id={moduleOf(f)} label={moduleTitle} compact className="[&>span:last-child]:sr-only" />
-          </span>
-        ) : null}
+      {/* The module as one dot in the fixed 28 px box the sidebar uses. Its
+          name is in the tooltip and the label. No module keeps the empty box. */}
+      <span data-col="module" className="flex justify-end">
+        <ModuleDots ids={[moduleOf(f)]} packs={[{ id: moduleOf(f), title: moduleTitle }]} />
       </span>
       <RowMenu label={`Actions for ${f.title}`}>
         <RowMenuItem onClick={open}>

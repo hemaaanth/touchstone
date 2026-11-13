@@ -653,3 +653,34 @@ export function runInterruption(
     : `${reason} ${agents.length > 1 ? "They were" : "It was"} not started again, so ${agents.length > 1 ? "their" : "its"} part of the scope is not finished. Send a message to continue.`
   return { ended, agents, reason, note }
 }
+
+// A run's start time as epoch ms, or undefined. The store keeps numbers; an
+// ISO string (or a number in a string) is read too, so a run never sorts or
+// groups as "no time" by its type alone.
+export function startMs(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? v : undefined
+  if (typeof v !== "string" || !v.trim()) return undefined
+  const n = /^\d+$/.test(v.trim()) ? Number(v) : Date.parse(v)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+export type DateGroup = { label: "Today" | "Yesterday" | "Earlier"; indices: number[] }
+
+// The run list's date headings: newest first, one group per label. A run with
+// no time counts as now (it is starting). `times` is indexed like the list.
+export function dateGroups(times: readonly unknown[], indices: readonly number[], startOfToday: number): DateGroup[] {
+  const yesterday = new Date(startOfToday)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const startOfYesterday = yesterday.getTime()
+  const ms = (i: number) => startMs(times[i])
+  const sorted = [...indices].sort((a, b) => (ms(b) ?? Number.MAX_SAFE_INTEGER) - (ms(a) ?? Number.MAX_SAFE_INTEGER))
+  const groups: DateGroup[] = []
+  for (const index of sorted) {
+    const t = ms(index)
+    const label = t === undefined || t >= startOfToday ? "Today" : t >= startOfYesterday ? "Yesterday" : "Earlier"
+    const last = groups[groups.length - 1]
+    if (last?.label === label) last.indices.push(index)
+    else groups.push({ label, indices: [index] })
+  }
+  return groups
+}

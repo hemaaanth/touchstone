@@ -51,3 +51,12 @@ describe("the candidate row", () => {
     expect(candidateState(cand("x", { measured: { reason: "harm-not-judged", words: "", count: 1, check: null } }))).toBe("Candidate · harm not judged")
   })
 })
+
+describe("the candidate row's module slot (N2 follow-up)", () => {
+  test("is the module dot in the same box as the finding row, with the row's ring colour", () => {
+    const out = renderToStaticMarkup(<CandidateListRow finding={candidateRow(cand("r2.c1"))} cols={`${FINDING_ROW_COLS} [--module-dots-ring:var(--card)]`} moduleTitle="Domains" run={undefined} onOpenRun={() => {}} />)
+    expect(out).toContain('data-slot="module-dots"')
+    expect(out).toContain("[--module-dots-ring:var(--card)]")
+    expect(out).not.toContain('data-slot="module-pill"')
+  })
+})
