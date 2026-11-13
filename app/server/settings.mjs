@@ -19,7 +19,7 @@ import {
 } from "../../spike/lib/providers.mjs"
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
+import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
 import crypto from "node:crypto"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 
@@ -198,9 +198,15 @@ function executionState(cfg) {
     key: c.apiKey
       ? { set: true, source: c.keySource, envName: c.keySource === "env" ? "DAYTONA_API_KEY" : null, last4: c.apiKey.length > 8 ? c.apiKey.slice(-4) : null }
       : { set: false, source: null, envName: null, last4: null },
+    apiUrl: c.apiUrl,
     target: c.target,
     snapshot: c.snapshot,
-    defaults: { target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
+    // A server env var wins over the saved value. Name it, so the form can say so.
+    envNames: {
+      apiUrl: process.env.DAYTONA_API_URL ? "DAYTONA_API_URL" : null,
+      target: process.env.DAYTONA_TARGET ? "DAYTONA_TARGET" : null,
+    },
+    defaults: { apiUrl: DEFAULT_API_URL, target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
   }
 }
 
@@ -220,12 +226,27 @@ export function setExecution(body = {}) {
     if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
     if (v) next[f] = v
   }
+  // The key is sent to this server, so it must be https.
+  const url = body.apiUrl === undefined ? prev.apiUrl : String(body.apiUrl ?? "").trim()
+  if (url) next.apiUrl = daytonaUrl(url)
   if (backend === "daytona" && !execConfig(process.env, { execution: next }).apiKey) {
     throw new Error("Daytona needs an API key (here, or DAYTONA_API_KEY)")
   }
   cfg.execution = next
   writeConfig(cfg)
   return getSettings()
+}
+
+function daytonaUrl(raw) {
+  let u
+  try {
+    u = new URL(raw)
+  } catch {
+    throw new Error("Daytona server URL is not a valid URL")
+  }
+  if (u.protocol !== "https:") throw new Error("Daytona server URL must start with https://")
+  if (u.username || u.password || u.search || u.hash) throw new Error("Daytona server URL must have no user name, password, query or #part")
+  return u.href.replace(/\/+$/, "")
 }
 
 function slug(s) {

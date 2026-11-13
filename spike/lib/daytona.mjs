@@ -53,7 +53,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
 
-const API = "https://app.daytona.io/api";
+export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
 export const DEFAULT_TARGET = "us-west-3";
 const SNAPSHOT_IMAGE = "docker:28.5.1-dind";
@@ -68,6 +68,7 @@ let downUntil = 0;
 // The execution settings, env first, then Settings, then the defaults.
 //   backend   "local" | "daytona"
 //   apiKey    the Daytona key, or "" when none is set
+//   apiUrl    the Daytona server, with no trailing slash
 export function execConfig(env = process.env, cfg = safeConfig()) {
   const saved = cfg.execution ?? {};
   const pick = String(env.TOUCHSTONE_EXEC || saved.backend || "local").toLowerCase();
@@ -75,6 +76,7 @@ export function execConfig(env = process.env, cfg = safeConfig()) {
     backend: pick === "daytona" ? "daytona" : "local",
     apiKey: String(saved.apiKey || env.DAYTONA_API_KEY || ""),
     keySource: saved.apiKey ? "settings" : env.DAYTONA_API_KEY ? "env" : null,
+    apiUrl: String(env.DAYTONA_API_URL || saved.apiUrl || DEFAULT_API_URL).replace(/\/+$/, ""),
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
   };
@@ -176,6 +178,7 @@ export function shq(s) {
 // ---- REST client
 
 function client(c) {
+  const API = c.apiUrl;
   const auth = { Authorization: `Bearer ${c.apiKey}` };
   async function call(method, url, body, { raw = false, timeoutMs = 60_000 } = {}) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
