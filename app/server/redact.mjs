@@ -15,7 +15,11 @@ const MARK = "[REDACTED]"
 // Object keys and header-cell names whose value is a credential.
 const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|cookie|set-cookie))$/i
 
-const QUOTED_HEADER = /"((?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-apikey|api-key|x-auth-token|x-access-token))"(\s*:\s*)"((?:\\.|[^"\\])*)"/gi
+// A "key":"value" pair inside a JSON string, such as a recorded HTTP body
+// or tool output. The second form is the same pair escaped one level deeper,
+// as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
+const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
+const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
 
 // One or two words: "Bearer <token>" and "Basic <blob>" are both the secret.
 const AUTH_HEADER = /(?<!["'])\b(authorization|proxy-authorization)\s*:\s*\S+(?:\s+\S+)?/gi
@@ -48,11 +52,17 @@ function secretish(tok) {
   return tok.length >= 20
 }
 
+// True when a value stored under this key or header name is a credential.
+function secretValue(name, value) {
+  return SECRET_KEY.test(name) && value !== "" && !value.startsWith(MARK)
+}
+
 function redactText(text) {
   if (!text || text.startsWith(MARK)) return text
-  for (const re of [QUOTED_HEADER, AUTH_HEADER, APIKEY_HEADER, COOKIE_HEADER, BEARER, QUERY, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, AUTH_HEADER, APIKEY_HEADER, COOKIE_HEADER, BEARER, QUERY, ...SHAPES]) re.lastIndex = 0
   let out = text
-  out = out.replace(QUOTED_HEADER, (_m, name, sep) => `"${name}"${sep}"${MARK}"`)
+  out = out.replace(JSON_PAIR, (m, name, sep, v) => (secretValue(name, v) ? `"${name}"${sep}"${MARK}"` : m))
+  out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => (secretValue(name, v) ? `\\"${name}\\"${sep}\\"${MARK}\\"` : m))
   out = out.replace(AUTH_HEADER, (_m, name) => `${name}: ${MARK}`)
   out = out.replace(APIKEY_HEADER, (_m, name) => `${name}: ${MARK}`)
   out = out.replace(COOKIE_HEADER, (_m, name) => `${name}: ${MARK}`)

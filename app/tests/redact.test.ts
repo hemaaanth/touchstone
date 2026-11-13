@@ -24,3 +24,39 @@ describe("redact: big inputs finish in linear time", () => {
     expect(text("Bearer Zq7Xv9KpR2mN4tW8yB3cL6")).toBe("Bearer [REDACTED]")
   })
 })
+
+describe("redact: secrets inside a JSON string", () => {
+  // Same shape as the real /siwe/verify response: {"token":"<48 hex>"}.
+  const hex48 = "5f0c1e2d3a4b".repeat(4)
+  const alice = "tk_alice_0a1b2c3d"
+  const bob = "tk_bob_4e5f6a7b"
+
+  test("a body's token and apiKey are masked; the rest of the body stays", () => {
+    const out = redactSecrets({
+      request: { body: `{"address":"0xabc","apiKey":"${alice}"}` },
+      response: { body: `{"token":"${hex48}"}` },
+    })
+    expect(out.response.body).toBe(`{"token":"[REDACTED]"}`)
+    expect(out.request.body).toBe(`{"address":"0xabc","apiKey":"[REDACTED]"}`)
+  })
+
+  test("the escaped form inside a JSON string is masked", () => {
+    const s = `{"resBody":"{\\"id\\":2,\\"apiKey\\":\\"${bob}\\",\\"token\\": \\"${hex48}\\"}"}`
+    const out = text(s)
+    expect(out).not.toContain(bob)
+    expect(out).not.toContain(hex48)
+    expect(out).toContain(`\\"id\\":2`)
+    expect(out).toContain(`\\"apiKey\\":\\"[REDACTED]\\"`)
+    expect(JSON.parse(JSON.parse(out).resBody).token).toBe("[REDACTED]")
+  })
+
+  test("other secret keys in a JSON string are masked", () => {
+    for (const key of ["access_token", "password", "api_key", "client_secret", "refresh_token", "authorization", "cookie"]) {
+      expect(text(`{"user":"a","${key}": "Zq7Xv9KpR2mN4tW8yB3cL6"}`)).toBe(`{"user":"a","${key}": "[REDACTED]"}`)
+    }
+  })
+
+  test("an empty value and plain keys stay", () => {
+    expect(text(`{"token":"","name":"alice","tokens":12}`)).toBe(`{"token":"","name":"alice","tokens":12}`)
+  })
+})
