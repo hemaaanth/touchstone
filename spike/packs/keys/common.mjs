@@ -22,6 +22,8 @@ import { event } from "../../lib/event.mjs";
 import { attemptCap, leftCount, leftText } from "../../lib/attempt-cap.mjs";
 import { proveFindings } from "../../lib/record.mjs";
 import { aderynScan } from "../../lib/aderyn.mjs";
+import { slitherLeads, slitherNote } from "../../lib/slither.mjs";
+import { ozMonitorLeads, ozMonitorNote } from "../../lib/oz-monitor.mjs";
 import { labOf, controlChanges } from "./control.mjs";
 import { scanSources } from "./source-checks.mjs";
 
@@ -480,7 +482,7 @@ Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the project code. Read the contracts you test.
 - There is no lab and no recorded chain state. The state tool will say so. Do not wait for it.
-- The leads tool returns ranked leads from our source checks. Aderyn leads come in the brief.
+- The leads tool returns ranked leads from our source checks. Aderyn leads, and Slither leads when the pack runs Slither, come in the brief.
   A lead is a guess from the code text. It counts only when your test proves it.
 - There are no known keys. Never invent a key. Use vm.addr(n), vm.prank and vm.deal.
 - Write a test (a contract that imports forge-std/Test.sol and the project contract, for
@@ -529,28 +531,40 @@ the operator questions. Work from the actual code.`;
 export function sourceKickoff(mode, brief) {
   const base = "Audit the contracts under src/. Call the leads tool, read the code, list every suspect worst first, then prove each one you can with its own passing Foundry test that deploys the real contract and moves ETH out or changes who controls it. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return brief
-    ? `${base}\n\n${brief}\n\nA lead is real only once your test proves it. Leads from source checks and Aderyn are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    ? `${base}\n\n${brief}\n\nA lead is real only once your test proves it. Leads from source checks and static tools (Aderyn, Slither) are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 }
 
 // Tell the agent when Aderyn did not run, so "no Aderyn leads" is never read as "clean".
 export const aderynNote = (aderyn) => aderyn.available ? "" : `\n\nNOTE: Aderyn did NOT run (${String(aderyn.reason ?? "its image is missing").slice(0, 160)}). Having no Aderyn leads here does NOT mean the code is clean. Read the code yourself.`;
 
-export async function chainPrepass(ws, { emit }, { mode, analyze }) {
+// Slither fields for the emit and the record, only when the pack runs Slither.
+const slitherFields = (slither) => (slither ? { slither: slither.available, ...(slither.available ? {} : { slitherReason: slither.reason }) } : {});
+// The same for OpenZeppelin Monitor, only when the pack runs it on a lab chain.
+const monitorFields = (monitor) => (monitor ? { ozMonitor: monitor.available, ...(monitor.available ? {} : { ozMonitorReason: monitor.reason }) } : {});
+
+export async function chainPrepass(ws, { emit }, { mode, analyze, slither: useSlither = false, monitor: useMonitor = false }) {
   // Lab mode runs the world in Docker. Source mode (a real folder) skips it.
   const world = hasWorld(ws, mode);
   const obs = world ? await observe(ws, mode) : null;
   const aderyn = await aderynLeads(ws);
+  // Slither is opt-in per pack (lib/slither.mjs). null means the pack did not ask for it.
+  const slither = useSlither ? await slitherLeads(ws) : null;
+  // OpenZeppelin Monitor is opt-in per pack (lib/oz-monitor.mjs) and needs a lab chain. null means it did not run.
+  const monitor = useMonitor && world ? await ozMonitorLeads(ws) : null;
   const base = leadsFor(ws, analyze);
-  // Aderyn leads come last in each impact class. They are a second engine on the source.
-  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...aderyn.leads]);
+  // OpenZeppelin Monitor leads come right after the pack's own: they read the same lab chain.
+  // Slither, then Aderyn leads come last in each impact class. They are extra engines on the source.
+  // Slither goes first: its results carry a confidence and drop Informational ones, and the brief
+  // shows only 12 leads.
+  const leads = mergeChain([...base.flatMap((l) => (l.engines ?? [l.engine]).map((engine) => ({ ...l, engine }))), ...(monitor?.leads ?? []), ...(slither?.leads ?? []), ...aderyn.leads]);
   const block = obs ? (obs.block ?? obs.toBlock) : null;
   emit({ t: Date.now(), ev: "chain-scan", pack: mode, engines: [...new Set(leads.flatMap((l) => l.engines))],
-    block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor),
     top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where, block: l.block ?? null, engines: l.engines, corroborated: l.corroborated })) });
   return {
-    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) },
-    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available,
+    env: { CHAIN_BRIEF: describeLeads(leads.slice(0, 12), "") + aderynNote(aderyn) + (slither ? slitherNote(slither) : "") + (monitor ? ozMonitorNote(monitor) : "") },
+    record: { mode, block, suspects: leads.length, source: !world, aderyn: aderyn.available, ...slitherFields(slither), ...monitorFields(monitor),
       corroborated: leads.filter((l) => l.corroborated).length, top: leads.slice(0, 8).map((l) => ({ check: l.check, impact: l.impact, where: l.where })) },
   };
 }

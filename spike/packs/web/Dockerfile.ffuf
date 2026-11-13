@@ -1,0 +1,27 @@
+# ffuf, the content-discovery (web fuzzing) tool. MIT licensed.
+# https://github.com/ffuf/ffuf
+#
+# Pinned to v2.3.0 and verified against the published checksum. The build stage
+# has network to fetch the release; the final image is a tiny pinned base and,
+# at run time, the pack runs it with --network <lab-net> --pull=never, so it
+# only ever talks to the lab, never a registry or the internet.
+FROM alpine:3.21 AS fetch
+ARG FFUF_VERSION=2.3.0
+ARG FFUF_SHA256=b2a3c725fcb9da175159682f54d6e9149f2905b00d84d155e7efc5d599975ceb
+RUN apk add --no-cache curl=~8 \
+ && curl -fsSL -o /tmp/ffuf.tar.gz \
+      "https://github.com/ffuf/ffuf/releases/download/v${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_amd64.tar.gz" \
+ && echo "${FFUF_SHA256}  /tmp/ffuf.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/ffuf.tar.gz -C /usr/local/bin ffuf \
+ && chmod 0755 /usr/local/bin/ffuf \
+ && /usr/local/bin/ffuf -V
+
+# ffuf is a static Go binary. busybox gives it a minimal runtime with a shell
+# (handy for the runner) but no package manager and nothing to reach out with.
+FROM alpine:3.21
+COPY --from=fetch /usr/local/bin/ffuf /usr/local/bin/ffuf
+# Run as an unprivileged user; the pack also passes --user and --cap-drop ALL.
+RUN adduser -D -u 1000 ffuf
+USER ffuf
+ENTRYPOINT []
+CMD ["ffuf", "-V"]
