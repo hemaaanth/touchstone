@@ -24,12 +24,16 @@ pack uses lib/proof-evidence.mjs and passes its allowlisted detector map.
 
 A dangling CNAME is stale DNS. It is not proof of a claimable provider account.
 SRI and CSP are separate controls with separate fixes. Identical captured HTML
-is checked once. Missing email-auth, registry-lock, DNSSEC and content-pin
+is checked once. Missing email-auth, TLS, registry-lock, DNSSEC and content-pin
 evidence is an informational evidence gap. Do not say these controls are disabled.
 
 An email-auth lead cites the published SPF or DMARC record. It proves the record
 state, never that a spoofed message reaches an inbox. No DKIM selector and no
 receiver filter are tested. Say so when you explain it.
+
+A `tls-*` lead is one handshake testssl.sh measured. Its severity is the tool's
+grade, not proof of exploit. The where cell is the endpoint. Say that a person
+must confirm exposure. No exploit is run and only one handshake is measured.
 
 The drainer check is behavior. The analyzer ran the captured scripts in a fake
 wallet and clicked each connect, claim, airdrop, mint or verify control. A lead
@@ -76,7 +80,7 @@ itself on first use when it is missing.
 A scope names a domain. `.touchstone.json` holds `domain` and `reach`. The
 platform grant fills `reach`: `network`, `granted`, `scope`, and optionally
 `resolver`, `ports` and `env`. The prepass then captures the domain through
-`runTool()` (subfinder, checkdmarc, dnsx, httpx, nuclei), pins the snapshot, and
+`runTool()` (subfinder, checkdmarc, dnsx, httpx, testssl.sh, nuclei), pins the snapshot, and
 the checks run on the pin. Live capture refuses a domain that is not covered by
 `reach.scope`. With no grant it stops before any tool runs. A network name is
 never a grant. A lab network must also be `--internal` in Docker, and the tools

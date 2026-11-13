@@ -73,7 +73,7 @@ test('email leads replay from the pinned snapshot', async () => {
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-test('a real capture stores the email evidence and its lead', { timeout: 240000 }, async () => {
+test('a real capture stores the email evidence and its lead', { timeout: 420000 }, async () => {
   const ws = mkdtempSync(join(tmpdir(), 'domain-email-live-'));
   try {
     const snapshot = await captureDomain({ ws, domain: root, reach: { network: 'bridge', granted: true, scope: [root], ports: [{ scheme: 'https', port: 443 }] } });

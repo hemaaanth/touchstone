@@ -11,6 +11,7 @@ import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { IMAGE, ensureImage } from './checks.mjs';
 import { checkEmail, emailLeads } from './email.mjs';
+import { captureTls, testsslTargets, tlsLeads } from './tls.mjs';
 import { assertInternal } from './labctl.mjs';
 
 const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec';
@@ -145,6 +146,14 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
     const scripts = scriptUrls(pages, scope).filter(u => !pages.some(p => p.url === u));
     const assets = scripts.length ? await probe('httpx-scripts', scripts) : [];
     const http = [...pages, ...assets].sort((a, b) => a.url < b.url ? -1 : 1);
+    // TLS is measured only where the capture already found an https endpoint.
+    // The A record is passed as --ip, so the lab needs no resolver in the container.
+    const tlsCheck = await captureTls(run, ws, testsslTargets(http.map(r => r.url)), host => dns.find(r => r.host === host && r.type === 'A' && r.answers.length)?.answers[0]);
+    for (const check of tlsCheck.runs) {
+      const row = coverage.find(c => c.engine === check.engine);
+      if (check.report) row.leads = tlsLeads({ root: domain, tls: [check.report] }).length;
+      else { row.status = 'unavailable'; row.reason = row.reason || check.error || 'the handshake was not measured'; }
+    }
     const hits = [];
     if (pages.length) {
       copyFileSync(TEMPLATE, join(dir, 'github-takeover.yaml'));
@@ -154,7 +163,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST }) 
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, email, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
+    return { schema: 1, root: domain, zone, dns, http, email, tls: tlsCheck.evidence, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.

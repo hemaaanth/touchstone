@@ -44,7 +44,7 @@ live-only tool needs a grant, not a new mode.
 |------|-------|---------|--------|
 | baddns | Subdomain takeover signatures | skip — overlap (assumed, not tested) | Same fingerprint space as the wrapped Nuclei takeover templates and the compared dnsReaper; our own fingerprint check is the replay proof. baddns was not run, so no distinct lab catch is shown. |
 | subzy, subjack | Takeover fingerprint scanners | skip — overlap (assumed, not tested) | Identical fingerprint space to Nuclei takeover templates, which already serve as the second corroborating engine. Neither was run; no new detection was shown. |
-| testssl.sh | Full TLS / cipher audit | backlog — TLS findings | Directly fills the "Missing TLS" crypto gap flagged on the dnsx and httpx rows. Wiring this tool is what makes TLS coverage land. The adapter would run testssl.sh against the granted TLS endpoint during live capture. A snapshot stores no TLS handshake today: `live.mjs` keeps URL, status, headers and body only. The work is the image, a `runTool()` call, stored TLS scan evidence, a replay adapter and tests. |
+| testssl.sh 3.2.5 | Full TLS / cipher audit | wrap — TLS handshake evidence | Was `backlog — TLS findings`; wrapped and green in the lab run. Fills the "Missing TLS" crypto gap flagged on the dnsx and httpx rows. License re-checked on 2026-11-12: GPLv2, from the upstream script header and `LICENSE.txt`; runs as a separate process, no code copied. Image `drwetter/testssl.sh:3.2@sha256:64bab3c1…7e29` (77.8 MiB), digest in `tls.mjs`. `captureTls()` runs it through `runTool()` with the pack limits on each https origin the capture found (max 2), passes the captured A record with `--ip`, and writes `--jsonfile-pretty` with `--severity LOW`. `--phone-out` stays off, so no CRL or OCSP fetch is made. Protocol, cipher, forward-secrecy, certificate, header, vulnerability and grade findings are stored in `snapshot.tls`; per-cipher detail is dropped. Each stored finding below OK becomes a `tls-<id>` lead with the tool's grade as severity. All replay from the pin. Proves the measured handshake and the tool's grade; no exploit is attempted and only one handshake is measured. The lab serves TLS with a committed self-signed cert; on 2026-11-12 the tool graded that chain CRITICAL and the handshake T. |
 | SSLyze, tlsx | TLS scan / cert capture | skip — overlap (assumed, not tested) | Assumed to overlap testssl.sh for TLS findings; nothing was run. Pick one TLS engine (testssl.sh) rather than ensemble three. tlsx may return later purely as snapshot cert/SAN capture, not as a finding source. |
 | DNSViz | DNSSEC validation | backlog — DNSSEC evidence | Fills the "Missing DNSSEC evidence" gap named on the dnsx row; `checks.mjs:125` reports it as `dnssec-evidence-missing`. DNSSEC is not captured today: `live.mjs:109` asks dnsx for A, AAAA and CNAME only. The work is to add chain capture in `live.mjs`, store the chain in the snapshot, add a replay check, and ship the image, `runTool()` call and parser. The grant covers the domain; nothing else exists. |
 | Zonemaster | DNS / DNSSEC conformance suite | skip — overlap (assumed, not tested) + scope | Assumed to overlap DNSViz for the DNSSEC evidence we would prove; no comparison was run. The rest is broad conformance testing outside this pack's two proof models. |
@@ -63,12 +63,16 @@ live-only tool needs a grant, not a new mode.
   while Docker builds the tool image. No tool package is installed on the host.
 - The locked build reports existing npm audit advisories. No dependency is upgraded.
   The image runs without network, as the host uid, with all capabilities dropped.
+- The lab TLS cert and key (`lab/tls-cert.pem`, `lab/tls-key.pem`) are our own
+  self-signed files, generated 2026-11-12 for ten years. The key is public and
+  covers no real host.
 
 ## Comparison on the same lab
 
 Run `node spike/packs/domains/smoke.mjs --lab`. It starts CoreDNS and a small
-web server on an internal network. It creates no published ports. It removes its
-own services and network when it ends.
+web server on an internal network: plain HTTP on 8080 and the same host over TLS
+on 8443 with a committed self-signed cert. It creates no published ports. It
+removes its own services and network when it ends.
 
 The lab plants four things a clean scan misses.
 
@@ -97,6 +101,9 @@ What each tool did on this lab.
   wallet and saw an unlimited ERC-20 approve to an unknown spender.
 - checkdmarc ran on the lab resolver. The lab zone has no SPF or DMARC record,
   so it returned `email-spf-missing` and `email-dmarc-missing`. It needs no HTTP.
+- testssl.sh measured the lab handshake. It graded the self-signed chain
+  CRITICAL, the certificate lifetime HIGH and the handshake T. The grade is the
+  tool's opinion of the lab cert, not a defect in the pack.
 
 The smoke also runs the live path on the lab. A scope with `domain` and `reach`
 and no snapshot makes the prepass capture the domain with the real tools and
@@ -131,3 +138,8 @@ change, resource registration, wallet signature, or transaction is attempted.
 Email-authentication leads prove the published record only. A valid SPF or
 DMARC record does not prove a spoofed message reaches an inbox, and no DKIM
 selector or receiver filter is tested.
+
+A TLS lead is the tool's grade of one measured handshake. No exploit is run.
+The grade is a judgement, not proof that a weakness is exploitable. CRL and
+OCSP are not fetched, so revocation shows as unscanned. At most two https
+origins are measured per capture.

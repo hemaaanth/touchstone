@@ -1,0 +1,472 @@
+{
+          "clientProblem1" : [
+                            {
+                                "id"           : "engine_problem",
+                                "severity"     : "WARN",
+                                "finding"      : "No engine or GOST support via engine with your /home/testssl/bin/openssl.Linux.x86_64"
+                           }
+          ],
+          "Invocation"  : "testssl.sh --jsonfile-pretty /work/tls.json --severity LOW --quiet --warnings off example.com:443",
+          "at"          : "b40d71e2861d:/home/testssl/bin/openssl.Linux.x86_64",
+          "version"     : "3.2.5 ",
+          "openssl"     : "OpenSSL 1.0.2-bad from Fri Mar 28 16:54:51 2025",
+          "startTime"   : "1794525923",
+          "scanResult"  : [
+          {
+                    "targetHost"      : "example.com",
+                    "ip"              : "172.66.147.243",
+                    "port"            : "443",
+                    "rDNS"            : "--",
+                    "service"         : "HTTP",
+                    "pretest"           : [
+
+                    ],
+                    "protocols"         : [
+                            {
+                                "id"           : "TLS1",
+                                "severity"     : "LOW",
+                                "finding"      : "offered (deprecated)"
+                           },{
+                                "id"           : "TLS1_1",
+                                "severity"     : "LOW",
+                                "finding"      : "offered (deprecated)"
+                           }
+                    ],
+                    "grease"            : [
+
+                    ],
+                    "ciphers"           : [
+                            {
+                                "id"           : "cipherlist_3DES_IDEA",
+                                "severity"     : "MEDIUM",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "offered"
+                           },{
+                                "id"           : "cipherlist_OBSOLETED",
+                                "severity"     : "LOW",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "offered"
+                           }
+                    ],
+                    "serverPreferences" : [
+                            {
+                                "id"           : "cipher-tls1_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   xc013   ECDHE-RSA-AES128-SHA              ECDH 256   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   xc014   ECDHE-RSA-AES256-SHA              ECDH 256   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x0a",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "TLSv1   x0a     DES-CBC3-SHA                      RSA        3DES        168      TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   xc013   ECDHE-RSA-AES128-SHA              ECDH 256   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   xc014   ECDHE-RSA-AES256-SHA              ECDH 256   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc009",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc009   ECDHE-ECDSA-AES128-SHA            ECDH 253   AES         128      TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc00a",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc00a   ECDHE-ECDSA-AES256-SHA            ECDH 253   AES         256      TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc023",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc023   ECDHE-ECDSA-AES128-SHA256         ECDH 253   AES         128      TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_xc024",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc024   ECDHE-ECDSA-AES256-SHA384         ECDH 253   AES         256      TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384"
+                           },{
+                                "id"           : "cipher-tls1_2_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc013   ECDHE-RSA-AES128-SHA              ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc014   ECDHE-RSA-AES256-SHA              ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc027",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc027   ECDHE-RSA-AES128-SHA256           ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_x3c",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3c     AES128-SHA256                     RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_xc028",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc028   ECDHE-RSA-AES256-SHA384           ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+                           },{
+                                "id"           : "cipher-tls1_2_x3d",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3d     AES256-SHA256                     RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA256"
+                           }
+                    ],
+                    "fs"                : [
+                            {
+                                "id"           : "FS_TLS12_sig_algs",
+                                "severity"     : "LOW",
+                                "finding"      : "RSA-PSS-RSAE+SHA256 RSA+SHA256 RSA-PSS-RSAE+SHA384 RSA+SHA384 RSA-PSS-RSAE+SHA512 RSA+SHA512 RSA+SHA1 ECDSA+SHA256 ECDSA+SHA384 ECDSA+SHA512"
+                           }
+                    ],
+                    "serverDefaults"    : [
+                            {
+                                "id"           : "cert_keyUsage <hostCert#1>",
+                                "severity"     : "HIGH",
+                                "finding"      : "Certificate incorrectly used for key encipherment: 'Digital Signature'"
+                           },{
+                                "id"           : "cert_expirationStatus <hostCert#1>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "expires < 60 days (42)"
+                           },{
+                                "id"           : "cert_notAfter <hostCert#1>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "2026-12-25 22:56"
+                           },{
+                                "id"           : "cert_ocspRevoked <hostCert#1>",
+                                "severity"     : "WARN",
+                                "finding"      : "unable to verify response"
+                           },{
+                                "id"           : "DNS_CAArecord <hostCert#1>",
+                                "severity"     : "LOW",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "cert_expirationStatus <hostCert#2>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "expires < 60 days (42)"
+                           },{
+                                "id"           : "cert_notAfter <hostCert#2>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "2026-12-25 22:56"
+                           },{
+                                "id"           : "cert_ocspRevoked <hostCert#2>",
+                                "severity"     : "WARN",
+                                "finding"      : "unable to verify response"
+                           },{
+                                "id"           : "DNS_CAArecord <hostCert#2>",
+                                "severity"     : "LOW",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "headerResponse"    : [
+                            {
+                                "id"           : "HSTS",
+                                "severity"     : "LOW",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "security_headers",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "vulnerabilities"   : [
+                            {
+                                "id"           : "BREACH",
+                                "severity"     : "MEDIUM",
+                                "cve"          : "CVE-2013-3587",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "potentially VULNERABLE, br gzip HTTP compression detected  - only supplied '/' tested"
+                           },{
+                                "id"           : "SWEET32",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2016-2183 CVE-2016-6329",
+                                "cwe"          : "CWE-327",
+                                "finding"      : "uses 64 bit block ciphers"
+                           },{
+                                "id"           : "BEAST_CBC_TLS1",
+                                "severity"     : "MEDIUM",
+                                "cve"          : "CVE-2011-3389",
+                                "cwe"          : "CWE-20",
+                                "finding"      : "ECDHE-RSA-AES128-SHA AES128-SHA ECDHE-RSA-AES256-SHA AES256-SHA DES-CBC3-SHA"
+                           },{
+                                "id"           : "BEAST",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2011-3389",
+                                "cwe"          : "CWE-20",
+                                "finding"      : "VULNERABLE -- but also supports higher protocols  TLSv1.1 TLSv1.2 (likely mitigated)"
+                           },{
+                                "id"           : "LUCKY13",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2013-0169",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "potentially vulnerable, uses obsolete TLS CBC ciphers"
+                           }
+                    ],
+                    "cipherTests"       : [
+
+                    ],
+                    "browserSimulations": [
+
+                    ],
+                    "rating"            : [
+                            {
+                                "id"           : "overall_grade",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "B"
+                           }
+                    ]
+          }
+          ,
+          {
+                    "targetHost"      : "example.com",
+                    "ip"              : "104.20.23.154",
+                    "port"            : "443",
+                    "rDNS"            : "--",
+                    "service"         : "HTTP",
+                    "pretest"           : [
+
+                    ],
+                    "protocols"         : [
+                            {
+                                "id"           : "TLS1",
+                                "severity"     : "LOW",
+                                "finding"      : "offered (deprecated)"
+                           },{
+                                "id"           : "TLS1_1",
+                                "severity"     : "LOW",
+                                "finding"      : "offered (deprecated)"
+                           }
+                    ],
+                    "grease"            : [
+
+                    ],
+                    "ciphers"           : [
+                            {
+                                "id"           : "cipherlist_3DES_IDEA",
+                                "severity"     : "MEDIUM",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "offered"
+                           },{
+                                "id"           : "cipherlist_OBSOLETED",
+                                "severity"     : "LOW",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "offered"
+                           }
+                    ],
+                    "serverPreferences" : [
+                            {
+                                "id"           : "cipher-tls1_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   xc013   ECDHE-RSA-AES128-SHA              ECDH 256   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   xc014   ECDHE-RSA-AES256-SHA              ECDH 256   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_x0a",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "TLSv1   x0a     DES-CBC3-SHA                      RSA        3DES        168      TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   xc013   ECDHE-RSA-AES128-SHA              ECDH 256   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   xc014   ECDHE-RSA-AES256-SHA              ECDH 256   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_1_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.1   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc009",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc009   ECDHE-ECDSA-AES128-SHA            ECDH 253   AES         128      TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc00a",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc00a   ECDHE-ECDSA-AES256-SHA            ECDH 253   AES         256      TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc023",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc023   ECDHE-ECDSA-AES128-SHA256         ECDH 253   AES         128      TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_xc024",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc024   ECDHE-ECDSA-AES256-SHA384         ECDH 253   AES         256      TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384"
+                           },{
+                                "id"           : "cipher-tls1_2_xc013",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc013   ECDHE-RSA-AES128-SHA              ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x2f",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x2f     AES128-SHA                        RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc014",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc014   ECDHE-RSA-AES256-SHA              ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_x35",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x35     AES256-SHA                        RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA"
+                           },{
+                                "id"           : "cipher-tls1_2_xc027",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc027   ECDHE-RSA-AES128-SHA256           ECDH 253   AES         128      TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_x3c",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3c     AES128-SHA256                     RSA        AES         128      TLS_RSA_WITH_AES_128_CBC_SHA256"
+                           },{
+                                "id"           : "cipher-tls1_2_xc028",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   xc028   ECDHE-RSA-AES256-SHA384           ECDH 253   AES         256      TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+                           },{
+                                "id"           : "cipher-tls1_2_x3d",
+                                "severity"     : "LOW",
+                                "finding"      : "TLSv1.2   x3d     AES256-SHA256                     RSA        AES         256      TLS_RSA_WITH_AES_256_CBC_SHA256"
+                           }
+                    ],
+                    "fs"                : [
+                            {
+                                "id"           : "FS_TLS12_sig_algs",
+                                "severity"     : "LOW",
+                                "finding"      : "RSA-PSS-RSAE+SHA256 RSA+SHA256 RSA-PSS-RSAE+SHA384 RSA+SHA384 RSA-PSS-RSAE+SHA512 RSA+SHA512 RSA+SHA1 ECDSA+SHA256 ECDSA+SHA384 ECDSA+SHA512"
+                           }
+                    ],
+                    "serverDefaults"    : [
+                            {
+                                "id"           : "cert_keyUsage <hostCert#1>",
+                                "severity"     : "HIGH",
+                                "finding"      : "Certificate incorrectly used for key encipherment: 'Digital Signature'"
+                           },{
+                                "id"           : "cert_expirationStatus <hostCert#1>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "expires < 60 days (42)"
+                           },{
+                                "id"           : "cert_notAfter <hostCert#1>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "2026-12-25 22:56"
+                           },{
+                                "id"           : "cert_ocspRevoked <hostCert#1>",
+                                "severity"     : "WARN",
+                                "finding"      : "unable to verify response"
+                           },{
+                                "id"           : "DNS_CAArecord <hostCert#1>",
+                                "severity"     : "LOW",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "cert_expirationStatus <hostCert#2>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "expires < 60 days (42)"
+                           },{
+                                "id"           : "cert_notAfter <hostCert#2>",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "2026-12-25 22:56"
+                           },{
+                                "id"           : "cert_ocspRevoked <hostCert#2>",
+                                "severity"     : "WARN",
+                                "finding"      : "unable to verify response"
+                           },{
+                                "id"           : "DNS_CAArecord <hostCert#2>",
+                                "severity"     : "LOW",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "headerResponse"    : [
+                            {
+                                "id"           : "HSTS",
+                                "severity"     : "LOW",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "security_headers",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "vulnerabilities"   : [
+                            {
+                                "id"           : "BREACH",
+                                "severity"     : "MEDIUM",
+                                "cve"          : "CVE-2013-3587",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "potentially VULNERABLE, br gzip HTTP compression detected  - only supplied '/' tested"
+                           },{
+                                "id"           : "SWEET32",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2016-2183 CVE-2016-6329",
+                                "cwe"          : "CWE-327",
+                                "finding"      : "uses 64 bit block ciphers"
+                           },{
+                                "id"           : "BEAST_CBC_TLS1",
+                                "severity"     : "MEDIUM",
+                                "cve"          : "CVE-2011-3389",
+                                "cwe"          : "CWE-20",
+                                "finding"      : "ECDHE-RSA-AES128-SHA AES128-SHA ECDHE-RSA-AES256-SHA AES256-SHA DES-CBC3-SHA"
+                           },{
+                                "id"           : "BEAST",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2011-3389",
+                                "cwe"          : "CWE-20",
+                                "finding"      : "VULNERABLE -- but also supports higher protocols  TLSv1.1 TLSv1.2 (likely mitigated)"
+                           },{
+                                "id"           : "LUCKY13",
+                                "severity"     : "LOW",
+                                "cve"          : "CVE-2013-0169",
+                                "cwe"          : "CWE-310",
+                                "finding"      : "potentially vulnerable, uses obsolete TLS CBC ciphers"
+                           }
+                    ],
+                    "cipherTests"       : [
+
+                    ],
+                    "browserSimulations": [
+
+                    ],
+                    "rating"            : [
+                            {
+                                "id"           : "overall_grade",
+                                "severity"     : "MEDIUM",
+                                "finding"      : "B"
+                           }
+                    ]
+          }
+          ],
+                    "scanTime"  : 145
+}
