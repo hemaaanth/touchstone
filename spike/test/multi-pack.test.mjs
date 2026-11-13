@@ -14,9 +14,9 @@
 //     run's allow-list does not grow.
 // No docker, no model call, no network. Builds are live-target builds: they only
 // write files. A throwaway grant store stands in for the operator's.
-import { test, after, beforeEach } from "node:test";
+import { test, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -26,10 +26,32 @@ process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
 beforeEach(() => rmSync(process.env.TOUCHSTONE_GRANTS_FILE, { force: true }));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
+// A fake fetch: no network. It writes the tree the real one would and records
+// every call, so a test can prove one fetch serves the whole run.
+const realFetch = await import("../lib/fetch.mjs");
+const realSandbox = await import("../lib/sandbox.mjs");
+const warmed = [];
+mock.module("../lib/sandbox.mjs", { exports: { ...realSandbox, warmSolc: async (v) => { warmed.push(v); return { version: v, ok: true }; } } });
+const fetchCalls = [];
+mock.module("../lib/fetch.mjs", {
+  exports: {
+    ...realFetch,
+    fetchSource: async (ws, url) => {
+      if (url !== "https://github.com/acme/repo/tree/main") throw new Error(`refused ${url}: it is not one of this scope's members`);
+      fetchCalls.push({ ws, url });
+      mkdirSync(path.join(ws, "vendor", "acme__repo"), { recursive: true });
+      writeFileSync(path.join(ws, "vendor", "acme__repo", "lib.js"), "// fetched\n");
+      writeFileSync(path.join(ws, "vendor", "acme__repo", "A.sol"), "pragma solidity ^0.8.20;\ncontract A {}\n");
+      return { where: path.join("vendor", "acme__repo"), files: [{ path: "vendor/acme__repo/lib.js" }, { path: "vendor/acme__repo/A.sol", pragmas: ["^0.8.20"] }], note: "fetched" };
+    },
+  },
+});
+
 const { addGrant } = await import("../lib/grant-store.mjs");
 const { reachHosts, openReach } = await import("../lib/reach.mjs");
 const { PACKS, packFor } = await import("../packs/index.mjs");
 const { multiPack, multiPacks, memberDir, prepassViewOf } = await import("../packs/multi.mjs");
+const { NAV_SYSTEM, sourceNavTools } = await import("../packs/source-nav/pack.mjs");
 const { dropOldBriefFile, prepareMultiWorkspace, prepareRunWorkspace, getTarget, scopeEnv } = await import("../lib/targets.mjs");
 
 const roots = [];
@@ -433,8 +455,215 @@ test("the scope notes name every module's facts, not the first module's", () => 
   assert.ok(joined.includes("acme/lib") && joined.includes(`https://${host}`));
 });
 
-test("a joined plan keeps replay only while some module can prove", () => {
+test("a joined plan is the union: engines with contracts, replay only when a member can prove", () => {
   const many = (chosen, proof) => planModules(contractLab, undefined, { proof }, chosen).map((m) => `${m.id}:${m.on}`);
-  assert.deepEqual(many(["contracts", "review"], "multi"), ["agent:true", "replay:true"]);
+  assert.deepEqual(many(["contracts", "review"], "multi"), ["agent:true", "static:true", "fuzz:true", "replay:true"]);
+  // No contracts member: no Solidity engines.
   assert.deepEqual(many(["review", "surface"], "none"), ["agent:true", "replay:false"]);
 });
+
+// ---- Reading the scope: fetch, shared tree, nav layer, coverage ---------------
+
+// A scope-kind target with one GitHub member, as the defect run had.
+const LINK = "https://github.com/acme/repo/tree/main";
+const scopeTarget = () => ({
+  id: "scope-audit", title: "Offline audit", kind: "scope", pack: "contracts",
+  members: [{ kind: "folder", name: "svc", files: [{ path: "a.js", content: "const a = 1\n" }] }],
+  links: [LINK],
+});
+const outText = (r) => (r?.output ?? []).map((o) => o.text ?? "").join("");
+
+test("a joined code run has the fetch tool and the nav layer, under names the text gives", async () => {
+  const ws = await build2(scopeTarget(), ["review", "contracts"]);
+  const pack = packFor(cfgOf(ws));
+  const tools = new Map(pack.tools(ws, scratch()).map((t) => [t.name, t]));
+  // Each code module has its own fetch, and the shared name is suffixed.
+  assert.ok(tools.has("fetch_source_review") && tools.has("fetch_source_contracts"));
+  const text = pack.system(ws) + "\n\n" + pack.kickoff(ws, {});
+  assert.ok(text.includes("fetch_source_review") && text.includes("fetch_source_contracts"));
+  // The nav prompt appended outside the pack is renamed the same way.
+  const nav = pack.renameText(ws, NAV_SYSTEM);
+  assert.ok(nav.includes("list_sources_review or list_sources_contracts"));
+  assert.doesNotMatch(nav, /list_sources(?!_)/);
+  // The index is built over the run root, which holds the scope's source once.
+  assert.ok(existsSync(path.join(ws, "src", "a.js")));
+  // The engine mounts the index layer for a joined run (agent-run.mjs reads this).
+  assert.equal(pack.readsCode, true);
+  assert.equal(PACKS.web.readsCode, undefined, "a one-module pack keeps its own id test");
+  assert.ok(sourceNavTools(ws).every((t) => typeof t.execute === "function"));
+});
+
+test("one fetch serves the run: both modules can read the tree, one source-fetch", async () => {
+  fetchCalls.length = 0;
+  const ws = await build2(scopeTarget(), ["review", "contracts"]);
+  const pack = packFor(cfgOf(ws));
+  const tools = new Map(pack.tools(ws, scratch()).map((t) => [t.name, t]));
+  // Each module's own fetch tool brings the tree in once.
+  await tools.get("fetch_source_review").execute({ url: LINK });
+  await tools.get("fetch_source_contracts").execute({ url: LINK });
+  assert.equal(fetchCalls.length, 1, "the link is cloned once for the run");
+  assert.equal(fetchCalls[0].ws, ws, "into the run's shared tree");
+  // The tree lives once at the root and each module reads its own copy.
+  assert.ok(existsSync(path.join(ws, "vendor", "acme__repo", "lib.js")));
+  for (const id of ["review", "contracts"]) {
+    assert.ok(existsSync(path.join(memberDir(ws, id), "vendor", "acme__repo", "lib.js")), `${id} has its copy`);
+    const list = outText(await tools.get(`list_sources_${id}`).execute({}));
+    assert.match(list, id === "contracts" ? /vendor\/acme__repo\/A\.sol/ : /vendor\/acme__repo\/lib\.js/, `${id} lists the fetched file`);
+    const file = id === "contracts" ? "vendor/acme__repo/A.sol" : "vendor/acme__repo/lib.js";
+    const read = outText(await tools.get(`read_source_${id}`).execute(id === "contracts" ? { file } : { file }));
+    assert.match(read, id === "contracts" ? /contract A/ : /fetched/, `${id} reads the fetched file`);
+  }
+  // Nothing in the workspace is a link; the tree is real folders.
+  const links = [...readdirSync(ws, { recursive: true, withFileTypes: true })].filter((e) => e.isSymbolicLink());
+  assert.deepEqual(links.map((e) => e.name), []);
+});
+
+test("a refused URL does not poison later fetches", async () => {
+  fetchCalls.length = 0;
+  const ws = await build2(scopeTarget(), ["review", "contracts"]);
+  const tools = new Map(packFor(cfgOf(ws)).tools(ws, scratch()).map((t) => [t.name, t]));
+  const bad = await tools.get("fetch_source_review").execute({ url: "https://github.com/acme/other" });
+  assert.equal(bad.isError, true);
+  const good = await tools.get("fetch_source_contracts").execute({ url: LINK });
+  assert.equal(good.isError, undefined, outText(good));
+  assert.equal(fetchCalls.length, 1);
+  assert.ok(existsSync(path.join(ws, "vendor", "acme__repo", "lib.js")));
+});
+
+test("two fetches of one link at the same time clone once", async () => {
+  fetchCalls.length = 0;
+  const ws = await build2(scopeTarget(), ["review", "contracts"]);
+  const tools = new Map(packFor(cfgOf(ws)).tools(ws, scratch()).map((t) => [t.name, t]));
+  const [a, b] = await Promise.all([
+    tools.get("fetch_source_review").execute({ url: LINK }),
+    tools.get("fetch_source_contracts").execute({ url: LINK }),
+  ]);
+  assert.equal(a.isError, undefined);
+  assert.equal(b.isError, undefined);
+  assert.equal(fetchCalls.length, 1, "one clone for the run");
+  for (const id of ["review", "contracts"]) {
+    assert.ok(existsSync(path.join(memberDir(ws, id), "vendor", "acme__repo", "lib.js")), `${id} got the copy`);
+  }
+});
+
+test("the contracts fetch still warms the compiler and lists the Solidity files", async () => {
+  warmed.length = 0;
+  const ws = await build2(scopeTarget(), ["review", "contracts"]);
+  const tools = new Map(packFor(cfgOf(ws)).tools(ws, scratch()).map((t) => [t.name, t]));
+  const r = await tools.get("fetch_source_contracts").execute({ url: LINK });
+  assert.equal(r.isError, undefined);
+  assert.ok(warmed.includes("0.8.20"), "the pinned compiler is warmed for the offline proof");
+  const text = outText(r);
+  assert.match(text, /Solidity files now available/);
+  assert.match(text, /A\.sol/);
+  assert.match(text, /Compiler versions prepared: 0\.8\.20/);
+  // A later caller of the same link does not warm again and does not clone.
+  warmed.length = 0;
+  fetchCalls.length = 0;
+  await tools.get("fetch_source_review").execute({ url: LINK });
+  const dup = await tools.get("fetch_source_contracts").execute({ url: LINK });
+  assert.deepEqual(warmed, [], "the warm is once per fetch");
+  assert.equal(fetchCalls.length, 0, "no second clone for the run");
+  assert.match(outText(dup), /Already fetched/);
+});
+
+test("a review-only fetch warms for the contracts member, once, with one event per call", async () => {
+  warmed.length = 0;
+  fetchCalls.length = 0;
+  const eventsFile = path.join(dir, "ev-fetch.jsonl");
+  process.env.EVENTS_FILE = eventsFile;
+  try {
+    const ws = await build2(scopeTarget(), ["review", "contracts"]);
+    const tools = new Map(packFor(cfgOf(ws)).tools(ws, scratch()).map((t) => [t.name, t]));
+    // The review tool alone: no contracts call at all.
+    const r = await tools.get("fetch_source_review").execute({ url: LINK });
+    assert.equal(r.isError, undefined);
+    assert.ok(warmed.includes("0.8.20"), "the contracts module's warm ran for the run");
+    assert.match(outText(r), /Solidity files now available/);
+    assert.match(outText(r), /Compiler versions prepared: 0\.8\.20/);
+    // A later call does not warm again, and every call emits exactly one
+    // `fetch_source` (the `source-fetch` stays the run's one).
+    const again = await tools.get("fetch_source_review").execute({ url: LINK + "/" });
+    assert.equal(again.isError, undefined, "a trailing slash is the same link");
+    assert.deepEqual(warmed, ["0.8.20"], "warmed once per fetch");
+    assert.equal(fetchCalls.length, 1, "the trailing slash is the same link");
+    const evs = readFileSync(eventsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(evs.filter((e) => e.ev === "fetch_source").length, 2, "one per call");
+    assert.equal(evs.filter((e) => e.ev === "fetch_source-done").length, 2);
+  } finally {
+    delete process.env.EVENTS_FILE;
+  }
+});
+
+test("no code module, no fetch: a capture-only run is unchanged", async () => {
+  const ws = await build(["surface", "web"]);
+  const tools = names(packFor(cfgOf(ws)).tools(ws, scratch()));
+  assert.equal(tools.includes("fetch_source"), false);
+  assert.equal(tools.includes("fetch_source_web"), false);
+});
+
+// The module table from the real packs: for every kind, every module the kind
+// allows, each tool and instruction section it has alone must be in a joined
+// run too (under its own name), and every nav name in the joined text too.
+const kinds = () => ({
+  scope: scopeTarget(),
+  live: live(["web", "domains", "surface"]),
+  brief: { id: "brief-a", kind: "brief", title: "B", pack: "contracts", brief: "# b", links: [LINK] },
+  local: { id: "local-a", kind: "local-source", title: "L", pack: "contracts", files: [{ path: "A.sol", content: "contract A {}" }] },
+  lab: getTarget("web/dapp"),
+});
+
+test("a joined run has every tool and section each module has ALONE (one-module workspace), for every pair", async () => {
+  const { eligiblePacks, withPack } = await import("../lib/targets.mjs");
+  const { planModules } = await import("../lib/modules.mjs");
+  const heads = (t) => t.match(/^#{2,3} .+$/gm) ?? [];
+  for (const [kind, target] of Object.entries(kinds())) {
+    const allowed = eligiblePacks(target);
+    if (allowed.length < 2) {
+      // A lab (and every single-module kind) has no joined form; the build says so.
+      await assert.rejects(prepareMultiWorkspace(target, { packs: [allowed[0], "contracts"].filter((v, i, a) => a.indexOf(v) === i) }), /one module/);
+      continue;
+    }
+    for (const [a, b] of allowed.flatMap((x) => allowed.filter((y) => y !== x).map((y) => [x, y]))) {
+      // The joined side uses the exact call the server makes, with `chosen`.
+      const joinedPlan = planModules(target, undefined, { proof: PACKS[a].proof === "none" && PACKS[b].proof === "none" ? "none" : "multi" }, [a, b]);
+      const ws = await prepareMultiWorkspace(target, { packs: [a, b], modules: joinedPlan });
+      roots.push(ws);
+      const pack = packFor(cfgOf(ws));
+      // The engine mounts the nav layer too (agent-run adds sourceNavTools once).
+      const have = new Set([...names(pack.tools(ws, scratch())), ...names(sourceNavTools(ws))]);
+      const text = pack.system(ws) + "\n\n" + pack.kickoff(ws, {});
+      for (const id of [a, b]) {
+        // The alone side is a REAL one-module workspace and the one-module plan call.
+        // The server passes the module's own manifest too (a proof: "none" pack).
+        const alonePlan = planModules(withPack(target, id), undefined, PACKS[id]);
+        const aloneWs = await prepareRunWorkspace(withPack(target, id), { modules: alonePlan });
+        roots.push(aloneWs);
+        // Plan union: whatever this module has ON alone is ON in the joined plan
+        // (it may also be on for another member, never turned off).
+        for (const m of alonePlan.filter((x) => x.on)) {
+          const j = joinedPlan.find((x) => x.id === m.id);
+          assert.ok(j?.on, `${kind}/${id}: joined plan drops ${m.id}`);
+        }
+        const alone = PACKS[id].tools(aloneWs, scratch());
+        for (const t of alone) {
+          const form = pack.nameFor(ws, id, t.name);
+          assert.ok(have.has(form), `${kind}/${id}: joined run lacks ${form}`);
+          assert.ok(text.includes(form), `${kind}/${id}: instructions never name ${form}`);
+        }
+        // Every instruction section of the alone prompt survives.
+        for (const h of heads(PACKS[id].system(aloneWs))) assert.ok(text.includes(h), `${kind}/${id}: section ${h} missing`);
+        // And the engine's nav layer names the same five tools over the run root.
+        assert.deepEqual(names(sourceNavTools(ws)).sort(), names(sourceNavTools(aloneWs)).sort(), `${kind}/${id}: nav tools differ`);
+      }
+    }
+  }
+});
+
+// A joined build with the run's own module plan (the fetch step is one of them).
+async function build2(target, packs) {
+  const { planModules } = await import("../lib/modules.mjs");
+  const ws = await prepareMultiWorkspace(target, { packs, modules: planModules(target) });
+  roots.push(ws);
+  return ws;
+}
