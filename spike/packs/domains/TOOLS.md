@@ -29,10 +29,13 @@ that resolves to a private address unless that grant allows it:
   (`1.1.1.1` by default, or `TOUCHSTONE_DNS_RESOLVER`); a lab keeps its lab resolver.
   checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
 - CAA: testssl.sh runs with DNS off (so a rebind cannot move its connection), so it
-  no longer checks CAA. The capture asks the CAA question itself, with `drill` through
-  the same resolver, for the granted name and its parents up to the registrable domain.
-  No CAA record anywhere is a LOW `tls-dns_caarecord` lead; a record is no lead; a query
-  that does not resolve is a `caa` coverage gap, never silence.
+  no longer checks CAA. The capture asks the CAA question itself, with `drill` over TCP
+  (`-t`, so a large answer is not truncated) through the same resolver, following any
+  CNAME the answer returns (RFC 8659). It asks the granted name and each parent, stopping
+  below the public suffix: `example.co.uk` is asked, `co.uk` is not (the stop uses the
+  scope code's own `PUBLIC_SUFFIXES`, `lib/grant-store.mjs`). No CAA record anywhere is a
+  LOW `tls-dns_caarecord` lead; a record is no lead; an answer that is truncated, has no
+  definite result, or does not resolve is a `caa` coverage gap, never read as "no record".
 The captured snapshot is what later steps read.
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |

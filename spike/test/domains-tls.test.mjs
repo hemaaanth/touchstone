@@ -219,68 +219,86 @@ test('the pinned image scans example.com through runTool (TOUCHSTONE_LIVE=1)', {
 
 
 // --- CAA (asked by the capture's own DNS, not the TLS scanner) ---
-const caaBlock = (name, recs, rcode = 'NOERROR') => ';; ->>HEADER<<- opcode: QUERY, rcode: ' + rcode + ', id: 1\n;; ANSWER SECTION:\n' + recs.map(r => name + '.\t60\tIN\tCAA\t' + r).join('\n') + '\n';
-const caaOutput = pairs => pairs.map(([n, recs, rcode]) => ';; TOUCHSTONE-CAA ' + n + '\n' + caaBlock(n, recs, rcode)).join('\n');
+const caaBlock = (name, recs, { rcode = 'NOERROR', tc = false, cname = null } = {}) => {
+  const head = ';; ->>HEADER<<- opcode: QUERY, rcode: ' + rcode + ', id: 1\n;; flags: qr' + (tc ? ' tc' : '') + ' rd ;\n;; ANSWER SECTION:\n';
+  const lines = [];
+  if (cname) { lines.push(name + '.\t60\tIN\tCNAME\t' + cname + '.'); for (const r of recs) lines.push(cname + '.\t60\tIN\tCAA\t' + r); }
+  else for (const r of recs) lines.push(name + '.\t60\tIN\tCAA\t' + r);
+  return head + lines.join('\n') + '\n';
+};
+const caaOutput = pairs => pairs.map(([n, recs, opt]) => ';; TOUCHSTONE-CAA ' + n + '\n' + caaBlock(n, recs, opt)).join('\n');
 
-test('caaNames walks from the granted name up to the registrable (two-label) domain', () => {
+test('caaNames walks up to the registrable domain and stops below a public suffix', () => {
   assert.deepEqual(caaNames('app.staging.example.com'), ['app.staging.example.com', 'staging.example.com', 'example.com']);
   assert.deepEqual(caaNames('example.com'), ['example.com']);
-  assert.deepEqual(caaNames('localhost'), ['localhost']);
+  // A multi-label public suffix: example.co.uk is asked, co.uk is not.
+  assert.deepEqual(caaNames('shop.example.co.uk'), ['shop.example.co.uk', 'example.co.uk']);
+  assert.deepEqual(caaNames('example.co.uk'), ['example.co.uk']);
+  assert.deepEqual(caaNames('co.uk'), []);
   assert.deepEqual(caaNames(''), []);
 });
 
-test('parseCaaBlock reads the CAA records for the queried name, and marks a failed query', () => {
+test('parseCaaBlock reads records, follows a CNAME, and marks a truncated or failed answer', () => {
   assert.deepEqual(parseCaaBlock(caaBlock('example.com', ['0 issue "letsencrypt.org"', '0 iodef "mailto:x@example.com"']), 'example.com'),
-    { ok: true, records: ['0 issue "letsencrypt.org"', '0 iodef "mailto:x@example.com"'] });
-  // NXDOMAIN still answers the CAA question: no record here.
-  assert.deepEqual(parseCaaBlock(caaBlock('example.com', [], 'NXDOMAIN'), 'example.com'), { ok: true, records: [] });
+    { ok: true, records: ['0 issue "letsencrypt.org"', '0 iodef "mailto:x@example.com"'], target: null });
+  // NXDOMAIN still answers: no record here.
+  assert.deepEqual(parseCaaBlock(caaBlock('example.com', [], { rcode: 'NXDOMAIN' }), 'example.com'), { ok: true, records: [], target: null });
   // SERVFAIL did not answer.
-  assert.deepEqual(parseCaaBlock(caaBlock('example.com', [], 'SERVFAIL'), 'example.com'), { ok: false, records: [] });
-  // A record for another name is ignored.
-  assert.deepEqual(parseCaaBlock(caaBlock('other.example.com', ['0 issue "ca"']), 'example.com'), { ok: true, records: [] });
+  assert.equal(parseCaaBlock(caaBlock('example.com', [], { rcode: 'SERVFAIL' }), 'example.com').ok, false);
+  // A truncated (tc) answer is not a full answer, so not read as "no record".
+  assert.equal(parseCaaBlock(caaBlock('example.com', [], { tc: true }), 'example.com').ok, false);
+  // A CNAME whose target has CAA inline: the target's records count.
+  assert.deepEqual(parseCaaBlock(caaBlock('www.example.com', ['0 issue "ca"'], { cname: 'cdn.example.net' }), 'www.example.com'),
+    { ok: true, records: ['0 issue "ca"'], target: null });
+  // A CNAME whose target has no CAA inline: the target is named so the caller can ask it.
+  assert.deepEqual(parseCaaBlock(caaBlock('www.example.com', [], { cname: 'cdn.example.net' }), 'www.example.com'),
+    { ok: true, records: [], target: 'cdn.example.net' });
 });
 
 test('caaVerdict returns the first level with a record, no record, or incomplete', () => {
   assert.deepEqual(caaVerdict(caaOutput([['app.example.com', []], ['example.com', ['0 issue "ca"']]])), { present: true, name: 'example.com', records: ['0 issue "ca"'] });
   assert.deepEqual(caaVerdict(caaOutput([['app.example.com', []], ['example.com', []]])), { present: false });
-  // A failed query before any record is incomplete.
-  assert.deepEqual(caaVerdict(caaOutput([['app.example.com', [], 'SERVFAIL'], ['example.com', ['0 issue "ca"']]])), { incomplete: true, name: 'app.example.com' });
+  // A truncated query before any record is incomplete, never "no record".
+  assert.deepEqual(caaVerdict(caaOutput([['app.example.com', [], { tc: true }], ['example.com', ['0 issue "ca"']]])), { incomplete: true, name: 'app.example.com' });
 });
 
 test('caaLeads makes the LOW lead only when no record exists, and replays from the stored output', () => {
   const output = caaOutput([['example.com', []]]);
   const snap = { root: 'example.com', caa: { domain: 'example.com', output, raw: sha256(output) } };
   assert.deepEqual(caaLeads(snap).map(l => [l.check, l.severity, l.where]), [['tls-dns_caarecord', 'low', 'example.com']]);
-  // tlsLeads folds the CAA lead in.
   assert.ok(tlsLeads(snap).some(l => l.check === 'tls-dns_caarecord'));
-  // A present record: no lead.
   const present = caaOutput([['example.com', ['0 issue "ca"']]]);
   assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output: present, raw: sha256(present) } }), []);
-  // A tampered store (hash mismatch) yields no lead, not a false one.
+  // A stored truncated answer replays as a gap (no lead), not a false "no record".
+  const trunc = caaOutput([['example.com', [], { tc: true }]]);
+  assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output: trunc, raw: sha256(trunc) } }), []);
+  // A tampered store (hash mismatch): no lead.
   assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output, raw: '0'.repeat(64) } }), []);
   // No CAA evidence at all: no lead (the gap is a coverage row).
   assert.deepEqual(caaLeads({ root: 'example.com' }), []);
 });
 
-test('captureCaa queries drill through the resolver and stores its output, or gaps', async () => {
-  const runs = [];
-  const run = async (args, opts) => { runs.push({ args, opts }); const name = args[args.indexOf('CAA') + 1]; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, name === 'example.com' ? [] : []) }; };
+test('captureCaa queries drill over TCP through runTool, follows a CNAME, or gaps', async () => {
+  const calls = [];
+  const run = async (opts) => { calls.push(opts); const name = opts.cmd[opts.cmd.indexOf('CAA') + 1]; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, []) }; };
   const res = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run });
-  assert.equal(runs[0].args[runs[0].args.indexOf('--entrypoint') + 1], 'drill');
-  assert.equal(runs[0].args.at(-1), '@1.1.1.1');
-  assert.equal(runs[0].args[runs[0].args.indexOf('--network') + 1], 'bridge');
+  assert.equal(calls[0].entrypoint, 'drill');
+  assert.deepEqual(calls[0].cmd, ['-t', 'CAA', 'example.com', '@1.1.1.1']);
+  assert.equal(calls[0].network, 'bridge');
   assert.equal(res.present, false);
   assert.match(res.record.raw, /^[0-9a-f]{64}$/);
+  // A CNAME to a target with CAA inline → present, one query.
+  const ok = await captureCaa('www.example.com', { resolver: '1.1.1.1', network: 'bridge', run: async (opts) => ({ code: 0, timedOut: false, stderr: '', stdout: caaBlock(opts.cmd[opts.cmd.indexOf('CAA') + 1], ['0 issue "ca"'], { cname: 'cdn.example.net' }) }) });
+  assert.equal(ok.present, true);
   // No resolver: a gap, and drill never runs.
   const none = await captureCaa('example.com', { resolver: null, network: 'bridge', run: async () => { throw new Error('should not run'); } });
   assert.equal(none.record, null);
   assert.match(none.error, /no resolver/);
-  // A failed query: a gap.
-  const gap = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run: async (args) => ({ code: 0, timedOut: false, stderr: '', stdout: ';; ->>HEADER<<- rcode: SERVFAIL\n' }) });
+  // A truncated answer: a gap, not "no record".
+  const gap = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run: async (opts) => ({ code: 0, timedOut: false, stderr: '', stdout: caaBlock(opts.cmd[opts.cmd.indexOf('CAA') + 1], [], { tc: true }) }) });
   assert.equal(gap.record, null);
-  assert.match(gap.error, /not checked|did not resolve/);
+  assert.match(gap.error, /full answer|truncated|not checked/);
 });
-
 
 test('a bad pin fails one endpoint as a gap, not the whole capture (G1 n5)', async () => {
   const good = { origin: 'https://ok.example.com', host: 'ok.example.com', port: 443 };

@@ -45,17 +45,17 @@ let current;
 let deepAnswers = {};
 const DEEP = { checkdmarc: 'letiemble/checkdmarc:', testssl: 'drwetter/testssl.sh:', dnsviz: 'dnsviz/dnsviz@' };
 mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
+  // The domains prepass asks CAA with drill through runTool. Answer a record present, so no CAA lead.
+  if (opts.entrypoint === 'drill') {
+    const name = opts.cmd[opts.cmd.indexOf('CAA') + 1];
+    return { code: 0, stdout: ';; ->>HEADER<<- rcode: NOERROR\n;; flags: qr rd ;\n;; ANSWER SECTION:\n' + name + '.\t60\tIN\tCAA\t0 issue "letsencrypt.org"\n', stderr: '', timedOut: false };
+  }
   const deep = Object.keys(DEEP).find(n => opts.image.startsWith(DEEP[n]));
   if (deep) { calls.push({ name: deep, ...opts }); return { code: 125, stdout: '', stderr: 'not run in this test', timedOut: false, ...deepAnswers[deep]?.(opts) }; }
   const name = Object.keys(answers).find(n => opts.image.startsWith('projectdiscovery/' + n + ':') || opts.image.startsWith('touchstone-' + n + ':'));
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
   return { stderr: '', timedOut: false, ...answers[name](opts) };
-}, runDocker: async (args) => {
-  // The domains prepass asks CAA with drill. Answer with a CAA record present, so no CAA lead.
-  if (!args.includes('drill')) return real.runDocker(args);
-  const name = args[args.indexOf('CAA') + 1];
-  return { code: 0, stdout: ';; ->>HEADER<<- rcode: NOERROR\n;; ANSWER SECTION:\n' + name + '.\t60\tIN\tCAA\t0 issue "letsencrypt.org"\n', stderr: '', timedOut: false };
 } } });
 // The capture loads grant-store, which reads the console token when it loads. Point it at
 // test values first, so no real token, grant or scope file is read (1h review F4).

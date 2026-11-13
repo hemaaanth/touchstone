@@ -4,9 +4,9 @@
 // new handshake.
 import { isIP } from 'node:net';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { sha256 } from '../../lib/proof-evidence.mjs';
-import { runDocker } from '../../lib/wrap.mjs';
+import { runTool } from '../../lib/wrap.mjs';
+import { PUBLIC_SUFFIXES } from '../../lib/grant-store.mjs';
 import { readOutputFile, readStored, storedRecord } from './stored.mjs';
 export const TESTSSL = 'drwetter/testssl.sh:3.2@sha256:64bab3c1fd8eee440f68d5e020dd633c1f2d375fe0ae593bdfec2725110a7e29';
 // Severities testssl grades. OK and INFO carry no finding a person must read.
@@ -107,33 +107,56 @@ export async function captureTls(run, ws, targets, ipOf) {
 // registrable domain lets any CA issue for it: a LOW lead, the same testssl made.
 export const DRILL_IMAGE = TESTSSL;
 
-// The names to ask: the granted name and each parent up to the registrable domain
-// (the last two labels). RFC 8659's issuer walk, bounded. Most specific first.
+// The names to ask: the granted name and each parent, stopping at the registrable
+// domain (one label below the public suffix). The public-suffix set is the scope
+// code's own `PUBLIC_SUFFIXES` (lib/grant-store.mjs), so `example.co.uk` asks
+// `example.co.uk` but never `co.uk`. Most specific first.
 export function caaNames(domain) {
   const labels = String(domain ?? '').split('.').filter(Boolean);
+  if (labels.length < 2) return labels.length ? [labels.join('.')] : [];
+  if (PUBLIC_SUFFIXES.has(labels.join('.'))) return [];
+  let etld = 1; // labels in the public suffix; default a single TLD label
+  for (let i = 2; i < labels.length; i++) if (PUBLIC_SUFFIXES.has(labels.slice(labels.length - i).join('.'))) etld = i;
+  const registrable = etld + 1;
+  if (labels.length < registrable) return [];
   const out = [];
-  for (let i = 0; i + 2 <= labels.length; i++) out.push(labels.slice(i).join('.'));
-  return out.length ? out : (labels.length ? [labels.join('.')] : []);
+  for (let i = 0; i <= labels.length - registrable; i++) out.push(labels.slice(i).join('.'));
+  return out;
 }
 
-// One drill answer block to its CAA records for `name`. ok is false only when the
-// query did not resolve (SERVFAIL, REFUSED, a timeout): NOERROR and NXDOMAIN both
-// answer the CAA question (no record here). Records are the raw CAA rdata strings.
+// One drill answer to the CAA records that apply to `name`, following the CNAME
+// chain the answer returned (RFC 8659 counts the alias target's CAA). `ok` is true
+// only for a full answer: not truncated (tc), and a definite rcode (NOERROR or
+// NXDOMAIN). A truncated or odd answer is never read as "no record". `target` is a
+// CNAME target with no CAA in this answer, so the caller can ask it at the resolver.
+const fqdnName = name => String(name).toLowerCase().replace(/\.+$/, '') + '.';
 export function parseCaaBlock(block, name) {
-  const rcode = /rcode:\s*([A-Za-z]+)/.exec(String(block ?? ''))?.[1]?.toUpperCase();
-  const ok = rcode === 'NOERROR' || rcode === 'NXDOMAIN';
-  const fq = String(name).toLowerCase().replace(/\.*$/, '') + '.';
-  const records = [];
-  for (const line of String(block ?? '').split('\n')) {
-    const m = /^(\S+)\s+\d+\s+IN\s+CAA\s+(.+?)\s*$/.exec(line);
-    if (m && m[1].toLowerCase() === fq) records.push(m[2].trim().slice(0, 200));
+  const text = String(block ?? '');
+  const flags = /flags:\s*([a-z ]*?)\s*;/.exec(text)?.[1] ?? '';
+  const rcode = /rcode:\s*([A-Za-z]+)/.exec(text)?.[1]?.toUpperCase();
+  const ok = !/\btc\b/.test(flags) && (rcode === 'NOERROR' || rcode === 'NXDOMAIN');
+  const caa = new Map(), cname = new Map();
+  for (const line of text.split('\n')) {
+    let m = /^(\S+)\s+\d+\s+IN\s+CAA\s+(.+?)\s*$/.exec(line);
+    if (m) { const o = m[1].toLowerCase(); if (!caa.has(o)) caa.set(o, []); caa.get(o).push(m[2].trim().slice(0, 200)); continue; }
+    m = /^(\S+)\s+\d+\s+IN\s+CNAME\s+(\S+?)\.?\s*$/.exec(line);
+    if (m) cname.set(m[1].toLowerCase(), fqdnName(m[2]));
   }
-  return { ok, records };
+  let cur = fqdnName(name); const origin = cur; const seen = new Set();
+  for (let hop = 0; hop < 8; hop++) {
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    if (caa.has(cur)) return { ok, records: caa.get(cur), target: null };
+    if (cname.has(cur)) { cur = cname.get(cur); continue; }
+    return { ok, records: [], target: cur === origin ? null : cur.replace(/\.$/, '') };
+  }
+  return { ok, records: [], target: cur === origin ? null : cur.replace(/\.$/, '') };
 }
 
-// The stored drill output is one block per name, each after a "TOUCHSTONE-CAA <name>"
-// marker. The walk returns the first level that has a CAA record (present), or marks
-// the answer incomplete when a query before any record did not resolve.
+// The stored drill output is one block per queried name, each after a
+// "TOUCHSTONE-CAA <name>" marker. The walk returns the first level with a CAA
+// record (present), or incomplete when a query before any record was not a full
+// answer. A truncated stored answer therefore replays as incomplete, not "no record".
 export function caaVerdict(output) {
   const parts = String(output ?? '').split(/^;; TOUCHSTONE-CAA (.+)$/m);
   for (let i = 1; i < parts.length; i += 2) {
@@ -144,25 +167,40 @@ export function caaVerdict(output) {
   return { present: false };
 }
 
-// `run` is runDocker (a test stand-in replaces it). drill asks the granted resolver
-// directly (@resolver), so no name of the target is resolved and no page is fetched.
-// Returns { record } to store, with present, or { error } so the caller gaps the row.
-export async function captureCaa(domain, { resolver, network, user = process.getuid() + ':' + process.getgid(), run = runDocker, timeoutMs = 20000 } = {}) {
+// `run` is runTool (a test stand-in replaces it), so the drill call gets runTool's
+// guards: --pull=never, the capture's network, the hardening, a named container and
+// the Daytona decision. drill asks the granted resolver directly over TCP (-t, so a
+// large answer is not truncated), so no name of the target is resolved and no page is
+// fetched. A CNAME target whose CAA is not inline is asked at the SAME resolver, with
+// a small hop limit; a target name is only ever a question to the resolver. Returns
+// { record, present } to store, or { error } so the caller gaps the row.
+export async function captureCaa(domain, { resolver, network, env = {}, run = runTool, timeoutMs = 20000 } = {}) {
   const names = caaNames(domain);
   if (!resolver) return { record: null, present: null, error: 'no resolver, so the CAA question was not asked' };
   if (!names.length) return { record: null, present: null, error: 'no registrable name to ask CAA for' };
   const blocks = [];
-  for (const name of names) {
-    const cname = 'touchstone-tool-' + randomBytes(6).toString('hex');
-    const args = ['run', '--rm', '--pull=never', '--network', network, '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '512', '--memory', '512m', '--user', user, '--name', cname, '--entrypoint', 'drill', DRILL_IMAGE, 'CAA', name, '@' + resolver];
-    const res = await run(args, { timeoutMs, name: cname, owner: user });
-    if (res.timedOut || res.code) return { record: null, present: null, error: 'the CAA query for ' + name + ' did not run: ' + (String(res.stderr ?? '').trim().slice(-120) || (res.timedOut ? 'timed out' : 'exit code ' + res.code)) };
+  const asked = new Set();
+  const ask = async (name) => {
+    const res = await run({ image: DRILL_IMAGE, network, env, entrypoint: 'drill', cmd: ['-t', 'CAA', name, '@' + resolver], timeoutMs });
+    if (res.timedOut || res.code) return { error: 'the CAA query for ' + name + ' did not run: ' + (String(res.stderr ?? '').trim().slice(-120) || (res.timedOut ? 'timed out' : 'exit code ' + res.code)) };
     blocks.push(';; TOUCHSTONE-CAA ' + name + '\n' + String(res.stdout ?? ''));
+    return { out: String(res.stdout ?? '') };
+  };
+  for (const start of names) {
+    let cur = start;
+    for (let hop = 0; hop < 4; hop++) {
+      if (asked.has(cur)) break;
+      asked.add(cur);
+      const a = await ask(cur);
+      if (a.error) return { record: null, present: null, error: a.error };
+      const p = parseCaaBlock(a.out, cur);
+      if (!p.ok) return { record: null, present: null, error: 'the CAA answer for ' + cur + ' was not a full answer (truncated or no definite result), so CAA was not checked' };
+      if (p.records.length) return { record: { domain, ...storedRecord(blocks.join('\n')) }, present: true };
+      if (p.target && !asked.has(p.target)) { cur = p.target; continue; }
+      break; // no CAA for this name and its CNAME chain; go to the parent
+    }
   }
-  const output = blocks.join('\n');
-  const verdict = caaVerdict(output);
-  if (verdict.incomplete) return { record: null, present: null, error: 'the CAA answer for ' + verdict.name + ' did not resolve, so CAA was not checked' };
-  return { record: { domain, ...storedRecord(output) }, present: verdict.present === true };
+  return { record: { domain, ...storedRecord(blocks.join('\n')) }, present: false };
 }
 
 // A CAA lead from the stored drill output. No record anywhere up to the registrable

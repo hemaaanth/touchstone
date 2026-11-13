@@ -284,7 +284,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
       // CAA is a DNS record, not a handshake. testssl runs with DNS off, so the
       // capture asks the granted resolver itself (drill) and builds the same lead.
-      const caaCheck = await captureCaa(domain, { resolver: reach.resolver, network: reach.network, user: `${process.getuid()}:${process.getgid()}` });
+      const caaCheck = await captureCaa(domain, { resolver: reach.resolver, network: reach.network, env });
       caa = caaCheck.record;
       if (caa) coverage.push({ engine: 'caa', status: 'ran', leads: caaLeads({ root: domain, caa }).length });
       else coverage.push({ engine: 'caa', status: 'unavailable', reason: 'CAA not checked: ' + caaCheck.error, leads: 0 });
