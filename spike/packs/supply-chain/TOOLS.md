@@ -36,13 +36,12 @@ It reads committed files through the GitHub API and pins them. It does not read
 repo or org settings, and no tool gets the network or the token. Workflow
 security is carried by the zizmor + poutine ensemble; Gato-X is the read-only
 reference for the remote-enumeration class. A tool that must call the GitHub API
-itself is still blocked: it needs its own networked `runTool()` run with the
-token, and that is not wired. Each reason names what it needs and the gap it
-would close.
+itself runs only in capture mode (`runTool({ capture })`, see "Networked tools
+(capture mode)" below). Each reason names what it needs and the gap it would close.
 
 | Tool | Space | Verdict | Reason |
 |------|-------|---------|--------|
-| OSSF Scorecard | Repo posture scored via GitHub API | blocked — needs a networked tool run | The live scope and grant now exist. Scorecard calls the API itself, so it needs network and `GITHUB_TOKEN` inside its container. `runTool()` gives neither today. Some of its checks also need more than `contents:read` and `actions:read`. It would close branch protection, review and release settings that a snapshot cannot show. |
+| OSSF Scorecard | Repo posture scored via GitHub API | **wired (file checks)**; API checks fail closed until the token can read the repo | `touchstone/scorecard:5.6.0`, built from `images/scorecard/Dockerfile` (release tarball by SHA-256). Opt-in: `--network-tools scorecard`. Two runs: `--local` on the pinned snapshot with `--network none`, and one API capture in capture mode. On the target it found 3 unpinned Dockerfile lines and no SECURITY.md, dependency-update config or LICENSE. The pack had no Dockerfile or repo-file check before. See "Networked tools". |
 | Allstar | GitHub App enforcing org policy | skip — out of model | A running GitHub App / org-policy enforcer, not a scanner. Needs a live org. |
 | Legitify | GitHub/GitLab org + repo misconfig via API | blocked — needs a networked tool run and admin-read scopes | Reads org and repo settings through the API from inside the tool, so it needs a networked `runTool()` run with the token. Most settings also need admin-read scopes that the read-only token does not have. Same remote class as Gato-X, which stays the read-only reference. It would close org and repo settings enumeration. |
 | chain-bench | CIS supply-chain benchmark against an SCM | blocked — needs a networked tool run and admin-read scopes | Same need as Legitify: API calls from inside the tool, and settings scopes beyond the read-only token. It would close live org settings; a snapshot scan cannot reach them. |
@@ -111,9 +110,44 @@ Live path limits:
 - The app form cannot make a supply-chain live scope. It turns a GitHub URL into a code scope, and its text says "websites". The server route takes one: `{ kind: "live", pack: "supply-chain", hosts: ["owner/repo"], permission: true }` (`app/server/runs.mjs`). That route was not run end to end. The app was not changed.
 - The capture runs in the run's own process. It does not go through the confine gate. The grant check at run start, the check in code, and the two-host allowlist in `githubGet()` hold it. The web pack's live scan stage is the same: it runs on the plain bridge network (`lib/live.mjs`).
 
+## Networked tools (capture mode)
+
+Four tools call the GitHub API themselves: Scorecard, Legitify, chain-bench and raven. The owner allowed them the network on 2026-11-12, in a capture step only. Code: `networked.mjs`, `lib/capture.mjs`.
+
+How a capture runs:
+
+- Opt-in per run: `.touchstone.json` `networkTools`, or `scan.mjs --network-tools <tool>`. With no opt-in nothing here runs, and every `runTool()` call keeps `--network none`.
+- `runTool({ capture })` refuses before any container or network exists when there is no grant, the grant does not name the target, a host is not a GitHub capture host, or the token is missing.
+- The tool runs on a Docker `--internal` network. Its only way out is the scope proxy, which allows `api.github.com` and `codeload.github.com` and nothing else. A raw socket has no route (tested with a real container). `--pull=never` is always set.
+- The token goes in as `-e GITHUB_TOKEN`: the name is in argv, the value is only in the docker CLI's environment. Any copy of the value in stdout, stderr or an error is replaced with `[REDACTED]` before it is saved.
+- The raw stdout is saved in the snapshot with its SHA-256, before the snapshot is pinned. Leads come from the saved bytes. Replay re-parses those bytes and checks each claim against the pinned files. It never reruns the tool and never uses the network.
+- A claim only the tool can see (a repo setting) never passes replay. It stays a lead with an unproven replay.
+- Fail closed. No grant, no token, no target, a 401, 403 or 404, a rate limit, a timeout, empty or unparsable output, or a wrong tool version gives status `unavailable` and a `networked-tool-unavailable` gap. Never a clean result.
+
+Honest limits of the boundary:
+
+- The proxy limits hosts, not paths. The token can read anything it can read on `api.github.com` while the capture runs. The tools are read-only; the token is the real limit.
+- `codeload.github.com` is allowed for capture only. The host-process GitHub path (`githubGet()`) still allows only `api.github.com` and `raw.githubusercontent.com`.
+- The token is visible to anyone who can run `docker inspect` on the short-lived capture container.
+- The proxy log counts TLS tunnels, not API requests. Request counts below come from GitHub's `/rate_limit` (it does not count against the limit).
+- Capture runs on local Docker only, never on a Daytona machine.
+
+Target and token, observed 2026-11-12: the target is `hemaaanth/touchstone` (private). The `GITHUB_TOKEN` in `.env.local` is a fine-grained token for user `hemaaanth` with access to public repositories only. `GET /repos/hemaaanth/touchstone` returns 404 with it. So every API capture of the target fails closed today. The fix is the owner's: add the repo to the token's repository access. No new scope is needed for the file and API checks below that list none.
+
+### Scorecard
+
+- Image: `touchstone/scorecard:5.6.0`, Scorecard v5.6.0 binary from the release tarball, `ADD --checksum=sha256:19bde071…`, on `alpine:3.20@sha256:d9e853e8…`, user 65532. Apache-2.0. The CLI has no write flags.
+- `--local=. --format=json --show-details` runs offline on the staged snapshot. The pack keeps leads from four file checks: Pinned-Dependencies, License, Security-Policy and Dependency-Update-Tool. Its workflow checks (Token-Permissions, Dangerous-Workflow) are not used; zizmor and poutine carry those.
+- `--repo=github.com/<o>/<r> [--commit=<sha>] --format=json --show-details` is the capture. Only API checks are taken from it: Branch-Protection, CI-Tests, CII-Best-Practices, Code-Review, Contributors, Maintained, Packaging, SAST, Signed-Releases, Webhooks, Fuzzing.
+- Leads: each `not pinned by hash: <file>:<line>` warning is a Low lead at that file and line. Replay checks the pinned line is still unpinned (a `FROM` without `@sha256`, an `npm install`, a `uses:` without a full SHA, and so on). A file check with score 0 is a repo lead; replay checks the named file is absent from the snapshot and the skip list, and fails when the capture was truncated. An API check with score 0–4 is a Low lead that never passes replay.
+- Real runs on the target (committed files at `7e01a7c`): local 6 leads: `containerImage` at `spike/packs/ai-mcp/Dockerfile.inspector:4` and `spike/packs/ai-mcp/lab/mcp/oracle/Dockerfile:3`, `npmCommand` at `Dockerfile.inspector:5`, no Security-Policy, no Dependency-Update-Tool, no License (Informational). All replay `pass`. A full `scan.mjs <repo> --network-tools scorecard` gave 5 root causes after grouping. The API capture: 1 tunnel to `api.github.com`, 2 core API requests (observed), exit 0 with empty stdout and `repo unreachable: 404` on stderr. That is recorded as `unavailable`.
+- Traps the parser handles (seen in real runs): API mode exits 0 with empty output on an unreachable repo. `--local` exits 1 with valid JSON because Fuzzing errors with no network. Vulnerabilities scores 10 ("0 existing vulnerabilities") with no network, so it is a `scorecard-check-not-trusted` gap, never a result (osv and Grype cover dependencies). Binary-Artifacts only sees the snapshot's text files, so it is a gap too. Local SAST says "no pull requests merged", so SAST comes from the API capture only.
+- Not covered: all API checks on the target (token cannot read the repo). Branch-Protection needs `Administration: read` and Webhooks needs `Webhooks: read`; without them they are a `not-covered-needs-scope` gap. This was not observed on the target, because the repo itself is not readable. Vulnerabilities (needs `api.osv.dev`, outside the allow-list). The 8 MiB snapshot budget skipped 405 files of this repo, so local mode saw 3 of the 18 unpinned Dockerfile lines a full export shows.
+- Fixture: `test/fixtures/supply-chain-networked/scorecard.json` holds both real outputs. Tests: `test/supply-chain-networked.test.mjs`.
+
 ## Limits
 
-This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), a plain folder, or a GitHub API capture at one commit (see "Live GitHub path"). Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings, package registries, installed dependency payloads, or container image layers.
+This pack audits a pinned snapshot: the Git HEAD tree (committed files only; untracked and ignored files are counted, and `--worktree` reads them), a plain folder, or a GitHub API capture at one commit (see "Live GitHub path"). Binary, oversized and over-budget files (8 MiB total) are skipped. The record keeps counts per reason and folder, and the full list is written to a file. A skipped file in `node_modules/<package>` is a coverage gap. Dependency heuristics have known evasions: see SKILL.md Limits. It does not scan deleted history, live GitHub settings (except through an opted-in networked tool), package registries, installed dependency payloads, or container image layers.
 Tools run offline and read a pinned snapshot. `scan.mjs <folder>` runs them on a real repo or folder. `scan.mjs --github` captures a real GitHub repo first. There is no credential verification, chain query, transaction, exploit workflow, or network fallback.
 A tool error remains an explicit coverage error. A missing advisory database is not a clean result.
 The bundled advisory record is narrow by design. Other dependencies need a separately supplied and pinned database.
