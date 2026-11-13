@@ -10,11 +10,29 @@
 // import is not. This points all of them at a throwaway directory, removed when
 // the process exits. A test that needs its own values sets them after this
 // import. spike/test/test-isolation.test.mjs fails a test that forgets this.
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const dir = mkdtempSync(join(tmpdir(), "touchstone-test-store-"))
+// `bun test` fires no "exit" event, so the hook below never runs there and the
+// folder stays. So the folder name carries this process's id, and each load
+// removes the folders of earlier test processes that have ended. Only this
+// helper's own prefix, only a process that is gone.
+const PREFIX = "touchstone-test-store-"
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+for (const name of readdirSync(tmpdir())) {
+  const m = new RegExp(`^${PREFIX}(\\d+)-[A-Za-z0-9]{6}$`).exec(name)
+  if (m && Number(m[1]) !== process.pid && !alive(Number(m[1]))) rmSync(join(tmpdir(), name), { recursive: true, force: true })
+}
+
+const dir = mkdtempSync(join(tmpdir(), `${PREFIX}${process.pid}-`))
 process.env.TOUCHSTONE_GRANT_TOKEN = "test-grant-token" // the value every app test uses: bun shares one module cache
 process.env.TOUCHSTONE_GRANT_TOKEN_FILE = join(dir, "console-token")
 process.env.TOUCHSTONE_GRANTS_FILE = join(dir, "grants.json")
