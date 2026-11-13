@@ -113,6 +113,17 @@ describe("dev server: the token-bearing page", () => {
 })
 
 describe("dev server: /api/", () => {
+  // The Findings page copies its texts from these reads. They pass the same
+  // Origin and Host guard as every other read.
+  test("the findings list and the copy routes refuse another origin and another Host", async () => {
+    const host = `evil.example:${new URL(base).port}`
+    for (const url of ["/api/findings", "/api/findings/zz-none/report?format=agent", "/api/findings/zz-none/report?format=md"]) {
+      expect((await fetch(base + url, { headers: { origin: base } })).status, url).not.toBe(403)
+      expect((await fetch(base + url, { headers: { origin: FOREIGN } })).status, url).toBe(403)
+      expect((await withHost(host, url)).status, url).toBe(403)
+    }
+  })
+
   test("a read works from the console and not from another origin", async () => {
     for (const url of ["/api/scopes", "/api/grants", "/api/settings", "/api/runs", "/api/models"]) {
       expect((await fetch(base + url)).status, url).toBe(200)

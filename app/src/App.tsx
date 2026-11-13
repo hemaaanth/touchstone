@@ -11,6 +11,7 @@ import { archiveRun, deleteRun, fetchModels, fetchRuns, renameRun, startRun } fr
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat, type FocusFinding } from "@/components/run-chat"
+import { FindingsPage } from "@/components/findings-page"
 import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
 import { SettingsPage } from "@/components/settings-page"
@@ -207,6 +208,8 @@ export function App() {
           />
         ) : page === "settings" ? (
           <SettingsPage onChanged={refreshModels} />
+        ) : page === "findings" ? (
+          <FindingsPage packs={packs} runs={rows} onOpenRun={openRun} />
         ) : page === "modules" ? (
           <ModulesPage catalog={catalog} packs={packs} targets={targets} runs={rows} briefs={briefs} onOpenRun={openRun} />
         ) : page === "scopes" ? (
