@@ -578,9 +578,9 @@ describe("report: replay bundle", () => {
       const poc = path.join(ws, "test", "AgentPoc.t.sol")
       writeFileSync(poc, readFileSync(poc, "utf8").replace(/(function test_reentrancy_drains_vault\(\)[^{]*\{)/, '$1 vm.readFile("fixtures/x.json");'))
     })
-    expect(r.snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls vm.readFile, and this folder holds only the .sol and config files"])
+    expect(r.snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls readFile(), a cheatcode that reads the disk or runs a program"])
     expect(r.cmds).toEqual([])
-    expect(r.line1).toBe(`${NO_RERUN}test/AgentPoc.t.sol calls vm.readFile, and this folder holds only the .sol and config files.`)
+    expect(r.line1).toBe(`${NO_RERUN}test/AgentPoc.t.sol calls readFile(), a cheatcode that reads the disk or runs a program.`)
   })
 
   test("skip case: a skip that no source imports cannot matter, and the command stays", async () => {
@@ -611,6 +611,80 @@ describe("report: replay bundle", () => {
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("rerun condition: the keys lab PoC loads the Safe from JSON, so its bundle has no command", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    const lab = new URL("../../spike/packs/keys/lab/", import.meta.url).pathname
+    const ws = makeWorkspace(lab)
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-keys-"))
+    try {
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), readFileSync(path.join(lab, "oracle", "DelegatedSetupTest.t.sol"), "utf8"))
+      const snap = snapshotForgeReplay(ws, { contract: "DelegatedSetupTest", test: "test_delegatedOwnerCanDrain()" })
+      expect(snap.omitted).toEqual([])
+      // Both the getCode-on-a-path read and the fs_permissions grant catch it.
+      expect(snap.runtimeReads).toEqual(["test/AgentPoc.t.sol calls getCode() on a path, and this folder holds only the .sol and config files"])
+      expect(snap.command).toBeNull()
+      const proof = { kind: "forge", pass: true, test: "test_delegatedOwnerCanDrain()", harm: { ok: true, kind: "control", victim: "0x" + "aa".repeat(20), writes: 1 } }
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "keys", proofKind: "forge", proof }, recorded: { replay: snap, proof } }), dir)
+      const files = readTree(dir)
+      // The files still ship, so the finding is still inspectable.
+      expect(files.has("test/AgentPoc.t.sol")).toBe(true)
+      expect(files.has("foundry.toml")).toBe(true)
+      const readme = files.get("README.md") || ""
+      expect(commands(readme)).toEqual([])
+      // Line 1 names one true reason; both the grant and the getCode read apply.
+      expect(readme.split("\n")[0]).toMatch(/^PROVEN: .* This bundle cannot be re-run from this folder: (foundry\.toml grants file-system access|test\/AgentPoc\.t\.sol calls getCode\(\) on a path)/)
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("rerun condition: fs_permissions, ffi, a file cheatcode on any receiver, or getCode on a path each drops the command", () => {
+    const base = (extraToml: string, pocBody: string) => {
+      const ws = mkdtempSync(path.join(tmpdir(), "replay-cond-"))
+      try {
+        mkdirSync(path.join(ws, "src"))
+        mkdirSync(path.join(ws, "test"))
+        writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n${extraToml}`)
+        writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+        writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `interface Vm { function readFile(string calldata) external; }\ncontract PocTest {\n  Vm cheat = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));\n  function testDrain() public {\n${pocBody}\n  }\n}\n`)
+        return snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      } finally {
+        rmSync(ws, { recursive: true, force: true })
+      }
+    }
+    // A plain PoC keeps the command.
+    expect(base("", "    uint256 x = 1;").command).not.toBeNull()
+    // fs_permissions in any profile drops it.
+    expect(base('fs_permissions = [{ access = "read", path = "lib/x" }]\n', "    uint256 x = 1;").command).toBeNull()
+    expect(base("[profile.ci]\nffi = true\n", "    uint256 x = 1;").command).toBeNull()
+    // A file cheatcode on a renamed receiver (not vm.) drops it.
+    expect(base("", '    cheat.readFile("x.txt");').command).toBeNull()
+    // getCode on a .json path drops it; on X.sol:Name it does not.
+    expect(base("", '    cheat.getCode("lib/safe-artifacts/Safe.json");').command).toBeNull()
+    const okArtifact = base("", '    cheat.getCode("Vault.sol:Vault");')
+    expect(okArtifact.runtimeReads ?? []).toEqual([])
+    expect(okArtifact.command).not.toBeNull()
+  })
+
+  test("rerun condition: an import hidden behind a string that opens a comment is still a gap", () => {
+    const ws = mkdtempSync(path.join(tmpdir(), "replay-strimport-"))
+    try {
+      mkdirSync(path.join(ws, "src"))
+      mkdirSync(path.join(ws, "test"))
+      writeFileSync(path.join(ws, "foundry.toml"), `[profile.default]\nsrc = "src"\ntest = "test"\n`)
+      writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault {}\n")
+      // The string "/*" would start a comment in the stripped pass and hide the
+      // import; the raw-text pass still sees it, so the file is a gap.
+      writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), `string constant OPEN = "/*";\nimport "../src/missing/Hidden.sol";\n// close: */\ncontract PocTest {}\n`)
+      const snap = snapshotForgeReplay(ws, { contract: "PocTest", test: "testDrain()" })
+      expect(snap.omitted.some((o: { reason: string }) => o.reason.includes("imported by test/AgentPoc.t.sol"))).toBe(true)
+      expect(snap.command).toBeNull()
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
     }
   })
 
@@ -1146,6 +1220,27 @@ describe("report: replay bundle", () => {
       else process.env.TOUCHSTONE_RESULTS_DIR = prev
       rmSync(dir, { recursive: true, force: true })
       rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  test("loadRecordedReplay prefers a finding's own pack over the run's (a joined run is 'multi')", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-pack-"))
+    const prev = process.env.TOUCHSTONE_RESULTS_DIR
+    process.env.TOUCHSTONE_RESULTS_DIR = dir
+    try {
+      // A joined run: the run is "multi"; the web finding keeps its own pack.
+      writeFileSync(path.join(dir, "run-joined-1.json"), JSON.stringify({
+        result: { pack: "multi", findings: [{ title: "web idor", pack: "web", pocProved: true, proof: { kind: "http" } }, { title: "a contracts finding", pack: "contracts", proof: { kind: "forge" } }] },
+      }))
+      expect(loadRecordedReplay("joined-1.1").pack).toBe("web")
+      expect(loadRecordedReplay("joined-1.2").pack).toBe("contracts")
+      // A single-pack run with no finding pack falls back to the run's pack.
+      writeFileSync(path.join(dir, "run-solo-1.json"), JSON.stringify({ result: { pack: "web", findings: [{ title: "one", proof: { kind: "http" } }] } }))
+      expect(loadRecordedReplay("solo-1.1").pack).toBe("web")
+    } finally {
+      if (prev === undefined) delete process.env.TOUCHSTONE_RESULTS_DIR
+      else process.env.TOUCHSTONE_RESULTS_DIR = prev
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 

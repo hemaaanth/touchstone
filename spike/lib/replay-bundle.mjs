@@ -531,9 +531,14 @@ function collectFiles(root) {
 // The Solidity imports of one text. Comments are removed first, so a
 // commented-out import is not read.
 const IMPORT = /\bimport\s+(?:[^;"']*?\bfrom\s+)?["']([^"']+)["']/g;
+// The imports of one text, matched on the comment-stripped text AND on the raw
+// text. A string like "/*" cannot hide an import from the stripped pass; a
+// false hit from import-like text inside a string becomes a gap (no command),
+// which fails closed.
 function importsOf(text) {
-  const code = String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
-  return [...code.matchAll(IMPORT)].map((m) => m[1]);
+  const raw = String(text ?? "");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+  return [...new Set([...code.matchAll(IMPORT), ...raw.matchAll(IMPORT)].map((m) => m[1]))];
 }
 function normPath(p) {
   const out = [];
@@ -620,18 +625,100 @@ export function importGaps(texts, { skipped = new Map(), skippedDirs = [], omitt
 // .sol and config files this folder holds. Engine library files are not
 // checked: they define these helpers, and a proof that only imports them
 // reads nothing.
-const RUNTIME_READ = /\bvm\s*\.\s*(readFile|readFileBinary|readLine|readDir|ffi)\s*\(/;
-export function runtimeReads(texts, vendoredPaths = new Set()) {
-  const out = [];
-  for (const [path, text] of texts) {
-    if (!path.endsWith(".sol") || vendoredPaths.has(path)) continue;
-    const m = RUNTIME_READ.exec(importsFree(text));
-    if (m) out.push(`${path} calls vm.${m[1]}, and this folder holds only the .sol and config files`);
+// The file-system and program cheatcodes, taken from the Filesystem section of
+// the vendored forge-std Vm.sol (between "======== Filesystem ========" and the
+// next "========" marker). ffi, tryFfi and the artifact helpers live in that
+// section, so the set matches the pinned forge-std. A call to any of these on
+// ANY receiver (vm., cheats., hevm., a renamed Vm variable) means the proof
+// needs more than this folder. The artifact helpers (getCode and the like) are
+// allowed only for an `X.sol` or `X.sol:Name` argument, which forge resolves
+// from the compiled out/ with no file read; any other argument, or a
+// non-literal one, drops the command.
+const ARTIFACT_CHEATS = new Set(["getCode", "getDeployedCode", "deployCode", "deployCodeTo"]);
+let fileCheatSet = null;
+function fileCheats() {
+  if (fileCheatSet) return fileCheatSet;
+  let names = [];
+  try {
+    const entry = [...(vendored().get("lib/forge-std/src/Vm.sol")?.values() ?? [])][0];
+    const src = entry ? readFileSync(entry.abs, "utf8") : "";
+    const at = src.indexOf("======== Filesystem ========");
+    const end = src.indexOf("========", at + 30);
+    const section = at >= 0 ? src.slice(at, end >= 0 ? end : undefined) : "";
+    names = [...section.matchAll(/\bfunction\s+([A-Za-z0-9_]+)\s*\(/g)].map((m) => m[1]);
+  } catch {
+    names = [];
   }
-  return out;
+  // A backstop if the vendored Vm.sol is not readable, so the rule never opens.
+  const fallback = ["readFile", "readFileBinary", "readLine", "readDir", "readLink", "writeFile", "writeFileBinary", "writeLine", "closeFile", "copyFile", "createDir", "removeDir", "removeFile", "exists", "isFile", "isDir", "fsMetadata", "projectRoot", "prompt", "promptSecret", "promptSecretUint", "promptUint", "promptAddress", "ffi", "tryFfi", "getCode", "getDeployedCode", "deployCode", "deployCodeTo", "getArtifactPathByCode", "getArtifactPathByDeployedCode"];
+  fileCheatSet = new Set(names.length ? names : fallback);
+  return fileCheatSet;
 }
 function importsFree(text) {
   return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
+}
+// The first string literal that follows "(", or null when the first argument
+// is not a plain string literal.
+function firstStringArg(afterParen) {
+  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/.exec(afterParen);
+  return m ? m[2] : null;
+}
+const ARTIFACT_NAME = /^[^"'\s]+\.sol(?::[A-Za-z0-9_$]+)?$/;
+// Each kept source that calls a file-system or ffi cheatcode, as a reason. The
+// raw text and the comment-stripped text are both scanned, so a call hidden
+// after a "/*" inside a string is still caught. A vendored library file defines
+// these cheatcodes but does not call them, so it is not scanned.
+export function runtimeReads(texts, vendoredPaths = new Set()) {
+  const names = fileCheats();
+  const CALL = new RegExp("\\.\\s*(" + [...names].join("|") + ")\\s*\\(([\\s\\S]{0,200})", "g");
+  const out = new Set();
+  for (const [path, text] of texts) {
+    if (!path.endsWith(".sol") || vendoredPaths.has(path)) continue;
+    for (const body of [String(text ?? ""), importsFree(text)]) {
+      CALL.lastIndex = 0;
+      let m;
+      while ((m = CALL.exec(body))) {
+        const name = m[1];
+        if (ARTIFACT_CHEATS.has(name)) {
+          const arg = firstStringArg(m[2]);
+          if (arg !== null && ARTIFACT_NAME.test(arg)) continue; // X.sol[:Name]: from out/, no file
+          out.add(`${path} calls ${name}() on a path, and this folder holds only the .sol and config files`);
+        } else {
+          out.add(`${path} calls ${name}(), a cheatcode that reads the disk or runs a program`);
+        }
+      }
+    }
+  }
+  return [...out];
+}
+
+// foundry.toml grants that let a proof reach outside the .sol and config files:
+// file-system access (fs_permissions) or program execution (ffi = true), in any
+// profile. forge itself denies these without the grant, so the grant is the
+// signal that the proof may need more than this folder.
+export function tomlGrant(texts) {
+  const toml = texts.get("foundry.toml") || "";
+  if (/^\s*fs_permissions\s*=/m.test(toml) || /\bfs_permissions\s*=\s*\[/.test(toml)) return "foundry.toml grants file-system access (fs_permissions), so the proof may read files this folder does not hold";
+  if (/\bffi\s*=\s*true\b/.test(toml)) return "foundry.toml enables program execution (ffi = true)";
+  return null;
+}
+
+// The one place that decides whether the bundle keeps its replay command. It
+// keeps the command only when EVERY condition holds; anything else means no
+// command, line 1 says why, and the files still ship. (A deny list let three
+// shapes through across reviews, so this is a positive list.)
+//   1. the folder holds foundry.toml and a proof test;
+//   2. no file was left out (omitted), which includes every import of every
+//      kept source resolving inside the folder (importGaps);
+//   3. foundry.toml grants no file-system access and no program execution;
+//   4. no kept source calls a forge-std file-system or ffi cheatcode (or an
+//      artifact cheatcode on a path that is not X.sol[:Name]).
+export function rerunBlock({ haveProject, filesLost, omitted, reads, grant }) {
+  if (!haveProject) return filesLost ? `the replay files of this run are gone (${filesLost})` : "it does not hold both foundry.toml and a proof test";
+  if (omitted.length) return `${omitted.length} ${omitted.length === 1 ? "file was" : "files were"} left out (see "Left out")`;
+  if (grant) return grant;
+  if (reads.length) return reads.join("; ");
+  return null;
 }
 
 // The solc the proof ran with, read the way forgeTest reads it: the workspace
@@ -700,6 +787,7 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   // A skip that a kept source imports into is a file the build needs.
   omitted.push(...importGaps(texts, { skipped, skippedDirs, omitted }));
   const reads = runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)));
+  const grant = tomlGrant(texts);
   let toml = "";
   try {
     if (paths.includes("foundry.toml")) toml = readFileSync(join(ws, "foundry.toml"), "utf8");
@@ -723,10 +811,9 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     ...(reads.length ? { runtimeReads: reads } : {}),
   };
   replay.prepare = prepareCommand(replay);
-  // A file left out may be one the proof needs, so the record has no command.
-  replay.command = !omitted.length && !reads.length && files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
-    ? forgeCommand(replay)
-    : null;
+  const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
+  // One rule decides the command, here and at bundle time.
+  replay.command = rerunBlock({ haveProject, filesLost: null, omitted, reads, grant }) ? null : forgeCommand(replay);
   return replay;
 }
 
@@ -1239,20 +1326,13 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   const texts = new Map(files.map((f) => [f.path, f.text]));
   if (testSource && !texts.has("test/AgentPoc.t.sol") && !files.some((f) => f.path.startsWith("test/"))) texts.set("test/AgentPoc.t.sol", testSource);
   omitted.push(...importGaps(texts, { omitted }));
-  const reads = [...new Set([...(Array.isArray(replay?.runtimeReads) ? replay.runtimeReads.map((r) => bundleText(String(r))) : []), ...runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)))])];
+  const reads = runtimeReads(texts, new Set(files.filter((f) => f.vendored).map((f) => f.path)));
+  const grant = tomlGrant(texts);
   replay = replay && { ...replay, omitted };
   const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
   // A file the proof may need is not here: the replay would not compile, so
   // the bundle has no command and says why on line 1.
-  const noRerun = !haveProject
-    ? replay?.filesLost
-      ? `the replay files of this run are gone (${replay.filesLost})`
-      : "it does not hold both foundry.toml and a proof test"
-    : omitted.length
-      ? `${omitted.length} ${omitted.length === 1 ? "file was" : "files were"} left out (see "Left out")`
-      : reads.length
-        ? reads.join("; ")
-        : null;
+  const noRerun = rerunBlock({ haveProject, filesLost: replay?.filesLost, omitted, reads, grant });
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
   // Rebuild the command from the recorded fields, so a record written before
   // the offline command still gets one.
