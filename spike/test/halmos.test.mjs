@@ -1,7 +1,7 @@
 // Halmos runs in Docker. The real-run tests need the image
 // (spike/packs/contracts/images/build.sh halmos) and skip when it is not built.
 // The lab is lab/vault-shares: its withdraw rounds the shares it burns down.
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -145,12 +145,24 @@ test("Halmos reports unavailable on a timeout and leaves no container, running o
 // The docker client hits its limit before the in-container kill. runTool must
 // report timedOut and leave no container, not even one in state "Created"
 // (the shared fix 44ba808, 135a436, 93dd481 on main).
+// At timeoutMs 1000 the scan's own in-container kill is 1 s, so the container
+// ends by itself and the test cannot see runTool's rm -f. A wrapper raises
+// only that kill to 60 s. The real runTool still runs, so only its rm -f can
+// stop the container near the limit. Halmos ends the lab in about 5.5 s on
+// its own, so the time bound is 4 s.
 test("a client-side timeout reports timedOut, returns near the limit and leaves no container", { skip: !hasHalmos && "image not built" }, async () => {
+  const wrap = await import("../lib/wrap.mjs");
+  const real = { ...wrap };
+  let lifted = 0;
+  const lift = (s) => s.replace(/timeout -s KILL \d+ /g, () => { lifted++; return "timeout -s KILL 60 "; });
+  mock.module("../lib/wrap.mjs", { exports: { ...real, runTool: (o) => real.runTool({ ...o, cmd: o.cmd.map(lift) }) } });
   const ws = makeWorkspace(LAB);
   try {
+    const { halmosScan } = await import("../packs/contracts/halmos.mjs?clienttimeout");
     const t0 = Date.now();
     const scan = await halmosScan(ws, { timeoutMs: 1000 });
-    assert.ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`);
+    assert.equal(lifted, 1, "the in-container kill was not raised");
+    assert.ok(Date.now() - t0 < 4_000, `took ${Date.now() - t0} ms`);
     assert.equal(scan.available, false);
     assert.equal(scan.timedOut, true);
     assert.equal(scan.reason, "timed out after 1s");
@@ -167,6 +179,7 @@ test("a client-side timeout reports timedOut, returns near the limit and leaves 
     assert.equal(left, "");
   } finally {
     // Remove only what this test left on its own workspace.
+    mock.reset();
     const mine = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/halmos:0.3.3", "--filter", `volume=${ws}`]).toString().trim().split("\n").filter(Boolean);
     if (mine.length) execFileSync("docker", ["rm", "-f", ...mine], { stdio: "ignore" });
     await cleanupWorkspace(ws);

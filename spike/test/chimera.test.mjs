@@ -116,11 +116,22 @@ test("Chimera reports unavailable when the image runs but writes no report", { s
 // The docker client hits its limit before the in-container kill. runTool must
 // report timedOut and leave no container, not even one in state "Created"
 // (the shared fix 44ba808, 135a436, 93dd481 on main).
+// At timeoutMs 1000 the scan's own in-container kill is 1 s, so the container
+// ends by itself and the test cannot see runTool's rm -f. A wrapper raises
+// only that kill to 60 s. The real runTool still runs, so only its rm -f can
+// stop the containers near the limit.
 test("a client-side timeout reports timedOut for both engines, returns near the limit and leaves no container", { skip: !hasChimera && "image not built" }, async () => {
+  const wrap = await import("../lib/wrap.mjs");
+  const real = { ...wrap };
+  let lifted = 0;
+  const lift = (s) => s.replace(/timeout -s KILL \d+ /g, () => { lifted++; return "timeout -s KILL 60 "; });
+  mock.module("../lib/wrap.mjs", { exports: { ...real, runTool: (o) => real.runTool({ ...o, cmd: o.cmd.map(lift) }) } });
   const ws = makeWorkspace(LAB);
   try {
+    const { chimeraScan } = await import("../packs/contracts/chimera.mjs?clienttimeout");
     const t0 = Date.now();
     const scan = await chimeraScan(ws, { timeoutMs: 1000 });
+    assert.equal(lifted, 2, "the in-container kill was not raised for both engines");
     assert.ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`);
     assert.equal(scan.available, false);
     assert.equal(scan.reason, "Echidna timed out after 1s; Medusa timed out after 1s");
@@ -139,6 +150,7 @@ test("a client-side timeout reports timedOut for both engines, returns near the 
     assert.equal(left, "");
   } finally {
     // Remove only what this test left on its own workspace.
+    mock.reset();
     const mine = execFileSync("docker", ["ps", "-aq", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim().split("\n").filter(Boolean);
     if (mine.length) execFileSync("docker", ["rm", "-f", ...mine], { stdio: "ignore" });
     await cleanupWorkspace(ws);
