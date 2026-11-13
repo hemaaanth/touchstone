@@ -237,14 +237,14 @@ export function tools(ws, state = {}) {
       const line = Number(args.line);
       const title = String(args.title ?? "").trim().slice(0, TITLE_CAP);
       const reason = String(args.reason ?? "").trim().slice(0, REASON_CAP);
-      const proof = String(args.proof ?? "").trim().slice(0, REASON_CAP);
+      const proof = typeof args.proof === "string" ? args.proof.trim().slice(0, REASON_CAP) : "";
       if (!SEVERITIES.includes(severity)) return text(`Severity must be one of ${SEVERITIES.join(", ")}.`, true);
       if (!title || !reason) return text("Give a title (what an attacker does) and a reason (why it holds).", true);
       const abs = resolveReadable(ws, raw);
       if (!abs) return text(`Not a readable source file: ${raw}. Pass a path list_sources shows.`, true);
       let body;
       try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
-      const lines = body.split("\n").length - (body.endsWith("\n") ? 1 : 0);
+      const lines = body ? body.split("\n").length - (body.endsWith("\n") ? 1 : 0) : 0;
       if (!Number.isInteger(line) || line < 1 || line > lines) return text(`Line ${args.line} is not in ${raw}, which has ${lines} line${lines === 1 ? "" : "s"}.`, true);
       const file = relative(realpathSync(ws), abs).split(sep).join("/");
       const id = "lead-" + createHash("sha1").update(`${file}:${line}`).digest("hex").slice(0, 12);

@@ -202,3 +202,20 @@ test("a run records at most 200 leads; the next one is refused with a clear erro
   assert.match(text({ content: over.output }), /cap/i);
   assert.equal(fileEvents(events).filter((e) => e.ev === "lead").length, 200, "the refused lead writes no event");
 });
+
+test("an empty file has no line 1, and a proof that is not text is not stored", async (t) => {
+  const { ws, events } = workspace();
+  t.mock.method(console, "log", () => {});
+  process.env.EVENTS_FILE = events;
+  t.after(() => { delete process.env.EVENTS_FILE; });
+  writeFileSync(join(ws, "src/svc/empty.js"), "");
+  const record = review.tools(ws, {}).find((x) => x.name === "record_lead");
+  const empty = await exec(record, { ...lead, file: "src/svc/empty.js", line: 1 });
+  assert.equal(empty.isError, true, "an empty file has no line to point at");
+  assert.match(text({ content: empty.output }), /0 lines/);
+  const ok = await exec(record, { ...lead, proof: { status: "pass" } });
+  assert.ok(!ok.isError, text({ content: ok.output }));
+  const leads = fileEvents(events).filter((e) => e.ev === "lead");
+  assert.equal(leads.length, 1);
+  assert.ok(!("proof" in leads[0]), `a proof object is dropped, not stored as ${JSON.stringify(leads[0].proof)}`);
+});
