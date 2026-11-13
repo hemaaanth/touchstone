@@ -28,19 +28,21 @@ These rules are fixed. A thread does not guess around them.
 |-----|------------------|
 | Author, normal work | `claude-code` / `claude-opus-5-5`, reasoning high |
 | Author, root-cause or cross-cutting work (A, C) | `claude-code` / `claude-fable-5-2`, reasoning high |
+| Author, fallback when a Claude route has trouble | `acp-omp` / DeepSeek V4.1 Flash abliterated ("DSF4.1-A"). Its commits end with `Authored-by: DSF4.1-A (omp)` |
 | Reviewer | `codex` / `gpt-6.1-sol`, reasoning high |
 | Tiny follow-up fix (minors only) | `claude-code` / `claude-sonnet-5-5` |
 
-If a route is down, the coordinator picks the other subscription family and writes that in the report. Never a silent paid route.
+If a route is down, the coordinator picks another subscription route and writes that in the report. Never a silent paid route.
+If the codex reviewer keeps raising findings that are not real, the coordinator takes it out of the rotation and uses a Claude reviewer on a different model than the author.
 
 **Every assignment states**: objective · acceptance criteria · owned paths · forbidden paths · base commit · checks to run · stop conditions · the form of the result.
 
 **Gates, in order**
 
 1. **Author check.** `bunx tsc --noEmit -p .`, `bunx oxlint src server vite.config.ts`, `bun test` in `app/`; the spike suite in `spike/`. New logic has a test. The result names one commit.
-2. **UI proof** (UI items only). The author runs the app from its worktree on its own port and takes before and after screenshots of each changed screen with `bb-browser`. It uses run records that already exist. No paid run.
+2. **UI proof** (UI items only). The author runs the app from its worktree on its own port and takes before and after screenshots of each changed screen with `bb-browser`. Existing run records are the default. A paid run is allowed when the proof needs one.
 3. **Independent review.** The reviewer gets the commit, the acceptance criteria, the owner's own words, and the screenshots. Verdict: READY or NOT READY, with findings marked blocker, major or minor.
-4. **Repair.** At most **two** repair rounds, each with a re-review by the same reviewer. Still NOT READY after round two: the branch is parked, the reason goes in this file, and work moves on.
+4. **Repair.** Up to **three** repair rounds, each with a re-review. A round is only spent on findings that are real and important; the coordinator checks each finding before it sends it back. Still NOT READY after round three: the branch is parked, the reason goes in this file, and work moves on.
 5. **Merge.** The coordinator merges one branch at a time into `main` with a merge commit. It runs gate 1 on `main`. Green: push to `origin/main`. Red: revert the merge and send it back.
 6. **Merge confirm.** Only when the merge had conflicts: the reviewer checks the merged result.
 
@@ -49,15 +51,27 @@ Minor findings do not block a merge. They go to a minors list in this file and a
 **Order and conflicts**
 
 - One writer per worktree. One owner per file per wave. Shared files (`runs.mjs`, `page-parts.tsx`, `settings-page.tsx`, `targets.mjs`) are named in each assignment.
-- After every merge, each open branch merges `main` into itself before its review.
-- At most 5 working threads at one time. Reviewers count.
+- **Coalesce.** After every merge the coordinator pushes, then tells every open thread the new `main` commit. Each thread merges `main` into its branch at once and reruns its checks. No branch stays behind `main` for more than one merge. Local `main` and `origin/main` stay equal.
+- Up to 16 working threads at one time, or the bb limit if that is lower. Reviewers count.
+
+**Craft**
+
+- Looks and craft are a review criterion, not a nice-to-have. A reviewer may fail a UI branch on craft alone.
+- Use the assistant-ui elements (https://www.assistant-ui.com/elements) from our library (`app/src/components/assistant-ui/elements`, `app/src/components/ui`) wherever one fits. Add a missing element from that library before writing a custom one.
+- `app/AGENTS.md` and `docs/restraint.md` hold for every UI change.
+
+**Money and outside access**
+
+- Paid model runs are allowed. Total budget: $100 across the project. Every thread reports what it spent.
+- Access to the outside is allowed: the owner's own sites (hem.so, slant.page, sher.ing; their code is also local) and targets that an Immunefi program lists as in scope. Immunefi targets are tested on local forks only. No transaction on a live chain.
+- Reports and posts to the outside are not allowed without the owner's yes.
 
 **Stop conditions** (the thread stops that item, writes it under "Needs the owner", and continues other work)
 
 - A change to `app/src/lib/{fleet,fleet-policy,coordinator}.ts`, their tests, or the gate `if (verdict.proven === true)`.
-- A paid model run beyond the approved budget.
+- A paid model run that would pass the total budget.
 - A credential it does not have. Any secret in a file, a log or a report.
-- Any outward action: PR comment, PR close, post, public repo, report to a project, a signed transaction.
+- A report or a post to the outside: PR comment, PR close, post, public repo, report to a project. A signed transaction.
 - A dependency upgrade. A scan of a target outside the authorized scope. Mainnet.
 - A third-party tool that would run outside Docker `runTool()` offline mode (the four approved network tools excepted).
 
@@ -119,12 +133,11 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | Need | Unblocks | Without it |
 |------|----------|-----------|
-| A budget for paid runs (spend so far: $5.22 of $50.85) | Wave 5, D3 proof, live check of A2 and A3 | Code and tests ship; live proof waits |
 | Yes or no on the protected fleet files | A5, I7 | Both stay blocked |
 | Yes for Daytona use on the owner's account | J1, I1 to I6 | Waves 1 to 3 are not affected |
 | A classic GitHub token, read-only | G3 live path (Scorecard API, Legitify) | G3 ships with the fixture path only |
 | A read-only cloud credential (AWS) | G8, 5 tool rows | Stays blocked |
-| A fork RPC URL + the network exception | Stader fork work | Stays blocked |
+| A fork RPC URL (the owner can give one) | Stader fork work | Stays blocked |
 | Yes to close PR 3 on GitHub | H1 tidy-up | PR 3 stays open |
 | An eye on the UI work | B, C, D, E, F | Merges on review + screenshots; the owner checks the morning page |
 
@@ -197,7 +210,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
 | G7 | todo | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
-| G9 | blocked | chain-bench and raven: token only on the command line. Advice: mark as skipped. |
+| G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
 
 ## H. Cloud PRs
