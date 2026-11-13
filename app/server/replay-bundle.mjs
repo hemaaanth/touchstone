@@ -45,5 +45,8 @@ export function loadRecordedReplay(findingId) {
     evidence: row?.evidence ?? null,
     proof,
     replay: loadReplayFiles(proof?.replay ?? row?.replay ?? null, path.join(resultsDir(), "replay")),
+    // Where the re-run verdicts live (spike/lib/replay-bundle.mjs side store).
+    // The bundle looks one up by the hash of the files it ships now.
+    rerunDir: path.join(resultsDir(), "replay"),
   }
 }

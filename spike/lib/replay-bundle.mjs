@@ -15,7 +15,7 @@
 // module does not mask. A file that is itself a key (a pem, an env file, a
 // cloud credential) is left out and named in the README.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { crc32 } from "node:zlib";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -672,6 +672,7 @@ export function pruneReplayStore(resultsDir) {
   }
   let removed = 0;
   const libs = new Set();
+  const kept = new Set();
   for (const f of readdirSync(dir)) {
     const m = /^([a-f0-9]{64})\.json$/.exec(f);
     if (!m) continue;
@@ -680,10 +681,32 @@ export function pruneReplayStore(resultsDir) {
       removed++;
       continue;
     }
+    kept.add(m[1]);
     try {
       for (const v of readFileSync(join(dir, f), "utf8").matchAll(HASH_FIELD)) libs.add(v[1]);
     } catch {
       return { removed, blobs: 0, stopped: "a replay file could not be read" };
+    }
+  }
+  // A re-run verdict goes with its store file: one whose store file is gone,
+  // or that cannot be read, and a temp file left by a stopped write, go too.
+  let verdicts = 0;
+  const rerun = join(dir, RERUN_DIR);
+  if (existsSync(rerun)) {
+    for (const f of readdirSync(rerun)) {
+      if (f === RERUN_WORK) {
+        verdicts += sweepWork(dir);
+        continue;
+      }
+      const at = join(rerun, f);
+      let keep = false;
+      if (/^[a-f0-9]{64}\.json$/.test(f)) {
+        try { keep = kept.has(JSON.parse(readFileSync(at, "utf8"))?.store); } catch { keep = false; }
+      }
+      if (!keep) {
+        rmSync(at, { recursive: true, force: true });
+        verdicts++;
+      }
     }
   }
   let blobs = 0;
@@ -696,7 +719,7 @@ export function pruneReplayStore(resultsDir) {
       }
     }
   }
-  return { removed, blobs };
+  return { removed, blobs, verdicts };
 }
 
 // The replay with its files back. An old record kept the text inline: it is
@@ -884,7 +907,7 @@ function vendoredNote(libs) {
 // claim: closing the "claims a re-run it cannot do" class needs every
 // workspace file, which is a later task. The README says what the folder is
 // and what it is not.
-function forgeReadme({ title, replay, fork, libs = [], haveCommand, cheat }) {
+function forgeReadme({ title, replay, fork, libs = [], haveCommand, cheat, checked = null }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   const forkNote = fork?.forked
     ? `The proof forked a chain; \`fork.json\` records the block as ${block}. The RPC endpoint is not in this folder, and the offline re-run cannot fork, so it is not re-run-checked.`
@@ -896,9 +919,9 @@ function forgeReadme({ title, replay, fork, libs = [], haveCommand, cheat }) {
     : "every .sol source in the workspace, the proof test, and the Foundry config";
   // Minor 2: name the cheatcode that reads a file the bundle does not ship.
   const dataLine = cheat
-    ? `This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.`
+    ? `This proof reads a file that is not in the bundle (${cheat}), so it has no re-run command.`
     : "A data file the proof reads through a cheatcode is not shipped, so a proof that needs one is not re-run-checked.";
-  const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract }) : "";
+  const section = haveCommand ? forgeReplaySection({ solc: replay?.solc, matchContract: replay?.contract, checked }) : "";
   return `# Proof source for this finding
 
 **${title || "Finding"}** · Foundry
@@ -1046,28 +1069,39 @@ export function provenDate({ finding, recorded } = {}) {
 // Line 1 of a Foundry bundle README. bundleRefusal lets only a proven finding
 // reach here, so it states the proof plainly, with the date and harm kind from
 // the record, and says the folder is source to read, not a folder to re-run.
-function forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked }) {
+function forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked, checked }) {
   const date = provenDate({ finding, recorded });
   const noun = harmNoun(harm);
   const head = `Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}`;
   // An automatic re-run check does not ship yet, so the bundle makes no re-run
   // claim: it carries the exact command for you to run by hand.
-  if (haveCommand) return `PROVEN: ${head}. These files were not re-run-checked (an automatic re-run check does not ship yet); the re-run command is in this README for you to run.\n\n`;
-  if (cheat) return `PROVEN: ${head}. This proof reads a file that is not in the bundle (vm.${cheat}), so it has no re-run command.\n\n`;
+  if (haveCommand && checked) return `PROVEN: ${head}. These files were re-run-checked: Touchstone re-ran them offline${verdictDay(checked) ? ` on ${verdictDay(checked)}` : ""} and the proof test passed; the re-run command is in this README.\n\n`;
+  if (haveCommand) return `PROVEN: ${head}. These files are not re-run-checked (no passing offline check of these exact files); the re-run command is in this README for you to run.\n\n`;
+  if (cheat) return `PROVEN: ${head}. This proof reads a file that is not in the bundle (${cheat}), so it has no re-run command.\n\n`;
   if (forked) return `PROVEN: ${head}. This proof forked a chain, which an offline re-run cannot, so it has no re-run command.\n\n`;
   return `PROVEN: ${head}. This folder holds the proof's source files for reading; it has no re-run command.\n\n`;
 }
 
 // The README's re-run section: the exact offline command, a prepare step for a
 // fresh machine, and whether Touchstone's own re-run of these files passed.
-function forgeReplaySection({ solc, matchContract }) {
+// The UTC day of a verdict's check, or null (the same believable-date rule
+// as provenDate: from 2020 to now).
+function verdictDay(v) {
+  const at = v?.at;
+  if (!Number.isFinite(at) || at < MIN_PROVEN_MS || at > Date.now()) return null;
+  try { return new Date(at).toISOString().slice(0, 10); } catch { return null; }
+}
+function forgeReplaySection({ solc, matchContract, checked = null }) {
   const command = forgeReplayCommand({ matchContract, solc });
   const prepare = forgePrepareCommand({ solc });
   const prep = prepare ? `\n## Prepare (once, online)\n\nOn a fresh machine, create and warm the pinned image's solc cache:\n\n\`\`\`sh\n${prepare}\n\`\`\`\n` : "";
   const passLine = matchContract
     ? "A pass means the named test compiled and passed from these files alone."
     : "A pass means the bundle compiled and its tests passed from these files alone.";
-  return `\n## Re-run (offline)\n\nTouchstone does not run an automatic re-run check yet, so this bundle is not re-run-checked. Run the proof yourself from this folder:\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). ${passLine}\n${prep}`;
+  const lead = checked
+    ? `Touchstone re-ran these exact files offline${verdictDay(checked) ? ` on ${verdictDay(checked)}` : ""} (the pinned image, no network), and the proof test passed. Run it yourself from this folder:`
+    : "These files are not re-run-checked (no passing offline check of these exact files). Run the proof yourself from this folder:";
+  return `\n## Re-run (offline)\n\n${lead}\n\n\`\`\`sh\nsha256sum -c SHA256SUMS && \\\n  ${command}\n\`\`\`\n\nThe image is pinned by digest and the container has no network (\`--network none\`). ${passLine}\n${prep}`;
 }
 
 // The cheatcodes that make a proof read a file from the workspace a bundle does
@@ -1085,31 +1119,76 @@ const FS_CLASS = (() => {
     return new Set(["ffi", "tryFfi", "writeFile", "writeFileBinary", "writeLine", "writeJson", "writeToml", "copyFile", "createDir", "removeDir", "removeFile", "dumpState"]);
   }
 })();
-const FILE_READS = ["readFile", "readFileBinary", "readLine", "readDir"];
+const FILE_READS = ["readFile", "readFileBinary", "readLine", "readDir",
+  // File probes and path helpers (read class in the pinned forge table): a proof
+  // that asks the file system decides on files the bundle may not hold.
+  "exists", "isFile", "isDir", "readLink", "fsMetadata", "projectRoot", "closeFile", "currentFilePath",
+  "getArtifactPathByCode", "getArtifactPathByDeployedCode"];
+// forge-std helpers whose body reads a file (StdCheats: vm.readFile). They are
+// called bare or on any receiver, so any call of one is a hit.
+const FORGE_STD_FILE_HELPERS = new Set(["readEIP1559ScriptArtifact", "readTx1559s", "readTx1559", "readReceipts", "readReceipt"]);
 const FILE_CHEATS = new Set([...FS_CLASS, ...FILE_READS]);
-const ARTIFACT_CHEATS = new Set(["getCode", "getDeployedCode"]);
-const ARTIFACT_NAME = /^[^"'\s]+\.sol(?::[A-Za-z0-9_$]+)?$/;
+// The artifact family loads code by name. A use counts as safe only when its
+// first argument is a string literal that names a contract the bundle ships:
+// "File.sol", "path/File.sol", "File.sol:Name", or a bare "Name". Any other
+// argument (a variable, a constant, a concatenation, a .json or other path)
+// may read a file the bundle does not hold, so it is a hit: unknown means no
+// command. The family is matched on any receiver and bare (forge-std's
+// StdCheats calls deployCode with no receiver).
+const ARTIFACT_FAMILY = ["getCode", "getDeployedCode", "deployCode", "deployCodeTo"];
+// loadAllocs always reads a JSON file: every use is a hit.
+const ALWAYS_FILE = new Set(["loadAllocs"]);
+const SOL_REF = /^(?:[\w$.\/-]*\/)?([\w$-]+\.sol)(?::([A-Za-z_$][\w$]*))?$/;
+const BARE_NAME = /^[A-Za-z_$][\w$]*$/;
 function firstStringArg(afterParen) {
-  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/.exec(afterParen);
+  const m = /^\s*(["'])((?:\\.|(?!\1)[^\\])*)\1\s*[,)]/.exec(afterParen);
   return m ? m[2] : null;
 }
 function stripComments(text) {
   return String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, "");
 }
-// The first file cheatcode a shipped source calls (as `vm.<name>`), or null.
-// Scans the comment-stripped text, on any receiver.
-const CHEAT_CALL = new RegExp("\\.\\s*([A-Za-z]+)\\s*\\(([\\s\\S]{0,160})", "g");
+// The contracts the shipped sources declare, and their file names.
+function shippedNames(sources) {
+  const files = new Set();
+  const contracts = new Set();
+  for (const { path, text } of sources) {
+    files.add(path.split("/").pop());
+    files.add(path);
+    for (const m of stripComments(text).matchAll(/\b(?:abstract\s+)?(?:contract|library)\s+([A-Za-z_$][\w$]*)/g)) contracts.add(m[1]);
+  }
+  return { files, contracts };
+}
+function artifactShipped(arg, names) {
+  const ref = SOL_REF.exec(arg);
+  if (ref) {
+    const fileOk = names.files.has(ref[1]) || names.files.has(arg.split(":")[0]);
+    return fileOk && (!ref[2] || names.contracts.has(ref[2]));
+  }
+  return BARE_NAME.test(arg) && names.contracts.has(arg);
+}
+// The argument text is a lookahead, so a match never consumes the calls after it.
+const CALL = new RegExp("(?<![\\w$])(?:([A-Za-z_$][\\w$]*)\\s*\\.\\s*)?([A-Za-z_$][\\w$]*)\\s*\\((?=([\\s\\S]{0,160}))", "g");
+// The first file read a shipped source makes, as a label ("vm.getCode",
+// "deployCode"), or null. `sources` is [{ path, text }]. Both the raw and the
+// comment-stripped text are scanned, so a "//" inside a string cannot hide a
+// call; a call inside a comment then also counts, which fails closed.
 function fileCheatUsed(sources) {
-  for (const text of sources) {
-    const code = stripComments(text);
-    CHEAT_CALL.lastIndex = 0;
-    let m;
-    while ((m = CHEAT_CALL.exec(code))) {
-      const name = m[1];
-      if (FILE_CHEATS.has(name)) return name;
-      if (ARTIFACT_CHEATS.has(name)) {
-        const arg = firstStringArg(m[2]);
-        if (arg !== null && !ARTIFACT_NAME.test(arg)) return name; // a path, not an artifact
+  const names = shippedNames(sources);
+  for (const { text } of sources) {
+    for (const code of [String(text ?? ""), stripComments(text)]) {
+      CALL.lastIndex = 0;
+      let m;
+      while ((m = CALL.exec(code))) {
+        const [, receiver, name, rest] = m;
+        if (/\bfunction\s+$/.test(code.slice(Math.max(0, m.index - 20), m.index))) continue; // a definition
+        const label = receiver ? `vm.${name}` : name;
+        if (receiver && FILE_CHEATS.has(name)) return label;
+        if (FORGE_STD_FILE_HELPERS.has(name)) return label;
+        if (ALWAYS_FILE.has(name)) return label;
+        if (ARTIFACT_FAMILY.includes(name)) {
+          const arg = firstStringArg(rest);
+          if (arg === null || !artifactShipped(arg, names)) return label;
+        }
       }
     }
   }
@@ -1188,17 +1267,16 @@ function forgeBundle({ finding, recorded, replay, proof }) {
   const omitted = tree.omitted;
   replay = replay && { ...replay, omitted };
   const harm = proof?.harm ?? null;
-  // The re-run verdict was recorded once (record.mjs), never in this request.
-  // The re-run command is offered for a proof that can run offline: it needs
-  // foundry.toml and a test, must not fork a chain (an offline re-run cannot
-  // fork), and must not read a file the bundle does not ship (a file cheatcode).
-  // Scan only the proof's own sources, not vendored libraries: forge-std's own
-  // code calls ffi/getCode, which does not mean this proof reads a file.
-  const cheat = fileCheatUsed(files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string" && f.vendored !== true).map((f) => f.text));
-  const noCmd = !haveProject ? null : fork.forked ? "forked" : cheat ? cheat : null;
-  const haveCommand = !noCmd && haveProject;
+  const { haveCommand, cheat } = commandPlan(tree);
+  // The re-run claim: the verdict side file keyed by the hash of the files
+  // this bundle ships NOW. Only an exact hit with a pass claims; every other
+  // case keeps the "not re-run-checked" wording.
+  // The command the README prints now: the verdict must be for exactly this.
+  const printed = forgeReplayCommand({ matchContract: replay?.contract, solc: replay?.solc });
+  const verdict = haveCommand ? readRerunVerdict(recorded?.rerunDir, { tree: treeHash(shippedFiles(tree)), command: printed }) : null;
+  const checked = verdict?.pass === true ? verdict : null;
   const readme = files.length
-    ? forgeReadme({ title, replay, fork, libs, haveCommand, cheat })
+    ? forgeReadme({ title, replay, fork, libs, haveCommand, cheat, checked })
     : `# Proof source for this finding
 
 **${title}** · Foundry
@@ -1216,7 +1294,133 @@ ${omittedList(omitted)}`;
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", testSource);
   // The hashes of every file the bundle ships, so a reader can check the folder.
   if (files.length || testSource) pushFile(entries, "SHA256SUMS", sha256Sums(entries), { own: true });
-  return finish(entries, forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked: fork.forked }) + readme);
+  return finish(entries, forgeLine1({ finding, recorded, harm, haveCommand, cheat, forked: fork.forked, checked }) + readme);
+}
+
+// Whether a bundle of this tree offers the re-run command, and the file
+// cheatcode that stops it. The command needs foundry.toml and a test, no
+// forked chain (an offline re-run cannot fork), and no file the bundle does
+// not ship (a file cheatcode). Only the proof's own sources are scanned, not
+// vendored libraries: forge-std calls ffi/getCode itself.
+function commandPlan(tree) {
+  const { files, testSource, fork, haveProject } = tree;
+  const scanned = files.filter((f) => f.path.endsWith(".sol") && typeof f.text === "string" && f.vendored !== true).map((f) => ({ path: f.path, text: f.text }));
+  // The PoC can come from proof.testSource instead of a shipped test/ file.
+  if (testSource && !files.some((f) => f.path.startsWith("test/"))) scanned.push({ path: "test/AgentPoc.t.sol", text: testSource });
+  const cheat = fileCheatUsed(scanned);
+  return { haveCommand: Boolean(haveProject && !fork.forked && !cheat), cheat };
+}
+
+// ---- The re-run verdict side store (H3c). --------------------------------
+// A verdict lives in <replay store>/rerun/<key>.json, never in a run record.
+// The key binds the verdict to WHAT was checked: the hash of the files AND the
+// exact forge command the README prints (it names the test contract with
+// --match-contract and the pinned image digest). Two findings of one run ship
+// the same files but run different test contracts: each gets its own file.
+// The file holds no source text and no secret: the key, the tree hash, the
+// store file it came from, pass/fail, the image digest, the command, the time.
+// The bundle builder computes the key from the files it ships now and the
+// command it prints now, and reads that one path.
+const RERUN_DIR = "rerun";
+const RERUN_MAX = 4096;
+// The check's private work folders, under this store only: a check killed
+// half way leaves its folder here, and the next check or prune removes it.
+const RERUN_WORK = ".work";
+const WORK_STALE_MS = 15 * 60 * 1000; // past forgeTest's 180 s bound with room
+export function rerunKey(tree, command) {
+  return createHash("sha256").update(`${tree}\n${command}`).digest("hex");
+}
+function rerunPath(storeDir, key) {
+  return join(storeDir, RERUN_DIR, `${key}.json`);
+}
+// The verdict for these files and this command, or null. A missing, damaged or
+// foreign file (other version, other key, other tree, other command, other
+// image) reads as no verdict.
+export function readRerunVerdict(storeDir, { tree, command } = {}) {
+  if (typeof storeDir !== "string" || !storeDir || !STORE_HASH.test(String(tree)) || typeof command !== "string" || !command) return null;
+  const key = rerunKey(tree, command);
+  const file = rerunPath(storeDir, key);
+  try {
+    const st = lstatSync(file);
+    if (!st.isFile() || st.size > RERUN_MAX) return null;
+    const v = JSON.parse(readFileSync(file, "utf8"));
+    if (v?.version !== 2 || v.key !== key || v.tree !== tree || v.command !== command) return null;
+    if (typeof v.pass !== "boolean" || v.image !== FOUNDRY_IMAGE || !Number.isFinite(v.at)) return null;
+    return v;
+  } catch {
+    return null;
+  }
+}
+// Write a verdict with a temp file of its own and a rename, so two checks of
+// one key at once leave one whole file and a stop mid-write leaves none.
+export function writeRerunVerdict(storeDir, v) {
+  const file = rerunPath(storeDir, v.key);
+  mkdirSync(join(storeDir, RERUN_DIR), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(v) + "\n", { mode: 0o600 });
+    renameSync(tmp, file);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+// Remove this store's own check folders that are older than WORK_STALE_MS (a
+// check killed half way). Only folders inside <store>/rerun/.work are touched,
+// each by its exact path; a live check's folder is younger and stays.
+function sweepWork(storeDir) {
+  const work = join(storeDir, RERUN_DIR, RERUN_WORK);
+  let removed = 0;
+  let names = [];
+  try { names = readdirSync(work); } catch { return 0; }
+  for (const name of names) {
+    if (!/^check-[a-f0-9]{12}$/.test(name)) continue;
+    const at = join(work, name);
+    try {
+      const st = lstatSync(at);
+      if (st.isDirectory() && Date.now() - st.mtimeMs > WORK_STALE_MS) {
+        rmSync(at, { recursive: true, force: true });
+        removed++;
+      }
+    } catch {
+      // gone already
+    }
+  }
+  return removed;
+}
+// Check one recorded Foundry replay (the record's pointer) and write its
+// verdict. A proof whose bundle offers no command is not run: it can never
+// claim. Returns the verdict written, or null.
+export async function checkReplayRerun({ replay, proof } = {}, { storeDir = replayStoreDir(), run } = {}) {
+  if (!replay?.store?.sha256) return null;
+  const loaded = loadReplayFiles(replay, storeDir);
+  if (!Array.isArray(loaded?.files) || !loaded.files.length) return null;
+  const tree = forgeFileTree({ finding: {}, recorded: { replay: loaded, proof }, replay: loaded, proof });
+  if (!commandPlan(tree).haveCommand) return null;
+  sweepWork(storeDir);
+  const work = join(storeDir, RERUN_DIR, RERUN_WORK);
+  mkdirSync(work, { recursive: true, mode: 0o700 });
+  const r = await verifyForgeReplay({ replay: loaded, proof }, { run, workDir: work });
+  if (!r?.tree) return null; // the check never ran
+  const key = rerunKey(r.tree, r.command);
+  const v = { version: 2, key, tree: r.tree, store: replay.store.sha256, pass: r.pass === true, image: r.image, command: r.command, at: Date.now(), ...(r.reason ? { reason: r.reason } : {}) };
+  writeRerunVerdict(storeDir, v);
+  return v;
+}
+// After a run's record is written: check each proven Foundry finding, one at a
+// time. It reads the in-memory findings and writes only side files; it never
+// touches the run record. Errors are swallowed per finding.
+export async function checkRecordedReplays(findings, { storeDir = replayStoreDir(), run } = {}) {
+  let checked = 0;
+  for (const f of Array.isArray(findings) ? findings : []) {
+    const proof = f?.proof;
+    if (f?.pocProved !== true || proof?.kind !== "forge" || !proof?.replay?.store) continue;
+    try {
+      if (await checkReplayRerun({ replay: proof.replay, proof }, { storeDir, run })) checked++;
+    } catch {
+      // best effort: no verdict means no claim
+    }
+  }
+  return { checked };
 }
 
 // Re-run the Foundry proof from the bundle's own files, offline, and say
@@ -1226,7 +1430,7 @@ ${omittedList(omitted)}`;
 // Docker available and the workspace still warm, and stores the verdict on the
 // replay; the download request never runs Docker. `run` is injected for tests.
 // Returns { checked, pass, command, prepare, image, matchContract, solc, ms?, reason? }.
-export async function verifyForgeReplay({ replay, proof, finding, recorded } = {}, { run } = {}) {
+export async function verifyForgeReplay({ replay, proof, finding, recorded } = {}, { run, workDir = null } = {}) {
   const matchContract = replay?.contract || null;
   const solc = replay?.solc ?? null;
   const base = {
@@ -1247,7 +1451,10 @@ export async function verifyForgeReplay({ replay, proof, finding, recorded } = {
   if (!tree.haveProject) return { ...base, pass: false, reason: "the bundle has no foundry.toml and proof test" };
   const sf = shippedFiles(tree);
   const tree_ = treeHash(sf);
-  const dir = mkdtempSync(join(tmpdir(), "replay-verify-"));
+  // A store's own check passes its private work folder; a direct call (a test)
+  // uses the system temp folder. Either way the folder goes in `finally`.
+  const dir = workDir ? join(workDir, `check-${randomBytes(6).toString("hex")}`) : mkdtempSync(join(tmpdir(), "replay-verify-"));
+  if (workDir) mkdirSync(dir, { mode: 0o700 });
   try {
     for (const f of sf) {
       const abs = join(dir, f.path);

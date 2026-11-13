@@ -22,6 +22,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { MODELS, PROVIDER_ID, costOf, guard, runSpend, spent } from "./lib/inference.mjs";
 import { readSpendWith } from "./lib/attempt-cap.mjs";
 import { auditState } from "./lib/audit-state.mjs";
+import { checkRecordedReplays } from "./lib/replay-bundle.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
@@ -404,6 +405,9 @@ async function main() {
     usage: settled?.usage, reports: settled?.reports,
   };
   writeFileSync(`${DIR}run-${ALIAS}.json`, JSON.stringify({ result, transcript: settled?.summary }, null, 2));
+  // After the record is written: re-run each proven Foundry proof offline and
+  // write its verdict side file. The record itself is never rewritten.
+  if (findings.length) { try { await checkRecordedReplays(findings); } catch (err) { console.log("· replay re-run check failed " + String(err?.message ?? err)); } }
   await reach?.stop?.();
   await cleanupWorkspace(ws);
 
