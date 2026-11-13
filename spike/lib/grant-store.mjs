@@ -23,7 +23,7 @@
 // real only when its proof replays and shows harm. A grant with no live run is
 // inert. The hard boundary "never scan a target that is not a lab and not a
 // granted, operator-owned target" (WAVE2.md Limits) is exactly this record.
-import { closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -141,32 +141,40 @@ function syncFolder(dir) {
 // The server and the CLI can both write a store. Each mutation reads the whole
 // file, changes it and writes it back, so two at once could lose one update.
 // withStoreLock runs a mutation while it holds "<file>.lock", made with "wx"
-// (only one process can make it). The lock holds the owner's pid and the time.
+// (only one process can make it). The lock holds the owner's pid, the time and
+// a random token; ownership is the token, never the inode (an inode number can
+// be reused by the next lock).
 //   - The lock path must be a regular file. A link or a folder there is
 //     refused with a sentence and never followed (lstat).
 //   - A lock is STALE when its process is gone, or when it is older than
-//     LOCK_STALE_MS. A stale lock is taken over atomically: it is renamed to a
-//     unique name, and only the process whose rename moved THAT lock (same
-//     inode) goes on to make its own with "wx". A process whose rename moved a
-//     fresh lock by mistake puts it back (link) and waits.
-//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS (default
-//     5 s); then the mutation is refused with a sentence and nothing is written.
-//   - A writer that held its lock longer than LOCK_STALE_MS can lose it to a
-//     takeover. A real write takes milliseconds; only a stopped or hung process
-//     (a suspended machine, a stuck disk) is that slow. So saveStore checks,
-//     just before its rename, that the lock is still its own, and refuses if
-//     not. Release removes the lock only when it is still its own.
+//     LOCK_STALE_MS. Breaking a stale lock is serialized by a second file,
+//     "<file>.lock.break", made with "wx": one breaker at a time. Under it the
+//     breaker reads the lock again and removes it only when it is still the
+//     very lock it judged stale (same content, so same token). A lock made in
+//     the meantime is never removed, so a writer is never refused because
+//     another process broke the lock it had just made.
+//   - A live lock is waited for up to TOUCHSTONE_STORE_LOCK_WAIT_MS, default
+//     LOCK_WAIT_MS (300 ms). The wait is synchronous: store calls are
+//     synchronous, and the console server calls them from its request
+//     handlers. A short bound keeps one stuck lock from freezing the console:
+//     the write is refused with a sentence and the operator tries again.
+//   - A writer that held its lock longer than LOCK_STALE_MS can lose it. A
+//     real write takes milliseconds; only a stopped or hung process is that
+//     slow. saveStore checks, just before its rename, that the lock still holds
+//     its token, and refuses if not. Release removes the lock only then too.
 // Re-entrant in one process: a mutation that calls another on the same store
 // does not wait for itself.
 const LOCK_STALE_MS = 30_000;
-const heldLocks = new Map(); // lock path -> the inode of our lock file
+const LOCK_WAIT_MS = 300;
+const BREAK_STALE_MS = 5_000; // a break takes microseconds
+const heldLocks = new Map(); // lock path -> our token
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-// For tests only: called between judging a lock stale and taking it over, so a
-// test can make two processes judge the same stale lock at once.
+// For tests only: called between judging a lock stale and breaking it, so a
+// test can change the lock in that gap or make two processes meet there.
 export const lockTestHooks = { afterStaleJudged: null };
 
-// What sits at the lock path: null (nothing), { bad: true } (not a regular
-// file), or { ino, owner, ageMs }.
+// What sits at a lock path: null (nothing), { bad: true } (not a regular
+// file), or { raw, token, owner, ageMs }.
 function lockAt(lock) {
   let st;
   try {
@@ -175,19 +183,25 @@ function lockAt(lock) {
     return null;
   }
   if (!st.isFile()) return { bad: true };
+  let raw = "";
+  try {
+    raw = readFileSync(lock, "utf8");
+  } catch {
+    return null; // removed between the lstat and the read
+  }
   let owner = null;
   try {
-    owner = JSON.parse(readFileSync(lock, "utf8"));
+    owner = JSON.parse(raw);
   } catch {
     /* being written right now, or damaged */
   }
-  return { ino: st.ino, owner, ageMs: Date.now() - st.mtimeMs };
+  return { raw, token: owner?.token ?? null, owner, ageMs: Date.now() - st.mtimeMs };
 }
 
-function lockIsStale(lock, { owner, ageMs }) {
-  if (ageMs > LOCK_STALE_MS) return true;
+function isStale(lock, { owner, ageMs }, maxAgeMs) {
+  if (ageMs > maxAgeMs) return true;
   const pid = Number(owner?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // a lock with no owner yet: give the writer a moment
+  if (!Number.isInteger(pid) || pid <= 0) return ageMs > 2_000; // no owner written yet: give the writer a moment
   if (pid === process.pid) return !heldLocks.has(lock); // ours but not held: a leftover
   try {
     process.kill(pid, 0);
@@ -197,36 +211,25 @@ function lockIsStale(lock, { owner, ageMs }) {
   }
 }
 
-// Take over the stale lock `seen`. True when this process moved exactly that
-// lock away; then it may try "wx". False when another process got there first.
-function takeOver(lock, seen) {
-  const moved = `${lock}.stale-${process.pid}-${randomUUID().slice(0, 8)}`;
+// Break the stale lock `seen`, one breaker at a time. Removes the lock only
+// when it is still exactly `seen`. Returns nothing: the caller tries "wx" again.
+function breakStale(lock, seen) {
+  const breaker = `${lock}.break`;
   try {
-    renameSync(lock, moved);
+    writeFileSync(breaker, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
   } catch (e) {
-    if (e.code === "ENOENT") return false; // another process took it over first
-    throw e;
+    if (e.code !== "EEXIST") throw e;
+    // Another process is breaking it now, or crashed while doing so.
+    const b = lockAt(breaker);
+    if (b && !b.bad && isStale(breaker, b, BREAK_STALE_MS)) rmSync(breaker, { force: true });
+    return;
   }
-  let ino = null;
   try {
-    ino = lstatSync(moved).ino;
-  } catch {
-    /* gone: nothing to put back */
+    const now = lockAt(lock);
+    if (now && !now.bad && now.raw === seen.raw && isStale(lock, now, LOCK_STALE_MS)) unlinkSync(lock);
+  } finally {
+    rmSync(breaker, { force: true });
   }
-  if (ino !== null && ino !== seen.ino) {
-    // We moved a FRESH lock: another process took the stale one over and made
-    // its own in between. Put it back. If a third lock is there already, the
-    // owner of the moved one notices at its save (lockStillOurs) and refuses.
-    try {
-      linkSync(moved, lock);
-    } catch {
-      /* a newer lock is there */
-    }
-    rmSync(moved, { force: true });
-    return false;
-  }
-  rmSync(moved, { force: true });
-  return true;
 }
 
 const notALockFile = (what, lock) =>
@@ -236,34 +239,36 @@ export function withStoreLock(file, what, fn) {
   const lock = `${file}.lock`;
   if (heldLocks.has(lock)) return fn();
   mkdirSync(path.dirname(file), { recursive: true });
-  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || 5_000;
+  const waitMs = Number(process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS) || LOCK_WAIT_MS;
   const deadline = Date.now() + waitMs;
   for (;;) {
+    const token = randomUUID();
     try {
-      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: "wx", mode: 0o600 });
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now(), token }), { flag: "wx", mode: 0o600 });
+      heldLocks.set(lock, token);
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
     const seen = lockAt(lock);
-    if (seen?.bad) throw notALockFile(what, lock);
-    if (seen && lockIsStale(lock, seen)) {
+    if (!seen) continue; // released just now: try again at once
+    if (seen.bad) throw notALockFile(what, lock);
+    if (isStale(lock, seen, LOCK_STALE_MS)) {
       lockTestHooks.afterStaleJudged?.();
-      takeOver(lock, seen);
+      breakStale(lock, seen);
       continue;
     }
     if (Date.now() > deadline) {
-      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen?.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
+      throw new Error(`Refused: the ${what} is busy. Another Touchstone process (pid ${seen.owner?.pid ?? "unknown"}) is writing it. Nothing was changed. Try again in a moment.`);
     }
-    pause(20);
+    pause(10);
   }
-  heldLocks.set(lock, lstatSync(lock).ino);
   try {
     return fn();
   } finally {
     const ours = heldLocks.get(lock);
     heldLocks.delete(lock);
-    if (lockAt(lock)?.ino === ours) rmSync(lock, { force: true });
+    if (lockAt(lock)?.token === ours) rmSync(lock, { force: true });
   }
 }
 
@@ -272,8 +277,8 @@ export function withStoreLock(file, what, fn) {
 function lockStillOurs(file) {
   const lock = `${file}.lock`;
   if (!heldLocks.has(lock)) return;
-  if (lockAt(lock)?.ino !== heldLocks.get(lock)) {
-    throw new Error(`Refused: this write held the store lock ${lock} so long that another process took it over. Nothing was changed. Try again.`);
+  if (lockAt(lock)?.token !== heldLocks.get(lock)) {
+    throw new Error(`Refused: another process took over the store lock ${lock} during this write (it was held longer than 30 s). Nothing was changed. Try again.`);
   }
 }
 

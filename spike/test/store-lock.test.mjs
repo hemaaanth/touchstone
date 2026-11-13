@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const { addGrant, readGrants, withStoreLock, saveStore, loadGrants } = await import("../lib/grant-store.mjs");
+const { addGrant, readGrants, withStoreLock, saveStore, loadGrants, lockTestHooks } = await import("../lib/grant-store.mjs");
 const { addScope, readScopes } = await import("../lib/scopes-store.mjs");
 const GRANTS = process.env.TOUCHSTONE_GRANTS_FILE;
 const LOCK = `${GRANTS}.lock`;
@@ -158,21 +158,31 @@ test("a slow writer whose lock was taken over refuses its write, and leaves the 
         writeFileSync(LOCK, JSON.stringify({ pid: 1, at: Date.now() }));
         saveStore(GRANTS, [...all, { id: "lost" }]);
       }),
-    /^Error: Refused: this write held the store lock .+ so long that another process took it over\. Nothing was changed\. Try again\.$/,
+    /^Error: Refused: another process took over the store lock .+ during this write \(it was held longer than 30 s\)\. Nothing was changed\. Try again\.$/,
   );
   assert.equal(readFileSync(GRANTS, "utf8"), before, "nothing written");
   assert.equal(JSON.parse(readFileSync(LOCK, "utf8")).pid, 1, "the other process's lock is not removed");
   reset();
 });
 
-// Two processes judge the same stale lock at once (a test hook pauses each one
-// between judging and taking over), then each runs a slow read-modify-write.
-// Only one may take the lock over; the other waits, so neither update is lost.
+// Two processes judge the same stale lock at once: a test hook stops each one
+// between judging and breaking, and both go on only when both are there (a
+// file barrier, not a timer). Then each runs a slow read-modify-write. Only one
+// may get the lock; the other waits, so neither update is lost.
+const BARRIER = path.join(TEST_STORE_DIR, "barrier");
 function racer(tag) {
   const code = `
     const g = await import(${JSON.stringify(STORE)});
+    const { existsSync, writeFileSync } = await import("node:fs");
     const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-    g.lockTestHooks.afterStaleJudged = () => pause(300);
+    let first = true;
+    g.lockTestHooks.afterStaleJudged = () => {
+      if (!first) return;
+      first = false;
+      writeFileSync(${JSON.stringify(BARRIER)} + ".${tag}", "");
+      const until = Date.now() + 10000;
+      while (!(existsSync(${JSON.stringify(BARRIER)} + ".one") && existsSync(${JSON.stringify(BARRIER)} + ".two")) && Date.now() < until) pause(5);
+    };
     g.withStoreLock(process.env.TOUCHSTONE_GRANTS_FILE, "grant store", () => {
       const all = g.loadGrants();
       pause(300); // a slow mutation: the other process must not be inside now
@@ -192,7 +202,48 @@ test("two processes that find the same stale lock: only one takes it over, and n
   process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS = "10000";
   const results = await Promise.all([racer("one"), racer("two")]);
   for (const r of results) assert.equal(r.code, 0, r.err);
+  assert.ok(existsSync(`${BARRIER}.one`) && existsSync(`${BARRIER}.two`), "both judged the same stale lock");
+  rmSync(`${BARRIER}.one`, { force: true });
+  rmSync(`${BARRIER}.two`, { force: true });
   assert.deepEqual(JSON.parse(readFileSync(GRANTS, "utf8")).map((g) => g.id).sort(), ["one", "two"]);
   assert.ok(!existsSync(LOCK));
   reset();
+});
+
+test("with no wait setting, a stuck live lock is refused within a short bound: one stuck lock cannot freeze the console", () => {
+  reset();
+  const owner = aliveProcess();
+  writeFileSync(LOCK, JSON.stringify({ pid: owner.pid, at: Date.now(), token: "stuck" }));
+  const t0 = Date.now();
+  assert.throws(() => addGrant({ hosts: ["stuck.example.com"], kind: "authorized", approvedBy: "test" }), /^Error: Refused: the grant store is busy\./);
+  const waited = Date.now() - t0;
+  assert.ok(waited >= 250 && waited < 1500, `waited ${waited} ms: at least the bound, never seconds`);
+  owner.kill();
+  reset();
+});
+
+// The gap between judging a lock stale and breaking it: another process may
+// have broken it already and made a fresh lock. The breaker must leave that
+// fresh lock alone (it compares the whole lock, token included), or the fresh
+// lock's owner would be refused at its save for a lock that was never stale.
+test("a lock made in the gap after the stale lock was judged is never removed", async () => {
+  reset();
+  writeFileSync(LOCK, JSON.stringify({ pid: await deadPid(), at: Date.now(), token: "stale" }));
+  const owner = aliveProcess();
+  lockTestHooks.afterStaleJudged = () => {
+    lockTestHooks.afterStaleJudged = null;
+    // Another process broke the stale lock and made its own.
+    rmSync(LOCK);
+    writeFileSync(LOCK, JSON.stringify({ pid: owner.pid, at: Date.now(), token: "fresh" }));
+  };
+  process.env.TOUCHSTONE_STORE_LOCK_WAIT_MS = "150";
+  try {
+    assert.throws(() => addGrant({ hosts: ["gap.example.com"], kind: "authorized", approvedBy: "test" }), /^Error: Refused: the grant store is busy\./);
+    assert.equal(JSON.parse(readFileSync(LOCK, "utf8")).token, "fresh", "the fresh lock is still there");
+    assert.ok(!existsSync(`${LOCK}.break`), "no breaker file is left");
+  } finally {
+    lockTestHooks.afterStaleJudged = null;
+    owner.kill();
+    reset();
+  }
 });
