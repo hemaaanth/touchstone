@@ -5,12 +5,17 @@
 // is saved. Leads come from the saved bytes. Prove and replay stay offline.
 //
 // What a capture needs, checked in this order, before any container starts:
-//   1. A reach grant: reach.granted === true and reach.scope naming each target
-//      ("owner/repo" or the whole "owner"). Same model as captureGithub. And
-//      each target must be in CAPTURE_TARGETS (today only hemaaanth/touchstone).
-//   2. An egress allow-list (hosts). The tool runs on a Docker `--internal`
+//   1. The run's own scope, by id, from the scopes store: a live supply-chain
+//      scope the operator saved. Its own grant (scope.permission.grantId, the
+//      binding of lib/reach.mjs) must exist, be active and name this scope.
+//      A grant of another scope does not count, even when it covers the host.
+//   2. Each target is a repo the scope lists in `github` AND one of
+//      CAPTURE_TARGETS (today only hemaaanth/touchstone), case-folded.
+//   3. An egress allow-list (hosts). Each host is a capture host and the
+//      scope's own grant covers it. The tool runs on a Docker `--internal`
 //      network. Its only path out is the scope proxy (lib/reach-confine.mjs),
 //      which allows these hosts and nothing else. A raw socket has no route.
+//   4. The operator asked: only a pack config with `networkTools` calls this.
 //
 // The argv always has `--pull=never` (the image is built locally and pinned).
 // A secret (the GitHub token) goes into the container by NAME only: the argv
@@ -26,42 +31,57 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { confineReach } from "./reach-confine.mjs";
+import { getGrant, grantActive, hostCovers } from "./grant-store.mjs";
+import { enforceReach } from "./reach.mjs";
+import { getUserScope, githubTarget, githubScopeKey } from "./scopes-store.mjs";
 
-// The GitHub hosts a capture may reach. codeload.github.com serves the repo
-// archive that api.github.com/.../tarball redirects to (Scorecard reads files
-// that way). A tool gets only the hosts its spec names, never more than these.
-export const GITHUB_CAPTURE_HOSTS = ["api.github.com", "codeload.github.com"];
+// The GitHub hosts a capture may reach. A supply-chain scope's own grant names
+// api.github.com and raw.githubusercontent.com (scopes-store.mjs GITHUB_HOSTS).
+// A capture asks only for api.github.com. codeload.github.com (where a repo
+// tarball redirects) is not in any scope's grant, so a capture never reaches it.
+export const GITHUB_CAPTURE_HOSTS = ["api.github.com"];
 
-const SCOPE_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\/[A-Za-z0-9._-]{1,100})?$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
-export const inCaptureScope = (t, scope) => {
-  const keys = (scope ?? []).map((s) => String(s).toLowerCase());
-  return keys.includes(String(t.owner).toLowerCase()) || (t.repo != null && keys.includes(`${t.owner}/${t.repo}`.toLowerCase()));
-};
-
 // The only repos a capture may read, whatever the grant says. A capture puts
-// the owner's token into a third-party tool's container, so a self-made grant
-// for another repo is not enough. Widening this list is a code change.
+// the owner's token into a third-party tool's container, so a grant for another
+// repo is not enough. Widening this list is a code change.
 export const CAPTURE_TARGETS = ["hemaaanth/touchstone"];
 export const isCaptureTarget = (t) => t?.repo != null && CAPTURE_TARGETS.includes(`${t.owner}/${t.repo}`.toLowerCase());
 
-// Refuse a capture with no grant, for a target the grant does not name, or for
-// a target outside CAPTURE_TARGETS.
-// targets: [{ owner, repo|null }]. An owner-wide target needs the owner in scope.
-export function assertCaptureReach(reach, targets) {
-  if (!reach || reach.granted !== true || !Array.isArray(reach.scope)) throw new Error("A capture needs an operator grant (reach.granted and reach.scope).");
+// The capture gate. Returns { scope, grant }, or throws a refusal that says why.
+//   scopeId  the run's own saved scope (scopes-store.mjs)
+//   targets  [{ owner, repo }] the capture reads
+//   hosts    the egress allow-list the tool asks for
+export function captureGrant(scopeId, targets, hosts, { now = Date.now() } = {}) {
+  if (typeof scopeId !== "string" || !scopeId) throw new Error("A capture needs the run's own saved scope (scopeId).");
+  const scope = getUserScope(scopeId);
+  if (!scope) throw new Error(`scope ${scopeId.slice(0, 80)} is not a saved scope`);
+  if (scope.kind !== "live" || scope.pack !== "supply-chain" || !Array.isArray(scope.github)) throw new Error("the scope is not a live supply-chain scope");
+  // The 1h binding: the scope's own grant only (scope.permission.grantId). A
+  // scope with no saved permission gets none here; enforceReach would let it
+  // use any covering grant.
+  const grantId = scope.permission?.grantId;
+  const grant = typeof grantId === "string" ? getGrant(grantId) : null;
+  if (!grant || !grantActive(grant, now)) throw new Error("the scope has no active grant of its own (removed, expired, or never saved)");
+  if (grant.scopeId !== scope.id) throw new Error("the scope's grant belongs to another scope");
+  // Every host the scope names must be covered by that same grant.
+  enforceReach(scope, { now });
   if (!Array.isArray(targets) || !targets.length) throw new Error("A capture needs at least one target.");
+  const listed = new Set(scope.github.map((g) => { try { return githubScopeKey(githubTarget(g)); } catch { return null; } }).filter(Boolean));
   for (const t of targets) {
-    if (!t || !SCOPE_RE.test(t.repo ? `${t.owner}/${t.repo}` : String(t.owner))) throw new Error("A capture target must be owner or owner/repo.");
-    if (!inCaptureScope(t, reach.scope)) throw new Error(`${t.repo ? `${t.owner}/${t.repo}` : t.owner} is not in the granted scope`);
-    if (!isCaptureTarget(t)) throw new Error(`${t.repo ? `${t.owner}/${t.repo}` : t.owner} is not a capture target (only ${CAPTURE_TARGETS.join(", ")})`);
+    // Plain strings only: the same value is compared here and put in the argv.
+    if (typeof t?.owner !== "string" || typeof t.repo !== "string") throw new Error("A capture target must be owner/repo strings (a whole owner is never captured).");
+    const key = `${t.owner}/${t.repo}`.toLowerCase();
+    if (!listed.has(key)) throw new Error(`${key.slice(0, 120)} is not a repo of this scope`);
+    if (!isCaptureTarget(t)) throw new Error(`${key} is not a capture target (only ${CAPTURE_TARGETS.join(", ")})`);
   }
-}
-
-function assertHosts(hosts) {
   if (!Array.isArray(hosts) || !hosts.length) throw new Error("A capture needs an egress allow-list.");
-  for (const h of hosts) if (!GITHUB_CAPTURE_HOSTS.includes(h)) throw new Error(`${h} is not a capture host`);
+  for (const h of hosts) {
+    if (!GITHUB_CAPTURE_HOSTS.includes(h)) throw new Error(`${String(h).slice(0, 80)} is not a capture host`);
+    if (!grant.hosts.some((e) => hostCovers(e, h))) throw new Error(`the scope's own grant does not cover ${h}`);
+  }
+  return { scope, grant };
 }
 
 // The docker argv for one capture. Pure, so a test can check it exactly.
@@ -101,6 +121,10 @@ export function scrub(text, values) {
 // (at each of the 3 byte offsets, and every 16-character piece of those), and
 // its URL-encoded form. A tool that prints any of them has its output dropped.
 export const PIECE = 12;
+// A secret must be at least two pieces long. Then a copy split in two (across
+// stdout and stderr, or two chunks of one stream) has one part of 12 or more
+// characters, which holdsSecret finds.
+export const SECRET_MIN = 2 * PIECE;
 export function secretForms(v) {
   const forms = new Set([encodeURIComponent(v)]);
   for (let i = 0; i + PIECE <= v.length; i++) forms.add(v.slice(i, i + PIECE));
@@ -176,19 +200,19 @@ export function egressSummary(logText) {
 // Run one tool with the network, confined. Resolves (never rejects) with
 //   { code, stdout, stderr, timedOut, egress, refused?, leaked? }
 // leaked: the output held part of a secret, so stdout and stderr are empty.
-// A refusal (no grant, bad hosts, a missing secret) starts nothing.
-//   reach, targets   the grant and what this call reads
-//   hosts            egress allow-list, a subset of GITHUB_CAPTURE_HOSTS
-//   secrets          { NAME: value }. Each must be a non-empty string of 8+ chars.
+// A refusal (see captureGrant, or a missing secret) starts nothing.
+//   scopeId, targets  the run's own saved scope and what this call reads
+//   hosts             egress allow-list, a subset of GITHUB_CAPTURE_HOSTS
+//   secrets           { NAME: value }. Each must be a string of SECRET_MIN+ chars.
 // confine and exec are seams for tests. Production uses the real boundary.
-export async function runCapture({ image, cmd, ws = null, user, env = {}, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024,
-  reach, targets, hosts, secrets = {}, confine = confineReach, exec = execDocker }) {
+export async function runCapture({ image, cmd, ws = null, user = `${process.getuid()}:${process.getgid()}`, env = {}, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024,
+  scopeId, targets, hosts, secrets = {}, confine = confineReach, exec = execDocker }) {
   const refuse = (why) => ({ code: -1, stdout: "", stderr: "", timedOut: false, egress: null, refused: why });
+  const given = Object.values(secrets ?? {}).filter((v) => typeof v === "string" && v);
   try {
-    assertCaptureReach(reach, targets);
-    assertHosts(hosts);
-    for (const [k, v] of Object.entries(secrets)) if (typeof v !== "string" || v.length < 8) throw new Error(`secret ${k} is missing`);
-  } catch (err) { return refuse(err.message); }
+    captureGrant(scopeId, targets, hosts);
+    for (const [k, v] of Object.entries(secrets ?? {})) if (typeof v !== "string" || v.length < SECRET_MIN) throw new Error(`secret ${k} is missing or shorter than ${SECRET_MIN} characters`);
+  } catch (err) { return refuse(cleanError(err.message, given)); }
   const values = Object.values(secrets);
   const name = `touchstone-capture-${randomBytes(4).toString("hex")}`;
   let box;

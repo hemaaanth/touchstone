@@ -2,14 +2,15 @@
 // sets `networkTools: ["scorecard", ...]`. With no opt-in nothing here runs.
 //
 // The proof model does not change. A networked tool runs ONCE, in a capture
-// step, before the snapshot is pinned (runTool capture mode, lib/capture.mjs:
-// grant check, GitHub-only egress, token by env name). Its raw output is saved
+// step, before the snapshot is pinned (runCapture, lib/capture.mjs: the run's
+// own scope and its own grant, only hemaaanth/touchstone, GitHub-only egress,
+// token by env name). Its raw output is saved
 // in the snapshot with its SHA-256. Leads are derived from those saved bytes.
 // Replay never reruns the tool and never touches the network: the detector
 // re-parses the saved bytes, then checks the claim against the pinned files.
 // A claim that only the tool can see (a repo setting) never passes replay.
 //
-// Fail closed: no grant, no token, no target, a refused capture, a tool error,
+// Fail closed: no scope, no grant, no token, no target, a refused capture, a tool error,
 // a timeout, empty or unparsable output all give status "unavailable" and a
 // gap. Never a clean result.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -17,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { execFileSync } from "node:child_process";
 import { runTool } from "../../lib/wrap.mjs";
-import { cleanOutput, cleanError } from "../../lib/capture.mjs";
+import { cleanOutput, cleanError, runCapture } from "../../lib/capture.mjs";
 import { loadSnapshot, pinSnapshot, sha256 } from "../../lib/proof-evidence.mjs";
 import { githubTarget } from "../../lib/scopes-store.mjs";
 import { captureSnapshot } from "./snapshot.mjs";
@@ -33,7 +34,10 @@ export const SCORECARD = {
   local: ["--local=.", "--format=json", "--show-details"],
   // Capture: the repo-setting checks through the GitHub API.
   api: (t, commit) => [`--repo=github.com/${t.owner}/${t.repo}`, ...(commit ? [`--commit=${commit}`] : []), "--format=json", "--show-details"],
-  hosts: ["api.github.com", "codeload.github.com"],
+  // Only api.github.com: the scope's own grant does not cover codeload.github.com,
+  // where the repo tarball redirects. Checks that read files through it fail
+  // inside the tool and are gaps.
+  hosts: ["api.github.com"],
 };
 
 // Checks Scorecard can only answer through the API (or another live service).
@@ -74,7 +78,7 @@ function stage(snapshot) {
 // Turn a tool's stderr into a short reason. Never copy raw stderr into a reason:
 // stderr is saved (scrubbed) next to it for a human to read.
 export function scorecardReason(r) {
-  if (r.refused) return `capture refused: ${r.refused}`;
+  if (r.refused) return `not covered: capture refused: ${r.refused}`;
   if (r.timedOut) return "timed out";
   const e = String(r.stderr ?? "");
   if (/\b404 Not Found\b|repo unreachable/.test(e)) return "repo unreachable (404): the token cannot read this repo, or it does not exist";
@@ -111,10 +115,10 @@ const unavailable = (mode, reason) => ({ tool: "scorecard", mode, status: "unava
 
 // Run Scorecard for one snapshot. Returns { local, api } capture records.
 //   target   { owner, repo } for the API capture, or null (no API capture)
-//   reach    the operator grant; capture mode re-checks it
+//   scopeId  the run's own saved scope; runCapture checks it and its own grant
 //   token    GITHUB_TOKEN value; never stored, never in argv
-// run is a seam for tests.
-export async function captureScorecard(snapshot, { target = null, reach, token = process.env.GITHUB_TOKEN, run = runTool } = {}) {
+// run (the offline run) and capture (the API run) are seams for tests.
+export async function captureScorecard(snapshot, { target = null, scopeId = null, token = process.env.GITHUB_TOKEN, run = runTool, capture = runCapture } = {}) {
   let local;
   let dir;
   try {
@@ -132,8 +136,8 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
     // Read the pinned commit, so the API result is about the same code. A local
     // commit that GitHub does not have makes the capture fail closed.
     const cmd = SCORECARD.api(target, /^[0-9a-f]{40}$/.test(snapshot.commit ?? "") ? snapshot.commit : null);
-    const r = await run({ image: SCORECARD.image, cmd, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp" }, timeoutMs: 300_000,
-      capture: { reach, targets: [{ owner: target.owner, repo: target.repo }], hosts: SCORECARD.hosts, secrets: { GITHUB_TOKEN: token } } });
+    const r = await capture({ image: SCORECARD.image, cmd, env: { HOME: "/tmp", XDG_CACHE_HOME: "/tmp" }, timeoutMs: 300_000,
+      scopeId, targets: [{ owner: target.owner, repo: target.repo }], hosts: SCORECARD.hosts, secrets: { GITHUB_TOKEN: token } });
     api = record("api", cmd, SCORECARD.image, r, { target: `${target.owner}/${target.repo}` }, [token]);
   }
   return { local, api };
@@ -141,7 +145,9 @@ export async function captureScorecard(snapshot, { target = null, reach, token =
 
 // Load the pin, or build the base snapshot, add the networked captures, and pin
 // it. A pinned snapshot is never recaptured: replay reads the saved bytes.
-export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree = false, signingPolicy = null, token = process.env.GITHUB_TOKEN, run = runTool, base = null } = {}) {
+// cfg.networkTools is the operator's opt-in. cfg.scopeId names the run's own
+// saved scope; the capture gate reads that scope and its grant from the stores.
+export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree = false, signingPolicy = null, token = process.env.GITHUB_TOKEN, run = runTool, capture = runCapture, base = null } = {}) {
   try { return loadSnapshot(ws); }
   catch (err) { if (err.code !== "ENOENT" && !String(err.message).includes("Missing snapshot SHA-256 pin")) throw err; }
   const tools = cfg.networkTools ?? [];
@@ -152,8 +158,9 @@ export async function prepareNetworkedSnapshot(ws, cfg, { source = ws, worktree 
   const named = list.length ? list : cfg.networkTarget ? [githubTarget(cfg.networkTarget)] : [];
   const target = named.find((t) => t.repo) ?? null;
   const captures = {};
-  if (tools.includes("scorecard")) captures.scorecard = await captureScorecard(snapshot, { target, reach: cfg.reach, token, run });
-  for (const t of tools) if (t !== "scorecard") captures[t] = await captureBlocked(t, { target, reach: cfg.reach, token, run });
+  const scopeId = typeof cfg.scopeId === "string" ? cfg.scopeId : null;
+  if (tools.includes("scorecard")) captures.scorecard = await captureScorecard(snapshot, { target, scopeId, token, run, capture });
+  for (const t of tools) if (t !== "scorecard") captures[t] = await captureBlocked(t, { target, scopeId, token, capture });
   if (named.length > 1) captures.notes = [`networked tools read only ${target ? `${target.owner}/${target.repo}` : "no repo"}; ${named.length - 1} other targets were not captured`];
   const out = { ...snapshot, ...(signingPolicy ? { signingPolicy } : {}), captures };
   return { snapshot: out, snapshotHash: pinSnapshot(ws, out) };
@@ -200,7 +207,7 @@ export function scorecardFrom(snapshot) {
     if (!reason && results.size === 0) reason = `unparsable report: none of the ${units.length} expected checks has a result`;
     if (reason) {
       coverage.push({ engine, status: "unavailable", code: cap?.code ?? null, timedOut: Boolean(cap?.timedOut), reason, leads: 0 });
-      gaps.push({ kind: "networked-tool-unavailable", detail: `Scorecard ${capture} run is unavailable: ${reason}. ${capture === "api" ? `Its checks (${API_CHECKS.join(", ")}) were not run.` : `Its file checks (${FILE_CHECKS.join(", ")}) were not run.`} This is not a clean result.` });
+      gaps.push({ kind: /^not covered: capture refused/.test(reason) ? "not-covered-capture-refused" : "networked-tool-unavailable", detail: `Scorecard ${capture} run is unavailable: ${reason}. ${capture === "api" ? `Its checks (${API_CHECKS.join(", ")}) were not run.` : `Its file checks (${FILE_CHECKS.join(", ")}) were not run.`} This is not a clean result.` });
       continue;
     }
     const before = leads.length;

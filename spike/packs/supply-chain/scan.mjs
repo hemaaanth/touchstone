@@ -14,7 +14,10 @@
 // --network-tools scorecard (opt-in) adds networked tools (networked.mjs). They
 // run once, in capture mode, and their saved output is pinned with the snapshot.
 // The API capture reads the --github repo, or --network-target <owner/repo> for a
-// folder scan. Either needs --authorized. GITHUB_TOKEN is read from the env only.
+// folder scan. It needs --scope <id>: a live supply-chain scope saved in the
+// console. The capture runs only with that scope's own grant, for a repo the
+// scope lists, and only for hemaaanth/touchstone. GITHUB_TOKEN is read from the
+// env only.
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync, realpathSync, statSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,7 +33,7 @@ import { CAPTURE_TARGETS, isCaptureTarget } from "../../lib/capture.mjs";
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const VALUED = ["--skipped-out", "--github", "--authorized", "--cosign-key", "--cosign-artifacts", "--network-tools", "--network-target"];
+const VALUED = ["--skipped-out", "--github", "--authorized", "--cosign-key", "--cosign-artifacts", "--network-tools", "--network-target", "--scope"];
 const target = args.find((a, i) => !a.startsWith("--") && !VALUED.includes(args[i - 1]));
 const usage = "Usage: node packs/supply-chain/scan.mjs <folder> [--json] [--worktree] [--skipped-out <file>]\n       node packs/supply-chain/scan.mjs --github <owner/repo[@ref]|owner>[,...] --authorized \"<who authorized this>\" [--json] [--skipped-out <file>]";
 for (const f of VALUED) if (flag(f) && !value(f)) { console.error(usage); process.exit(2); }
@@ -46,11 +49,14 @@ const networkTools = value("--network-tools")?.split(",").filter(Boolean) ?? nul
 let networkTarget = null;
 if (flag("--network-target")) {
   if (github || !networkTools) { console.error("--network-target is for a folder scan with --network-tools"); process.exit(2); }
-  if (!String(value("--authorized") ?? "").trim()) { console.error("--network-target needs --authorized \"<who authorized this test>\"."); process.exit(2); }
   try { networkTarget = githubEntry(githubTarget(value("--network-target"))); } catch (err) { console.error(err.message); process.exit(2); }
   if (!isCaptureTarget(githubTarget(networkTarget))) { console.error(`--network-target must be one of: ${CAPTURE_TARGETS.join(", ")}`); process.exit(2); }
 }
-const netCfg = networkTools ? { networkTools, ...(networkTarget ? { networkTarget, reach: { granted: true, scope: [githubScopeKey(githubTarget(networkTarget))], authorizedBy: String(value("--authorized")).trim() } } : {}) } : {};
+if (networkTools && !flag("--scope")) { console.error("--network-tools needs --scope <id>: the live supply-chain scope whose own grant covers the capture."); process.exit(2); }
+if (flag("--scope") && !networkTools) { console.error("--scope is for --network-tools"); process.exit(2); }
+// The capture gate (lib/capture.mjs captureGrant) reads this scope and its own
+// grant from the stores. Nothing here grants anything.
+const netCfg = networkTools ? { networkTools, scopeId: String(value("--scope")), ...(networkTarget ? { networkTarget } : {}) } : {};
 
 if (flag("--cosign-key") !== flag("--cosign-artifacts")) { console.error("--cosign-key and --cosign-artifacts go together"); process.exit(2); }
 let cosign = {};

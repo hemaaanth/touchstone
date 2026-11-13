@@ -5,22 +5,37 @@
 // target's committed files, and a real capture-mode run against the GitHub API.
 // No canned tool output stands in for a success. Replay never runs a tool.
 //
-//   node --test spike/test/supply-chain-networked.test.mjs
-import { test } from "node:test";
+// Scope and grant stores are throwaway files; no real store or console token
+// is read. No test reaches the network: the API capture goes through a
+// stand-in boundary and docker, or is refused by the real gate first.
+//
+//   node --experimental-test-module-mocks --test spike/test/supply-chain-networked.test.mjs
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { execFileSync } from "node:child_process";
-import { runTool } from "../lib/wrap.mjs";
-import { holdsSecret, runCapture } from "../lib/capture.mjs";
-import { pinSnapshot, replayEvidence, sha256 } from "../lib/proof-evidence.mjs";
-import { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } from "../packs/supply-chain/networked.mjs";
+
+const storeDir = mkdtempSync(join(tmpdir(), "supply-net-test-stores-"));
+process.env.TOUCHSTONE_SCOPES_FILE = join(storeDir, "scopes.json");
+process.env.TOUCHSTONE_GRANTS_FILE = join(storeDir, "grants.json");
+process.env.TOUCHSTONE_GRANT_TOKEN = "test-token-not-real";
+after(() => rmSync(storeDir, { recursive: true, force: true }));
+
+const { holdsSecret, runCapture } = await import("../lib/capture.mjs");
+const { pinSnapshot, replayEvidence, sha256 } = await import("../lib/proof-evidence.mjs");
+const { SCORECARD, captureScorecard, prepareNetworkedSnapshot, scorecardFrom, networkedResults, networkedDetectors, scorecardReason, scorecardExitOk } = await import("../packs/supply-chain/networked.mjs");
+const { addLiveScope } = await import("../lib/scopes-store.mjs");
 
 const fx = JSON.parse(readFileSync(new URL("./fixtures/supply-chain-networked/scorecard.json", import.meta.url), "utf8"));
 const FAKE_TOKEN = "github_pat_FAKEFAKEFAKEFAKEFAKE_0123456789abcdef";
-const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
+// The run's own saved scope, made as the console's permission tick makes it.
+const scopeId = addLiveScope({ hosts: ["hemaaanth/touchstone"], pack: "supply-chain", permission: true }).id;
+// A stand-in boundary: runCapture's real gate runs, then a fake docker.
+const boundary = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
+const seam = (exec, confine = boundary) => (o) => runCapture({ ...o, confine, exec });
 const target = { owner: "hemaaanth", repo: "touchstone" };
 
 // The snapshot the real local run read: every real path, the real bytes of each
@@ -141,24 +156,27 @@ test("a repo-setting lead from an API capture never passes replay: the tool alon
 
 test("fail closed: no target, no token, no grant, timeout, junk output, wrong version", async () => {
   const snap = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
-  const runs = [];
-  const run = async (o) => { runs.push(o); return o.capture ? runTool(o) : { code: 0, stdout: "", stderr: "", timedOut: false }; };
+  let docker = 0;
+  const run = async () => ({ code: 0, stdout: "", stderr: "", timedOut: false });
+  // The real gate, with a docker and a boundary that count calls.
+  const capture = seam(async () => { docker++; return { code: 0, stdout: "", stderr: "" }; }, async () => { docker++; return boundary(); });
 
-  let c = await captureScorecard(snap, { target: null, reach, token: FAKE_TOKEN, run });
+  let c = await captureScorecard(snap, { target: null, scopeId, token: FAKE_TOKEN, run, capture });
   assert.equal(c.api.status, "unavailable"); assert.match(c.api.reason, /no GitHub repo target/);
   assert.equal(c.local.status, "unavailable", "empty local output is not a clean run");
 
-  c = await captureScorecard(snap, { target, reach, token: "", run });
+  c = await captureScorecard(snap, { target, scopeId, token: "", run, capture });
   assert.match(c.api.reason, /no GITHUB_TOKEN/);
 
-  // The real runTool refuses an ungranted capture before any container starts.
-  c = await captureScorecard(snap, { target, reach: { granted: true, scope: ["hemaaanth/other"] }, token: FAKE_TOKEN, run });
-  assert.match(c.api.reason, /capture refused: .*not in the granted scope/);
-  c = await captureScorecard(snap, { target, reach: undefined, token: FAKE_TOKEN, run });
-  assert.match(c.api.reason, /capture refused/);
+  // The real gate refuses before any container starts: no scope, another repo.
+  c = await captureScorecard(snap, { target, scopeId: null, token: FAKE_TOKEN, run, capture });
+  assert.match(c.api.reason, /^not covered: capture refused: A capture needs the run's own saved scope/);
+  c = await captureScorecard(snap, { target: { owner: "hemaaanth", repo: "other" }, scopeId, token: FAKE_TOKEN, run, capture });
+  assert.match(c.api.reason, /^not covered: capture refused: hemaaanth\/other is not a repo of this scope/);
+  assert.equal(docker, 0, "no boundary and no docker call for a refused capture");
 
   const timed = async (o) => ({ code: 1, stdout: '{"checks":[]}', stderr: "", timedOut: true });
-  c = await captureScorecard(snap, { target, reach, token: FAKE_TOKEN, run: timed });
+  c = await captureScorecard(snap, { target, scopeId, token: FAKE_TOKEN, run: timed, capture: timed });
   assert.equal(c.api.status, "unavailable"); assert.equal(c.api.reason, "timed out");
   assert.equal(c.local.status, "unavailable"); assert.equal(c.local.reason, "timed out");
 
@@ -178,8 +196,8 @@ test("capture argv for Scorecard: confined network, --pull=never, token by name,
   const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: "touchstone-reach-proxy-t", gateUrl: "http://scope-gate:8080", stop: async () => {} });
   const exec = async (args, { env }) => { calls.push({ args, env }); return { code: 0, stdout: "", stderr: "", timedOut: false }; };
   const localRuns = [];
-  const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : (localRuns.push(o), { code: 0, stdout: "", stderr: "" }));
-  await captureScorecard({ version: 1, scope: "github-commit", commit: "a".repeat(40), files: { "a.txt": "x" } }, { target, reach, token: FAKE_TOKEN, run });
+  const run = async (o) => (localRuns.push(o), { code: 0, stdout: "", stderr: "" });
+  await captureScorecard({ version: 1, scope: "github-commit", commit: "a".repeat(40), files: { "a.txt": "x" } }, { target, scopeId, token: FAKE_TOKEN, run, capture: seam(exec, confine) });
 
   const { args, env } = calls.find((c) => c.args[0] === "run");
   assert.ok(args.includes("--pull=never"));
@@ -207,7 +225,7 @@ async function shimmedLocalArgv() {
   const path = process.env.PATH;
   process.env.PATH = `${dir}:${path}`;
   try {
-    await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, token: FAKE_TOKEN });
+    await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, scopeId, token: FAKE_TOKEN });
     return readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((a) => a[0] === "run");
   } finally { process.env.PATH = path; rmSync(dir, { recursive: true, force: true }); }
 }
@@ -233,11 +251,11 @@ test("local run argv: --pull=never", async () => {
 test("the token value appears nowhere in the pinned snapshot, even when the tool prints it", async () => {
   const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
   const exec = async (args, { env }) => ({ code: 0, stdout: `{"token":"${env.GITHUB_TOKEN}"}`, stderr: `401 Bad credentials for ${env.GITHUB_TOKEN}`, timedOut: false });
-  const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : { code: 0, stdout: `echo ${FAKE_TOKEN}`, stderr: "" });
+  const run = async () => ({ code: 0, stdout: `echo ${FAKE_TOKEN}`, stderr: "" });
   const ws = mkdtempSync(join(tmpdir(), "touchstone-net-tok-"));
   try {
     const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
-    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run, base });
+    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], networkTarget: "hemaaanth/touchstone", scopeId }, { token: FAKE_TOKEN, run, capture: seam(exec, confine), base });
     assert.equal(snapshot.captures.scorecard.api.status, "ran");
     for (const f of readdirSync(ws)) assert.ok(!readFileSync(join(ws, f), "utf8").includes(FAKE_TOKEN), `${f} holds the token`);
     assert.ok(readFileSync(join(ws, "snapshot.json"), "utf8").includes("[REDACTED]"));
@@ -245,7 +263,7 @@ test("the token value appears nowhere in the pinned snapshot, even when the tool
     assert.ok(!JSON.stringify(d).includes(FAKE_TOKEN));
     // The pinned snapshot is reused: a second prepare does not run the tool again.
     let reran = false;
-    await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"] }, { token: FAKE_TOKEN, run: async () => { reran = true; return {}; } });
+    await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], scopeId }, { token: FAKE_TOKEN, run: async () => { reran = true; return {}; }, capture: async () => { reran = true; return {}; } });
     assert.equal(reran, false);
   } finally { rmSync(ws, { recursive: true, force: true }); }
   assert.ok(!/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/.test(JSON.stringify(fx)), "the saved real fixture holds no token");
@@ -256,11 +274,11 @@ test("an encoded or split copy of the token: the capture is unavailable and the 
   const half = FAKE_TOKEN.length >> 1;
   for (const leak of [(t) => Buffer.from(t).toString("base64"), (t) => `${t.slice(0, half)}\n${t.slice(half)}`]) {
     const exec = async (args, { env }) => ({ code: 0, stdout: `{"checks":[],"note":"${leak(env.GITHUB_TOKEN)}"}`, stderr: "", timedOut: false });
-    const run = async (o) => (o.capture ? runCapture({ ...o, ...o.capture, confine, exec }) : { code: 1, stdout: "", stderr: "" });
+    const run = async () => ({ code: 1, stdout: "", stderr: "" });
     const ws = mkdtempSync(join(tmpdir(), "touchstone-net-leak-"));
     try {
       const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
-      const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run, base });
+      const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["scorecard"], networkTarget: "hemaaanth/touchstone", scopeId }, { token: FAKE_TOKEN, run, capture: seam(exec, confine), base });
       const api = snapshot.captures.scorecard.api;
       assert.equal(api.status, "unavailable");
       assert.equal(api.reason, "output contained part of the token");
@@ -283,6 +301,57 @@ test("scan.mjs refuses a --network-target outside the capture allow-list before 
     assert.equal(code, 2);
     assert.match(err, /--network-target must be one of: hemaaanth\/touchstone/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The CLI: a capture needs --scope (the run's own saved scope). Nothing on the
+// command line grants anything.
+const scanCli = (args) => {
+  try { execFileSync("node", [new URL("../packs/supply-chain/scan.mjs", import.meta.url).pathname, ...args], { stdio: "pipe", encoding: "utf8", env: { ...process.env, GITHUB_TOKEN: "" } }); return { code: 0, err: "" }; }
+  catch (e) { return { code: e.status, err: String(e.stderr) }; }
+};
+test("scan.mjs: --network-tools needs --scope, and --scope needs --network-tools, before any work", () => {
+  const dir = mkdtempSync(join(tmpdir(), "touchstone-net-cli-"));
+  try {
+    writeFileSync(join(dir, "a.txt"), "x");
+    let r = scanCli([dir, "--network-tools", "scorecard", "--network-target", "hemaaanth/touchstone"]);
+    assert.equal(r.code, 2); assert.match(r.err, /--network-tools needs --scope <id>/);
+    r = scanCli([dir, "--scope", scopeId]);
+    assert.equal(r.code, 2); assert.match(r.err, /--scope is for --network-tools/);
+    for (const t of ["https://github.com@evil.com/hemaaanth/touchstone", "hemaaanth/touchstone/../other", "https://evil.com/hemaaanth/touchstone", "hemaaanth-x/touchstone"]) {
+      r = scanCli([dir, "--network-tools", "scorecard", "--network-target", t, "--scope", scopeId]);
+      assert.equal(r.code, 2, t);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Each failure of the API capture is "unavailable" with a reason and a gap,
+// never a clean check. The real gate runs; only docker is a stand-in.
+test("Scorecard API capture fails closed: non-zero exit, timeout, empty, partial JSON, rate limit, 404", async () => {
+  const full = JSON.parse(fx.captures.scorecard.local.text);
+  full.repo = { name: "github.com/hemaaanth/touchstone", commit: fx.commit };
+  const good = JSON.stringify(full);
+  const cases = [
+    [{ code: 2, stdout: "", stderr: "boom" }, /tool exited 2 with no usable output/],
+    [{ code: 2, stdout: good, stderr: "" }, /tool exited 2, which is not a documented Scorecard exit/],
+    [{ code: 0, stdout: good, stderr: "", timedOut: true }, /^timed out$/],
+    [{ code: 0, stdout: "", stderr: "" }, /no usable output/],
+    [{ code: 0, stdout: good.slice(0, good.length >> 1), stderr: "" }, /unparsable report|no usable output/],
+    [{ code: 0, stdout: '{"checks":[]}', stderr: "" }, /unparsable report/],
+    [{ code: 1, stdout: "", stderr: "GET https://api.github.com/repos/hemaaanth/touchstone: 403 API rate limit exceeded" }, /^rate limited$/],
+    [{ code: 1, stdout: "", stderr: "GET https://api.github.com/repos/hemaaanth/touchstone: 404 Not Found" }, /repo unreachable \(404\)/],
+  ];
+  for (const [out, why] of cases) {
+    const capture = seam(async (args) => (args[0] === "run" ? { timedOut: false, ...out } : { code: 0, stdout: "", stderr: "" }));
+    const snap = fixtureSnapshot();
+    const c = await captureScorecard(snap, { target, scopeId, token: FAKE_TOKEN, run: async () => fx.captures.scorecard.local, capture });
+    snap.captures.scorecard.api = c.api;
+    const d = scorecardFrom(snap);
+    const row = d.coverage.find((x) => x.engine === "scorecard-api");
+    assert.equal(row.status, "unavailable", JSON.stringify(out).slice(0, 80));
+    assert.match(row.reason, why, JSON.stringify(out).slice(0, 80));
+    assert.ok(d.gaps.some((g) => g.kind === "networked-tool-unavailable" && /Scorecard api run is unavailable/.test(g.detail) && /not a clean result/.test(g.detail)));
+    assert.ok(!d.leads.some((l) => l.where.capture === "api"));
+  }
 });
 
 test("no opt-in: a snapshot without captures gives no networked leads, coverage or gaps", async () => {
@@ -312,7 +381,7 @@ test("exit code: only 0, or Scorecard's exact '1 + checks failed + an internal-e
   assert.equal(scorecardExitOk(1, real.stderr, { checks: json.checks.filter((c) => !/internal error/.test(c.reason)) }), false, "1 without an errored check");
   // Through record(): valid JSON with an unexpected code gives no run.
   for (const code of [2, 137, -1]) {
-    const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, run: async () => ({ code, stdout: real.text, stderr: real.stderr }) });
+    const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, scopeId, run: async () => ({ code, stdout: real.text, stderr: real.stderr }) });
     assert.equal(c.local.status, "unavailable", `code ${code}`);
     assert.match(c.local.reason, new RegExp(`exited ${code}`));
   }
@@ -401,7 +470,7 @@ const hasImages = (() => {
 // "unavailable" with a reason, never a run, even with valid output.
 test("a timed-out local run is unavailable with reason 'timed out', even with valid JSON", async () => {
   const real = fx.captures.scorecard.local;
-  const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, reach, run: async () => ({ code: 0, stdout: real.text, stderr: "", timedOut: true }) });
+  const c = await captureScorecard({ version: 1, scope: "folder", files: { "a.txt": "x" } }, { target: null, scopeId, run: async () => ({ code: 0, stdout: real.text, stderr: "", timedOut: true }) });
   assert.equal(c.local.status, "unavailable");
   assert.equal(c.local.reason, "timed out");
   const s = fixtureSnapshot(); s.captures.scorecard.local = c.local;
@@ -410,7 +479,7 @@ test("a timed-out local run is unavailable with reason 'timed out', even with va
 
 test("real local Scorecard run through runTool: no network, the exit pair is accepted, the lead names the pinned line", { skip: !hasImages && "docker or images missing", timeout: 120_000 }, async () => {
   const snap = { version: 1, scope: "folder", files: { "Dockerfile": "FROM alpine:3.20\nRUN npm install left-pad\n" }, skipped: [] };
-  const { local } = await captureScorecard(snap, { target: null, reach });
+  const { local } = await captureScorecard(snap, { target: null, scopeId });
   assert.equal(local.status, "ran", local.reason);
   assert.ok([0, 1].includes(local.code));
   const s = { ...snap, captures: { scorecard: { local, api: { status: "unavailable", reason: "no target" } } } };

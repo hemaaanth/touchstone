@@ -7,7 +7,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { daytonaOn, remoteDocker } from "./daytona.mjs";
-import { runCapture } from "./capture.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
@@ -25,18 +24,7 @@ import { runCapture } from "./capture.mjs";
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-//
-// capture  OFF by default. An object { reach, targets, hosts, secrets } turns on
-//          capture mode (lib/capture.mjs): the one way a tool gets the network.
-//          It needs a grant that covers the targets, runs behind an egress
-//          allow-list, keeps --pull=never, and passes secrets by env name only.
-//          `network` is ignored in this mode. Capture runs on local Docker only.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, capture = null }) {
-  if (capture) {
-    // Only these four. confine and exec are runCapture's test seams, not options.
-    const { reach, targets, hosts, secrets } = capture;
-    return runCapture({ reach, targets, hosts, secrets, image, cmd, ws, user, env, timeoutMs, maxBuffer });
-  }
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
   const args = [
     "run", "--rm", "--pull=never", "--network", network,

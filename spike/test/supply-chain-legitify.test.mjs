@@ -5,25 +5,34 @@
 // (fixtures/supply-chain-networked/legitify.json): Legitify rejects the
 // fine-grained token before any request. No canned output stands in for it.
 //
-//   node --test spike/test/supply-chain-legitify.test.mjs
-import { test } from "node:test";
+// Throwaway scope and grant stores; no real store or console token is read.
+//
+//   node --experimental-test-module-mocks --test spike/test/supply-chain-legitify.test.mjs
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runTool } from "../lib/wrap.mjs";
-import { holdsSecret, runCapture } from "../lib/capture.mjs";
-import { sha256 } from "../lib/proof-evidence.mjs";
-import { LEGITIFY, captureLegitify, blockedFrom, legitifyReason } from "../packs/supply-chain/networked-blocked.mjs";
-import { prepareNetworkedSnapshot, networkedResults, NETWORKED_TOOLS } from "../packs/supply-chain/networked.mjs";
+const storeDir = mkdtempSync(join(tmpdir(), "legitify-test-stores-"));
+process.env.TOUCHSTONE_SCOPES_FILE = join(storeDir, "scopes.json");
+process.env.TOUCHSTONE_GRANTS_FILE = join(storeDir, "grants.json");
+process.env.TOUCHSTONE_GRANT_TOKEN = "test-token-not-real";
+after(() => rmSync(storeDir, { recursive: true, force: true }));
+
+const { holdsSecret, runCapture } = await import("../lib/capture.mjs");
+const { sha256 } = await import("../lib/proof-evidence.mjs");
+const { LEGITIFY, captureLegitify, blockedFrom, legitifyReason } = await import("../packs/supply-chain/networked-blocked.mjs");
+const { prepareNetworkedSnapshot, networkedResults, NETWORKED_TOOLS } = await import("../packs/supply-chain/networked.mjs");
+// The run's own saved scope, made as the console's permission tick makes it.
+const { addLiveScope } = await import("../lib/scopes-store.mjs");
+const scopeId = addLiveScope({ hosts: ["hemaaanth/touchstone"], pack: "supply-chain", permission: true }).id;
 
 const real = JSON.parse(readFileSync(new URL("./fixtures/supply-chain-networked/legitify.json", import.meta.url), "utf8"));
 const FAKE_TOKEN = "ghp_FAKEFAKEFAKEFAKEFAKEFAKE0123456789ab";
-const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
 const target = { owner: "hemaaanth", repo: "touchstone" };
 const confine = async () => ({ netClient: "touchstone-reach-client-t", proxyName: null, gateUrl: "http://scope-gate:8080", stop: async () => {} });
-const seam = (exec) => async (o) => runCapture({ ...o, ...o.capture, confine, exec });
+const seam = (exec) => async (o) => runCapture({ ...o, confine, exec });
 const legRow = (d) => d.coverage.find((c) => c.engine === "legitify");
 
 test("real capture: Legitify rejects the fine-grained token; the result is a not-covered gap, no lead, never clean", () => {
@@ -46,7 +55,7 @@ test("real capture: Legitify rejects the fine-grained token; the result is a not
 test("capture argv for Legitify: --pull=never, the confined network, the exact tag, SCM_TOKEN by name, read-only flags", async () => {
   const calls = [];
   const exec = async (args, { env }) => { calls.push({ args, env }); return { code: 0, stdout: "", stderr: "", timedOut: false }; };
-  await captureLegitify({ target, reach, token: FAKE_TOKEN, run: seam(exec) });
+  await captureLegitify({ target, scopeId, token: FAKE_TOKEN, capture: seam(exec) });
   const { args, env } = calls.find((c) => c.args[0] === "run");
   assert.ok(args.includes("--pull=never"));
   assert.equal(args.filter((a) => a === "--network").length, 1);
@@ -67,16 +76,18 @@ test("capture argv for Legitify: --pull=never, the confined network, the exact t
 test("fail closed: no target, no token, no grant, timeout, empty success, an undocumented exit code", async () => {
   let calls = 0;
   const never = seam(async () => { calls++; return { code: 0, stdout: "", stderr: "" }; });
-  assert.match((await captureLegitify({ target: null, reach, token: FAKE_TOKEN, run: never })).reason, /no GitHub repo target/);
-  assert.match((await captureLegitify({ target, reach, token: "", run: never })).reason, /no GITHUB_TOKEN/);
-  // The real runTool refuses an ungranted capture before any container starts.
-  let c = await captureLegitify({ target, reach: { granted: true, scope: ["hemaaanth/other"] }, token: FAKE_TOKEN, run: never });
-  assert.match(c.reason, /capture refused: .*not in the granted scope/);
-  c = await captureLegitify({ target, reach: undefined, token: FAKE_TOKEN, run: never });
-  assert.match(c.reason, /capture refused/);
+  assert.match((await captureLegitify({ target: null, scopeId, token: FAKE_TOKEN, capture: never })).reason, /no GitHub repo target/);
+  assert.match((await captureLegitify({ target, scopeId, token: "", capture: never })).reason, /no GITHUB_TOKEN/);
+  // The real gate refuses before any container starts: no scope, or a repo the scope does not list.
+  let c = await captureLegitify({ target, scopeId: null, token: FAKE_TOKEN, capture: never });
+  assert.match(c.reason, /^not covered: capture refused: A capture needs the run's own saved scope/);
+  assert.equal(c.gapKind, "not-covered-capture-refused");
+  c = await captureLegitify({ target: { owner: "hemaaanth", repo: "other" }, scopeId, token: FAKE_TOKEN, capture: never });
+  assert.match(c.reason, /capture refused: hemaaanth\/other is not a repo of this scope/);
+  assert.ok(blockedFrom({ captures: { legitify: c } }).gaps.some((g) => g.kind === "not-covered-capture-refused"));
   assert.equal(calls, 0, "no docker call without a target, a token and a grant");
 
-  const out = async (r) => captureLegitify({ target, reach, token: FAKE_TOKEN, run: async () => ({ stderr: "", ...r }) });
+  const out = async (r) => captureLegitify({ target, scopeId, token: FAKE_TOKEN, capture: async () => ({ stderr: "", ...r }) });
   c = await out({ code: 0, stdout: '{"ok":1}', timedOut: true });
   assert.equal(c.status, "unavailable"); assert.equal(c.reason, "timed out");
   c = await out({ code: 0, stdout: "  \n" });
@@ -105,7 +116,7 @@ test("a base64 copy of the token from Legitify: unavailable, and the snapshot ho
   const ws = mkdtempSync(join(tmpdir(), "touchstone-legit-leak-"));
   try {
     const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
-    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["legitify"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run: seam(exec), base });
+    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["legitify"], networkTarget: "hemaaanth/touchstone", scopeId }, { token: FAKE_TOKEN, capture: seam(exec), base });
     assert.equal(snapshot.captures.legitify.status, "unavailable");
     assert.equal(snapshot.captures.legitify.reason, "output contained part of the token");
     for (const f of readdirSync(ws)) assert.ok(!holdsSecret(readFileSync(join(ws, f), "utf8"), [FAKE_TOKEN]), `${f} holds part of the token`);
@@ -119,7 +130,7 @@ test("the token value appears nowhere in the pinned snapshot, even when Legitify
   const ws = mkdtempSync(join(tmpdir(), "touchstone-legit-tok-"));
   try {
     const base = { version: 1, scope: "folder", files: { "a.txt": "x" }, skipped: [] };
-    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["legitify"], networkTarget: "hemaaanth/touchstone", reach }, { token: FAKE_TOKEN, run: seam(exec), base });
+    const { snapshot } = await prepareNetworkedSnapshot(ws, { networkTools: ["legitify"], networkTarget: "hemaaanth/touchstone", scopeId }, { token: FAKE_TOKEN, capture: seam(exec), base });
     assert.equal(snapshot.captures.legitify.status, "ran");
     assert.equal(snapshot.captures.scorecard, undefined, "only the opted-in tool ran");
     for (const f of readdirSync(ws)) assert.ok(!readFileSync(join(ws, f), "utf8").includes(FAKE_TOKEN), `${f} holds the token`);

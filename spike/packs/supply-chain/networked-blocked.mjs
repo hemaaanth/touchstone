@@ -2,13 +2,12 @@
 // opt-in gives coverage "unavailable" and a gap that says why. Never a clean
 // result, never a lead, never a proof. networked.mjs calls this file.
 //
-// Legitify runs in capture mode (lib/capture.mjs). Its raw output is saved with
+// Legitify runs in capture mode (runCapture, lib/capture.mjs). Its raw output is saved with
 // its SHA-256. No lead parser exists yet: the pack has never seen a real
 // successful Legitify result (it rejects the fine-grained token it was given),
 // so a parser would be a guess. A run that prints output is still a gap.
 import { execFileSync } from "node:child_process";
-import { runTool } from "../../lib/wrap.mjs";
-import { cleanOutput } from "../../lib/capture.mjs";
+import { cleanOutput, runCapture } from "../../lib/capture.mjs";
 import { sha256 } from "../../lib/proof-evidence.mjs";
 
 // Legitify v1.0.11, built locally from the release tarball checked by SHA-256
@@ -53,7 +52,7 @@ const unavailable = (tool, reason, extra = {}) => ({ tool, mode: "api", status: 
 
 // A short reason from Legitify's stderr. Raw stderr is saved (scrubbed) beside it.
 export function legitifyReason(r) {
-  if (r.refused) return `capture refused: ${r.refused}`;
+  if (r.refused) return `not covered: capture refused: ${r.refused}`;
   if (r.timedOut) return "timed out";
   const e = String(r.stderr ?? "");
   if (/fine-grained tokens are not supported/i.test(e)) return "not covered: needs a classic PAT. Legitify rejects fine-grained tokens (github_pat_) before any request";
@@ -67,12 +66,14 @@ export function legitifyReason(r) {
   return `tool exited ${r.code} with no usable output`;
 }
 
-export async function captureLegitify({ target = null, reach, token = process.env.GITHUB_TOKEN, run = runTool } = {}) {
+//   scopeId  the run's own saved scope; runCapture checks it and its own grant
+// capture is a seam for tests.
+export async function captureLegitify({ target = null, scopeId = null, token = process.env.GITHUB_TOKEN, capture = runCapture } = {}) {
   if (!target?.repo) return unavailable("legitify", "no GitHub repo target for the capture");
   if (!token) return unavailable("legitify", "no GITHUB_TOKEN: Legitify needs a token");
   const cmd = LEGITIFY.cmd(target);
-  const r = await run({ image: LEGITIFY.image, cmd, env: { HOME: "/tmp" }, timeoutMs: 300_000,
-    capture: { reach, targets: [{ owner: target.owner, repo: target.repo }], hosts: LEGITIFY.hosts, secrets: { [LEGITIFY.secret]: token } } });
+  const r = await capture({ image: LEGITIFY.image, cmd, env: { HOME: "/tmp" }, timeoutMs: 300_000,
+    scopeId, targets: [{ owner: target.owner, repo: target.repo }], hosts: LEGITIFY.hosts, secrets: { [LEGITIFY.secret]: token } });
   // Output that still holds part of the token after the scrub is dropped.
   const c = cleanOutput(r, [token]);
   const leaked = r.leaked ?? c.leaked;
@@ -80,7 +81,7 @@ export async function captureLegitify({ target = null, reach, token = process.en
   // Only exit 0 with output is a run. No real run has shown an "issues found" exit.
   const ran = !leaked && !r.refused && !r.timedOut && r.code === 0 && text.trim().length > 0;
   return { tool: "legitify", mode: "api", image: LEGITIFY.image, imageId: imageId(LEGITIFY.image), cmd, status: ran ? "ran" : "unavailable", code: r.code, timedOut: Boolean(r.timedOut),
-    sha256: sha256(text), text, stderr: leaked ? "" : c.stderr.slice(0, 8192), ...(ran ? {} : { reason: leaked ?? legitifyReason({ ...r, stderr: c.stderr }) }), ...(r.egress ? { egress: r.egress } : {}),
+    sha256: sha256(text), text, stderr: leaked ? "" : c.stderr.slice(0, 8192), ...(ran ? {} : { reason: leaked ?? legitifyReason({ ...r, stderr: c.stderr }) }), ...(r.refused ? { gapKind: "not-covered-capture-refused" } : {}), ...(r.egress ? { egress: r.egress } : {}),
     capturedAt: now(), target: `${target.owner}/${target.repo}` };
 }
 
