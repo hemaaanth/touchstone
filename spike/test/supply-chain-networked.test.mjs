@@ -273,6 +273,18 @@ test("an encoded or split copy of the token: the capture is unavailable and the 
   }
 });
 
+test("scan.mjs refuses a --network-target outside the capture allow-list before any work", () => {
+  const dir = mkdtempSync(join(tmpdir(), "touchstone-net-cli-"));
+  try {
+    writeFileSync(join(dir, "a.txt"), "x");
+    let code = 0, err = "";
+    try { execFileSync("node", [new URL("../packs/supply-chain/scan.mjs", import.meta.url).pathname, dir, "--network-tools", "scorecard", "--network-target", "torvalds/linux", "--authorized", "test"], { stdio: "pipe", encoding: "utf8", env: { ...process.env, GITHUB_TOKEN: "" } }); }
+    catch (e) { code = e.status; err = String(e.stderr); }
+    assert.equal(code, 2);
+    assert.match(err, /--network-target must be one of: hemaaanth\/touchstone/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("no opt-in: a snapshot without captures gives no networked leads, coverage or gaps", async () => {
   assert.deepEqual(networkedResults({ files: {} }), { leads: [], coverage: [], gaps: [] });
   await assert.rejects(prepareNetworkedSnapshot(mkdtempSync(join(tmpdir(), "touchstone-net-bad-")), { networkTools: ["nmap"] }, { base: { files: {} } }), /Unknown networked tool/);

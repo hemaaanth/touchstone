@@ -6,7 +6,8 @@
 //
 // What a capture needs, checked in this order, before any container starts:
 //   1. A reach grant: reach.granted === true and reach.scope naming each target
-//      ("owner/repo" or the whole "owner"). Same model as captureGithub.
+//      ("owner/repo" or the whole "owner"). Same model as captureGithub. And
+//      each target must be in CAPTURE_TARGETS (today only hemaaanth/touchstone).
 //   2. An egress allow-list (hosts). The tool runs on a Docker `--internal`
 //      network. Its only path out is the scope proxy (lib/reach-confine.mjs),
 //      which allows these hosts and nothing else. A raw socket has no route.
@@ -36,7 +37,14 @@ export const inCaptureScope = (t, scope) => {
   return keys.includes(String(t.owner).toLowerCase()) || (t.repo != null && keys.includes(`${t.owner}/${t.repo}`.toLowerCase()));
 };
 
-// Refuse a capture with no grant, or for a target the grant does not name.
+// The only repos a capture may read, whatever the grant says. A capture puts
+// the owner's token into a third-party tool's container, so a self-made grant
+// for another repo is not enough. Widening this list is a code change.
+export const CAPTURE_TARGETS = ["hemaaanth/touchstone"];
+export const isCaptureTarget = (t) => t?.repo != null && CAPTURE_TARGETS.includes(`${t.owner}/${t.repo}`.toLowerCase());
+
+// Refuse a capture with no grant, for a target the grant does not name, or for
+// a target outside CAPTURE_TARGETS.
 // targets: [{ owner, repo|null }]. An owner-wide target needs the owner in scope.
 export function assertCaptureReach(reach, targets) {
   if (!reach || reach.granted !== true || !Array.isArray(reach.scope)) throw new Error("A capture needs an operator grant (reach.granted and reach.scope).");
@@ -44,6 +52,7 @@ export function assertCaptureReach(reach, targets) {
   for (const t of targets) {
     if (!t || !SCOPE_RE.test(t.repo ? `${t.owner}/${t.repo}` : String(t.owner))) throw new Error("A capture target must be owner or owner/repo.");
     if (!inCaptureScope(t, reach.scope)) throw new Error(`${t.repo ? `${t.owner}/${t.repo}` : t.owner} is not in the granted scope`);
+    if (!isCaptureTarget(t)) throw new Error(`${t.repo ? `${t.owner}/${t.repo}` : t.owner} is not a capture target (only ${CAPTURE_TARGETS.join(", ")})`);
   }
 }
 

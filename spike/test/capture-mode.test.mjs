@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 
 import { runTool } from "../lib/wrap.mjs";
-import { captureArgs, assertCaptureReach, egressSummary, scrub, runNamed, runCapture, holdsSecret, cleanOutput, LEAK_REASON, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
+import { captureArgs, assertCaptureReach, CAPTURE_TARGETS, egressSummary, scrub, runNamed, runCapture, holdsSecret, cleanOutput, LEAK_REASON, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
 
 const FAKE_TOKEN = "ghp_FAKEtokenFAKEtokenFAKEtokenFAKE1234";
 const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
@@ -150,6 +150,20 @@ test("grant check, egress parse and scrub", () => {
 
 // A scrub only replaces the whole value. Encoded or split copies must still be
 // caught, and then the whole output is dropped.
+// A grant the caller wrote for itself is not enough: the token goes only to
+// a capture of hemaaanth/touchstone.
+test("capture targets: a self-granted repo outside CAPTURE_TARGETS is refused before any boundary exists", async () => {
+  assert.deepEqual(CAPTURE_TARGETS, ["hemaaanth/touchstone"]);
+  const s = seams({ print: "{}" });
+  for (const [scope, t] of [[["torvalds/linux"], { owner: "torvalds", repo: "linux" }], [["hemaaanth"], { owner: "hemaaanth", repo: "other" }], [["hemaaanth"], { owner: "hemaaanth", repo: null }]]) {
+    const r = await runCapture({ image: "i:1", cmd: [], user: "1:1", reach: { granted: true, scope }, targets: [t], hosts: ["api.github.com"], secrets: { GITHUB_TOKEN: FAKE_TOKEN }, confine: s.confine, exec: s.exec });
+    assert.match(r.refused ?? "", /not a capture target/, JSON.stringify(t));
+  }
+  assert.equal(s.built.length, 0, "no boundary was built");
+  assert.equal(s.calls.length, 0, "docker was never called");
+  assert.doesNotThrow(() => assertCaptureReach({ granted: true, scope: ["HEMAAANTH/Touchstone"] }, [{ owner: "Hemaaanth", repo: "TouchStone" }]));
+});
+
 test("leak check: base64, base64url, split and URL-encoded copies of the token are caught", () => {
   const b64 = (s) => Buffer.from(s).toString("base64");
   const half = FAKE_TOKEN.length >> 1;

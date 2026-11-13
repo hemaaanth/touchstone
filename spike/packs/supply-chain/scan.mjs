@@ -25,6 +25,7 @@ import { cosignDetectors } from "./cosign.mjs";
 import { networkedDetectors } from "./networked.mjs";
 import { replayEvidence } from "../../lib/proof-evidence.mjs";
 import { githubTarget, githubEntry, githubScopeKey } from "../../lib/scopes-store.mjs";
+import { CAPTURE_TARGETS, isCaptureTarget } from "../../lib/capture.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -47,6 +48,7 @@ if (flag("--network-target")) {
   if (github || !networkTools) { console.error("--network-target is for a folder scan with --network-tools"); process.exit(2); }
   if (!String(value("--authorized") ?? "").trim()) { console.error("--network-target needs --authorized \"<who authorized this test>\"."); process.exit(2); }
   try { networkTarget = githubEntry(githubTarget(value("--network-target"))); } catch (err) { console.error(err.message); process.exit(2); }
+  if (!isCaptureTarget(githubTarget(networkTarget))) { console.error(`--network-target must be one of: ${CAPTURE_TARGETS.join(", ")}`); process.exit(2); }
 }
 const netCfg = networkTools ? { networkTools, ...(networkTarget ? { networkTarget, reach: { granted: true, scope: [githubScopeKey(githubTarget(networkTarget))], authorizedBy: String(value("--authorized")).trim() } } : {}) } : {};
 
