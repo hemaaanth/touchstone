@@ -287,6 +287,20 @@ test("a report for a suite this workspace does not have is dropped, and the list
   });
 });
 
+test("a declared check_ function with no result is a gap, and the run view says so", async () => {
+  const key = `${SUITE}:ShareVaultSymbolicTest`;
+  // The report has only the first of the suite's two check_ functions.
+  const one = { exitcode: 0, test_results: { [key]: [REPORT.test_results[key][0]] } };
+  await withShim({ out: JSON.stringify(one) }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.leads, []);
+    assert.deepEqual(scan.gaps, [{ suite: SUITE, name: "check_withdrawBurnsAtLeastValue", reason: "Halmos reported no result for this check_ function" }]);
+    assert.equal(scan.reason, "1 of 2 checks unchecked (Halmos reported no result for this check_ function)");
+    const view = prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: halmosRecord(scan) }).tools.find((t) => t.name === "Halmos");
+    assert.deepEqual(view, { name: "Halmos", status: "ran", reason: scan.reason, leads: 0 });
+  });
+});
+
 test("an empty report is unavailable, not clean", async () => {
   await withShim({ out: JSON.stringify({ exitcode: 0, test_results: {} }) }, (scan) => {
     assert.equal(scan.available, false);
@@ -297,14 +311,14 @@ test("an empty report is unavailable, not clean", async () => {
 
 test("when every check is a gap the run view shows unavailable with a reason; a partial gap shows ran with a reason", async () => {
   const key = `${SUITE}:ShareVaultSymbolicTest`;
-  const slow = { exitcode: 2, test_results: { [key]: [{ name: "check_a(uint256)", exitcode: 2, models: [] }, { name: "check_b(uint256)", exitcode: 2, models: [] }] } };
+  const slow = { exitcode: 2, test_results: { [key]: [{ name: "check_depositMintsAtMostValue(uint256)", exitcode: 2, models: [] }, { name: "check_withdrawBurnsAtLeastValue(uint256)", exitcode: 2, models: [] }] } };
   await withShim({ out: JSON.stringify(slow) }, (scan) => {
     const rec = halmosRecord(scan);
     assert.equal(rec.status, "unavailable");
     assert.equal(rec.reason, "2 of 2 checks unchecked (solver timed out; the property is unchecked)");
     assert.deepEqual(prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: rec }).tools.find((t) => t.name === "Halmos"), { name: "Halmos", status: "unavailable", reason: rec.reason, leads: 0 });
   });
-  const partial = { exitcode: 2, test_results: { [key]: [REPORT.test_results[key][0], { name: "check_b(uint256)", exitcode: 2, models: [] }] } };
+  const partial = { exitcode: 2, test_results: { [key]: [REPORT.test_results[key][0], { name: "check_withdrawBurnsAtLeastValue(uint256)", exitcode: 2, models: [] }] } };
   await withShim({ out: JSON.stringify(partial) }, (scan) => {
     const view = prepassView({ static: { tool: "Slither", engines: [], suspects: 0, top: [] }, symbolic: halmosRecord(scan) }).tools.find((t) => t.name === "Halmos");
     assert.deepEqual(view, { name: "Halmos", status: "ran", reason: "1 of 2 checks unchecked (solver timed out; the property is unchecked)", leads: 0 });

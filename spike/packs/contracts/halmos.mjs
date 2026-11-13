@@ -44,6 +44,8 @@ const scanCmd = (secs) => [
 ].join(" ");
 
 const CHECK_FN = /\bfunction\s+check_\w+\s*\(/;
+const CHECK_FNS = /\bfunction\s+(check_\w+)\s*\(/g;
+const bare = (name) => String(name).replace(/\(.*$/, "");
 
 // The test files that hold at least one check_ function, relative to ws.
 export function symbolicSuites(ws) {
@@ -169,6 +171,16 @@ async function scanHalmos(ws, { timeoutMs = 300_000 } = {}) {
   parsed = { results: parsed.results.filter((x) => listed.has(x.suite)), gaps: parsed.gaps.filter((x) => listed.has(x.suite)) };
   const seen = new Set([...parsed.results, ...parsed.gaps].map((x) => x.suite));
   for (const suite of suites) if (!seen.has(suite)) parsed.gaps.push({ suite, reason: "Halmos reported no result for this suite" });
+  // Each check_ function the suite file declares, with no result in a suite
+  // that did report, is a gap. A check_ inherited from another file is not
+  // seen here; Halmos still reports it, and it counts.
+  for (const suite of suites) {
+    if (parsed.gaps.some((g) => g.suite === suite && !g.name)) continue;
+    const got = new Set(parsed.results.filter((x) => x.suite === suite).map((x) => bare(x.name)));
+    for (const m of readFileSync(join(ws, suite), "utf8").matchAll(CHECK_FNS)) {
+      if (!got.has(m[1])) parsed.gaps.push({ suite, name: m[1], reason: "Halmos reported no result for this check_ function" });
+    }
+  }
   // The gate call site. One verdict per suite; today every verdict is "untrusted".
   const trust = {};
   for (const s of suites) trust[s] = await suiteTrust(ws, { tool, suite: s });
@@ -201,7 +213,9 @@ async function scanHalmos(ws, { timeoutMs = 300_000 } = {}) {
 // A check is one test result, or one suite that gave no test result at all.
 function gapSummary(results, gaps) {
   if (!gaps.length) return null;
-  const total = results.length + gaps.filter((g) => !g.name).length;
+  // A gap that mirrors a result (timeout, error) is counted once.
+  const has = new Set(results.map((r) => `${r.suite}\0${r.name}`));
+  const total = results.length + gaps.filter((g) => !g.name || !has.has(`${g.suite}\0${g.name}`)).length;
   const why = [...new Set(gaps.map((g) => g.reason))].join("; ");
   return `${gaps.length} of ${total} check${total === 1 ? "" : "s"} unchecked (${why})`;
 }

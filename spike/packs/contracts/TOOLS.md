@@ -49,7 +49,9 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   and say so); any non-zero container exit, even with a valid report; a build
   error; no report; an empty or unreadable report; a failed `setUp` (Halmos
   reports an empty list); a solver timeout on one test (exit 2); and a listed
-  suite with no entry in the report; a `test/` we cannot walk (for example
+  suite with no entry in the report; a `check_` function the suite file
+  declares with no result (one inherited from another file is not checked
+  this way); a `test/` we cannot walk (for example
   a symlink loop, ELOOP). A report entry for a suite this
   workspace does not list is dropped. When any check is a gap, the run view
   says how many ("1 of 2 checks unchecked (...)"). When no check ran at all,
