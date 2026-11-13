@@ -6,6 +6,7 @@
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
 import { daytonaOn, remoteDocker } from "./daytona.mjs";
+import { runCapture } from "./capture.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
@@ -18,7 +19,14 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
+//
+// capture  OFF by default. An object { reach, targets, hosts, secrets } turns on
+//          capture mode (lib/capture.mjs): the one way a tool gets the network.
+//          It needs a grant that covers the targets, runs behind an egress
+//          allow-list, keeps --pull=never, and passes secrets by env name only.
+//          `network` is ignored in this mode. Capture runs on local Docker only.
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, capture = null }) {
+  if (capture) return runCapture({ ...capture, image, cmd, ws, user, env, timeoutMs, maxBuffer });
   const args = [
     "run", "--rm", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
