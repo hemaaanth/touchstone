@@ -288,7 +288,9 @@ export async function phishingLeads(snapshot) {
       missing('blocklist-evidence-missing', { list: String(list.name ?? ''), problem }, String(list.name) + ' is not usable evidence. ' + problem, engine);
       continue;
     }
-    const pin = list.synthetic ? 'sha256:' + list.sha256 : list.commit;
+    // Only the vendored MetaMask commit is checked by the pack. An operator commit carries a prefix,
+    // so the where cell cannot pass for a checked pin.
+    const pin = list.synthetic ? 'sha256:' + list.sha256 : list.name === METAMASK.name ? list.commit : 'operator:' + list.commit;
     const source = list.synthetic ? ' (synthetic lab list)' : list.name === METAMASK.name ? ' (vendored copy; commit and sha256 checked by the pack)' : ' (commit ' + list.commit.slice(0, 12) + ' is operator-stated; the pack checked only the sha256 of the pinned bytes)';
     for (const [domain, line] of entries) {
       const at = { domain, list: list.name, line: String(line), pin };

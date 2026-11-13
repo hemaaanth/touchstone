@@ -48,8 +48,10 @@ only what the records show.
 
 `known-scam-lookalike` (high). dnstwist generated the name, and it is an exact
 entry in a pinned blocklist. The where cells are the domain, the list name, the
-1-based line in the upstream file, and the pin. The pin is the upstream git
-commit. For the synthetic lab list it is `sha256:` and the list hash. Cite the
+1-based line in the upstream file, and the pin. For the vendored MetaMask
+slice the pin is the upstream git commit, which the pack checks. For an
+operator list it is `operator:` and the commit the operator stated. For the
+synthetic lab list it is `sha256:` and the list hash. Cite the
 list, the line and the pin.
 
 `unverified-lookalike` (low, reviewOnly). The name answers, but the answer is

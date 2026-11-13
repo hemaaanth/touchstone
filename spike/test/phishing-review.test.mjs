@@ -215,10 +215,13 @@ test('m2: a changed MetaMask slice with a recomputed sha256 is refused; other co
   const l = operator.leads.find(x => x.check === 'known-scam-lookalike' && x.where.domain === 'tidekep.test');
   assert.ok(l);
   assert.match(l.description, /operator-stated/);
+  assert.equal(l.where.pin, 'operator:' + 'a'.repeat(40), 'Minor 3: an operator commit is marked in the pin itself');
   // An operator copy at the same upstream commit, under its own name, is allowed and still operator-stated.
   const sameCommit = await phishingLeads(snap({ blocklists: [{ ...LAB_LIST, name: 'operator-full-config', synthetic: false, commit: METAMASK.commit }] }));
   assert.equal(sameCommit.coverage.find(c => c.engine === 'blocklist:operator-full-config').status, 'ran');
-  assert.match(sameCommit.leads.find(x => x.check === 'known-scam-lookalike' && x.where.domain === 'tidekep.test').description, /operator-stated/);
+  const same = sameCommit.leads.find(x => x.check === 'known-scam-lookalike' && x.where.domain === 'tidekep.test');
+  assert.match(same.description, /operator-stated/);
+  assert.equal(same.where.pin, 'operator:' + METAMASK.commit, 'Minor 3: the MetaMask commit on an operator list is not shown as the checked pin');
 });
 
 test('m3: the brand\'s own subdomain on a list is not called a lookalike', async () => {
