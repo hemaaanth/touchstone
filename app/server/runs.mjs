@@ -2156,8 +2156,24 @@ function rebuildEvents(id, record, engineEvents) {
     evs.push({ t: tN, ev: "artifact-done", id: `proof-${f.id}` })
   }
   const ids = list.map((f) => f.id)
+  // The record says how much of the scope was read. A gap must survive the
+  // rebuild, as it does live (noteCoverage, coverageGap): a recorded run gets
+  // its coverage note, and a run with no finding ends as the coverage error,
+  // never as no-finding. A record from before sourceCoverage has no gap here.
+  const spentUsd = Number(engineEvents.findLast((e) => e.ev === "spend")?.usd ?? 0)
+  const failed = r.outcome === "error" ? r.errorInfo ?? null : null
+  const gap = failed?.kind === "coverage" ? failed : coverageFailure(r.sourceCoverage, { spentUsd })
   if (ids.length) {
+    const note = coverageFailure(r.sourceCoverage, { spentUsd, found: true })
+    if (note) evs.push({ t: tN, ev: "coverage", info: note })
     evs.push({ t: tN, ev: "status", status: "recorded", decision: "approve", findingId: ids[0], findingIds: ids })
+  } else if (failed || gap) {
+    // The run ended as an error (a coverage gap, or another recorded failure:
+    // its own reason wins). Keep the agent's final answer, then end on that
+    // error, as the live run did.
+    const info = failed ?? gap
+    if (r.final) evs.push({ t: tN, ev: "no-finding", final: r.final })
+    evs.push({ t: tN, ev: "status", status: "error", error: r.error ?? info.message, errorInfo: info })
   } else if (r.final) {
     evs.push({ t: tN, ev: "no-finding", final: r.final })
     evs.push({ t: tN, ev: "status", status: "no-finding" })
