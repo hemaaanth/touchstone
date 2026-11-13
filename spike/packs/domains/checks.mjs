@@ -146,15 +146,38 @@ export function classifyHost(name, root, records) {
   if (cname) return { kind: 'cname', next: 'domains', why: 'it is an alias of ' + cname };
   return { kind: 'address', next: 'domains', why: 'it resolves to an address' };
 }
+// A crawled URL. A path named in JavaScript is a lead, not proof the route is reachable.
+export function classifyEndpoint(row) {
+  const path = new URL(row.url).pathname;
+  if (/javascript/.test(row.type) || /\.m?js$/i.test(path)) return { kind: 'script', next: 'web', why: 'it serves or names JavaScript' };
+  if (/json/.test(row.type) || /\/(?:api|rpc|graphql)(?:\/|$)/i.test(path)) return { kind: 'api-endpoint', next: 'web', why: 'its path or answer looks like an API' };
+  return { kind: 'route', next: 'web', why: 'it is a page path the crawl found' };
+}
+const crawlDetail = row => 'katana found it in ' + (row.tag === 'js' ? 'JavaScript' : row.tag ? 'a ' + row.tag + ' ' + row.attribute : 'a crawled file') + ' at ' + row.source + '. '
+  + (row.status ? 'It answered HTTP ' + row.status + ' at capture time.' : 'katana kept no status for it. It may only exist in the browser.');
+// jsluice rows name where a script uses a URL: fetch, import, a string, and so on.
+const jsluiceDetail = row => 'jsluice found it in JavaScript at ' + row.source + ' (' + row.types.join(', ') + (row.methods.length ? '; method ' + row.methods.join(', ') : '') + ').'
+  + (row.url.includes('EXPR') ? ' EXPR is a part the script builds at run time.' : '') + ' jsluice reads code only. It did not request this URL.';
+const secretDetail = row => 'jsluice matched its ' + row.kind + ' pattern in ' + row.source + '. jsluice rates it ' + (row.severity || 'unrated') + '. Fields: '
+  + Object.entries(row.fields).map(([k, n]) => k + ' (' + n + ' chars)').join(', ') + '. Fingerprint ' + row.fingerprint + '. The values are not kept. A match does not prove the value is a real or working secret.';
 export function surfaceLeads(snapshot, analysis) {
   const assets = new Map();
   const root = analysis.zone.$origin.replace(/\.$/, '');
   const sources = snapshot.discovery?.sources ?? {};
-  const add = (type, where, detail, source, info) => {
+  const add = (type, where, detail, source, info, foundBy) => {
     const key = type + ':' + where;
-    if (assets.has(key)) return;
-    const found = (sources[type === 'host' ? where : new URL(where).hostname] ?? [source]).join(', ');
-    assets.set(key, { id: sha256(key).slice(0, 16), check: 'discovered-' + type, type, where, kind: info.kind, foundBy: found, description: detail + ' Kind: ' + info.kind + ' (' + info.why + '). Found by: ' + found + '. Next pack: ' + info.next + '.', engine: source, impact: 'Informational', severity: 'informational', scope: snapshot.discovery?.source ?? 'lab', nextPack: info.next });
+    const seen = assets.get(key);
+    // A second tool that finds the same endpoint joins the lead. It does not make a new one.
+    if (seen) {
+      if (foundBy && !seen.engines.includes(source)) {
+        seen.engines.push(source);
+        seen.foundBy += ', ' + foundBy;
+        seen.description = seen.description.replace(/ Kind: (.*?)\. Found by: .*$/, (_, kind) => ' ' + detail + ' Kind: ' + kind + '. Found by: ' + seen.foundBy + '. Next pack: ' + seen.nextPack + '.');
+      }
+      return;
+    }
+    const found = foundBy ?? (sources[type === 'host' ? where : new URL(where).hostname] ?? [source]).join(', ');
+    assets.set(key, { id: sha256(key).slice(0, 16), check: 'discovered-' + type, type, where, kind: info.kind, foundBy: found, description: detail + ' Kind: ' + info.kind + ' (' + info.why + '). Found by: ' + found + '. Next pack: ' + info.next + '.', engine: source, engines: [source], impact: 'Informational', severity: 'informational', scope: snapshot.discovery?.source ?? 'lab', nextPack: info.next });
   };
   const hosts = new Set();
   for (const type of ['a', 'aaaa', 'cname', 'srv']) for (const record of analysis.zone[type] ?? []) hosts.add(fqdn(record.name, root));
@@ -163,6 +186,9 @@ export function surfaceLeads(snapshot, analysis) {
   const rootFirst = [...snapshot.http].sort((x, y) => (new URL(x.url).pathname === '/' ? 0 : 1) - (new URL(y.url).pathname === '/' ? 0 : 1));
   for (const response of rootFirst) add('service', new URL(response.url).origin, 'Captured HTTP status ' + response.status + '.', 'httpx', classifyService(response));
   for (const record of analysis.zone.srv ?? []) add('service', 'tcp://' + fqdn(record.target, root) + ':' + record.port, 'SRV record advertises this service. HTTP reachability is separate.', 'dns-zonefile', { kind: 'srv-service', next: 'web', why: 'a SRV record advertises it' });
+  for (const row of snapshot.discovery?.crawl ?? []) add('endpoint', row.url, crawlDetail(row), 'katana', classifyEndpoint(row), 'katana');
+  for (const row of snapshot.discovery?.jsluice?.urls ?? []) add('endpoint', row.url, jsluiceDetail(row), 'jsluice', classifyEndpoint({ url: row.url, type: '' }), 'jsluice');
+  for (const row of snapshot.discovery?.jsluice?.secrets ?? []) add('secret', row.source + '#' + row.kind + '-' + row.fingerprint, secretDetail(row), 'jsluice-secrets', { kind: 'secret-pattern', next: 'web', why: 'a script holds a string shaped like a ' + row.kind }, 'jsluice');
   return [...assets.values()];
 }
 
@@ -174,7 +200,7 @@ export async function scanSnapshot(ws, id = 'domains') {
 
 export function detectorsFor(id = 'domains') {
   const cache = new WeakMap();
-  const checks = id === 'surface' ? ['discovered-host','discovered-service'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','dnssec-evidence-missing','registry-lock-evidence-missing','frontend-content-pin-missing'];
+  const checks = id === 'surface' ? ['discovered-host','discovered-service','discovered-endpoint','discovered-secret'] : ['dangling-cname','subdomain-takeover-fingerprint','wallet-drainer-behavior','missing-frame-protection','weak-csp','wallet-cdn-without-sri','third-party-script-without-sri','known-vulnerable-js','dnssec-evidence-missing','registry-lock-evidence-missing','frontend-content-pin-missing'];
   return Object.fromEntries(checks.map(check => [check,async(snapshot,where) => {
     if (!cache.has(snapshot)) cache.set(snapshot,analyzeSnapshot(snapshot));
     const analysis = await cache.get(snapshot);
