@@ -1732,6 +1732,84 @@ function rebuildEvents(id, record, engineEvents) {
   return evs
 }
 
+// ---- A fleet and a restart. A restart kills the workers, so a child that was
+// mid-turn would read as working for ever. Its end is written into the stream,
+// with the reason. The server starts no agent again: an agent costs money, so
+// the operator decides. A message continues the run (followUp).
+const CUT_OFF = "The server restarted while this agent was working. It was not started again. Send a message to continue the work."
+
+// A run's children by their last lifecycle event. `working` still read as
+// working. `cut` were ended by a restart and have not worked since.
+function fleetChildren(events) {
+  const last = new Map()
+  for (const e of events) {
+    if ((e.ev === "subagent-spawned" || e.ev === "agent-status" || e.ev === "subagent-done") && typeof e.id === "string") last.set(e.id, e)
+  }
+  const ids = (test) => [...last].filter(([, e]) => test(e)).map(([id]) => id)
+  return {
+    working: ids((e) => e.ev === "subagent-spawned" || (e.ev === "agent-status" && e.state !== "idle")),
+    cut: ids((e) => e.ev === "subagent-done" && e.interrupted === true),
+  }
+}
+
+// The end of each child that still reads as working. The view has no
+// "interrupted" state yet, so the status is "failed"; `interrupted` says why.
+function cutOffEvents(events) {
+  return fleetChildren(events).working.map((id) => ({ t: Date.now(), ev: "subagent-done", agent: id, id, status: "failed", interrupted: true, error: CUT_OFF }))
+}
+
+// The error card of a fleet run that a restart cut off: who was mid-turn, that
+// nothing was started again, and the one next step.
+function fleetCutOff(id, events) {
+  const names = fleetChildren(events).cut.map((c) => events.find((e) => e.ev === "subagent-spawned" && e.id === c)?.name || c)
+  const who = names.length > 1 ? `, and ${names.slice(0, -1).join(", ")} and ${names.at(-1)} were cut off mid-turn` : names.length ? `, and ${names[0]} was cut off mid-turn` : ""
+  // Without a saved agent session there is nothing a message could continue.
+  const session = existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+  return {
+    kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
+    spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+    title: "This fleet run stopped at the server restart",
+    hint: session
+      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history, its agents and its files.`
+      : "The server restarted before the agents of this fleet started. Start a new run on the same scope.",
+    message: "this fleet run stopped at the server restart; its agents were not started again",
+  }
+}
+
+// What the agents submitted so far, each with the test source that passed. The
+// engine keeps this list beside the session (spike/lib/audit-state.mjs).
+function submittedFindings(id) {
+  try {
+    const found = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.sqlite.audit.json`), "utf8")).found
+    return Array.isArray(found) ? found : []
+  } catch {
+    return []
+  }
+}
+
+// A `finding` event in the stream says "proven" only as a copy. The run record
+// holds the replay proof. A copy that the record does not back reads as not
+// proven: no record, an unreadable record, or a replay that did not pass. This
+// only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
+// (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
+// with one finding.
+function provenByRecord(id, events) {
+  const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
+  if (!claims.length) return
+  let r = {}
+  try {
+    r = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8")).result ?? {}
+  } catch {
+    // no readable record: nothing is proven
+  }
+  const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
+  for (const e of claims) {
+    const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
+    const stored = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id && r.finding ? { pocProved: r.pocProved, proof: r.proof } : null
+    if (!isProven(stored)) e.proven = false
+  }
+}
+
 // Turn a saved event list into a settled registry entry. Status, headline and
 // finding ids are read back from the events themselves.
 function savedRun(id, events, mtime) {
@@ -1778,18 +1856,31 @@ function savedRun(id, events, mtime) {
       saved = false
     }
   }
-  if (interrupted && (!saved || ((events.findLast((e) => e.ev === "mode")?.mode ?? saved.mode) !== "solo" && !stopPending))) {
+  const mode = events.findLast((e) => e.ev === "mode")?.mode ?? (saved || {}).mode
+  // A fleet cut off while its agents worked: the agents stay stopped, but the
+  // proof check of what they had submitted is free, so it runs (resumeRun).
+  if (interrupted && saved && mode !== "solo" && saved.phase === "agent" && !stopPending && existsSync(path.join(String(saved.ws), ".touchstone.json"))) {
+    const found = submittedFindings(id)
+    if (found.length) saved = { ...saved, phase: "proof", settled: { status: "interrupted", reason: "interrupted", findings: found } }
+  }
+  // A follow-up the restart cut off started after the last close.
+  const lastClose = events.findLastIndex((e) => e.ev === "closed")
+  const replyCut = events.findLastIndex((e) => e.ev === "reply-start") > lastClose
+  // The children that were mid-turn end here. loadSavedRun writes these to the file.
+  const cut = interrupted || replyCut ? cutOffEvents(events) : []
+  events.push(...cut)
+  let errorInfo = null
+  // Only a solo run starts its agent again. A fleet goes on by itself only from
+  // its proof phase, where every agent has already ended.
+  if (interrupted && (!saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
     status = "error"
+    if (saved !== false && mode === "fleet") errorInfo = fleetCutOff(id, events)
     error = saved === false
       ? "saved recovery state is unreadable; start a new run"
-      : events.findLast((e) => e.ev === "mode")?.mode === "fleet"
-        ? "this fleet run stopped at the server restart; its coordinator cannot safely resume yet"
-        : "the server restarted during this run, so it stopped"
-    events.push({ t: Date.now(), ev: "status", status, error })
+      : errorInfo?.message ?? "the server restarted during this run, so it stopped"
+    events.push({ t: Date.now(), ev: "status", status, error, ...(errorInfo ? { errorInfo } : {}) })
   }
-  // Same for a follow-up the restart cut off: it started after the last close.
-  const lastClose = events.findLastIndex((e) => e.ev === "closed")
-  if (events.findLastIndex((e) => e.ev === "reply-start") > lastClose) {
+  if (replyCut) {
     events.push({ t: Date.now(), ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
     events.push({ t: Date.now(), ev: "closed" })
   }
@@ -1813,10 +1904,31 @@ function savedRun(id, events, mtime) {
     findingIds,
     decision,
     error,
+    errorInfo,
     interrupted,
     saved,
+    cut,
     child: null,
     stderr: "",
+  }
+}
+
+// Write the ends of the cut-off children into the stream file, so they stay in
+// the run's history. Only the owner of the run calls this. The file is read
+// again first, so two servers that boot together cannot write an end twice. A
+// failed write leaves the ends in memory; the next boot makes them again.
+function saveCut(run) {
+  if (!run.cut.length) return
+  try {
+    ensureFiles(run)
+    const working = new Set(fleetChildren(readJsonl(run.streamFile)).working)
+    const lines = run.cut.filter((e) => working.has(e.id)).map((e) => JSON.stringify(e) + "\n").join("")
+    // A crash can leave a torn last line. Start on a new line, or the first end joins it and is lost.
+    const torn = lines && !readFileSync(run.streamFile, "utf8").endsWith("\n")
+    appendFileSync(run.streamFile, (torn ? "\n" : "") + lines)
+    run.cut = []
+  } catch {
+    // a full disk must not hide the run
   }
 }
 
@@ -1952,6 +2064,7 @@ function loadSavedRun(id) {
     let mtime
     if (existsSync(streamFile)) {
       events = readJsonl(streamFile)
+      provenByRecord(id, events)
       mtime = statSync(streamFile).mtimeMs
     } else if (existsSync(recordFile)) {
       const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
@@ -1970,6 +2083,11 @@ function loadSavedRun(id) {
     // owner still holds gets listed but left for that owner.
     const ownedError = run.interrupted && run.status === "error" && own(run)
     runs.set(id, run)
+    // A restart during a follow-up leaves the run idle: no branch below owns it.
+    if (!run.interrupted && run.cut.length && own(run)) {
+      saveCut(run)
+      release(run)
+    }
     if (TERMINAL.includes(run.status) && !run.events.some((e) => e.ev === "closed") && existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
       ensureFiles(run)
       if (own(run)) {
@@ -1986,6 +2104,7 @@ function loadSavedRun(id) {
     // one now from the stream: the run is an error, with its reason.
     if (run.interrupted && run.status === "error") {
       if (!ownedError) return // a live owner still holds it; leave the cleanup to that owner
+      saveCut(run)
       if (!existsSync(recordFile)) finalize(run)
       if (run.saved === false) {
         ensureFiles(run)
@@ -1993,8 +2112,8 @@ function loadSavedRun(id) {
       } else if (run.saved) {
         // A valid checkpoint we will not resume (a fleet, or unknown-mode, run).
         // Drop the stale state file so a later boot does not keep seeing it
-        // interrupted; it shows as ended at the restart. Fleet resume itself is
-        // unsupported — the coordinator's state lives in memory.
+        // interrupted; it shows as ended at the restart. Its agents are not
+        // started again here: the operator continues the run with a message.
         ensureFiles(run)
         run.ws = run.saved.ws ?? null
         endWorkspace(run).catch(() => {}).finally(() => broadcast(run, { ev: "closed" }))
@@ -2003,6 +2122,7 @@ function loadSavedRun(id) {
     if (run.interrupted && run.status !== "error") {
       ensureFiles(run)
       if (own(run)) {
+        saveCut(run)
         const stopped = run.events.findLastIndex((e) => e.ev === "stop-requested") > run.events.findLastIndex((e) => e.ev === "stopped")
         if (stopped) {
           run.ws = run.saved.ws
