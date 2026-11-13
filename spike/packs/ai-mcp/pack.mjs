@@ -769,6 +769,9 @@ async function prove(ws, found, _events, log) {
 export default {
   id: "ai-mcp",
   title: "AI and MCP",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "An AI agent and the MCP server it uses, from the outside, with one low-privilege token.",
   tier: "P", // passive
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.

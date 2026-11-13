@@ -757,6 +757,9 @@ starting with "Fix:". Keep going without asking questions. Work from the real si
 export default {
   id: "web",
   title: "Web and sign-in",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "A dApp backend from the outside: its sign-in with Ethereum flow and its REST API.",
   tier: "P", // passive
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.

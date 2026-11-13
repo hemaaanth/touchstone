@@ -331,6 +331,9 @@ export interface TargetScope {
 export interface PackChoice {
   id: string
   title: string
+  // What the module tests, in one plain sentence: the pack's own description
+  // (spike/packs/index.mjs packList). Absent when a pack has none.
+  description?: string
   tier?: string
   proof: string
   // The module's tools can be aimed at a real host.

@@ -123,6 +123,9 @@ function tools(ws, state) {
 
 export default {
   id: "supply-chain", title: "Supply chain and Secrets", tier: "P", proof: "evidence",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "A Git repository, without running its code: leaked keys, risky workflows and vulnerable dependencies.",
   // A live target is a GitHub repo or org, read through the read-only API into a
   // pinned snapshot. The scanners still run offline on that snapshot.
   live: true,
