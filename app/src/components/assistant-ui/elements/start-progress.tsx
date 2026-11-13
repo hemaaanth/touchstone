@@ -1,58 +1,124 @@
 "use client";
 
+import { useState, type ReactNode } from "react";
+import { CheckIcon, ChevronRightIcon, Loader2Icon, MinusIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { StartProgress as Progress, StartState } from "@/lib/startup";
 import { card, mono, ShimmerLabel, StatusMark, type Mark } from "./surfaces";
 
-// The run's progress before the agent session opens, in the style of the
-// assistant-ui generative order-status element: one card, a header with the
-// live counts, and one row per stage with its own mark. Neutral throughout.
-// A failed tool is a coverage gap, not a finding, so nothing turns red.
+// The run's setup, from "starting" to the first agent step, as one card. It
+// has the same shape as the ToolGroup card that follows it: the same header,
+// chevron, row style and width. So the thread never changes container kind,
+// indent or width while the run gets ready. Rows only grow: the last row
+// changes its words in place ("Starting the agent session" becomes "Agent
+// session started"). A live run and a replayed run build the same card.
+//
+// Closed by default (docs/restraint.md). A run that stopped before the agent
+// started opens it, because the card is all there is to read. Neutral
+// throughout: a failed tool is a coverage gap, not a finding.
 
-const MARK: Record<StartState, { mark: Mark; word?: string }> = {
-  running: { mark: "running" },
-  done: { mark: "done" },
-  failed: { mark: "fail" },
-  unavailable: { mark: "off", word: "Unavailable" },
+export interface RunStartRow {
+  key: string;
+  label: string;
+  detail?: string;
+  mark: Mark;
+  word?: string;
+}
+
+const ROW_ICON: Partial<Record<Mark, typeof CheckIcon>> = {
+  running: Loader2Icon,
+  fail: XIcon,
+  off: MinusIcon,
 };
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-
-export function StartProgress({ progress, live }: { progress: Progress; live: boolean }) {
-  const running = live && progress.stages.some((s) => s.state === "running");
-  const counts = [
-    progress.tools ? `${plural(progress.tools, "tool")} (${progress.ran} ran)` : null,
-    progress.leads != null ? `${plural(progress.leads, "lead")}${running ? " so far" : ""}` : null,
-  ].filter(Boolean);
+export function RunStart({
+  rows,
+  meta,
+  mark,
+  word,
+  active,
+  openFirst,
+  children,
+  className,
+}: {
+  rows: readonly RunStartRow[];
+  meta: string | null;
+  mark: Mark;
+  word?: string;
+  active: boolean;
+  openFirst: boolean;
+  /** More detail under the rows, e.g. the tool scan's leads. */
+  children?: ReactNode;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(openFirst);
   return (
-    <div className={cn(card, "flex flex-col")} role="status" aria-live="polite">
-      <div className="flex items-baseline justify-between gap-3 px-4 py-3">
-        <ShimmerLabel active={running} className="text-sm font-medium text-foreground">
-          {running ? "Getting the run ready" : "Run setup"}
+    <div
+      data-slot="run-start"
+      className={cn(card, "flex w-full flex-col overflow-hidden", className)}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2.5 px-3.5 py-2.5 text-start transition-colors hover:bg-foreground/[0.03]"
+      >
+        <ChevronRightIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground transition-transform duration-200 motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        />
+        <ShimmerLabel active={active} className="min-w-0 truncate text-[13.5px] font-medium">
+          Run setup
         </ShimmerLabel>
-        {counts.length ? <span className="text-xs text-muted-foreground">{counts.join(" · ")}</span> : null}
-      </div>
-      <ol className="flex flex-col border-t border-border/60">
-        {progress.stages.map((s) => {
-          // A stage cannot keep running once the run stopped. Show it as not
-          // finished instead of a spinner that never ends.
-          const m = s.state === "running" && !live ? { mark: "off" as Mark, word: "Stopped" } : MARK[s.state];
-          return (
-            <li
-              key={s.key}
-              className="flex items-start justify-between gap-3 border-b border-border/40 px-4 py-2 last:border-b-0"
-            >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className={cn("text-xs", s.state === "running" && live ? "text-foreground" : "text-muted-foreground")}>
-                  {s.label}
-                </span>
-                {s.detail ? <span className={cn(mono, "break-words text-muted-foreground")}>{s.detail}</span> : null}
-              </div>
-              <StatusMark mark={m.mark} word={m.word} />
-            </li>
-          );
-        })}
-      </ol>
+        {meta ? (
+          <span className={cn(mono, "min-w-0 truncate text-muted-foreground tabular-nums")}>{meta}</span>
+        ) : null}
+        <span role="status" aria-live="polite" className="ml-auto flex shrink-0">
+          <StatusMark mark={mark} word={word} />
+        </span>
+      </button>
+
+      {open ? (
+        <div className="flex flex-col border-t border-foreground/[0.06] animate-in fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none">
+          <ol className="flex flex-col">
+            {rows.map((r) => {
+              const Icon = ROW_ICON[r.mark] ?? CheckIcon;
+              return (
+                <li key={r.key} className="flex items-center gap-2.5 px-3.5 py-2">
+                  <span className="flex size-3.5 shrink-0 items-center justify-center">
+                    <Icon
+                      aria-hidden
+                      className={cn(
+                        "size-3 text-muted-foreground",
+                        r.mark === "running" && "animate-spin motion-reduce:animate-none",
+                      )}
+                    />
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 text-[13px]",
+                      r.mark === "running" ? "text-foreground" : "text-foreground/80",
+                    )}
+                  >
+                    {r.label}
+                  </span>
+                  {r.detail ? (
+                    <span className={cn(mono, "min-w-0 flex-1 truncate text-muted-foreground")} title={r.detail}>
+                      {r.detail}
+                    </span>
+                  ) : (
+                    <span className="flex-1" />
+                  )}
+                  {r.word ? <span className="shrink-0 text-xs text-muted-foreground">{r.word}</span> : null}
+                </li>
+              );
+            })}
+          </ol>
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
