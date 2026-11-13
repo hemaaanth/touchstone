@@ -17,6 +17,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const { prepareWorkspace, listTargets, scopeEnv } = await import("../lib/targets.mjs");
 const { addLiveScope } = await import("../lib/scopes-store.mjs");
+const { PACKS } = await import("../packs/index.mjs");
 
 const live = (host, pack) => ({
   id: `live-${pack}`, title: "t", kind: "live", pack,
@@ -40,14 +41,15 @@ test("the web lane stores the base URL and nothing lab-shaped", () => {
   assert.equal(cfg.live, undefined);
 });
 
-test("an AI/MCP target carries its token into the agent's instructions and the config", () => {
+test("an AI/MCP target carries its token into the root's first message and the config, never the shared notes", () => {
   const target = { ...live("mcp.example.com", "ai-mcp"), mcp: { token: "tok_live_1" } };
   const ws = build(target);
   const cfg = cfgOf(ws);
   assert.equal(cfg.baseUrl, "https://mcp.example.com");
   assert.equal(cfg.mcp.token, "tok_live_1");
   assert.ok(!existsSync(join(ws, "BRIEF.md")));
-  assert.match(scopeEnv(target).SCOPE_NOTES, /Bearer token: tok_live_1/);
+  assert.ok(!scopeEnv(target).SCOPE_NOTES.includes("tok_live_1"), "every agent gets the notes, so no token there");
+  assert.match(PACKS["ai-mcp"].kickoff(ws, {}), /Your only credential is this bearer token: tok_live_1/);
 });
 
 test("a domain capture gets the root domain and a governed reach block", () => {
