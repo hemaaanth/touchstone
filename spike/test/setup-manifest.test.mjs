@@ -141,7 +141,6 @@ const testImages = imagesIn([...sources(join(ROOT, "spike/test"), { tests: true 
 
 // Named in the code but never run on this host, each with its reason.
 const NOT_RUN_HERE = {
-  "touchstone/chain-bench:0.1.10": "networked-blocked.mjs: declared only to say why it is never run (argv token)",
   "docker:28.5.1-dind": "daytona.mjs: the Daytona snapshot base; Daytona pulls it on the remote machine",
 };
 
