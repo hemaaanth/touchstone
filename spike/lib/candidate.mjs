@@ -241,3 +241,30 @@ export function forgeLookup({ ws, state, judge = null, stateTrace = false }) {
 }
 
 export const FORGE_POC = "the name of a test contract that passed run_poc but whose replay the harm check did not count";
+
+// ---------------------------------------------------------------- evidence packs
+// supply-chain, infra-cloud, domains. A candidate comes from a lead whose
+// replay against the pinned snapshot ran in this session and did not pass.
+
+export function recordEvidence(state, id, { lead, evidence = lead?.evidence, proof }) {
+  state.attempts ??= new Map();
+  state.attempts.set(String(id), { lead, evidence, proof });
+}
+
+export function evidenceLookup(state) {
+  return (id) => {
+    const a = state.attempts?.get(id);
+    if (!a) return null;
+    if (a.proof?.status === "pass" || state.passed.has(id)) return { proved: true };
+    const { lead, evidence, proof } = a;
+    return {
+      evidence: { kind: "snapshot-slice", leadId: lead.id, check: lead.check, file: lead.file, lines: lead.lines, where: lead.where, commit: lead.commit, evidence, replay: proof },
+      // Compact JSON, as the lead board and the replay printed it, so a cited
+      // line copied from either tool output matches.
+      text: `${JSON.stringify(lead)}\n${JSON.stringify(proof)}`,
+      rootCause: lead.rootCause ?? `lead:${lead.id}`,
+    };
+  };
+}
+
+export const EVIDENCE_POC = "the id of a lead whose evidence replay ran in this session and did not pass";

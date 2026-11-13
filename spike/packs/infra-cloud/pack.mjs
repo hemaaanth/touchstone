@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
+import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
 import { proveFindings, replayEvidence, sha256 } from "../../lib/proof-evidence.mjs";
 import { analyze, cryptoDetectors, parseResources } from "./checks.mjs";
 import { prepareSnapshot } from "./snapshot.mjs";
@@ -77,8 +78,9 @@ function tools(ws, state) {
       state.poc++;
       const proof = await replayEvidence(ws, lead.evidence, { detectors: allowed });
       if (proof.status === "pass") state.passed.set(lead.id, sha256(JSON.stringify(lead.evidence)));
+      recordEvidence(state, lead.id, { lead, proof });
       event("check_evidence", { lead: lead.id, status: proof.status });
-      return output(proof, proof.status !== "pass");
+      return output(proof.status === "pass" ? proof : { ...proof, candidate: CANDIDATE_HINT }, proof.status !== "pass");
     } }),
     defineTool({ name: "submit_finding", description: "Record a lead after its own check_evidence pass. One finding per root cause. The finding uses fixed redacted text and the lead's severity; it cannot claim a live exploit.", parameters: obj({ lead_id: str() }), replay: "safe", execute: async ({ lead_id }) => {
       const lead = report().leads.find((l) => l.id === lead_id);
@@ -93,6 +95,7 @@ function tools(ws, state) {
       event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, next: "Continue with the next distinct root cause." });
     } }),
+    candidateTool({ pack: "infra-cloud", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC }),
   ];
 }
 

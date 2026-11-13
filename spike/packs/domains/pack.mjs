@@ -1,6 +1,7 @@
 import { defineTool } from '@earendil-works/pi-durable';
 import { obj, str } from '@earendil-works/pi-schema';
 import { event } from '../../lib/event.mjs';
+import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
 import { scanSnapshot, detectorsFor } from './checks.mjs';
 import { replayEvidence, proveFindings, loadSnapshot } from '../../lib/proof-evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -17,12 +18,14 @@ export function evidenceTools(ws,state,id) {
       if(!lead || lead.reviewOnly || state.found.some(f=>f.poc===lead.id)) return {...text('Unknown, duplicate, or review-only lead. A pattern alone cannot prove a drainer.'),isError:true};
       const evidence = {check:lead.check,where:lead.where,snapshotHash:scan.snapshotHash};
       const proof = await replayEvidence(ws,evidence,{detectors:detectorsFor(id)});
-      if(proof.status !== 'pass') return {...text(proof),isError:true};
+      if(proof.status !== 'pass') { recordEvidence(state,lead.id,{lead,evidence,proof}); return {...text({...proof,candidate:CANDIDATE_HINT}),isError:true}; }
       const finding={n:state.found.length+1,title:lead.check,severity:lead.severity,poc:lead.id,explanation:args.explanation,evidence};
       state.found.push(finding);
       event('finding-submitted',{n:finding.n,title:finding.title,severity:finding.severity,poc:finding.poc});
       return text({recorded:finding.n,proof});
-    }})];
+    }}),
+    // Surface shares these tools but is leads only, so it gets no candidates.
+    ...(id === 'domains' ? [candidateTool({pack:'domains',state,lookup:evidenceLookup(state),poc:EVIDENCE_POC})] : [])];
 }
 // The scope can name a domain: `.touchstone.json` has `domain` and `reach`. The platform fills `reach`.
 // With no pinned snapshot yet, the prepass captures the domain once and pins the result. A pinned lab skips this.

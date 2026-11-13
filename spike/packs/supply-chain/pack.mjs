@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { event } from "../../lib/event.mjs";
+import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
 import { replayEvidence, proveFindings, sha256 } from "../../lib/proof-evidence.mjs";
 import { prepareSnapshot, skipSummary } from "./snapshot.mjs";
 import { prepareGithubSnapshot } from "./github.mjs";
@@ -93,8 +94,9 @@ function tools(ws, state) {
       state.poc++;
       const proof = await replayEvidence(ws, lead.evidence, { detectors: allowed });
       if (proof.status === "pass") state.passed.set(lead.id, sha256(JSON.stringify(lead.evidence)));
+      recordEvidence(state, lead.id, { lead, proof });
       event("check_evidence", { lead: lead.id, status: proof.status });
-      return output(proof, proof.status !== "pass");
+      return output(proof.status === "pass" ? proof : { ...proof, candidate: CANDIDATE_HINT }, proof.status !== "pass");
     } }),
     defineTool({ name: "submit_finding", description: "Record a lead only after its evidence replay passes. One finding per root cause. Do not claim a leaked key is funded or an RPC credential is live.", parameters: obj({ lead_id: str(), severity: str() }), replay: "safe", execute: async (args) => {
       const lead = known().find((l) => l.id === args.lead_id);
@@ -112,6 +114,7 @@ function tools(ws, state) {
       event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, continue: "Check the next root cause." });
     } }),
+    candidateTool({ pack: "supply-chain", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC }),
   ];
 }
 
