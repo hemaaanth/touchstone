@@ -24,6 +24,10 @@ export const OpenArtifact = createContext<(fileId: string, versionId?: string) =
 // focus ring for a moment. Null when nothing is marked.
 export const MarkedStep = createContext<string | null>(null)
 
+// On a phone, a finding a child agent submitted: the spawn row of that child
+// says so and opens its thread on a tap. Null when there is nothing to say.
+export const FindingNote = createContext<{ agent: string; name: string; open: () => void } | null>(null)
+
 export type CardState = "waiting" | "replaying" | "proven" | "unproven" | "dropped"
 
 // The proof kind of a submitted finding: what the scope's proof surface says,
@@ -314,13 +318,18 @@ export function findingTarget(
   state: RunState,
   status: RunStatus,
   findingId: string,
-): { key: string | null; agent: string | null; proofId: string | null } | null {
+): FindingTarget | null {
   const rec = state.findings.find((f) => f.id === findingId)
   if (!rec) return null
   const step = state.steps.find((s) => s.kind === "submitted" && s.finding && recordFor(state, s.finding, status)?.id === rec.id)
   const proofId = step?.finding ? cardFor(state, step.finding, status).proofArtifactId : null
-  return { key: step?.key ?? null, agent: step?.agent ?? null, proofId }
+  const agent = step?.agent ?? null
+  // A child's card is in its own thread. In the main chat that child is its
+  // spawn row: the place a phone lands on.
+  const spawn = agent ? (state.steps.find((s) => s.kind === "subagent" && s.subId === agent && !s.agent)?.key ?? null) : null
+  return { key: step?.key ?? null, agent, proofId, spawn }
 }
+export type FindingTarget = { key: string | null; agent: string | null; proofId: string | null; spawn: string | null }
 
 // What one "open this finding" request still has to do, given where the finding
 // sits now and what the request already did. The jump to the card and the
@@ -329,13 +338,25 @@ export function findingTarget(
 // once, with no second jump. On a phone the drawer never opens by itself.
 export type FocusDone = { jumped: boolean; opened: boolean }
 export function focusActions(
-  target: { key: string | null; agent: string | null; proofId: string | null } | null,
+  target: FindingTarget | null,
   done: FocusDone,
   narrow: boolean,
-): { jump: string | null; proof: string | null; peek: { agent: string; key: string } | null; done: FocusDone } {
-  const none = { jump: null, proof: null, peek: null, done }
+): {
+  jump: string | null
+  proof: string | null
+  peek: { agent: string; key: string } | null
+  // On a phone, a child's finding: the note under that child's spawn row.
+  note: { agent: string; key: string | null } | null
+  // On a phone, fold the Run Info panel so it does not cover the card.
+  fold: boolean
+  done: FocusDone
+} {
+  const none = { jump: null, proof: null, peek: null, note: null, fold: false, done }
   if (!target) return none
-  const jump = !done.jumped && target.key && !target.agent ? target.key : null
+  // The main chat's card, or on a phone the spawn row of the child that holds it.
+  const main = target.agent ? (narrow ? target.spawn : null) : target.key
+  const jump = !done.jumped && main ? main : null
+  const note = narrow && target.agent ? { agent: target.agent, key: target.key } : null
   let proof: string | null = null
   let peek: { agent: string; key: string } | null = null
   if (!done.opened && !narrow) {
@@ -347,7 +368,9 @@ export function focusActions(
     jump,
     proof,
     peek,
-    done: { jumped: done.jumped || !!jump || !!target.agent, opened: done.opened || !!proof || !!peek },
+    note,
+    fold: narrow && !!jump,
+    done: { jumped: done.jumped || !!jump || (!!target.agent && !narrow), opened: done.opened || !!proof || !!peek },
   }
 }
 
@@ -516,6 +539,14 @@ export async function sendCopy(
 // an old record. Nothing here needs to guess.
 export function runModules(state: RunState): string[] {
   return state.packs
+}
+
+// The server's module list in this run's own order. ModulePills orders the
+// pills by the list it gets, so a joined run shows its modules as stored.
+export function inRunOrder<T extends { id: string }>(packs: T[] | undefined, ids: readonly string[]): T[] | undefined {
+  if (!packs) return packs
+  const at = (id: string) => (ids.includes(id) ? ids.indexOf(id) : ids.length)
+  return [...packs].sort((a, b) => at(a.id) - at(b.id))
 }
 
 // A run row's word and dot tone in the run list. A run a restart cut off reads

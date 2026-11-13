@@ -6,7 +6,8 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { agentLook, buildMessages, findingTarget, focusActions, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { orderModules } from "../lib/module-colors"
+import { agentLook, buildMessages, findingTarget, focusActions, inRunOrder, runHeadStatus, runInterruption, runModules, runRowStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -291,9 +292,9 @@ const proofEv = (k: number): RunEvent => ({ ev: "artifact-open", id: `proof-${R}
 test("open a finding: its card's step and its replay proof, for a proven one", () => {
   const state = reduceEvents([submittedEv(1, "PocA"), submittedEv(2, "PocB"), findingEv(1, "PocA"), findingEv(2, "PocB", false), proofEv(1), { ev: "status", status: "recorded" }])
   const card = (n: number) => state.steps.find((s) => s.kind === "submitted" && s.finding?.n === n)?.key
-  assert.deepEqual(findingTarget(state, "recorded", `${R}.1`), { key: card(1), agent: null, proofId: `proof-${R}.1` })
+  assert.deepEqual(findingTarget(state, "recorded", `${R}.1`), { key: card(1), agent: null, proofId: `proof-${R}.1`, spawn: null })
   // Not proven: the card only, no proof to open.
-  assert.deepEqual(findingTarget(state, "recorded", `${R}.2`), { key: card(2), agent: null, proofId: null })
+  assert.deepEqual(findingTarget(state, "recorded", `${R}.2`), { key: card(2), agent: null, proofId: null, spawn: null })
   // The card's step really carries its key into the thread.
   const keys = buildMessages(state, state.steps, "recorded", false)
     .flatMap((m) => (Array.isArray(m.content) ? (m.content as { toolName?: string; args?: { stepKey?: string } }[]) : []))
@@ -350,4 +351,49 @@ test("open a finding: a proof that lands after its card still opens, once, with 
   assert.equal(phone.proof, null)
   // An unknown id does nothing.
   assert.deepEqual(focusActions(findingTarget(later, "recorded", `${R}.9`), { jumped: false, opened: false }, false).jump, null)
+})
+
+test("open a child's finding on a phone: land on its spawn row with a note, fold the panel; desktop is unchanged", () => {
+  const state = reduceEvents([
+    { ev: "mode", mode: "fleet" },
+    { ev: "subagent-spawned", id: "a-40", name: "hidden-routes", conv: "c40" },
+    submittedEv(1, "PocA", "a-40"),
+    findingEv(1, "PocA"),
+    proofEv(1),
+    { ev: "status", status: "recorded" },
+  ])
+  const t = findingTarget(state, "recorded", `${R}.1`)
+  const spawn = state.steps.find((s) => s.kind === "subagent" && s.subId === "a-40")?.key
+  assert.equal(t?.agent, "a-40")
+  assert.equal(t?.spawn, spawn)
+  const fresh = { jumped: false, opened: false }
+  // Phone: the spawn row, marked, with the note; the panel folds; no drawer.
+  const phone = focusActions(t, fresh, true)
+  assert.equal(phone.jump, spawn)
+  assert.deepEqual(phone.note, { agent: "a-40", key: t?.key })
+  assert.equal(phone.fold, true)
+  assert.equal(phone.proof, null)
+  assert.equal(phone.peek, null)
+  // Desktop: as before, the proof opens and nothing jumps in the main chat.
+  const desk = focusActions(t, fresh, false)
+  assert.deepEqual([desk.jump, desk.note, desk.fold, desk.proof], [null, null, false, `proof-${R}.1`])
+})
+
+test("open a main-chat finding on a phone folds the Run Info panel", () => {
+  const state = reduceEvents([submittedEv(1, "PocA"), findingEv(1, "PocA"), { ev: "status", status: "recorded" }])
+  const act = focusActions(findingTarget(state, "recorded", `${R}.1`), { jumped: false, opened: false }, true)
+  assert.ok(act.jump)
+  assert.equal(act.fold, true)
+  assert.equal(act.note, null)
+  // Only once: the second update does not fold again.
+  assert.equal(focusActions(findingTarget(state, "recorded", `${R}.1`), act.done, true).fold, false)
+})
+
+test("Run Info's module pills follow the run's own order, not the server's list", () => {
+  const server = [{ id: "contracts", title: "Contracts" }, { id: "domains", title: "Domains" }, { id: "web", title: "Web" }]
+  const ordered = inRunOrder(server, ["web", "contracts", "domains"])
+  assert.deepEqual(ordered?.map((p) => p.id), ["web", "contracts", "domains"])
+  // The pills order by that list, as ModulePills does.
+  assert.deepEqual(orderModules(["contracts", "domains", "web"], ordered!.map((p) => p.id)), ["web", "contracts", "domains"])
+  assert.equal(inRunOrder(undefined, ["web"]), undefined)
 })
