@@ -10,9 +10,9 @@ import { Empty, Label, PageBody, PageHeader, RunLinks, UncountedNote } from "@/c
 
 // The attack modules the agent can run. One row per pack the engine's loader
 // lists (GET /api/models `packs`). Closed, a row shows the pack, how it proves
-// a finding, and whether its tools stay in the sandbox or can reach a granted
-// host. Open, it says that in a sentence, then the pipeline and tools its
-// latest run actually used.
+// a finding, and where its tools reach, from the pack's reach fields. Open, it
+// says that in sentences, then the pipeline and tools its latest run actually
+// used.
 export function ModulesPage({
   catalog,
   packs,

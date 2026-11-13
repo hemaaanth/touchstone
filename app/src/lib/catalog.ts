@@ -3,8 +3,9 @@ import type { RunBrief } from "./runModel"
 
 // Words for the module (pack) catalog, shared by the New run dialog and the
 // Modules and Scopes pages. A module's own sentence comes from the pack fields
-// the loader sends (`live`, `proof`, `tier`, `labTarget`). The sentences restate
-// those fields. They are not a second source of truth.
+// the loader sends (`live`, `proof`, `tier`, and the reach fields in
+// spike/packs/index.mjs). The sentences restate those fields. They are not a
+// second source of truth. A pack that sets no reach field gets no reach sentence.
 
 // A scope saved before modules existed has no pack. It is a Contracts scope.
 export const DEFAULT_PACK = "contracts"
@@ -29,7 +30,7 @@ export const PROOF_KIND: Record<string, { label: string; detail: string }> = {
   },
   none: {
     label: "No proof",
-    detail: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
+    detail: "This module has no replay oracle. The run reports leads. No finding can be proven.",
   },
 }
 
@@ -42,33 +43,59 @@ export function proofKind(p: Pick<PackChoice, "proof" | "live">): { label: strin
   return known
 }
 
-// The pack's tier. "P" is the passive tier. Whether the tools stay offline is `live`.
+// The pack's tier. "P" is the passive tier. Where the tools reach is the reach fields.
 export function tierLabel(tier: string | undefined): string | null {
   if (!tier) return null
   return tier === "P" ? "Passive" : tier
 }
 
-// Where this module may run, as the open row states it.
-// A live pack can reach a host the operator has granted. An offline passive
-// pack keeps the sandbox sentence. `labTarget: "rule-based"` adds that the
-// lab assistant is a stand-in. Any other lab target adds nothing.
-export function moduleNote(p: Pick<PackChoice, "tier" | "live" | "labTarget">): string | null {
+type ReachFields = Pick<PackChoice, "tier" | "live" | "labTarget" | "offline" | "fetches" | "scanNet" | "grants" | "extraProof">
+
+// One sentence per reach field value. Each one restates a pack field.
+export const REACH_SENTENCE = {
+  host: "It can reach a host you've granted.",
+  github: "A live run reads a GitHub repo or org you've granted, through the read-only GitHub API.",
+  scanNet: "Its scanners run on an open network.",
+  offline: "It runs only in our own offline sandbox.",
+  fetchGithub: "On the host, it can fetch the GitHub links the scope lists.",
+  fetchSolc: "It can also download the Solidity compilers those files pin.",
+  fetchRest: "Its other tools work offline.",
+  cloudHttp: "One check also gets an HTTP replay against a private practice cloud.",
+  standIn: "Its lab target is a rule-based stand-in.",
+} as const
+
+// Where this module may run, as the open row states it. Each sentence comes
+// from one pack field. A field the console does not know adds nothing.
+export function moduleNote(p: ReachFields): string | null {
+  const s = REACH_SENTENCE
   const parts: string[] = []
-  if (p.live) parts.push("It can reach a host you've granted.")
-  else if (tierLabel(p.tier) === "Passive") parts.push("Passive: it runs only in our own offline sandbox.")
-  if (p.labTarget === "rule-based") parts.push("Its lab target is a rule-based stand-in.")
+  if (p.live) {
+    parts.push(p.grants === "github" ? s.github : s.host)
+    if (p.scanNet === "open") parts.push(s.scanNet)
+  }
+  if (p.offline === true) parts.push(s.offline)
+  const fetches = p.fetches ?? []
+  if (fetches.includes("github")) parts.push(s.fetchGithub)
+  if (fetches.includes("solc")) parts.push(s.fetchSolc)
+  if (fetches.includes("github") || fetches.includes("solc")) parts.push(s.fetchRest)
+  if (p.extraProof === "cloud-http") parts.push(s.cloudHttp)
+  if (p.labTarget === "rule-based") parts.push(s.standIn)
   return parts.length ? parts.join(" ") : null
 }
 
-// The closed-row words after the proof label. Same facts as `moduleNote`,
-// short enough for the row. A live pack does not read as sandbox-only.
-export function moduleAside(p: Pick<PackChoice, "tier" | "live" | "labTarget">): string | null {
+// The closed-row words after the proof label. Same fields as `moduleNote`,
+// short enough for the row.
+export function moduleAside(p: ReachFields): string | null {
   const parts: string[] = []
-  if (p.live) parts.push("Can reach a granted host")
-  else {
+  if (p.live) {
+    parts.push(p.grants === "github" ? "Can read a granted GitHub repo" : "Can reach a granted host")
+    if (p.scanNet === "open") parts.push("Open-network scanners")
+  } else {
     const tier = tierLabel(p.tier)
     if (tier) parts.push(tier)
   }
+  if (p.offline === true) parts.push("Offline")
+  if (p.fetches?.includes("github")) parts.push("Fetches GitHub links")
   if (p.labTarget === "rule-based") parts.push("Rule-based lab")
   return parts.length ? parts.join(" · ") : null
 }

@@ -310,6 +310,19 @@ export interface PackChoice {
   // What the pack's own lab stands in for. "rule-based" means the lab
   // assistant is a rule-based stand-in, not a model.
   labTarget?: string
+  // Where the pack's tools reach. The engine sends each field only when the pack
+  // sets it (spike/packs/index.mjs packList). See spike/packs/README.md.
+  // true: no tool reaches a network.
+  offline?: boolean
+  // What the host fetches for a run: "github" (the scope's GitHub links),
+  // "solc" (the compilers those files pin).
+  fetches?: string[]
+  // "open": a live run's scanners use the open bridge network.
+  scanNet?: string
+  // "github": a live grant names GitHub repos or orgs, not hosts.
+  grants?: string
+  // "cloud-http": one check also gets an HTTP replay on a private practice cloud.
+  extraProof?: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
