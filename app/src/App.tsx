@@ -68,31 +68,29 @@ export function App() {
     }
   }, [refreshModels])
 
-  // One run per module, started in turn. A run that started stays in the list
-  // if a later one fails; the dialog then stays open with the error.
+  // ONE run for the whole ticked list: the server builds one workspace with a
+  // part per module, one budget and one grant. A single tick is today's run.
   const onStart = useCallback(
     async (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => {
       setBusy(true)
       setStartError(null)
       try {
-        for (const pack of modules) {
-          const run = await startRun(alias, targetId, budgetUsd, pack, mode)
-          setRuns((prev) => [
-            {
-              id: run.id,
-              alias: run.alias,
-              status: run.status,
-              startedAt: run.startedAt,
-              title: null,
-              severity: null,
-              scopeTitle: run.scope?.title ?? run.target ?? null,
-            },
-            ...prev.filter((r) => r.id !== run.id),
-          ])
-          // Only the last run is opened; the others still need their stream.
-          loadRun(run.id)
-          setView({ kind: "run", id: run.id })
-        }
+        const run = await startRun(alias, targetId, budgetUsd, modules, mode)
+        setRuns((prev) => [
+          {
+            id: run.id,
+            alias: run.alias,
+            status: run.status,
+            startedAt: run.startedAt,
+            title: null,
+            severity: null,
+            packs: run.packs,
+            scopeTitle: run.scope?.title ?? run.target ?? null,
+          },
+          ...prev.filter((r) => r.id !== run.id),
+        ])
+        loadRun(run.id)
+        setView({ kind: "run", id: run.id })
         setDialogOpen(false)
       } catch (err: unknown) {
         setStartError(err instanceof Error ? err.message : String(err))

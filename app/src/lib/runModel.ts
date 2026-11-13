@@ -123,6 +123,10 @@ export interface RunFailure {
   reason?: string
 }
 
+// The one module of a run from before the `packs` event: the scope's own pack,
+// and Contracts for a record older than modules (as the server's view says).
+const ownPack = (s: unknown): string[] => (s ? [(s as TargetScope).pack ?? "contracts"] : [])
+
 // The step label of one read_source call.
 function readLabel(file: string, scope: TargetScope | null): string {
   if (file.replace(/^\.\//, "") !== "BRIEF.md") return `Read ${file || "a source file"}`
@@ -136,6 +140,9 @@ export interface RunState {
   // until it arrives (or on an old run that predates the event). The header
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
+  // Every module this run covers. One entry for a one-module run and for any
+  // record from before the `packs` event; empty until the scope is known.
+  packs: string[]
   // The operator's scope brief the agent got, from the last `brief` event.
   // Null when the run had none or it was removed in a later follow-up.
   brief: string | null
@@ -228,6 +235,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
+  // Every module this ONE run covers. Empty until the `packs` event (or the
+  // scope, whose `pack` is the run's own on a one-module record).
+  let packs: string[] = []
   let brief: string | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
@@ -300,6 +310,12 @@ export function reduceEvents(events: RunEvent[]): RunState {
         // The run's opening event: which resource it is pointed at. Carries no
         // visible step — it sets the header, not the transcript.
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
+        break
+      }
+      case "packs": {
+        // The modules a joined run covers. It adds no step; the header and Run
+        // Info read it.
+        if (Array.isArray(e.packs)) packs = e.packs.map((p) => str(p)).filter(Boolean)
         break
       }
       case "brief":
@@ -879,6 +895,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
     events,
     steps,
     scope,
+    // One module on a one-module run and on an old record: the run's own pack.
+    // `scope` is reassigned inside the loop, which TS control flow cannot see.
+    packs: packs.length ? packs : ownPack(scope),
     brief,
     status,
     pending,

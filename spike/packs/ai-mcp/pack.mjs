@@ -662,7 +662,7 @@ function tools(ws, state) {
       const n = state.found.length + 1;
       const finding = { n, title: String(args.title), severity: String(args.severity), poc: label, explanation: String(args.explanation), script: entry.script, oracleName: entry.oracleName };
       state.found.push(finding);
-      event("finding-submitted", { n, title: finding.title, severity: finding.severity, poc: label });
+      event("finding-submitted", { pack: "ai-mcp", n, title: finding.title, severity: finding.severity, poc: label });
       return { output: [{ type: "text", text: `Recorded finding #${n}: ${finding.title} (${finding.severity}). Do NOT stop. Continue auditing for other root causes. ${leftText(MAX_SCRIPT_RUNS, state.poc, "script")} When every suspect is proven or ruled out, write the coverage summary.` }] };
     },
   });
