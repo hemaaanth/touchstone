@@ -9,7 +9,7 @@
 //   node spike/scripts/setup.mjs --list       # show the manifest, build nothing
 //   node spike/scripts/setup.mjs --dry-run    # show what WOULD run
 //   node spike/scripts/setup.mjs --only web,contracts
-//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory
+//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory, scorecard, legitify
 //   node spike/scripts/setup.mjs --force      # rebuild/repull even if present
 //   node spike/scripts/setup.mjs --daytona    # only the images that reach Daytona
 //
@@ -26,7 +26,7 @@
 // only this provisioning step reaches out.
 
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -42,7 +42,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // group = the pack the image belongs to. optional = heavy / rarely needed.
 // daytona = true for the images that reach a Daytona sandbox on main today.
 
-const MANIFEST = [
+export const MANIFEST = [
   // ---- contracts (EVM static/dynamic analysis + proof replay) ----
   { tag: "ghcr.io/foundry-rs/foundry:latest", group: "contracts", kind: "pull",
     ref: "ghcr.io/foundry-rs/foundry:latest", daytona: true,
@@ -56,6 +56,12 @@ const MANIFEST = [
     file: "spike/packs/contracts/Dockerfile.heimdall", context: "spike/packs/contracts", daytona: true },
   { tag: "touchstone/aderyn:0.6.8", group: "contracts", kind: "build",
     context: "tools/aderyn", daytona: true },
+  { tag: "touchstone/halmos:0.3.3", group: "contracts", kind: "build",
+    file: "spike/packs/contracts/images/Dockerfile.halmos", context: "spike/packs/contracts/images",
+    note: "Halmos pre-pass; same build as images/build.sh halmos." },
+  { tag: "touchstone/chimera:e2.3.3-m1.5.1", group: "contracts", kind: "build",
+    file: "spike/packs/contracts/images/Dockerfile.chimera", context: "spike/packs/contracts/images",
+    note: "Chimera pre-pass (Echidna + Medusa); same build as images/build.sh chimera." },
 
   // ---- keys (Safe / signing) ----
   { tag: "touchstone-chain-tools:wave1", group: "keys", kind: "build",
@@ -145,6 +151,13 @@ const MANIFEST = [
     ref: "ghcr.io/mongodb/kingfisher:2.18.1" },
   { tag: "touchstone-cosign:v3.1.4", group: "supply-chain", kind: "build",
     context: "spike/packs/supply-chain/cosign" },
+  // Opt-in networked tools (networked.mjs). Each runs only in capture mode.
+  { tag: "touchstone/scorecard:5.6.0", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/scorecard",
+    note: "OSSF Scorecard. Opt-in: --network-tools scorecard." },
+  { tag: "touchstone/legitify:1.0.11", group: "supply-chain", kind: "build", optional: true,
+    context: "spike/packs/supply-chain/images/legitify",
+    note: "Legitify. Opt-in; always fails closed (no lead parser)." },
 
   // ---- infra-cloud ----
   { tag: "touchstone/checkov-cli:3.4.3", group: "infra-cloud", kind: "build",
@@ -193,7 +206,10 @@ const opt = {
   jobs: Math.max(1, parseInt(val("--jobs") || "4", 10) || 4),
 };
 
-if (has("--help") || has("-h")) {
+// Imported (by a test), it only exports MANIFEST. Run, it is the CLI.
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isCli && (has("--help") || has("-h"))) {
   console.log(`Touchstone tool-image setup
 
   node spike/scripts/setup.mjs [flags]
@@ -203,7 +219,7 @@ Flags:
   --dry-run           Print each action that would run, do nothing
   --force             Rebuild/repull even if the image is already present
   --only a,b          Only these groups (${[...new Set(MANIFEST.map((m) => m.group))].join(", ")})
-  --include-optional  Include optional images (garak, observatory, strix)
+  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify)
   --daytona           Only images that reach Daytona on main
   --pull-only         Skip builds
   --build-only        Skip pulls
@@ -337,4 +353,4 @@ async function main() {
   process.exit(failed.length ? 1 : 0);
 }
 
-main();
+if (isCli) main();
