@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { COSIGN, buildCosignImage, classify, cosignDetectors, cosignScan, parsePolicy, verifyBlob } from "../packs/supply-chain/cosign.mjs";
+import { COSIGN, buildCosignImage, classify, cosignDetectors, cosignScan, parsePolicy, signingPin, verifyBlob } from "../packs/supply-chain/cosign.mjs";
 import { makeCosignLab, newKey, signBundle } from "../packs/supply-chain/cosign-lab.mjs";
 import { captureSnapshot } from "../packs/supply-chain/snapshot.mjs";
 import { makeLabWorkspace } from "../packs/supply-chain/lab.mjs";
@@ -26,7 +26,8 @@ before(() => {
   if (err) throw new Error(err);
   lab = temp();
   policy = makeCosignLab(lab);
-  snapshot = captureSnapshot(lab);
+  // The pack pins the operator policy into the snapshot before the scan.
+  snapshot = { ...captureSnapshot(lab), signingPolicy: signingPin(policy) };
 });
 
 test("cosign runs from a digest-pinned local image, offline, with no transparency log or TUF fetch", async () => {
@@ -64,11 +65,25 @@ test("real cosign on the lab: one verified, one unsigned lead, one invalid-signa
   const changed = { ...snapshot, files: { ...snapshot.files, "release/updater.js": snapshot.files["release/updater.js"] + "\n" } };
   assert.equal((await d["tool:cosign"](changed, invalid.where)).ok, false);
   assert.equal((await d["tool:cosign"](snapshot, { ...invalid.where, keySha256: "0".repeat(64) })).ok, false);
-  assert.equal((await d["tool:cosign"](snapshot, { ...invalid.where, publicKey: newKey().publicKey.export({ type: "spki", format: "pem" }) })).ok, false);
+  // The key in `where` is never trusted. A forged key plus its own sha does not replay.
+  const other = newKey().publicKey;
+  const forgedKey = { publicKey: other.export({ type: "spki", format: "pem" }), keySha256: sha(other.export({ type: "spki", format: "der" })) };
+  assert.equal((await d["tool:cosign"](snapshot, { ...invalid.where, ...forgedKey })).ok, false);
   // The verified artifact cannot be passed off as an invalid signature.
   const good = { ...invalid.where, file: "release/wallet-cli.js", artifactSha256: sha(snapshot.files["release/wallet-cli.js"]), bundle: "release/wallet-cli.js.sigstore.json" };
   good.bundleSha256 = sha(snapshot.files[good.bundle]);
   assert.equal((await d["tool:cosign"](snapshot, good)).ok, false);
+  assert.equal((await d["tool:cosign"](snapshot, { ...good, ...forgedKey })).ok, false, "a correctly signed artifact with a forged key in where");
+  // The replay is tied to the pinned policy: no pin, or a pin with another key, fails.
+  const { signingPolicy, ...unpinned } = snapshot;
+  assert.equal((await d["tool:cosign"](unpinned, invalid.where)).ok, false);
+  assert.equal((await d["artifact-signature-missing"](unpinned, unsigned.where)).ok, false);
+  assert.equal((await d["tool:cosign"]({ ...snapshot, signingPolicy: { ...signingPolicy, ...forgedKey } }, invalid.where)).ok, false);
+  // An unsigned lead must name an artifact and bundles the policy names.
+  const withReadme = { ...snapshot, files: { ...snapshot.files, "README.md": "# app\n" } };
+  const readme = { ...unsigned.where, file: "README.md", artifactSha256: sha("# app\n"), bundles: ["README.md.made-up"] };
+  assert.equal((await d["artifact-signature-missing"](withReadme, readme)).ok, false);
+  assert.equal((await d["artifact-signature-missing"](snapshot, { ...unsigned.where, bundles: ["release/install.sh.made-up"] })).ok, false);
   // An unsigned lead fails once a bundle appears.
   const signed = { ...snapshot, files: { ...snapshot.files, "release/install.sh.sigstore.json": "{}" } };
   assert.equal((await d["artifact-signature-missing"](signed, unsigned.where)).ok, false);
@@ -164,6 +179,10 @@ test("the full lab prepass: cosign finds the bad signature no other engine saw, 
   try {
     assert.ok(JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8")).cosign.publicKey.startsWith("-----BEGIN PUBLIC KEY-----"));
     const { record } = await pack.prepass(ws, {});
+    // The policy is part of the pinned snapshot, so the replay can check against it.
+    const pinnedSnap = JSON.parse(readFileSync(join(ws, "snapshot.json"), "utf8"));
+    assert.equal(pinnedSnap.signingPolicy.artifacts.length, 3);
+    assert.match(pinnedSnap.signingPolicy.keySha256, /^[0-9a-f]{64}$/);
     const cov = record.coverage.find((c) => c.engine === "cosign");
     assert.equal(cov.status, "ok");
     assert.equal(cov.leads, 2);

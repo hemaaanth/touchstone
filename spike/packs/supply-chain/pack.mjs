@@ -9,7 +9,7 @@ import { prepareGithubSnapshot } from "./github.mjs";
 import { makeLabWorkspace } from "./lab.mjs";
 import { cryptoLeads, cryptoDetectors } from "./crypto.mjs";
 import { SCANNERS, scanSnapshot, scannerDetectors } from "./scanners.mjs";
-import { cosignScan, cosignDetectors } from "./cosign.mjs";
+import { cosignScan, cosignDetectors, signingPin } from "./cosign.mjs";
 
 const detectors = () => ({ ...cryptoDetectors, ...scannerDetectors(), ...cosignDetectors() });
 const reportFile = (ws) => join(ws, "supply-chain-leads.json");
@@ -50,7 +50,8 @@ export async function prepass(ws, { emit = () => {} } = {}) {
   let source = ws, worktree = false, cfg = {};
   try { cfg = JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8")); if (typeof cfg.source === "string") source = cfg.source; worktree = cfg.worktree === true; } catch { /* no config: lab layout */ }
   if (cfg.github) emit({ ev: "supply-chain-github-capture-start", github: cfg.github });
-  const { snapshot, snapshotHash } = cfg.github ? await prepareGithubSnapshot(ws, cfg.github, { reach: cfg.reach }) : prepareSnapshot(ws, source, { worktree });
+  const signingPolicy = signingPin(cfg.cosign);
+  const { snapshot, snapshotHash } = cfg.github ? await prepareGithubSnapshot(ws, cfg.github, { reach: cfg.reach, signingPolicy }) : prepareSnapshot(ws, source, { worktree, signingPolicy });
   const scans = await Promise.all([...Object.keys(SCANNERS).map((engine) => scanSnapshot(snapshot, engine)), cosignScan(snapshot, cfg.cosign)]);
   const raw = [...cryptoLeads(snapshot), ...scans.flatMap((r) => r.leads).filter((l) => !["zizmor/anonymous-definition", "zizmor/concurrency-limits"].includes(l.check))];
   const signers = new Map(raw.filter((l) => l.address && l.secret && !l.addressSource).map((l) => [l.secret.sha256, l.address]));

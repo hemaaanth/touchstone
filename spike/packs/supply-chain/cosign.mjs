@@ -80,6 +80,15 @@ export async function verifyBlob({ artifact, bundle, publicKey }, { image = COSI
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+// The operator policy, as pinned into the snapshot before the scan. The replay
+// trusts only this pin, never a key or a path in the evidence `where`.
+// No policy or a bad policy pins nothing, so no cosign lead can replay.
+export function signingPin(raw) {
+  let policy;
+  try { policy = parsePolicy(raw); } catch { return null; }
+  return policy && { keySha256: policy.keySha256, publicKey: policy.publicKey, artifacts: policy.artifacts.map(({ path, bundles }) => ({ path, bundles })) };
+}
+
 const where = (rule, a, extra) => ({ file: a.path, line: 1, rule, artifactSha256: sha(a.text), ...extra });
 function leadOf(engine, check, impact, a, w, description) {
   return { engine, check, impact, file: a.path, lines: [1], where: w, description };
@@ -136,19 +145,29 @@ export async function cosignScan(snapshot, rawPolicy, opts = {}) {
 }
 
 // Replay detectors. They read only the pinned snapshot and the evidence `where`.
+// The key and the artifact list come from the policy pinned in the snapshot:
+// the artifact must be one the policy names, and the bundles and key must be
+// the policy's own. The key in `where` is ignored.
 export function cosignDetectors(opts = {}) {
+  const policyOf = (snapshot, w) => {
+    let pin;
+    try { pin = parsePolicy(snapshot.signingPolicy && { publicKey: snapshot.signingPolicy.publicKey, artifacts: snapshot.signingPolicy.artifacts.map((a) => a.path) }); } catch { return null; }
+    if (!pin || pin.keySha256 !== snapshot.signingPolicy.keySha256) return null;
+    const art = snapshot.signingPolicy.artifacts.find((a) => a.path === w?.file);
+    return art && Array.isArray(art.bundles) ? { ...pin, art } : null;
+  };
   const pinned = (snapshot, w) => w && safePath(w.file) && Object.hasOwn(snapshot.files, w.file) && sha(snapshot.files[w.file]) === w.artifactSha256 && w.line === 1;
   return {
     "artifact-signature-missing": async (snapshot, w) => {
+      const p = pinned(snapshot, w) && policyOf(snapshot, w);
+      if (!p || w.rule !== "artifact-signature-missing" || JSON.stringify(w.bundles) !== JSON.stringify(p.art.bundles)) return { ok: false };
       const skipped = new Set((snapshot.skipped ?? []).map((s) => s.file));
-      return { ok: Boolean(pinned(snapshot, w) && w.rule === "artifact-signature-missing" && Array.isArray(w.bundles) && w.bundles.length && w.bundles.every((b) => safePath(b) && !Object.hasOwn(snapshot.files, b) && !skipped.has(b))) };
+      return { ok: p.art.bundles.length > 0 && p.art.bundles.every((b) => safePath(b) && !Object.hasOwn(snapshot.files, b) && !skipped.has(b)) };
     },
     "tool:cosign": async (snapshot, w) => {
-      if (!pinned(snapshot, w) || w.rule !== "cosign/invalid-signature" || !safePath(w.bundle) || !Object.hasOwn(snapshot.files, w.bundle) || sha(snapshot.files[w.bundle]) !== w.bundleSha256) return { ok: false };
-      let policy;
-      try { policy = parsePolicy({ publicKey: w.publicKey, artifacts: [w.file] }); } catch { return { ok: false }; }
-      if (policy.keySha256 !== w.keySha256) return { ok: false };
-      const r = await verifyBlob({ artifact: snapshot.files[w.file], bundle: snapshot.files[w.bundle], publicKey: policy.publicKey }, opts);
+      const p = pinned(snapshot, w) && policyOf(snapshot, w);
+      if (!p || w.rule !== "cosign/invalid-signature" || p.keySha256 !== w.keySha256 || !p.art.bundles.includes(w.bundle) || !safePath(w.bundle) || !Object.hasOwn(snapshot.files, w.bundle) || sha(snapshot.files[w.bundle]) !== w.bundleSha256) return { ok: false };
+      const r = await verifyBlob({ artifact: snapshot.files[w.file], bundle: snapshot.files[w.bundle], publicKey: p.publicKey }, opts);
       return { ok: r.result === "invalid-signature" };
     },
   };

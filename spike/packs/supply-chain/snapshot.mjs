@@ -115,7 +115,7 @@ export function prepareSnapshot(ws, source = ws, opts = {}) {
   try { return loadSnapshot(ws); }
   catch (err) {
     if (err.code !== "ENOENT" && !String(err.message).includes("Missing snapshot SHA-256 pin")) throw err;
-    const snapshot = captureSnapshot(source, opts);
+    const snapshot = { ...captureSnapshot(source, opts), ...(opts.signingPolicy ? { signingPolicy: opts.signingPolicy } : {}) };
     const snapshotHash = pinSnapshot(ws, snapshot);
     return { snapshot, snapshotHash };
   }
