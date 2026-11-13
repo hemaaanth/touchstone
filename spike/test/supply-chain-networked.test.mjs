@@ -486,7 +486,7 @@ test("the local run's output is dropped when it holds part of the token", async 
 });
 
 test("setup manifest: the Scorecard and Legitify images are optional supply-chain builds with a Dockerfile", async () => {
-  const { MANIFEST } = await import("../scripts/setup.mjs");
+  const { MANIFEST } = await import("../lib/images.mjs");
   const { LEGITIFY } = await import("../packs/supply-chain/networked-blocked.mjs");
   for (const tag of [SCORECARD.image, LEGITIFY.image]) {
     const m = MANIFEST.find((x) => x.tag === tag);
