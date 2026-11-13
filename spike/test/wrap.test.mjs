@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -51,6 +51,32 @@ test("SARIF leads from two engines merge and corroborate in the ensemble", () =>
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
 })();
+
+test("runTool passes --pull=never directly after run --rm", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wrap-args-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const result = await runTool({ image: "example.invalid/tool@sha256:" + "0".repeat(64), cmd: ["true"] });
+    assert.equal(result.code, 0);
+  } finally {
+    process.env.PATH = path;
+  }
+  try {
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a missing image fails without a registry pull", { skip: !hasDocker && "no docker" }, async () => {
+  const result = await runTool({ image: "touchstone-missing@sha256:" + "1".repeat(64), cmd: ["true"] });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Unable to find image|No such image|not found/i);
+});
 
 test("runTool mounts the workspace and has no network", { skip: !hasDocker && "no docker" }, async () => {
   const ws = mkdtempSync(join(tmpdir(), "wrap-"));
