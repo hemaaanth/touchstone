@@ -3,9 +3,10 @@
 # source to read, so without their lab image they cannot run at all.
 #
 #   spike/scripts/build-labs.sh            # build web-lab, ai-mcp-lab, mcp-inspector, mcp-shield
-#   spike/scripts/build-labs.sh web        # build one: web | ffuf | arjun | ai-mcp | inspector | shield | garak
+#   spike/scripts/build-labs.sh web        # build one: web | ffuf | arjun | schemathesis | ai-mcp | inspector | shield | garak
 #   spike/scripts/build-labs.sh ffuf       # the Web pack's content-discovery image (not in the default list)
 #   spike/scripts/build-labs.sh arjun      # the Web pack's hidden-parameter image (not in the default list)
+#   spike/scripts/build-labs.sh schemathesis  # the Web pack's API schema-fuzz image (not in the default list)
 #
 # garak (about 3 GB, CPU torch) is not in the default list. Build it only if
 # you will run the AI/MCP pack live with an assistant budget.
@@ -20,6 +21,7 @@ cd "$(dirname "$0")/.."
 build_web()       { docker build -t touchstone/web-lab:dev packs/web/lab/dapp/oracle; }
 build_ffuf()      { docker build -f packs/web/Dockerfile.ffuf -t touchstone/web-ffuf:2.3.0 packs/web; }
 build_arjun()     { docker build -f packs/web/Dockerfile.arjun -t touchstone/web-arjun:2.2.7 packs/web; }
+build_schemathesis() { docker build -f packs/web/Dockerfile.schemathesis -t touchstone/web-schemathesis:4.33.4 packs/web; }
 build_ai_mcp()    { docker build -t touchstone/ai-mcp-lab:dev packs/ai-mcp/lab/mcp/oracle; }
 build_inspector() { docker build -f packs/ai-mcp/Dockerfile.inspector -t touchstone/mcp-inspector:0.17.2 packs/ai-mcp; }
 build_shield()    { docker build -f packs/ai-mcp/Dockerfile.shield -t touchstone/mcp-shield:1.0.4 packs/ai-mcp; }
@@ -33,12 +35,13 @@ for t in "${targets[@]}"; do
     web) build_web ;;
     ffuf) build_ffuf ;;
     arjun) build_arjun ;;
+    schemathesis) build_schemathesis ;;
     ai-mcp) build_ai_mcp ;;
     inspector) build_inspector ;;
     shield) build_shield ;;
     garak) build_garak ;;
     strix) build_strix ;;
-    *) echo "unknown target: $t (use web, ffuf, arjun, ai-mcp, inspector, shield, garak or strix)" >&2; exit 2 ;;
+    *) echo "unknown target: $t (use web, ffuf, arjun, schemathesis, ai-mcp, inspector, shield, garak or strix)" >&2; exit 2 ;;
   esac
 done
 echo "built: ${targets[*]}"

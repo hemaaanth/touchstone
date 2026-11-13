@@ -70,6 +70,16 @@ const LEAKED_SIGNER = {
   signerPrivateKey: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
 };
 
+// BUG 7 fixture: a fixed-size in-memory "chain". Heights 0..CHAIN_HEAD-1 are
+// real blocks; anything else is out of range. The block-lookup route below
+// reads this array without a range check, which is the planted fault.
+const CHAIN_HEAD = 128;
+const BLOCKS = Array.from({ length: CHAIN_HEAD }, (_, h) => ({
+  height: h,
+  hash: "0x" + h.toString(16).padStart(64, "0"),
+  txCount: (h * 7) % 13,
+}));
+
 // --- Nonce store. Bug 1: a nonce is never invalidated after a successful
 // verify, so the same signed message replays indefinitely.
 const nonces = new Map(); // nonce -> issuedAt (ms)
@@ -187,6 +197,25 @@ app.get("/api/users/:id/wallet", requireSession, (req, res) => {
   const u = BY_ID.get(Number(req.params.id));
   if (!u) return res.status(404).json({ error: "not_found" });
   res.json({ id: u.id, wallet: u.wallet, apiKey: u.apiKey });
+});
+
+// BUG 7: a documented, public block-lookup endpoint (in openapi.yaml, no
+// security). It assumes the requested height is in range and reads the chain
+// array directly. An out-of-range or negative height -- the kind a schema
+// fuzzer generates from the integer path parameter -- indexes past the array,
+// so the handler dereferences `undefined` and Express turns the thrown
+// TypeError into an unhandled HTTP 500, instead of the 404 a missing block
+// should get. A 500 on a well-typed but out-of-range input is a server-error /
+// schema-conformance bug. None of the other prepass tools fuzz a typed path
+// parameter against the schema, so only Schemathesis trips it. Valid heights
+// (0..CHAIN_HEAD-1) return 200 with the block, so the route is genuinely
+// functional. This is additive: no existing route changes.
+app.get("/api/block/:height", (req, res) => {
+  const height = Number(req.params.height);
+  const block = BLOCKS[height]; // undefined when out of range or negative
+  // Bug: no `if (!block) return res.status(404)...`. Reading .hash of
+  // undefined throws synchronously, which Express serves as a 500.
+  res.json({ height: block.height, hash: block.hash, txCount: block.txCount });
 });
 
 // BUG 3: undocumented, unauthenticated, leaks the chain signer's key. Not

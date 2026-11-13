@@ -52,6 +52,30 @@ paths:
           description: Missing or malformed message/signature.
         "401":
           description: Domain/uri/chainId mismatch, unknown nonce, or bad signature.
+  /api/block/{height}:
+    get:
+      summary: Look up a block by height on the lab chain.
+      description: >
+        Public block-explorer lookup. Returns the block at the given height.
+        Needs no session.
+      parameters:
+        - name: height
+          in: path
+          required: true
+          schema: { type: integer, format: int32 }
+      responses:
+        "200":
+          description: The block at that height.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  height: { type: integer }
+                  hash: { type: string }
+                  txCount: { type: integer }
+        "404":
+          description: No such block.
   /api/me:
     get:
       summary: The caller's own profile.

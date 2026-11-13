@@ -8,14 +8,20 @@
 // a failed run.
 import { scanFfuf } from "./ffuf.mjs";
 import { scanArjun } from "./arjun.mjs";
+import { scanSchemathesis } from "./schemathesis.mjs";
 
 const cap = (s, n = 200) => String(s ?? "").slice(0, n);
 const RANK = { High: 0, Medium: 1, Low: 2, Informational: 3 };
 
 // The extra tools, in order. Each is called with { net, baseUrl, run }. Add a
 // new tool by pushing its scan function here; pack.mjs does not change.
-// ffuf finds hidden PATHS; arjun mines hidden PARAMETERS on known paths.
-const TOOLS = [{ name: "ffuf", scan: scanFfuf }, { name: "arjun", scan: scanArjun }];
+// ffuf finds hidden PATHS; arjun mines hidden PARAMETERS on known paths;
+// schemathesis drives TYPED inputs at documented operations from the schema.
+const TOOLS = [
+  { name: "ffuf", scan: scanFfuf },
+  { name: "arjun", scan: scanArjun },
+  { name: "schemathesis", scan: scanSchemathesis },
+];
 
 // Run every extra tool against { net, baseUrl }. Always resolves. A tool that
 // throws (it should not) is turned into an "unavailable" row so the prepass

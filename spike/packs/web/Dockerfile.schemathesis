@@ -1,0 +1,27 @@
+# Schemathesis, the OpenAPI/GraphQL schema fuzzer. MIT licensed.
+# https://github.com/schemathesis/schemathesis
+#
+# Pinned to 4.33.4. The build stage has network to fetch from PyPI; the
+# schemathesis sdist itself is verified against its published SHA-256 before
+# install. At run time the pack runs the image with --network <lab-net> and
+# --pull=never, so it only ever talks to the lab, never a registry or PyPI.
+#
+# We only RUN schemathesis as a separate program in this container; we do not
+# modify or redistribute its source, so it is listed in TOOLS.md, not
+# THIRD_PARTY.md. Its transitive Python dependencies are resolved at build time
+# as wheels and are not individually pinned (the tool version is).
+FROM python:3.12-slim
+ARG ST_VERSION=4.33.4
+ARG ST_SHA256=6b9b2f17d12e6474d5a53d8a61d0d8e10620c259249cb30a2d7cf2cd6688b56d
+RUN set -eux; \
+    pip download --no-deps --no-binary :all: "schemathesis==${ST_VERSION}" -d /tmp/pkg; \
+    echo "${ST_SHA256}  /tmp/pkg/schemathesis-${ST_VERSION}.tar.gz" | sha256sum -c -; \
+    pip install --no-cache-dir "/tmp/pkg/schemathesis-${ST_VERSION}.tar.gz"; \
+    rm -rf /tmp/pkg /root/.cache; \
+    schemathesis --version
+# Run as an unprivileged user; the pack also passes --user and --cap-drop ALL.
+RUN useradd -m -u 1000 st
+USER st
+WORKDIR /work
+ENTRYPOINT []
+CMD ["schemathesis", "--version"]
