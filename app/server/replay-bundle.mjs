@@ -3,18 +3,13 @@
 // proveFindings stores the snapshot on the proof, and the run record keeps that
 // proof. The normalized finding the page renders does not carry the file bytes
 // (findings.mjs rebuilds a view of the proof), so the bundle reads the raw run
-// file for the snapshot, the request script, and the pinned evidence.
+// file for the snapshot and the request script.
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
-import { buildReplayBundle } from "../../spike/lib/replay-bundle.mjs"
+import { buildReplayBundle, bundleRefusal } from "../../spike/lib/replay-bundle.mjs"
+import { resultsDir } from "./findings.mjs"
 
-export { buildReplayBundle }
-
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-// Same directory the run record is written to. TOUCHSTONE_RESULTS_DIR is how
-// tests point this at a throwaway folder; the default matches runs.mjs.
-const resultsDir = () => process.env.TOUCHSTONE_RESULTS_DIR || path.resolve(HERE, "../../spike/results/agent")
+export { buildReplayBundle, bundleRefusal }
 
 // The raw replay for one finding id (`<runId>` or `<runId>.<n>`). Null when
 // that run file is not on disk. Missing snapshot fields stay null so the zip

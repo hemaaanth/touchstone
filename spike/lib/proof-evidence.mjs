@@ -81,9 +81,8 @@ export async function proveFindings(ws, found, events, log = () => {}, { detecto
     try { proof = await confirmEvidence(pinned, finding.evidence, detectors); } catch { proof = failed(); }
     log(`Evidence replay: ${proof.status}`);
     if (proof.status === "pass") {
-      // Keep the pinned bytes with the proof. The workspace, and snapshot.json
-      // in it, is deleted after record. The detector itself is pack code and is
-      // not copied; the bundle says so.
+      // Keep the pin and the captured file names with the proof, never the
+      // file text: the snapshot is raw target files and may hold secrets.
       let replay = null;
       try { replay = evidenceReplay(pinned); } catch { replay = null; }
       out.push({ ...finding, proof: replay ? { ...proof, replay } : proof, proven: true });

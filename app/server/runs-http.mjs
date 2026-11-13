@@ -7,7 +7,7 @@
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, namesLocalPath } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
 import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
-import { buildReplayBundle, loadRecordedReplay } from "./replay-bundle.mjs"
+import { buildReplayBundle, bundleRefusal, loadRecordedReplay } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive, GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, settingsWriteRefusal } from "./settings.mjs"
 
@@ -190,6 +190,11 @@ export async function handleFindings(req, res) {
       const slug = String(id).replace(/[^\w.-]+/g, "-")
       if (format === "bundle" || format === "zip") {
         const recorded = loadRecordedReplay(id)
+        const refused = bundleRefusal({ finding, recorded })
+        if (refused) {
+          send(res, 409, { error: refused })
+          return true
+        }
         const zip = buildReplayBundle({ finding, recorded })
         res.statusCode = 200
         res.setHeader("content-type", "application/zip")

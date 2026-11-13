@@ -8,7 +8,8 @@
 // sources, foundry.toml, the proof JSON, fork parameters, and a README whose
 // one command reruns the proof from inside the unzipped folder.
 //
-// Secrets never go in. Provider keys and bearer tokens are replaced with
+// An evidence finding gets no zip (bundleRefusal): its snapshot is raw target
+// files. Secrets never go in. Provider keys and bearer tokens are replaced with
 // placeholders. A file that is itself a key (a pem, an env file, a cloud
 // credential) is left out and named in the README.
 import { crc32 } from "node:zlib";
@@ -238,29 +239,32 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
   return replay;
 }
 
-// The pinned snapshot, as bytes a judge can hash. Scrubbing a secret changes
-// the bytes, so the recorded hash will not match; `scrubbed` says so.
+// What an evidence proof keeps for a later export: the pin and the names of
+// the captured files. Never the file text. A snapshot holds raw target files
+// (.env, hardhat configs, keys), and no redaction layer strips them yet.
+const MAX_LISTED = 2000;
 export function evidenceReplay(pinned) {
-  const raw = JSON.stringify(pinned?.snapshot ?? null);
-  if (raw.length > MAX_TOTAL) {
-    return {
-      version: 1,
-      kind: "evidence",
-      snapshotHash: pinned?.snapshotHash ?? null,
-      scrubbed: false,
-      files: [],
-      omitted: [{ path: "snapshot.json", reason: "snapshot is larger than the bundle cap" }],
-    };
-  }
-  const text = scrubReplayText(raw);
+  const f = pinned?.snapshot?.files;
+  const names = Array.isArray(f)
+    ? f.map((x) => (typeof x === "string" ? x : x?.path ?? x?.file)).filter((x) => typeof x === "string")
+    : f && typeof f === "object" ? Object.keys(f) : [];
   return {
-    version: 1,
+    version: 2,
     kind: "evidence",
     snapshotHash: pinned?.snapshotHash ?? null,
-    scrubbed: text !== raw,
-    files: [{ path: "snapshot.json", text }],
-    omitted: text !== raw ? [{ path: "snapshot.json", reason: "provider keys and bearer tokens were replaced; sha256sum will not match the recorded pin" }] : [],
+    snapshotFiles: names.slice(0, MAX_LISTED),
+    snapshotFileCount: names.length,
   };
+}
+
+const EVIDENCE_REFUSAL = "An evidence finding has no replay bundle yet. Its pinned snapshot holds raw files from the target, and no redaction layer strips secrets from them. The report's snapshotHash is the proof.";
+
+// Why this finding gets no zip, or null when it gets one.
+export function bundleRefusal({ finding, recorded } = {}) {
+  const proof = recorded?.proof || finding?.proof || null;
+  const replay = recorded?.replay || proof?.replay || null;
+  const kind = replay?.kind || proof?.kind || finding?.proofKind || "forge";
+  return kind === "evidence" ? EVIDENCE_REFUSAL : null;
 }
 
 function scrubValue(value, key = "") {
@@ -290,7 +294,6 @@ function proofJson(proof, replay) {
       contract: replay.contract || null,
       test: replay.test || null,
       omitted: replay.omitted || [],
-      scrubbed: Boolean(replay.scrubbed),
     };
   }
   return JSON.stringify(body, null, 2) + "\n";
@@ -417,27 +420,6 @@ No provider key and no bearer token is included. A token the script sent is ${be
 `;
 }
 
-function evidenceReadme({ title, replay, hash }) {
-  const have = (replay?.files || []).some((f) => f.path === "snapshot.json");
-  const command = have ? "sha256sum snapshot.json" : null;
-  const pin = hash ? `The run recorded \`snapshotHash\` \`${hash}\`.` : "The run did not record a snapshot hash.";
-  const match = !have
-    ? "The pinned snapshot bytes were not kept with this finding. The workspace is deleted after record, and this run stored only the hash, so the check cannot be rerun from this folder."
-    : replay?.scrubbed
-      ? `${pin} Provider keys and bearer tokens were removed from \`snapshot.json\`, so the hash of this file will not equal the recorded pin.`
-      : `${pin} The command below hashes \`snapshot.json\`. It must equal that pin.`;
-  return `# Replay this finding
-
-**${title || "Finding"}** · Pinned evidence
-
-${match}
-
-## What cannot be bundled
-
-The detector that interprets the snapshot is pack code. It is not in this zip, so the check itself cannot be re-executed here. ${have ? "The command only confirms the bytes still match the pin." : "What this folder can show is the check name and the hash in `proof.json`."}
-${fence(command)}${omittedList(replay?.omitted)}`;
-}
-
 function pushFile(entries, name, text) {
   const path = zipPath(name);
   if (!path || entries.some((e) => e.name === path)) return;
@@ -482,23 +464,15 @@ function httpBundle({ finding, recorded, proof }) {
   return zipStore(entries);
 }
 
-function evidenceBundle({ finding, replay, proof }) {
-  const hash = replay?.snapshotHash || proof?.snapshotHash || finding?.evidence?.snapshotHash || null;
-  const entries = [];
-  pushFile(entries, "README.md", evidenceReadme({ title: finding?.title, replay, hash }));
-  pushFile(entries, "proof.json", proofJson({ ...(proof || {}), snapshotHash: hash }, replay));
-  for (const f of replay?.files || []) pushFile(entries, f.path, f.text);
-  return zipStore(entries);
-}
-
 // Zip bytes for one finding. `recorded` is the raw run row (replay snapshot,
 // request script, proof). `finding` is the normalized finding the report uses.
 // Either may be missing fields; the zip says what it could not include.
 export function buildReplayBundle({ finding, recorded } = {}) {
+  const refused = bundleRefusal({ finding, recorded });
+  if (refused) throw new Error(refused);
   const proof = recorded?.proof || finding?.proof || null;
   const replay = recorded?.replay || proof?.replay || null;
   const kind = replay?.kind || proof?.kind || finding?.proofKind || "forge";
   if (kind === "http") return httpBundle({ finding, recorded, proof });
-  if (kind === "evidence") return evidenceBundle({ finding, replay, proof });
   return forgeBundle({ finding, replay, proof });
 }
