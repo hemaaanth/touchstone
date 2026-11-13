@@ -34,6 +34,21 @@ export function dropOnOwnScroll(containers: readonly EventTarget[], drop: () => 
   }
 }
 
+// The pill is display-only, so a wheel over its portion outside the list
+// would normally scroll the chat underneath. Route only that portion back to
+// the list; its own scroll listener then closes the pill. Inside the list,
+// leave the browser's native wheel handling alone.
+export function routePillWheel(e: WheelEvent, pill: DOMRect, list: HTMLElement): boolean {
+  if (e.defaultPrevented || e.ctrlKey || list.contains(e.target as Node) ||
+      e.clientX < pill.left || e.clientX >= pill.right || e.clientY < pill.top || e.clientY >= pill.bottom) return false
+  const line = e.deltaMode === 1 ? parseFloat(getComputedStyle(list).lineHeight) || 16 : 1
+  const x = e.deltaMode === 2 ? list.clientWidth : line
+  const y = e.deltaMode === 2 ? list.clientHeight : line
+  e.preventDefault()
+  list.scrollBy({ left: e.deltaX * x, top: e.deltaY * y })
+  return true
+}
+
 // A tap outside that closed the pill does nothing else: the click that ends
 // that tap is stopped before it reaches what lies under the finger. Call it on
 // the pointerdown; it stops one click, until that pointer goes up (or is

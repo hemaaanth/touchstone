@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
 import { createPortal } from "react-dom"
 import { animate, motion, useMotionValue, useReducedMotion, useTransform, type MotionValue } from "motion/react"
 import { cn } from "cn"
@@ -17,7 +17,7 @@ import {
   restWidth,
   type OpenLayout,
 } from "@/lib/module-dots-layout"
-import { dropOnOwnScroll, mayHoverOpen, noteScroll, swallowTapClick } from "@/lib/module-dots-rules"
+import { dropOnOwnScroll, mayHoverOpen, noteScroll, routePillWheel, swallowTapClick } from "@/lib/module-dots-rules"
 
 // A run's modules as one mark that grows. At rest it is a small stack with a
 // dot for every module, in the module's own colour (src/lib/module-colors.ts)
@@ -27,9 +27,9 @@ import { dropOnOwnScroll, mayHoverOpen, noteScroll, swallowTapClick } from "@/li
 // beside it. Closing is the same movement backwards. Nothing is drawn twice:
 // while the pill is out, the stack in the row is empty.
 //
-// The pill only shows; it takes no pointer events. A wheel over it scrolls the
-// list beneath, and a click on it reaches what lies under it. It keeps the
-// mark's left edge and its vertical centre, and lies over whatever is to the
+// The pill only shows; it takes no pointer events. A wheel over its portion
+// beyond the list routes back to that list; clicks reach what lies under it.
+// It keeps the mark's left edge and its vertical centre, and lies over the
 // right (in the sidebar, past the rail), so it lives in a portal, outside the
 // list's clip, and the row's layout never changes. It is at most MAX_OPEN_W
 // wide, with balanced lines, and moves left only when not even a short pill
@@ -100,6 +100,7 @@ export function ModuleDots({
   // Set while the pill is out: open, or on its way back.
   const [anchor, setAnchor] = useState<Anchor | null>(null)
   const markRef = useRef<HTMLSpanElement>(null)
+  const pillRef = useRef<HTMLDivElement>(null)
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef(false)
   // Why it is open: the pointer is on the mark, the mark has keyboard focus,
@@ -172,15 +173,25 @@ export function ModuleDots({
       if (e.pointerType !== "mouse") swallowTapClick(window)
     }
     const onDrop = () => live.current.drop()
+    const onWheel = (e: WheelEvent) => {
+      const mark = markRef.current
+      const pill = pillRef.current
+      if (!mark || !pill || underLayer(mark)) return
+      const list = lists.current.find((c): c is HTMLElement =>
+        c instanceof HTMLElement && (c.scrollHeight > c.clientHeight || c.scrollWidth > c.clientWidth))
+      if (list) routePillWheel(e, pill.getBoundingClientRect(), list)
+    }
     const stopScroll = dropOnOwnScroll(lists.current, onDrop)
     window.addEventListener("keydown", onKey)
     window.addEventListener("pointerdown", onDown, true)
+    window.addEventListener("wheel", onWheel, { capture: true, passive: false })
     window.addEventListener("contextmenu", onDrop, true)
     window.addEventListener("resize", onDrop)
     return () => {
       stopScroll()
       window.removeEventListener("keydown", onKey)
       window.removeEventListener("pointerdown", onDown, true)
+      window.removeEventListener("wheel", onWheel, true)
       window.removeEventListener("contextmenu", onDrop, true)
       window.removeEventListener("resize", onDrop)
     }
@@ -252,7 +263,7 @@ export function ModuleDots({
       </span>
       {anchor
         ? createPortal(
-            <Pill modules={modules} anchor={anchor} open={open} reduce={reduce} onClosed={() => setAnchor(null)} />,
+            <Pill modules={modules} anchor={anchor} open={open} reduce={reduce} pillRef={pillRef} onClosed={() => setAnchor(null)} />,
             document.body,
           )
         : null}
@@ -284,12 +295,14 @@ function Pill({
   anchor,
   open,
   reduce,
+  pillRef,
   onClosed,
 }: {
   modules: Module[]
   anchor: Anchor
   open: boolean
   reduce: boolean
+  pillRef: RefObject<HTMLDivElement | null>
   onClosed: () => void
 }) {
   const measureRef = useRef<HTMLDivElement>(null)
@@ -330,6 +343,7 @@ function Pill({
 
   return (
     <motion.div
+      ref={pillRef}
       data-slot="module-dots-pill"
       data-open={open || undefined}
       style={{ left, top, width, height }}

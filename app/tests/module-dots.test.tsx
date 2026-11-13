@@ -17,7 +17,7 @@ import {
   pillMaxWidth,
   restWidth,
 } from "../src/lib/module-dots-layout"
-import { SCROLL_QUIET, dropOnOwnScroll, mayHoverOpen, noteScroll, swallowTapClick } from "../src/lib/module-dots-rules"
+import { SCROLL_QUIET, dropOnOwnScroll, mayHoverOpen, noteScroll, routePillWheel, swallowTapClick } from "../src/lib/module-dots-rules"
 
 // A run's modules as one mark: a dot for every module at rest, in the server's
 // module order; open, the same dots with their names, once each.
@@ -173,6 +173,41 @@ describe("the open pill's lines", () => {
 
 describe("what closes it, and when hover may open it", () => {
   const ev = (type: string) => new Event(type, { cancelable: true })
+  test("wheel over the visible pill beyond the list routes to that list, but outside or over the list stays native", () => {
+    const pill = { left: 206, right: 729, top: 64, bottom: 84 } as DOMRect
+    const inList = new EventTarget()
+    const inChat = new EventTarget()
+    const moves: ScrollToOptions[] = []
+    const list = {
+      contains: (target: EventTarget) => target === inList,
+      scrollBy: (delta: ScrollToOptions) => moves.push(delta),
+      clientHeight: 196,
+      clientWidth: 256,
+    } as unknown as HTMLElement
+    const wheel = (target: EventTarget, x: number, y: number, deltaY = 120, deltaMode = 0) => {
+      const e = Object.assign(ev("wheel"), { clientX: x, clientY: y, deltaX: 0, deltaY, deltaMode }) as WheelEvent
+      target.dispatchEvent(e)
+      return e
+    }
+    const acrossBoundary = wheel(inChat, 310, 76)
+    expect(routePillWheel(acrossBoundary, pill, list)).toBe(true)
+    expect(acrossBoundary.defaultPrevented).toBe(true)
+    expect(moves).toEqual([{ left: 0, top: 120 }])
+    const sidebarSegment = wheel(inList, 210, 76)
+    expect(routePillWheel(sidebarSegment, pill, list)).toBe(false)
+    expect(sidebarSegment.defaultPrevented).toBe(false)
+    const outside = wheel(inChat, 310, 100)
+    expect(routePillWheel(outside, pill, list)).toBe(false)
+    expect(outside.defaultPrevented).toBe(false)
+    expect(moves).toHaveLength(1)
+    const page = wheel(inChat, 310, 76, -1, 2)
+    expect(routePillWheel(page, pill, list)).toBe(true)
+    expect(moves[1]).toEqual({ left: 0, top: -196 })
+    const zoom = wheel(inChat, 310, 76)
+    Object.assign(zoom, { ctrlKey: true })
+    expect(routePillWheel(zoom, pill, list)).toBe(false)
+    expect(zoom.defaultPrevented).toBe(false)
+  })
   test("a scroll of another container (a live chat) does not drop the pill; its own list does", () => {
     const list = new EventTarget()
     const chat = new EventTarget()
