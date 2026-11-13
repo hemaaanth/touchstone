@@ -26,8 +26,8 @@ const workspaces = [];
 after(() => { for (const d of [store, ...workspaces]) rmSync(d, { recursive: true, force: true }); });
 
 // What the fake tools answer. Each test sets these.
-let zone, found, web, crawlOut, calls, ws;
-beforeEach(() => { zone = {}; found = []; web = {}; crawlOut = {}; calls = []; });
+let zone, found, web, crawlOut, calls, caa, caaCalls, ws;
+beforeEach(() => { zone = {}; found = []; web = {}; crawlOut = {}; calls = []; caa = {}; caaCalls = []; });
 const PUBLIC = '93.184.216.34';
 const rows = list => list.map(r => JSON.stringify(r) + '\n').join('');
 const listOf = cmd => {
@@ -59,12 +59,23 @@ mock.module('../lib/wrap.mjs', { exports: { ...realWrap, runTool: async opts => 
   const input = name === 'subfinder' || name === 'jsluice' ? [] : listOf(opts.cmd);
   calls.push({ name, cmd: opts.cmd, network: opts.network, input });
   return { code: 0, stderr: '', timedOut: false, stdout: answers[name](opts.cmd, input) };
+}, runDocker: async (args) => {
+  // The only direct-docker call the capture makes is the CAA drill query.
+  if (!args.includes('drill')) throw new Error('unexpected runDocker call ' + args.join(' '));
+  const name = args[args.indexOf('CAA') + 1];
+  caaCalls.push({ name, network: args[args.indexOf('--network') + 1], args });
+  const a = caa[name] ?? caa['*'];            // undefined for an unconfigured name
+  if (a === 'fail') return { code: 0, stdout: ';; ->>HEADER<<- rcode: SERVFAIL\n', stderr: '', timedOut: false };
+  const recs = a === 'absent' ? [] : Array.isArray(a) ? a : ['0 issue "letsencrypt.org"'];
+  const answer = ';; ->>HEADER<<- rcode: NOERROR\n;; ANSWER SECTION:\n' + recs.map(r => name + '.\t60\tIN\tCAA\t' + r).join('\n') + '\n';
+  return { code: 0, stdout: answer, stderr: '', timedOut: false };
 } } });
 // The lab test needs no Docker network: the --internal check is its own test (domains-live).
 mock.module('../packs/domains/labctl.mjs', { exports: { ...realLab, assertInternal: () => {} } });
 
 const { ensureImage } = await import('../packs/domains/checks.mjs');
 const { assertReach, captureDomain, crawlScope, katanaArgs, PORTS, WORDLIST } = await import('../packs/domains/live.mjs');
+const { caaLeads } = await import('../packs/domains/tls.mjs');
 const { coverageOf } = await import('../packs/domains/pack.mjs');
 const { prepassView } = await import('../lib/prepass-view.mjs');
 const { addLiveScope } = await import('../lib/scopes-store.mjs');
@@ -425,7 +436,59 @@ test('a live run with no resolver does not run checkdmarc or DNSViz, and says wh
   assert(call('dnsviz'), 'the lab runs DNSViz');
 });
 
-// F2. An exact-host grant skips subdomain discovery. The run view says so.
+test('CAA is asked through the granted resolver, not the TLS scanner, and no record is a LOW lead', async () => {
+  zone = { 'example.com': { a: [PUBLIC] } };
+  caa = { 'example.com': 'absent' };
+  const snapshot = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  // drill asked the granted resolver directly, on the run's network, for the registrable name.
+  assert.deepEqual(caaCalls.map(c => c.name), ['example.com']);
+  const q = caaCalls[0].args;
+  assert.equal(q[q.indexOf('--entrypoint') + 1], 'drill');
+  assert.equal(q.includes('CAA'), true);
+  assert.equal(q.at(-1), '@1.1.1.1');
+  assert.equal(q[q.indexOf('--network') + 1], 'bridge');
+  // The drill output is stored, and the LOW lead replays from it.
+  assert.match(snapshot.caa.raw, /^[0-9a-f]{64}$/);
+  assert.deepEqual(caaLeads(snapshot).map(l => [l.check, l.severity, l.where]), [['tls-dns_caarecord', 'low', 'example.com']]);
+  assert.equal(snapshot.discovery.coverage.find(c => c.engine === 'caa').leads, 1);
+
+  // A CAA record present → no lead, the row still ran.
+  caa = { 'example.com': ['0 issue "letsencrypt.org"'] };
+  const ok = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(caaLeads(ok), []);
+  assert.deepEqual([ok.discovery.coverage.find(c => c.engine === 'caa').status, ok.discovery.coverage.find(c => c.engine === 'caa').leads], ['ran', 0]);
+
+  // The query could not be asked (SERVFAIL) → a gap with the reason, never a lead.
+  caa = { 'example.com': 'fail' };
+  const gap = await capture('example.com', live(['example.com'], { resolver: '1.1.1.1' }));
+  assert.equal(gap.caa, undefined);
+  const row = gap.discovery.coverage.find(c => c.engine === 'caa');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /^CAA not checked:/);
+  assert.deepEqual(caaLeads(gap), []);
+
+  // No resolver → CAA is a gap and drill is never run.
+  caaCalls = [];
+  const noR = await capture('example.com', live(['example.com']));
+  assert.equal(noR.discovery.coverage.find(c => c.engine === 'caa').status, 'unavailable');
+  assert.equal(caaCalls.length, 0);
+});
+
+test('CAA walks the parents up to the registrable domain, stopping at the first record', async () => {
+  zone = { 'app.example.com': { a: [PUBLIC] } };
+  // The host has no CAA, but the registrable domain does: no lead.
+  caa = { 'app.example.com': 'absent', 'example.com': ['0 issue "letsencrypt.org"'] };
+  const ok = await capture('app.example.com', live(['app.example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(caaCalls.map(c => c.name), ['app.example.com', 'example.com']);
+  assert.deepEqual(caaLeads(ok), []);
+  // Neither level has a record: the LOW lead, keyed on the captured root.
+  caaCalls = [];
+  caa = { 'app.example.com': 'absent', 'example.com': 'absent' };
+  const miss = await capture('app.example.com', live(['app.example.com'], { resolver: '1.1.1.1' }));
+  assert.deepEqual(caaLeads(miss).map(l => l.where), ['app.example.com']);
+});
+
+// F2. An exact-host grant skips subdomain discovery.// F2. An exact-host grant skips subdomain discovery. The run view says so.
 test('an exact-host grant says that subdomain discovery was skipped, and names the "*." entry', async () => {
   zone = { 'example.com': { a: [PUBLIC] } };
   const snapshot = await capture('example.com', live(['example.com']));

@@ -87,7 +87,8 @@ test("TOUCHSTONE_DNS_RESOLVER overrides the resolver when it is a public address
 });
 
 test("a private, loopback or bad resolver override is refused for a normal live target", () => {
-  for (const bad of ["10.0.0.53", "127.0.0.1", "169.254.169.254", "not-an-ip"]) {
+  // n4: a bare IP only. URL-ish or port-suffixed forms are refused, not read as public.
+  for (const bad of ["10.0.0.53", "127.0.0.1", "169.254.169.254", "not-an-ip", "1.1.1.1:53", "1.1.1.1#53", "https://1.1.1.1", "tls://1.1.1.1", "1.1.1", "010.0.0.1"]) {
     process.env.TOUCHSTONE_DNS_RESOLVER = bad;
     // No resolver reaches the config, so the DNS tools gap (live.mjs), not a private resolver.
     assert.equal("resolver" in cfgOf(build(live("app.example.com", "domains"))).reach, false, bad);

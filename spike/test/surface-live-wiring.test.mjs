@@ -51,6 +51,11 @@ mock.module('../lib/wrap.mjs', { exports: { ...real, runTool: async opts => {
   if (!name) return real.runTool(opts);
   calls.push({ name, ...opts });
   return { stderr: '', timedOut: false, ...answers[name](opts) };
+}, runDocker: async (args) => {
+  // The domains prepass asks CAA with drill. Answer with a CAA record present, so no CAA lead.
+  if (!args.includes('drill')) return real.runDocker(args);
+  const name = args[args.indexOf('CAA') + 1];
+  return { code: 0, stdout: ';; ->>HEADER<<- rcode: NOERROR\n;; ANSWER SECTION:\n' + name + '.\t60\tIN\tCAA\t0 issue "letsencrypt.org"\n', stderr: '', timedOut: false };
 } } });
 // The capture loads grant-store, which reads the console token when it loads. Point it at
 // test values first, so no real token, grant or scope file is read (1h review F4).

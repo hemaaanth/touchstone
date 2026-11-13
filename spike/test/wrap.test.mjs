@@ -133,6 +133,8 @@ test("addHosts adds one --add-host per pair and a dead resolver, and checks its 
     [["x.com", "not-an-ip"]], [["x.com", "1.2.3.4 --privileged"]], [["x.com"]], ["x.com"], "x.com:1.2.3.4"]) {
     assert.throws(() => hostPins(bad), /addHosts/, JSON.stringify(bad));
   }
+  // A zone id parses as an IP (isIP accepts it) but is refused with a clear message.
+  assert.throws(() => hostPins([["x.com", "fe80::1%eth0"]]), /IPv6 zone id is not allowed/);
   // runTool puts the flags in the argv it runs.
   const dir = mkdtempSync(join(tmpdir(), "wrap-pins-"));
   const record = join(dir, "args");

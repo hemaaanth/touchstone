@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { runTool } from '../lib/wrap.mjs';
 import { pinSnapshot, replayEvidence, sha256 } from '../lib/proof-evidence.mjs';
 import { detectorsFor } from '../packs/domains/checks.mjs';
-import { captureTls, parseTestssl, testsslTargets, tlsLeads, TESTSSL } from '../packs/domains/tls.mjs';
+import { captureCaa, caaLeads, caaNames, caaVerdict, captureTls, parseCaaBlock, parseTestssl, testsslTargets, tlsLeads, TESTSSL } from '../packs/domains/tls.mjs';
 const real = readFileSync(new URL('../packs/domains/fixtures/testssl-example.com.json', import.meta.url), 'utf8');
 const lab = readFileSync(new URL('../packs/domains/fixtures/testssl-lab.json', import.meta.url), 'utf8');
 const endpoint = { origin: 'https://example.com', host: 'example.com', port: 443 };
@@ -96,6 +96,7 @@ test('testssl.sh always gets the checked address, and does not run without one',
   const run = async (engine, o) => { seen.push(o.cmd); opts.push(o); return { code: 1, stdout: '', stderr: 'stub', timedOut: false }; };
   await captureTls(run, null, [endpoint], () => '93.184.216.34');
   assert.deepEqual(seen[0].slice(-5), ['--nodns', 'none', '--ip', '93.184.216.34', endpoint.host + ':' + endpoint.port]);
+  assert.equal(seen[0].includes('-6'), false, 'no -6 for an IPv4 address');
   // The name is pinned to the same address inside the container, so a check that
   // uses the name (Winshock's curl) reaches that address too. The env is fixed.
   assert.deepEqual(opts[0].addHosts, [[endpoint.host, '93.184.216.34']]);
@@ -104,6 +105,8 @@ test('testssl.sh always gets the checked address, and does not run without one',
   seen.length = 0; opts.length = 0;
   await captureTls(run, null, [endpoint], () => '2606:2800:220:1::');
   assert.deepEqual(seen[0].slice(-3), ['--ip', '2606:2800:220:1::', endpoint.host + ':' + endpoint.port]);
+  // testssl.sh connects over IPv4 unless told -6, so an IPv6 address gets it.
+  assert(seen[0].includes('-6'), '-6 for an IPv6 address');
   assert.deepEqual(opts[0].addHosts, [[endpoint.host, '2606:2800:220:1::']]);
   // An IP literal host has no name to pin.
   opts.length = 0;
@@ -212,4 +215,85 @@ test('the pinned image scans example.com through runTool (TOUCHSTONE_LIVE=1)', {
     assert(evidence[0].scans[0].findings.length > 0);
     assert.match(TESTSSL, /@sha256:[0-9a-f]{64}$/);
   } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+
+// --- CAA (asked by the capture's own DNS, not the TLS scanner) ---
+const caaBlock = (name, recs, rcode = 'NOERROR') => ';; ->>HEADER<<- opcode: QUERY, rcode: ' + rcode + ', id: 1\n;; ANSWER SECTION:\n' + recs.map(r => name + '.\t60\tIN\tCAA\t' + r).join('\n') + '\n';
+const caaOutput = pairs => pairs.map(([n, recs, rcode]) => ';; TOUCHSTONE-CAA ' + n + '\n' + caaBlock(n, recs, rcode)).join('\n');
+
+test('caaNames walks from the granted name up to the registrable (two-label) domain', () => {
+  assert.deepEqual(caaNames('app.staging.example.com'), ['app.staging.example.com', 'staging.example.com', 'example.com']);
+  assert.deepEqual(caaNames('example.com'), ['example.com']);
+  assert.deepEqual(caaNames('localhost'), ['localhost']);
+  assert.deepEqual(caaNames(''), []);
+});
+
+test('parseCaaBlock reads the CAA records for the queried name, and marks a failed query', () => {
+  assert.deepEqual(parseCaaBlock(caaBlock('example.com', ['0 issue "letsencrypt.org"', '0 iodef "mailto:x@example.com"']), 'example.com'),
+    { ok: true, records: ['0 issue "letsencrypt.org"', '0 iodef "mailto:x@example.com"'] });
+  // NXDOMAIN still answers the CAA question: no record here.
+  assert.deepEqual(parseCaaBlock(caaBlock('example.com', [], 'NXDOMAIN'), 'example.com'), { ok: true, records: [] });
+  // SERVFAIL did not answer.
+  assert.deepEqual(parseCaaBlock(caaBlock('example.com', [], 'SERVFAIL'), 'example.com'), { ok: false, records: [] });
+  // A record for another name is ignored.
+  assert.deepEqual(parseCaaBlock(caaBlock('other.example.com', ['0 issue "ca"']), 'example.com'), { ok: true, records: [] });
+});
+
+test('caaVerdict returns the first level with a record, no record, or incomplete', () => {
+  assert.deepEqual(caaVerdict(caaOutput([['app.example.com', []], ['example.com', ['0 issue "ca"']]])), { present: true, name: 'example.com', records: ['0 issue "ca"'] });
+  assert.deepEqual(caaVerdict(caaOutput([['app.example.com', []], ['example.com', []]])), { present: false });
+  // A failed query before any record is incomplete.
+  assert.deepEqual(caaVerdict(caaOutput([['app.example.com', [], 'SERVFAIL'], ['example.com', ['0 issue "ca"']]])), { incomplete: true, name: 'app.example.com' });
+});
+
+test('caaLeads makes the LOW lead only when no record exists, and replays from the stored output', () => {
+  const output = caaOutput([['example.com', []]]);
+  const snap = { root: 'example.com', caa: { domain: 'example.com', output, raw: sha256(output) } };
+  assert.deepEqual(caaLeads(snap).map(l => [l.check, l.severity, l.where]), [['tls-dns_caarecord', 'low', 'example.com']]);
+  // tlsLeads folds the CAA lead in.
+  assert.ok(tlsLeads(snap).some(l => l.check === 'tls-dns_caarecord'));
+  // A present record: no lead.
+  const present = caaOutput([['example.com', ['0 issue "ca"']]]);
+  assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output: present, raw: sha256(present) } }), []);
+  // A tampered store (hash mismatch) yields no lead, not a false one.
+  assert.deepEqual(caaLeads({ root: 'example.com', caa: { domain: 'example.com', output, raw: '0'.repeat(64) } }), []);
+  // No CAA evidence at all: no lead (the gap is a coverage row).
+  assert.deepEqual(caaLeads({ root: 'example.com' }), []);
+});
+
+test('captureCaa queries drill through the resolver and stores its output, or gaps', async () => {
+  const runs = [];
+  const run = async (args, opts) => { runs.push({ args, opts }); const name = args[args.indexOf('CAA') + 1]; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, name === 'example.com' ? [] : []) }; };
+  const res = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run });
+  assert.equal(runs[0].args[runs[0].args.indexOf('--entrypoint') + 1], 'drill');
+  assert.equal(runs[0].args.at(-1), '@1.1.1.1');
+  assert.equal(runs[0].args[runs[0].args.indexOf('--network') + 1], 'bridge');
+  assert.equal(res.present, false);
+  assert.match(res.record.raw, /^[0-9a-f]{64}$/);
+  // No resolver: a gap, and drill never runs.
+  const none = await captureCaa('example.com', { resolver: null, network: 'bridge', run: async () => { throw new Error('should not run'); } });
+  assert.equal(none.record, null);
+  assert.match(none.error, /no resolver/);
+  // A failed query: a gap.
+  const gap = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run: async (args) => ({ code: 0, timedOut: false, stderr: '', stdout: ';; ->>HEADER<<- rcode: SERVFAIL\n' }) });
+  assert.equal(gap.record, null);
+  assert.match(gap.error, /not checked|did not resolve/);
+});
+
+
+test('a bad pin fails one endpoint as a gap, not the whole capture (G1 n5)', async () => {
+  const good = { origin: 'https://ok.example.com', host: 'ok.example.com', port: 443 };
+  const bad = { origin: 'https://bad.example.com', host: 'bad.example.com', port: 443 };
+  // The bad endpoint throws (as runTool would when hostPins rejects a pin); the good one runs.
+  const run = async (engine) => { if (engine.includes('bad.example.com')) throw new Error('addHosts: not an IP address: zone%eth0'); return { code: 0, stderr: '', timedOut: false }; };
+  const res = await captureTls(run, null, [good, bad], () => '93.184.216.34');
+  // The capture completed: two entries, the bad one a gap with its own reason.
+  assert.equal(res.entries.length, 2);
+  const badEntry = res.entries.find(e => e.url === 'https://bad.example.com');
+  assert.match(badEntry.error, /the endpoint was not scanned: addHosts: not an IP address/);
+  // The good endpoint was reached (its own run did not throw); it gaps only on the missing file.
+  const goodEntry = res.entries.find(e => e.url === 'https://ok.example.com');
+  assert.ok('error' in goodEntry);
+  assert.doesNotMatch(String(goodEntry.error), /not an IP address/);
 });

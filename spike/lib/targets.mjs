@@ -56,6 +56,7 @@ import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeOutline, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
 import { reachHosts, allowsPrivate } from "./reach.mjs"
 import { ipKind } from "./grant-store.mjs"
+import { isIP } from "node:net"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -68,6 +69,9 @@ const DEFAULT_DNS_RESOLVER = "1.1.1.1"
 const PRIVATE_RESOLVER_KINDS = new Set(["private", "loopback", "link-local"])
 function liveResolver(target) {
   const raw = String(process.env.TOUCHSTONE_DNS_RESOLVER ?? DEFAULT_DNS_RESOLVER).trim()
+  // A bare IP only: ipKind normalizes URL-ish forms, so "1.1.1.1:53", "https://1.1.1.1"
+  // or "1.1.1" would otherwise read as public. isIP refuses them, so they gap.
+  if (!isIP(raw)) return null
   const kind = ipKind(raw)
   if (kind === "public") return raw
   if (PRIVATE_RESOLVER_KINDS.has(kind) && allowsPrivate(target)) return raw

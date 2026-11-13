@@ -55,6 +55,9 @@ export function hostPins(addHosts) {
   for (const pair of addHosts) {
     const [host, ip] = Array.isArray(pair) ? pair : [];
     if (typeof host !== "string" || !HOST_NAME.test(host) || isIP(host)) throw new Error("addHosts: not a plain host name: " + String(host).slice(0, 80));
+    // A zone id (fe80::1%eth0) names a host interface, which means nothing inside a
+    // container; isIP accepts it, so refuse it here with a clear message.
+    if (typeof ip === "string" && ip.includes("%")) throw new Error("addHosts: an IPv6 zone id is not allowed in a pinned address: " + ip.slice(0, 80));
     if (typeof ip !== "string" || !isIP(ip)) throw new Error("addHosts: not an IP address: " + String(ip).slice(0, 80));
     out.push("--add-host", host + ":" + ip);
   }

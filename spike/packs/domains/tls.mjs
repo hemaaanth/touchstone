@@ -4,7 +4,9 @@
 // new handshake.
 import { isIP } from 'node:net';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { sha256 } from '../../lib/proof-evidence.mjs';
+import { runDocker } from '../../lib/wrap.mjs';
 import { readOutputFile, readStored, storedRecord } from './stored.mjs';
 export const TESTSSL = 'drwetter/testssl.sh:3.2@sha256:64bab3c1fd8eee440f68d5e020dd633c1f2d375fe0ae593bdfec2725110a7e29';
 // Severities testssl grades. OK and INFO carry no finding a person must read.
@@ -77,7 +79,14 @@ export async function captureTls(run, ws, targets, ipOf) {
     const gap = error => { runs.push({ engine, error }); entries.push({ url: endpoint.origin, host: endpoint.host, port: Number(endpoint.port), error }); errors.push(error); };
     if (!ip) { gap('Not run: no checked address for ' + endpoint.host + '. testssl.sh would look the name up again by itself.'); continue; }
     const pin = isIP(endpoint.host) ? [] : [[endpoint.host, ip]];
-    const result = await run(engine, { image: TESTSSL, env: TESTSSL_ENV, addHosts: pin, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--nodns', 'none', '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 });
+    // testssl.sh connects over IPv4 unless told otherwise, so an IPv6 checked
+    // address needs -6. The name stays pinned to that one address.
+    const family = isIP(ip) === 6 ? ['-6'] : [];
+    // A bad pin (an address or name our own validation refuses) fails this one
+    // endpoint as a gap, never the whole capture.
+    let result;
+    try { result = await run(engine, { image: TESTSSL, env: TESTSSL_ENV, addHosts: pin, cmd: ['--jsonfile-pretty', file, '--severity', 'LOW', '--quiet', '--warnings', 'off', '--color', '0', '--connect-timeout', '10', '--openssl-timeout', '10', '--nodns', 'none', ...family, '--ip', ip, endpoint.host + ':' + endpoint.port], timeoutMs: 240000 }); }
+    catch (error) { gap('the endpoint was not scanned: ' + String(error?.message ?? error).slice(0, 160)); continue; }
     if (result.code || result.timedOut) { gap(result.stderr.trim().slice(-160) || (result.timedOut ? 'timed out' : 'exit code ' + result.code)); continue; }
     let text;
     try { text = readOutputFile(join(ws, '.live', 'tls-' + i + '.json')); }
@@ -89,6 +98,81 @@ export async function captureTls(run, ws, targets, ipOf) {
     } catch (error) { gap(error.message); }
   }
   return { runs, entries, evidence, errors };
+}
+
+// CAA evidence. testssl.sh asks DNS for the CAA record, but the capture runs it
+// with --nodns none (so a rebind cannot move its connection). So the capture asks
+// the CAA question itself, through the granted resolver, with drill (it ships in
+// the testssl image). A domain with no CAA record at any level up to the
+// registrable domain lets any CA issue for it: a LOW lead, the same testssl made.
+export const DRILL_IMAGE = TESTSSL;
+
+// The names to ask: the granted name and each parent up to the registrable domain
+// (the last two labels). RFC 8659's issuer walk, bounded. Most specific first.
+export function caaNames(domain) {
+  const labels = String(domain ?? '').split('.').filter(Boolean);
+  const out = [];
+  for (let i = 0; i + 2 <= labels.length; i++) out.push(labels.slice(i).join('.'));
+  return out.length ? out : (labels.length ? [labels.join('.')] : []);
+}
+
+// One drill answer block to its CAA records for `name`. ok is false only when the
+// query did not resolve (SERVFAIL, REFUSED, a timeout): NOERROR and NXDOMAIN both
+// answer the CAA question (no record here). Records are the raw CAA rdata strings.
+export function parseCaaBlock(block, name) {
+  const rcode = /rcode:\s*([A-Za-z]+)/.exec(String(block ?? ''))?.[1]?.toUpperCase();
+  const ok = rcode === 'NOERROR' || rcode === 'NXDOMAIN';
+  const fq = String(name).toLowerCase().replace(/\.*$/, '') + '.';
+  const records = [];
+  for (const line of String(block ?? '').split('\n')) {
+    const m = /^(\S+)\s+\d+\s+IN\s+CAA\s+(.+?)\s*$/.exec(line);
+    if (m && m[1].toLowerCase() === fq) records.push(m[2].trim().slice(0, 200));
+  }
+  return { ok, records };
+}
+
+// The stored drill output is one block per name, each after a "TOUCHSTONE-CAA <name>"
+// marker. The walk returns the first level that has a CAA record (present), or marks
+// the answer incomplete when a query before any record did not resolve.
+export function caaVerdict(output) {
+  const parts = String(output ?? '').split(/^;; TOUCHSTONE-CAA (.+)$/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    const name = parts[i].trim(), { ok, records } = parseCaaBlock(parts[i + 1] ?? '', name);
+    if (records.length) return { present: true, name, records };
+    if (!ok) return { incomplete: true, name };
+  }
+  return { present: false };
+}
+
+// `run` is runDocker (a test stand-in replaces it). drill asks the granted resolver
+// directly (@resolver), so no name of the target is resolved and no page is fetched.
+// Returns { record } to store, with present, or { error } so the caller gaps the row.
+export async function captureCaa(domain, { resolver, network, user = process.getuid() + ':' + process.getgid(), run = runDocker, timeoutMs = 20000 } = {}) {
+  const names = caaNames(domain);
+  if (!resolver) return { record: null, present: null, error: 'no resolver, so the CAA question was not asked' };
+  if (!names.length) return { record: null, present: null, error: 'no registrable name to ask CAA for' };
+  const blocks = [];
+  for (const name of names) {
+    const cname = 'touchstone-tool-' + randomBytes(6).toString('hex');
+    const args = ['run', '--rm', '--pull=never', '--network', network, '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '512', '--memory', '512m', '--user', user, '--name', cname, '--entrypoint', 'drill', DRILL_IMAGE, 'CAA', name, '@' + resolver];
+    const res = await run(args, { timeoutMs, name: cname, owner: user });
+    if (res.timedOut || res.code) return { record: null, present: null, error: 'the CAA query for ' + name + ' did not run: ' + (String(res.stderr ?? '').trim().slice(-120) || (res.timedOut ? 'timed out' : 'exit code ' + res.code)) };
+    blocks.push(';; TOUCHSTONE-CAA ' + name + '\n' + String(res.stdout ?? ''));
+  }
+  const output = blocks.join('\n');
+  const verdict = caaVerdict(output);
+  if (verdict.incomplete) return { record: null, present: null, error: 'the CAA answer for ' + verdict.name + ' did not resolve, so CAA was not checked' };
+  return { record: { domain, ...storedRecord(output) }, present: verdict.present === true };
+}
+
+// A CAA lead from the stored drill output. No record anywhere up to the registrable
+// domain is a LOW lead. The output is re-parsed, so replay reads the pin.
+export function caaLeads(snapshot) {
+  const root = String(snapshot.root ?? '');
+  if (!snapshot.caa) return [];
+  const read = readStored(snapshot.caa, output => caaVerdict(output));
+  if (read.error || read.evidence.present !== false) return [];
+  return [{ check: 'tls-dns_caarecord', where: root, severity: 'low', description: 'No CAA record is published for ' + root + ' or its parents up to the registrable domain, so any certificate authority may issue a certificate for the name. The capture asked the granted resolver, not the TLS scanner. This is a configuration gap, not proof of mis-issuance.' }];
 }
 
 const hashOf = entry => /^[0-9a-f]{64}$/.test(String(entry?.raw ?? '')) ? 'Tool output sha256: ' + String(entry.raw).slice(0, 12) + '. ' : '';
@@ -111,7 +195,7 @@ export function tlsLeads(snapshot) {
     const why = coverage?.status === 'unavailable'
       ? ' testssl.sh did not run: ' + String(coverage.reason ?? 'no reason given').slice(0, 160)
       : ' The snapshot was captured without a TLS handshake scan.';
-    return [{ check: 'tls-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no TLS handshake evidence, so this run does not cover the TLS configuration.' + why + ' This does not prove the TLS is fine.' }];
+    return [{ check: 'tls-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no TLS handshake evidence, so this run does not cover the TLS configuration.' + why + ' This does not prove the TLS is fine.' }, ...caaLeads(snapshot)];
   }
   const leads = [];
   for (const stored of snapshot.tls) {
@@ -137,5 +221,5 @@ export function tlsLeads(snapshot) {
       });
     }
   }
-  return leads;
+  return [...leads, ...caaLeads(snapshot)];
 }
