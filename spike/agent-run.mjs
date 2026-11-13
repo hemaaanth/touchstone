@@ -25,7 +25,7 @@ import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { getTarget, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
+import { briefChange, getTarget, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
@@ -81,7 +81,9 @@ async function openHarness(db, ws, state) {
   // root agent and every fleet child start with them (targets.mjs scopeEnv).
   const system = pack.system(ws) + navText + scopeInstructions(process.env);
   const registry = createRegistry();
-  const fleet = createFleet({ system, costOf });
+  // A child that a follow-up reopens holds the brief of its spawn. The fleet
+  // gives it the current one with its next message (fleet.mjs createFleet).
+  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "" });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);

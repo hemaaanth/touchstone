@@ -1,5 +1,6 @@
 import { AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { createHash } from "node:crypto";
 import { event, withAgent } from "./event.mjs";
 import { watchCognition } from "./cognition.mjs";
 
@@ -35,7 +36,19 @@ export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first
 // FLEET=0 is a solo run: no fleet tools. FLEET=1 is a fleet run: the coordinator
 // must split the scope before it does pack work itself. Unset keeps the fleet
 // tools and leaves spawning to the model, for runs started before the choice.
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6 } = {}) {
+//
+// The scope brief. A child's instructions are set once, at its spawn, from
+// `system`, and they hold the brief of that moment (`brief`). The roster keeps
+// with each child the brief it was last given. A later worker can have another
+// brief: the operator changed it, and a follow-up reopened the run. A child
+// whose brief is not the worker's is told the change, once
+// (`briefChange(before, now)`, the text the coordinator gets):
+//   - a message to it carries the change (message_agent);
+//   - a child that goes back to work with no new message, because a restart cut
+//     its turn off, gets the change steered into that turn (Reporter).
+// A child from before the roster kept briefs gets `changed`: the change this
+// worker was told about, or nothing.
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "" } = {}) {
   if (process.env.FLEET === "0") return undefined;
   max = Number(max);
   if (!Number.isInteger(max) || max < 1) throw new Error("FLEET_MAX must be a positive integer.");
@@ -88,9 +101,19 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
         const watch = await observe(agent, ctx);
         event("agent-status", { agent: agent.id, id: agent.id, state: "working" });
         let status = "done", error, answer, final, finalTask;
+        let told = false;
         try {
           const child = await runtime.conversation(agent.conv, ctx);
           const submission = await child.submit({ type: "input", content: `[From ${from}] ${text}`, requestId: `fleet:${task.id}`, whenBusy: "steer" }, ctx);
+          // This task can be an older worker's: a restart cut the child's turn
+          // off, and the input above is the one it already has. If the child's
+          // brief is not this worker's, steer the change into the turn. The id
+          // names the brief, so a replay of this phase does not say it twice.
+          const note = briefNote((await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx))?.agents.find((a) => a.id === agent.id));
+          if (note) {
+            await child.submit({ type: "input", content: note, requestId: `fleet-brief:${task.id}:${createHash("sha256").update(brief).digest("hex").slice(0, 12)}`, whenBusy: "steer" }, ctx);
+            told = true;
+          }
           const settled = await submission.wait(ctx);
           await child.waitForIdle(ctx);
           if (settled.status !== "done") {
@@ -112,6 +135,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
         await runtime.commit(async (tx) => {
           const board = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
           const stored = board.agents.find((a) => a.id === agent.id);
+          // The change reached the child, so the child has this worker's brief now.
+          if (told) stored.brief = brief;
           const receipt = answer ?? `failed:${task.id}`;
           if (stored.reported.includes(receipt)) return { status: "running", checkpoint: { phase: "report" } };
           stored.reported.push(receipt);
@@ -140,6 +165,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
   });
   const background = { ownership: { kind: "conversation" }, background: true };
+  // What a child must be told about the brief: "" when it has this worker's.
+  const briefNote = (stored) => (stored?.brief === undefined ? changed : briefChange(stored.brief, brief));
 
   const spawn = defineTool({
     name: "spawn_agent", description: `Start one trusted child on one clear task. At most ${max} children per run. Use message_agent to retry an existing child.`,
@@ -158,7 +185,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
           tools: { remove: [spawn] },
           instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
         });
-        const agent = { id: who(child.id), conv: child.id, name, title: task, area, spawn: api.taskId, status: "working", reported: [] };
+        const agent = { id: who(child.id), conv: child.id, name, title: task, area, spawn: api.taskId, status: "working", reported: [], brief };
         board.agents.push(agent);
         board.jobs[api.taskId] = await tx.createTask(Reporter, { agent, text: task, from: C }, background);
         return { agent, fresh: true };
@@ -187,8 +214,12 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
       } else {
         await api.commit(async (tx) => {
           const current = await tx.doc(Fleet, ROOT_CONVERSATION_ID);
-          current.agents.find((a) => a.id === destination).status = "working";
-          current.jobs[api.taskId] = await tx.createTask(Reporter, { agent: target, text, from }, background);
+          const stored = current.agents.find((a) => a.id === destination);
+          stored.status = "working";
+          // A child whose brief is not this worker's reads the change with the message.
+          const note = briefNote(stored);
+          stored.brief = brief;
+          current.jobs[api.taskId] = await tx.createTask(Reporter, { agent: target, text: note ? `${text}\n\n${note}` : text, from }, background);
         }, ctx);
       }
       event("agent-message", { id: `m-${api.taskId}`, from, to: destination, text });
