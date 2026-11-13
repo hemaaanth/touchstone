@@ -113,7 +113,7 @@ timed-out control looks quiet. Two guards cover this. A zone is quiet only if
 run, a missing row, a `!ServFail` row or fewer than 3 controls make the zone
 unknown: its resolving rows are `no-control` and a gap lead names the zone.
 Second, if a zone has at least 20 generated names and more than 20% of them
-answer A or AAAA, the zone is a wildcard whatever the controls say. Its rows
+answer A, AAAA or MX, the zone is a wildcard whatever the controls say. Its rows
 are review-only and a `{wildcard: 'ratio', zones}` gap lead is raised.
 
 Capture then runs dnstwist offline once more and stores the sha256 and count

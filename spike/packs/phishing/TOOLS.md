@@ -57,7 +57,7 @@ Two checks guard the capture itself:
   unknown, and its rows are review-only. A snapshot with no control rows gives
   no `registered-lookalike` lead.
 - Wildcard ratio. If more than 20% of a zone's generated names (at least 20
-  names) answer A or AAAA, the zone is treated as a wildcard even with quiet
+  names) answer A, AAAA or MX, the zone is treated as a wildcard even with quiet
   controls. Real registrations are far rarer than that.
 - Generator fingerprint. Capture stores the sha256 and count of the offline
   `--format list` name set. Replay makes the set again and compares. A

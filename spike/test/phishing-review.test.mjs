@@ -134,6 +134,15 @@ test('M-A: one field-less control, or a timed-out control, does not make a zone 
   assert.equal(registered(same, 'tldekeep.test'), undefined);
 });
 
+test('Delta 3 Minor 1: an MX-only wildcard with field-less controls gives a gap lead, not thousands of leads', async () => {
+  // The three .test controls look quiet (a timeout looks the same), but every
+  // generated .test name answers MX only. That is a mail wildcard.
+  const every = Object.fromEntries(NAMES.filter(d => d.endsWith('.test') && d !== 'tidekeep.test').map(d => [d, { dns_mx: ['mx.' + d] }]));
+  const scan = await phishingLeads(snap({ rows: every }));
+  assert.equal(confirmed(scan).length, 0, 'no MX wildcard answer is confirmed');
+  assert.ok(gap(scan, { wildcard: 'ratio', zones: 'test' }), 'ratio gap lead names the zone');
+});
+
 test('Minor 5: a control that answers !ServFail is unknown, not quiet', async () => {
   const servfail = ctl('test', { dns_ns: ['!ServFail'], dns_a: ['!ServFail'] }, 2);
   const scan = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('test', {}, 1), servfail, ...ctl3('com')] }));

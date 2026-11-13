@@ -75,7 +75,7 @@ export const CONTROL = /^ts-ctl-[0-9a-f]{12}$/;
 // control is weak. A zone is quiet only when 3 distinct controls all came back field-less.
 export const CONTROLS_PER_ZONE = 3;
 // A second guard: if more than 20% of the generated names in a zone (of at least 20)
-// answer A or AAAA, the resolver wildcards there, whatever the controls say.
+// answer A, AAAA or MX, the resolver wildcards there, whatever the controls say.
 export const WILDCARD_RATIO = 0.2, WILDCARD_MIN = 20;
 // The generator fingerprint: sha256 of the sorted name set dnstwist made. Capture stores it;
 // replay must get the same set from the local image, or nothing is proven.
@@ -216,7 +216,7 @@ export async function phishingLeads(snapshot) {
     const state = list.some(c => c.state === 'answers') ? 'answers' : list.length >= CONTROLS_PER_ZONE && list.every(c => c.state === 'quiet') ? 'quiet' : 'unknown';
     controls.set(zone, { state, values: list.flatMap(c => c.values) });
   }
-  // Ratio guard. Count generated names per zone, and those whose row answers A or AAAA.
+  // Ratio guard. Count generated names per zone, and those whose row answers A, AAAA or MX.
   const massZones = new Set();
   if (regen.ok) {
     const tally = new Map();
@@ -225,7 +225,7 @@ export async function phishingLeads(snapshot) {
       const d = name(row.domain);
       if (!names.has(d) || skip.has(d)) continue;
       const r = recordsOf(row);
-      if (r.A.length || r.AAAA.length || r.sink.length) tally.get(zoneOf(d, official))?.answer.add(d);
+      if (r.A.length || r.AAAA.length || r.MX.length || r.sink.length) tally.get(zoneOf(d, official))?.answer.add(d);
     }
     for (const [zone, t] of tally) if (t.names >= WILDCARD_MIN && t.answer.size / t.names > WILDCARD_RATIO) {
       massZones.add(zone);
@@ -268,7 +268,7 @@ export async function phishingLeads(snapshot) {
   }
   if (captured && !perZone.size) missing('lookalike-evidence-missing', 'no control rows', 'The capture has no wildcard control rows, so a resolver that answers every name cannot be ruled out. No resolving lookalike is confirmed. Capture again.', 'dnstwist-capture');
   else if (noControl.size) missing('lookalike-evidence-missing', { controls: 'missing', zones: [...noControl].sort().join(' ') }, 'No usable control row for ' + [...noControl].sort().map(z => '.' + z).join(', ') + '. Resolving names there are not confirmed.', 'dnstwist-capture');
-  if (massZones.size) missing('lookalike-evidence-missing', { wildcard: 'ratio', zones: [...massZones].sort().join(' ') }, 'More than ' + WILDCARD_RATIO * 100 + '% of the generated names in ' + [...massZones].sort().map(z => '.' + z + ' (' + controls.get(z).ratio + ')').join(', ') + ' answer A or AAAA. Real lookalike registrations are far rarer, so the resolver wildcards there even if its control names look quiet. No name in that zone is confirmed. Use a resolver that returns NXDOMAIN and capture again.', 'dnstwist-capture');
+  if (massZones.size) missing('lookalike-evidence-missing', { wildcard: 'ratio', zones: [...massZones].sort().join(' ') }, 'More than ' + WILDCARD_RATIO * 100 + '% of the generated names in ' + [...massZones].sort().map(z => '.' + z + ' (' + controls.get(z).ratio + ')').join(', ') + ' answer A, AAAA or MX. Real lookalike registrations are far rarer, so the resolver wildcards there even if its control names look quiet. No name in that zone is confirmed. Use a resolver that returns NXDOMAIN and capture again.', 'dnstwist-capture');
   if (wild) missing('lookalike-evidence-missing', 'resolver wildcards', 'The resolver wildcards: a random name that cannot exist got an answer. Names that answer the same way are review-only. Use a resolver that returns NXDOMAIN and capture again.', 'dnstwist-capture');
 
   // Known scams: an exact match in a pinned list.
