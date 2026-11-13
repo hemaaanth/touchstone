@@ -215,7 +215,7 @@ test("setup tags a pinned pull with its short tag, and leaves an existing tag al
       '#!/bin/sh\nprintf "%s\\n" "$*" >> "' + log + '"\n' +
       'if [ "$1" = image ] && [ "$2" = inspect ]; then [ "$3" = "alpine:3.20" ] && exit 0; exit 1; fi\nexit 0\n',
       { mode: 0o755 });
-    execFileSync(process.execPath, [SETUP, "--only", "base", "--jobs", "1"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
+    execFileSync(process.execPath, [SETUP, "--only", "base", "--include-optional", "--jobs", "1"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
     const calls = readFileSync(log, "utf8").trim().split("\n");
     const node = MANIFEST.find((m) => m.tag === "node:20-slim");
     const alpine = MANIFEST.find((m) => m.tag === "alpine:3.20");
@@ -226,4 +226,14 @@ test("setup tags a pinned pull with its short tag, and leaves an existing tag al
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Review m2: a default setup must not pull an image it did not pull before.
+// alpine:3.20 is run only by two capture-mode tests (they skip without it), so
+// it is optional: listed with --include-optional, left out without flags.
+test("alpine:3.20 is optional: a setup with no flags does not select it", () => {
+  const plain = execFileSync(process.execPath, [SETUP, "--list"], { encoding: "utf8" });
+  const all = execFileSync(process.execPath, [SETUP, "--list", "--include-optional"], { encoding: "utf8" });
+  assert.doesNotMatch(plain, /pull {2}alpine:3\.20/);
+  assert.match(all, /pull {2}alpine:3\.20 {2}\(optional\)/);
 });

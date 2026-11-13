@@ -9,7 +9,7 @@
 //   node spike/scripts/setup.mjs --list       # show the manifest, build nothing
 //   node spike/scripts/setup.mjs --dry-run    # show what WOULD run
 //   node spike/scripts/setup.mjs --only web,contracts
-//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory, scorecard, legitify
+//   node spike/scripts/setup.mjs --include-optional   # add garak (~3 GB) + observatory, scorecard, legitify, alpine:3.20
 //   node spike/scripts/setup.mjs --force      # rebuild/repull even if present
 //   node spike/scripts/setup.mjs --daytona    # only the images that reach Daytona
 //
@@ -47,9 +47,9 @@ export const MANIFEST = [
   { tag: "node:20-slim", group: "base", kind: "pull",
     ref: "node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0",
     note: "Web lab recording proxy, reach-confine proxy, jwt token capture." },
-  { tag: "alpine:3.20", group: "base", kind: "pull",
+  { tag: "alpine:3.20", group: "base", kind: "pull", optional: true,
     ref: "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
-    note: "Capture-mode tests; the base of the scorecard and legitify images." },
+    note: "Only the capture-mode tests run it (they skip without it); the scorecard and legitify builds pull it as their base. Optional, so a default setup pulls nothing new." },
 
   // ---- contracts (EVM static/dynamic analysis + proof replay) ----
   { tag: "ghcr.io/foundry-rs/foundry:latest", group: "contracts", kind: "pull",
@@ -243,7 +243,7 @@ Flags:
   --dry-run           Print each action that would run, do nothing
   --force             Rebuild/repull even if the image is already present
   --only a,b          Only these groups (${[...new Set(MANIFEST.map((m) => m.group))].join(", ")})
-  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify)
+  --include-optional  Include optional images (garak, observatory, strix, scorecard, legitify, alpine:3.20)
   --daytona           Only images that reach Daytona on main
   --pull-only         Skip builds
   --build-only        Skip pulls
