@@ -490,7 +490,15 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   if (!RUN_MODES.includes(mode)) throw new Error(`unknown run mode: ${mode}`)
   // The run's own target: under the first module, so every old reader that only
   // knows `target.pack` still names a module the run really has.
+  // A joined run keeps its own target under the first module for every old
+  // reader, but `withPack` drops the credential of an AI/MCP scope for any other
+  // module. The run's target keeps it, so the scrub, the restore and the build
+  // all see the token whatever the module order.
   const target = withFreshFolders(pickTarget({ id: targetId, pack: multi ? picked[0] : one || undefined }))
+  if (multi && !target.mcp) {
+    const held = getTarget(target.id)?.mcp
+    if (held) target.mcp = held
+  }
   // The reach gate (default-deny by kind). Before anything is spent or any
   // workspace is prepared: an offline kind (lab/local-source/brief/scope) with no
   // host passes inert; EVERY other kind — and any kind that names a host — must
@@ -1171,12 +1179,16 @@ function restoreSecrets(ws, target) {
   editMcp(ws, (mcp) => Object.assign(mcp, credentialOf(target)))
 }
 const credentialOf = (target) => ({ ...(target?.mcp?.token ? { token: target.mcp.token } : {}), ...(target?.mcp?.tokens ? { tokens: target.mcp.tokens } : {}) })
+// The target as the module that holds the credential has it. `withPack` gives
+// `mcp` only to an ai-mcp copy, so a joined run asks for that copy whatever the
+// module's position in the list. A run without ai-mcp has no credential at all.
+const credentialTarget = (target, packs) => (Array.isArray(packs) && packs.includes("ai-mcp") ? withPack(target, "ai-mcp") : target)
 // The run's scope as the library has it now, or null when the scope is gone.
 // A scope store that cannot be read is not "gone": nobody knows then, so this throws.
 function libraryTarget(run) {
   if (!run.scope?.id) return null
   const library = getTarget(run.scope.id)
-  if (library) return withPack(library, run.scope.pack ?? library.pack)
+  if (library) return withPack(library, run.packs?.includes("ai-mcp") ? "ai-mcp" : run.scope.pack ?? library.pack)
   try {
     loadScopes() // the lookup above reads a damaged store as empty; this read throws
   } catch {
@@ -1197,7 +1209,8 @@ function cleanRestored(run) {
     const rec = readWorkspace(run.id)
     if (!rec?.restored || !(mine = own(run))) return // a live owner still answers: its own ending scrubs
     const ws = checkedWorkspace(rec.ws, run.id)
-    const secrets = secretsOf(libraryTarget(run))
+    // A joined run's credential sits in its ai-mcp module, whatever its position.
+    const secrets = secretsOf(credentialTarget(libraryTarget(run), run.packs))
     try {
       if (!ws || !secrets.length) throw new Error("nothing to scrub with")
       scrubSecrets(ws, secrets)
@@ -1227,7 +1240,7 @@ function keepWorkspace(run, ws) {
   try {
     const old = readWorkspace(run.id)
     const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
-    const secrets = secretsOf(target)
+    const secrets = secretsOf(credentialTarget(target, run.packs))
     // A restored credential that is not known here cannot be scrubbed: do not keep.
     if (old?.restored && !secrets.length) return false
     if (secrets.length) scrubSecrets(real, secrets)
@@ -1389,8 +1402,8 @@ export function followUp(run, text, clientId) {
   // library, where it already is. Only the credential: the rest stays the run's
   // own snapshot. A scope that is gone from the library gives none.
   let noCredential = ""
-  if (target && kept?.credential && !secretsOf(target).length) {
-    const found = credentialOf(libraryTarget(run))
+  if (target && kept?.credential && !secretsOf(credentialTarget(target, run.packs)).length) {
+    const found = credentialOf(credentialTarget(libraryTarget(run), run.packs))
     if (secretsOf({ mcp: found }).length) target = { ...target, mcp: { ...target.mcp, ...found } }
     else noCredential = "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it."
   }

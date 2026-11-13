@@ -563,6 +563,9 @@ export interface RunView {
   // A label for back-compat; `scope` carries the structured target descriptor.
   target: string | null
   scope: TargetScope | null
+  // Every module this ONE run covers. One entry for a one-module run and for a
+  // record from before modules existed; the server always sends it.
+  packs: string[]
   status: RunStatus
   startedAt: number
   events: RunEvent[]
@@ -594,6 +597,8 @@ export interface RunSummary {
   name?: string | null
   // The title of the scope the run attacks, for runs with no name or finding.
   scopeTitle?: string | null
+  // Every module the run covers, so a list row can name them all.
+  packs?: string[]
 }
 
 export type Verdict = "approve" | "deny"

@@ -637,6 +637,90 @@ test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets
   });
 });
 
+
+// ---- Safety: a JOINED run's credential, whatever the module order -------------
+
+// A joined scope: the site module and the MCP module in ONE run. The credential
+// lives in the ai-mcp module and nowhere else.
+const livePair = (packs) => addLiveScope({ title: "Site and MCP", hosts: ["127.0.0.1"], pack: packs, permission: true, allowPrivate: true, token: TOKEN, tokens: { [TOKEN]: ["read"], [ADMIN]: ["admin"] }, toolScope: { echo: "read" } });
+// What a worker can read: the ai-mcp module's own brief and config.
+const readJoined = (call) => {
+  const ws = call.args[4];
+  call.brief = readFileSync(path.join(ws, "modules", "ai-mcp", "BRIEF.md"), "utf8");
+  call.mcp = JSON.parse(readFileSync(path.join(ws, "modules", "ai-mcp", ".touchstone.json"), "utf8")).mcp;
+};
+
+for (const packs of [["web", "ai-mcp"], ["ai-mcp", "web"]]) {
+  test(`safety: a joined run (${packs.join(", ")}) keeps no credential, and scrubs it again after a follow-up`, async () => {
+    await withLivePack(async () => {
+      const live = livePair(packs);
+      // The engine child reads the workspace while the run is live, before the
+      // end scrubs it.
+      scripts.push({ act: (call) => {
+        readJoined(call);
+        writeFileSync(call.args[3], "");
+        writeFileSync(path.join(call.args[4], "notes.md"), `curl -H "Authorization: Bearer ${ADMIN}" works`);
+      }, events: [done] });
+      const { id } = await createRun({ targetId: live.id, packs, mode: "solo" });
+      await settle(id);
+      const first = spawns.at(-1);
+      const ws = first.args[4];
+      // One workspace, one part per module.
+      assert.deepEqual(readdirSync(path.join(ws, "modules")), [...packs].sort());
+      const root = JSON.parse(readFileSync(path.join(ws, ".touchstone.json"), "utf8"))
+      assert.equal(root.pack, "multi");
+      assert.deepEqual(root.packs, packs);
+      assert.deepEqual(kept(id).packs, packs, "the record keeps the modules");
+      // The run itself had the token in the ai-mcp module only.
+      assert.ok(first.brief.includes(TOKEN), "the module that needs it had it");
+      assert.deepEqual(Object.keys(first.mcp.tokens), [TOKEN, ADMIN]);
+      assert.ok(!readFileSync(path.join(ws, "modules", "web", "BRIEF.md"), "utf8").includes(TOKEN));
+      // After the end: no file under the kept workspace holds a credential, and
+      // no config holds it either.
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "no file in the kept workspace");
+      const cfg = readFileSync(path.join(ws, "modules", "ai-mcp", ".touchstone.json"), "utf8");
+      assert.ok(!cfg.includes(TOKEN) && !cfg.includes(ADMIN), "the config is scrubbed as JSON too");
+      assert.deepEqual(JSON.parse(cfg).mcp, { toolScope: { echo: "read" } });
+      assert.deepEqual(kept(id).target.mcp, { toolScope: { echo: "read" } });
+      assert.deepEqual(holding(RESULTS, [TOKEN, ADMIN]), []);
+
+      // A follow-up gets the credential back in the ai-mcp module, and it leaves again.
+      const server = await restart();
+      scripts.push({ act: readJoined, events: [done] });
+      server.steerRun(id, "Try the admin token again.");
+      const r = await settle(id, closes(id, server), server);
+      const second = spawns.at(-1);
+      assert.equal(second.args[4], ws);
+      assert.ok(second.brief.includes(TOKEN), "the module that needs it has it back");
+      assert.deepEqual(Object.keys(second.mcp.tokens), [TOKEN, ADMIN]);
+      assert.ok(!r.events.some((e) => e.ev === "workspace"), "nothing to tell the operator");
+      assert.deepEqual(holding(ws, [TOKEN, ADMIN]), [], "and it leaves again when the follow-up ends");
+    });
+  });
+}
+
+test("safety: a joined run rebuilt from nothing is rebuilt joined, with no credential", async () => {
+  await withLivePack(async () => {
+    const live = livePair(["web", "ai-mcp"]);
+    scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+    const { id } = await createRun({ targetId: live.id, packs: ["web", "ai-mcp"], mode: "solo" });
+    await settle(id);
+    const ws = spawns.at(-1).args[4];
+    made.push(ws);
+    rmSync(ws, { recursive: true, force: true });
+    const server = await restart();
+    scripts.push({ act: readJoined, events: [done] });
+    server.steerRun(id, "Start the files again.");
+    const r = await settle(id, closes(id, server), server);
+    const fresh = spawns.at(-1).args[4];
+    made.push(fresh);
+    assert.notEqual(fresh, ws);
+    assert.ok(existsSync(path.join(fresh, "modules", "web")) && existsSync(path.join(fresh, "modules", "ai-mcp")), "both modules are built again");
+    assert.deepEqual(r.events.filter((e) => e.ev === "workspace").map((e) => e.state), ["rebuilt"]);
+    assert.deepEqual(holding(fresh, [TOKEN, ADMIN]), []);
+  });
+});
+
 // ---- Safety: a server stop during a follow-up --------------------------------------
 
 // A finished live run on a new server. Its agent wrote the admin token into a note.

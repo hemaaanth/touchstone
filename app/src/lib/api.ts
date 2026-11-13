@@ -81,16 +81,25 @@ export async function fetchRuns(): Promise<RunSummary[]> {
   return data.runs
 }
 
-// Start a run against a chosen scope. Omit targetId to let the server pick a
-// target at random from the library, so repeated Runs stop re-breaking one bug.
+// Start ONE run against a chosen scope, over one module or several. Omit
+// targetId to let the server pick a target at random from the library, so
+// repeated Runs stop re-breaking one bug. One module goes as `pack`, the old
+// shape; several go as `packs`, and the server builds one joined run.
 export function startRun(
   alias: string,
   targetId?: string,
   budgetUsd?: number,
-  pack?: string,
+  modules: string[] = [],
   mode?: RunMode,
 ): Promise<RunView> {
-  return postJson<RunView>("/api/runs", { alias, targetId, budgetUsd, pack, mode })
+  const packs = [...new Set(modules)]
+  return postJson<RunView>("/api/runs", {
+    alias,
+    targetId,
+    budgetUsd,
+    mode,
+    ...(packs.length > 1 ? { packs } : { pack: packs[0] }),
+  })
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.

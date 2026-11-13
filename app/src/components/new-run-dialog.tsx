@@ -40,7 +40,7 @@ export function NewRunDialog({
   packs: PackChoice[]
   busy: boolean
   error: string | null
-  // One run per module in `modules`.
+  // One run covers every module in `modules`.
   onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => void
 }) {
   const alias = models[0]?.alias ?? ""
@@ -147,7 +147,7 @@ export function NewRunDialog({
                 ))}
               </div>
               {modules.length > 1 ? (
-                <span className="text-xs text-muted-foreground">Starts {modules.length} runs, one per module.</span>
+                <span className="text-xs text-muted-foreground">One run covers {plural(modules.length, "module")}.</span>
               ) : null}
             </div>
           ) : null}
@@ -196,7 +196,7 @@ export function NewRunDialog({
                 onChange={(e) => setBudget(e.target.value)}
                 aria-label="Budget for this run in USD"
               />
-              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "Each run stops at this limit" : "Run stops at this limit"}</span>
+              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "One budget, shared" : "Run stops at this limit"}</span>
             </span>
           </label>
 
