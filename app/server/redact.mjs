@@ -313,7 +313,7 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
     v = bare.slice(0, cut)
     rest = bare.slice(cut)
   }
-  if (!secretName(name) || !secretish(v, 6) || keepUnder(v) || (bare != null && MEMBER_PATH.test(v))) return m
+  if (!secretName(name) || !secretish(v, 6) || keepUnder(v) || setting(name, v) || (bare != null && MEMBER_PATH.test(v))) return m
   const q = dq != null ? '"' : sq != null ? "'" : ""
   return `${name}${sep}${q}${MARK}${q}${rest}`
 }

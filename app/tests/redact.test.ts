@@ -693,3 +693,11 @@ describe("redact: prose after Auth: or Credentials:, and a log line keeps its fi
     expect(text("Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==.\n")).toBe("Authorization: Basic [REDACTED]\n")
   })
 })
+
+describe("redact: an assignment keeps a short setting like the JSON pair (final review Minor 3)", () => {
+  test("a setting stays and a secret is still masked", () => {
+    for (const s of [`const sortKey = "created_at";`, "CACHE_KEY=user_profile"]) expect(text(s)).toBe(s)
+    expect(text(`const dbPassword = "letmein-please";`)).toBe(`const dbPassword = "[REDACTED]";`)
+    expect(text("DB_PASSWORD=abc123 node x")).toBe("DB_PASSWORD=[REDACTED] node x")
+  })
+})
