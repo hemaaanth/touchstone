@@ -15,7 +15,7 @@
 // with zero cooperation from the agent's test and no source-string guessing.
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { writePoc, forgeTestJson } from "./sandbox.mjs";
+import { writePoc, forgeTestJson, FORGE_OUTPUT_CAP } from "./sandbox.mjs";
 import { extractControlTrace, controlTakeovers, word, asAddress, isAddressWord, ADMIN_SLOT, IMPLEMENTATION_SLOT } from "./control-trace.mjs";
 import { keccak256 } from "ethers";
 
@@ -132,14 +132,19 @@ function findResult(parsed, contract) {
 // already holds the proving test, and return the real proof delta. `contract` is
 // the submitted test contract. Returns null when the replay produced no parsable
 // JSON (e.g. the test no longer compiles) so the caller can fall back to the
-// source-derived view for older runs.
+// source-derived view for older runs. A replay whose output was larger than the
+// cap (FORGE_OUTPUT_CAP) returns a failed proof with TRACE_TOO_LARGE as the
+// reason, never a verdict on the cut trace.
 //
 // Every replay runs at full state verbosity (-vvvvv): the harm gate needs the
 // storage writes. `stateTrace` only decides whether the large controlTrace is
 // kept on the returned delta (packs that judge control harm themselves ask).
 export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, stateTrace = false } = {}) {
   if (source) writePoc(ws, source);
-  const { raw, timedOut } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace: true });
+  const { raw, timedOut, overflow } = await forgeTestJson(ws, { matchContract: contract, timeoutMs, stateTrace: true });
+  // The replay output was larger than the cap, so it was cut. A cut trace is never
+  // judged: the proof fails, and the reason tells the agent how to repair the PoC.
+  if (overflow) return traceTooLarge(contract, timedOut);
   let parsed = null;
   try { parsed = JSON.parse(raw); } catch { parsed = null; }
   if (!parsed) return null;
@@ -170,6 +175,12 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
     ...(stateTrace ? { controlTrace } : {}),
     timedOut,
   };
+}
+
+export const TRACE_TOO_LARGE = `the replay trace is larger than ${FORGE_OUTPUT_CAP / 1048576} MiB, so it was cut and the gate does not judge it. A forge-std deal(token, …) in the test body makes a very large trace (about 10 MiB for each call): call deal in setUp() instead, and keep the test body to the attack itself`;
+function traceTooLarge(contract, timedOut) {
+  const harm = { ok: false, reason: TRACE_TOO_LARGE, targets: [] };
+  return { tool: "Foundry", source: "engine-replay", contract, test: null, status: "fail", pass: false, reason: TRACE_TOO_LARGE, gasUsed: null, logs: [], transfers: [], harm, timedOut };
 }
 
 function lowerKeys(obj) {
@@ -714,12 +725,12 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     if (targets.has(a)) { impersonated.push(`${a} (${targets.get(a)})`); targets.delete(a); }
   }
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
-  // Not proven. When the test impersonated a target, that is the true reason: say
-  // it, so the agent can repair its PoC.
+  // Not proven. When the test impersonated a target, say so first, so the agent can
+  // repair its PoC; then keep the base reason, which may be the true cause.
   const refuse = (reason) => ({
     ok: false,
     reason: impersonated.length
-      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp()`
+      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp(). Without that target: ${reason}`
       : reason,
     targets: names,
   });

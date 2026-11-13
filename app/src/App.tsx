@@ -186,6 +186,7 @@ export function App() {
         onWidth={setSidebarWidth}
         defaultWidth={sidebarDefault}
         runs={rows}
+        packs={packs}
         view={view}
         onSelect={select}
         onNewRun={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}
