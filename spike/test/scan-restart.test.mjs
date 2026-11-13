@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const calls = [];
-mock.module("node:child_process", { exports: { execFile: (_command, args, _opts, cb) => {
+// Spread the real module so lab-net.mjs's `execFileSync` import still resolves
+// under the module-mock loader; only execFile is intercepted here.
+const realChild = await import("node:child_process");
+mock.module("node:child_process", { exports: { ...realChild, execFile: (_command, args, _opts, cb) => {
   calls.push(args);
   const output = args[0] === "network" && args[1] === "inspect"
     ? JSON.stringify({ "scan-container-id": { Name: "leftover-scan" } }) : "";
