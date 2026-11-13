@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 
@@ -51,6 +51,26 @@ describe("readFolderInPlace", () => {
     // key.ts is kept here by name; folderFiles drops it for its content.
     expect(r.files.map((f: { path: string }) => f.path).sort()).toEqual(["src/Vault.sol", "src/key.ts"])
     expect(r.files.some((f: { content: string }) => f.content.includes("secret"))).toBe(false)
+  })
+
+  test("a parent folder swapped for a symlink after the walk is refused, not read", () => {
+    // An outside folder with a file of the same name.
+    const outside = path.join(dir, "outside-src")
+    rmSync(outside, { recursive: true, force: true })
+    mkdirSync(outside)
+    writeFileSync(path.join(outside, "Vault.sol"), "contract OUTSIDE {}\n")
+    writeFileSync(path.join(outside, "key.ts"), "export const OUTSIDE = 1\n")
+    let swapped = false
+    const swap = () => {
+      if (swapped) return
+      swapped = true
+      // The exact race: src is renamed and replaced by a symlink to the outside
+      // folder after the walk saw src/Vault.sol as a plain file.
+      renameSync(path.join(lab, "src"), path.join(lab, "src-kept"))
+      symlinkSync(outside, path.join(lab, "src"))
+    }
+    expect(() => readFolderInPlace(lab, { beforeOpen: swap })).toThrow(/no longer inside/)
+    expect(swapped).toBe(true)
   })
 
   test("a folder given through a symlink is read at its real path, and ~ is the home folder", () => {

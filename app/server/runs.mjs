@@ -17,7 +17,7 @@
 //      event plus one replay-proof artifact per finding. A proven run records
 //      itself; the operator can dismiss any finding later from the ledger.
 import { spawn } from "node:child_process"
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdirSync, renameSync, statSync, existsSync, realpathSync, readlinkSync, lstatSync, openSync, closeSync, fstatSync, constants as fsc } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -151,7 +151,33 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
 // secret names and content, the file and size limits. Returns the folder's
 // real path, a safe folder name, and its source files.
 const MAX_SCAN = 20000
-export function readFolderInPlace(dir) {
+
+// Is the open file `fd` inside `root`? On Linux, /proc/self/fd/<fd> names the
+// file the descriptor really points at. Elsewhere, the file at the path's real
+// location (inside the root) must be the same file (device and inode) as the
+// open one; a swap after the open changes the inode, so it is refused too.
+function openedInside(fd, st, full, root) {
+  let where = null
+  try {
+    where = readlinkSync(`/proc/self/fd/${fd}`)
+  } catch {
+    // no /proc: fall back to the device and inode check
+  }
+  if (where !== null) return where.startsWith(root + path.sep)
+  let real
+  try {
+    real = realpathSync(full)
+  } catch {
+    return false
+  }
+  if (!real.startsWith(root + path.sep)) return false
+  const now = lstatSync(real)
+  return now.dev === st.dev && now.ino === st.ino
+}
+
+// `hooks.beforeOpen(relPath)` runs just before each file is opened. Tests use
+// it to swap a folder at that moment; HTTP callers cannot pass it.
+export function readFolderInPlace(dir, hooks = {}) {
   let raw = String(dir ?? "").trim()
   if (raw === "~" || raw.startsWith("~/")) raw = path.join(homedir(), raw.slice(1))
   if (!raw || !path.isAbsolute(raw)) throw new Error("Use the folder's full path, like /home/me/project or ~/project.")
@@ -183,14 +209,16 @@ export function readFolderInPlace(dir) {
   let bytes = 0
   const files = keep.map((n) => {
     const full = path.join(root, n)
-    // The walk saw a plain file. If it was swapped for a symlink since, or a
-    // parent folder now points elsewhere, refuse it: O_NOFOLLOW for the file
-    // itself, and its real path must still be inside the root.
-    if (!realpathSync(full).startsWith(root + path.sep)) throw new Error(`${n} is no longer inside ${raw}.`)
+    hooks.beforeOpen?.(n)
+    // The walk saw a plain file, but any part of its path may have been swapped
+    // for a symlink since. O_NOFOLLOW guards only the last part, so after the
+    // open we check where the open file really is, and read only through that
+    // same descriptor.
     const fd = openSync(full, fsc.O_RDONLY | fsc.O_NOFOLLOW)
     try {
       const st = fstatSync(fd)
       if (!st.isFile()) throw new Error(`${n} is no longer a file.`)
+      if (!openedInside(fd, st, full, root)) throw new Error(`${n} is no longer inside ${raw}.`)
       bytes += st.size
       if (bytes > MAX_BYTES) throw new Error(`${raw} is over 2 MB of source. Pick a smaller folder.`)
       return { path: n, content: readFileSync(fd, "utf8") }
