@@ -36,6 +36,12 @@ test('the parser refuses an answer with no measured scan or no grade', () => {
   const noGrade = JSON.parse(real);
   delete noGrade.scanResult[0].rating;
   assert.throws(() => parseTestssl(JSON.stringify(noGrade), endpoint), /no grade/);
+  const emptyGrade = JSON.parse(real);
+  for (const scan of emptyGrade.scanResult) scan.rating[0].finding = '';
+  assert.throws(() => parseTestssl(JSON.stringify(emptyGrade), endpoint), /no grade/);
+  const fatal = JSON.parse(real);
+  fatal.scanResult[0].scanProblem = { severity: 'FATAL', code: 'CONNECT_FAILED', finding: 'cannot connect' };
+  assert.throws(() => parseTestssl(JSON.stringify(fatal), endpoint), /FATAL/);
   assert.throws(() => parseTestssl('not json', endpoint));
 });
 
@@ -82,9 +88,29 @@ test('a tool error and an unparsable answer are collected per endpoint', async (
   assert.match(result.errors[0], /manifest unknown/);
   const unparsable = await captureTls(async () => ({ code: 0, stderr: '', timedOut: false }), null, [{ ...endpoint }], () => null);
   assert.equal(unparsable.errors.length, 1);
+  assert.doesNotMatch(unparsable.errors[0], /\/tmp|\/home/);
+  assert.match(unparsable.errors[0], /output file missing/);
   assert.equal(unparsable.entries[0].error, unparsable.errors[0]);
   assert.equal(unparsable.entries[0].url, 'https://example.com');
   assert.equal(typeof empty, 'function');
+});
+
+test('an entry without raw, grade or scans is a gap, not a clean result', () => {
+  const good = parseTestssl(real, endpoint);
+  assert.match(good.raw, /^[0-9a-f]{64}$/);
+  const cases = [
+    { url: 'https://a.test', host: 'a.test', port: 443, grade: 'B', scans: [] },
+    { ...good, grade: '' },
+    { ...good, scans: undefined },
+  ];
+  for (const entry of cases) {
+    const leads = tlsLeads({ root: 'example.com', tls: [entry] });
+    assert.deepEqual(leads.map(l => [l.check, l.where]), [['tls-evidence-missing', entry.url]], JSON.stringify(entry).slice(0, 120));
+  }
+  const noRaw = { ...good };
+  delete noRaw.raw;
+  assert.equal(tlsLeads({ root: 'example.com', tls: [noRaw] })[0].check, 'tls-evidence-missing');
+  assert(tlsLeads({ root: 'example.com', tls: [{ url: 'https://x.test' }] }).length === 1);
 });
 
 test('tls checks replay from the pinned snapshot, unknown ones do not', async () => {

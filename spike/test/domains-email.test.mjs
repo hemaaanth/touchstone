@@ -41,6 +41,14 @@ test('a parsed record is marked present and a listed absence is marked absent', 
   assert.deepEqual(emailLeads({ root, email }).map(l => l.check), ['email-dmarc-missing', 'email-spf-missing']);
 });
 
+test('a timeout text is unread, only the tool\'s exact absence text is absent', () => {
+  const email = parseCheckdmarc(JSON.stringify({ domain: root, spf: { record: null, valid: false, error: 'Timed out: no answer from 1.1.1.1 for the TXT record' }, dmarc: { record: null, valid: false, error: 'A DMARC record does not exist.' } }), root);
+  assert.equal(email.spf.state, 'unread');
+  assert.equal(email.dmarc.state, 'absent');
+  const checks = emailLeads({ root, email }).map(l => l.check);
+  assert.deepEqual(checks, ['email-auth-evidence-missing', 'email-dmarc-missing']);
+});
+
 test('an answer with no record field is unread, not absent', () => {
   const email = parseCheckdmarc(JSON.stringify({ domain: root }), root);
   assert.equal(email.spf.state, 'unread');
@@ -60,6 +68,15 @@ test('malformed and permissive records each raise one lead', () => {
   assert.deepEqual(checks({ ...evidence(), dmarc: { ...evidence().dmarc, policy: 'none' } }), ['email-dmarc-policy-none', 'email-dmarc-no-reporting']);
   assert.deepEqual(checks({ ...evidence(), spf: { record: 'v=spf1 +all', valid: true, all: '+all', warnings: [], state: 'present' } }), ['email-dmarc-no-reporting', 'email-spf-allows-all']);
   assert.deepEqual(checks({ ...evidence(), spf: { record: 'v=spf1 include:x.test', valid: false, all: null, warnings: [], state: 'present' } }), ['email-dmarc-no-reporting', 'email-spf-invalid']);
+});
+
+test('evidence without a raw hash or a record state is a gap, not a lead', () => {
+  const noRaw = { ...evidence() };
+  delete noRaw.raw;
+  assert.deepEqual(emailLeads({ root, email: noRaw }).map(l => l.check), ['email-auth-evidence-missing']);
+  const noState = { ...evidence(), spf: { record: 'v=spf1 -all', valid: true, all: '-all', warnings: [] }, dmarc: { record: 'v=DMARC1;p=reject', valid: true, policy: 'reject', reports: true, warnings: [] } };
+  assert.match(emailLeads({ root, email: noState })[0].description, /incomplete/);
+  assert.match(evidence().raw, /^[0-9a-f]{64}$/);
 });
 
 test('no email evidence is a coverage gap that names the tool failure', () => {

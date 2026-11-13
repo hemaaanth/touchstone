@@ -3,6 +3,7 @@
 // assessment is stored in the snapshot, so replay reads the pin.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { sha256 } from '../../lib/proof-evidence.mjs';
 export const DNSVIZ = 'dnsviz/dnsviz@sha256:5a4c5e8293d591010bd57fb2e79a803865607d72457e74335229130f69265932';
 const fqdn = domain => domain.endsWith('.') ? domain : domain + '.';
 const text = (value, max = 300) => String(value ?? '').slice(0, max);
@@ -40,13 +41,16 @@ export function parseDnssec(text_, domain) {
   const query = entry.queries?.[fqdn(domain) + '/IN/DNSKEY'];
   // A claim needs the fields it rests on; a missing field is incomplete evidence.
   const missing = [];
-  if (!VERDICTS.has(delegation)) missing.push('no chain verdict');
+  if (!VERDICTS.has(delegation)) missing.push(delegation === 'UNKNOWN' ? 'no chain verdict' : 'unknown chain verdict ' + delegation);
   if (delegation === 'SECURE') { if (!signed) missing.push('no DNSKEY'); if (!dsOk) missing.push('no valid DS'); }
-  if (delegation === 'INSECURE' && !(Array.isArray(query?.nodata) || Array.isArray(query?.nxdomain))) missing.push('no DNSKEY answer');
+  // INSECURE is complete when the zone is signed with no DS at the parent, or
+  // when the DNSKEY query definitely answered empty.
+  if (delegation === 'INSECURE' && !signed && !((query?.nodata?.length) || (query?.nxdomain?.length))) missing.push('no DNSKEY answer');
   const errors = errorsOf(entry);
   const complete = missing.length === 0;
   return {
     domain,
+    raw: sha256(text_),
     status: text(entry.status, 30) || 'UNKNOWN',
     delegation,
     signed,
@@ -65,10 +69,19 @@ export async function captureDnssec(run, ws, domain, resolver, tag = '') {
   const report = '/work/.live/dnssec' + tag + '.json';
   const probed = await run('dnsviz-probe' + tag, { image: DNSVIZ, cmd: ['probe', ...(resolver ? ['-s', resolver] : []), '-o', probe, domain], timeoutMs: 180000 });
   if (probed.code || probed.timedOut) return { evidence: null, error: probed.stderr.trim().slice(-160) || (probed.timedOut ? 'probe timed out' : 'probe exit code ' + probed.code) };
-  const assessed = await run('dnsviz-grok' + tag, { image: DNSVIZ, cmd: ['grok', '-r', probe, '-c', '-o', report, domain], timeoutMs: 60000 });
+  const assessed = await run('dnsviz-grok' + tag, { image: DNSVIZ, network: 'none', cmd: ['grok', '-r', probe, '-c', '-o', report, domain], timeoutMs: 60000 });
   if (assessed.code || assessed.timedOut) return { evidence: null, error: assessed.stderr.trim().slice(-160) || (assessed.timedOut ? 'grok timed out' : 'grok exit code ' + assessed.code) };
-  try { return { evidence: parseDnssec(readFileSync(join(ws, '.live', 'dnssec' + tag + '.json'), 'utf8'), domain), error: null }; }
+  let text;
+  try { text = readFileSync(join(ws, '.live', 'dnssec' + tag + '.json'), 'utf8'); }
+  catch { return { evidence: null, error: 'output file missing' }; }
+  try { return { evidence: parseDnssec(text, domain), error: null }; }
   catch (error) { return { evidence: null, error: error.message || ('grok exit code ' + assessed.code) }; }
+}
+
+// What the coverage rows should say about a stored assessment, or null when it
+// is complete. Incomplete evidence must not read as a ran check.
+export function assessmentCoverage(evidence) {
+  return evidence && evidence.complete !== true ? { status: 'unavailable', reason: 'incomplete assessment: ' + (evidence.reason ?? 'missing fields') } : null;
 }
 
 // DNSSEC leads from the stored evidence. A signed and valid chain is reported
@@ -83,11 +96,14 @@ export function dnssecLeads(snapshot) {
       : ' The snapshot was captured without a DNSSEC probe.';
     return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The snapshot has no DNSSEC chain evidence, so this run does not cover DNSSEC.' + why + ' This does not prove DNSSEC is disabled.' }];
   }
-  const errors = dnssec.errors ?? [], warnings = dnssec.warnings ?? [];
-  if (dnssec.complete === false) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The DNSViz assessment is incomplete (' + (dnssec.reason ?? 'missing fields') + '), so this run does not prove the chain state. This does not prove DNSSEC is disabled.' }];
+  const errors = Array.isArray(dnssec.errors) ? dnssec.errors : [], warnings = Array.isArray(dnssec.warnings) ? dnssec.warnings : [];
+  const hash = /^[0-9a-f]{64}$/.test(String(dnssec.raw ?? '')) ? ' Tool output sha256: ' + String(dnssec.raw).slice(0, 12) + '.' : '';
+  // A verdict and its error list must be stored, and the tool output hashed.
+  if (dnssec.complete !== true || !Array.isArray(dnssec.errors) || !hash || !['SECURE','INSECURE','BOGUS'].includes(dnssec.delegation)) return [{ check: 'dnssec-evidence-missing', where: root, severity: 'informational', description: 'The stored DNSViz assessment is incomplete (' + (dnssec.reason ?? (dnssec.complete !== true ? 'no complete verdict' : !hash ? 'no tool output hash' : 'unknown chain verdict')) + '), so this run does not prove the chain state.' + hash + ' This does not prove DNSSEC is disabled.' }];
+  if (dnssec.delegation === 'INSECURE' && dnssec.signed) return [{ check: 'dnssec-no-ds', where: root, severity: 'low', description: 'The zone is signed but its parent publishes no DS record, so validators treat the zone as insecure. The signatures are not anchored to the root trust chain.' + hash }];
   // A bogus verdict or an invalid signature is broken, whatever the signing state.
-  if (dnssec.delegation === 'BOGUS' || dnssec.errors.length || (dnssec.signed && !dnssec.validatedChain)) return [{ check: 'dnssec-broken-chain', where: root, severity: 'high', description: (dnssec.signed ? 'The zone is signed but the chain does not validate' : 'The chain is bogus') + ' (' + dnssec.delegation + '). ' + (errors[0]?.description ?? 'DNSViz reported no usable chain.') + ' A resolver that validates may treat the zone as bogus.' }];
-  if (!dnssec.signed) return [{ check: 'dnssec-unsigned', where: root, severity: 'low', description: 'The zone is not signed. No DNSKEY is published and the parent has no usable DS, so resolvers cannot validate the answers. The chain was measured once and says the zone is insecure, which is different from an unread chain.' }];
-  if (warnings.length) return [{ check: 'dnssec-warning', where: root, severity: 'low', description: 'The chain validates, but DNSViz warned: ' + warnings[0].description }];
+  if (dnssec.delegation === 'BOGUS' || dnssec.errors.length || (dnssec.signed && !dnssec.validatedChain)) return [{ check: 'dnssec-broken-chain', where: root, severity: 'high', description: (dnssec.signed ? 'The zone is signed but the chain does not validate' : 'The chain is bogus') + ' (' + dnssec.delegation + '). ' + (errors[0]?.description ?? 'DNSViz reported no usable chain.') + ' A resolver that validates may treat the zone as bogus.' + hash }];
+  if (!dnssec.signed) return [{ check: 'dnssec-unsigned', where: root, severity: 'low', description: 'The zone is not signed. No DNSKEY is published and the parent has no usable DS, so resolvers cannot validate the answers. The chain was measured once and says the zone is insecure, which is different from an unread chain.' + hash }];
+  if (warnings.length) return [{ check: 'dnssec-warning', where: root, severity: 'low', description: 'The chain validates, but DNSViz warned: ' + warnings[0].description + hash }];
   return [];
 }

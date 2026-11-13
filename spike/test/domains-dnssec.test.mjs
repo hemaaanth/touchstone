@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { runTool } from '../lib/wrap.mjs';
 import { pinSnapshot, replayEvidence } from '../lib/proof-evidence.mjs';
 import { detectorsFor } from '../packs/domains/checks.mjs';
-import { captureDnssec, dnssecLeads, parseDnssec, DNSVIZ } from '../packs/domains/dnssec.mjs';
+import { assessmentCoverage, captureDnssec, dnssecLeads, parseDnssec, DNSVIZ } from '../packs/domains/dnssec.mjs';
 const secure = readFileSync(new URL('../packs/domains/fixtures/dnsviz-example.com.json', import.meta.url), 'utf8');
 const insecure = readFileSync(new URL('../packs/domains/fixtures/dnsviz-unsigned.json', import.meta.url), 'utf8');
 const bogus = readFileSync(new URL('../packs/domains/fixtures/dnsviz-bogus.json', import.meta.url), 'utf8');
@@ -68,6 +68,20 @@ test('an incomplete assessment is missing evidence, not a verdict', () => {
   const unsigned = parseDnssec(JSON.stringify({ 'example.com.': { delegation: { status: 'INSECURE' }, queries: { 'example.com./IN/DNSKEY': { nodata: [{}] } } } }), root);
   assert.equal(unsigned.complete, true);
   assert.equal(dnssecLeads({ root, dnssec: unsigned })[0].check, 'dnssec-unsigned');
+  const emptyAnswer = parseDnssec(JSON.stringify({ 'example.com.': { delegation: { status: 'INSECURE' }, queries: { 'example.com./IN/DNSKEY': { nodata: [] } } } }), root);
+  assert.equal(emptyAnswer.complete, false);
+});
+
+test('a signed zone whose parent has no DS is a distinct no-DS lead', () => {
+  const dnssec = parseDnssec(JSON.stringify({ 'example.com.': { status: 'NOERROR', delegation: { status: 'INSECURE' }, dnskey: [{ key_tag: 1, algorithm: 13 }], queries: { 'example.com./IN/DNSKEY': { answer: [{}] } } } }), root);
+  assert.equal(dnssec.complete, true);
+  assert.equal(dnssecLeads({ root, dnssec })[0].check, 'dnssec-no-ds');
+  assert.equal(assessmentCoverage(dnssec), null);
+});
+
+test('an incomplete assessment marks the coverage rows unavailable', () => {
+  assert.equal(assessmentCoverage({ complete: true }), null);
+  assert.deepEqual(assessmentCoverage({ complete: false, reason: 'no DNSKEY answer' }), { status: 'unavailable', reason: 'incomplete assessment: no DNSKEY answer' });
 });
 
 test('a warning on a secure chain is a low lead', () => {
@@ -76,6 +90,22 @@ test('a warning on a secure chain is a low lead', () => {
   const [lead] = dnssecLeads({ root, dnssec });
   assert.equal(lead.check, 'dnssec-warning');
   assert.match(lead.description, /SOA serial is low/);
+});
+
+test('evidence without complete, errors or raw is a gap, never a crash', () => {
+  assert.match(evidence().raw, /^[0-9a-f]{64}$/);
+  for (const change of [
+    dnssec => { delete dnssec.complete; },
+    dnssec => { delete dnssec.errors; },
+    dnssec => { delete dnssec.raw; },
+    dnssec => { dnssec.delegation = 'UNKNOWN'; },
+  ]) {
+    const dnssec = evidence();
+    change(dnssec);
+    const leads = dnssecLeads({ root, dnssec });
+    assert.equal(leads[0].check, 'dnssec-evidence-missing');
+  }
+  assert.equal(dnssecLeads({ root, dnssec: {} })[0].check, 'dnssec-evidence-missing');
 });
 
 test('missing evidence is a coverage gap that names the failure', () => {
@@ -98,10 +128,12 @@ test('a probe error and an unreadable assessment both come back as an error', as
   const ws = mkdtempSync(join(tmpdir(), 'dnssec-bad-'));
   mkdirSync(join(ws, '.live'));
   try {
-    const grokSilent = async () => ({ code: 0, stderr: '', timedOut: false });
+    const seen = [];
+    const grokSilent = async (engine, opts) => { seen.push([engine, opts.network]); return { code: 0, stderr: '', timedOut: false }; };
     const unreadable = await captureDnssec(grokSilent, ws, root, null);
     assert.equal(unreadable.evidence, null);
-    assert.match(unreadable.error, /ENOENT|no such file/);
+    assert.equal(unreadable.error, 'output file missing');
+    assert.deepEqual(seen.find(([engine]) => engine === 'dnsviz-grok'), ['dnsviz-grok', 'none']);
     // grok can write a readable file and still fail; the exit status decides.
     const grokFailed = async engine => {
       if (engine === 'dnsviz-probe') return { code: 0, stderr: '', timedOut: false };
