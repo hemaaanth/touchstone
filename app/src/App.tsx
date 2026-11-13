@@ -4,7 +4,6 @@ import type {
   RunSummary,
   TargetChoice,
   PackChoice,
-  Playbook,
   RunMode,
 } from "@/lib/types"
 import type { CatalogState } from "@/lib/catalog"
@@ -14,7 +13,6 @@ import { AppSidebar, type View } from "@/components/app-sidebar"
 import { RunChat } from "@/components/run-chat"
 import { ModulesPage } from "@/components/modules-page"
 import { ScopesPage } from "@/components/scopes-page"
-import { PlaybooksPage } from "@/components/playbooks-page"
 import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
@@ -157,13 +155,6 @@ export function App() {
   // A run that settles while we watch it changes spend and findings.
   useEffect(() => onRunSettled(() => refreshModels()), [refreshModels])
 
-  // Start a run from a playbook with the same call New run makes.
-  // TODO(backend): startRun takes no module list, so a playbook's pipeline
-  // choice is not sent yet; the server plans the modules from the scope.
-  const onRunPlaybook = useCallback(
-    (p: Playbook) => onStart(p.model ?? models[0]?.alias ?? "", p.targetId, p.budgetUsd ?? undefined, p.pack),
-    [onStart, models],
-  )
   const openRun = useCallback((id: string) => setView({ kind: "run", id }), [])
 
   const activeRun = view?.kind === "run" ? rows.find((r) => r.id === view.id) ?? null : null
@@ -199,17 +190,6 @@ export function App() {
             briefs={briefs}
             onOpenRun={openRun}
             onChanged={refreshModels}
-          />
-        ) : page === "playbooks" ? (
-          <PlaybooksPage
-            packs={packs}
-            targets={targets}
-            runs={rows}
-            briefs={briefs}
-            busy={busy}
-            error={dialogOpen ? null : startError}
-            onOpenRun={openRun}
-            onRun={onRunPlaybook}
           />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
