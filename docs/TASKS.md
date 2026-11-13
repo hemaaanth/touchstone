@@ -101,7 +101,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 | Thread | Items | Owns | Running as |
 |--------|-------|------|------------|
-| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity` |
+| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity`; candidate `6a95a1e` in review (`thr_itmcnmnnku`) |
 | 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language` |
 | 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish` |
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
@@ -158,10 +158,11 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| A1 | doing | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. |
-| A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
-| A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
-| A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
+| A1 | review | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. Cause found: the worker called `process.exit` before the long `settled` line left the pipe. Candidate `fix/run-continuity` `6a95a1e`; reviewer `thr_itmcnmnnku`. |
+| A2 | review | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). Partly met in the candidate: the workspace is kept; a lost one is rebuilt and said in one `workspace` event. Same-commit restore needs `fetch.mjs` to record commits (new task A6). |
+| A3 | review | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
+| A4 | review | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
+| A6 | todo | Same-commit restore of a lost workspace: `spike/lib/fetch.mjs` records the commit of each fetch; a rebuild checks out the same commits. Also decide: reach on a follow-up of a live-target run (owner question). Wave 3. |
 | A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. The owner allowed it for this task (2026-11-13). Starts after thread 1a merges (wave 2, thread 2h). Own reviewer; the gate line is never touched. |
 
 ## B. Run view polish
@@ -214,7 +215,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
-| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. |
+| G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. Head `406e63b`: jwt_tool wiring finished. Two images and the lab image were never built; the author now builds them and reruns the skipped tests. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
 | G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
