@@ -177,7 +177,8 @@ function tailStart(s, chars) {
 // True when any word of a header value is a credential.
 function credential(value) {
   if (/^\s*</.test(value)) return false
-  return value.split(/[\s,]+/).some((w) => secretish(w.slice(0, tailStart(w, "\"'),;")).replace(/^["'(]+/, "")))
+  // A sentence stop after a word is not part of it: "is required." is prose.
+  return value.split(/[\s,]+/).some((w) => secretish(w.slice(0, tailStart(w, "\"'),;.:!?")).replace(/^["'(]+/, "")))
 }
 
 // Under a header that always holds a credential, one word of 12 or more
@@ -241,9 +242,17 @@ function maskCookie(value) {
   return hit ? out : null
 }
 
-function maskHeader(m, lead, name, sep, raw) {
+function maskHeader(m, lead, name, sep, raw, offset, str) {
+  // After a tab or ", " inside a log line the value ends at the next ", " or
+  // tab: "method=GET, X-Api-Key: …, status=200" keeps ", status=200".
+  // That lead is empty and follows a space or a tab.
+  let end = raw.length
+  if (lead === "" && typeof str === "string" && (str[offset - 1] === " " || str[offset - 1] === "\t")) {
+    const cut = raw.search(/, |\t/)
+    if (cut >= 0) end = cut
+  }
   // In a table row the closing bar stays outside the mask.
-  const value = raw.slice(0, tailStart(raw, lead.includes("|") ? " \t,;|" : " \t,;"))
+  const value = raw.slice(0, tailStart(raw.slice(0, end), lead.includes("|") ? " \t,;|" : " \t,;"))
   const masked = value && maskHeaderValue(name, value)
   return masked ? `${lead}${name}${sep}${masked}${raw.slice(value.length)}` : m
 }

@@ -678,3 +678,18 @@ describe("redact: a passphrase of lowercase words under a secret name (final rev
     expect(redactSecrets(plain)).toEqual(plain)
   })
 })
+
+describe("redact: prose after Auth: or Credentials:, and a log line keeps its fields (final review M1)", () => {
+  test("a plain sentence stays", () => {
+    for (const s of ["- Auth: no authentication is required.", "* Credentials: none needed for the exploit.", "Auth: not checked!"]) expect(text(s)).toBe(s)
+  })
+  test("a log line keeps the fields after the masked header", () => {
+    expect(text("method=GET, X-API-Key: tk_live9fakeZ, status=200")).toBe("method=GET, X-API-Key: [REDACTED], status=200")
+    expect(text("method=GET\tX-API-Key: tk_live9fakeZ\tstatus=200")).toBe("method=GET\tX-API-Key: [REDACTED]\tstatus=200")
+    expect(text("method=GET, X-API-Key: <value>, status=200")).toBe("method=GET, X-API-Key: <value>, status=200")
+  })
+  test("a real key with a stop after it is still masked", () => {
+    expect(text("- Auth: tk_live9fakeZ.")).toBe("- Auth: [REDACTED]")
+    expect(text("Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==.\n")).toBe("Authorization: Basic [REDACTED]\n")
+  })
+})
