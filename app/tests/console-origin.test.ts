@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
+import http from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -46,6 +47,18 @@ afterAll(async () => {
 })
 
 const page = (headers: Record<string, string> = {}) => fetch(`${base}/`, { headers: { accept: "text/html", ...headers } })
+// A request with a chosen Host header, as a DNS rebinding page sends it. fetch
+// sets Host itself, so this goes through node:http.
+const withHost = (host: string, url: string, headers: Record<string, string> = {}) =>
+  new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = http.request(base + url, { headers: { accept: "text/html", ...headers, host } }, (res) => {
+      let body = ""
+      res.on("data", (d) => (body += d))
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }))
+    })
+    req.on("error", reject)
+    req.end()
+  })
 const own = () => ({ origin: base, "content-type": "application/json", "x-touchstone-grant-token": TOKEN })
 
 describe("dev server: the token-bearing page", () => {
@@ -67,6 +80,28 @@ describe("dev server: the token-bearing page", () => {
       expect(body.includes(TOKEN), origin).toBe(false)
       expect(body, origin).not.toContain(META)
     }
+  })
+
+  // The Origin rule compares Origin with Host, so it is safe only while Host is
+  // restricted (server.allowedHosts). A DNS rebinding page sends its own name as
+  // Host, and an Origin that matches it.
+  test("a request with a foreign Host does not get the page", async () => {
+    const port = new URL(base).port
+    for (const host of ["evil.example", `evil.example:${port}`]) {
+      for (const headers of [{}, { origin: `http://${host}` }]) {
+        const where = `Host: ${host}, ${JSON.stringify(headers)}`
+        const res = await withHost(host, "/", headers)
+        expect(res.status, where).toBe(403)
+        expect(res.body.includes(TOKEN), where).toBe(false)
+        expect(res.body, where).not.toContain(META)
+        // /api/ is closed to a foreign Host too, for a read as well.
+        expect((await withHost(host, "/api/scopes", headers)).status, `/api/scopes, ${where}`).toBe(403)
+      }
+    }
+    // The same helper with the console's own Host gets the page.
+    const own = await withHost(`127.0.0.1:${port}`, "/")
+    expect(own.status).toBe(200)
+    expect(own.body).toContain(META)
   })
 
   test("a preflight from another origin is not granted", async () => {
@@ -122,6 +157,8 @@ describe("the token stays out of the logs and out of a build", () => {
 
   test("a build output does not hold the token", async () => {
     const outDir = path.join(dir, "dist")
+    // The build writes to the throwaway outDir only: app/dist is as it was before.
+    const distBefore = existsSync(path.join(appDir, "dist"))
     await build({ ...shared, logLevel: "silent", build: { outDir, emptyOutDir: true } })
     const html = readFileSync(path.join(outDir, "index.html"), "utf8")
     expect(html).toContain('<div id="root">')
@@ -131,6 +168,6 @@ describe("the token stays out of the logs and out of a build", () => {
     const all = files(outDir)
     expect(all.length).toBeGreaterThan(1)
     expect(all.filter((f) => readFileSync(f).includes(TOKEN)).map((f) => path.relative(outDir, f))).toEqual([])
-    expect(existsSync(path.join(appDir, "dist"))).toBe(false)
+    expect(existsSync(path.join(appDir, "dist"))).toBe(distBefore)
   }, 120_000)
 })
