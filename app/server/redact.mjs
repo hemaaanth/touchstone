@@ -34,6 +34,11 @@ function secretName(name) {
   return (SECRET_SUFFIX.test(name) || SECRET_CAMEL.test(name)) && !PUBLIC_KEY.test(name)
 }
 
+// A name that is secret only by its ending is often a plain setting:
+// baseToken: "USDC", primaryKey: "id". Under such a name a value is masked
+// only when it looks like a secret. Under a SECRET_KEY name every value is.
+const maskUnder = (name, value) => SECRET_KEY.test(name) || secretish(value)
+
 // A "key":"value" pair inside a JSON string, such as a recorded HTTP body
 // or tool output. The second form is the same pair escaped one level deeper,
 // as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
@@ -232,7 +237,7 @@ function maskPairValue(name, value) {
   if (!secretName(name) || keepUnder(value)) return null
   if (/authorization$/i.test(name)) return maskHeaderValue(name, value)
   if (/cookie$/i.test(name) && value.includes("=")) return maskCookie(value)
-  return MARK
+  return maskUnder(name, value) ? MARK : null
 }
 
 // A query value: trailing sentence punctuation stays outside the mask, and
@@ -318,14 +323,17 @@ function walk(value, key) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "string") {
     if (MARKER.test(value)) return value
-    if (key && secretName(key)) return PLAIN_VALUE.test(value) ? value : MARK
+    if (key && secretName(key)) {
+      if (PLAIN_VALUE.test(value)) return value
+      if (maskUnder(key, value)) return MARK
+    }
     return redactText(value)
   }
   if (Array.isArray(value)) {
     // A list of [name, value] header tuples: [["x-api-key", "tk_…"]].
     if (value.length && value.every(isTuple)) return value.map(([name, v]) => [name, walk(v, name)])
     const blank = key && secretName(key)
-    return value.map((item) => (blank && typeof item === "string" && !keepUnder(item) ? MARK : walk(item, "")))
+    return value.map((item) => (blank && typeof item === "string" && !keepUnder(item) && maskUnder(key, item) ? MARK : walk(item, "")))
   }
   if (typeof value !== "object") return value
   if (value.redacted === true && typeof value.sha256 === "string") return copyRedactedCell(value)

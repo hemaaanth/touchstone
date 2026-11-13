@@ -563,3 +563,16 @@ describe("redact: header tuples (delta review 4)", () => {
     for (const s of ["[" + " ".repeat(MB) + '"a",', '["token","' + "\\".repeat(MB), '[("a", "b"'.repeat(MB / 10)]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })
+
+describe("redact: a name secret only by its ending keeps a plain value (delta review 4)", () => {
+  test("plain settings stay in objects and text", () => {
+    const plain = { baseToken: "USDC", quoteToken: "WETH", rewardToken: "NEAR", sort_key: "name", cache_key: "user:42", primaryKey: "id", nextToken: "", tokenKey: "sub", storageKey: "theme", tags: { authToken: undefined } }
+    expect(redactSecrets(plain)).toEqual(plain)
+    for (const s of [`{"baseToken":"USDC","primaryKey":"id"}`, `const q = { quoteToken: 'WETH', sort_key: "name" }`]) expect(text(s)).toBe(s)
+  })
+  test("a secret-shaped value under such a name, and any value under a secret word, is masked", () => {
+    const out = redactSecrets({ signerPrivateKey: "0x" + "ab12".repeat(16), dbPassword: "hunter22pass", "x-goog-api-key": "AIzaFAKEkey123", token: "short", password: "letmein" })
+    expect(out).toEqual({ signerPrivateKey: "[REDACTED]", dbPassword: "[REDACTED]", "x-goog-api-key": "[REDACTED]", token: "[REDACTED]", password: "[REDACTED]" })
+    expect(text(`{"nextToken":"eyJwYWdlIjoyfQ=="}`)).toBe(`{"nextToken":"[REDACTED]"}`)
+  })
+})
