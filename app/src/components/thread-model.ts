@@ -292,9 +292,12 @@ export function cardFor(
   // The finding's own proof kind: from its record, else from the module it came
   // through; the run's scope only when neither is known. In a joined run a web
   // finding is an HTTP replay even when the scope is a Contracts one.
-  const ownPack = sub.pack ? packProof[sub.pack] : undefined
-  const proofKind: ProofKind =
-    rec?.proofKind ?? (ownPack === "forge" || ownPack === "http" || ownPack === "evidence" ? ownPack : proofKindOf(state))
+  // The module: the recorded finding's, else the submitted card's.
+  const known = (pack: string | null | undefined): ProofKind | undefined => {
+    const k = pack ? packProof[pack] : undefined
+    return k === "forge" || k === "http" || k === "evidence" ? k : undefined
+  }
+  const proofKind: ProofKind = rec?.proofKind ?? known(rec?.pack) ?? known(sub.pack) ?? proofKindOf(state)
   if (rec) {
     if (!rec.proven) return { card: "unproven", proofKind, proofArtifactId: null }
     const proofs = state.artifacts.filter((a) => a.kind === "proof")

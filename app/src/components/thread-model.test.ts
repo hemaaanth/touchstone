@@ -421,3 +421,19 @@ test("a joined run's finding card reads its own module's proof, not the scope's;
   const forge: RunEvent = { ev: "finding-submitted", n: 1, title: "Drain", severity: "high", poc: "DrainTest" }
   assert.deepEqual(kinds([contracts, forge, { ev: "finding", id: `${R}.1`, runId: R, title: "Drain", poc: "DrainTest" }]), ["forge"])
 })
+
+test("a recorded finding with a module but no proof kind reads its module's proof, before the scope's", () => {
+  // The review's case: no pack on the card, no proofKind on the record, only the record's pack.
+  const contracts = { ev: "scope", scope: { id: "s", title: "Vault", kind: "lab", pack: "contracts", proofSurface: { kind: "sandbox-foundry" } } } as RunEvent
+  const events: RunEvent[] = [
+    contracts,
+    { ev: "finding-submitted", n: 1, title: "XSS", severity: "medium", poc: "P" },
+    { ev: "finding", id: `${R}.1`, runId: R, title: "XSS", poc: "P", pack: "web" },
+  ]
+  const state = reduceEvents(events)
+  const kinds = buildMessages(state, state.steps, "recorded", false, false, null, { web: "http", contracts: "forge" })
+    .flatMap((m) => (Array.isArray(m.content) ? (m.content as { toolName?: string; args?: { proofKind?: string } }[]) : []))
+    .filter((p) => p.toolName === "proof")
+    .map((p) => p.args?.proofKind)
+  assert.deepEqual(kinds, ["http"])
+})
