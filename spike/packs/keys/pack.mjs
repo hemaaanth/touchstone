@@ -6,6 +6,8 @@
 // leads. The agent writes a test that runs a harmful transaction the setup should
 // have blocked. See SKILL.md and TOOLS.md.
 import { chainNudge, chainPrepass, chainTools, keysLeads, proveWithHarm, hasWorld, sourceKickoff, sourceSystem } from "./common.mjs";
+import { SAFE_HASH_ENGINE, safeHashLeads } from "./safe-hash.mjs";
+import { SAFE_TX_HASHES_ENGINE } from "./safe-tx-hashes.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a pair of Safe multisig wallets that the operator owns. Each Safe
@@ -16,7 +18,9 @@ PROVE each one with a runnable Foundry test.
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the lab code under src/. KeysLab.sol has a helper
-  that deploys a real Safe 1.4.1 and one example module.
+  that deploys a real Safe 1.4.1 and one example module. CosignVault.sol is a small
+  co-signing vault beside the Safes. It is not deployed in the lab world and safe_state
+  does not read it: to prove a bug in it, deploy it in setUp and fund it with vm.deal.
 - safe_state returns what the lab read from both Safes: owners, threshold, nonce,
   modules, guard, fallback handler, and the code each owner address holds.
 - key_leads returns ranked leads from our checks. Two readers (plain ethers and
@@ -81,7 +85,7 @@ const kickoff = (ws, env) => {
   if (!hasWorld(ws, "keys")) return sourceKickoff("keys", env.CHAIN_BRIEF);
   const base = "Audit the two Safes in this lab. Call key_leads and safe_state, read the lab source, list every suspect worst first, then prove each one you can with its own passing Foundry test that rebuilds the weak setup and moves ETH out of a Safe without the approval the owners meant to require. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call key_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from our Safe checks, source checks, Slither and Aderyn, scariest first. A lead is real only once your test proves it. Call key_leads for the full list. Some leads come from source checks, Slither and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
@@ -102,6 +106,6 @@ export default {
   }),
   kickoff,
   nudge: (state) => chainNudge(state, "suspect"),
-  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "keys", analyze: keysLeads }),
+  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "keys", analyze: keysLeads, slither: true, extra: (w, o) => safeHashLeads(w, o, { engines: [SAFE_HASH_ENGINE, SAFE_TX_HASHES_ENGINE] }) }),
   prove: proveWithHarm,
 };
