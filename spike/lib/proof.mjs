@@ -714,12 +714,12 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
     if (targets.has(a)) { impersonated.push(`${a} (${targets.get(a)})`); targets.delete(a); }
   }
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
-  // Not proven. When the test impersonated a target, that is the true reason: say
-  // it, so the agent can repair its PoC.
+  // Not proven. When the test impersonated a target, say so first, so the agent can
+  // repair its PoC; then keep the base reason, which may be the true cause.
   const refuse = (reason) => ({
     ok: false,
     reason: impersonated.length
-      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp()`
+      ? `the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp(). Without that target: ${reason}`
       : reason,
     targets: names,
   });

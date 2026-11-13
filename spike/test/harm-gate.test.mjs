@@ -477,6 +477,21 @@ test("harm gate: a net-zero logged flow with a balance-slot drop is not a token 
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
+// H1d n3: the impersonation text must not hide the true cause. The test pranks
+// scope target TOKEN (not the victim) and calls VAULT, which moves nothing. The
+// reason names the prank AND keeps the base reason.
+test("harm gate: the impersonation reason keeps the base reason after it (H1d n3)", () => {
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    prankNode(TOKEN),
+    callVault(),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, new RegExp(`impersonated scope target ${TOKEN}`));
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
 // ---- the whole impersonation family (M4, delta review) ---------------------
 //
 // vm.prank / vm.startPrank each have four overloads: plain, with a tx.origin,
