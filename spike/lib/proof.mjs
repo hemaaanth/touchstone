@@ -177,7 +177,7 @@ export async function proofDelta(ws, { source, contract, timeoutMs = 180_000, st
   };
 }
 
-export const TRACE_TOO_LARGE = `the replay trace is larger than ${FORGE_OUTPUT_CAP / 1048576} MiB, so it was cut and the gate does not judge it. A forge-std deal(token, …) in the test body makes a very large trace (about 10 MiB for each call): call deal in setUp() instead, and keep the test body to the attack itself`;
+export const TRACE_TOO_LARGE = `the replay trace is larger than ${FORGE_OUTPUT_CAP / 1048576} MiB, so it was cut and the gate does not judge it. A forge-std deal(token, …) in the test body makes a very large trace (about 10 MiB for each call). Move it to setUp(), and keep the test body to the attack itself. But use deal in setUp() only to fund a scope contract: a deal that funds the attacker with a scope token writes that token's storage and is refused too. So get the attacker's tokens through the protocol, or use a token outside the scope`;
 function traceTooLarge(contract, timedOut) {
   const harm = { ok: false, reason: TRACE_TOO_LARGE, targets: [] };
   return { tool: "Foundry", source: "engine-replay", contract, test: null, status: "fail", pass: false, reason: TRACE_TOO_LARGE, gasUsed: null, logs: [], transfers: [], harm, timedOut };
