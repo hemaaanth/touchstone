@@ -19,13 +19,15 @@
 //   `setup` call carries `setup: true`. A setUp write is fixture, not an exploit step.
 //   The storage owner is the address that ran the code: the caller for DELEGATECALL,
 //   the callee for CALL.
-// - pranks: the impersonated msg.sender (first address argument) of every cheatcode in
+// - pranks: the impersonated msg.sender (first address argument), and for the origin
+//   overloads also the pranked tx.origin (second), of every cheatcode in
 //   the trace that sets msg.sender or tx.origin — the whole vm.prank / vm.startPrank
 //   family (including the two-arg origin and the delegateCall `bool` overloads) and
 //   vm.broadcast / vm.startBroadcast with an explicit address. Recorded for any call kind
 //   and even in a frame that reverted: forge keeps prank state in its inspector, so a
-//   revert does not undo it. A target the test impersonated cannot be a drain victim:
-//   the move is the test acting as that target, not an exploit (see lib/proof.mjs).
+//   revert does not undo it. A target the test impersonated is no target at all (not a
+//   victim, token or takeover context): the move is the test acting as that target, not
+//   an exploit (see lib/proof.mjs).
 // - calls (from the "Execution" trace only): successful CALL nodes, in order, to see
 //   what ran after an etch.
 // What we keep from every trace: the set of created contracts and the selectors each
@@ -73,6 +75,10 @@ const IMPERSONATION_SIGS = [
   "startBroadcast(address)",
 ];
 const IMPERSONATE = new Set(IMPERSONATION_SIGS.map(selector4));
+// The overloads whose SECOND address argument is the pranked tx.origin. A scope
+// contract can never be a real tx.origin, so an origin prank AS a target is the
+// test acting as that target too: record it as well (fail closed).
+const WITH_ORIGIN = new Set(IMPERSONATION_SIGS.filter((s) => s.includes("(address,address")).map(selector4));
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -183,6 +189,7 @@ export function extractControlTrace(traces) {
           // prank state in its inspector, not in EVM state, so a revert does NOT
           // undo it: record it whether or not the frame was kept.
           out.pranks.push("0x" + data.slice(24, 64));
+          if (WITH_ORIGIN.has(selector)) out.pranks.push("0x" + data.slice(88, 128));
         }
         return;
       }

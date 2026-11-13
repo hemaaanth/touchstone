@@ -494,6 +494,26 @@ for (const sig of IMPERSONATION_SIGS) {
   });
 }
 
+// Review 2, "not checked": prank(sender, origin) also sets tx.origin. A scope
+// contract can never be a real tx.origin, so an origin prank AS the victim is a
+// forgery too, even when msg.sender is the attacker.
+for (const sig of IMPERSONATION_SIGS.filter((s) => s.includes("(address,address"))) {
+  test(`harm gate: a token drain where the test pranks the victim as tx.origin via ${sig} is not proven`, () => {
+    const log = transferLog(VAULT, ATTACKER, ONE);
+    const bool = sig.endsWith(",bool)") ? word("0x0").slice(2) : "";
+    const traces = [setup(createToken()), ["Execution", { arena: [
+      node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+      node(0, { kind: "CALL", address: "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d", caller: TEST,
+        data: id(sig).slice(0, 10) + word(ATTACKER).slice(2) + word(VAULT).slice(2) + bool }),
+      callVault(),
+      logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+    ] }]];
+    const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+    assert.equal(h.ok, false, `${sig} origin impersonation must not be a proof`);
+    assert.match(h.reason, impersonatedVault);
+  });
+}
+
 // ---- real forge, in Docker --------------------------------------------------
 
 const hasForge = (() => {
