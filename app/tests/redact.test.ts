@@ -767,3 +767,29 @@ describe("redact: an RPC or API key in a URL path (H2b item 2)", () => {
     expect(timeMs("https://x.alchemy.com" + "/seg".repeat(MB / 4) + " x")).toBeLessThan(2000)
   })
 })
+
+describe("redact: JSON escaped three or more times (H2b item 3)", () => {
+  // Build the value at escape depth d: each JSON.stringify doubles backslashes.
+  const atDepth = (obj: object, d: number): string => {
+    let s = JSON.stringify(obj)
+    for (let i = 0; i < d; i++) s = JSON.stringify(s).slice(1, -1)
+    return s
+  }
+  test("a value under a secret name is masked at depth 2, 3 and 4", () => {
+    const V = "correct-horse-battery-staple"
+    for (let d = 2; d <= 4; d++) {
+      const s = atDepth({ password: V }, d)
+      expect(s).toContain("\\\\\\") // it really is deeply escaped
+      expect(text(s)).not.toContain(V)
+    }
+  })
+  test("a setting and a 0x address stay at depth 3", () => {
+    expect(text(atDepth({ sort_key: "created_at" }, 3))).toContain("created_at")
+    const addr = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+    expect(text(atDepth({ token: addr }, 3))).toContain(addr)
+  })
+  test("a deep pair with a 1 MB backslash run finishes in linear time", () => {
+    expect(timeMs('{\\\\\\"token\\\\\\":\\\\\\"a' + "\\\\".repeat(MB) + 'b\\\\\\"}')).toBeLessThan(2000)
+    expect(timeMs("x" + "\\\\".repeat(MB) + '"token":"v"')).toBeLessThan(2000)
+  })
+})

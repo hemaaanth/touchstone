@@ -57,6 +57,16 @@ const maskUnder = (name, value) => SECRET_KEY.test(name) || (secretish(value) &&
 // as in a JSON string that holds JSON. The key is tested with SECRET_KEY.
 const JSON_PAIR = /"([^"\\\r\n]{1,64})"(\s*:\s*)"((?:\\.|[^"\\])*)"/g
 const JSON_PAIR_ESC = /\\"([^"\\\r\n]{1,64})\\"(\s*:\s*)\\"((?:[^"\\]|\\(?!"))*)\\"/g
+// The same pair escaped two or more levels deep, as in a JSON string that
+// holds a JSON string that holds JSON. Each JSON.stringify doubles the
+// backslashes, so the run before every quote is 1, 3, 7, 15 … characters.
+// JSON_PAIR and JSON_PAIR_ESC handle depth 0 and 1; this one run of 3 or more
+// backslashes (\\{3,}), tied across the four quotes by the backreference,
+// handles every deeper level in one rule, not one rule per depth. The run is
+// a single greedy group, so it is linear. The name and the value are plain
+// text at any depth (a value with its own escaped quote is a rare edge the
+// run does not reach into).
+const JSON_PAIR_DEEP = /(\\{3,})"([^"\\\r\n]{1,64})\1"(\s*:\s*)\1"([^"\\\r\n]*)\1"/g
 // A HAR or app header cell held as text: {"name":"Authorization",
 // "value":"Basic …"}, maybe with short fields between them, such as
 // "redacted":false. The value is judged under the name. The second form is
@@ -357,7 +367,7 @@ function maskEnv(m, name, sep, dq, sq, bare, offset, str) {
 
 function redactText(text) {
   if (!text || MARKER.test(text)) return text
-  for (const re of [JSON_PAIR, JSON_PAIR_ESC, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
+  for (const re of [JSON_PAIR, JSON_PAIR_ESC, JSON_PAIR_DEEP, NAMED_VALUE, NAMED_VALUE_ESC, TUPLE, CODE_PAIR, CODE_PAIR_ESC, LINE_HEADER, TABLE_HEADER, QUOTE_HEADER, BEARER, QUERY, RPC_URL, URL_USERINFO, CURL_USER, CURL_COOKIE, CLI_FLAG, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
@@ -366,6 +376,10 @@ function redactText(text) {
   out = out.replace(JSON_PAIR_ESC, (m, name, sep, v) => {
     const masked = maskPairValue(name, v)
     return masked == null ? m : `\\"${name}\\"${sep}\\"${masked}\\"`
+  })
+  out = out.replace(JSON_PAIR_DEEP, (m, bs, name, sep, v) => {
+    const masked = maskPairValue(name, v)
+    return masked == null ? m : `${bs}"${name}${bs}"${sep}${bs}"${masked}${bs}"`
   })
   out = out.replace(NAMED_VALUE, maskNamed)
   out = out.replace(NAMED_VALUE_ESC, maskNamed)
