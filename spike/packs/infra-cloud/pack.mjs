@@ -95,7 +95,7 @@ function tools(ws, state) {
       event("finding-submitted", { n: finding.n, title: finding.title, severity: finding.severity, poc: finding.poc });
       return output({ recorded: finding.n, next: "Continue with the next distinct root cause." });
     } }),
-    candidateTool({ pack: "infra-cloud", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC }),
+    candidateTool({ pack: "infra-cloud", state, lookup: evidenceLookup(state, (id) => `infra-evidence-${id}`), poc: EVIDENCE_POC }),
   ];
 }
 

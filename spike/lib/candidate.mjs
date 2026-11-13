@@ -218,15 +218,25 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
     return refuse("cap", `Cannot record this candidate: this run already has ${CANDIDATE_CAP} candidates, the most a run may hold. A candidate costs a human's attention. Keep auditing for proven findings, or write the coverage summary.`);
   }
   if (!poc) return refuse("no-attempt", "Cannot record this candidate: name the recorded attempt it comes from.");
-  const finding = state.found.find((f) => f.poc === poc);
-  if (finding) return refuse("duplicate", `"${poc}" is already recorded as finding #${finding.n} ("${finding.title}"). A candidate cannot repeat a finding.`);
-  const twin = state.candidates.find((c) => c.poc === poc);
-  if (twin) return refuse("duplicate", `"${poc}" is already recorded as candidate #${twin.n} ("${twin.title}").`);
+  const samePoc = (p) => {
+    const finding = state.found.find((f) => f.poc === p);
+    if (finding) return refuse("duplicate", `"${p}" is already recorded as finding #${finding.n} ("${finding.title}"). A candidate cannot repeat a finding.`);
+    const twin = state.candidates.find((c) => c.poc === p);
+    if (twin) return refuse("duplicate", `"${p}" is already recorded as candidate #${twin.n} ("${twin.title}").`);
+    return null;
+  };
+  const dup = samePoc(poc);
+  if (dup) return dup;
   let attempt;
   try { attempt = await lookup(poc); } catch (err) { attempt = { error: String(err?.message ?? err).slice(0, 200) }; }
   if (attempt?.error) return refuse("no-evidence", `Cannot record this candidate: the attempt "${poc}" could not be read back (${attempt.error}).`);
   if (!attempt) return refuse("no-attempt", `Cannot record this candidate: "${poc}" is not a recorded attempt in this session. A candidate needs real captured evidence, never a bare claim. Run the attempt first, then cite it.`);
   if (attempt.proved) return refuse("proved", `Not a candidate: the attempt "${poc}" met this pack's proof model. It is a real finding. Call submit_finding with "${poc}" instead.`);
+  // The poc a finding for this attempt would carry (evidence packs prefix the
+  // lead id). The candidate is stored under it, so the guards see the pair.
+  const recordPoc = String(attempt.poc ?? poc);
+  const dupRecord = recordPoc === poc ? null : samePoc(recordPoc);
+  if (dupRecord) return dupRecord;
   const rootCause = attempt.rootCause ?? null;
   if (rootCause) {
     const sameRoot = state.found.find((f) => f.rootCause === rootCause) ?? state.candidates.find((c) => c.rootCause === rootCause);
@@ -251,7 +261,7 @@ export async function checkCandidate({ pack, state, lookup, args, scrub = scrubV
   // The pack's own scrub first (it knows its secret shapes), then the shared one.
   const line = (t) => scrubText(scrubLine(String(t ?? "")));
   const candidate = makeCandidate({
-    n, pack, poc, severity, rootCause, evidenceHash,
+    n, pack, poc: recordPoc, severity, rootCause, evidenceHash,
     title: line(own ? own.title : args.title),
     explanation: line(explanation),
     cites: cites.map(line),
@@ -356,7 +366,8 @@ export function recordEvidence(state, id, { lead, evidence = lead?.evidence, pro
   state.attempts.set(String(id), { lead, evidence, proof });
 }
 
-export function evidenceLookup(state) {
+// `findingPoc` maps a lead id to the poc the pack's submit_finding records.
+export function evidenceLookup(state, findingPoc = (id) => id) {
   return (id) => {
     const a = state.attempts?.get(id);
     if (!a) return null;
@@ -368,6 +379,7 @@ export function evidenceLookup(state) {
       // line copied from either tool output matches.
       text: `${JSON.stringify(lead)}\n${JSON.stringify(proof)}`,
       rootCause: lead.rootCause ?? `lead:${lead.id}`,
+      poc: findingPoc(id),
       // For a pack that keeps no model prose (supply-chain), as submit_finding.
       packText: { title: lead.check, explanation: lead.description },
     };

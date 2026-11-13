@@ -115,7 +115,7 @@ function tools(ws, state) {
       return output({ recorded: finding.n, continue: "Check the next root cause." });
     } }),
     // No model prose here either: the candidate text comes from the lead.
-    candidateTool({ pack: "supply-chain", state, lookup: evidenceLookup(state), poc: EVIDENCE_POC, packText: true }),
+    candidateTool({ pack: "supply-chain", state, lookup: evidenceLookup(state, (id) => `evidence-${id}`), poc: EVIDENCE_POC, packText: true }),
   ];
 }
 

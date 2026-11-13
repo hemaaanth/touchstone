@@ -35,10 +35,10 @@ const { default: domains } = await import("../packs/domains/pack.mjs");
 const { default: surface } = await import("../packs/surface/pack.mjs");
 
 const SPECS = [
-  { pack: supplyChain, report: "supply-chain-leads.json", finding: (id) => ({ lead_id: id, severity: "high" }) },
-  { pack: infraCloud, report: "infra-cloud-leads.json", finding: (id) => ({ lead_id: id }) },
+  { pack: supplyChain, report: "supply-chain-leads.json", finding: (id) => ({ lead_id: id, severity: "high" }), findingPoc: (id) => `evidence-${id}` },
+  { pack: infraCloud, report: "infra-cloud-leads.json", finding: (id) => ({ lead_id: id }), findingPoc: (id) => `infra-evidence-${id}` },
   // domains replays inside submit_finding; a failed submit is the attempt.
-  { pack: domains, finding: (id) => ({ lead_id: id, explanation: "Captured. Fix: remove it." }) },
+  { pack: domains, finding: (id) => ({ lead_id: id, explanation: "Captured. Fix: remove it." }), findingPoc: (id) => id },
 ];
 
 const candidateArgs = (id) => ({
@@ -49,7 +49,7 @@ const candidateArgs = (id) => ({
   explanation: "The file exposes an admin endpoint the rule does not cover.\nFix: remove the public binding.",
 });
 
-for (const { pack, report, finding } of SPECS) {
+for (const { pack, report, finding, findingPoc } of SPECS) {
   const setup = () => {
     pass.clear();
     const ws = mkdtempSync(join(tmpdir(), `cand-${pack.id}-`));
@@ -82,6 +82,21 @@ for (const { pack, report, finding } of SPECS) {
       // The finding gate is unchanged: the failed lead is still refused there.
       assert.equal((await tools.submit_finding.execute(finding("L1"))).isError, true);
       assert.equal(state.found.length, 0);
+    } finally { done(); }
+  });
+
+  // Review Minor 3: the candidate's poc is the form a finding for the same
+  // lead uses, so the poc guards and the supersede step see the pair.
+  test(`${pack.id}: the candidate poc is the finding's poc form, and the poc guard uses it`, async () => {
+    const { state, tools, attempt, done } = setup();
+    try {
+      await attempt("L1");
+      await attempt("L2");
+      assert.ok(!(await tools.submit_candidate.execute(candidateArgs("L1"))).isError);
+      assert.equal(state.candidates[0].poc, findingPoc("L1"));
+      state.found.push({ n: 1, poc: findingPoc("L2"), title: "found" });
+      assert.match((await tools.submit_candidate.execute(candidateArgs("L2"))).output[0].text, /already recorded as finding #1/);
+      assert.equal(state.candidates.length, 1);
     } finally { done(); }
   });
 
