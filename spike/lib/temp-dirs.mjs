@@ -9,13 +9,20 @@
 // The process still dies by the signal. lab-net re-raises it only when its own
 // handler is the only listener; this handler re-raises it when it runs last
 // with no listener left. In either order exactly one of the two raises it.
-import { rmSync } from "node:fs";
+//
+// Because it deletes, it tracks only a real directory (not a link) that is a
+// direct child of the real temp folder (realpath of os.tmpdir()), as mkdtempSync
+// makes them. Anything else throws and is not tracked.
+import { lstatSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 
-const dirs = new Set();
+// The path a caller tracked -> its real path, which is what a signal removes.
+const dirs = new Map();
 const SIGNALS = ["SIGINT", "SIGTERM"];
 
 function removeAll() {
-  for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+  for (const real of dirs.values()) { try { rmSync(real, { recursive: true, force: true }); } catch { /* best effort */ } }
   dirs.clear();
 }
 function off() {
@@ -28,10 +35,16 @@ function onSignal(sig) {
   if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
 }
 
-// Remove dir on SIGINT/SIGTERM/exit until untrackTempDir(dir).
+// Remove dir on SIGINT/SIGTERM/exit until untrackTempDir(dir). dir must be a real
+// directory directly inside the real temp folder; anything else throws.
 export function trackTempDir(dir) {
+  let real = null;
+  try { if (lstatSync(dir).isDirectory()) real = realpathSync(dir); } catch { /* checked below */ }
+  if (!real || dirname(real) !== realpathSync(tmpdir())) {
+    throw new Error(`trackTempDir: ${String(dir).slice(0, 200)} is not a real directory directly inside the temp folder ${tmpdir()}, so it is not tracked.`);
+  }
   if (dirs.size === 0) { for (const s of SIGNALS) process.on(s, onSignal); process.on("exit", removeAll); }
-  dirs.add(dir);
+  dirs.set(dir, real);
   return dir;
 }
 export function untrackTempDir(dir) {
@@ -43,4 +56,4 @@ export function removeTempDir(dir) {
   rmSync(dir, { recursive: true, force: true });
   untrackTempDir(dir);
 }
-export const trackedTempDirs = () => [...dirs];
+export const trackedTempDirs = () => [...dirs.keys()];
