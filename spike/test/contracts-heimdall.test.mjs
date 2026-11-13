@@ -130,6 +130,16 @@ test("heimdallScan returns the recovered functions when the unit decompiles", as
   assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
 });
 
+test("heimdallScan treats a non-zero exit as unavailable even when a good ABI was written", async () => {
+  const ws = mkdir();
+  const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ code: 1 }, goodAbi()) });
+  assert.equal(scan.available, false);
+  assert.match(scan.reason, /exit 1/);
+  assert.equal(scan.units[0].status, "unavailable");
+  assert.deepEqual(scan.functions, []);
+  assert.deepEqual(readdirSync(ws).filter((f) => f.startsWith(".heimdall")), []);
+});
+
 test("heimdallScan treats an empty ABI as a gap, not a clean run with zero functions", async () => {
   const ws = mkdir();
   const scan = await heimdallScan(ws, [UNIT], { run: fakeRun({ code: 0 }, "[]") });
