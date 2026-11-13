@@ -117,7 +117,7 @@ describe("dev server: /api/", () => {
   // Origin and Host guard as every other read.
   test("the findings list and the copy routes refuse another origin and another Host", async () => {
     const host = `evil.example:${new URL(base).port}`
-    for (const url of ["/api/findings", "/api/findings/zz-none/report?format=agent", "/api/findings/zz-none/report?format=md"]) {
+    for (const url of ["/api/findings", "/api/findings/zz-none?events=0", "/api/findings/zz-none/report?format=agent", "/api/findings/zz-none/report?format=md"]) {
       expect((await fetch(base + url, { headers: { origin: base } })).status, url).not.toBe(403)
       expect((await fetch(base + url, { headers: { origin: FOREIGN } })).status, url).toBe(403)
       expect((await withHost(host, url)).status, url).toBe(403)

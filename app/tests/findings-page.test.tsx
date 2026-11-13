@@ -26,6 +26,7 @@ const NO_REPLAY = "zz-fp-2611120931-1" // a forge finding with no replay record
 const FAILED = "zz-fp-2611120932-1" // a forge proof that failed its replay
 const DAMAGED = "zz-fp-2611120933-1" // not JSON
 const LONG = "zz-fp-2611120934-1" // a narrative over the 64 KB redaction cap
+const SPLIT = "zz-fp-2611120935-1" // a key that is whole only once the brief is assembled
 
 const records: Record<string, string> = {
   [`run-${MULTI}.json`]: JSON.stringify({
@@ -71,6 +72,22 @@ const records: Record<string, string> = {
     result: { finding: { title: "Replay failed", severity: "critical", poc: "YTest" }, pocProved: true, proof: { pass: false, status: "fail", contract: "YTest", transfers: [] } },
   }),
   [`run-${DAMAGED}.json`]: '{"result": {"finding": {"title": "Torn',
+  // The key's BEGIN line is in the title and its body and END line in the
+  // narrative. Each field alone holds no whole key, so the report's own pass
+  // leaves both; only the pass over the assembled brief can see the key.
+  [`run-${SPLIT}.json`]: JSON.stringify({
+    result: {
+      findings: [
+        {
+          title: "Key dump -----BEGIN PRIVATE KEY-----",
+          severity: "high",
+          pocProved: true,
+          explanation: `${PEM_BODY} -----END PRIVATE KEY----- came back from the debug route`,
+          proof: { kind: "evidence", status: "pass", check: "key-dump" },
+        },
+      ],
+    },
+  }),
   [`run-${LONG}.json`]: JSON.stringify({
     result: {
       findings: [{ title: "Huge write-up", severity: "low", pocProved: true, explanation: `Key ${TOKEN}. ` + "The vault pays twice. ".repeat(4000), proof: { kind: "evidence", status: "pass", check: "big" } }],
@@ -98,6 +115,8 @@ mock.module("node:fs/promises", () => ({
 const { listFindings } = await import("../server/findings.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")
+// @ts-expect-error — plain .mjs module, no types
+const { handleApi } = await import("../server/api.mjs")
 
 type Listed = FindingSummary & { pack: string | null; scope: string | null; at: number | null }
 const listed = async (): Promise<Listed[]> => ((await listFindings()) as Listed[]).filter((f) => f.id.startsWith("zz-fp-"))
@@ -204,6 +223,12 @@ describe("copied texts (server): built by the report builder and redacted", () =
     }
   })
 
+  test("the agent brief is redacted again once assembled: a key split across the title and the narrative", async () => {
+    const { body } = await getReport(`${SPLIT}.1`, "agent")
+    expect(body).not.toContain(PEM_BODY.slice(0, 32))
+    expect(body).toContain("[REDACTED]")
+  })
+
   test("an unknown finding is a 404", async () => {
     expect((await getReport("zz-fp-none", "agent")).status).toBe(404)
   })
@@ -276,6 +301,39 @@ describe("findings list (browser): order and filters", () => {
   })
 })
 
+describe("the sheet's read (m3): the finding without its run's events", () => {
+  test("?events=0 leaves the events out; the default keeps them", async () => {
+    const full = await handleApi(`/api/findings/${MULTI}.1`)
+    const lean = await handleApi(`/api/findings/${MULTI}.1?events=0`)
+    expect(full.status).toBe(200)
+    expect(lean.status).toBe(200)
+    expect(full.json.events.length).toBeGreaterThan(0)
+    expect(lean.json.events).toEqual([])
+    // Everything the sheet shows is still there.
+    const { events: _a, ...fullRest } = full.json
+    const { events: _b, ...leanRest } = lean.json
+    expect(leanRest).toEqual(fullRest)
+  })
+})
+
+describe("dismissed findings (m4): hidden by default, last when shown", () => {
+  const mixed = many.map((f, i) => (i % 10 === 3 ? { ...f, dismissed: true } : f))
+  test("the default view hides them; Show dismissed brings them back", () => {
+    expect(DEFAULT_VIEW.dismissed).toBe("hide")
+    expect(filterFindings(mixed, DEFAULT_VIEW)).toHaveLength(450)
+    expect(filterFindings(mixed, DEFAULT_VIEW).some((f) => f.dismissed)).toBe(false)
+    expect(filterFindings(mixed, { ...DEFAULT_VIEW, dismissed: "show" })).toHaveLength(500)
+  })
+  test("every sort puts a dismissed finding after every open one", () => {
+    for (const sort of ["proven", "severity", "newest", "oldest", "scope"] as const) {
+      const out = sortFindings(mixed, sort)
+      const firstDismissed = out.findIndex((f) => f.dismissed)
+      expect(firstDismissed).toBe(450)
+      expect(out.slice(firstDismissed).every((f) => f.dismissed)).toBe(true)
+    }
+  })
+})
+
 describe("a row: red only on a proven finding, green only after a replay", () => {
   const row = (f: FindingSummary) =>
     renderToStaticMarkup(
@@ -298,6 +356,12 @@ describe("a row: red only on a proven finding, green only after a replay", () =>
     expect(html).not.toContain("text-bad")
     expect(html).not.toContain("text-warn")
     expect(html).toContain("Not proven")
+  })
+
+  test("a dismissed proven row reads Dismissed first, then its true state", () => {
+    const html = row({ ...critical, dismissed: true, proven: true, stages: { ...critical.stages, proven: true } })
+    expect(html.indexOf("Dismissed")).toBeGreaterThan(-1)
+    expect(html.indexOf("Dismissed")).toBeLessThan(html.indexOf(">Proven<"))
   })
 
   test("a row with no recorded date says so", () => {

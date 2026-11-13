@@ -4,13 +4,14 @@
 import { listFindings, getFinding } from "./findings.mjs"
 
 export async function handleApi(url) {
-  const { pathname } = new URL(url, "http://local")
+  const { pathname, searchParams } = new URL(url, "http://local")
   if (pathname === "/api/findings") {
     return { status: 200, json: { findings: await listFindings() } }
   }
   const match = pathname.match(/^\/api\/findings\/([^/]+)$/)
   if (match) {
-    const finding = await getFinding(decodeURIComponent(match[1]))
+    // ?events=0: the finding without its run's transcript (findings.mjs).
+    const finding = await getFinding(decodeURIComponent(match[1]), { events: searchParams.get("events") !== "0" })
     return finding
       ? { status: 200, json: finding }
       : { status: 404, json: { error: "not found" } }
