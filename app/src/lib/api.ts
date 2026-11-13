@@ -94,6 +94,8 @@ export function attachScope(body: {
   token?: string
   tokens?: Record<string, { client: string; scopes: string[] }>
   toolScope?: Record<string, string>
+  // The assistant's chat path and request budget for garak (ai-mcp only).
+  assistant?: { path: string; budget: number }
   members?: ScopeMember[]
   pack?: string
   repo?: string

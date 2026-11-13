@@ -350,11 +350,14 @@ function siteOrigin(raw: string): string | null {
 // repos, whose content the server does not know until a run fetches it.
 // Live websites go as { kind: "live", hosts, permission }: the checkbox is the
 // operator saying they may test them, and the server records it as a grant.
-function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, pack: string | undefined, permission: boolean, token: string, chat: { path: string; budget: string }): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   const sites = sources.flatMap((s) => (s.kind === "site" ? [s.origin] : []))
   const bearer = token.trim()
-  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}) }
+  // garak runs only with a chat path and a budget. The server checks both.
+  const chatPath = chat.path.trim()
+  const assistant = chatPath || chat.budget.trim() ? { path: chatPath, budget: Number(chat.budget) } : null
+  if (sites.length) return { kind: "live", title, hosts: sites, permission, pack: pack ?? "web", ...(bearer ? { token: bearer } : {}), ...(assistant && pack === "ai-mcp" ? { assistant } : {}) }
   const members = sources.filter((s): s is Exclude<Source, { kind: "site" }> => s.kind !== "site")
   return { title, members, ...(pack ? { pack } : {}) }
 }
@@ -382,12 +385,14 @@ export function AddScope({
   const [busy, setBusy] = useState(false)
   const [permission, setPermission] = useState(false)
   const [token, setToken] = useState("")
+  const [chatPath, setChatPath] = useState("")
+  const [chatBudget, setChatBudget] = useState("")
   const [module, setModule] = useState("web")
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const siteModule = pack && pack !== "contracts" ? pack : module
-  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token) : null
+  const body = sources.length ? scopeBody(sources, name.trim(), siteModule, permission, token, { path: chatPath, budget: chatBudget }) : null
   const live = sources.some((s) => s.kind === "site")
   const livePacks = (packs ?? []).filter((p) => p.live)
   // Only the AI/MCP module takes a caller credential. A website does not.
@@ -400,6 +405,8 @@ export function AddScope({
     setSources([])
     setPermission(false)
     setToken("")
+    setChatPath("")
+    setChatBudget("")
     onError(null)
   }
   const add = (s: Source) => {
@@ -596,6 +603,28 @@ export function AddScope({
                 placeholder="optional; the caller token to audit with"
                 aria-label="Bearer token the run may use"
                 className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+            </label>
+          ) : null}
+          {wantsToken ? (
+            <label className="flex items-center gap-2 border-t border-border/60 py-1.5 pr-2 pl-2.5">
+              <span className="shrink-0 text-[11px] text-muted-foreground">garak</span>
+              <input
+                value={chatPath}
+                disabled={busy}
+                onChange={(e) => setChatPath(e.target.value)}
+                placeholder="optional; assistant chat path, e.g. /agent/chat"
+                aria-label="Assistant chat path garak may probe"
+                className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              />
+              <input
+                value={chatBudget}
+                disabled={busy}
+                inputMode="numeric"
+                onChange={(e) => setChatBudget(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                placeholder="requests"
+                aria-label="Most requests garak may send (8 to 200)"
+                className="h-7 w-16 shrink-0 bg-transparent text-right font-mono text-[11.5px] outline-none placeholder:font-sans placeholder:text-muted-foreground"
               />
             </label>
           ) : null}

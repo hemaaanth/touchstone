@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const SHIELD_IMAGE = "touchstone/mcp-shield:1.0.4";
+const GARAK_IMAGE = "touchstone/garak:0.17.1";
 const shieldOut = readFileSync(new URL("./fixtures/mcp-shield/poisoned.json", import.meta.url), "utf8");
+const garakOut = readFileSync(new URL("./fixtures/garak/echo.json", import.meta.url), "utf8");
 
 const calls = [];
 let missing = new Set();
@@ -22,6 +24,7 @@ mock.module("../lib/wrap.mjs", {
     runTool: async (o) => {
       calls.push(o);
       if (o.image === SHIELD_IMAGE) return { code: 0, stdout: shieldOut, stderr: "", timedOut: false };
+      if (o.image === GARAK_IMAGE) return { code: 0, stdout: garakOut, stderr: "", timedOut: false };
       return { code: 0, stdout: "", stderr: "", timedOut: false };
     },
   },
@@ -43,9 +46,9 @@ const { prepassView } = await import("../lib/prepass-view.mjs");
 
 const reach = { hosts: ["mcp.example.com"], confine: { netClient: "ts-client-x", gateUrl: "http://gate:8080" } };
 
-function liveWs() {
+function liveWs(mcp = { token: "tok_live_1" }) {
   const ws = mkdtempSync(join(tmpdir(), "ai-mcp-live-"));
-  writeTouchstone(ws, { kind: "live", pack: "ai-mcp", baseUrl: "https://mcp.example.com", mcp: { token: "tok_live_1" } });
+  writeTouchstone(ws, { kind: "live", pack: "ai-mcp", baseUrl: "https://mcp.example.com", mcp });
   return ws;
 }
 
@@ -101,5 +104,60 @@ test("live prepass: a missing mcp-shield image shows as a coverage error in the 
     assert.equal(t.status, "unavailable");
     assert.match(t.reason, /touchstone\/mcp-shield:1\.0\.4 is not built\. Build it with: npm run build:labs -- shield/);
     assert.equal(t.leads, 0);
+  } finally { rmSync(ws, { recursive: true, force: true }); missing = new Set(); }
+});
+
+test("live prepass: garak runs only with the operator's chat path and budget, and its leads reach the agent and the run view", async () => {
+  calls.length = 0;
+  missing = new Set();
+  const ws = liveWs({ token: "tok_live_1", assistant: { path: "/agent/chat", budget: 16 } });
+  try {
+    const events = [];
+    const prep = await pack.prepass(ws, { emit: (e) => events.push(e), reach });
+    const garak = calls.filter((c) => c.image === GARAK_IMAGE);
+    assert.equal(garak.length, 1, "garak runs once, on the live assistant");
+    assert.deepEqual(garak[0].cmd, ["https://mcp.example.com/agent/chat"]);
+    assert.equal(garak[0].network, "bridge");
+    assert.deepEqual(garak[0].env, { GARAK_BUDGET: "16", GARAK_DEADLINE_S: "480", MCP_TOKEN: "tok_live_1" });
+    assert.ok(events.some((e) => e.ev === "ai-mcp-scan-started" && e.engines.includes("garak")));
+
+    const cov = prep.record.coverage.find((c) => c.engine === "garak");
+    assert.deepEqual(cov, { engine: "garak", status: "ran", code: 0, timedOut: false, leads: 6, reason: "garak ran: 16 of 16 requests used, 16 replies." });
+    const agent = JSON.parse(prep.env.LEADS);
+    assert.ok(agent.some((l) => l.check === "garak-promptinject.HijackHateHumans" && l.where === "assistant /agent/chat"));
+
+    // The run view shows "ran · 6 leads". The request count stays in the record.
+    const view = prepassView(prep.record);
+    assert.deepEqual(view.tools.find((t) => t.name === "garak"), { name: "garak", status: "ran", reason: null, leads: 6 });
+    assert.equal(view.leads.filter((l) => l.tools.includes("garak")).length, 6);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("live prepass: no chat path and budget means garak sends nothing and the run view says why", async () => {
+  calls.length = 0;
+  missing = new Set();
+  const ws = liveWs();
+  try {
+    const events = [];
+    const prep = await pack.prepass(ws, { emit: (e) => events.push(e), reach });
+    assert.equal(calls.filter((c) => c.image === GARAK_IMAGE).length, 0);
+    assert.ok(!events.some((e) => e.ev === "ai-mcp-scan-started" && e.engines.includes("garak")));
+    const t = prepassView(prep.record).tools.find((x) => x.name === "garak");
+    assert.equal(t.status, "unavailable");
+    assert.match(t.reason, /garak did not run: the live scope sets no assistant chat path and budget/);
+    assert.equal(t.leads, 0);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("live prepass: a missing garak image is a coverage error, never a clean scan", async () => {
+  calls.length = 0;
+  missing = new Set([GARAK_IMAGE]);
+  const ws = liveWs({ token: "tok_live_1", assistant: { path: "/agent/chat", budget: 16 } });
+  try {
+    const prep = await pack.prepass(ws, { reach });
+    assert.equal(calls.filter((c) => c.image === GARAK_IMAGE).length, 0);
+    const t = prepassView(prep.record).tools.find((x) => x.name === "garak");
+    assert.equal(t.status, "unavailable");
+    assert.match(t.reason, /touchstone\/garak:0\.17\.1 is not built\. Build it with: npm run build:labs -- garak/);
   } finally { rmSync(ws, { recursive: true, force: true }); missing = new Set(); }
 });

@@ -417,13 +417,27 @@ export function siteOrigin(raw) {
 
 // ---- Live sites ------------------------------------------------------------
 //
+// A live AI/MCP scope may name its assistant's chat path and a request budget.
+// garak (ai-mcp pack) runs only when both are set: each request it sends can
+// cost the operator a model call. No path means no garak; a bad value throws.
+export function liveAssistant(a) {
+  if (a == null || a === "") return null;
+  const path = String(a.path ?? "").trim();
+  if (!path && (a.budget == null || a.budget === "")) return null;
+  if (!/^\/[\w\-./~%]*$/.test(path) || path.includes("..")) throw new Error("The assistant chat path must start with / and hold no host or query, for example /agent/chat.");
+  const budget = Number(a.budget);
+  if (!Number.isInteger(budget) || budget < 8 || budget > 200) throw new Error("Set the assistant request budget to a whole number from 8 to 200.");
+  return { path, budget };
+}
+
 // A live scope is one or more real websites the operator wants tested. The
 // operator ticks one box to say they have permission to test them. We record
 // that tick as a grant (grant-store.mjs) linked to this scope, so the reach gate
 // (reach.mjs) lets a run reach exactly these hosts. Removing the scope removes
 // its grant. There is no separate grant step.
-export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope } = {}) {
+export function addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant } = {}) {
   if (permission !== true) throw new Error("Tick the box to confirm you have permission to test these sites.");
+  const chat = liveAssistant(assistant);
   const list = (Array.isArray(hosts) ? hosts : [hosts]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("A live scope needs at least one website.");
   if (list.length > 20) throw new Error("A live scope holds at most 20 websites.");
@@ -446,11 +460,12 @@ export function addLiveScope({ title, hosts, pack, blurb, permission, token, tok
   const t = name || grant.hosts.join(" + ").slice(0, 120);
   // A live AI/MCP target may carry its own bearer token and what that token may
   // do. Both are the operator's text; nothing is inferred.
-  const mcp = token || tokens || toolScope
+  const mcp = token || tokens || toolScope || chat
     ? {
       ...(String(token ?? "").trim() ? { token: String(token).trim() } : {}),
       ...(tokens && typeof tokens === "object" ? { tokens } : {}),
       ...(toolScope && typeof toolScope === "object" ? { toolScope } : {}),
+      ...(chat ? { assistant: chat } : {}),
     }
     : null;
   const scope = {
