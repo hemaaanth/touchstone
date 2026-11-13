@@ -114,14 +114,9 @@ test("Chimera reports unavailable when the image runs but writes no report", { s
 });
 
 // The docker client hits its limit before the in-container kill. runTool must
-// report timedOut and remove the container. It does not yet: at a 1 s limit
-// the daemon creates the container after the client is killed, so it stays
-// "Created". The shared wrap.mjs commit 6526bbe (pack/domains) does not close
-// this either: its `docker rm -f` runs before the create and finds nothing.
-// Marked todo (runs and reports, does not fail the suite) until a shared fix
-// lands. Remove the todo then.
-const TIMEOUT_RACE = "runTool leaks a Created container when the client times out before the create; needs a shared wrap.mjs fix";
-test("a client-side timeout reports timedOut for both engines, returns near the limit and leaves no container", { skip: !hasChimera && "image not built", todo: TIMEOUT_RACE }, async () => {
+// report timedOut and leave no container, not even one in state "Created"
+// (the shared fix 44ba808, 135a436, 93dd481 on main).
+test("a client-side timeout reports timedOut for both engines, returns near the limit and leaves no container", { skip: !hasChimera && "image not built" }, async () => {
   const ws = makeWorkspace(LAB);
   try {
     const t0 = Date.now();
@@ -137,7 +132,7 @@ test("a client-side timeout reports timedOut for both engines, returns near the 
     await new Promise((r) => setTimeout(r, 5000));
     let left = "";
     for (let i = 0; i < 10; i++) {
-      left = execFileSync("docker", ["ps", "-aq", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim();
+      left = execFileSync("docker", ["ps", "-a", "--format", "{{.ID}} {{.Status}}", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim();
       if (!left) break;
       await new Promise((r) => setTimeout(r, 1000));
     }
