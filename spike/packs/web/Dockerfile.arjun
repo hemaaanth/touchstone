@@ -1,0 +1,32 @@
+# Arjun, the HTTP hidden-parameter discovery tool. AGPL-3.0 licensed.
+# https://github.com/s0md3v/Arjun
+#
+# NOTE on the license: the authoritative LICENSE file in the repo is AGPL-3.0.
+# The project's setup.py free-text `license=` string (and PyPI's info.license)
+# mislabel it "GPLv3", but the OSI classifier and the LICENSE text are AGPL-3.0.
+# We only RUN Arjun as a separate program in this container; we do not modify or
+# redistribute its source, so it is listed in TOOLS.md, not THIRD_PARTY.md.
+#
+# Pinned to 2.2.7. The build stage has network to fetch and install from PyPI;
+# the Arjun sdist itself is verified against its published SHA-256 before
+# install. At run time the pack runs the image with --network <lab-net> and
+# --pull=never, so it only ever talks to the lab, never a registry or PyPI.
+#
+# Arjun ships its own parameter wordlists inside the package, so the run needs
+# no network beyond the target. Its transitive Python dependencies are resolved
+# at build time and are not individually pinned (the tool version is).
+FROM python:3.12-slim
+ARG ARJUN_VERSION=2.2.7
+ARG ARJUN_SHA256=b193cdaf97bf7b0e8cd91a41da778639e01fd9738d5f666a8161377f475ce72e
+RUN set -eux; \
+    pip download --no-deps --no-binary :all: "arjun==${ARJUN_VERSION}" -d /tmp/pkg; \
+    echo "${ARJUN_SHA256}  /tmp/pkg/arjun-${ARJUN_VERSION}.tar.gz" | sha256sum -c -; \
+    pip install --no-cache-dir "/tmp/pkg/arjun-${ARJUN_VERSION}.tar.gz"; \
+    rm -rf /tmp/pkg /root/.cache; \
+    arjun --help >/dev/null
+# Run as an unprivileged user; the pack also passes --user and --cap-drop ALL.
+RUN useradd -m -u 1000 arjun
+USER arjun
+WORKDIR /work
+ENTRYPOINT []
+CMD ["arjun", "--help"]
