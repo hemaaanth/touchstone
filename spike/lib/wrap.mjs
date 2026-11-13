@@ -5,6 +5,8 @@
 // writes JSON or SARIF. We parse that output into leads, the same lead shape the
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
@@ -17,19 +19,35 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 //            with no capabilities and its output files stay ours
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
 //
+// Each container has its own name, so a timeout can really stop it (see
+// runDocker).
+//
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
 export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
+  const name = `touchstone-tool-${randomBytes(6).toString("hex")}`;
   const args = [
-    "run", "--rm", "--pull=never", "--network", network,
+    "run", "--rm", "--pull=never", "--name", name, "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     image, ...cmd,
   ];
-  return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user });
+  return runDocker(args, { ws, timeoutMs, maxBuffer, owner: user, name });
+}
+
+// Remove a container by name. The daemon may still be creating it, so try a
+// few times. Never rejects. On Daytona the remote watchdog removes its own
+// container, and this finds nothing here.
+async function removeContainer(name) {
+  const docker = (args) => new Promise((done) => execFile("docker", args, { timeout: 20_000 }, (err, out) => done(err ? "" : String(out).trim())));
+  for (const wait of [0, 1000, 2000]) {
+    await sleep(wait);
+    await docker(["rm", "-f", name]);
+  }
+  if (await docker(["ps", "-aq", "--filter", `name=^${name}$`])) await docker(["rm", "-f", name]);
 }
 
 // Run one `docker run` argv on the chosen backend: a Daytona machine when
@@ -38,20 +56,33 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
 // runTool uses this. A module that needs its own docker flags (an entrypoint,
 // the image's own user) calls it directly, so it still honors the backend.
 // root names the calling run when ws is a dir outside it (a fuzz scratch dir).
+// name is the --name in args. With it, a local timeout really stops the tool:
+// an attached docker client sends SIGTERM to the container and waits, and a tool
+// that runs as PID 1 ignores SIGTERM. So at timeoutMs the container is removed
+// with `docker rm -f`, which also ends the client. On Daytona the remote
+// watchdog does this.
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
-export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack, root = null, stream = null } = {}) {
+export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, owner, skipBack, root = null, stream = null, name = null } = {}) {
   if (daytonaOn()) {
     const remote = await remoteDocker(args, { ws, timeoutMs, maxBuffer, owner, skipBack, root });
     if (remote) return remote;
   }
   return new Promise((resolve) => {
-    const child = execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
-      resolve({
+    let late = false;
+    const stop = name ? setTimeout(() => { late = true; removeContainer(name); }, timeoutMs) : null;
+    // With a name, the client kill is only a backstop.
+    const child = execFile("docker", args, { timeout: name ? timeoutMs + 30_000 : timeoutMs, maxBuffer }, (err, stdout, stderr) => {
+      clearTimeout(stop);
+      const timedOut = late || Boolean(err?.killed);
+      const result = {
         code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
         stdout: String(stdout ?? ""),
         stderr: String(stderr ?? ""),
-        timedOut: Boolean(err?.killed),
-      });
+        timedOut,
+      };
+      // A client killed before the container started leaves it "Created".
+      if (timedOut && name) removeContainer(name).then(() => resolve(result));
+      else resolve(result);
     });
     // Optional live tee. The callback still receives the full buffers; this is
     // only so a long engine can report progress before it exits.

@@ -91,3 +91,45 @@ test("runTool mounts the workspace and has no network", { skip: !hasDocker && "n
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+test("runTool names its container and planRemote drops that name", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wrap-name-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    await runTool({ image: "img:1", cmd: ["true"] });
+  } finally {
+    process.env.PATH = path;
+  }
+  try {
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    const at = args.indexOf("--name");
+    assert.ok(at > 0);
+    assert.match(args[at + 1], /^touchstone-tool-[0-9a-f]{12}$/);
+    const { planRemote } = await import("../lib/daytona.mjs");
+    const plan = planRemote(args, null, null);
+    assert.equal(plan.local, null);
+    assert.ok(!plan.args.includes("--name"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a runTool timeout stops a PID 1 that ignores SIGTERM and leaves no container", { skip: !hasDocker && "no docker", timeout: 60_000 }, async () => {
+  const mark = `TS_MARK=${process.pid}-${Date.now()}`;
+  const mine = () => {
+    const ids = execFileSync("docker", ["ps", "-aq", "--filter", "name=touchstone-tool-"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    if (!ids.length) return [];
+    let out = "";
+    try { out = execFileSync("docker", ["inspect", "--format", "{{.Name}} {{json .Config.Env}}", ...ids], { encoding: "utf8" }); } catch (e) { out = String(e.stdout ?? ""); }
+    return out.split("\n").filter((l) => l.includes(mark));
+  };
+  const t0 = Date.now();
+  const r = await runTool({ image: "debian:bookworm-slim", cmd: ["sh", "-c", "trap '' TERM; while :; do sleep 1; done"], env: { TS_MARK: mark.slice(8) }, timeoutMs: 3000 });
+  const took = Date.now() - t0;
+  assert.equal(r.timedOut, true);
+  assert.ok(took < 3000 + 6000, `returned after ${took} ms`);
+  assert.deepEqual(mine(), []);
+});

@@ -12,11 +12,15 @@
 // The scan copies the workspace to /tmp inside the container first. crytic-compile
 // runs `forge clean` and `forge build`, and that must not touch the agent's files.
 //
-// Fail closed: a missing image, a timeout, a compile error or a report we cannot
-// read gives `available: false` with a reason. It never gives a clean result.
+// Fail closed: a missing image, a timeout, a non-zero exit, a compile error, or a
+// report we cannot read or that has no results gives `available: false` with a
+// reason. It never gives a clean result. A result for a file that is not in this
+// workspace is dropped.
 //
 // lib/static.mjs (the contracts pack) still runs its own Slither from the
 // eth-security-toolbox image. This file does not change that path.
+import { existsSync, realpathSync } from "node:fs";
+import { isAbsolute, join, sep } from "node:path";
 import { runTool } from "./wrap.mjs";
 
 export const SLITHER_DEFAULT_IMAGE = "touchstone/slither:0.11.6";
@@ -62,9 +66,20 @@ function toLead(d) {
   };
 }
 
+// True when `file` is a real file inside `ws`. A path that is absolute, climbs
+// out with `../`, or is not there belongs to some other target.
+function inWorkspace(ws, file) {
+  if (!file || isAbsolute(file) || file.split(/[\\/]/).includes("..")) return false;
+  const full = join(ws, file);
+  if (!existsSync(full)) return false;
+  const root = realpathSync(ws);
+  return realpathSync(full).startsWith(root + sep);
+}
+
 // Parse the stdout of one scan. Pure, so the failure cases are easy to test.
-// Returns { available, reason?, leads }.
-export function parseSlither(stdout) {
+// With ws, a lead whose file is not in ws is dropped, and `dropped` counts it.
+// Returns { available, reason?, leads, dropped }.
+export function parseSlither(stdout, ws = null) {
   let report;
   try { report = JSON.parse(String(stdout ?? "")); } catch { return { available: false, reason: "no report produced", leads: [] }; }
   if (!report || typeof report !== "object") return { available: false, reason: "unparsable report", leads: [] };
@@ -72,12 +87,17 @@ export function parseSlither(stdout) {
     const why = String(report.error ?? "unknown error").split("\n").find((line) => line.trim()) ?? "unknown error";
     return { available: false, reason: `Slither failed: ${why.slice(0, 200)}`, leads: [] };
   }
-  const detectors = report.results?.detectors ?? [];
+  // Real Slither with no findings prints "results": {}. A report with no results
+  // object did not scan anything we can trust.
+  if (!report.results || typeof report.results !== "object" || Array.isArray(report.results)) {
+    return { available: false, reason: "unparsable report", leads: [] };
+  }
+  const detectors = report.results.detectors ?? [];
   if (!Array.isArray(detectors)) return { available: false, reason: "unparsable report", leads: [] };
-  const leads = detectors.map(toLead)
-    .filter((l) => l.impact in IMPACT_ORDER && !(l.file && VENDORED.test(l.file)))
+  const all = detectors.map(toLead).filter((l) => l.impact in IMPACT_ORDER && !(l.file && VENDORED.test(l.file)));
+  const leads = (ws ? all.filter((l) => inWorkspace(ws, l.file)) : all)
     .sort((a, b) => IMPACT_ORDER[a.impact] - IMPACT_ORDER[b.impact] || (CONFIDENCE_ORDER[a.confidence] ?? 9) - (CONFIDENCE_ORDER[b.confidence] ?? 9));
-  return { available: true, leads };
+  return { available: true, leads, dropped: all.length - leads.length };
 }
 
 // Run Slither over the workspace. Resolves (never rejects).
@@ -87,7 +107,13 @@ export async function slitherScan(ws, { timeoutMs = 240_000 } = {}) {
   if (/unable to find image|no such image|pull access denied/i.test(r.stderr)) {
     return { tool: "Slither", available: false, reason: "image not built (spike/tools/build-slither-image.sh)", leads: [] };
   }
-  const parsed = parseSlither(r.stdout);
+  // The scan command ends with `cat`, so a normal run exits 0 even when Slither
+  // found issues. Any other code means the container or the shell failed.
+  if (r.code !== 0) {
+    const why = String(r.stderr).split("\n").map((line) => line.trim()).filter(Boolean).pop() ?? "";
+    return { tool: "Slither", available: false, reason: `exit ${r.code}${why ? `: ${why.slice(0, 160)}` : ""}`, leads: [] };
+  }
+  const parsed = parseSlither(r.stdout, ws);
   if (!parsed.available && parsed.reason === "no report produced") {
     const why = String(r.stderr).split("\n").map((line) => line.trim()).filter((line) => /error/i.test(line)).pop();
     if (why) parsed.reason = `no report produced: ${why.slice(0, 200)}`;

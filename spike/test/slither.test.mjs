@@ -4,7 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { SLITHER_DEFAULT_IMAGE, parseSlither, slitherLeads, slitherScan } from "../lib/slither.mjs";
 import { aderynLeads, chainPrepass, sourceLeads } from "../packs/keys/common.mjs";
@@ -68,12 +69,81 @@ test("parseSlither fails closed: empty, garbage, success false and a bad detecto
     ["null", /unparsable/],
     [JSON.stringify({ success: false, error: "Error: Source file requires different compiler version\nmore", results: {} }), /Slither failed: Error: Source file requires different compiler version$/],
     [JSON.stringify({ success: true, results: { detectors: { a: 1 } } }), /unparsable/],
+    [JSON.stringify({ success: true }), /unparsable/],
+    [JSON.stringify({ success: true, results: null }), /unparsable/],
+    [JSON.stringify({ success: true, results: [] }), /unparsable/],
   ]) {
     const r = parseSlither(stdout);
     assert.equal(r.available, false, stdout);
     assert.match(r.reason, reason);
     assert.deepEqual(r.leads, []);
   }
+});
+
+test("parseSlither with no findings (results: {}) is a clean, available scan", () => {
+  const r = parseSlither(JSON.stringify({ success: true, error: null, results: {} }));
+  assert.equal(r.available, true);
+  assert.deepEqual(r.leads, []);
+});
+
+test("parseSlither drops a result for a file that is not in this workspace", () => {
+  const ws = mkdtempSync(join(tmpdir(), "slither-bound-"));
+  try {
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src", "A.sol"), "contract C {}");
+    const det = (file) => ({ check: "uninitialized-state", impact: "High", confidence: "High", description: file,
+      elements: [{ type: "variable", name: "x", source_mapping: { filename_relative: file, lines: [3] }, type_specific_fields: { parent: { type: "contract", name: "C" } } }] });
+    const files = ["src/A.sol", "/other/repo/src/Evil.sol", "../other/src/Evil.sol", "src/../../x/Evil.sol", "src/Missing.sol", null];
+    const report = JSON.stringify({ success: true, results: { detectors: files.map(det) } });
+    const r = parseSlither(report, ws);
+    assert.equal(r.available, true);
+    assert.deepEqual(r.leads.map((l) => l.file), ["src/A.sol"]);
+    assert.equal(r.dropped, 5);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+// ---- runTool argv and exit code, with a docker shim on PATH
+
+const withShim = async ({ stdout = "", code = 0 }, fn) => {
+  const dir = mkdtempSync(join(tmpdir(), "slither-shim-"));
+  writeFileSync(join(dir, "out"), stdout);
+  writeFileSync(join(dir, "docker"), `#!/bin/sh\nprintf "%s\\n" "$@" > "${dir}/args"\ncat "${dir}/out"\nexit ${code}\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${dir}:${path}`;
+  try { return { result: await fn(), args: readFileSync(join(dir, "args"), "utf8").trim().split("\n") }; } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+const ONE_LEAD = JSON.stringify({ success: true, results: { detectors: [{ check: "uninitialized-state", impact: "High", confidence: "High", description: "x",
+  elements: [{ type: "variable", name: "x", source_mapping: { filename_relative: "src/A.sol", lines: [3] }, type_specific_fields: { parent: { type: "contract", name: "C" } } }] }] } });
+
+test("Slither runs from the pinned image with --pull=never and --network none", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "slither-argv-"));
+  try {
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src", "A.sol"), "contract C {}");
+    const { result, args } = await withShim({ stdout: ONE_LEAD }, () => slitherScan(ws, { timeoutMs: 30_000 }));
+    assert.equal(result.available, true);
+    assert.equal(result.leads.length, 1);
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    assert.equal(args[args.indexOf("--network") + 1], "none");
+    assert.equal(args.filter((a) => a === "--network" || a.startsWith("--network=") || a === "--net").length, 1);
+    assert.ok(args.includes(`${ws}:/work`));
+    assert.equal(args[args.indexOf("sh") - 1], "touchstone/slither:0.11.6");
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("Slither with a non-zero exit is unavailable, even with a valid report on stdout", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "slither-exit-"));
+  try {
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src", "A.sol"), "contract C {}");
+    const { result } = await withShim({ stdout: ONE_LEAD, code: 1 }, () => slitherLeads(ws, { timeoutMs: 30_000 }));
+    assert.equal(result.available, false);
+    assert.match(result.reason, /^exit 1/);
+    assert.deepEqual(result.leads, []);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
 // ---- failure cases through the real runTool
@@ -91,10 +161,16 @@ test("Slither reports unavailable, not clean, when the image is missing", async 
 test("Slither reports unavailable when it times out", { skip: !hasImage && "image not built" }, async () => {
   const ws = makeWorkspace(CHAIN_LAB);
   try {
-    const scan = await slitherScan(ws, { timeoutMs: 300 }); // a full scan takes over 1 s
+    const ids = () => execFileSync("docker", ["ps", "-aq", "--filter", `ancestor=${SLITHER_DEFAULT_IMAGE}`, "--filter", `volume=${ws}`], { encoding: "utf8" }).trim();
+    const t0 = Date.now();
+    // 300 ms: the client dies before the container starts, the case that used to leave it "Created".
+    const scan = await slitherScan(ws, { timeoutMs: 300 });
+    const took = Date.now() - t0;
     assert.equal(scan.available, false);
     assert.equal(scan.reason, "timed out");
     assert.deepEqual(scan.leads, []);
+    assert.ok(took < 300 + 6000, `returned after ${took} ms`);
+    assert.equal(ids(), "", "no Slither container is left, running or created");
   } finally { cleanupWorkspace(ws); }
 });
 

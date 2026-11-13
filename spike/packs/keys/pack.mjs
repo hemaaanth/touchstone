@@ -16,7 +16,9 @@ PROVE each one with a runnable Foundry test.
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the lab code under src/. KeysLab.sol has a helper
-  that deploys a real Safe 1.4.1 and one example module.
+  that deploys a real Safe 1.4.1 and one example module. CosignVault.sol is a small
+  co-signing vault beside the Safes. It is not deployed in the lab world and safe_state
+  does not read it: to prove a bug in it, deploy it in setUp and fund it with vm.deal.
 - safe_state returns what the lab read from both Safes: owners, threshold, nonce,
   modules, guard, fallback handler, and the code each owner address holds.
 - key_leads returns ranked leads from our checks. Two readers (plain ethers and

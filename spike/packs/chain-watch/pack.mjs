@@ -16,7 +16,9 @@ owner change, a role grant) and PROVE its harm with a runnable Foundry test.
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the lab code under src/. ChainWatchLab.sol is the
-  proxy, with the benign and the drain implementations.
+  proxy, with the benign and the drain implementations. VaultImplementationV2.sol is a
+  second implementation the owner could upgrade to. It is not deployed in the lab world:
+  to prove a bug in it, deploy it in setUp and fund it with vm.deal.
 - chain_state returns what the lab recorded for the block range: a snapshot of the
   implementation slot, admin slot, owner and role state at each block, the logs, the
   transactions, and the proxy balance.
