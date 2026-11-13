@@ -10,8 +10,9 @@ import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-// app/server -> repo root -> spike/results/agent
-const RESULTS_DIR = path.resolve(HERE, "../../spike/results/agent")
+// app/server -> repo root -> spike/results/agent. TOUCHSTONE_RESULTS_DIR is
+// how runs.mjs and tests point at a throwaway folder. Read on each call.
+export const resultsDir = () => process.env.TOUCHSTONE_RESULTS_DIR || path.resolve(HERE, "../../spike/results/agent")
 
 const num = (s) => Number(String(s).replace(/,/g, ""))
 
@@ -337,7 +338,7 @@ function normalize(raw, { id, runId, finding }) {
 async function readRuns() {
   let entries = []
   try {
-    entries = await readdir(RESULTS_DIR)
+    entries = await readdir(resultsDir())
   } catch {
     return []
   }
@@ -345,7 +346,7 @@ async function readRuns() {
   const out = []
   for (const file of files) {
     try {
-      const raw = JSON.parse(await readFile(path.join(RESULTS_DIR, file), "utf8"))
+      const raw = JSON.parse(await readFile(path.join(resultsDir(), file), "utf8"))
       const runId = file.replace(/^run-/, "").replace(/\.json$/, "")
       for (const item of splitRun(raw, runId)) {
         out.push({ ...normalize(raw, item), _index: item.index })
@@ -364,7 +365,7 @@ async function readRuns() {
 async function runStartedAt(runId) {
   let file
   try {
-    file = await open(path.join(RESULTS_DIR, `run-${runId}.events`))
+    file = await open(path.join(resultsDir(), `run-${runId}.events`))
     const { buffer, bytesRead } = await file.read(Buffer.alloc(64 * 1024), 0, 64 * 1024, 0)
     for (const line of buffer.toString("utf8", 0, bytesRead).split("\n")) {
       try {
@@ -412,7 +413,7 @@ export async function listFindings() {
 // agent's work. Missing or torn lines are skipped, never shown as a fake step.
 async function readEvents(id) {
   try {
-    const text = await readFile(path.join(RESULTS_DIR, `run-${id}.events`), "utf8")
+    const text = await readFile(path.join(resultsDir(), `run-${id}.events`), "utf8")
     return text
       .split("\n")
       .filter((l) => l.trim())
@@ -464,7 +465,7 @@ export async function dismissFinding(id, dismissed) {
   if (!/^[\w.-]+$/.test(id)) throw new Error("bad finding id")
   const target = (await readRuns()).find((f) => f.id === id)
   if (!target) throw new Error("no such finding")
-  const file = path.join(RESULTS_DIR, `run-${target.runId}.json`)
+  const file = path.join(resultsDir(), `run-${target.runId}.json`)
   const raw = JSON.parse(await readFile(file, "utf8"))
   raw.result = raw.result || {}
   // A multi-finding record keeps the flag on the finding itself; a legacy

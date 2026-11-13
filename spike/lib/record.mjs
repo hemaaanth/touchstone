@@ -6,7 +6,14 @@
 // and the target storage it changed. A finding is proven only when that replay
 // shows harm to a scope target.
 // The CLI and the web server both call this, so both record the same shape.
+//
+// The workspace is deleted after this returns. snapshotForgeReplay copies the
+// proof test, the scope sources, and foundry.toml first, so a later report
+// export can zip them. storeReplayFiles writes those files to the results
+// folder (replay/<sha256>.json); the proof keeps the hash and the paths only.
+// The snapshot never includes a provider key or a bearer token.
 import { proofDelta } from "./proof.mjs";
+import { snapshotForgeReplay, storeReplayFiles } from "./replay-bundle.mjs";
 
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -42,7 +49,17 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
       try {
         const delta = await proofDelta(ws, { source: f.source, contract: f.poc, stateTrace });
         // The kind names the replay that made this proof; the app picks its card from it.
-        if (delta) proof = gate({ kind: "forge", ...delta }, judge);
+        // The replay snapshot is taken here, while `ws` still has the sources.
+        if (delta) {
+          let replay = null;
+          try {
+            replay = storeReplayFiles(snapshotForgeReplay(ws, { contract: f.poc, test: delta.test }));
+            if (replay?.filesLost) log(`replay snapshot for ${f.poc}: ${replay.filesLost}`);
+          } catch (err) {
+            log(`replay snapshot failed for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);
+          }
+          proof = gate({ kind: "forge", ...delta, ...(replay ? { replay } : {}) }, judge);
+        }
       } catch (err) {
         log(`proof-delta failed for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);
       }

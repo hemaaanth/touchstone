@@ -551,3 +551,7 @@ export function renderReportAgent(report) {
   lines.push(`Touchstone finding ${r.id || ""}, run ${r.runId || ""}.`)
   return redactSecrets({ text: lines.join("\n") }).text
 }
+
+// The replayable export (format=bundle on the report route). The zip builder
+// lives next to this file so the narrative renderers stay as they are.
+export { buildReplayBundle } from "./replay-bundle.mjs"
