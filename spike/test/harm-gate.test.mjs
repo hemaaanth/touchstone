@@ -756,7 +756,7 @@ test("harm gate: vm.broadcastRawTransaction makes every scope target unusable (H
   const row = CHEAT_ROWS.find((r) => r.name === "broadcastRawTransaction");
   const h = judgeTamper(tamperDrain(vmData(row)));
   assert.equal(h.ok, false);
-  assert.match(h.reason, /vm\.broadcastRawTransaction \(account, in body\).*do not send raw transactions/);
+  assert.match(h.reason, /vm\.broadcastRawTransaction \(account, in body\).*the gate has no rule for this cheatcode/);
 });
 
 test("harm gate: a VM call with a selector the table does not know makes every scope target unusable, and the reason names it (H1e backstop)", () => {
@@ -774,6 +774,21 @@ for (const cls of ["read", "control", "time", "fs"]) {
   test(`harm gate: a ${cls} cheatcode (${firstOf(cls).name}) is trusted: the drain stays proven (H1e backstop)`, () => {
     const h = judgeTamper(tamperDrain(vmData(firstOf(cls))));
     assert.equal(h.ok, true, JSON.stringify(h));
+  });
+}
+
+// Minor 5: the runtime is an allow-list. A table that gains a class, or an account
+// entry no rule reads, is refused at runtime, not only by the coverage test.
+for (const [label, row] of [
+  ["a class the gate does not know", { selector: "0x11111111", name: "brandNew", signature: "brandNew()", class: "brandnew" }],
+  ["an account entry with no rule", { selector: "0x22222222", name: "setSomething", signature: "setSomething(address)", class: "account" }],
+]) {
+  test(`harm gate: ${label} in the table is refused at runtime (H1e allow-list)`, () => {
+    const table = new Map([...CHEAT_TABLE, [row.selector, { name: row.name, signature: row.signature, class: row.class }]]);
+    const traces = tamperDrain(row.selector + "00".repeat(32));
+    const h = judgeHarm(traces, { scope: TOKEN_SCOPE, controlTrace: extractControlTrace(traces, { cheatTable: table }), layouts: new Map(), balances: tokenBalances });
+    assert.equal(h.ok, false, JSON.stringify(h));
+    assert.match(h.reason, new RegExp(`vm\\.${row.name} \\(${row.class}, in body\\).*the gate has no rule for this cheatcode`));
   });
 }
 
@@ -1331,6 +1346,64 @@ test("forge: the real lab ETH drain is STILL proven with its exact value (review
   assert.equal(isProven(f), true);
 });
 
+// H1e minor 2: a stray vm.deal on the victim must not drop a real drain. The dealt
+// balance is credited to the test party as "put in", not the party's whole take. The
+// lab drain with an extra vm.deal(address(vault), 1) stays proven; the 1 wei it adds
+// is the test's own, so the loss is the 10 ether the honest users put in (± that wei).
+const OPEN_VAULT = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Vault {
+  mapping(address => uint256) public balanceOf;
+  function deposit() external payable { balanceOf[msg.sender] += msg.value; }
+  function withdraw(uint256 a) external { (bool ok,) = msg.sender.call{value: a}(""); require(ok, "x"); } // BUG: no balance check
+  function totalAssets() external view returns (uint256) { return address(this).balance; }
+}
+`;
+// A test-deployed contract (the test party) drains the vault, which an honest pranked
+// user funded with 10 ether and the test dealt a stray 1 wei. The strict rule dropped
+// the whole test-party take, losing the 10 ether. Crediting only the dealt 1 wei as
+// "put in" keeps the 10 ether proven.
+test("forge: a stray vm.deal on the victim does not drop a real drain by a test contract (H1e minor 2)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Vault.sol": OPEN_VAULT }, "StrayDealTest", `import "../src/Vault.sol";
+contract Drainer { function go(Vault v, uint256 a) external { v.withdraw(a); } receive() external payable {} }
+contract StrayDealTest is Test {
+  Vault v; Drainer d; address alice = makeAddr("alice");
+  function setUp() public {
+    v = new Vault(); d = new Drainer();
+    vm.deal(address(v), 1); // stray: the test's own 1 wei (set before the deposit; vm.deal sets the balance)
+    vm.deal(alice, 10 ether); vm.prank(alice); v.deposit{value: 10 ether}();
+  }
+  function test_x() public { d.go(v, 10 ether + 1); assertEq(address(d).balance, 10 ether + 1); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, true, JSON.stringify(f.proof.harm));
+  assert.equal(f.proof.harm.kind, "funds");
+  assert.equal(f.proof.harm.lostWei, "10000000000000000000"); // the honest 10 ether; the dealt 1 wei is the test's own
+  assert.equal(isProven(f), true);
+});
+
+// The other side: when the deal funds the WHOLE take, nothing is proven. The test
+// deals 1 ether to the vault and a test-side contract takes exactly that 1 ether out.
+// Credited as put in, the test party's excess is 0.
+test("forge: a drain of only what vm.deal funded is NOT proven (H1e minor 2)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Open.sol": `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Open { function take(address payable to, uint256 a) external { to.transfer(a); } receive() external payable {} }
+` }, "DealTakeTest", `import "../src/Open.sol";
+contract Sink { receive() external payable {} }
+contract DealTakeTest is Test {
+  Open o; Sink s;
+  function setUp() public { o = new Open(); s = new Sink(); vm.deal(address(o), 1 ether); }
+  function test_x() public { o.take(payable(address(s)), 1 ether); assertEq(address(s).balance, 1 ether); }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.equal(isProven(f), false);
+});
+
 // H1c: a forge-std deal(token, …) in the test BODY makes a replay trace above the
 // 8 MiB cap (about 10 MiB on the pinned image). The cut trace is never judged; the
 // proof fails and the reason tells the agent to move deal into setUp(). The same
@@ -1401,7 +1474,7 @@ contract DealFixTest is Test {
 `);
     assert.equal(f.forgePassed, true);
     assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
-    assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Tok\) via vm\.store;.*forge-std deal\(\) that funds a scope contract's token balance is fine/);
+    assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(Tok\) via vm\.store;.*A deal\(\) that funds a scope contract's token balance is counted as the test's own/);
     assert.equal(isProven(f), false);
   });
 }
@@ -1677,6 +1750,40 @@ contract LateTest is Test {
   assert.equal(f.forgePassed, true);
   assert.equal(f.proof.harm.ok, false);
   assert.match(f.proof.harm.reason, /the unknown cheatcode 0x0af6a701 \(in setUp\)/);
+});
+
+// Minor 4 and the guard's depth limit, on real forge (the reviewer's probes 2 and 3;
+// honest shapes: a constructor that rejects 0, a function that reverts).
+const NEEDS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Needs { constructor(uint256 x) { require(x != 0, "zero"); } }
+contract Bank { function hello() external pure returns (uint256) { return 1; } function fail() external pure { revert("nope"); } }
+`;
+const needsTest = (body) => `import "../src/Needs.sol";
+contract NeedsTest is Test {
+  Bank bank;
+  function setUp() public { bank = new Bank(); }
+  function test_x() public { bank.hello(); ${body} }
+}
+`;
+// Probe 2: forge makes new Needs(1) a deployCode call whose child CREATE succeeds.
+// The armed call is bank.fail() (reverted). Without the depth limit, the guard
+// would take that child CREATE and refuse by mistake.
+test("forge: expectRevert, then new X(), then the reverting call: the guard takes the call, not the cheatcode's child CREATE (H1e depth limit)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Needs.sol": NEEDS }, "NeedsTest", needsTest(`vm.expectRevert(bytes("nope")); new Needs(1); bank.fail();`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /^the test called a scope target but moved no ETH out of it/, f.proof.harm.reason);
+});
+
+// Probe 3: expectRevert directly on new Needs(0). Forge reports Success, but the
+// whole test frame reverted and no call followed. The guard refuses, and the reason
+// names the real cause.
+test("forge: expectRevert directly on new ScopeContract(bad) is refused, and the reason names the creation (H1e minor 4)", { skip, timeout: 300_000 }, async () => {
+  const f = await proveScope(makeWs(), { "Needs.sol": NEEDS }, "NeedsTest", needsTest(`vm.expectRevert(bytes("zero")); new Needs(0);`));
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /vm\.expectRevert \(in body\) on the creation of a contract \(new X\(…\)\)\. Forge makes that creation a cheatcode call \(deployCode\).*external helper call.*try\/catch/);
 });
 
 // The common real shape (13 of the 14 recorded proofs that use expectRevert): a real
