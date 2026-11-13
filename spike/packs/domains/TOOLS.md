@@ -155,3 +155,15 @@ A DNSSEC lead is the chain state DNSViz measured once. An unsigned zone is not
 spoofable by itself: a resolver must be reached or poisoned first. A bogus chain
 only hurts clients that validate. Signatures are checked by DNSViz, not by this
 pack.
+
+`runTool()` passes `--pull=never`. Pull every pinned image before a run. A
+missing image is reported as unavailable coverage with the Docker reason.
+
+## Known scoping gaps
+
+- checkdmarc reads SPF and DMARC records. No DKIM selector is queried, and no
+  receiver filter is tested.
+- testssl.sh measures at most two HTTPS origins per capture. CRL and OCSP are
+  not fetched, so revocation is unscanned.
+- DNSViz measures chain state. It does not prove a resolver can be reached or
+  spoofed.
