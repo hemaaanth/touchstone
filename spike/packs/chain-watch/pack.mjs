@@ -7,6 +7,7 @@
 // with no event shows only in the state diff. The agent writes a test that shows
 // the change and its harm. See SKILL.md and TOOLS.md.
 import { chainNudge, chainPrepass, chainTools, proveWithHarm, watchLeads, hasWorld, sourceKickoff, sourceSystem } from "../keys/common.mjs";
+import { withCandidateLine } from "../../lib/candidate.mjs";
 
 const SYSTEM = `You are an authorized offensive-security agent in an isolated sandbox.
 The target is a proxy contract that the operator owns. A monitor watched a range of
@@ -88,7 +89,7 @@ export default {
   proof: "forge",
   // No tool reaches a network. The Modules page reads this.
   offline: true,
-  system: (ws) => (hasWorld(ws, "chain-watch") ? SYSTEM : sourceSystem("chain-watch")),
+  system: withCandidateLine((ws) => (hasWorld(ws, "chain-watch") ? SYSTEM : sourceSystem("chain-watch"))),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "chain-watch",
     stateTool: { name: "chain_state", description: "Read what the lab recorded for the watched block range: per-block snapshots of the EIP-1967 implementation and admin slots, the owner and role state, the logs, the transactions, the proxy balance and the canary wallet." },

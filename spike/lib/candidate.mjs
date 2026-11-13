@@ -29,6 +29,11 @@ export const SEVERITIES = ["critical", "high", "medium", "low", "informational"]
 // The line each pack adds to its "no proof" message.
 export const CANDIDATE_HINT = `If you are confident this is a real, serious vulnerability that this pack's checks do not cover, record it with submit_candidate. It is marked unproven and queued for human review, not dropped. Use it rarely: at most ${CANDIDATE_CAP} per run.`;
 
+// The line each wired pack's system prompt ends with. A run's instructions
+// name every tool it has (multi.mjs renames it per module in a joined run).
+export const CANDIDATE_SYSTEM = `Rare case: if an attempt you ran showed serious harm that this pack's proof checks do not cover, record it with submit_candidate, citing that attempt. It stays unproven and goes to a human for review. At most ${CANDIDATE_CAP} per run.`;
+export const withCandidateLine = (system) => (ws) => `${system(ws)}\n\n${CANDIDATE_SYSTEM}`;
+
 // ---------------------------------------------------------------- scrub
 // One redactor: app/server/redact.mjs (its TEXT_RULES and its 64 KB whole-text
 // mask), the same one the report, the replay bundle and the findings ledger

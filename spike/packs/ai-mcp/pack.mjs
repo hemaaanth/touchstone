@@ -31,7 +31,7 @@ import { GARAK_BUDGET, scanMcp } from "./scan.mjs";
 import { SCAN_NETWORK, bindLive, isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { readTouchstone } from "../../lib/sandbox.mjs";
 import { fp, scrubBody, scrubProof, scrubText } from "../web/redact.mjs";
-import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, recordScript, scriptLookup } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, withCandidateLine, recordScript, scriptLookup } from "../../lib/candidate.mjs";
 
 const IMAGE = "touchstone/ai-mcp-lab:dev";
 const LEADS_FILE = ".ai-mcp-leads.json";
@@ -784,7 +784,7 @@ export default {
   scanNet: "open",
   // POST /agent/chat in the lab is not a model. See SKILL.md.
   labTarget: "rule-based",
-  system: (ws) => (isLive(ws) ? LIVE_SYSTEM : SYSTEM),
+  system: withCandidateLine((ws) => (isLive(ws) ? LIVE_SYSTEM : SYSTEM)),
   tools,
   kickoff,
   nudge,

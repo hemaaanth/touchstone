@@ -40,7 +40,7 @@ import { extraScans, foldScan } from "./discovery.mjs";
 import { isLive, liveProof, runLiveScript } from "../../lib/live.mjs";
 import { livePrepass } from "./live.mjs";
 import { fp, scrubBody, scrubProof, scrubText } from "./redact.mjs";
-import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, recordScript, scriptLookup } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, SCRIPT_POC, candidateTool, withCandidateLine, recordScript, scriptLookup } from "../../lib/candidate.mjs";
 
 const IMAGE = "touchstone/web-lab:dev";
 const LEADS_FILE = ".web-leads.json";
@@ -770,7 +770,7 @@ export default {
   // A live run's lead scanners use SCAN_NETWORK (lib/live.mjs), the open bridge
   // network. Only the request scripts and replays go through the grant gate.
   scanNet: "open",
-  system: (ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM),
+  system: withCandidateLine((ws) => (isLive(ws) ? liveSystem(ws) : SYSTEM)),
   tools,
   kickoff,
   nudge,

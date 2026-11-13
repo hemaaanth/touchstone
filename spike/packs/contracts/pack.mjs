@@ -22,7 +22,7 @@ import { proofDelta } from "../../lib/proof.mjs";
 import { halmosBrief, halmosRecord, halmosScan } from "./halmos.mjs";
 import { chimeraBrief, chimeraRecord, chimeraScan } from "./chimera.mjs";
 import { bytecodeFindingsTool, bytecodeKickoff, bytecodePrepass, bytecodeUnits } from "./bytecode/index.mjs";
-import { CANDIDATE_HINT, FORGE_POC, candidateTool, forgeLookup, provedLater, recordForge } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, FORGE_POC, candidateTool, withCandidateLine, forgeLookup, provedLater, recordForge } from "../../lib/candidate.mjs";
 
 // Total run_poc attempts for the whole audit. No count cap unless MAX_POC is
 // set: the run's spend budget is the stop (see lib/attempt-cap.mjs). When a cap
@@ -511,7 +511,7 @@ export default {
   // scope's GitHub links on the host, and warmSolc downloads the compilers those
   // files pin. Static, fuzz and run_poc run with --network none.
   fetches: ["github", "solc"],
-  system: systemFor,
+  system: withCandidateLine(systemFor),
   tools,
   kickoff,
   nudge,

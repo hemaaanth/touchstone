@@ -1,7 +1,7 @@
 import { defineTool } from '@earendil-works/pi-durable';
 import { obj, str } from '@earendil-works/pi-schema';
 import { event } from '../../lib/event.mjs';
-import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
+import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, withCandidateLine, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
 import { scanSnapshot, detectorsFor } from './checks.mjs';
 import { replayEvidence, proveFindings, loadSnapshot } from '../../lib/proof-evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -58,7 +58,7 @@ export default {
   // The capture filters each tool's input against the scope's own grant, and stops a
   // name that resolves to a private address unless that grant allows it (live.mjs).
   live:true,scanNet:'open',
-  system:()=> 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.',
+  system: withCandidateLine(() => 'Audit only the pinned offline DNS and HTTP snapshot. Call snapshot_leads. Review all leads. Submit each supported root cause with submit_finding. Never submit reviewOnly leads. A dangling CNAME does not prove claimability. Approval patterns do not prove a drainer. Missing evidence does not prove a control is disabled. Use the exact severity and check from the lead. Write short sentences. End each explanation with Fix:. Never execute bundle code or access the internet.'),
   tools:(ws,state)=>evidenceTools(ws,state,'domains'),
   kickoff:(ws,env)=>'Review every lead, worst first. Submit supported evidence with its exact lead id, then continue. Summarize coverage. Leads: '+(env.LEADS ?? 'Call snapshot_leads.'),
   nudge:()=>null,prepass:prepassFor('domains'),
