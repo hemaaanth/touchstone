@@ -54,7 +54,7 @@ type ReachFields = Pick<PackChoice, "tier" | "live" | "labTarget" | "offline" | 
 // One sentence per reach field value. Each one restates a pack field.
 export const REACH_SENTENCE = {
   host: "It can reach a host you've granted.",
-  github: "A live run reads a GitHub repo or org you've granted, through the read-only GitHub API.",
+  github: "A live run reads a GitHub repo or org you've granted, through read-only GitHub reads.",
   scanNet: "Its scanners run on an open network.",
   offline: "It runs only in our own offline sandbox.",
   fetchGithub: "On the host, it can fetch the GitHub links the scope lists.",

@@ -55,10 +55,24 @@ test("packList sends each pack's proof and reach fields", () => {
   for (const [id, want] of Object.entries(REACH)) assert.deepEqual(byId[id], want, id)
 })
 
-// Read every source file in a pack's own folder, not its lab or its docs.
+// Read every source file in a pack's own folder, not its lab or its docs, and
+// every file of ANOTHER pack folder it imports (chain-watch runs its tools from
+// keys/common.mjs), so shared pack code is checked too (pr1-delta-review Minor 1).
+// spike/lib is checked by its own test below.
 function packSource(id) {
-  const dir = path.join(ROOT, "spike", "packs", id)
-  return readdirSync(dir).filter((f) => f.endsWith(".mjs")).map((f) => readFileSync(path.join(dir, f), "utf8")).join("\n")
+  const PACKS_DIR = path.join(ROOT, "spike", "packs")
+  const seen = new Set()
+  const read = (file) => {
+    if (seen.has(file)) return ""
+    seen.add(file)
+    const src = readFileSync(file, "utf8")
+    const shared = [...src.matchAll(/from\s+["'](\.\.\/[a-z0-9-]+\/[a-z0-9-]+\.mjs)["']/g)]
+      .map((m) => path.resolve(path.dirname(file), m[1]))
+      .filter((f) => f.startsWith(PACKS_DIR + path.sep))
+    return [src, ...shared.map(read)].join("\n")
+  }
+  const dir = path.join(PACKS_DIR, id)
+  return readdirSync(dir).filter((f) => f.endsWith(".mjs")).map((f) => read(path.join(dir, f))).join("\n")
 }
 
 test("the reach fields match what each pack's code does", () => {
@@ -71,6 +85,24 @@ test("the reach fields match what each pack's code does", () => {
       assert.equal(PACKS[id].live, undefined, `${id}: an offline pack is not live`)
       assert.equal(/\bSCAN_NETWORK\b|network:\s*"bridge"|fetch_source/.test(src), false, `${id} says offline`)
     }
+  }
+})
+
+test("a pack's source check reads the other pack's code it runs (chain-watch reads keys/common.mjs)", () => {
+  const common = readFileSync(path.join(ROOT, "spike", "packs", "keys", "common.mjs"), "utf8")
+  assert.ok(packSource("chain-watch").includes(common), "chain-watch's check reads keys/common.mjs")
+})
+
+// The offline packs (keys, chain-watch) replay with lib/sandbox.mjs's forge
+// runs. Those must stay off the network, or "Offline" on the Modules page is
+// false (pr1-delta-review Minor 1: forgeTest on bridge failed no test).
+test("the sandbox's forge runs use --network none", () => {
+  const src = readFileSync(path.join(ROOT, "spike", "lib", "sandbox.mjs"), "utf8")
+  for (const fn of ["forgeTest", "forgeTestJson"]) {
+    const start = src.indexOf(`export async function ${fn}(`)
+    assert.ok(start >= 0, `${fn} is in lib/sandbox.mjs`)
+    const body = src.slice(start, src.indexOf("\n}\n", start))
+    assert.match(body, /"--network",\s*"none"/, `${fn} runs forge with --network none`)
   }
 })
 

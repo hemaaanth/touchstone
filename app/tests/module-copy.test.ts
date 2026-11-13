@@ -12,7 +12,7 @@ const packs = new Map((packList() as PackChoice[]).map((p) => [p.id, p]))
 const NOTE: Record<string, string | null> = {
   "contracts": "On the host, it can fetch the GitHub links the scope lists. It can also download the Solidity compilers those files pin. Its other tools work offline.",
   "review": "On the host, it can fetch the GitHub links the scope lists. Its other tools work offline.",
-  "supply-chain": "A live run reads a GitHub repo or org you've granted, through the read-only GitHub API.",
+  "supply-chain": "A live run reads a GitHub repo or org you've granted, through read-only GitHub reads.",
   "domains": "It can reach a host you've granted. Its scanners run on an open network.",
   "surface": "It can reach a host you've granted. Its scanners run on an open network.",
   "phishing": "It can reach a host you've granted. Its scanners run on an open network.",
