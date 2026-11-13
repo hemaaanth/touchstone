@@ -114,7 +114,7 @@ const PROOF_NOTE = {
   http: "Proven by a request replayed in Docker on a private network with no internet.",
   evidence: "Proven by checking the cited evidence again against the pinned snapshot in the run workspace.",
   forge: "Proven in an isolated, offline, per-run Foundry workspace — no live chain and no real funds.",
-  none: "No replay oracle fits this code. The run reports leads. No finding can be proven.",
+  none: "This module has no replay oracle. The run reports leads. No finding can be proven.",
 }
 
 function packLabs() {

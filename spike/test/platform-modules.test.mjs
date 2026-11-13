@@ -3,7 +3,7 @@
 // pack that another thread ships; it is added and removed inside the test.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs"
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PACKS, packList } from "../packs/index.mjs"
@@ -28,7 +28,56 @@ function withFakePack(fn) {
 test("packList reads the loader", () => {
   const ids = packList().map((p) => p.id)
   assert.ok(ids.includes("contracts"))
-  withFakePack(() => assert.ok(packList().some((p) => p.id === "fakepack" && p.proof === "http")))
+  withFakePack(() => assert.ok(packList().some((p) => p.id === "fakepack" && p.proof === "http" && p.live === false && p.labTarget === undefined)))
+})
+
+// The Modules page builds its sentences from these fields (app/src/lib/catalog.ts).
+// Each pack's map is pinned here, so a pack that changes its reach must change this too.
+const REACH = {
+  "contracts": { proof: "forge", live: false, fetches: ["github", "solc"] },
+  "review": { proof: "none", live: false, fetches: ["github"] },
+  "supply-chain": { proof: "evidence", live: true, grants: "github" },
+  "domains": { proof: "evidence", live: true, scanNet: "open" },
+  "surface": { proof: "none", live: true, scanNet: "open" },
+  "web": { proof: "http", live: true, scanNet: "open" },
+  "ai-mcp": { proof: "http", live: true, scanNet: "open", labTarget: "rule-based" },
+  "keys": { proof: "forge", live: false, offline: true },
+  "chain-watch": { proof: "forge", live: false, offline: true },
+  "infra-cloud": { proof: "evidence", live: false, offline: true, extraProof: "cloud-http" },
+}
+
+test("packList sends each pack's proof and reach fields", () => {
+  const byId = Object.fromEntries(packList().map(({ id, title, tier, ...rest }) => [id, rest]))
+  assert.deepEqual(Object.keys(byId).sort(), Object.keys(REACH).sort())
+  for (const [id, want] of Object.entries(REACH)) assert.deepEqual(byId[id], want, id)
+})
+
+// Read every source file in a pack's own folder, not its lab or its docs.
+function packSource(id) {
+  const dir = path.join(ROOT, "spike", "packs", id)
+  return readdirSync(dir).filter((f) => f.endsWith(".mjs")).map((f) => readFileSync(path.join(dir, f), "utf8")).join("\n")
+}
+
+test("the reach fields match what each pack's code does", () => {
+  for (const id of Object.keys(REACH)) {
+    const src = packSource(id)
+    const fetches = /name:\s*"fetch_source"/.test(src)
+    assert.equal(PACKS[id].fetches?.includes("github") === true, fetches, `${id}: fetch_source needs fetches: ["github"]`)
+    if (/\bSCAN_NETWORK\b/.test(src)) assert.equal(PACKS[id].scanNet, "open", `${id}: SCAN_NETWORK needs scanNet: "open"`)
+    if (PACKS[id].offline) {
+      assert.equal(PACKS[id].live, undefined, `${id}: an offline pack is not live`)
+      assert.equal(/\bSCAN_NETWORK\b|network:\s*"bridge"|fetch_source/.test(src), false, `${id} says offline`)
+    }
+  }
+})
+
+test("a pack with no replay oracle plans the replay step off", () => {
+  const plan = planModules({ kind: "lab", pack: "surface" }, undefined, PACKS.surface)
+  const replay = plan.find((m) => m.id === "replay")
+  assert.equal(replay.on, false)
+  assert.equal(replay.available, false)
+  assert.match(replay.reason, /no finding can be proven/)
+  assert.equal(planModules({ kind: "lab", pack: "web" }, undefined, PACKS.web).find((m) => m.id === "replay").on, true)
 })
 
 test("targets carry a pack; built-in labs are Contracts, pack labs name their pack", () => {
