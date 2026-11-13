@@ -55,8 +55,24 @@ import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } fr
 import { PACKS } from "../packs/index.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
 import { reachHosts, allowsPrivate } from "./reach.mjs"
+import { ipKind } from "./grant-store.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
+
+// The resolver a live domains/surface capture sends its DNS questions to. A public
+// recursive resolver by default; TOUCHSTONE_DNS_RESOLVER overrides it. The value must
+// parse as an IP; a private, loopback or link-local address is refused unless the
+// target's reach allows private addresses. An unusable value yields no resolver, so
+// the DNS tools (checkdmarc, DNSViz) do not run and their rows are gaps (live.mjs).
+const DEFAULT_DNS_RESOLVER = "1.1.1.1"
+const PRIVATE_RESOLVER_KINDS = new Set(["private", "loopback", "link-local"])
+function liveResolver(target) {
+  const raw = String(process.env.TOUCHSTONE_DNS_RESOLVER ?? DEFAULT_DNS_RESOLVER).trim()
+  const kind = ipKind(raw)
+  if (kind === "public") return raw
+  if (PRIVATE_RESOLVER_KINDS.has(kind) && allowsPrivate(target)) return raw
+  return null
+}
 const ROOT = path.resolve(HERE, "../..") // repo root
 
 export const TARGET_KINDS = ["lab", "local-source", "brief", "scope", "live"]
@@ -442,7 +458,9 @@ export function prepareWorkspace(target, { modules = [] } = {}) {
       live.domain = hosts[0]
       // The capture checks every tool input against `scope`, and refuses a name
       // that resolves to a private address unless the scope's own grant allows it.
-      live.reach = { network: "bridge", granted: true, scope: hosts, ports, ...(allowsPrivate(target) ? { allowPrivate: true } : {}) }
+      // DNS questions for the granted domain go to a public recursive resolver (a lab keeps its own).
+      const resolver = liveResolver(target)
+      live.reach = { network: "bridge", granted: true, scope: hosts, ports, ...(resolver ? { resolver } : {}), ...(allowsPrivate(target) ? { allowPrivate: true } : {}) }
     }
     // The phishing pack captures the lookalikes of one root domain the same way.
     // `owned` lists the client's own defensive registrations; they raise no lead.

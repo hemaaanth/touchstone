@@ -13,10 +13,14 @@ import { join } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "live-targets-test-"));
 process.env.TOUCHSTONE_SCOPES_FILE = join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = join(dir, "grants.json");
-after(() => rmSync(dir, { recursive: true, force: true }));
+// A test token, set before grant-store loads, so no real console token is read.
+process.env.TOUCHSTONE_GRANT_TOKEN = "test-token-not-real";
+const savedResolver = process.env.TOUCHSTONE_DNS_RESOLVER;
+after(() => { rmSync(dir, { recursive: true, force: true }); if (savedResolver === undefined) delete process.env.TOUCHSTONE_DNS_RESOLVER; else process.env.TOUCHSTONE_DNS_RESOLVER = savedResolver; });
 
 const { prepareWorkspace, listTargets } = await import("../lib/targets.mjs");
 const { addLiveScope } = await import("../lib/scopes-store.mjs");
+const { allowsPrivate } = await import("../lib/reach.mjs");
 
 const live = (host, pack) => ({
   id: `live-${pack}`, title: "t", kind: "live", pack,
@@ -61,6 +65,38 @@ test("an explicit port survives into the capture ports", () => {
   const target = { ...live("example.org", "surface"), origins: ["http://example.org:8080"] };
   const ws = build(target);
   assert.deepEqual(cfgOf(ws).reach.ports, [{ scheme: "http", port: 8080 }]);
+});
+
+// A live run sends its DNS questions for the granted domain to a resolver the
+// platform names here. A public recursive resolver by default; an env override;
+// a private override is refused unless the scope's own grant allows private space.
+test("a live domain capture gets the default public resolver", () => {
+  delete process.env.TOUCHSTONE_DNS_RESOLVER;
+  assert.equal(cfgOf(build(live("app.example.com", "domains"))).reach.resolver, "1.1.1.1");
+  assert.equal(cfgOf(build(live("app.example.com", "surface"))).reach.resolver, "1.1.1.1");
+});
+
+test("TOUCHSTONE_DNS_RESOLVER overrides the resolver when it is a public address", () => {
+  process.env.TOUCHSTONE_DNS_RESOLVER = "9.9.9.9";
+  assert.equal(cfgOf(build(live("app.example.com", "domains"))).reach.resolver, "9.9.9.9");
+});
+
+test("a private, loopback or bad resolver override is refused for a normal live target", () => {
+  for (const bad of ["10.0.0.53", "127.0.0.1", "169.254.169.254", "not-an-ip"]) {
+    process.env.TOUCHSTONE_DNS_RESOLVER = bad;
+    // No resolver reaches the config, so the DNS tools gap (live.mjs), not a private resolver.
+    assert.equal("resolver" in cfgOf(build(live("app.example.com", "domains"))).reach, false, bad);
+  }
+});
+
+test("a private resolver override is allowed when the scope's own grant allows private space", () => {
+  const labScope = addLiveScope({ title: "lab", hosts: ["127.0.0.1"], permission: true, allowPrivate: true });
+  assert.equal(allowsPrivate(labScope), true);
+  process.env.TOUCHSTONE_DNS_RESOLVER = "10.0.0.53";
+  assert.equal(cfgOf(build({ ...labScope, pack: "domains" })).reach.resolver, "10.0.0.53");
+  // A loopback resolver too.
+  process.env.TOUCHSTONE_DNS_RESOLVER = "127.0.0.1";
+  assert.equal(cfgOf(build({ ...labScope, pack: "surface" })).reach.resolver, "127.0.0.1");
 });
 
 test("every website pack takes a live scope; a source-only pack is refused", () => {

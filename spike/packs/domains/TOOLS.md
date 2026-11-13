@@ -25,7 +25,9 @@ that resolves to a private address unless that grant allows it:
   confined network and goes through its scope proxy (`-proxy`), which checks the
   address and connects to that same address. With no proxy, katana does not run.
 - checkdmarc and DNSViz get the granted domain and send DNS questions to the
-  resolver only. checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
+  resolver only. A live run sends those questions to a public recursive resolver
+  (`1.1.1.1` by default, or `TOUCHSTONE_DNS_RESOLVER`); a lab keeps its lab resolver.
+  checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
 The captured snapshot is what later steps read.
 
 | Tool | License | Runs as | Offline | Input | Output | Lead | Proof | Overlap | Lift | Crypto gap | Verdict |
