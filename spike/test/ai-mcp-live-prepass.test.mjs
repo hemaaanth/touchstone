@@ -126,9 +126,10 @@ test("live prepass: garak runs only with the operator's chat path and budget, an
     const agent = JSON.parse(prep.env.LEADS);
     assert.ok(agent.some((l) => l.check === "garak-promptinject.HijackHateHumans" && l.where === "assistant /agent/chat"));
 
-    // The run view shows "ran · 6 leads". The request count stays in the record.
+    // The run view shows "6 leads" and the request count: a ran row keeps its
+    // reason, so the operator sees how much of the budget garak used.
     const view = prepassView(prep.record);
-    assert.deepEqual(view.tools.find((t) => t.name === "garak"), { name: "garak", status: "ran", reason: null, leads: 6 });
+    assert.deepEqual(view.tools.find((t) => t.name === "garak"), { name: "garak", status: "ran", reason: "garak ran: 16 of 16 requests used, 16 replies.", leads: 6 });
     assert.equal(view.leads.filter((l) => l.tools.includes("garak")).length, 6);
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
