@@ -54,8 +54,10 @@ const GENERATOR = { sha256: sha([...new Set(NAMES)].sort().join('\n')), count: n
 const LIST_TEXT = readFileSync(join(PACK, 'lab', 'blocklists', 'touchstone-lab-blocklist.json'), 'utf8');
 const LAB_LIST = { name: 'touchstone-lab-blocklist', format: 'metamask-config', file: 'blocklists/touchstone-lab-blocklist.json', synthetic: true, sha256: sha(LIST_TEXT), text: LIST_TEXT };
 const SLICE_TEXT = readFileSync(join(PACK, METAMASK.file), 'utf8');
-const ctl = (zone, extra = {}) => { const domain = 'ts-ctl-0123456789ab.' + zone; return { zone, domain, code: 0, rows: [{ domain, fuzzer: '*original', ...extra }] }; };
-const QUIET = [ctl('test'), ctl('com')];
+// One control row. `i` picks the random label, so a zone can hold 3 distinct controls.
+const ctl = (zone, extra = {}, i = 0) => { const domain = 'ts-ctl-0123456789a' + 'bcd'[i] + '.' + zone; return { zone, domain, code: 0, rows: [{ domain, fuzzer: '*original', ...extra }] }; };
+const ctl3 = (zone, extra = {}) => [0, 1, 2].map(i => ctl(zone, extra, i));
+const QUIET = [...ctl3('test'), ...ctl3('com')];
 
 // One snapshot: every generated name has a bare row, the official name answers,
 // and `rows` overrides or adds rows by domain.
@@ -81,7 +83,7 @@ test('positive control: a normal snapshot with quiet controls confirms the real 
 
 test('M1: a wildcard resolver gives no confirmed lookalike and raises "resolver wildcards"', async () => {
   const every = Object.fromEntries(NAMES.map(d => [d, { dns_a: ['192.0.2.1'] }]));
-  const s = snap({ rows: every, controls: [ctl('test', { dns_a: ['192.0.2.1'] }), ctl('com', { dns_a: ['192.0.2.1'] })] });
+  const s = snap({ rows: every, controls: [...ctl3('test', { dns_a: ['192.0.2.1'] }), ...ctl3('com', { dns_a: ['192.0.2.1'] })] });
   const scan = await phishingLeads(s);
   assert.equal(confirmed(scan).length, 0, 'no wildcard answer is confirmed');
   assert.ok(gap(scan, 'resolver wildcards'), 'resolver wildcards gap lead');
@@ -90,7 +92,7 @@ test('M1: a wildcard resolver gives no confirmed lookalike and raises "resolver 
 
 test('M1: a row whose answer equals a control answer is review-only, even in another zone', async () => {
   // An ISP that rewrites NXDOMAIN answers the com control. The test control is quiet.
-  const s = snap({ rows: { 'tldekeep.test': HIT, 'tidekeap.test': { dns_a: ['198.51.100.7'] } }, controls: [ctl('test'), ctl('com', { dns_a: ['198.51.100.7'] })] });
+  const s = snap({ rows: { 'tldekeep.test': HIT, 'tidekeap.test': { dns_a: ['198.51.100.7'] } }, controls: [...ctl3('test'), ...ctl3('com', { dns_a: ['198.51.100.7'] })] });
   const scan = await phishingLeads(s);
   assert.equal(registered(scan, 'tidekeap.test'), undefined);
   assert.ok(gap(scan, 'resolver wildcards'));
@@ -101,6 +103,34 @@ test('M1: a snapshot with no control rows confirms nothing and raises the gap le
   const scan = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: null }));
   assert.equal(registered(scan, 'tldekeep.test'), undefined);
   assert.ok(gap(scan, 'no control rows'));
+});
+
+test('M-A: field-less controls but mass answers: the zone is a wildcard, nothing confirmed, a gap lead', async () => {
+  // dnstwist writes the same field-less row for a timeout and for NXDOMAIN. Here all
+  // three .test controls are field-less, but every generated .test name answers with
+  // its own address. That is a wildcard, not 4857 registrations.
+  const every = Object.fromEntries(NAMES.filter(d => d.endsWith('.test') && d !== 'tidekeep.test').map((d, i) => [d, { dns_a: ['203.0.' + (i >> 8) + '.' + (i & 255)] }]));
+  const scan = await phishingLeads(snap({ rows: every }));
+  assert.equal(confirmed(scan).length, 0, 'no mass answer is confirmed');
+  assert.ok(gap(scan, { wildcard: 'ratio', zones: 'test' }), 'ratio gap lead names the zone');
+  assert.equal(scan.leads.find(l => l.where.domain === 'tldekeep.test').where.reason, 'wildcard');
+  // Below the ratio, the same quiet controls still confirm a real lookalike.
+  assert.ok(registered(await phishingLeads(snap({ rows: { 'tldekeep.test': HIT } })), 'tldekeep.test'));
+});
+
+test('M-A: one field-less control, or a timed-out control, does not make a zone quiet', async () => {
+  // The old capture shape: one control per zone.
+  const one = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('com')] }));
+  assert.equal(registered(one, 'tldekeep.test'), undefined);
+  assert.ok(gap(one, { controls: 'missing', zones: 'test' }));
+  // Three controls, but one run timed out (no row, non-zero code).
+  const timedOut = { ...ctl('test', {}, 2), code: 1, rows: [], reason: 'Timed out.' };
+  const late = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('test', {}, 1), timedOut, ...ctl3('com')] }));
+  assert.equal(registered(late, 'tldekeep.test'), undefined);
+  assert.ok(gap(late, { controls: 'missing', zones: 'test' }));
+  // The same label three times is one control, not three.
+  const same = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, controls: [ctl('test'), ctl('test'), ctl('test'), ...ctl3('com')] }));
+  assert.equal(registered(same, 'tldekeep.test'), undefined);
 });
 
 test('M2: every row but the official one is !ServFail: coverage partial and a gap lead with both counts', async () => {
@@ -199,21 +229,22 @@ test('m10: a list entry under a generated lookalike gets a review lead', async (
   assert.equal(l.check, 'lookalike-host-on-blocklist');
 });
 
-test('M1/m5: live capture asks one control per zone on the granted network, then fingerprints the generator offline', async () => {
+test('M1/m5/M-A: live capture asks three controls per zone on the granted network, then fingerprints the generator offline', async () => {
   const lab = loadSnapshot(join(PACK, 'lab')).snapshot;
   captured = lab.dnstwist;
   calls.length = 0;
   try {
     const reach = { network: 'bridge', granted: true, scope: ['tidekeep.test'], resolver: '172.30.47.53' };
     const snapshot = await captureLookalikes({ ws: join(PACK, 'lab'), domain: 'tidekeep.test', owned: ['tide-keep.test'], reach });
-    assert.equal(liveCalls.length, 3, 'one main run and one control per zone');
+    assert.equal(liveCalls.length, 7, 'one main run and three controls per zone');
     assert.deepEqual(liveCalls[0].cmd, ['--format', 'json', '--nameservers', '172.30.47.53', 'tidekeep.test']);
     assert.ok(liveCalls.every(c => c.network === 'bridge'));
     const probes = liveCalls.slice(1).map(c => c.cmd.at(-1));
     assert.deepEqual(liveCalls[1].cmd.slice(0, 6), ['--format', 'json', '--fuzzers', '*original', '--nameservers', '172.30.47.53']);
-    assert.match(probes[0], /^ts-ctl-[0-9a-f]{12}\.com$/);
-    assert.match(probes[1], /^ts-ctl-[0-9a-f]{12}\.test$/);
-    assert.deepEqual(snapshot.dnstwist.controls.map(c => c.zone), ['com', 'test']);
+    for (const p of probes.slice(0, 3)) assert.match(p, /^ts-ctl-[0-9a-f]{12}\.com$/);
+    for (const p of probes.slice(3)) assert.match(p, /^ts-ctl-[0-9a-f]{12}\.test$/);
+    assert.equal(new Set(probes).size, 6, 'each control is a new random name');
+    assert.deepEqual(snapshot.dnstwist.controls.map(c => c.zone), ['com', 'com', 'com', 'test', 'test', 'test']);
     assert.deepEqual(calls.map(c => [c.network, c.cmd]), [['none', ['--format', 'list', 'tidekeep.test']]]);
     assert.equal(snapshot.dnstwist.generator.sha256, GENERATOR.sha256);
     assert.equal(snapshot.dnstwist.generator.count, GENERATOR.count);

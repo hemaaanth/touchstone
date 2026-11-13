@@ -49,6 +49,12 @@ export function zoneOf(domain, official) {
 }
 // A control is a random label that cannot exist. If it answers, the resolver answers everything.
 export const CONTROL = /^ts-ctl-[0-9a-f]{12}$/;
+// dnstwist writes the same field-less row for NXDOMAIN and for a timeout. So one quiet
+// control is weak. A zone is quiet only when 3 distinct controls all came back field-less.
+export const CONTROLS_PER_ZONE = 3;
+// A second guard: if more than 20% of the generated names in a zone (of at least 20)
+// answer A or AAAA, the resolver wildcards there, whatever the controls say.
+export const WILDCARD_RATIO = 0.2, WILDCARD_MIN = 20;
 // The generator fingerprint: sha256 of the sorted name set dnstwist made. Capture stores it;
 // replay must get the same set from the local image, or nothing is proven.
 export const fingerprint = names => ({ sha256: sha([...names].sort().join('\n')), count: names.size });
@@ -170,9 +176,9 @@ export async function phishingLeads(snapshot) {
     }
   }
 
-  // Wildcard controls: one random name per zone. A zone whose control answers, or a row
-  // that gives a control's answer, shows the resolver, not a registration.
-  const controls = new Map();
+  // Wildcard controls: 3 random names per zone. A zone is 'answers' if any control
+  // answers, 'quiet' only if 3 distinct controls ran and all were field-less, else 'unknown'.
+  const perZone = new Map();
   for (const c of Array.isArray(capture.controls) ? capture.controls : []) {
     const zone = name(c?.zone), domain = name(c?.domain);
     if (!zone || !domain.endsWith('.' + zone) || !CONTROL.test(domain.slice(0, -zone.length - 1))) continue;
@@ -180,8 +186,33 @@ export async function phishingLeads(snapshot) {
     const r = row ? recordsOf(row) : null;
     const values = r ? [...r.A, ...r.AAAA, ...r.MX, ...r.sink] : [];
     const state = !row || servFailed(row) ? 'unknown' : values.length || r.NS.length ? 'answers' : 'quiet';
-    const prev = controls.get(zone);
-    if (!prev || prev.state === 'quiet' || (prev.state === 'unknown' && state === 'answers')) controls.set(zone, { state: prev?.state === 'answers' ? 'answers' : state, values: [...(prev?.values ?? []), ...values] });
+    if (!perZone.has(zone)) perZone.set(zone, new Map());
+    const seen = perZone.get(zone), prev = seen.get(domain);
+    // The same label twice counts once, at its worst state.
+    const rank = { quiet: 0, unknown: 1, answers: 2 };
+    seen.set(domain, !prev || rank[state] > rank[prev.state] ? { state, values: [...(prev?.values ?? []), ...values] } : { ...prev, values: [...prev.values, ...values] });
+  }
+  const controls = new Map();
+  for (const [zone, seen] of perZone) {
+    const list = [...seen.values()];
+    const state = list.some(c => c.state === 'answers') ? 'answers' : list.length >= CONTROLS_PER_ZONE && list.every(c => c.state === 'quiet') ? 'quiet' : 'unknown';
+    controls.set(zone, { state, values: list.flatMap(c => c.values) });
+  }
+  // Ratio guard. Count generated names per zone, and those whose row answers A or AAAA.
+  const massZones = new Set();
+  if (regen.ok) {
+    const tally = new Map();
+    for (const n of names) if (!skip.has(n)) { const z = zoneOf(n, official); tally.set(z, { names: (tally.get(z)?.names ?? 0) + 1, answer: new Set() }); }
+    for (const row of rows) {
+      const d = name(row.domain);
+      if (!names.has(d) || skip.has(d)) continue;
+      const r = recordsOf(row);
+      if (r.A.length || r.AAAA.length || r.sink.length) tally.get(zoneOf(d, official))?.answer.add(d);
+    }
+    for (const [zone, t] of tally) if (t.names >= WILDCARD_MIN && t.answer.size / t.names > WILDCARD_RATIO) {
+      massZones.add(zone);
+      controls.set(zone, { state: 'answers', values: controls.get(zone)?.values ?? [], ratio: t.answer.size + ' of ' + t.names });
+    }
   }
   const wildValues = new Set([...controls.values()].flatMap(c => c.values));
   const noControl = new Set();
@@ -201,9 +232,9 @@ export async function phishingLeads(snapshot) {
       const reason = ctl?.state === 'answers' || kinds.some(k => r[k].some(v => wildValues.has(v))) ? 'wildcard' : ctl?.state !== 'quiet' ? 'no-control' : null;
       if (reason) {
         stats.unverified++;
-        if (reason === 'wildcard') wild = true; else noControl.add(zone);
+        if (reason === 'wildcard') { if (!massZones.has(zone)) wild = true; } else noControl.add(zone);
         leads.push(leadOf('unverified-lookalike', { ...where, reason }, 'low', domain + ' answers (' + kinds.join(', ') + '), but ' + (reason === 'wildcard'
-          ? 'a random name that cannot exist in .' + zone + ' also answers, or gives the same answer. The resolver answers for names nobody registered, so this does not show ' + domain + ' is registered.'
+          ? (massZones.has(zone) ? 'more than ' + WILDCARD_RATIO * 100 + '% of the generated names in .' + zone + ' answer too (' + ctl.ratio + ').' : 'a random name that cannot exist in .' + zone + ' also answers, or gives the same answer.') + ' The resolver answers for names nobody registered, so this does not show ' + domain + ' is registered.'
           : 'the capture has no usable control row for .' + zone + ', so a resolver wildcard is not ruled out.') + ' Review by hand.', 'dnstwist', { reviewOnly: true }));
         continue;
       }
@@ -217,8 +248,9 @@ export async function phishingLeads(snapshot) {
       leads.push(leadOf('parked-lookalike', { domain, fuzzer, NS: r.NS.join(' ') }, 'low', domain + ' has name servers but no A, AAAA or MX. It is registered but not live. Watch it.', 'dnstwist', { reviewOnly: true }));
     } else stats.bare++;
   }
-  if (captured && !controls.size) missing('lookalike-evidence-missing', 'no control rows', 'The capture has no wildcard control rows, so a resolver that answers every name cannot be ruled out. No resolving lookalike is confirmed. Capture again.', 'dnstwist-capture');
+  if (captured && !perZone.size) missing('lookalike-evidence-missing', 'no control rows', 'The capture has no wildcard control rows, so a resolver that answers every name cannot be ruled out. No resolving lookalike is confirmed. Capture again.', 'dnstwist-capture');
   else if (noControl.size) missing('lookalike-evidence-missing', { controls: 'missing', zones: [...noControl].sort().join(' ') }, 'No usable control row for ' + [...noControl].sort().map(z => '.' + z).join(', ') + '. Resolving names there are not confirmed.', 'dnstwist-capture');
+  if (massZones.size) missing('lookalike-evidence-missing', { wildcard: 'ratio', zones: [...massZones].sort().join(' ') }, 'More than ' + WILDCARD_RATIO * 100 + '% of the generated names in ' + [...massZones].sort().map(z => '.' + z + ' (' + controls.get(z).ratio + ')').join(', ') + ' answer A or AAAA. Real lookalike registrations are far rarer, so the resolver wildcards there even if its control names look quiet. No name in that zone is confirmed. Use a resolver that returns NXDOMAIN and capture again.', 'dnstwist-capture');
   if (wild) missing('lookalike-evidence-missing', 'resolver wildcards', 'The resolver wildcards: a random name that cannot exist got an answer. Names that answer the same way are review-only. Use a resolver that returns NXDOMAIN and capture again.', 'dnstwist-capture');
 
   // Known scams: an exact match in a pinned list.

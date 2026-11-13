@@ -9,7 +9,7 @@ import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { inScope, failReason } from '../domains/live.mjs';
 import { assertInternal } from '../domains/labctl.mjs';
-import { IMAGE, METAMASK, name, zoneOf, regenerate, fingerprint } from './checks.mjs';
+import { IMAGE, METAMASK, CONTROLS_PER_ZONE, name, zoneOf, regenerate, fingerprint } from './checks.mjs';
 
 const PACK = fileURLToPath(new URL('.', import.meta.url));
 const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
@@ -51,8 +51,9 @@ async function dnstwistJson(cmd, network, timeoutMs) {
 }
 
 // Capture one scope. Returns a snapshot. The coverage row says if the capture ran.
-// After the main run it asks the same resolver about one random name per zone (the
-// control). That name cannot exist, so an answer means the resolver wildcards.
+// After the main run it asks the same resolver about 3 random names per zone (the
+// controls). They cannot exist, so an answer means the resolver wildcards. dnstwist
+// gives a timeout and NXDOMAIN the same bare row, so the checks need all 3 bare.
 // Then it runs dnstwist offline once more and stores the fingerprint of the name set.
 export async function captureLookalikes({ ws, domain, owned = [], reach, blocklists = [], lab = false }) {
   assertReach(reach, domain);
@@ -65,7 +66,7 @@ export async function captureLookalikes({ ws, domain, owned = [], reach, blockli
   let generator = null;
   if (!reason) {
     const zones = [...new Set(rows.map(r => name(r.domain)).filter(Boolean).map(d => zoneOf(d, [domain])))].sort();
-    for (const zone of zones) {
+    for (const zone of zones) for (let i = 0; i < CONTROLS_PER_ZONE; i++) {
       const probe = 'ts-ctl-' + randomBytes(6).toString('hex') + '.' + zone;
       const ctlCmd = ['--format', 'json', '--fuzzers', '*original', ...ns, probe];
       const out = await dnstwistJson(ctlCmd, reach.network, 120000);

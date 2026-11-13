@@ -40,8 +40,9 @@ are the domain, the fuzzer and the records. The scan runs dnstwist again offline
 (`--format list`, `--network none`). The fresh name set must have the same
 sha256 as the generator fingerprint stored at capture. The name must be in it,
 and the records must match the pin exactly. Only routable addresses count.
-The zone's control name (below) must be quiet, and no record value may equal a
-control answer. An A or AAAA record means the name can serve a page. An MX
+The zone's 3 control names (below) must all be quiet, fewer than 20% of the
+zone's generated names may answer, and no record value may equal a control
+answer. An A or AAAA record means the name can serve a page. An MX
 record means it can receive mail. Neither proves a phishing page exists. Say
 only what the records show.
 
@@ -52,9 +53,10 @@ commit. For the synthetic lab list it is `sha256:` and the list hash. Cite the
 list, the line and the pin.
 
 `unverified-lookalike` (low, reviewOnly). The name answers, but the answer is
-not proof of a registration. The `reason` cell says why: `wildcard` (the
-zone's control name also answers, or the value equals a control answer),
-`no-control` (the zone has no usable control row), or `non-routable` (only
+not proof of a registration. The `reason` cell says why: `wildcard` (a
+control name in the zone answers, the value equals a control answer, or more
+than 20% of the zone's generated names answer), `no-control` (the zone does
+not have 3 distinct quiet control rows), or `non-routable` (only
 0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is often a sinkhole).
 
 `parked-lookalike` (low, reviewOnly). The name has NS records but no A, AAAA or
@@ -75,7 +77,9 @@ not the lookalike itself.
 `lookalike-evidence-missing` and `blocklist-evidence-missing` (informational,
 reviewOnly). A tool failed, the capture is empty, the resolver gave no answer
 for the official domain, the generator fingerprint is missing or different,
-the capture has no control rows, a control answers (resolver wildcards), or a
+the capture has no control rows, a zone lacks 3 quiet controls, a control
+answers (resolver wildcards), more than 20% of a zone's names answer (where
+`{wildcard: 'ratio', zones}`), or a
 list is empty, a stub, changed, or not pinned. A partial capture also raises
 one: rows that answered `!ServFail` or generated names with no row. Its where
 cell holds both counts, and the `dnstwist-capture` coverage row is `partial`.
@@ -91,11 +95,22 @@ record.
 
 ## Control rows
 
-After the main run, capture asks the same resolver about one random name per
-zone, `ts-ctl-<12 hex>.<zone>`. That name cannot exist. If it answers, the
-resolver wildcards (a wildcard TLD, or an ISP that rewrites NXDOMAIN), and
-every row in that zone is review-only. Capture then runs dnstwist offline once
-more and stores the sha256 and count of the name set as `generator`.
+After the main run, capture asks the same resolver about 3 random names per
+zone, `ts-ctl-<12 hex>.<zone>`. They cannot exist. If one answers, the resolver
+wildcards (a wildcard TLD, or an ISP that rewrites NXDOMAIN), and every row in
+that zone is review-only.
+
+dnstwist writes the same bare row for NXDOMAIN and for a DNS timeout. So a
+timed-out control looks quiet. Two guards cover this. A zone is quiet only if
+3 distinct controls ran with exit code 0 and all 3 rows are bare. A failed
+run, a missing row, a `!ServFail` row or fewer than 3 controls make the zone
+unknown: its resolving rows are `no-control` and a gap lead names the zone.
+Second, if a zone has at least 20 generated names and more than 20% of them
+answer A or AAAA, the zone is a wildcard whatever the controls say. Its rows
+are review-only and a `{wildcard: 'ratio', zones}` gap lead is raised.
+
+Capture then runs dnstwist offline once more and stores the sha256 and count
+of the name set as `generator`.
 
 Write short sentences. Explain the captured risk, not an imagined attack.
 End each lead with Fix: and the next step, for example a

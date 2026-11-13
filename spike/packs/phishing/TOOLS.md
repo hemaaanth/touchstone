@@ -25,7 +25,8 @@ empty list and the only tool is `snapshot_leads`. The two strongest leads are:
 
 1. `registered-lookalike`: dnstwist generates the name again, offline, from the
    official domain, and the pinned DNS row has a routable A or AAAA, or an MX.
-   The zone's control rows must be quiet, and no value may equal a control
+   The zone's 3 control rows must be quiet, at most 20% of the zone's names
+   may answer, and no value may equal a control
    answer.
 2. `known-scam-lookalike`: dnstwist generates the name again, offline, and it is
    an exact entry in a pinned blocklist. The evidence names the list, the
@@ -44,10 +45,16 @@ counts.
 
 Two checks guard the capture itself:
 
-- Control rows. After the main run, capture asks the same resolver about one
-  random name per zone (`ts-ctl-<12 hex>.<zone>`). That name cannot exist. If
-  it answers, the resolver wildcards, and rows in that zone are review-only. A
-  snapshot with no control rows gives no `registered-lookalike` lead.
+- Control rows. After the main run, capture asks the same resolver about 3
+  random names per zone (`ts-ctl-<12 hex>.<zone>`). They cannot exist. If one
+  answers, the resolver wildcards, and rows in that zone are review-only.
+  dnstwist gives a timeout and NXDOMAIN the same bare row, so a zone is quiet
+  only when all 3 distinct controls ran and came back bare. Anything else is
+  unknown, and its rows are review-only. A snapshot with no control rows gives
+  no `registered-lookalike` lead.
+- Wildcard ratio. If more than 20% of a zone's generated names (at least 20
+  names) answer A or AAAA, the zone is treated as a wildcard even with quiet
+  controls. Real registrations are far rarer than that.
 - Generator fingerprint. Capture stores the sha256 and count of the offline
   `--format list` name set. Replay makes the set again and compares. A
   different set (for example a rebuilt image under the same tag) gives no
@@ -114,9 +121,11 @@ Real holes (work nobody has done yet):
 5. dnstwist drops DNS timeouts without a mark. A slow or rate-limiting
    resolver can make a registered name look bare. `!ServFail` and missing rows
    are counted; timeouts cannot be.
-6. One control per zone misses two cases: a wildcard in a zone below the one
-   the control asks about (for example `*.co.za` when the control asks under
-   `za`), and a resolver that rewrites only some names and not the control. A
+6. The controls miss two cases: a wildcard in a zone below the one the
+   controls ask about (for example `*.co.za` when they ask under `za`), and a
+   resolver that rewrites only some names and not the controls. All 3 controls
+   can still time out and look quiet; the 20% ratio then catches a mass
+   wildcard only in a zone with at least 20 names, and not a partial one. A
    sinkhole that answers with routable addresses is not caught either.
 7. The vendored MetaMask copy is a 450-entry slice. Real coverage needs the
    operator to pin the full 3.5 MB `config.json` at a commit.
