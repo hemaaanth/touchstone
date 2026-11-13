@@ -13,6 +13,7 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
 | Echidna | AGPL-3.0 | Toolbox image | Yes | Generated invariant harness | Text, parsed | broken property → check, call sequence | `forge` | Medusa | None yet | Only the invariants our template writes | ensemble |
 | Medusa | AGPL-3.0 | Toolbox image | Yes | Same harness, `medusa.json` | Text, parsed | Same as Echidna | `forge` | Echidna | None yet | Same as Echidna | ensemble |
 | Halmos | AGPL-3.0 (LICENSE in the wheel); image also carries z3 (MIT) and yices (GPL-3.0) | `touchstone/halmos:0.3.3`, built by `images/build.sh halmos` from `images/Dockerfile.halmos` (base images by digest, solc by checksum, every pip package pinned) | Yes: `--network none`, `--pull=never`, `FOUNDRY_OFFLINE` | The target's own `test/**/*.sol` with `check_*` functions | `--json-output`, parsed by `halmos.mjs` | counterexample → `symbolic-counterexample` lead with the argument values | `forge`, through the agent's PoC. The lead alone never proves | None for symbolic; Echidna/Medusa sample the same space | None | Checks only properties the target ships; see below | wrap (leads only until the vacuity gate merges) |
+| Chimera (Recon) | Library MIT by `SPDX-License-Identifier` headers only (no LICENSE file, no copyright line; see below). Runners: Echidna AGPL-3.0, Medusa AGPL-3.0, crytic-compile AGPL-3.0, solc GPL-3.0 | `touchstone/chimera:e2.3.3-m1.5.1`, built by `images/build.sh chimera` from `images/Dockerfile.chimera` (base images by digest, Echidna, Medusa and solc by checksum, every pip package pinned) | Yes: `--network none`, `--pull=never`, `FOUNDRY_OFFLINE` | The target's own Chimera suite: one `contract CryticTester` under `test/` that imports `@chimera/` | Echidna `--format text` and Medusa text, parsed by `chimera.mjs` | broken property → `chimera-property-broken` lead with the call sequence and which engines broke it | `forge`, through the agent's PoC. The lead alone never proves | Our fuzz template runs the same two engines, but on our harness, not the target's | None | Checks only properties the target ships; see below | wrap (leads only until the vacuity gate merges) |
 
 ## Halmos: what it covers and what it does not
 
@@ -48,6 +49,61 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   baked into the image. A brief scope gets nothing, because it has no `test/`
   at start.
 
+## Chimera: what it covers and what it does not
+
+- **Runs** in the contracts pre-pass, with the fuzz module, in parallel with
+  Halmos, when `test/` has exactly one `.sol` file that declares
+  `contract CryticTester` and imports Chimera. It runs that suite under Echidna
+  and Medusa, each in its own container (two `runTool()` calls). With no such
+  suite it starts no container and adds nothing to the run. With two or more
+  `CryticTester` contracts it runs none and reports a gap, because both
+  engines pick the contract by name.
+- **Assertion mode only.** Chimera's asserts (`t`, `eq`, `gte`, ...) fail with
+  `assert(false)`, so Echidna and Medusa run in assertion mode. A property
+  written as a bool-returning `echidna_` function is not checked.
+- **Budget:** 60 s of fuzzing per engine, at most 50,000 calls, sequences of
+  50 calls, 2 workers each. The container limit is that plus 120 s for the
+  build. A property that did not break only did not break in this budget.
+- **Gives** one lead per broken property: the property, the shortest call
+  sequence either engine reported, and which engines broke it (one engine or
+  both). The lead goes into the agent's first message (`PROPERTY_BRIEF`), the
+  `chimera-scan` event and the run view (row "Chimera"). There is no agent
+  tool for it.
+- **Lab:** `lab/vault-shares` ships a Chimera suite in `test/recon/` and the
+  library in `lib/chimera/`. Both engines break `property_solvent()` with
+  deposit then redeem (Echidna shrinks it to `vault_deposit(0)`,
+  `vault_redeem(0)`): `redeem` takes shares off `managedAssets`, so the vault
+  counts assets it does not hold. Static flags only `deposit` and `addYield`,
+  no fuzz template fits, and Halmos's `check_*` functions never call
+  `redeem`. So before this wrap the pack had no lead at `redeem`.
+  `oracle/ShareVaultExploits.t.sol` replays it.
+- **Vacuity gate, fail closed.** The same `suiteTrust()` call site as Halmos.
+  Today it returns `trusted: false`, so every Chimera lead has
+  `supportsProof: false` and a property that did not break is `unverified`.
+  Results are leads only and cannot support proof until the gate merges.
+- **Fails closed.** A missing image, a timeout (in-container kill at the limit
+  minus 5 s), a build error, no report, a report cut short (no summary lines),
+  a test Echidna or Medusa could not run, or output we cannot read is a gap.
+  One engine down is a gap for that engine; the other engine's results still
+  count. Both down: the scan is `unavailable`.
+- **Text, not JSON.** Echidna 2.3.3 `--format json` names every test "name",
+  leaves the contract empty and mixes log lines into stdout, so we parse the
+  text report. A change to either engine's text format makes the parser throw,
+  which is a gap, not a pass. The fixtures in `spike/test/fixtures/chimera/`
+  are real output from this image.
+- **Does not cover:** properties the target does not ship. Chimera does not
+  write properties. Foundry and Halmos entry points of the same suite
+  (`CryticToFoundry`, `HalmosAsserts`) are not run here. Slither is not in
+  the image, so Echidna gets no Slither constants. Solidity must build with
+  solc 0.8.38. A brief scope gets nothing.
+- **License.** Every `src/*.sol` file at tag 0.1.4
+  (`0d37c2b8998756680e76d859c343e01c4fc1e006`) says
+  `SPDX-License-Identifier: MIT`. The repo has no LICENSE file and no
+  copyright line, and GitHub reports no license. We run the target's copy; the
+  pack ships none of it. Only the lab vendors it, unchanged, in
+  `lab/vault-shares/lib/chimera/`. This still needs a licensing review before
+  any release that includes the lab.
+
 ## Gaps in our wrapping
 
 - Aderyn runs on the host, not in Docker. Untrusted code is parsed outside the
@@ -55,6 +111,8 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
 - The fuzz template covers vault accounting only. Other targets get no fuzz leads.
 - Halmos runs only properties the target ships. A target with no `check_*`
   functions gets no symbolic leads.
+- Chimera runs only a suite the target ships. Most targets ship none, so they
+  get no Chimera leads. Generating a Chimera suite is not done.
 
 ## Evaluated, not wrapped (research-named OSS, 03-capabilities.md M5–M8, 04-crypto-coverage.md, 07-gap-3)
 
@@ -67,7 +125,6 @@ drive most of these.
 
 | Tool | Why it was raised | Verdict | Reason |
 |------|-------------------|---------|--------|
-| Chimera (Recon) | One property suite runs across Echidna, Medusa, Halmos and Foundry. | blocked — vacuity gate and license review | Directly closes the "fuzz template covers vault accounting only" gap above. The blind-agent test in the Halmos section applies: the fuzzer passed all 7 vacuous invariants, so no suite result counts until the gate exists. License: MIT, declared only by `SPDX-License-Identifier: MIT` headers in its `.sol` files. The repo has no LICENSE text file. `create-chimera-app` has no license at all. That needs licensing review. |
 | Mythril | Symbolic execution on bytecode; finds paths Slither misses. | blocked — no source-less live target | Lab targets ship source, so Slither + Aderyn already cover those paths. Mythril's bytecode-only path finding adds lift only against a target that ships bytecode without source. That target kind does not exist yet: lab code is under `src/`, and a brief scope only fetches the GitHub links it names. Wire it as an ensemble lead engine when such a target exists. |
 | Heimdall | Decompiles bytecode when there is no source. | blocked — no source-less live target | The lab always has source, so Heimdall has zero lift today. It earns a row only when a target ships bytecode without source, and no scope kind produces such a target: brief scopes fetch GitHub source only. |
 | Wake | Python test and detector framework. | skip — overlap (assumed, not tested) | Duplicates Slither + Aderyn as a static detector. No distinct detection was shown; that is an assumption, not a comparison. |

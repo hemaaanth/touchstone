@@ -4,7 +4,8 @@
 // shapes differ:
 //   Contracts      { static: { tool, engines, suspects, top[] },
 //                    fuzz:   { tool, engines, applicable, suspects, top[] },
-//                    symbolic: same keys plus status/reason (Halmos) }
+//                    symbolic: same keys plus status/reason (Halmos),
+//                    chimera:  same keys plus status/reason (Chimera) }
 //   supply chain   { coverage: [{ engine, status, code, timedOut, leads }],
 //                    leads: [{ check, impact, where, file, lines, description, engine }] }
 //   Keys, Chain watch { mode, block, suspects, corroborated, top: [{ check, impact, where }] }
@@ -92,7 +93,7 @@ function lead(l, toolNames) {
 function contracts(rec) {
   const tools = [];
   const leads = [];
-  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"]]) {
+  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"], ["chimera", "Chimera"]]) {
     const p = rec[key];
     if (!p || typeof p !== "object") continue;
     const engines = arr(p.engines).map((e) => str(e, 40)).filter(Boolean);
