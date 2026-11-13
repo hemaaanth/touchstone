@@ -17,9 +17,11 @@
 //     `source-fetch` per link, not one per module.
 // A run with one module never comes here: packFor returns that module's pack.
 import path from "node:path";
-import { cpSync } from "node:fs";
+import { cpSync, readdirSync } from "node:fs";
 import { prepassView } from "../lib/prepass-view.mjs";
 import { fetchSource } from "../lib/fetch.mjs";
+import { concreteSolc, warmSolc } from "../lib/sandbox.mjs";
+import { event } from "../lib/event.mjs";
 
 export const MULTI = "multi";
 export const MULTI_DIR = "modules";
@@ -175,42 +177,65 @@ export function multiPack(members) {
   // The modules that read code (and get the fetched tree copied in). A run of
   // capture modules only fetches nothing and the members' own tool is left alone.
   const codeMembers = members.filter((p) => p.id === "contracts" || p.id === "review");
-  const fetched = new Map(); // url -> report, so a second call copies and never re-clones
+  const fetched = new Map(); // url -> report, once the one clone is done
   let queue = Promise.resolve();
 
-  // One fetch for the run: into the root's vendor/ (the run's shared tree), then
-  // copied into each code member so its own read tools see the files.
-  function sharedFetch(ws) {
-    return async (args) => {
-      const url = String(args?.url ?? "").trim();
-      let report = fetched.get(url);
-      if (!report) {
+  // ONE clone per link for the run, into the root's vendor/ (the run's shared
+  // tree), serialized and shared: a second caller of the same link waits for the
+  // first and gets its report. The tree is then copied into every code member, so
+  // each module's own read tools work on its own paths.
+  function ensureFetch(ws, url) {
+    if (fetched.has(url)) return Promise.resolve(fetched.get(url));
+    // Serialized, and the cache is checked again once this call reaches the head of
+    // the queue: a second caller of the same link that was waiting finds the first
+    // caller's report instead of cloning. The queue survives a refusal, so one
+    // wrong URL cannot poison the run.
+    const run = queue.catch(() => {}).then(async () => {
+      if (fetched.has(url)) return fetched.get(url);
+      const report = await fetchSource(ws, url);
+      fetched.set(url, report);
+      return report;
+    });
+    queue = run;
+    return run;
+  }
+
+  // A small duplicate of the part of a module's fetch that the shared clone skips:
+  // that module's two events, its own text, and (for contracts) the solc warm the
+  // offline proof needs. The clone, the tree and `source-fetch` stay the run's one.
+  async function completeFetch(p, ws, url, report, already) {
+    event("fetch_source", { url });
+    const where = report?.where;
+    if (where) {
+      for (const other of codeMembers) {
         try {
-          // Serialized: two modules' texts can ask for the same link at once.
-          queue = queue.then(async () => {
-            report = await fetchSource(ws, url);
-            fetched.set(url, report);
-          });
-          await queue;
-        } catch (err) {
-          return { output: [{ type: "text", text: `Could not fetch ${url}: ${String(err?.message ?? err)}` }], isError: true };
+          cpSync(path.join(ws, where), path.join(memberDir(ws, other.id), where), { recursive: true, force: true });
+        } catch {
+          // one module's copy must not fail the fetch
         }
       }
-      const where = report?.where;
-      if (where) {
-        for (const p of codeMembers) {
-          try {
-            cpSync(path.join(ws, where), path.join(memberDir(ws, p.id), where), { recursive: true, force: true });
-          } catch {
-            // one module's copy must not fail the fetch
-          }
-        }
+    }
+    const solid = (report?.files ?? []).map((f) => f.path ?? f).filter((f) => /\.sol$/i.test(String(f)));
+    const warmed = [];
+    if (p.id === "contracts") {
+      const versions = new Set();
+      for (const f of report?.files ?? []) for (const pragma of f.pragmas ?? []) { const v = concreteSolc(pragma); if (v) versions.add(v); }
+      for (const v of versions) { const w = await warmSolc(v); warmed.push(`${w.version}${w.ok ? "" : " (warm failed)"}`); }
+    }
+    let n = 0;
+    if (where) {
+      try {
+        n = [...readdirSync(path.join(ws, where), { recursive: true, withFileTypes: true })].filter((e) => e.isFile()).length;
+      } catch {
+        n = 0;
       }
-      const files = (report?.files ?? []).length;
-      return {
-        output: [{ type: "text", text: `Fetched ${url} into ${where ?? "(not saved)"}${files ? `: ${files} file${files === 1 ? "" : "s"}` : ""}. Every module that reads code can see it: call its list_sources.` }],
-      };
-    };
+    }
+    event("fetch_source-done", { url, ok: true, kind: report?.kind, files: n, ...(warmed.length ? { warmed } : {}) });
+    const lines = [already ? `Already fetched for this run: ${where ?? url}` : `Fetched ${url} into ${where ?? "(not saved)"}`, ""];
+    if (solid.length) lines.push("Solidity files now available:", ...solid.map((f) => `  ${f}`), "");
+    lines.push(`Use list_sources to see all ${n} file${n === 1 ? "" : "s"}, then read_source.`);
+    if (warmed.length) lines.push(`Compiler versions prepared: ${warmed.join(", ")}.`);
+    return { output: [{ type: "text", text: lines.join("\n") }] };
   }
 
   return {
@@ -236,7 +261,6 @@ export function multiPack(members) {
     },
 
     tools(ws, state) {
-      const fetch = sharedFetch(ws);
       const out = members.flatMap((p) => {
         const rename = renameFor(ws, p.id);
         // Every tool is wrapped, not only a renamed one: a plain name can still
@@ -248,7 +272,22 @@ export function multiPack(members) {
           ...(t.parameters ? { parameters: renameSchema(t.parameters, rename) } : {}),
           // A fetch brings the tree in once, for the run, and hands every module
           // that reads code its own copy: a scope is read, not re-cloned.
-          execute: async (...args) => renameResult(await (t.name === "fetch_source" && codeMembers.length ? fetch(...args) : t.execute(...args)), rename),
+          execute: async (...args) => {
+            if (t.name !== "fetch_source" || !codeMembers.length) return renameResult(await t.execute(...args), rename);
+            const url = String(args?.[0]?.url ?? "").trim();
+            const again = fetched.has(url);
+            event("fetch_source", { url });
+            let report;
+            try {
+              report = await ensureFetch(ws, url);
+            } catch (err) {
+              const why = String(err?.message ?? err);
+              event("fetch_source-done", { url, ok: false, error: why.slice(0, 200) });
+              return { output: [{ type: "text", text: rename(`Could not fetch ${url}: ${why}`) }], isError: true };
+            }
+            // The primary caller's own work is done here too, identically.
+            return renameResult(await completeFetch(p, ws, url, report, again), rename);
+          },
         }));
       });
       // The registry routes a call by name. Two tools with one name would send a
