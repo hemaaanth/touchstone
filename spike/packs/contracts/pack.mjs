@@ -497,6 +497,9 @@ async function prepass(ws, { emit }) {
 export default {
   id: "contracts",
   title: "Contracts",
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "Solidity contracts you own, from a lab, a local folder or a GitHub repo.",
   tier: "P", // passive: the target code and PoCs run only in our offline sandbox
   proof: "forge", // a finding is real only when its Foundry test replays green
   // Where its tools reach. The Modules page reads this. fetch_source clones the

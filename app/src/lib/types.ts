@@ -1,3 +1,5 @@
+import type { Harm } from "./eth"
+
 // The shapes the API serves. Every field is derived from a real recorded
 // engine run; see server/findings.mjs.
 
@@ -41,6 +43,9 @@ export interface FindingSummary {
   pack?: string | null
   scope?: string | null
   at?: number | null
+  // Which replay proves it, from the finding's own module (the run's `finding`
+  // event). Absent on an older record.
+  proofKind?: ProofKind
 }
 
 export interface PocRun {
@@ -71,6 +76,8 @@ export interface Transfer {
   address: string
   net: string
   gained: boolean
+  // The exact signed wei, when the server passes it (the record has it).
+  netWei?: string
 }
 
 export interface Proof {
@@ -90,6 +97,9 @@ export interface Proof {
   assertions: string[]
   rerunCommand: string | null
   testSource: string | null
+  // What the proof gate says was lost (spike/lib/proof.mjs), when the server
+  // passes it: an ETH or token drain, or a control takeover.
+  harm?: Harm | null
 }
 
 export interface Usage {
@@ -321,6 +331,9 @@ export interface TargetScope {
 export interface PackChoice {
   id: string
   title: string
+  // What the module tests, in one plain sentence: the pack's own description
+  // (spike/packs/index.mjs packList). Absent when a pack has none.
+  description?: string
   tier?: string
   proof: string
   // The module's tools can be aimed at a real host.
@@ -566,6 +579,8 @@ export interface PendingApproval {
   severity: Severity
   poc: string
   n?: number
+  // The module the finding came through (the `finding-submitted` event).
+  pack?: string
 }
 
 export interface RunView {

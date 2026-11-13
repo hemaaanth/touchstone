@@ -1,9 +1,9 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, Bug, Check, ChevronRight, FileArchive, FileText, Loader2, PanelRight, Search, X } from "lucide-react"
+import { Bot, Bug, Check, ChevronRight, FileArchive, FileText, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
-import { bundleUrl, fetchBundleCheck, fetchFinding, fetchFindingText, fetchFindings, type BundleCheck } from "@/lib/api"
+import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, DEFAULT_VIEW, sizeText, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -257,6 +257,7 @@ export function FindingsPage({
                   onOpen={openDetail}
                   onCopy={copy}
                   onOpenRun={onOpenRun}
+                  evidence={packs.find((p) => p.id === moduleOf(f))?.proof === "evidence"}
                 />
               ))}
             </ListCard>
@@ -407,6 +408,7 @@ export const FindingListRow = memo(function FindingListRow({
   onOpen,
   onCopy,
   onOpenRun,
+  evidence = false,
 }: {
   finding: FindingSummary
   moduleTitle: string
@@ -415,6 +417,8 @@ export const FindingListRow = memo(function FindingListRow({
   onOpen: (f: FindingSummary, bundle?: boolean) => void
   onCopy: (f: FindingSummary, format: CopyFormat) => void
   onOpenRun: (id: string, findingId?: string) => void
+  // An evidence finding: the server has no replay bundle for it.
+  evidence?: boolean
 }) {
   const open = () => onOpen(f)
   return (
@@ -455,7 +459,7 @@ export const FindingListRow = memo(function FindingListRow({
           </RowMenuItem>
           {/* Only a proven finding has a bundle. The sheet opens and asks the
               server about it first, so the operator sees what it holds. */}
-          {f.proven ? (
+          {f.proven && !evidence ? (
             <RowMenuItem onClick={() => onOpen(f, true)}>
               <FileArchive /> {BUNDLE_LABEL}
             </RowMenuItem>
@@ -556,8 +560,6 @@ function FindingDetail({
           {note ? <p role="status" className="text-xs leading-relaxed text-muted-foreground">{fullNote(note)}</p> : null}
         </div>
 
-        {f.proven ? <BundleControl key={f.id} id={f.id} start={bundle} /> : null}
-
         {full === null ? (
           <div role="status" aria-busy="true" className="flex flex-col gap-3">
             <span className="sr-only">Loading the proof…</span>
@@ -567,91 +569,11 @@ function FindingDetail({
             <Skeleton className="h-3.5 w-1/2" />
           </div>
         ) : full.finding ? (
-          <ReplayProof finding={full.finding} />
+          <ReplayProof finding={full.finding} startBundle={bundle} />
         ) : (
           <p className="text-xs text-muted-foreground">The proof did not load. Close the sheet and open it again.</p>
         )}
       </div>
     </>
-  )
-}
-
-// ── Replay bundle (H3c) ─────────────────────────────────────────────────────
-
-const BUNDLE_LABEL = "Download replay bundle"
-
-// The bundle control in the sheet. It asks the server first (`bundle-check`),
-// then offers the download. Nothing here is red: it is not a destructive control.
-function BundleControl({ id, start }: { id: string; start: boolean }) {
-  const [state, setState] = useState<{ kind: "idle" | "checking" | "failed" } | { kind: "done"; check: BundleCheck }>({ kind: start ? "checking" : "idle" })
-  const check = useCallback(
-    () =>
-      fetchBundleCheck(id).then(
-        (answer) => setState({ kind: "done", check: answer }),
-        () => setState({ kind: "failed" }),
-      ),
-    [id],
-  )
-  const ask = () => {
-    setState({ kind: "checking" })
-    void check()
-  }
-  // From the row menu: the state starts as "checking"; ask once.
-  const asked = useRef(false)
-  useEffect(() => {
-    if (!start || asked.current) return
-    asked.current = true
-    void check()
-  }, [start, check])
-
-  if (state.kind === "done") return <BundleResult check={state.check} href={bundleUrl(id)} />
-  return (
-    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
-      <Button size="sm" variant="outline" disabled={state.kind === "checking"} onClick={ask}>
-        {state.kind === "checking" ? <Loader2 className="animate-spin" /> : <FileArchive />}
-        {state.kind === "checking" ? "Checking the bundle…" : BUNDLE_LABEL}
-      </Button>
-      {state.kind === "failed" ? <p role="status" className="text-xs text-muted-foreground">The server did not answer. Try again.</p> : null}
-    </section>
-  )
-}
-
-// The README's text is Markdown: a `name` in backticks reads as code.
-function codeSpans(text: string) {
-  return text.split(/(`[^`]+`)/).map((part, i) =>
-    /^`[^`]+`$/.test(part) ? (
-      <code key={i} className="font-mono text-[0.92em]">
-        {part.slice(1, -1)}
-      </code>
-    ) : (
-      part
-    ),
-  )
-}
-
-// What the server said about the bundle. A refusal shows its one sentence and
-// no download. Otherwise: what the bundle is (the README's own first words),
-// the counts it could not judge (never a value), and the download with its size.
-export function BundleResult({ check, href }: { check: BundleCheck; href: string }) {
-  if (!check.ok) {
-    return (
-      <section aria-label="Replay bundle" className="flex flex-col gap-1.5">
-        <Label>Replay bundle</Label>
-        <p role="status" className="text-xs leading-relaxed text-muted-foreground">{check.error}</p>
-      </section>
-    )
-  }
-  return (
-    <section aria-label="Replay bundle" className="flex flex-col items-start gap-2">
-      <Button size="sm" variant="outline" render={<a href={href} download />}>
-        <FileArchive /> {BUNDLE_LABEL} <span className="text-muted-foreground tabular-nums">· {sizeText(check.bytes)}</span>
-      </Button>
-      {check.about ? <p className="text-xs leading-relaxed text-muted-foreground">{codeSpans(check.about)}</p> : null}
-      {check.note && check.unjudged.length ? (
-        <p role="status" className="text-xs leading-relaxed text-muted-foreground">
-          {check.note}: {check.unjudged.map((u) => u.text).join("; ")}.
-        </p>
-      ) : null}
-    </section>
   )
 }

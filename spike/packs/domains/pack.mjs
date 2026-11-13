@@ -48,6 +48,9 @@ export function prepassFor(id) { return async(ws,{emit=()=>{},reach}={})=>{
 }; }
 export default {
   id:'domains',title:'Domains and front end',tier:'P',proof:'evidence',
+  // What the module tests, in one plain sentence (from its SKILL.md). The
+  // Modules page shows it; it makes no proof claim.
+  description: "A pinned snapshot of your DNS and front end, for gaps in their controls.",
   // It captures a real domain into a pinned snapshot, so it can take a live one.
   // The capture filters each tool's input against the scope's own grant, and stops a
   // name that resolves to a private address unless that grant allows it (live.mjs).
