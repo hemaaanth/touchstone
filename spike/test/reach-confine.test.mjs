@@ -25,6 +25,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { docker, dockerReady, confineReach, containerIp } from "../lib/reach-confine.mjs";
+import { createOwnedNetwork, removeOwnedNetwork } from "../lib/docker-nets.mjs";
 
 const ready = await dockerReady();
 const skip = ready.ok ? false : ready.reason;
@@ -62,7 +63,7 @@ before(async () => {
   // The targets network is --internal too: the origins have no internet either,
   // which keeps the test hermetic. The proxy bridges the client network to THIS
   // network, so the only reach the run gets is to the origins named here.
-  const nt = await docker(["network", "create", "--internal", netTargets]);
+  const nt = await createOwnedNetwork(netTargets, ["--internal"]);
   if (nt.code !== 0) throw new Error(`targets network create failed: ${nt.stderr}`);
   await startOrigin(grantedName, GRANTED_ALIAS, "GRANTED-ORIGIN");
   await startOrigin(evilName, EVIL_ALIAS, "EVIL-ORIGIN");
@@ -81,9 +82,11 @@ before(async () => {
 
 after(async () => {
   if (confine) await confine.stop();
-  await docker(["rm", "-f", grantedName]);
-  await docker(["rm", "-f", evilName]);
-  await docker(["network", "rm", netTargets]);
+  if (!skip) {
+    await docker(["rm", "-f", grantedName]);
+    await docker(["rm", "-f", evilName]);
+    await removeOwnedNetwork(netTargets);
+  }
 }, { timeout: 60_000 });
 
 test("1. THROUGH the gate, the granted host answers (200)", { skip, timeout: 60_000 }, async () => {

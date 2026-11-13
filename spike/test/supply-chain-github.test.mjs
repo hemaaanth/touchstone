@@ -4,6 +4,7 @@
 // from api.github.com and raw.githubusercontent.com. Tests replay it by URL, so
 // no test sends a network request. An unrecorded URL is a 404.
 import { test, after } from "node:test";
+import { skipUnlessImages } from "./docker-skip.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +22,8 @@ const { readGrants } = await import("../lib/grant-store.mjs");
 const { enforceReach } = await import("../lib/reach.mjs");
 const { listTargets, prepareWorkspace, getTarget } = await import("../lib/targets.mjs");
 const { cryptoLeads } = await import("../packs/supply-chain/crypto.mjs");
-const { scanSnapshot } = await import("../packs/supply-chain/scanners.mjs");
+const { scanSnapshot, SCANNERS } = await import("../packs/supply-chain/scanners.mjs");
+const scannerSkip = skipUnlessImages(...["zizmor", "poutine", "gitleaks", "trufflehog", "semgrep", "osv"].map((name) => SCANNERS[name].image));
 const pack = (await import("../packs/supply-chain/pack.mjs")).default;
 const { replayEvidence } = await import("../lib/proof-evidence.mjs");
 const { cryptoDetectors } = await import("../packs/supply-chain/crypto.mjs");
@@ -153,7 +155,7 @@ test("githubGet reads only the two GitHub hosts, with no credentials in the URL"
   }
 });
 
-test("the captured repo runs the pack's own checks and every lead replays from the pin", async () => {
+test("the captured repo runs the pack's own checks and every lead replays from the pin", { skip: scannerSkip }, async () => {
   const w = ws();
   await prepareGithubSnapshot(w, [REPO], { reach, token: null, get: replay() });
   writeFileSync(path.join(w, ".touchstone.json"), JSON.stringify({ ...JSON.parse(readFileSync(path.join(w, ".touchstone.json"), "utf8")), pack: "supply-chain", kind: "live", github: [REPO], reach }));
@@ -172,7 +174,7 @@ test("the captured repo runs the pack's own checks and every lead replays from t
   assert.deepEqual(cryptoLeads({ files: (await prepareGithubSnapshot(w, [REPO], { reach })).snapshot.files }).map((l) => l.check).sort(), record.leads.filter((l) => l.engine === "Touchstone").map((l) => l.check).sort());
 });
 
-test("poutine runs once per repo when a capture holds several repos", async () => {
+test("poutine runs once per repo when a capture holds several repos", { skip: scannerSkip }, async () => {
   const snap = await captureGithub([githubTarget(REPO)], { reach, token: null, get: replay() });
   const files = {};
   for (const root of [REPO, "copy/request-error.js"]) for (const [f, t] of Object.entries(snap.files)) files[`${root}/${f}`] = t;

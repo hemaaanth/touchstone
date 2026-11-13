@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Install Docker, start the daemon, and pull or build every image spike/test runs
+# for real. Images that are already present are left alone.
+#
+#   spike/scripts/setup-docker
+#
+# Needs network once. After this, `npm test` in spike/ runs the Docker-backed
+# tests. Without Docker, or before this script, those tests skip with a reason
+# instead of failing. garak is large (CPU torch) and is not in the default
+# build; pass --garak to include it.
+set -euo pipefail
+export DOCKER_BUILDKIT=1
+
+SPIKE="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$SPIKE/.." && pwd)"
+GARAK=0
+if [ "${1:-}" = "--garak" ]; then GARAK=1; fi
+
+if ! command -v docker >/dev/null 2>&1 || ! command -v dockerd >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-buildx ca-certificates
+  else
+    curl -fsSL https://get.docker.com | sudo sh
+  fi
+fi
+# The domains image uses BuildKit ADD --chmod. docker.io does not always ship the plugin.
+if ! docker buildx version >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-buildx
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  if ! sudo docker info >/dev/null 2>&1; then
+    sudo mkdir -p /var/log /var/run
+    # systemd is not always available (a VM without it). dockerd in the
+    # background is enough for the test suite.
+    sudo sh -c 'nohup dockerd >/var/log/dockerd.log 2>&1 &'
+    for _ in $(seq 1 60); do
+      sudo docker info >/dev/null 2>&1 && break
+      sleep 1
+    done
+  fi
+  sudo docker info >/dev/null
+  if ! docker info >/dev/null 2>&1; then
+    sudo chmod 666 /var/run/docker.sock
+  fi
+fi
+docker info >/dev/null
+
+# Docker 29 programs nftables. If an iptables-legacy table is also loaded, its
+# FORWARD policy DROP is still enforced and containers on a custom network
+# cannot reach each other (the gate, a lab, a scanner). Accept there; nftables
+# keeps Docker's own rules.
+if command -v iptables-legacy >/dev/null 2>&1; then
+  if sudo iptables-legacy -S FORWARD 2>/dev/null | grep -q '^-P FORWARD DROP$'; then
+    sudo iptables-legacy -P FORWARD ACCEPT
+  fi
+fi
+
+# Public images the suite inspects by tag or digest. A missing one is a skip.
+PULLS=(
+  node:20-slim
+  node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+  debian:bookworm-slim
+  ghcr.io/foundry-rs/foundry:latest
+  projectdiscovery/katana:v1.2.2@sha256:5dc4db5bea876732f2e393a460c2145de1e7385c1884b5d9129beb34acd4e45b
+  projectdiscovery/nuclei:v3.4.10
+  semgrep/semgrep@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed
+  ghcr.io/zizmorcore/zizmor:1.32.0@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d
+  ghcr.io/boostsecurityio/poutine:1.1.6@sha256:722a8e0999b583c1540fe2974e691032b2d9d21b9256a17965132b6bfd0081b0
+  ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  trufflesecurity/trufflehog:3.99.8@sha256:674b2f187620a19df77f44cf9a7d77efcc581a5662accef2f2739cbb46ba4a3a
+  ghcr.io/google/osv-scanner:v2.7.1@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde
+  aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  checkmarx/kics:v2.2.1@sha256:49ccc54b6ae7f5d5fc95e96f8f95c18c57f3bba047ab611a03d80792bdff6757
+  motoserver/moto:5.2.5@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a
+)
+printf '%s\n' "${PULLS[@]}" | xargs -P 3 -I{} bash -c '
+  image="$1"
+  if docker image inspect "$image" >/dev/null 2>&1; then echo "present: $image"; exit 0; fi
+  echo "pull: $image"
+  docker pull "$image"
+' _ {}
+
+build() {
+  local tag="$1"
+  shift
+  if docker image inspect "$tag" >/dev/null 2>&1; then
+    echo "present: $tag"
+    return
+  fi
+  echo "build: $tag"
+  docker build "$@"
+}
+
+build touchstone-domains-tools:wave2 -t touchstone-domains-tools:wave2 "$SPIKE/packs/domains"
+build touchstone-jsluice:0ddfab1 -t touchstone-jsluice:0ddfab1 "$SPIKE/packs/surface/jsluice"
+build touchstone-chain-tools:wave1 -f "$SPIKE/packs/keys/runtime/Dockerfile" -t touchstone-chain-tools:wave1 "$ROOT"
+build touchstone/prowler-python:5.48.0 -f "$SPIKE/packs/infra-cloud/Dockerfile.prowler-python" -t touchstone/prowler-python:5.48.0 "$SPIKE/packs/infra-cloud"
+if ! docker image inspect touchstone/aderyn:0.6.8 >/dev/null 2>&1; then
+  echo "build: touchstone/aderyn:0.6.8"
+  bash "$ROOT/tools/build-aderyn-image.sh"
+fi
+if ! docker image inspect touchstone/web-lab:dev >/dev/null 2>&1 \
+  || ! docker image inspect touchstone/ai-mcp-lab:dev >/dev/null 2>&1 \
+  || ! docker image inspect touchstone/mcp-inspector:0.17.2 >/dev/null 2>&1 \
+  || ! docker image inspect touchstone/mcp-shield:1.0.4 >/dev/null 2>&1; then
+  echo "build: web, ai-mcp, inspector, shield"
+  bash "$SPIKE/scripts/build-labs.sh"
+fi
+if [ "$GARAK" = 1 ] && ! docker image inspect touchstone/garak:0.17.1 >/dev/null 2>&1; then
+  echo "build: touchstone/garak:0.17.1"
+  bash "$SPIKE/scripts/build-labs.sh" garak
+fi
+
+# Offline forge tests compile with --network none. They read solc from the
+# foundry-svm volume, which has to be filled once, with the network on.
+if ! docker volume inspect foundry-svm >/dev/null 2>&1; then
+  docker volume create foundry-svm >/dev/null
+fi
+docker run --rm -u 0 --entrypoint sh -v foundry-svm:/svm ghcr.io/foundry-rs/foundry:latest -c 'mkdir -p /svm && chown 1000:1000 /svm'
+warm_dir="$(mktemp -d)"
+mkdir -p "$warm_dir/src"
+printf '%s\n' '[profile.default]' 'src = "src"' 'out = "out"' > "$warm_dir/foundry.toml"
+for version in 0.8.20 0.8.38; do
+  printf '%s\n' '// SPDX-License-Identifier: MIT' "pragma solidity ${version};" 'contract W {}' > "$warm_dir/src/W.sol"
+  echo "warm solc ${version}"
+  docker run --rm -v foundry-svm:/home/foundry/.svm -v "$warm_dir":/work -w /work ghcr.io/foundry-rs/foundry:latest "forge build --use ${version}"
+done
+rm -rf "$warm_dir"
+
+echo "docker images ready"
+docker image ls --format '{{.Repository}}:{{.Tag}}' | sort

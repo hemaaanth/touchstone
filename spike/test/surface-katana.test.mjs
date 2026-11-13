@@ -1,6 +1,7 @@
 // katana: the real tool against the 127.0.0.1 SPA lab, and its parser on recorded output.
 // Record the fixture again with: RECORD_KATANA=1 node --test test/surface-katana.test.mjs
 import { test } from 'node:test';
+import { skipUnlessImages } from './docker-skip.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -59,7 +60,7 @@ test('crawl rows are typed for the hand-off', () => {
   assert.equal(kind('/admin/users'), 'route');
 });
 
-test('real katana crawls the 127.0.0.1 SPA lab and stays in scope', { timeout: 200000 }, async () => {
+test('real katana crawls the 127.0.0.1 SPA lab and stays in scope', { skip: skipUnlessImages(KATANA), timeout: 200000 }, async () => {
   const lab = await startSpaLab();
   const ws = mkdtempSync(join(tmpdir(), 'surface-katana-'));
   try {

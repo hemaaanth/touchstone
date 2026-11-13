@@ -40,12 +40,13 @@
 // its request tool through it to a proof on the target. The cooperative proxy
 // (lib/scope-proxy.mjs on its own) remains the default for tests and for any
 // caller that runs on the host.
-import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { rmSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { docker, createOwnedNetwork, removeOwnedNetwork } from "./docker-nets.mjs";
+
+export { docker };
 
 const LIB_DIR = dirname(fileURLToPath(import.meta.url));
 const PROXY_IMAGE = "node:20-slim";
@@ -53,19 +54,14 @@ const DEFAULT_PROXY_PORT = 8080;
 const GATE_ALIAS = "scope-gate"; // what the client names to reach the proxy
 const READY_MARKER = "__SCOPE_READY__";
 
-// Run one docker command. Returns { code, stdout, stderr, timedOut }. Never
-// throws, so a caller branches on code like lib/proof-http.mjs does.
-export function docker(args, { timeoutMs = 30_000, maxBuffer = 16 * 1024 * 1024 } = {}) {
-  return new Promise((resolve) => {
-    execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
-      resolve({
-        code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
-        timedOut: Boolean(err?.killed),
-      });
-    });
-  });
+// One-shot client or tool container. Named so a timed-out `docker run` (the CLI
+// dies, the container keeps the network endpoint, --rm never runs) can be
+// removed, and so stop() can sweep it with the network.
+async function runNamed(args, opts) {
+  const name = `touchstone-reach-run-${randomBytes(4).toString("hex")}`;
+  const result = await docker(["run", "--rm", "--name", name, ...args], opts);
+  if (result.timedOut) await docker(["rm", "-f", name], { timeoutMs: 20_000 });
+  return result;
 }
 
 // Is docker usable right now? Tests skip honestly when it is not, rather than
@@ -115,13 +111,15 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
 
   const cleanup = async () => {
     await docker(["rm", "-f", proxyName]);
-    for (const n of createdNets) await docker(["network", "rm", n]);
+    // Drop any tool container still attached, then the network. A plain
+    // `network rm` fails while an endpoint remains, and the subnet leaks.
+    for (const n of createdNets) await removeOwnedNetwork(n);
     if (entryDir) { try { rmSync(entryDir, { recursive: true, force: true }); } catch { /* ignore */ } }
   };
   const fail = async (msg) => { await cleanup(); throw new Error(`confineReach: ${msg}`); };
 
   // The client network: --internal, so a container on it has no default route.
-  const nc = await docker(["network", "create", "--internal", netClient]);
+  const nc = await createOwnedNetwork(netClient, ["--internal"]);
   if (nc.code !== 0) return fail(`client network create failed: ${nc.stderr.trim().slice(0, 500)}`);
   createdNets.push(netClient);
 
@@ -180,7 +178,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     // command. Its sole route off-network is the proxy at gateUrl; every other
     // address is unreachable (no route), so a bypass attempt cannot leave.
     runClient: (nodeArgs, { timeoutMs = 20_000 } = {}) =>
-      docker(["run", "--rm", "--network", netClient, ...HARDEN, "--entrypoint", "node", PROXY_IMAGE, ...nodeArgs], { timeoutMs }),
+      runNamed(["--network", netClient, ...HARDEN, "--entrypoint", "node", PROXY_IMAGE, ...nodeArgs], { timeoutMs }),
 
     // Run a live run's TOOL inside the boundary — the dispatch primitive the
     // targets.mjs doc names as the last missing step. This is the confined
@@ -204,7 +202,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
     runConfined: (cmd, { image = PROXY_IMAGE, entrypoint = null, ws = null, user = null, env = {}, timeoutMs = 60_000, maxBuffer = 16 * 1024 * 1024 } = {}) => {
       const gate = gateUrl;
       const args = [
-        "run", "--rm", "--network", netClient, ...HARDEN,
+        "--network", netClient, ...HARDEN,
         ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
         ...(user ? ["--user", user] : []),
         "-e", `HTTP_PROXY=${gate}`, "-e", `http_proxy=${gate}`,
@@ -214,7 +212,7 @@ export async function confineReach({ allowedHosts = [], allowPrivate = false, eg
         ...(entrypoint ? ["--entrypoint", entrypoint] : []),
         image, ...cmd,
       ];
-      return docker(args, { timeoutMs, maxBuffer });
+      return runNamed(args, { timeoutMs, maxBuffer });
     },
     stop: cleanup,
   };

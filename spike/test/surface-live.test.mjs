@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyHost, classifyService, surfaceLeads, analyzeSnapshot } from '../packs/domains/checks.mjs';
+import { classifyHost, classifyService, surfaceLeads, analyzeSnapshot, IMAGE } from '../packs/domains/checks.mjs';
+import { skipUnlessImages } from './docker-skip.mjs';
+const skip = skipUnlessImages(IMAGE);
 import { coverageOf } from '../packs/domains/pack.mjs';
 import { prepassView } from '../lib/prepass-view.mjs';
 
@@ -28,7 +30,7 @@ test('a host is typed from its records', () => {
   assert.equal(classifyHost('x.example.com', 'example.com', rec('A', ['1.2.3.4'])).kind, 'address');
 });
 
-test('every inventory lead says what it is, how it was found and who takes it next', async () => {
+test('every inventory lead says what it is, how it was found and who takes it next', { skip }, async () => {
   const leads = surfaceLeads(lab, await analyzeSnapshot(lab));
   assert(leads.length > 10);
   for (const lead of leads) {
@@ -39,7 +41,7 @@ test('every inventory lead says what it is, how it was found and who takes it ne
   assert.equal(leads.find(l => l.where === 'docs.touchstone.test').kind, 'provider-cname');
 });
 
-test('discovery sources show in the lead when the capture recorded them', async () => {
+test('discovery sources show in the lead when the capture recorded them', { skip }, async () => {
   const snap = { ...lab, discovery: { source: 'live', sources: { 'staging.touchstone.test': ['wordlist'], 'www.touchstone.test': ['subfinder', 'wordlist'] } } };
   const leads = surfaceLeads(snap, await analyzeSnapshot(snap));
   assert.equal(leads.find(l => l.where === 'staging.touchstone.test').foundBy, 'wordlist');
@@ -47,7 +49,7 @@ test('discovery sources show in the lead when the capture recorded them', async 
   assert.equal(leads.find(l => l.where === 'www.touchstone.test').scope, 'live');
 });
 
-test('the prepass view names every tool that ran, capture first', async () => {
+test('the prepass view names every tool that ran, capture first', { skip }, async () => {
   const snap = { ...lab, discovery: { source: 'live', coverage: [{ engine: 'subfinder', status: 'ran', leads: 0 }, { engine: 'dnsx', status: 'ran', leads: 8 }, { engine: 'nuclei', status: 'unavailable', reason: 'Exited with code 1.', leads: 0 }] } };
   const leads = surfaceLeads(snap, await analyzeSnapshot(snap));
   const view = prepassView({ pack: 'surface', leads, coverage: coverageOf(snap, leads) });

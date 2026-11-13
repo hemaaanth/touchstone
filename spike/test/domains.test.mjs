@@ -1,14 +1,17 @@
-import {before,test} from 'node:test';
+import {before,test as nodeTest} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import domains from '../packs/domains/pack.mjs';
-import {analyzeSnapshot,domainLeads,detectorsFor} from '../packs/domains/checks.mjs';
+import {analyzeSnapshot,domainLeads,detectorsFor,IMAGE} from '../packs/domains/checks.mjs';
+import {skipUnlessImages} from './docker-skip.mjs';
 import {pinSnapshot,replayEvidence,loadSnapshot} from '../lib/proof-evidence.mjs';
+const skip = skipUnlessImages(IMAGE);
+const test = (name, fn) => nodeTest(name, { skip }, fn);
 const snapshot=JSON.parse(readFileSync(new URL('../packs/domains/lab/snapshot.json',import.meta.url),'utf8'));
 let analysis;
-before(async()=>{analysis=await analyzeSnapshot(snapshot);});
+before(async()=>{ if (skip) return; analysis=await analyzeSnapshot(snapshot); });
 const has=(value,check)=>domainLeads(value,analysis).some(l=>l.check===check);
 const workspace=()=>{const ws=mkdtempSync(join(tmpdir(),'domains-test-')); pinSnapshot(ws,snapshot); return ws;};
 

