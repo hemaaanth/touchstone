@@ -1601,10 +1601,6 @@ async function restoreSources(run, ws, kept) {
   }
   const todo = Object.entries(pins)
   if (!todo.length) return out
-  const file = path.join(ws, ".touchstone.json")
-  const cfg = JSON.parse(readFileSync(file, "utf8"))
-  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("the config of the new workspace is not a record")
-  writeFileSync(file, JSON.stringify({ ...cfg, pins }, null, 2))
   const mark = (on) => {
     const rec = readWorkspace(run.id)
     if (!rec || Boolean(rec.restoring) === on) return
@@ -1612,7 +1608,14 @@ async function restoreSources(run, ws, kept) {
     else delete rec.restoring
     writeWorkspace(run.id, rec)
   }
+  // The mark comes first. If the config cannot be read, or the pins cannot be
+  // written, this throws with the mark set: the workspace has no sources yet,
+  // and the next follow-up must put them back, not use it as it is.
   mark(true)
+  const file = path.join(ws, ".touchstone.json")
+  const cfg = JSON.parse(readFileSync(file, "utf8"))
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("the config of the new workspace is not a record")
+  writeFileSync(file, JSON.stringify({ ...cfg, pins }, null, 2))
   // The operator sees what the run is doing: a fetch can take up to 90 seconds.
   // Only the repository's name goes into these events: no path of this host.
   const say = (message) => broadcast(run, { t: Date.now(), ev: "workspace", state: "restoring", message })
