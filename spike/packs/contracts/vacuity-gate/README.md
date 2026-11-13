@@ -2,8 +2,9 @@
 
 A passing invariant suite can be dead. For example, a handler can catch every
 failed deposit and leave the vault empty. This fixture-specific gate rejects that
-case. It compares an invariant on a healthy reference, fixed mutants, and (with
-`--known-bug`) the planted `rescue` access-control bug.
+case. It compares every `invariant_*` function of the test file on a healthy
+reference, fixed mutants, and (with `--known-bug`) the planted `rescue`
+access-control bug.
 
 ## Run
 
@@ -96,22 +97,30 @@ invariant on a second healthy build **B** and requires the same result.
 
 ## Campaigns
 
-- **Strong healthy run:** 256 runs x depth 32, fixed seed, no `--debug`. The
+Every `invariant_*` function in the test file is selected. Forge 1.9 checks
+all of them in one campaign and reports one result per invariant
+(`invariant_predicate_results`). The gate reads those per-invariant results,
+and fails closed if they disagree with Forge's aggregate status.
+
+- **Strong healthy run:** 256 runs x depth 32, fixed seed, no `--debug`. Every
   selected invariant must succeed with no skips or execution errors.
 - **Score runs:** 32 runs x depth 32, fixed seed, for A, B, the known bug and
   the mutants.
-- **Liveness run:** one full campaign with `--debug` for traces and storage.
+- **Liveness run:** one campaign with `--debug` for traces and storage.
+  `forge --debug` replays exactly one test, so this run selects the first
+  invariant. The handler calls come from `setUp` and the seed, not from the
+  invariant, so on the healthy build the call sequence is the same.
 
 ## What counts
 
-- **Healthy control:** the selected invariant must run and succeed on the
+- **Healthy control:** every selected invariant must run and succeed on the
   unmutated healthy source. `--known-bug` repairs `FeeVault.rescue` with
   `onlyOwner` in the healthy copy; the input source is the planted-bug copy.
   The repair must match exactly once. An already-failing control cannot score.
-- **Known bug:** the same named invariant must newly fail on the buggy copy.
+- **Known bug:** at least one invariant must newly fail on the buggy copy.
   A unit test, `setUp()` failure, skipped test, compiler error, or timeout is
   not a detected invariant bug.
-- **Mutation kill:** the same named invariant must newly fail on a compiled
+- **Mutation kill:** at least one invariant must newly fail on a compiled
   mutant compared with the successful healthy control. The six fixed edits
   include deposit/withdraw guards, rescue transfer failure, fee divisor, fee
   accumulation, and withdraw write order. A kill is credited only for an
@@ -122,18 +131,35 @@ invariant on a second healthy build **B** and requires the same result.
   successful action must leave a net target balance or storage-value
   difference from its pre-action state. Intermediate writes, same-value
   `SSTORE`, and deposit-then-withdraw round trips do not count. An incomplete
-  trace or absent storage dump fails closed. Every target selector observed in
-  the campaign needs a successful committed call.
+  trace or absent storage dump fails closed.
+- **Dead selectors:** a target selector with no committed success is accepted
+  only as a *probe*: at least one of its calls ran the target's code and
+  reverted there (a `require`, custom error or panic). An access-control test
+  that calls `rescue` as a non-owner is such a probe. A selector whose calls
+  never ran the target's code (for example `OutOfFunds` because the pranked
+  caller holds no ETH, or out of gas), or that succeeded only inside a
+  rolled-back frame, is a dead action and fails the gate. Probes are allowed
+  only because other calls change committed state (the rule above). The
+  verdict lists `deadSelectors` and `probeSelectors`.
 
-The normal positive fixture is `ReviewProof.t.sol`: it changes target state,
-checks fee accounting, detects the unauthorized rescue on the buggy source,
-and kills the fee mutants. The old `FeeVaultInvariantsFixed.t.sol` example
-is **not accepted**: the repaired rescue cannot succeed under its handler,
-and its previous six “kills” were inherited from the buggy baseline.
+There are two positive fixtures:
+
+- `ReviewProof.t.sol` changes target state, checks fee accounting, detects the
+  unauthorized rescue on the buggy source, and kills the fee mutants.
+- `FeeVaultInvariantsFixed.t.sol` uses ghost variables and bounded actors, and
+  calls `rescue` only from non-owners. On the repaired reference every such
+  call reverts in the target, so `rescue` is a probe. Its first invariant,
+  `invariant_solvency`, kills no mutant; `invariant_feeAccounting` kills the
+  two fee mutants, and `invariant_solvency` and `invariant_feesAccruedBacked`
+  detect the known bug.
+
+`FeeVaultInvariants.t.sol` is the dead suite by design. Its handler funds
+itself but pranks an unfunded actor, so every `deposit()` ends `OutOfFunds`
+before the target runs. The gate rejects it as a dead selector.
 
 ## Scope and limits
 
-This is evidence of non-vacuity **for the selected invariant, the fixed seed,
+This is evidence of non-vacuity **for the selected invariants, the fixed seed,
 the repaired reference, and the fixed mutants**. It is not a claim that every
 seed is covered, that every bug is detectable, or that arbitrary Solidity
 assertions are behavioral. Known gaps:
@@ -157,7 +183,7 @@ assertions are behavioral. Known gaps:
   commit.
 - The repair and mutants are written for this `FeeVault` source only.
 
-Negative fixtures `ReviewFail`, `ReviewGreen`, `ReviewSkip`, `ReviewRollback`,
+Negative fixtures `FeeVaultInvariants`, `ReviewFail`, `ReviewGreen`, `ReviewSkip`, `ReviewRollback`,
 `ReviewSample`, `ReviewRoundTrip`, `ReviewSetup`, `ReviewHiddenHash`, and the
 review-finding fixtures B1–M5 each exercise a former false pass.
 `ReviewRawCheat` reads the artifact size through a raw cheatcode call that the

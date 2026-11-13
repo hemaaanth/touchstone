@@ -58,13 +58,15 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     ["ReviewRoundTrip", [], /no committed/],
     ["ReviewSetup", ["--known-bug"], /known-bug: no new invariant Failure/],
     ["ReviewHiddenHash", [], /scan: banned/],
-    ["FeeVaultInvariantsFixed", ["--known-bug"], /selector\(s\) never succeeded/],
+    // The agent's original suite: deposit() runs out of funds, so the target never runs it.
+    ["FeeVaultInvariants", ["--known-bug"], /1 selector\(s\) never succeeded and never ran to a revert of their own/],
   ]) {
     it(`${fixture} cannot pass`, { skip }, async () => {
       const { status, verdict } = await gate(fixture, args);
       rejected(status, verdict, reason);
       if (["ReviewGreen", "ReviewSkip", "ReviewSample", "ReviewSetup"].includes(fixture)) assert.equal(verdict.killRate, 0);
       if (fixture === "ReviewSetup") assert.equal(verdict.knownBug.detected, false);
+      if (fixture === "FeeVaultInvariants") assert.deepEqual(verdict.liveness.deadSelectors, ["deposit()"]);
       if (fixture === "ReviewRoundTrip") {
         assert.equal(verdict.liveness.storageChanges, 0);
         assert.equal(verdict.liveness.balanceChanges, 0);
@@ -165,6 +167,24 @@ describe("vacuity gate", { concurrency: 4 }, () => {
     assert.equal(verdict.environment.ffi, false);
     assert.match(String(verdict.environment.seed), /^0x[0-9a-f]+$/);
     console.log(`ReviewProof killRate ${verdict.killRate}`);
+  });
+
+  // Honest suite: ghost variables, bounded actors, and rescue() called only by
+  // non-owners. On the repaired reference every rescue() reverts in the target,
+  // which is an access-control probe, not a dead action. Its first invariant
+  // kills no mutant, so every invariant_* must be scored.
+  it("FeeVaultInvariantsFixed: access-control probe and later invariants are accepted", { skip }, async () => {
+    const { status, verdict } = await gate("FeeVaultInvariantsFixed", ["--known-bug"]);
+    assert.equal(status, 0, JSON.stringify(verdict.reasons));
+    assert.equal(verdict.pass, true);
+    assert.deepEqual(verdict.liveness.deadSelectors, ["rescue(address,uint256)"]);
+    assert.deepEqual(verdict.liveness.probeSelectors, ["rescue(address,uint256)"]);
+    assert.equal(verdict.campaign.invariants[0], "invariant_solvency");
+    assert.ok(verdict.campaign.invariants.includes("invariant_feeAccounting"));
+    assert.equal(verdict.knownBug.detected, true);
+    assert.ok(verdict.mutants.some((m) => m.killed && m.failingInvariants.includes("invariant_feeAccounting()")));
+    assert.equal(verdict.differential.pass, true);
+    console.log(`FeeVaultInvariantsFixed killRate ${verdict.killRate}`);
   });
 
   it("external symlinked test is rejected before reading outside the project", async () => {

@@ -418,13 +418,14 @@ function scanSources(sources) {
   return { sources: scanned.sort(), findings: [...new Set(findings)] };
 }
 
-function firstInvariant(sources, test) {
+// Every invariant_* function in the test file, in source order. All of them are scored.
+function invariantNames(sources, test) {
   const unit = sources.get(test);
   const found = [];
   if (unit) walkAst(unit.ast, (n) => {
     if (n.nodeType === "FunctionDefinition" && /^invariant_\w*$/.test(n.name ?? "")) found.push({ name: n.name, at: Number(n.src.split(":")[0]) });
   });
-  return found.sort((a, b) => a.at - b.at)[0]?.name ?? null;
+  return [...new Set(found.sort((a, b) => a.at - b.at).map((f) => f.name))];
 }
 
 // ---------------------------------------------------------------------------
@@ -612,12 +613,12 @@ function artifactSummary(a) {
 // Forge runs. Every run uses the gate config, the fixed seed and the same
 // invariant selection; only runs and depth change between profiles.
 
-async function runSuite(ws, test, invariant, profile, { debug = false } = {}) {
+async function runSuite(ws, test, invariants, profile, { debug = false } = {}) {
   const dir = path.join(ws, ".vacuity-gate");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "results.json");
   fs.rmSync(file, { force: true });
-  const argv = ["test", "--match-path", test, "--match-test", `^${invariant}\\(`, "--fuzz-seed", SEED,
+  const argv = ["test", "--match-path", test, "--match-test", `^(${invariants.join("|")})\\(`, "--fuzz-seed", SEED,
     "--json-file", ".vacuity-gate/results.json"];
   if (debug) argv.push("--debug", "--dump", ".vacuity-gate/dump");
   const run = await forge(ws, argv, { ...profile, timeoutMs: 600_000 });
@@ -648,11 +649,20 @@ function invariantStatuses(run) {
     !name.startsWith("invariant_") || !tr.kind?.Invariant || !["Success", "Failure"].includes(tr.status))) return null;
   const statuses = new Map();
   for (const { name, tr } of tests) {
-    statuses.set(name, tr.status);
-    for (const p of tr.invariant_predicate_results ?? []) {
-      if (!["Success", "Failure"].includes(p.status)) return null;
-      statuses.set(p.name, p.status);
+    // Forge 1.9 checks several matched invariants in one campaign. It reports
+    // one aggregate test plus one predicate result per invariant. The
+    // aggregate name is one of the invariants, so only the predicates count.
+    const predicates = tr.invariant_predicate_results ?? [];
+    if (!predicates.length) {
+      statuses.set(name, tr.status);
+      continue;
     }
+    for (const p of predicates) {
+      if (!["Success", "Failure"].includes(p.status)) return null;
+      statuses.set(`${p.name}()`, p.status);
+    }
+    // The aggregate must agree with its predicates, else the result is not trusted.
+    if ((tr.status === "Failure") !== predicates.some((p) => p.status === "Failure")) return null;
   }
   return statuses;
 }
@@ -782,8 +792,10 @@ function livenessCheck({ dumpDir, results, target, handlers, handlerMethods }) {
           parent = parent.parent == null ? null : arena[parent.parent];
         }
         const sel = (c.data ?? "0x").slice(0, 10).toLowerCase();
-        const row = bySelector.get(sel) ?? { selector: sel, calls: 0, successes: 0 };
+        const row = bySelector.get(sel) ?? { selector: sel, calls: 0, successes: 0, reverts: 0 };
         row.calls++;
+        // The target's code ran and refused the call (require, custom error, panic).
+        if (c.status === "Revert") row.reverts++;
         if (committed) {
           row.successes++;
           successfulTargetCalls++;
@@ -810,6 +822,12 @@ function livenessCheck({ dumpDir, results, target, handlers, handlerMethods }) {
   }
   const storageChanges = committedStorageChanges(dumpDir, target, handlers, handlerMethods, metrics);
   const dead = [...bySelector.values()].filter((r) => r.successes === 0);
+  // A selector with no committed success is allowed only when the target ran
+  // and refused it (an access-control or input probe). A call that never ran
+  // the target's code (OutOfFunds, OutOfGas, call depth) or that only
+  // succeeded inside a rolled-back frame is a dead action.
+  const neverRan = dead.filter((r) => r.reverts === 0);
+  const probes = dead.filter((r) => r.reverts > 0);
   const reasons = [];
   // Forge may append one debugger replay action beyond the recorded metrics.
   if (!handlerCalls || tracedActions < handlerCalls || tracedActions > handlerCalls + 1 ||
@@ -818,15 +836,19 @@ function livenessCheck({ dumpDir, results, target, handlers, handlerMethods }) {
   }
   if (targetCalls === 0) reasons.push("liveness: handler never reached the target");
   if (targetCalls && !successfulTargetCalls) reasons.push("liveness: every target call failed or was rolled back");
-  if (dead.length) reasons.push(`liveness: ${dead.length} selector(s) never succeeded`);
+  if (neverRan.length) reasons.push(`liveness: ${neverRan.length} selector(s) never succeeded and never ran to a revert of their own`);
   if (storageChanges == null) reasons.push("liveness: debugger storage evidence unavailable");
-  if (!balanceChanges && !storageChanges) reasons.push("liveness: no committed target balance or storage-value change");
+  // Probe selectors are allowed only because other calls change committed state.
+  if (!balanceChanges && !storageChanges) {
+    reasons.push(`liveness: no committed target balance or storage-value change${probes.length ? ` (${probes.length} selector(s) only reverted)` : ""}`);
+  }
   return {
     pass: reasons.length === 0, targetCalls, successfulTargetCalls,
     failedTargetCalls: targetCalls - successfulTargetCalls, successfulValueCalls,
     storageChanges, balanceChanges, handlerCalls, handlerReverts, tracedActions,
     targetCallSuccessRate: targetCalls ? Number((successfulTargetCalls / targetCalls).toFixed(4)) : 0,
-    selectors: [...bySelector.values()], deadSelectors: dead.map((r) => r.selector), reasons,
+    selectors: [...bySelector.values()], deadSelectors: dead.map((r) => r.selector),
+    probeSelectors: probes.map((r) => r.selector), reasons,
   };
 }
 
@@ -937,9 +959,13 @@ async function main() {
       for (const f of verdict.scan.findings) verdict.reasons.push(`scan: banned ${f}`);
       return verdict;
     }
-    const invariant = firstInvariant(full.sources, opts.test);
-    if (!invariant) return fail("control: no invariant function found");
-    verdict.campaign.invariant = invariant;
+    const invariants = invariantNames(full.sources, opts.test);
+    if (!invariants.length) return fail("control: no invariant function found");
+    verdict.campaign.invariants = invariants;
+    // forge --debug replays exactly one test, so liveness replays the first
+    // invariant. The handler calls come from setUp and the seed, not from the
+    // invariant, so on the healthy build this is the same call sequence.
+    verdict.campaign.livenessInvariant = invariants[0];
 
     // 6. Build B and prove it is behavior-equal to A.
     const A = artifact(ws);
@@ -959,7 +985,7 @@ async function main() {
     // 7. Strong healthy campaign on A.
     const prof = (p) => `${p.runs} runs x depth ${p.depth}, seed ${SEED}`;
     log(`control: strong campaign (${prof(CAMPAIGN.strong)})`);
-    const strong = await runSuite(ws, opts.test, invariant, CAMPAIGN.strong);
+    const strong = await runSuite(ws, opts.test, invariants, CAMPAIGN.strong);
     verdict.campaign.strong = { runs: CAMPAIGN.strong.runs, depth: CAMPAIGN.strong.depth, statuses: Object.fromEntries(strong.statuses ?? []) };
     if (!strong.statuses || strong.code !== 0 || failures(strong.statuses).length) {
       return fail(`control: healthy reference must pass every selected invariant (strong campaign: ${prof(CAMPAIGN.strong)}; no skips or execution errors)`);
@@ -967,27 +993,27 @@ async function main() {
 
     // 8. Scored campaign on A, then the same campaign on B.
     log(`control: scored campaign on A (${prof(CAMPAIGN.score)})`);
-    const healthyRun = await runSuite(ws, opts.test, invariant, CAMPAIGN.score);
+    const healthyRun = await runSuite(ws, opts.test, invariants, CAMPAIGN.score);
     const healthy = healthyRun.statuses;
     if (!healthy || healthyRun.code !== 0 || failures(healthy).length) {
       return fail(`control: healthy reference must pass every selected invariant (scored campaign: ${prof(CAMPAIGN.score)}; no skips or execution errors)`);
     }
     log("differential: scored campaign on B");
-    const bRun = await runSuite(B.dir, opts.test, invariant, CAMPAIGN.score);
+    const bRun = await runSuite(B.dir, opts.test, invariants, CAMPAIGN.score);
     verdict.differential.statuses = { A: Object.fromEntries(healthy), B: Object.fromEntries(bRun.statuses ?? []) };
     if (!bRun.statuses || bRun.timedOut) {
-      return fail(`differential: build B gave no complete result for ${invariant} (incomplete campaign or execution error)`);
+      return fail(`differential: build B gave no complete result for the selected invariants (incomplete campaign or execution error)`);
     }
     verdict.differential.failing = failures(bRun.statuses).filter((n) => healthy.get(n) === "Success");
     if (verdict.differential.failing.length || bRun.code !== 0) {
-      return fail(`differential: ${verdict.differential.failing.join(", ") || invariant} passes on healthy build A but fails on behavior-equal build B ` +
+      return fail(`differential: ${verdict.differential.failing.join(", ") || "a selected invariant"} passes on healthy build A but fails on behavior-equal build B ` +
         `(A ${verdict.differential.builds[0].runtimeHash} vs B ${verdict.differential.builds[1].runtimeHash}; fingerprint oracle or too-strict/flaky invariant)`);
     }
     verdict.differential.pass = true;
 
     // 9. Liveness from one replayed campaign on A.
     log("liveness: one debug campaign on A");
-    const debugRun = await runSuite(ws, opts.test, invariant, CAMPAIGN.debug, { debug: true });
+    const debugRun = await runSuite(ws, opts.test, [invariants[0]], CAMPAIGN.debug, { debug: true });
     const dumpDir = path.join(ws, ".vacuity-gate", "dump");
     if (!debugRun.statuses || debugRun.code !== 0) return fail("liveness: debug campaign on the healthy reference did not complete");
     const { target, handlers } = resolveTarget(dumpDir, opts.test, debugRun.results);
@@ -1007,6 +1033,7 @@ async function main() {
     const names = await inspectSelectors(ws, `${TARGET.path}:${TARGET.contract}`);
     for (const row of verdict.liveness.selectors) row.name = names.get(row.selector) ?? null;
     verdict.liveness.deadSelectors = verdict.liveness.deadSelectors.map((s) => names.get(s) ?? s);
+    verdict.liveness.probeSelectors = verdict.liveness.probeSelectors.map((s) => names.get(s) ?? s);
     if (!verdict.liveness.pass) {
       verdict.reasons.push(...verdict.liveness.reasons);
       return verdict;
@@ -1016,7 +1043,7 @@ async function main() {
     // the padding is proven against an unpadded build of the same text.
     const scored = async (label, text) => {
       const built = await paddedBuild(base, ws, label, text);
-      const run = await runSuite(built.dir, opts.test, invariant, CAMPAIGN.score);
+      const run = await runSuite(built.dir, opts.test, invariants, CAMPAIGN.score);
       const failing = failures(run.statuses).filter((n) => healthy.get(n) === "Success");
       return { killed: Boolean(run.statuses && run.code === 1 && !run.timedOut && failing.length), failing, runtimeHash: artifactSummary(built.artifact).runtimeHash };
     };
