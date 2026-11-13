@@ -283,7 +283,7 @@ test('captureCaa queries drill over TCP through runTool, follows a CNAME, or gap
   const run = async (opts) => { calls.push(opts); const name = opts.cmd[opts.cmd.indexOf('CAA') + 1]; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, []) }; };
   const res = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run });
   assert.equal(calls[0].entrypoint, 'drill');
-  assert.deepEqual(calls[0].cmd, ['-t', 'CAA', 'example.com', '@1.1.1.1']);
+  assert.deepEqual(calls[0].cmd, ['-t', '--', 'CAA', 'example.com', '@1.1.1.1']);
   assert.equal(calls[0].network, 'bridge');
   assert.equal(res.present, false);
   assert.match(res.record.raw, /^[0-9a-f]{64}$/);
@@ -298,6 +298,21 @@ test('captureCaa queries drill over TCP through runTool, follows a CNAME, or gap
   const gap = await captureCaa('example.com', { resolver: '1.1.1.1', network: 'bridge', run: async (opts) => ({ code: 0, timedOut: false, stderr: '', stdout: caaBlock(opts.cmd[opts.cmd.indexOf('CAA') + 1], [], { tc: true }) }) });
   assert.equal(gap.record, null);
   assert.match(gap.error, /full answer|truncated|not checked/);
+});
+
+test('captureCaa refuses a CNAME target that is not a plain domain name, and gaps a loop', async () => {
+  // A target the resolver returns that is "@server" or a "-option" is never asked: a gap.
+  for (const bad of ['@ns.trap.test', '-T.trap.test', '1.2.3.4', 'a_b.test']) {
+    const run = async (opts) => { const name = opts.cmd[opts.cmd.indexOf('CAA') + 1]; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, [], { cname: bad }) }; };
+    const res = await captureCaa('www.example.com', { resolver: '1.1.1.1', network: 'bridge', run });
+    assert.equal(res.record, null, bad);
+    assert.match(res.error, /not a plain domain name/, bad);
+  }
+  // A CNAME loop is a gap, not a "no CAA" lead.
+  const loop = async (opts) => { const name = opts.cmd[opts.cmd.indexOf('CAA') + 1]; const to = name === 'loop.test' ? 'loop2.test' : 'loop.test'; return { code: 0, timedOut: false, stderr: '', stdout: caaBlock(name, [], { cname: to }) }; };
+  const res = await captureCaa('loop.test', { resolver: '1.1.1.1', network: 'bridge', run: loop });
+  assert.equal(res.record, null);
+  assert.match(res.error, /loops/);
 });
 
 test('a bad pin fails one endpoint as a gap, not the whole capture (G1 n5)', async () => {

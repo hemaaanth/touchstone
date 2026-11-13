@@ -452,7 +452,7 @@ test('CAA is asked through the granted resolver with runTool, and no record is a
   assert.deepEqual(caaCalls.map(c => c.name), ['example.com']);
   const c = caaCalls[0];
   assert.equal(c.entrypoint, 'drill');
-  assert.deepEqual(c.cmd, ['-t', 'CAA', 'example.com', '@1.1.1.1']);
+  assert.deepEqual(c.cmd, ['-t', '--', 'CAA', 'example.com', '@1.1.1.1']);
   assert.equal(c.network, 'bridge');
   // The drill output is stored, and the LOW lead replays from it.
   assert.match(snapshot.caa.raw, /^[0-9a-f]{64}$/);
@@ -518,7 +518,34 @@ test('the CAA walk stops below a public suffix: example.co.uk is asked, co.uk is
   assert.equal(caaCalls.some(c => c.name === 'co.uk'), false);
 });
 
-// F2. An exact-host grant skips subdomain discovery.// F2. An exact-host grant skips subdomain discovery. The run view says so.
+test('a CNAME target that is not a plain domain name is never asked: a gap, not a lead', async () => {
+  zone = { 'www.example.com': { a: [PUBLIC] } };
+  // drill returns a CNAME whose "target" is an @server / a -option: it must not reach the argv.
+  for (const bad of ['@ns.trap.test', '-T.trap.test']) {
+    caaCalls = [];
+    caa = { 'www.example.com': { cname: bad, records: [] }, 'example.com': 'absent' };
+    const snap = await capture('www.example.com', live(['www.example.com', '*.example.com'], { resolver: '1.1.1.1' }));
+    assert.deepEqual(caaCalls.map(c => c.name), ['www.example.com'], bad);
+    assert.equal(snap.caa, undefined, bad);
+    const row = snap.discovery.coverage.find(c => c.engine === 'caa');
+    assert.equal(row.status, 'unavailable', bad);
+    assert.match(row.reason, /not a plain domain name/, bad);
+    assert.deepEqual(caaLeads(snap), [], bad);
+  }
+});
+
+test('a CNAME loop is a gap, not a "no CAA" lead', async () => {
+  zone = { 'loop.example.com': { a: [PUBLIC] } };
+  caa = { 'loop.example.com': { cname: 'loop2.example.com', records: [] }, 'loop2.example.com': { cname: 'loop.example.com', records: [] } };
+  const snap = await capture('loop.example.com', live(['loop.example.com', '*.example.com'], { resolver: '1.1.1.1' }));
+  assert.equal(snap.caa, undefined);
+  const row = snap.discovery.coverage.find(c => c.engine === 'caa');
+  assert.equal(row.status, 'unavailable');
+  assert.match(row.reason, /loops/);
+  assert.deepEqual(caaLeads(snap), []);
+});
+
+// F2. An exact-host grant skips subdomain discovery. The run view says so.
 test('an exact-host grant says that subdomain discovery was skipped, and names the "*." entry', async () => {
   zone = { 'example.com': { a: [PUBLIC] } };
   const snapshot = await capture('example.com', live(['example.com']));

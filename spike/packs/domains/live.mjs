@@ -43,7 +43,7 @@ export const JSLUICE = 'touchstone-jsluice:0ddfab1';
 const TEMPLATE = fileURLToPath(new URL('./templates/github-takeover.yaml', import.meta.url));
 // A short list of names that real projects use. subfinder adds the names that public sources know.
 export const WORDLIST = ['www', 'app', 'api', 'cdn', 'docs', 'staging', 'stage', 'dev', 'test', 'beta', 'old', 'static', 'assets', 'blog', 'status', 'admin', 'portal', 'rpc', 'wallet', 'bridge', 'swap', 'claim', 'airdrop', 'mint', 'stake', 'dashboard', 'mail', 'ns'];
-const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
+export const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 const LAB_NAME = /^touchstone-domains-/;
 
 // A host is in scope when it is a listed name or a subdomain of one.

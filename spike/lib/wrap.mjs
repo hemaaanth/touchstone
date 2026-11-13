@@ -52,11 +52,12 @@ export async function runTool({ image, cmd, ws, network = "none", user = `${proc
 }
 
 // The --entrypoint flag, or []. A plain binary name (letters, digits, _ . -) or an
-// absolute path with those same characters. No spaces, no shell metacharacters, so a
+// absolute path; each segment starts with a letter, digit or underscore (so no leading
+// "-" option, no "." or ".." segment), and holds no spaces or shell metacharacters, so a
 // value can never smuggle extra docker words or shell text. (--entrypoint is already a
 // known value flag to Daytona's planner; a live-reach call keeps its non-none network,
 // which keeps it local anyway.)
-const ENTRYPOINT = /^(?:\/[A-Za-z0-9_.-]+)+$|^[A-Za-z0-9_.-]+$/;
+const ENTRYPOINT = /^(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$|^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 export function entrypointFlag(entrypoint) {
   if (entrypoint == null) return [];
   if (typeof entrypoint !== "string" || !ENTRYPOINT.test(entrypoint)) throw new Error("runTool: entrypoint must be a plain binary name or absolute path: " + String(entrypoint).slice(0, 80));

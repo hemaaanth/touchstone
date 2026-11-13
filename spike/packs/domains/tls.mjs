@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { sha256 } from '../../lib/proof-evidence.mjs';
 import { runTool } from '../../lib/wrap.mjs';
 import { PUBLIC_SUFFIXES } from '../../lib/grant-store.mjs';
+import { DOMAIN } from './live.mjs';
 import { readOutputFile, readStored, storedRecord } from './stored.mjs';
 export const TESTSSL = 'drwetter/testssl.sh:3.2@sha256:64bab3c1fd8eee440f68d5e020dd633c1f2d375fe0ae593bdfec2725110a7e29';
 // Severities testssl grades. OK and INFO carry no finding a person must read.
@@ -178,25 +179,34 @@ export async function captureCaa(domain, { resolver, network, env = {}, run = ru
   const names = caaNames(domain);
   if (!resolver) return { record: null, present: null, error: 'no resolver, so the CAA question was not asked' };
   if (!names.length) return { record: null, present: null, error: 'no registrable name to ask CAA for' };
+  const MAX_HOPS = 4;
   const blocks = [];
-  const asked = new Set();
+  const gap = reason => ({ record: null, present: null, error: reason });
+  // -- ends drill's option parsing, so a label is never read as an option; the name
+  // is validated below, so it is a plain domain anyway. The target is sent only as a
+  // DNS question to the checked resolver.
   const ask = async (name) => {
-    const res = await run({ image: DRILL_IMAGE, network, env, entrypoint: 'drill', cmd: ['-t', 'CAA', name, '@' + resolver], timeoutMs });
+    const res = await run({ image: DRILL_IMAGE, network, env, entrypoint: 'drill', cmd: ['-t', '--', 'CAA', name, '@' + resolver], timeoutMs });
     if (res.timedOut || res.code) return { error: 'the CAA query for ' + name + ' did not run: ' + (String(res.stderr ?? '').trim().slice(-120) || (res.timedOut ? 'timed out' : 'exit code ' + res.code)) };
     blocks.push(';; TOUCHSTONE-CAA ' + name + '\n' + String(res.stdout ?? ''));
     return { out: String(res.stdout ?? '') };
   };
   for (const start of names) {
     let cur = start;
-    for (let hop = 0; hop < 4; hop++) {
-      if (asked.has(cur)) break;
-      asked.add(cur);
+    const seen = new Set();
+    for (let hop = 0; ; hop++) {
+      // A CNAME target is data from a DNS answer: it is asked only when it passes
+      // the capture's own domain-name rule (so never a "-" option or an "@server").
+      if (!DOMAIN.test(cur)) return gap('a CAA CNAME target for ' + start + ' ("' + String(cur).slice(0, 80) + '") is not a plain domain name, so CAA was not checked');
+      if (seen.has(cur)) return gap('the CAA CNAME chain for ' + start + ' loops at ' + cur + ', so CAA was not checked');
+      if (hop >= MAX_HOPS) return gap('the CAA CNAME chain for ' + start + ' is longer than ' + MAX_HOPS + ' hops, so CAA was not checked');
+      seen.add(cur);
       const a = await ask(cur);
-      if (a.error) return { record: null, present: null, error: a.error };
+      if (a.error) return gap(a.error);
       const p = parseCaaBlock(a.out, cur);
-      if (!p.ok) return { record: null, present: null, error: 'the CAA answer for ' + cur + ' was not a full answer (truncated or no definite result), so CAA was not checked' };
+      if (!p.ok) return gap('the CAA answer for ' + cur + ' was not a full answer (truncated or no definite result), so CAA was not checked');
       if (p.records.length) return { record: { domain, ...storedRecord(blocks.join('\n')) }, present: true };
-      if (p.target && !asked.has(p.target)) { cur = p.target; continue; }
+      if (p.target) { cur = p.target; continue; }
       break; // no CAA for this name and its CNAME chain; go to the parent
     }
   }

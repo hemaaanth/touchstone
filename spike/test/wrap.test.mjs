@@ -164,7 +164,7 @@ test("entrypoint adds --entrypoint before the image, checks its input, and no op
   assert.deepEqual(entrypointFlag(null), []);
   assert.deepEqual(entrypointFlag("drill"), ["--entrypoint", "drill"]);
   assert.deepEqual(entrypointFlag("/usr/bin/drill"), ["--entrypoint", "/usr/bin/drill"]);
-  for (const bad of ["drill x", "a;b", "a|b", "$(x)", "`x`", "a&b", "drill\n", "", "../drill", 7, {}]) {
+  for (const bad of ["drill x", "a;b", "a|b", "$(x)", "`x`", "a&b", "drill\n", "", "../drill", "-x", "--privileged", ".", "..", "/a/../b", "/", "//x", 7, {}]) {
     assert.throws(() => entrypointFlag(bad), /entrypoint/, JSON.stringify(bad));
   }
   const dir = mkdtempSync(join(tmpdir(), "wrap-entry-"));
