@@ -214,8 +214,9 @@ test("monitorConfig points only at the lab alias and keys the non-owner check to
 
 // A fake docker on PATH. It logs each call, plays the lab (writes the observation
 // into the lab workspace, says the network is internal), and for the monitor run
-// prints `out` and exits `code`, after `sleepMs` if given. With `ignoreTerm` it plays
-// a client that ignores SIGTERM and exits 0 late, as docker run can today.
+// prints `out` and exits `code`, after `sleepMs` if given. `rm -f` kills that run, as
+// it does in real Docker. With `ignoreRm` and `ignoreTerm` it plays a client that
+// ignores both and exits 0 late.
 const OBS = { chainId: 31337, address: PROXY, fromBlock: 5, toBlock: 5, snapshots: [{ block: 4, owner: OWNER }], canary: { address: CANARY, transactions: [] } };
 const SHIM = `#!/usr/bin/env node
 const fs = require("node:fs"), path = require("node:path");
@@ -224,19 +225,24 @@ fs.appendFileSync(path.join(dir, "calls"), JSON.stringify(args) + "\\n");
 const cfg = JSON.parse(fs.readFileSync(path.join(dir, "cfg.json"), "utf8"));
 if (args[0] === "network" && args[1] === "inspect") console.log(cfg.internal);
 else if (args[0] === "inspect") console.log("true");
+else if (args[0] === "rm") {
+  const pid = path.join(dir, "run.pid");
+  if (!cfg.ignoreRm && fs.existsSync(pid)) { try { process.kill(Number(fs.readFileSync(pid, "utf8")), "SIGKILL"); } catch {} }
+}
 else if (args[0] === "run" && args.includes("-d")) {
   const ws = args[args.findIndex((a) => a.endsWith(":/work"))].slice(0, -":/work".length);
   fs.writeFileSync(path.join(ws, "chain-observation.json"), JSON.stringify(cfg.obs));
   fs.writeFileSync(path.join(ws, "chain-observation.ready"), "");
 } else if (args[0] === "run") {
   if (cfg.ignoreTerm) process.on("SIGTERM", () => {});
+  fs.writeFileSync(path.join(dir, "run.pid"), String(process.pid));
   process.stdout.write(cfg.out);
   setTimeout(() => process.exit(cfg.code), cfg.sleepMs || 0);
 }
 `;
-const withDockerShim = async ({ out, code = 0, sleepMs = 0, ignoreTerm = false, internal = "true" }, fn) => {
+const withDockerShim = async ({ out, code = 0, sleepMs = 0, ignoreTerm = false, ignoreRm = false, internal = "true" }, fn) => {
   const dir = mkdtempSync(join(tmpdir(), "ozmon-shim-"));
-  writeFileSync(join(dir, "cfg.json"), JSON.stringify({ obs: OBS, out, code, sleepMs, ignoreTerm, internal }));
+  writeFileSync(join(dir, "cfg.json"), JSON.stringify({ obs: OBS, out, code, sleepMs, ignoreTerm, ignoreRm, internal }));
   writeFileSync(join(dir, "docker"), SHIM, { mode: 0o755 });
   const path = process.env.PATH;
   process.env.PATH = `${dir}:${path}`;
@@ -321,11 +327,11 @@ test("a monitor run that times out is unavailable, even with valid output so far
   assert.equal(result.available, false);
   assert.equal(result.reason, "timed out");
   assert.deepEqual(result.leads, []);
-  assert.ok(Date.now() - t0 < 10_000, "the shim dies on the client kill");
+  assert.ok(Date.now() - t0 < 10_000, "rm -f at timeoutMs ends the run");
 });
 
 test("a monitor run that ends after its deadline with code 0 is unavailable", async () => {
-  const { result } = await withDockerShim({ out: SHIM_OUT, sleepMs: 3000, ignoreTerm: true }, () => ozMonitorLeads(CHAIN_LAB, { tag: newTag(), timeoutMs: 1000 }));
+  const { result } = await withDockerShim({ out: SHIM_OUT, sleepMs: 3000, ignoreTerm: true, ignoreRm: true }, () => ozMonitorLeads(CHAIN_LAB, { tag: newTag(), timeoutMs: 1000 }));
   assert.equal(result.available, false);
   assert.equal(result.reason, "timed out");
   assert.deepEqual(result.leads, []);
@@ -390,7 +396,11 @@ test("an unreachable lab RPC gives unavailable, not a clean result", { skip: nee
   leftNothing(tag);
 });
 
-test("a monitor run that times out gives unavailable", { skip: needs, timeout: 300_000 }, async () => {
+// runDocker removes the timed-out container before it returns (main 44ba808). Before
+// that fix the monitor container was still on the network here. That the call returns
+// near timeoutMs is pinned in test/wrap.test.mjs with a 40 s tool; the monitor's full
+// run takes only about 9 s, so a time bound here cannot tell the two apart.
+test("a monitor run that times out gives unavailable and leaves no monitor container before cleanup", { skip: needs, timeout: 300_000 }, async () => {
   const tag = newTag();
   const handle = await startWatchLab(CHAIN_LAB, { tag });
   try {
@@ -398,22 +408,8 @@ test("a monitor run that times out gives unavailable", { skip: needs, timeout: 3
     assert.equal(r.available, false);
     assert.equal(r.reason, "timed out");
     assert.deepEqual(r.leads, []);
-  } finally { await stopWatchLab(handle); } // it removes every container on the lab network
-  leftNothing(tag);
-});
-
-// Seen before 6526bbe: the client is killed, but the monitor container lives on until
-// stopWatchLab removes it. This turns green with the shared runDocker timeout fix.
-test("a monitor run that times out leaves no monitor container before cleanup", { skip: needs, timeout: 300_000,
-  todo: "needs the shared runDocker timeout fix (6526bbe)" }, async () => {
-  const tag = newTag();
-  const handle = await startWatchLab(CHAIN_LAB, { tag });
-  try {
-    const t0 = Date.now();
-    await runMonitors(handle, { timeoutMs: 1500 });
     const members = execFileSync("docker", ["ps", "-a", "--filter", `network=${handle.net}`, "--format", "{{.Names}}"], { encoding: "utf8" }).trim().split("\n");
     assert.deepEqual(members, [handle.name], "only the lab is left on the network");
-    assert.ok(Date.now() - t0 < 1500 + 8000, "returned near timeoutMs");
   } finally { await stopWatchLab(handle); }
   leftNothing(tag);
 });

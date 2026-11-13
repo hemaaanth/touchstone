@@ -331,9 +331,9 @@ export async function runMonitors(handle, { timeoutMs = 180_000 } = {}) {
     const t0 = Date.now();
     const r = await runTool({ image: ozMonitorImage(), ws: dir, network: handle.net, timeoutMs,
       cmd: ["bash", "/opt/touchstone/run.sh", String(range.from), String(range.to), ...MONITORS] });
-    // A result after the deadline is a timeout too. Without the shared runDocker fix
-    // (6526bbe), a killed client can wait for the container and report code 0 and
-    // timedOut false.
+    // runDocker reports a timeout (main 44ba808). A result after the deadline is a
+    // timeout too, as a backstop: before that fix a docker client could wait for the
+    // container and report code 0 and timedOut false.
     if (r.timedOut || Date.now() - t0 > timeoutMs) return { available: false, reason: "timed out", leads: [] };
     if (/unable to find image|no such image|pull access denied/i.test(r.stderr)) {
       return { available: false, reason: "image not built (spike/tools/build-oz-monitor-image.sh)", leads: [] };
