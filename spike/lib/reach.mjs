@@ -68,6 +68,16 @@ export function reachHosts(target) {
   return out;
 }
 
+// Does this scope's own grant allow private and loopback addresses? Both the
+// scope's saved permission and the grant it names must say so. A grant of
+// another scope does not count, and a target with no saved permission gets no.
+export function allowsPrivate(target, { now = Date.now() } = {}) {
+  const p = target?.permission;
+  if (p?.allowPrivate !== true || typeof p.grantId !== "string") return false;
+  const grant = getGrant(p.grantId);
+  return Boolean(grant) && grantActive(grant, now) && grant.allowPrivate === true;
+}
+
 // The gate decision, with no network I/O. Returns { hosts, networkKind, grants },
 // or throws a clear refusal. Pure, so the default-deny rule is easy to test on
 // its own. `grants` is the grants this run uses (empty for an offline run).

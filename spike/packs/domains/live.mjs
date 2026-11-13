@@ -1,15 +1,24 @@
 // Live capture: turn one domain into the pinned snapshot the evidence checks read.
 // Every tool runs through runTool(). The network comes from `reach`, never from this file.
-//   reach = { network, granted, scope, resolver?, ports?, env? }
+//   reach = { network, granted, scope, allowPrivate?, resolver?, ports?, env? }
 // Every capture needs a grant: `granted: true` and a `scope` list that covers the domain.
 // The platform (Reach) fills `reach`. The lab fills its own, for the lab domain only.
 // A network name is never a grant. A network named like the lab must also be --internal in Docker.
+//
+// A live capture runs on an open network, so the tool inputs are the boundary:
+//   - `scope` holds the grant's hosts. A name is covered by its exact entry or by a "*." entry.
+//   - dnsx gets covered names only. A generated name the grant does not cover is not resolved.
+//   - httpx, katana and nuclei get only names whose every address is public.
+//     `allowPrivate: true` (from the grant) lifts the address rule, not the cover rule.
+//   - katana does not follow redirects. A redirect could name any host.
+// The lab keeps its own rule (a listed name or a subdomain of one): its network has no route out.
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot, sha256 } from '../../lib/proof-evidence.mjs';
+import { hostCovers, ipKind } from '../../lib/grant-store.mjs';
 import { IMAGE, ensureImage, missingImage } from './checks.mjs';
 import { assertInternal } from './labctl.mjs';
 
@@ -28,18 +37,26 @@ const LAB_NAME = /^touchstone-domains-/;
 
 // A host is in scope when it is a listed name or a subdomain of one.
 export const inScope = (host, scope) => scope.some(s => host === s || host.endsWith('.' + s));
+const isLab = reach => LAB_NAME.test(reach.network);
+// The hosts a reach covers. A lab network: a listed name or a subdomain of one.
+// Any other network: the grant rule. The exact name, or a "*." entry for its subdomains.
+export const coveredBy = reach => isLab(reach) ? h => inScope(h, reach.scope) : h => reach.scope.some(s => hostCovers(s, h));
+// A scope argument is a host list or a test: host => boolean.
+const inside = scope => typeof scope === 'function' ? scope : h => inScope(h, scope);
 export function assertReach(reach, domain) {
   if (!DOMAIN.test(domain ?? '')) throw new Error('Invalid domain');
   if (!reach || typeof reach.network !== 'string') throw new Error('Live capture needs reach.network from the platform');
-  if (reach.granted !== true || !Array.isArray(reach.scope) || !inScope(domain, reach.scope)) throw new Error('Live capture needs a grant that covers ' + domain);
-  if (LAB_NAME.test(reach.network)) assertInternal(reach.network);
+  if (reach.granted !== true || !Array.isArray(reach.scope) || !coveredBy(reach)(domain)) throw new Error('Live capture needs a grant that covers ' + domain);
+  if (isLab(reach)) assertInternal(reach.network);
+  // The tools send every DNS question to the resolver. Outside the lab it is a public address, or the grant allows private ones.
+  else if (reach.resolver != null && reach.allowPrivate !== true && ipKind(reach.resolver) !== 'public') throw new Error('Live capture needs a public resolver address. The grant does not allow a private one');
   return reach.scope;
 }
 const lines = text => String(text ?? '').split('\n').map(l => l.trim()).filter(Boolean);
 const jsonl = text => lines(text).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
 const nameOf = value => String(value).toLowerCase().replace(/\.$/, '');
 
-export const parseSubfinder = (stdout, scope) => [...new Set(jsonl(stdout).map(r => nameOf(r.host)).filter(h => DOMAIN.test(h) && inScope(h, scope)))];
+export const parseSubfinder = (stdout, scope) => [...new Set(jsonl(stdout).map(r => nameOf(r.host)).filter(h => DOMAIN.test(h) && inside(scope)(h)))];
 // dnsx rows to dns evidence rows. NXDOMAIN becomes ENOTFOUND, an empty answer becomes ENODATA.
 export function dnsRows(rows) {
   const out = [];
@@ -79,11 +96,11 @@ export function httpRows(rows) {
 }
 // Script URLs a page loads, limited to hosts the grant covers.
 export function scriptUrls(pages, scope) {
-  const urls = new Set();
+  const urls = new Set(), ok = inside(scope);
   for (const page of pages) {
     if (!(page.headers['content-type'] ?? '').includes('text/html')) continue;
     for (const m of page.body.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) {
-      try { const u = new URL(m[1], page.url); if (/^https?:$/.test(u.protocol) && inScope(u.hostname, scope)) urls.add(u.href); } catch {}
+      try { const u = new URL(m[1], page.url); if (/^https?:$/.test(u.protocol) && ok(u.hostname)) urls.add(u.href); } catch {}
     }
   }
   return [...urls];
@@ -98,19 +115,22 @@ const quote = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const PORTS = [{ scheme: 'https', port: 443 }, { scheme: 'http', port: 80 }];
 const isDefault = ({ scheme, port }) => (scheme === 'http' && port === 80) || (scheme === 'https' && port === 443);
 // Only granted hosts, their subdomains, and the granted scheme and port pairs.
-export const crawlScope = (scope, ports = PORTS) => '^(?:' + ports.map(p => p.scheme + '://([a-z0-9-]+\\.)*(' + scope.map(quote).join('|') + ')' + (isDefault(p) ? '(:' + p.port + ')?' : ':' + p.port)).join('|') + ')(?:/|$)';
+// exact: each entry is one host. Only a "*." entry stands for subdomains, as in a grant.
+const hostPattern = h => h.startsWith('*.') ? '([a-z0-9-]+\\.)+' + quote(h.slice(2)) : quote(h);
+export const crawlScope = (scope, ports = PORTS, exact = false) => '^(?:' + ports.map(p => p.scheme + '://' + (exact ? '(' + scope.map(hostPattern).join('|') + ')' : '([a-z0-9-]+\\.)*(' + scope.map(quote).join('|') + ')') + (isDefault(p) ? '(:' + p.port + ')?' : ':' + p.port)).join('|') + ')(?:/|$)';
 const portAllowed = (u, ports) => ports.some(p => p.scheme + ':' === u.protocol && Number(u.port || (u.protocol === 'https:' ? 443 : 80)) === p.port);
-export const katanaArgs = (list, scope, resolver, ports = PORTS) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
-  '-rl', '5', '-c', '2', '-p', '2', '-timeout', '10', '-retry', '1', '-mrs', '2097152', '-cs', crawlScope(scope, ports),
-  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver ? ['-r', 'udp:' + resolver + ':53'] : [])];
+// exact: a live crawl. The scope is exact and redirects are off (-dr): katana follows a redirect to any host.
+export const katanaArgs = (list, scope, resolver, ports = PORTS, exact = false) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
+  '-rl', '5', '-c', '2', '-p', '2', '-timeout', '10', '-retry', '1', '-mrs', '2097152', '-cs', crawlScope(scope, ports, exact),
+  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver ? ['-r', 'udp:' + resolver + ':53'] : []), ...(exact ? ['-dr'] : [])];
 // katana -jsonl rows to crawl rows. Seed URLs have no source, and httpx already has them.
 // A row with no status_code is a URL katana requested whose answer it did not keep (often an SPA fallback page).
 export function parseKatana(stdout, scope, ports = PORTS) {
-  const out = new Map();
+  const out = new Map(), ok = inside(scope);
   for (const r of jsonl(stdout)) {
     if (!r.request?.source) continue;
     let u; try { u = new URL(r.request.endpoint); } catch { continue; }
-    if (!/^https?:$/.test(u.protocol) || !inScope(u.hostname, scope) || !portAllowed(u, ports)) continue;
+    if (!/^https?:$/.test(u.protocol) || !ok(u.hostname) || !portAllowed(u, ports)) continue;
     u.hash = ''; u.search = '';
     if (out.has(u.href)) continue;
     const status = Number.isInteger(r.response?.status_code) ? r.response.status_code : null;
@@ -126,10 +146,10 @@ const MAX_SCRIPT_BYTES = 2097152;
 const isScript = (url, type) => /javascript|ecmascript/i.test(type ?? '') || /\.m?js$/i.test(new URL(url).pathname);
 // The script bodies to read: katana answers and httpx script rows, in scope, one per URL.
 export function scriptBodies(katanaStdout, http, scope, ports = PORTS) {
-  const out = new Map();
+  const out = new Map(), ok = inside(scope);
   const keep = (url, type, body) => {
     let u; try { u = new URL(url); } catch { return; }
-    if (!/^https?:$/.test(u.protocol) || !inScope(u.hostname, scope) || !portAllowed(u, ports) || !isScript(u.href, type)) return;
+    if (!/^https?:$/.test(u.protocol) || !ok(u.hostname) || !portAllowed(u, ports) || !isScript(u.href, type)) return;
     u.hash = '';
     if (!out.has(u.href) && body) out.set(u.href, String(body).slice(0, MAX_SCRIPT_BYTES));
   };
@@ -143,12 +163,12 @@ export const jsluiceErrors = stderr => lines(stderr).filter(l => l.startsWith('e
 // jsluice urls rows to endpoint rows. A relative URL is read against the script that names it.
 // EXPR marks a part the script builds at run time. It stays in the URL.
 export function parseJsluiceUrls(stdout, scripts, scope, ports = PORTS) {
-  const out = new Map();
+  const out = new Map(), ok = inside(scope);
   for (const r of jsonl(stdout)) {
     const source = scripts[Number(/\/(\d{4})\.js$/.exec(r.filename ?? '')?.[1] ?? -1)]?.url;
     if (!source || typeof r.url !== 'string') continue;
     let u; try { u = new URL(r.url, source); } catch { continue; }
-    if (!/^https?:$/.test(u.protocol) || !inScope(u.hostname, scope) || !portAllowed(u, ports)) continue;
+    if (!/^https?:$/.test(u.protocol) || !ok(u.hostname) || !portAllowed(u, ports)) continue;
     u.hash = ''; u.search = '';
     const row = out.get(u.href) ?? { url: u.href, methods: [], types: [], source };
     if (r.method && !row.methods.includes(r.method)) row.methods.push(r.method);
@@ -193,6 +213,8 @@ export function failReason(result, image) {
 // crawl: also run katana over the live pages. Surface sets it. Domains does not need it.
 export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false }) {
   const scope = assertReach(reach, domain);
+  // lab: the lab network, with no route out. open: no address rule (the lab, or a grant that allows private addresses).
+  const lab = isLab(reach), open = lab || reach.allowPrivate === true, covered = coveredBy(reach);
   ensureImage();
   const dir = join(ws, '.live');
   mkdirSync(dir, { recursive: true });
@@ -207,17 +229,25 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     return Object.assign(result, { note: n => { coverage.find(c => c.engine === engine).leads = n; return n; } });
   };
   try {
-    const passive = await run('subfinder', { image: SUBFINDER, env: { ...env, HOME: '/tmp' }, cmd: ['-d', domain, '-silent', '-oJ', '-duc', '-nW', '-timeout', '5', '-max-time', '1'], timeoutMs: 120000 });
-    const found = parseSubfinder(passive.stdout, scope);
-    passive.note(found.length);
     const wild = 'touchstone-nx-' + Math.random().toString(36).slice(2, 10) + '.' + domain;
-    const candidates = [...new Set([domain, ...wordlist.map(w => w + '.' + domain), ...found, wild])];
-    put('hosts.txt', candidates);
+    // subfinder reads public sources. -nW also makes it resolve each name it finds.
+    // It stays only when the grant covers every subdomain. Else subfinder sends no DNS question for a found name.
+    const passive = await run('subfinder', { image: SUBFINDER, env: { ...env, HOME: '/tmp' }, cmd: ['-d', domain, '-silent', '-oJ', '-duc', ...(covered(wild) ? ['-nW'] : []), '-timeout', '5', '-max-time', '1'], timeoutMs: 120000 });
+    const found = parseSubfinder(passive.stdout, covered);
+    passive.note(found.length);
+    // Names the grant lists one by one. Under the domain they are hosts to check. The others are resolved only,
+    // so the crawl may follow a link to them.
+    const listed = lab ? [] : scope.filter(s => DOMAIN.test(s)), others = listed.filter(s => !inScope(s, [domain]));
+    // dnsx resolves covered names only. A generated name the grant does not cover is dropped here.
+    const candidates = [...new Set([domain, ...wordlist.map(w => w + '.' + domain), ...found, ...listed.filter(s => !others.includes(s)), wild])].filter(covered);
+    put('hosts.txt', [...candidates, ...others]);
     const resolver = reach.resolver ? ['-r', reach.resolver] : [];
     const dnsArgs = ['-a', '-aaaa', '-cname', '-json', '-silent', '-duc', '-rl', '20', '-t', '5', '-retry', '1'];
     const brute = await run('dnsx', { image: DNSX, cmd: ['-l', '/work/.live/hosts.txt', ...resolver, ...dnsArgs], timeoutMs: 180000 });
     if (brute.timedOut || (brute.code && !brute.stdout)) throw new Error('dnsx failed: ' + brute.stderr.slice(-300));
     let rows = jsonl(brute.stdout);
+    const otherRows = rows.filter(r => others.includes(nameOf(r.host)));
+    rows = rows.filter(r => !others.includes(nameOf(r.host)));
     // A wildcard answers for any name. Drop hosts that only repeat its answer.
     const wildRow = rows.find(r => nameOf(r.host) === wild && r.status_code === 'NOERROR');
     const wildAnswers = wildRow ? JSON.stringify([wildRow.a ?? [], wildRow.cname ?? []]) : null;
@@ -233,16 +263,35 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     }
     const dns = dnsRows([...rows, ...targetRows]);
     const zone = synthZone(domain, dns);
-    const live = rows.filter(r => r.a?.length || r.aaaa?.length || r.cname?.length).map(r => nameOf(r.host)).filter(h => inScope(h, scope));
+    const live = rows.filter(r => r.a?.length || r.aaaa?.length || r.cname?.length).map(r => nameOf(r.host)).filter(covered);
     const ports = reach.ports ?? PORTS;
+    // The addresses of a name: its own, and those of its CNAME targets.
+    const byHost = new Map([...rows, ...targetRows, ...otherRows].map(r => [nameOf(r.host), r]));
+    const addresses = (h, seen = new Set()) => { const r = byHost.get(h); if (!r || seen.has(h)) return []; seen.add(h); return [...(r.a ?? []), ...(r.aaaa ?? []), ...(r.cname ?? []).flatMap(t => addresses(nameOf(t), seen))]; };
+    // Why an HTTP tool must not contact a name, or null. Every address must be public unless the grant allows private ones.
+    const refusal = h => {
+      const bad = open ? null : addresses(h).find(ip => ipKind(ip) !== 'public');
+      return bad ? 'It resolves to ' + bad + ', a ' + (ipKind(bad) ?? 'unknown') + ' address. The grant does not allow private addresses.' : null;
+    };
+    // A name with no address at all has nothing to check and nothing to contact. It is not probed and not listed.
+    const safe = h => open || (addresses(h).length > 0 && !refusal(h));
+    const refused = live.map(host => ({ host, reason: refusal(host) })).filter(r => r.reason);
+    const probeable = live.filter(safe);
+    // The run view shows this row, so the operator sees each name the capture did not contact.
+    if (refused.length) coverage.push({ engine: 'address-check', status: 'refused', reason: 'Not contacted: ' + refused.map(r => r.host + '. ' + r.reason).join(' ').slice(0, 600), leads: 0 });
+    // The hosts httpx, katana and nuclei may contact. Open: any covered host. Else: the checked names and the granted public addresses.
+    const checked = open ? null : [...probeable, ...others.filter(safe), ...scope.filter(s => ipKind(s) === 'public')];
+    const within = open ? covered : h => checked.includes(h);
+    // A second stop inside the tool, for a name that changes its address after the check. Checked on loopback: both flags stop the dial.
+    const noPrivate = open ? [] : ['-e', 'private-ips'], noLocal = open ? [] : ['-lna'];
     const probe = async (engine, urls) => {
       put('urls.txt', urls);
-      const res = await run(engine, { image: HTTPX, cmd: ['-l', '/work/.live/urls.txt', ...(reach.resolver ? ['-r', 'udp:' + reach.resolver + ':53'] : []), '-json', '-silent', '-duc', '-nfs', '-sc', '-title', '-irh', '-irr', '-rl', '5', '-t', '2', '-timeout', '10', '-retries', '1'], timeoutMs: 180000 });
+      const res = await run(engine, { image: HTTPX, cmd: ['-l', '/work/.live/urls.txt', ...(reach.resolver ? ['-r', 'udp:' + reach.resolver + ':53'] : []), '-json', '-silent', '-duc', '-nfs', '-sc', '-title', '-irh', '-irr', '-rl', '5', '-t', '2', '-timeout', '10', '-retries', '1', ...noPrivate], timeoutMs: 180000 });
       const out = httpRows(jsonl(res.stdout)); res.note(out.length);
       return out;
     };
-    const pages = live.length ? await probe('httpx', live.flatMap(h => ports.map(p => originOf(h, p)))) : [];
-    const scripts = scriptUrls(pages, scope).filter(u => !pages.some(p => p.url === u));
+    const pages = probeable.length ? await probe('httpx', probeable.flatMap(h => ports.map(p => originOf(h, p)))) : [];
+    const scripts = scriptUrls(pages, within).filter(u => !pages.some(p => p.url === u));
     const assets = scripts.length ? await probe('httpx-scripts', scripts) : [];
     const http = [...pages, ...assets].sort((a, b) => a.url < b.url ? -1 : 1);
     let crawled = null, js = null;
@@ -258,28 +307,35 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       scripts.forEach((s, i) => writeFileSync(join(ws, jsluiceFile(i).replace('/work/', '')), s.body));
       const failed = r => { const errors = jsluiceErrors(r.stderr); return errors.length ? 'jsluice could not read ' + errors.length + ' of ' + scripts.length + ' scripts. ' + errors.join(' ').slice(-200) : null; };
       const u = await run('jsluice', { image: JSLUICE, network: 'none', cmd: jsluiceArgs('urls', scripts.length), timeoutMs: 120000 }, failed);
-      const urls = parseJsluiceUrls(u.stdout, scripts, scope, ports); u.note(urls.length);
+      const urls = parseJsluiceUrls(u.stdout, scripts, covered, ports); u.note(urls.length);
       const k = await run('jsluice-secrets', { image: JSLUICE, network: 'none', cmd: jsluiceArgs('secrets', scripts.length), timeoutMs: 120000 }, failed);
       const secrets = parseJsluiceSecrets(k.stdout, scripts); k.note(secrets.length);
       return { scripts: scripts.map(s => s.url), urls, secrets };
     };
     if (crawl && pages.length) {
-      put('crawl.txt', [...new Set(pages.map(p => new URL(p.url).origin + '/'))]);
-      const k = await run('katana', { image: KATANA, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports), timeoutMs: 180000 });
-      const rows = parseKatana(k.stdout, scope, ports); k.note(rows.length);
+      const katana = (engine, seeds) => { put('crawl.txt', seeds); return run(engine, { image: KATANA, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: lab ? katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports) : katanaArgs('/work/.live/crawl.txt', open ? scope : checked, reach.resolver, ports, true), timeoutMs: 180000 }); };
+      // A live crawl follows no redirect. A redirect that stays inside the checked hosts and ports becomes a seed.
+      const target = (from, to) => { try { const u = new URL(to, from); u.hash = ''; return /^https?:$/.test(u.protocol) && within(u.hostname) && portAllowed(u, ports) ? [u.href] : []; } catch { return []; } };
+      const moved = rows => lab ? [] : rows.flatMap(r => r.status >= 300 && r.status < 400 && r.location ? target(r.url, r.location) : []);
+      const seeds = [...new Set([...pages.map(p => new URL(p.url).origin + '/'), ...moved(pages.map(p => ({ url: p.url, status: p.status, location: p.headers.location })))])];
+      const k = await katana('katana', seeds);
+      let out = k.stdout;
+      const next = [...new Set(moved(jsonl(out).map(r => ({ url: r.request?.endpoint, status: r.response?.status_code, location: r.response?.headers?.location }))))].filter(u => !seeds.includes(u));
+      if (next.length) out += '\n' + (await katana('katana-redirects', next)).stdout;
+      const rows = parseKatana(out, within, ports); k.note(rows.length);
       crawled = rows.slice(0, MAX_CRAWL);
-      js = await readScripts(scriptBodies(k.stdout, http, scope, ports));
+      js = await readScripts(scriptBodies(out, http, within, ports));
     }
     const hits = [];
     if (pages.length) {
       copyFileSync(TEMPLATE, join(dir, 'github-takeover.yaml'));
       put('pages.txt', pages.map(p => p.url));
       if (reach.resolver) put('resolvers.txt', [reach.resolver]);
-      const nuclei = await run('nuclei', { image: NUCLEI, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: ['-l', '/work/.live/pages.txt', '-t', '/work/.live/github-takeover.yaml', ...(reach.resolver ? ['-r', '/work/.live/resolvers.txt'] : []), '-jsonl', '-silent', '-duc', '-ni', '-rl', '5', '-c', '2', '-timeout', '10', '-retries', '0'], timeoutMs: 180000 });
+      const nuclei = await run('nuclei', { image: NUCLEI, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: ['-l', '/work/.live/pages.txt', '-t', '/work/.live/github-takeover.yaml', ...(reach.resolver ? ['-r', '/work/.live/resolvers.txt'] : []), '-jsonl', '-silent', '-duc', '-ni', '-rl', '5', '-c', '2', '-timeout', '10', '-retries', '0', ...noLocal], timeoutMs: 180000 });
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : [])]])), wildcard: Boolean(wildAnswers), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
+    return { schema: 1, root: domain, zone, dns, http, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : listed.includes(h) ? ['grant'] : [])]])), wildcard: Boolean(wildAnswers), ...(refused.length ? { refused } : {}), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.
