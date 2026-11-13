@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { closeRun, delta, execConfig, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
+import { closeRun, delta, execConfig, haveImage, planRemote, readPending, runRoot, scan, shq, warmScript } from "../lib/daytona.mjs";
 
 const hasDocker = (() => {
   try { execFileSync("docker", ["image", "inspect", "debian:bookworm-slim"], { stdio: "ignore" }); return true; } catch { return false; }
@@ -44,6 +44,22 @@ test("planRemote rewrites the workspace mount and keeps named volumes", () => {
   assert.deepEqual(p.args, ["--rm", "--network", "none", "--cap-drop", "ALL", "--user", "1000:1000",
     "-v", "foundry-svm:/home/foundry/.svm", "-v", "/ts/w/1:/work", "-w", "/work",
     "-e", "A=b c", "img:1", "forge", "test", "-v", "x"]);
+});
+
+test("planRemote keeps --pull=never and the machine then never pulls", () => {
+  const p = planRemote(["run", "--rm", "--pull=never", "--network", "none", "img:1", "true"], null, null);
+  assert.equal(p.local, null);
+  assert.equal(p.noPull, true);
+  assert.deepEqual(p.args, ["--rm", "--pull=never", "--network", "none", "img:1", "true"]);
+  assert.doesNotMatch(haveImage(p, "/ts/r/x"), /docker pull/);
+  // Without the flag the machine may pull, as before.
+  const q = planRemote(["run", "--network", "none", "img:1"], null, null);
+  assert.equal(q.noPull, false);
+  assert.match(haveImage(q, "/ts/r/x"), /docker pull -q 'img:1'/);
+  // Any other pull policy is a flag the parser does not know: it stays local.
+  for (const f of ["--pull=always", "--pull=missing", "--pull"]) {
+    assert.match(planRemote(["run", f, "--network", "none", "img"], null, null).local, /not known/);
+  }
 });
 
 test("planRemote keeps host networks and foreign mounts local", () => {

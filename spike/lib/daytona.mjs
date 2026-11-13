@@ -106,7 +106,9 @@ export function daytonaOn(env = process.env) {
 // scope proxy and the grant gate on this host, so it must not leave it.
 // The parser fails safe. A flag it does not know may take a value, so it
 // cannot find the image after it. Such a call stays local. So does any
-// `--flag=value` form except `--network=`, and a second network flag.
+// `--flag=value` form except `--network=` and `--pull=never`, and a second
+// network flag. `--pull=never` sets `noPull`: the machine then never pulls the
+// image. A missing image is copied up from this host instead (code 199).
 const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
 
@@ -116,6 +118,7 @@ export function planRemote(args, ws, remoteWs) {
   let image = null;
   let local = null;
   let net = null; // docker's default network has internet access
+  let noPull = false;
   const stay = (why) => ({ local: why, image: null, args });
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
@@ -138,6 +141,9 @@ export function planRemote(args, ws, remoteWs) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {
       out.push(a);
+    } else if (a === "--pull=never") {
+      noPull = true;
+      out.push(a);
     } else if (a.startsWith("-")) {
       return stay(`flag ${a.split("=")[0]} is not known to the remote path`);
     } else {
@@ -146,7 +152,14 @@ export function planRemote(args, ws, remoteWs) {
     }
   }
   if (net !== "none") local ??= `network ${net ?? "default"} stays on this host`;
-  return { local: image ? local : "no image", image, args: out };
+  return { local: image ? local : "no image", image, args: out, noPull };
+}
+
+// The shell test for "the image is on this machine". It pulls a missing image
+// unless the call said --pull=never.
+export function haveImage(plan, dir) {
+  const inspect = `docker image inspect ${shq(plan.image)} >/dev/null 2>&1`;
+  return plan.noPull ? inspect : `${inspect} || docker pull -q ${shq(plan.image)} >${dir}/pull 2>&1`;
 }
 
 // Quote one word for /bin/sh.
@@ -605,9 +618,9 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
     remoteWs && sync.send.length ? `tar -xf /tmp/ts-${cid}.tar -C ${remoteWs} && rm -f /tmp/ts-${cid}.tar` : ":",
     remoteWs ? `chown -R ${shq(own)} ${remoteWs}` : ":",
     // Pull outside the time limit, as a local warm cache would.
-    // Code 199 means no registry has the image.
+    // Code 199 means the machine does not have the image and may not pull it.
     `touch ${dir}/stamp`,
-    `if docker image inspect ${shq(plan.image)} >/dev/null 2>&1 || docker pull -q ${shq(plan.image)} >${dir}/pull 2>&1; then`,
+    `if ${haveImage(plan, dir)}; then`,
     `touch ${dir}/stamp; sleep 1`,
     // The watchdog checks once a second. Its stdio is closed, so the toolbox
     // does not wait for it.
