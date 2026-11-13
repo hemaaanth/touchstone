@@ -28,7 +28,22 @@ function withFakePack(fn) {
 test("packList reads the loader", () => {
   const ids = packList().map((p) => p.id)
   assert.ok(ids.includes("contracts"))
-  withFakePack(() => assert.ok(packList().some((p) => p.id === "fakepack" && p.proof === "http")))
+  withFakePack(() => assert.ok(packList().some((p) => p.id === "fakepack" && p.proof === "http" && p.live === false && p.labTarget === undefined)))
+})
+
+// The Modules page derives its sentences from these fields. A live pack must
+// stay live here, and only AI/MCP names a rule-based lab.
+test("packList reports which packs can reach a host, and which lab is a stand-in", () => {
+  const byId = Object.fromEntries(packList().map((p) => [p.id, p]))
+  const live = ["ai-mcp", "domains", "supply-chain", "surface", "web"]
+  const offline = ["chain-watch", "contracts", "infra-cloud", "keys", "review"]
+  assert.deepEqual(Object.keys(byId).sort(), [...live, ...offline].sort())
+  for (const id of live) assert.equal(byId[id].live, true, id)
+  for (const id of offline) assert.equal(byId[id].live, false, id)
+  assert.equal(byId["ai-mcp"].labTarget, "rule-based")
+  for (const id of [...live, ...offline]) {
+    if (id !== "ai-mcp") assert.equal(byId[id].labTarget, undefined, id)
+  }
 })
 
 test("targets carry a pack; built-in labs are Contracts, pack labs name their pack", () => {

@@ -771,6 +771,8 @@ export default {
   proof: "http",
   // This pack can drive its tools at a real host, not only at its own lab.
   live: true,
+  // POST /agent/chat in the lab is not a model. See SKILL.md.
+  labTarget: "rule-based",
   system: (ws) => (isLive(ws) ? LIVE_SYSTEM : SYSTEM),
   tools,
   kickoff,

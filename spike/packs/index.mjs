@@ -35,5 +35,11 @@ export function packFor(cfg = {}) {
 
 // What the New run dialog needs to list the modules.
 export function packList() {
-  return Object.values(PACKS).map(({ id, title, tier, proof, live }) => ({ id, title: title ?? id, tier, proof, live: live === true }));
+  return Object.values(PACKS).map(({ id, title, tier, proof, live, labTarget }) => {
+    const row = { id, title: title ?? id, tier, proof, live: live === true };
+    // Only a pack that names its lab target carries one. An absent field stays
+    // absent, so the console does not invent a stand-in for every module.
+    if (typeof labTarget === "string" && labTarget) row.labTarget = labTarget;
+    return row;
+  });
 }

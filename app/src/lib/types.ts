@@ -307,6 +307,9 @@ export interface PackChoice {
   proof: string
   // The module's tools can be aimed at a real host.
   live?: boolean
+  // What the pack's own lab stands in for. "rule-based" means the lab
+  // assistant is a rule-based stand-in, not a model.
+  labTarget?: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
