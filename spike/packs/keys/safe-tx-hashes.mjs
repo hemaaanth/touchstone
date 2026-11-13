@@ -14,7 +14,6 @@
 // empty hashes with exit 0 when chisel has no solc), or an echo that does not match our input
 // makes the whole engine unavailable, never clean.
 import { runTool } from "../../lib/wrap.mjs";
-import { underTimeout } from "./safe-hash.mjs";
 
 export const SAFE_TX_HASHES_IMAGE = process.env.SAFE_TX_HASHES_IMAGE || "touchstone/safe-tx-hashes:e295975";
 const ENGINE = "safe-tx-hashes-util";
@@ -95,9 +94,9 @@ export async function hashWithSafeTxHashes(jobs, { timeoutMs = 180_000, image = 
     if (error) return { ok: false, reason: error };
     env[`J${i}`] = line;
   }
-  // GNU timeout as PID 1 stops a hung container at the limit (see underTimeout in safe-hash.mjs).
-  const run = await runTool({ image, cmd: underTimeout(timeoutMs, ["bash", "-c", BATCH]), ws: null, env, timeoutMs });
-  if (run.timedOut || run.code === 124) return { ok: false, reason: `${ENGINE} timed out` };
+  const run = await runTool({ image, cmd: ["bash", "-c", BATCH], ws: null, env, timeoutMs });
+  // Stopping the container at the limit is runTool's job (the shared wrap fix), not ours.
+  if (run.timedOut) return { ok: false, reason: `${ENGINE} timed out` };
   if (NO_IMAGE.test(run.stderr)) return { ok: false, reason: `image ${image} not built (${BUILD})` };
   const sections = run.stdout.split(/^@@ job (\d+)$/m).slice(1);
   const hashes = new Map();

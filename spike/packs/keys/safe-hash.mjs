@@ -30,10 +30,6 @@ const NO_IMAGE = /unable to find image|no such image|pull access denied/i;
 const HEX32 = /^0x[0-9a-f]{64}$/;
 const lc = (s) => String(s ?? "").toLowerCase();
 const short = (s) => `${String(s).slice(0, 6)}…${String(s).slice(-4)}`;
-// GNU timeout as the container's PID 1. On a timeout, runTool's docker client forwards SIGTERM
-// to PID 1. A shell or node as PID 1 ignores it, so a hung container (and the call) would run
-// on. timeout passes the signal on, and also stops the command itself just after the limit.
-export const underTimeout = (timeoutMs, argv) => ["timeout", "-k", "5", String(Math.max(1, Math.ceil(timeoutMs / 1000))), ...argv];
 
 // ---------------------------------------------------------------- the queue lab world
 
@@ -46,11 +42,11 @@ export async function runQueueWorld(ws, { timeoutMs = 180_000, image = CHAIN_IMA
   copyFileSync(WORLD_SRC, join(ws, WORLD_IN_WS));
   let run;
   try {
-    run = await runTool({ image, ws, env: { HOME: "/tmp" }, timeoutMs, cmd: underTimeout(timeoutMs, ["node", WORLD_IN_WS]) });
+    run = await runTool({ image, ws, env: { HOME: "/tmp" }, timeoutMs, cmd: ["node", WORLD_IN_WS] });
   } finally { rmSync(join(ws, WORLD_IN_WS), { force: true }); }
   try {
     if (!existsSync(file) || run.code !== 0) {
-      const why = run.timedOut || run.code === 124 ? "timed out" : NO_IMAGE.test(run.stderr) ? `image ${image} not built` : `exit ${run.code}: ${run.stderr.slice(-200)}`;
+      const why = run.timedOut ? "timed out" : NO_IMAGE.test(run.stderr) ? `image ${image} not built` : `exit ${run.code}: ${run.stderr.slice(-200)}`;
       return { ok: false, reason: `the Safe queue lab did not run (${why})` };
     }
     try { return { ok: true, queue: JSON.parse(readFileSync(file, "utf8")) }; }
@@ -92,8 +88,9 @@ export async function hashWithSafeHash(jobs, { timeoutMs = 60_000, image = SAFE_
   if (!jobs.length) return { ok: true, hashes: new Map() };
   const env = { N: String(jobs.length) };
   jobs.forEach((job, i) => { env[`J${i}`] = JSON.stringify(job.typed); });
-  const run = await runTool({ image, cmd: underTimeout(timeoutMs, ["sh", "-c", BATCH]), ws: null, env, timeoutMs });
-  if (run.timedOut || run.code === 124) return { ok: false, reason: `${ENGINE} timed out` };
+  const run = await runTool({ image, cmd: ["sh", "-c", BATCH], ws: null, env, timeoutMs });
+  // Stopping the container at the limit is runTool's job (the shared wrap fix), not ours.
+  if (run.timedOut) return { ok: false, reason: `${ENGINE} timed out` };
   if (NO_IMAGE.test(run.stderr)) return { ok: false, reason: `image ${image} not built (${BUILD})` };
   const sections = run.stdout.split(/^@@ job (\d+)$/m).slice(1);
   const hashes = new Map();

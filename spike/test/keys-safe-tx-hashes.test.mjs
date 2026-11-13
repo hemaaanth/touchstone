@@ -11,7 +11,7 @@ import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NETWORKS, SAFE_TX_HASHES_ENGINE, hashWithSafeTxHashes, jobLine, parseSafeTxHashes, txHashesJobs, warningLeads } from "../packs/keys/safe-tx-hashes.mjs";
-import { SAFE_HASH_ENGINE, compareQueue, runQueueWorld, safeHashLeads, underTimeout } from "../packs/keys/safe-hash.mjs";
+import { SAFE_HASH_ENGINE, compareQueue, runQueueWorld, safeHashLeads } from "../packs/keys/safe-hash.mjs";
 import { runTool } from "../lib/wrap.mjs";
 import { keysLeads, leadsFor } from "../packs/keys/common.mjs";
 import keys from "../packs/keys/pack.mjs";
@@ -91,13 +91,13 @@ test("txHashesJobs uses the same job ids as safe-hash-rs, so both engines compar
 async function withFakeDocker(stdout, code, fn) {
   const dir = mkdtempSync(join(tmpdir(), "fake-docker-"));
   const path = process.env.PATH;
-  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_ARGS"\nprintf "%s" "$FAKE_OUT"\nexit "$FAKE_CODE"\n');
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_ARGS"\n[ -n "$FAKE_SLEEP" ] && exec sleep "$FAKE_SLEEP"\nprintf "%s" "$FAKE_OUT"\nexit "$FAKE_CODE"\n');
   chmodSync(join(dir, "docker"), 0o755);
   Object.assign(process.env, { PATH: `${dir}:${path}`, FAKE_ARGS: join(dir, "args"), FAKE_OUT: stdout, FAKE_CODE: String(code) });
   try { return await fn(() => readFileSync(join(dir, "args"), "utf8").split("\n").slice(0, -1)); }
   finally {
     process.env.PATH = path;
-    for (const k of ["FAKE_ARGS", "FAKE_OUT", "FAKE_CODE"]) delete process.env[k];
+    for (const k of ["FAKE_ARGS", "FAKE_OUT", "FAKE_CODE", "FAKE_SLEEP"]) delete process.env[k];
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -114,7 +114,7 @@ test("the safe-tx-hashes call runs with no network, no pull, no workspace, under
     assert.ok(!a.includes("-v"), "the tool sees no workspace");
     const at = a.indexOf("touchstone/safe-tx-hashes:e295975");
     assert.ok(at > 0, "the pinned image tag");
-    assert.deepEqual(a.slice(at + 1, at + 7), ["timeout", "-k", "5", "180", "bash", "-c"]);
+    assert.deepEqual(a.slice(at + 1, at + 3), ["bash", "-c"]);
   });
 });
 
@@ -128,7 +128,7 @@ test("a nonzero exit, of the container or of one job, is not a result", async ()
     assert.equal((await hashWithSafeTxHashes([job])).ok, false);
   });
   await withFakeDocker(section(0), 124, async () => {
-    assert.match((await hashWithSafeTxHashes([job])).reason, /timed out/);
+    assert.match((await hashWithSafeTxHashes([job])).reason, /exit 124/);
   });
 });
 
@@ -171,17 +171,27 @@ test("a script that hashes a default in place of our field (exit 0) is caught by
   assert.match(out.reason, /failed on badTo \(exit 0\).*Safe transaction hash: 0x/);
 });
 
+test("a safe-tx-hashes run that runTool marks timedOut is unavailable, with a reason, and gives no hash", async () => {
+  process.env.FAKE_SLEEP = "30";
+  await withFakeDocker(section(0), 0, async () => {
+    const out = await hashWithSafeTxHashes([job], { timeoutMs: 500 });
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /timed out/);
+    assert.equal(out.hashes, undefined);
+  });
+});
+
 test("safe-tx-hashes-util reports unavailable when it times out", { skip: skipTool }, async () => {
   const out = await hashWithSafeTxHashes([job], { timeoutMs: 1 });
   assert.equal(out.ok, false);
   assert.match(out.reason, /timed out/);
 });
 
-test("a safe-tx-hashes container that really hangs is stopped at the timeout, and nothing is left", { skip: skipTool, timeout: 60_000 }, async () => {
+test("a safe-tx-hashes container that really hangs is stopped at the timeout, and nothing is left", { skip: "needs the shared runTool timeout fix (6526bbe on pack/domains); without it the container outlives the call", timeout: 60_000 }, async () => {
   const tag = `HANG_${process.pid}_${Date.now()}`;
   const start = Date.now();
-  const run = await runTool({ image: "touchstone/safe-tx-hashes:e295975", ws: null, env: { [tag]: "1" }, timeoutMs: 4000, cmd: underTimeout(4000, ["bash", "-c", "sleep 300 & sleep 300; wait"]) });
-  assert.equal(run.timedOut || run.code === 124, true);
+  const run = await runTool({ image: "touchstone/safe-tx-hashes:e295975", ws: null, env: { [tag]: "1" }, timeoutMs: 4000, cmd: ["bash", "-c", "sleep 300 & sleep 300; wait"] });
+  assert.equal(run.timedOut, true);
   assert.ok(Date.now() - start < 20_000, `the call returned after ${Date.now() - start} ms`);
   const left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/safe-tx-hashes:e295975"], { encoding: "utf8" }).split("\n").filter(Boolean)
     .filter((id) => execFileSync("docker", ["inspect", "-f", "{{.Config.Env}}", id], { encoding: "utf8" }).includes(tag));

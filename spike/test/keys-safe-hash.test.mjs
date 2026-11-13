@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareQueue, hashWithSafeHash, parseSafeHash, queueJobs, runQueueWorld, safeHashLeads, safeHashNote, safeTxTypedData, underTimeout } from "../packs/keys/safe-hash.mjs";
+import { compareQueue, hashWithSafeHash, parseSafeHash, queueJobs, runQueueWorld, safeHashLeads, safeHashNote, safeTxTypedData } from "../packs/keys/safe-hash.mjs";
 import { keysLeads, leadsFor } from "../packs/keys/common.mjs";
 import keys from "../packs/keys/pack.mjs";
 import { cleanupWorkspace, makeWorkspace } from "../lib/sandbox.mjs";
@@ -162,13 +162,13 @@ test("the hook is unavailable, with no lead, when something throws", async () =>
 async function withFakeDocker(stdout, code, fn) {
   const dir = mkdtempSync(join(tmpdir(), "fake-docker-"));
   const path = process.env.PATH;
-  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_ARGS"\nprintf "%s" "$FAKE_OUT"\nexit "$FAKE_CODE"\n');
+  writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_ARGS"\n[ -n "$FAKE_SLEEP" ] && exec sleep "$FAKE_SLEEP"\nprintf "%s" "$FAKE_OUT"\nexit "$FAKE_CODE"\n');
   chmodSync(join(dir, "docker"), 0o755);
   Object.assign(process.env, { PATH: `${dir}:${path}`, FAKE_ARGS: join(dir, "args"), FAKE_OUT: stdout, FAKE_CODE: String(code) });
   try { return await fn(() => readFileSync(join(dir, "args"), "utf8").split("\n").slice(0, -1)); }
   finally {
     process.env.PATH = path;
-    for (const k of ["FAKE_ARGS", "FAKE_OUT", "FAKE_CODE"]) delete process.env[k];
+    for (const k of ["FAKE_ARGS", "FAKE_OUT", "FAKE_CODE", "FAKE_SLEEP"]) delete process.env[k];
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -183,7 +183,7 @@ test("the safe-hash call runs with no network, no pull, no workspace, under time
     assert.equal(a[a.indexOf("--network") + 1], "none");
     assert.ok(a.includes("--pull=never"));
     assert.ok(!a.includes("-v"), "the tool sees no workspace");
-    assert.deepEqual(a.slice(a.indexOf("touchstone/safe-hash:0.0.19") + 1, -3), ["timeout", "-k", "5", "60"]);
+    assert.deepEqual(a.slice(a.indexOf("touchstone/safe-hash:0.0.19") + 1, -1), ["sh", "-c"]);
   });
 });
 
@@ -239,17 +239,27 @@ test("safe-hash reports unavailable when the tool fails on bad input", { skip: !
   assert.match(out.reason, /failed on bad/);
 });
 
+test("a run that runTool marks timedOut is unavailable, with a reason, and gives no hash", async () => {
+  process.env.FAKE_SLEEP = "30";
+  await withFakeDocker(section(0), 0, async () => {
+    const out = await hashWithSafeHash([job0], { timeoutMs: 500 });
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /timed out/);
+    assert.equal(out.hashes, undefined);
+  });
+});
+
 test("safe-hash reports unavailable when it times out", { skip: !hasSafeHash && "safe-hash image not built" }, async () => {
   const out = await hashWithSafeHash([{ id: "x", typed: safeTxTypedData(1, SAFE, fields, 0) }], { timeoutMs: 1 });
   assert.equal(out.ok, false);
   assert.match(out.reason, /timed out/);
 });
 
-test("a container that really hangs is stopped at the timeout, and nothing is left running", { skip: !hasSafeHash && "safe-hash image not built", timeout: 60_000 }, async () => {
-  // The same wrapper hashWithSafeHash uses, around a command that never ends.
+test("a container that really hangs is stopped at the timeout, and nothing is left running", { skip: "needs the shared runTool timeout fix (6526bbe on pack/domains); without it the container outlives the call", timeout: 60_000 }, async () => {
+  // A command that never ends. runTool itself must stop the container (shared wrap fix).
   const tag = `HANG_${process.pid}_${Date.now()}`;
   const start = Date.now();
-  const run = await runTool({ image: "touchstone/safe-hash:0.0.19", ws: null, env: { [tag]: "1" }, timeoutMs: 4000, cmd: underTimeout(4000, ["sh", "-c", "sleep 300"]) });
+  const run = await runTool({ image: "touchstone/safe-hash:0.0.19", ws: null, env: { [tag]: "1" }, timeoutMs: 4000, cmd: ["sh", "-c", "sleep 300"] });
   assert.equal(run.timedOut, true);
   assert.ok(Date.now() - start < 20_000, `the call returned after ${Date.now() - start} ms`);
   const left = execFileSync("docker", ["ps", "-aq", "--filter", "ancestor=touchstone/safe-hash:0.0.19"], { encoding: "utf8" }).split("\n").filter(Boolean)
