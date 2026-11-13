@@ -49,10 +49,11 @@
 //                     operator's website.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
+import { MULTI, MULTI_DIR, memberDir } from "../packs/multi.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeBrief, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
 import { reachHosts, allowsPrivate } from "./reach.mjs"
 
@@ -516,4 +517,50 @@ export async function prepareRunWorkspace(target, { modules = [] } = {}) {
   }
   writeTouchstone(ws, { ...readTouchstone(ws), kind: "lab", pack, modules })
   return ws
+}
+
+// Build one workspace that covers several modules of one run (piece D3).
+//
+// Each module keeps its own sub-workspace, `<ws>/modules/<id>`, built by that
+// module's own path above, so its config, its brief and its networks stay its
+// own: a module that captures a network writes its `reach` block into its own
+// file, never into another module's. The run's reach decision is made once, by
+// the app, from the scope's own grant — this build never touches a host.
+//
+// The run's root config names the modules in `packs`, so packFor returns the
+// joined pack and every later step reads the same list. `links` is the union, so
+// a run-level source-coverage check still sees every link. A run with one module
+// never comes here: it keeps `prepareRunWorkspace` and its `pack` field.
+//
+// `packs` is the module ids in the operator's order; duplicates are dropped.
+export async function prepareMultiWorkspace(target, { packs = [], modules = [] } = {}) {
+  const ids = [...new Set(packs.map(String))]
+  if (ids.length < 2) {
+    throw new Error(`a multi-module run needs more than one module (got ${ids.length ? `"${ids[0]}"` : "none"})`)
+  }
+  const unknown = ids.filter((id) => !PACKS[id])
+  if (unknown.length) throw new Error(`Unknown pack "${unknown.join('", "')}". Known: ${Object.keys(PACKS).join(", ")}`)
+  const ws = mkdtempSync(path.join(tmpdir(), "redteam-run-"))
+  try {
+    mkdirSync(path.join(ws, MULTI_DIR), { recursive: true })
+    for (const id of ids) {
+      // The module's own build path, under the module it is: a target copy is
+      // per module, so nothing is shared but the root.
+      const built = await prepareRunWorkspace(withPack(target, id), { modules })
+      const dest = memberDir(ws, id)
+      try {
+        renameSync(built, dest)
+      } catch {
+        // A generated lab may come from another filesystem.
+        cpSync(built, dest, { recursive: true })
+        rmSync(built, { recursive: true, force: true })
+      }
+    }
+    const links = [...new Set(ids.flatMap((id) => readTouchstone(memberDir(ws, id)).links ?? []))]
+    writeTouchstone(ws, { kind: target.kind, pack: MULTI, packs: ids, modules, links })
+    return ws
+  } catch (err) {
+    rmSync(ws, { recursive: true, force: true })
+    throw err
+  }
 }
