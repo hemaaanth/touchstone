@@ -73,7 +73,7 @@ function fixture(name, phase, extra = [], state = {}) {
 const setupId = fixture("setup-restart", "setup", [], { ws: null });
 const emptySetupId = fixture("setup-no-stream", "setup", [], { ws: null, mode: "solo", modules: [], budget: 1, provider: "boundless", model: "fake" });
 writeFileSync(join(dir, `run-${emptySetupId}.stream.jsonl`), "");
-const agentId = fixture("agent-restart", "agent", [{ ev: "spend", t: 6, usd: 0.2 }]);
+const agentId = fixture("agent-restart", "agent", [{ ev: "spend", t: 6, usd: 0.2 }, { ev: "thinking-delta", t: 7, conv: "root", attempt: 2, text: "before the crash" }]);
 writeFileSync(join(dir, `run-${agentId}.events`), JSON.stringify({ ev: "spend", usd: 0.35 }) + "\n");
 writeFileSync(join(dir, `run-${agentId}.charges.jsonl`), JSON.stringify({ usd: 0.4 }) + "\n");
 const proofId = fixture("proof-restart", "proof", [{ ev: "settled", t: 6, summary: { final: { text: "done" } } }, { ev: "status", t: 7, status: "deciding" }], {
@@ -143,6 +143,8 @@ test("agent and proof phases restart; paid responses are carried forward once", 
   assert.equal(getRun(agentId).events.filter((e) => e.ev === "phase-restarted" && e.phase === "agent").length, 1);
   assert.equal(getRun(proofId).events.filter((e) => e.ev === "phase-restarted" && e.phase === "proof").length, 1);
   assert.equal(envs.find((e) => e.EVENTS_FILE?.includes(agentId))?.RUN_SPENT_USD, "0.4");
+  // The re-spawned worker numbers its steps after the ones streamed before the crash.
+  assert.equal(envs.find((e) => e.EVENTS_FILE?.includes(agentId))?.ATTEMPT_BASE, "3");
   assert.equal(getRun(proofId).events.filter((e) => e.ev === "finding").length, 1);
 });
 

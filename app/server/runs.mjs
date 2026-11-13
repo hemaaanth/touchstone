@@ -762,13 +762,20 @@ function failureInfo(run) {
   }
 }
 
+// Steps from earlier turns, or from a worker a restart killed, are keyed by
+// attempt; a new worker starts past the last one.
+function attemptBase(run) {
+  const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
+  return String(Math.max(-1, ...attempts) + 1)
+}
+
 // Spawn the agent worker over the prepared workspace, with the pre-pass leads in
 // its env, and wire its event stream into the run.
 function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
+  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -996,8 +1003,6 @@ function followUp(run, text, clientId) {
     release(run)
     throw err
   }
-  // Steps from earlier turns are keyed by attempt; start past the last one.
-  const attempts = run.events.filter((e) => e.ev === "thinking-delta" || e.ev === "assistant-delta").map((e) => Number(e.attempt) || 0)
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
   run.error = null
@@ -1020,7 +1025,7 @@ function followUp(run, text, clientId) {
       FOLLOWUP: text,
       ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
       PRIOR_FOUND: JSON.stringify(prior),
-      ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),
+      ATTEMPT_BASE: attemptBase(run),
     },
     stdio: ["pipe", "pipe", "pipe"],
   })

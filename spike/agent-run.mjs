@@ -214,7 +214,7 @@ async function child([, , , mode, db, ws]) {
   if (mode === "run") {
     // Stream the agent's thinking and prose to the UI for the whole live turn.
     // In CLI mode stdin is /dev/null, so the steer reader never fires.
-    await streamCognition(harness);
+    await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
     readSteers(root);
   }
 
