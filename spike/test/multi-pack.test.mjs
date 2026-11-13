@@ -16,7 +16,7 @@
 // write files. A throwaway grant store stands in for the operator's.
 import { test, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -509,7 +509,13 @@ test("one fetch serves the run: both modules can read the tree, one source-fetch
     assert.ok(existsSync(path.join(memberDir(ws, id), "vendor", "acme__repo", "lib.js")), `${id} has its copy`);
     const list = outText(await tools.get(`list_sources_${id}`).execute({}));
     assert.match(list, id === "contracts" ? /vendor\/acme__repo\/A\.sol/ : /vendor\/acme__repo\/lib\.js/, `${id} lists the fetched file`);
+    const file = id === "contracts" ? "vendor/acme__repo/A.sol" : "vendor/acme__repo/lib.js";
+    const read = outText(await tools.get(`read_source_${id}`).execute(id === "contracts" ? { file } : { file }));
+    assert.match(read, id === "contracts" ? /contract A/ : /fetched/, `${id} reads the fetched file`);
   }
+  // Nothing in the workspace is a link; the tree is real folders.
+  const links = [...readdirSync(ws, { recursive: true, withFileTypes: true })].filter((e) => e.isSymbolicLink());
+  assert.deepEqual(links.map((e) => e.name), []);
 });
 
 test("a refused URL does not poison later fetches", async () => {
