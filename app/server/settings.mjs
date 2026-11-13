@@ -34,18 +34,10 @@ import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
 // Note: the Vite dev server answers CORS preflights for localhost origins. So
 // a page on another localhost port can send a JSON POST. The Origin == Host
 // rule and the token are what refuse it.
-// The token is TOUCHSTONE_GRANT_TOKEN, else a random one printed once to the
-// server terminal. It is the same env var and header T7's grant routes use.
-// The same single token T7's grant routes use (grant-store.GRANT_TOKEN), so the
-// operator has exactly one console token for every mutating console action.
+// The token is grant-store.GRANT_TOKEN, the same single token T7's grant routes
+// use. The operator never types it. The dev server writes it into the page it
+// serves (vite.config.ts), and the page sends it back on each write.
 export const SETTINGS_TOKEN = GRANT_TOKEN
-let tokenAnnounced = false
-function announceToken() {
-  if (tokenAnnounced || process.env.TOUCHSTONE_GRANT_TOKEN) return
-  tokenAnnounced = true
-  process.stderr.write(`[settings] to change Settings, paste this console token on the Settings page (header x-touchstone-grant-token): ${SETTINGS_TOKEN}\n`)
-}
-announceToken()
 
 // Why this write is refused, as { status, error }, or null when it may go on.
 export function settingsWriteRefusal(req) {
@@ -64,7 +56,7 @@ export function settingsWriteRefusal(req) {
   }
   const token = h["x-touchstone-grant-token"]
   if (!token || token !== SETTINGS_TOKEN) {
-    return { status: 403, error: "missing or wrong console token. Paste the token the server printed at start" }
+    return { status: 403, error: "this page is out of date. Reload it" }
   }
   return null
 }

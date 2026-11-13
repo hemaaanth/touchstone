@@ -26,7 +26,7 @@ import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary } from "../../spike/lib/targets.mjs"
+import { getTarget, listTargets, pickTarget, prepareRunWorkspace, prepareWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
 import { readScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
@@ -103,7 +103,8 @@ function runProvider(run) {
   return Object.values(all).find((p) => p.models?.[run.alias])?.id ?? activeProvider().id
 }
 
-// The target library the UI picks a scope from. No filesystem paths leak out.
+// The target library the UI picks a scope from. The only filesystem path in it
+// is one the operator typed: a folder scope the server reads in place.
 export function availableTargets() {
   return listTargets()
 }
@@ -135,7 +136,10 @@ export function listScopes() {
 export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
-    if (pack != null && pack !== "" && !Object.hasOwn(PACKS, pack)) throw new Error(`unknown module: ${pack}`)
+    // `pack` is one module or the list the operator ticked.
+    for (const id of pack == null || pack === "" ? [] : [pack].flat()) {
+      if (typeof id !== "string" || !Object.hasOwn(PACKS, id)) throw new Error(`unknown module: ${id}`)
+    }
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
     const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
     return { ...targetSummary(live), runnable: true }
@@ -1061,7 +1065,10 @@ export function followUp(run, text, clientId) {
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error("this run has spent its budget")
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
-  const target = run.target ?? (run.scope?.id ? getTarget(run.scope.id) : null)
+  // An older run saved no target. Its scope may allow several modules now, so
+  // it comes back under the module this run used.
+  const saved = run.target ? null : run.scope?.id ? getTarget(run.scope.id) : null
+  const target = run.target ?? (saved ? withPack(saved, run.scope.pack ?? saved.pack) : null)
   if (!target) throw new Error("this run's scope is no longer in the library")
   run.target = target
   // A generated lab is new on every run, with its own throwaway keys, so a reopened

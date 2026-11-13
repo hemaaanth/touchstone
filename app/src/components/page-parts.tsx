@@ -34,16 +34,6 @@ export function Empty({ children }: { children: React.ReactNode }) {
   return <p className="border-y py-6 text-center text-xs leading-relaxed text-muted-foreground">{children}</p>
 }
 
-// The note under a page that counts runs: which runs it could not place.
-export function UncountedNote({ loading, unscoped }: { loading: number; unscoped: number }) {
-  if (!loading && !unscoped) return null
-  const parts = [
-    loading ? `${loading} ${loading === 1 ? "run is" : "runs are"} still loading` : null,
-    unscoped ? `${unscoped} older ${unscoped === 1 ? "run records" : "runs record"} no scope` : null,
-  ].filter(Boolean)
-  return <p className="mt-3 text-[11px] text-muted-foreground">Not counted: {parts.join("; ")}.</p>
-}
-
 // A short list of runs. Each row opens its run.
 export function RunLinks({ runs, onOpen, limit = 5 }: { runs: ScopedRun[]; onOpen: (id: string) => void; limit?: number }) {
   const shown = runs.slice(0, limit)
