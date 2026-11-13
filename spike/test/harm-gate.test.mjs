@@ -445,6 +445,22 @@ test("harm gate: a token drain while pranking AS the attacker is still proven (M
   assert.equal(h.victim, VAULT);
 });
 
+// m2 (review 2): the logged flow of the victim nets to zero (out and back in),
+// but its balance slot dropped. The log channel counts only a net LOSER, so this
+// is no drain. The mutant `delta >= 0n` -> `delta > 0n` would report a drain
+// of 0 units.
+test("harm gate: a net-zero logged flow with a balance-slot drop is not a token drain", () => {
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] },
+      [transferLog(VAULT, ATTACKER, ONE), transferLog(ATTACKER, VAULT, ONE)]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
+  assert.equal(h.ok, false, JSON.stringify(h));
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
 // ---- the whole impersonation family (M4, delta review) ---------------------
 //
 // vm.prank / vm.startPrank each have four overloads: plain, with a tx.origin,
