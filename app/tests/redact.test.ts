@@ -865,7 +865,11 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
   // on. Each is built at 64 KB and 256 KB, placed at the start, the middle and
   // the end of the buffer, and as ONE line with no line end (the shape that
   // hid the quadratic MYSQL_PW). The bound is linear growth: 256 KB under
-  // 4.5x the 64 KB time plus 40 ms, and under an absolute 1200 ms.
+  // 4.5x the 64 KB time plus 40 ms (strict). The absolute cap is a safety net
+  // only: 1200 ms, raised in step with how slow the host is right now (a
+  // baseline measured in the same test). A check that fails is measured again
+  // (best of a few runs) before it counts: a quadratic rule is slow every run,
+  // a load spike is not. Passing checks cost one run, as before.
   // A short trigger text per rule, each a string the rule matches.
   const TRIGGERS: Record<string, string> = {
     JSON_PAIR: '"token":"vv"',
@@ -929,6 +933,43 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
     return [core, pad + core, core + pad] // end-of-buffer, start-of-buffer, mid
   }
 
+  // The best of `runs` timings.
+  const best = (f: () => number, runs: number): number => Math.min(...Array.from({ length: runs }, f))
+  // The host's speed right now: redacting 256 KB of plain prose, which every
+  // rule scans and none matches. On a loaded host it grows, and so does the cap.
+  const baseline = (): number => best(() => timeMs(PAD(256 * 1024 * 4)), 3)
+  const capFor = (base: number): number => Math.max(1200, 40 * base)
+  const growthOk = (t64: number, t256: number): boolean => t256 < 4.5 * t64 + 40
+  // One run; when it fails, the best of three more decides.
+  const underCap = (f: () => number, cap: number): boolean => f() < cap || best(f, 3) < cap
+  const grows = (f64: () => number, f256: () => number): boolean => growthOk(f64(), f256()) || growthOk(best(f64, 3), best(f256, 3))
+
+  test("the timing guard is not blind: it still fails quadratic growth, and only load moves the cap", () => {
+    // A quadratic workload: 4x the input, 16x the time. The growth check fails it.
+    const quad = (n: number): number => {
+      const t0 = performance.now()
+      let x = 0
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) x += i ^ j
+      if (x === -1) throw new Error("unreachable")
+      return performance.now() - t0
+    }
+    expect(grows(() => quad(4000), () => quad(16000))).toBe(false)
+    // A slow rule stays slow on the re-run, so the cap still catches it.
+    expect(underCap(() => 5000, capFor(10))).toBe(false)
+    // A one-off load spike (the first run only) does not fail a linear rule.
+    let first = true
+    const spike = (fast: number) => () => (first ? ((first = false), 5000) : fast)
+    expect(underCap(spike(50), capFor(10))).toBe(true)
+    first = true
+    expect(grows(() => 20, spike(80))).toBe(true)
+    // A linear rule on an idle host keeps the 1200 ms cap; the same rule on a
+    // host three times slower (the 2,117 ms failure) gets a cap that follows
+    // the host, while its growth ratio is unchanged.
+    expect(capFor(10)).toBe(1200)
+    expect(2117).toBeLessThan(capFor(3 * 20))
+    expect(growthOk(3 * 50, 3 * 190)).toBe(true)
+  })
+
   test("the rule table is covered", () => {
     const names = Object.keys(TEXT_RULES as Record<string, unknown>)
     for (const name of names) expect(TRIGGERS[name], `rule ${name} needs a timing trigger`).not.toBeUndefined()
@@ -939,12 +980,13 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
     test(
       `${name} is linear`,
       () => {
+        const cap = capFor(baseline())
         for (const [prefix, unit] of cases(trigger)) {
-          for (const s of framed(prefix, unit, 256 * 1024)) expect(timeMs(s)).toBeLessThan(1200)
+          for (const s of framed(prefix, unit, 256 * 1024)) expect(underCap(() => timeMs(s), cap), `${name} at 256 KB under ${cap} ms`).toBe(true)
           // Linear growth: the one-line run at 64 KB vs 256 KB.
-          const t64 = timeMs(oneLine(prefix, unit, 64 * 1024))
-          const t256 = timeMs(oneLine(prefix, unit, 256 * 1024))
-          expect(t256).toBeLessThan(4.5 * t64 + 40)
+          const s64 = oneLine(prefix, unit, 64 * 1024)
+          const s256 = oneLine(prefix, unit, 256 * 1024)
+          expect(grows(() => timeMs(s64), () => timeMs(s256)), `${name} grows linearly`).toBe(true)
         }
         // Nested-quantifier catch: the trigger WITHOUT its closing character,
         // then a long run of a letter or a digit. With no closing delimiter a

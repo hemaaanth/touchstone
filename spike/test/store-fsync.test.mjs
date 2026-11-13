@@ -30,7 +30,7 @@ const fs = {
   },
 };
 mock.module("node:fs", { exports: { ...fs, default: fs } });
-const { saveStore } = await import("../lib/grant-store.mjs");
+const { saveStore, rotateConsoleToken, consoleToken } = await import("../lib/grant-store.mjs");
 
 test("after the rename, the folder itself is fsynced", () => {
   const file = path.join(TEST_STORE_DIR, "fsync-store.json");
@@ -54,5 +54,28 @@ test("a real fsync error on the folder is thrown; a system that cannot fsync a f
     }
   } finally {
     folderFsyncFails = null;
+  }
+});
+
+test("a console-token rotate fsyncs the folder after its rename; a failed folder sync still gives the new token", () => {
+  const pinned = process.env.TOUCHSTONE_GRANT_TOKEN;
+  delete process.env.TOUCHSTONE_GRANT_TOKEN;
+  process.env.TOUCHSTONE_GRANT_TOKEN_FILE = path.join(TEST_STORE_DIR, "console-token");
+  try {
+    const old = consoleToken();
+    calls.length = 0;
+    const next = rotateConsoleToken(old);
+    assert.equal(typeof next, "string");
+    const renamed = calls.findIndex(([op, p]) => op === "rename" && p === process.env.TOUCHSTONE_GRANT_TOKEN_FILE);
+    assert.ok(renamed >= 0, "the token file was renamed into place");
+    assert.ok(calls.some(([op, p], i) => i > renamed && op === "fsync" && p === TEST_STORE_DIR), `the folder is fsynced after the rename: ${JSON.stringify(calls)}`);
+    // The folder sync fails: the rename is done, so the rotate still gives the new token.
+    folderFsyncFails = "EIO";
+    const third = rotateConsoleToken(next);
+    assert.equal(typeof third, "string");
+    assert.equal(consoleToken(), third);
+  } finally {
+    folderFsyncFails = null;
+    process.env.TOUCHSTONE_GRANT_TOKEN = pinned;
   }
 });
