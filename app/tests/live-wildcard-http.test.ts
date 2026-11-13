@@ -160,6 +160,21 @@ describe("a *. entry through POST /api/scopes", () => {
     }
   })
 
+  test("an address with a user name or password is refused, and the sentence does not repeat the secret", async () => {
+    // An address that does not parse is refused too, with the credential part masked.
+    const broken = await create(["https://example.com", "https://user:pw-secret-1@exa mple.com"])
+    expect(broken.status).toBe(400)
+    expect(broken.json.error).toBe(`"https://…@exa mple.com" is not a website address Touchstone can read. Write a host name or an http(s) address, for example example.com or https://app.example.com:8443.`)
+    for (const bad of ["https://user:pw-secret-1@example.com", "admin:pw-secret-1@shop.example.com", "https://user@example.com"]) {
+      const r = await create(["https://example.com", bad])
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/^The address for (shop\.)?example\.com holds a user name or password\. Touchstone never keeps a credential typed into a website address\./)
+      expect(r.json.error).not.toContain("pw-secret-1")
+      expect(scopes()).toEqual([])
+      expect(grants()).toEqual([])
+    }
+  })
+
   test("a plain website that does not parse is refused with a sentence, not dropped", async () => {
     for (const bad of ["exa mple.com", "ftp://files.example.com", "https://", "http://[::1", "exa_mple..com"]) {
       const r = await create(["https://example.com", bad])

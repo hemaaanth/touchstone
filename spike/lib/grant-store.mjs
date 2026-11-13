@@ -223,7 +223,10 @@ export function grantStoreError() {
     loadGrants();
     return null;
   } catch (e) {
-    const text = String(e?.message ?? e).replace(/^Refused: /, "");
+    // Read on a page that changes nothing: no "Nothing was changed".
+    const text = String(e?.message ?? e)
+      .replace(/^Refused: /, "")
+      .replace(/ Nothing was changed\. Repair the file or move it away, then try again\.$/, " Its grants are not shown, and none can be added or changed, until the file is repaired or moved away.");
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 }

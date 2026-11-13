@@ -37,12 +37,13 @@ describe("GET /api/stores", () => {
     writeFileSync(SCOPES, "{ not json")
     expect(listTargets().every((t: { id: string }) => !t.id.startsWith("scope-"))).toBe(true)
     const { json } = await handleApi("/api/stores")
-    expect(json.errors).toEqual([`The scope store file ${SCOPES} is not a valid JSON list. Nothing was changed. Repair the file or move it away, then try again.`])
+    expect(json.errors).toEqual([`The scope store file ${SCOPES} is not a valid JSON list. Its scopes are not shown, and none can be added or changed, until the file is repaired or moved away.`])
   })
 
   test("a damaged grant store is named too", async () => {
     writeFileSync(GRANTS, '{"not": "a list"}')
     const { json } = await handleApi("/api/stores")
-    expect(json.errors).toEqual([`The grant store file ${GRANTS} is not a valid JSON list. Nothing was changed. Repair the file or move it away, then try again.`])
+    expect(json.errors).toEqual([`The grant store file ${GRANTS} is not a valid JSON list. Its grants are not shown, and none can be added or changed, until the file is repaired or moved away.`])
+    expect(json.errors[0]).not.toContain("Nothing was changed")
   })
 })

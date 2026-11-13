@@ -65,10 +65,25 @@ export function liveHostsRefusal(hosts, { pack } = {}) {
       const shared = sharedWildcardRefusal(base);
       if (shared) return shared;
     }
+    // A user name or password typed into the address would be dropped without
+    // a word. Refuse it, and do not repeat it: the sentence names the host only.
+    if (websites && !looksWild(h)) {
+      let u = null;
+      try {
+        u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(h) ? h : `https://${h}`);
+      } catch {
+        /* not a URL: the parse check below says so */
+      }
+      if (u && (u.username || u.password)) {
+        return `The address for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a website address. Remove it; an AI and MCP scope takes its token in the Bearer token field.`;
+      }
+    }
     // A plain website: both the run's address and the grant's host must come
     // out of it, or one of them drops it without a word.
     if (websites && !looksWild(h) && (!siteOrigin(h) || !normalizeHost(h))) {
-      return `"${h.slice(0, 200)}" is not a website address Touchstone can read. Write a host name or an http(s) address, for example example.com or https://app.example.com:8443.`;
+      // Never repeat a "user:password@" part, even in an address that does not parse.
+      const shown = h.slice(0, 200).replace(/^([a-z][a-z0-9+.-]*:\/\/)?[^/?#]*@/i, "$1…@");
+      return `"${shown}" is not a website address Touchstone can read. Write a host name or an http(s) address, for example example.com or https://app.example.com:8443.`;
     }
     if (looksWild(h) && !base) {
       return `"${h.slice(0, 200)}" is not a wildcard entry Touchstone accepts. Write it as *.example.com: a star, a dot and a domain name, with no scheme, port or path.`;
