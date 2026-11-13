@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 
 import { runTool } from "../lib/wrap.mjs";
-import { captureArgs, assertCaptureReach, egressSummary, scrub, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
+import { captureArgs, assertCaptureReach, egressSummary, scrub, runNamed, GITHUB_CAPTURE_HOSTS } from "../lib/capture.mjs";
 
 const FAKE_TOKEN = "ghp_FAKEtokenFAKEtokenFAKEtokenFAKE1234";
 const reach = { granted: true, scope: ["hemaaanth/touchstone"] };
@@ -93,12 +93,29 @@ test("the token value never appears in what a capture returns, even when the too
   assert.match(r.stderr, /\[REDACTED\]/);
 });
 
-test("a timed-out capture removes its container by name", async () => {
+test("every capture removes its container by name, even one that ended on its own", async () => {
   const s = seams({ code: 1, timedOut: true });
   const r = await runTool({ image: "x:1", cmd: [], user: "1:1", capture: { reach, targets, hosts: ["api.github.com"], confine: s.confine, exec: s.exec } });
   assert.equal(r.timedOut, true);
   const name = s.calls[0].args[s.calls[0].args.indexOf("--name") + 1];
   assert.deepEqual(s.calls.find((c) => c.args[0] === "rm").args, ["rm", "-f", name]);
+});
+
+// A docker CLI that never returns until its container is removed: the real
+// shape when PID 1 ignores SIGTERM. Our own timer must remove it.
+test("runNamed: at timeoutMs the container is removed by name and the call reports timedOut", async () => {
+  let release;
+  const calls = [];
+  const exec = async (args) => {
+    calls.push(args);
+    if (args[0] === "rm") { release?.(); return { code: 0, stdout: "", stderr: "" }; }
+    return new Promise((r) => { release = () => r({ code: 137, stdout: "", stderr: "", timedOut: false }); });
+  };
+  const t0 = Date.now();
+  const r = await runNamed(["run", "--name", "n1", "x:1"], "n1", { timeoutMs: 200, exec });
+  assert.ok(Date.now() - t0 < 2_000);
+  assert.equal(r.timedOut, true);
+  assert.deepEqual(calls.filter((a) => a[0] === "rm")[0], ["rm", "-f", "n1"]);
 });
 
 test("captureArgs refuses an open network and a secret passed as a plain env value", () => {
@@ -133,4 +150,20 @@ test("real capture container: token arrives by env name, output is scrubbed, a r
   assert.match(r.stdout, /\[REDACTED\]/);
   assert.match(r.stdout, /raw-blocked/);
   assert.ok(!JSON.stringify(r).includes(FAKE_TOKEN));
+});
+
+// The real fault: `docker run` of a PID 1 that ignores SIGTERM. A plain
+// execFile timeout leaves the CLI and the container running for a minute.
+// Capture mode must return near timeoutMs and leave no container behind.
+test("real capture timeout: returns near timeoutMs and leaves no container", { skip: !hasDocker && "docker or images missing", timeout: 90_000 }, async () => {
+  const before = execFileSync("docker", ["ps", "-aq", "--filter", "name=touchstone-capture-"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  const t0 = Date.now();
+  const r = await runTool({ image: "alpine:3.20", cmd: ["sleep", "60"], timeoutMs: 3_000,
+    capture: { reach, targets, hosts: ["api.github.com"] } });
+  const took = Date.now() - t0;
+  assert.equal(r.refused, undefined, r.refused);
+  assert.equal(r.timedOut, true);
+  assert.ok(took < 20_000, `took ${took} ms`);
+  const after = execFileSync("docker", ["ps", "-aq", "--filter", "name=touchstone-capture-"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  assert.deepEqual(after.filter((id) => !before.includes(id)), []);
 });

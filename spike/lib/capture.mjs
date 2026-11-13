@@ -92,6 +92,25 @@ function execDocker(args, { env, timeoutMs, maxBuffer }) {
   });
 }
 
+// Run one named `docker run` and always remove the container by name after.
+// The timeout is ours, not the docker CLI's: a signal to the CLI does not stop
+// the container, and a PID 1 that ignores SIGTERM keeps the CLI waiting. So at
+// timeoutMs the container is removed by name, and the call reports timedOut.
+// The finally also covers a CLI that died early (maxBuffer, a crash).
+export async function runNamed(args, name, { env = process.env, timeoutMs = 180_000, maxBuffer = 64 * 1024 * 1024, exec = execDocker } = {}) {
+  const rm = () => exec(["rm", "-f", name], { env: process.env, timeoutMs: 30_000, maxBuffer: 1024 * 1024 }).catch(() => {});
+  let late = false;
+  const timer = setTimeout(() => { late = true; rm(); }, timeoutMs);
+  try {
+    // A backstop only: the timer above stops the tool first.
+    const r = await exec(args, { env, timeoutMs: timeoutMs + 60_000, maxBuffer });
+    return { ...r, timedOut: Boolean(r.timedOut) || late };
+  } finally {
+    clearTimeout(timer);
+    await rm();
+  }
+}
+
 // The gate's own log: one __TOUCHSTONE_SCOPE__ JSON line per proxied request.
 // With HTTPS each line is one CONNECT tunnel, not one API request.
 export function egressSummary(logText) {
@@ -129,9 +148,7 @@ export async function runCapture({ image, cmd, ws = null, user, env = {}, timeou
     const args = captureArgs({ name, image, cmd, ws, network: box.netClient, gate: box.gateUrl, user, env, secretNames: Object.keys(secrets) });
     // Secrets live only in the docker CLI's environment. The CLI copies a
     // `-e NAME` with no value from there into the container.
-    const r = await exec(args, { env: { ...process.env, ...secrets }, timeoutMs, maxBuffer });
-    // A killed CLI can leave the container running. Remove it by name.
-    if (r.timedOut) await exec(["rm", "-f", name], { env: process.env, timeoutMs: 30_000, maxBuffer: 1024 * 1024 });
+    const r = await runNamed(args, name, { env: { ...process.env, ...secrets }, timeoutMs, maxBuffer, exec });
     const logs = box.proxyName ? await exec(["logs", box.proxyName], { env: process.env, timeoutMs: 15_000, maxBuffer: 16 * 1024 * 1024 }) : { stdout: "", stderr: "" };
     return { code: r.code, stdout: scrub(r.stdout, values), stderr: scrub(r.stderr, values), timedOut: r.timedOut, egress: egressSummary(`${logs.stdout}\n${logs.stderr}`) };
   } catch (err) {
