@@ -483,10 +483,11 @@ function replayParties(traces) {
 // the chain by the test itself — as the test contract, a CREATE/CREATE2, an
 // `etch`, or a `cloneAccount`/7702 delegation that lands code at a "pre-existing"
 // address. None of those is the audited token, so none authenticates a drain.
-// We therefore trust only a scope target and reject every other emitter.
-function realTokenEmitter(token, targets, testContract, created, etched) {
+// We therefore trust only a scope target and reject every other emitter. An
+// etched or cloned target is no scope target: judgeHarm removes it from
+// `targets` before any channel runs, so it fails `targets.has` below.
+function realTokenEmitter(token, targets, testContract, created) {
   if (!token || token === testContract) return false;
-  if (etched.has(token)) return false;
   if (targets.has(token)) return true;
   if (created.has(token)) return false;
   return false;
@@ -538,7 +539,6 @@ function storedBalanceLoss(writes, token, holder, bases) {
 // biggest loss first.
 function tokenDrains(traces, targets, controlTrace, balances) {
   const { testContract, created } = replayParties(traces);
-  const etched = new Set((controlTrace?.etches ?? []).map((e) => lc(e.target)));
   const writes = controlTrace?.writes ?? [];
   const net = new Map(); // token -> Map(holder -> signed units)
   const bump = (token, holder, delta) => {
@@ -559,7 +559,7 @@ function tokenDrains(traces, targets, controlTrace, balances) {
       // runs the callee's code in the caller's account, which is also where
       // extractControlTrace records the SSTORE (the storage context).
       const token = (t.kind === "DELEGATECALL" || t.kind === "CALLCODE") ? lc(t.caller) : lc(t.address);
-      if (!token || !realTokenEmitter(token, targets, testContract, created, etched)) return;
+      if (!token || !realTokenEmitter(token, targets, testContract, created)) return;
       for (const log of node?.logs ?? []) {
         const raw = log?.raw_log ?? log;
         const topics = raw?.topics;
