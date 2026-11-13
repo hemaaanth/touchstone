@@ -223,9 +223,8 @@ test("local run argv (real runTool, PATH docker shim): --network none, the exact
   assert.ok(!args.some((a) => /TOKEN/.test(a)), "no token variable is passed to the local run");
 });
 
-// --pull=never on the local run comes from runTool's shared argv. Main has it.
-// This base does not yet, so the test is a todo until main is merged.
-test("local run argv: --pull=never", { todo: "needs runTool's shared --pull=never from main" }, async () => {
+// --pull=never on the local run comes from runTool's shared argv (from main).
+test("local run argv: --pull=never", async () => {
   assert.ok((await shimmedLocalArgv()).includes("--pull=never"));
 });
 
