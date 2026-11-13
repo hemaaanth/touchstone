@@ -128,23 +128,19 @@ export function parseList(list = {}, { lab = false } = {}) {
 }
 
 // dnstwist regenerates the permutation set for each official domain, offline.
-// Only successful runs are cached, so a later run can recover. Capture passes
-// fresh, so the fingerprint it stores comes from the image as it is now.
-const generated = new Map();
-export async function regenerate(official, { fresh = false } = {}) {
+// Every call runs the image again. There is no cache, so a rebuilt image is seen
+// in the same process, and the fingerprint check compares the image as it is now.
+export async function regenerate(official) {
   const out = new Set();
   for (const domain of official) {
-    if (fresh || !generated.has(domain)) {
-      const result = await runTool({ image: IMAGE, cmd: ['--format', 'list', domain], network: 'none', timeoutMs: 120000 });
-      const names = String(result.stdout ?? '').split('\n').map(name).filter(Boolean);
-      if (result.code !== 0 || result.timedOut || !names.includes(domain)) {
-        const tail = String(result.stderr ?? '').trim().slice(-200);
-        const reason = result.timedOut ? 'Timed out. ' + tail : result.code === 125 ? 'Docker could not run the image ' + IMAGE + '. ' + BUILD_HINT + '. ' + tail : result.code !== 0 ? 'Exited with code ' + result.code + '. ' + tail : 'dnstwist did not list ' + domain + '.';
-        return { ok: false, reason: reason.trim() };
-      }
-      generated.set(domain, new Set(names));
+    const result = await runTool({ image: IMAGE, cmd: ['--format', 'list', domain], network: 'none', timeoutMs: 120000 });
+    const names = String(result.stdout ?? '').split('\n').map(name).filter(Boolean);
+    if (result.code !== 0 || result.timedOut || !names.includes(domain)) {
+      const tail = String(result.stderr ?? '').trim().slice(-200);
+      const reason = result.timedOut ? 'Timed out. ' + tail : result.code === 125 ? 'Docker could not run the image ' + IMAGE + '. ' + BUILD_HINT + '. ' + tail : result.code !== 0 ? 'Exited with code ' + result.code + '. ' + tail : 'dnstwist did not list ' + domain + '.';
+      return { ok: false, reason: reason.trim() };
     }
-    for (const n of generated.get(domain)) out.add(n);
+    for (const n of names) out.add(n);
   }
   return { ok: true, names: out };
 }

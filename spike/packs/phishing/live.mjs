@@ -73,7 +73,7 @@ export async function captureLookalikes({ ws, domain, owned = [], reach, blockli
       const out = await dnstwistJson(ctlCmd, reach.network, 120000);
       controls.push({ zone, domain: probe, cmd: ctlCmd, code: out.code, rows: out.rows, ...(out.reason ? { reason: out.reason } : {}) });
     }
-    const gen = await regenerate([domain], { fresh: true });
+    const gen = await regenerate([domain]);
     if (gen.ok) generator = { ...fingerprint(gen.names), cmd: ['--format', 'list', domain], network: 'none' };
   }
   return {

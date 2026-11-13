@@ -18,6 +18,7 @@ const calls = [];
 // lab rows. A control run gets the single bare row dnstwist printed for the quiet
 // lab controls, with the random probe name. No resolver is contacted.
 let captured = null;
+let listOverride = null; // Minor 4: a rebuilt image that lists other names
 const liveCalls = [];
 mock.module('../lib/wrap.mjs', { exports: {
   ...real,
@@ -30,7 +31,7 @@ mock.module('../lib/wrap.mjs', { exports: {
     }
     calls.push(opts);
     if (opts.network !== 'none' || opts.cmd[0] !== '--format' || opts.cmd[1] !== 'list') throw new Error('Test path must stay offline: ' + JSON.stringify(opts.cmd));
-    return { code: 0, stdout: recorded(opts.cmd.at(-1)), stderr: '', timedOut: false };
+    return { code: 0, stdout: listOverride ?? recorded(opts.cmd.at(-1)), stderr: '', timedOut: false };
   },
   runDocker: async () => { throw new Error('runDocker is not allowed in tests'); },
 } });
@@ -250,6 +251,18 @@ test('m5: a generator that gives a different name set than at capture fails clos
   assert.ok(gap(bad, 'dnstwist'));
   const none = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT }, generator: null }));
   assert.equal(confirmed(none).length, 0, 'no fingerprint, no proof');
+});
+
+test('Minor 4: a rebuilt image in the same process is seen; the old name set is not reused', async () => {
+  const before = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT } }));
+  assert.ok(registered(before, 'tldekeep.test'));
+  listOverride = recorded('tidekeep.test') + 'tidekeep-rebuilt.test\n';
+  try {
+    const after = await phishingLeads(snap({ rows: { 'tldekeep.test': HIT } }));
+    assert.equal(registered(after, 'tldekeep.test'), undefined, 'a different name set must fail closed');
+    assert.ok(after.leads.some(l => l.check === 'lookalike-evidence-missing'), 'a gap lead says why');
+  } finally { listOverride = null; }
+  assert.ok(registered(await phishingLeads(snap({ rows: { 'tldekeep.test': HIT } })), 'tldekeep.test'), 'the original image confirms again');
 });
 
 test('m10: a list entry under a generated lookalike gets a review lead', async () => {
