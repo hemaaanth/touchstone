@@ -1,7 +1,41 @@
-import { memo } from "react"
-import ReactMarkdown, { type Components } from "react-markdown"
+import { createContext, memo, useContext, type ComponentProps } from "react"
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
+import { fenceClosed } from "@/lib/mermaid"
+import { MermaidBlock } from "@/components/mermaid-block"
+
+// The Markdown source of the text being rendered. A fenced block reads its own
+// slice from it to see whether its closing fence has arrived yet.
+const SourceText = createContext("")
+
+const PRE = "my-2 overflow-x-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-[0.85em] leading-relaxed [&_code]:bg-transparent [&_code]:p-0"
+
+// A fenced block. A `mermaid` fence is drawn as a diagram once it is closed and
+// parses (components/mermaid-block.tsx); until then it is this same code block.
+function Pre({ node, ...p }: ComponentProps<"pre"> & ExtraProps) {
+  const text = useContext(SourceText)
+  const plain = <pre className={PRE} {...p} />
+  const code = node?.children[0]
+  if (code?.type !== "element" || code.tagName !== "code") return plain
+  const cls = code.properties?.className
+  if (!(Array.isArray(cls) && cls.includes("language-mermaid"))) return plain
+  const source = code.children.map((c) => (c.type === "text" ? c.value : "")).join("").replace(/\n$/, "")
+  const start = node?.position?.start.offset
+  const end = node?.position?.end.offset
+  const closed = start != null && end != null && fenceClosed(text.slice(start, end))
+  // One worst-case diagram blocks the page for about 95 ms, so a message draws
+  // at most MAX_DIAGRAMS by itself; the rest wait for a "Draw diagram" press.
+  const deferred = start != null && mermaidFencesBefore(text, start) >= MAX_DIAGRAMS
+  return <MermaidBlock source={source} closed={closed} fallback={plain} deferred={deferred} />
+}
+
+export const MAX_DIAGRAMS = 10
+
+// How many mermaid fences open before `offset` in this text.
+function mermaidFencesBefore(text: string, offset: number): number {
+  return (text.slice(0, offset).match(/^[ \t>]*(`{3,}|~{3,})[ \t]*mermaid\b/gm) ?? []).length
+}
 
 // Agent text is Markdown: headings, lists, tables, bold, inline code. This
 // renders it with the app's quiet type scale. Sizes are relative (em), so the
@@ -32,12 +66,7 @@ const components: Components = {
       {...p}
     />
   ),
-  pre: ({ node: _n, ...p }) => (
-    <pre
-      className="my-2 overflow-x-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-[0.85em] leading-relaxed [&_code]:bg-transparent [&_code]:p-0"
-      {...p}
-    />
-  ),
+  pre: Pre,
   table: ({ node: _n, ...p }) => (
     <div className="my-2 overflow-x-auto rounded-lg border border-border/60">
       <table className="w-full border-collapse text-[0.88em]" {...p} />
@@ -56,9 +85,11 @@ const plugins = [remarkGfm]
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
   return (
     <div className={cn("min-w-0 break-words", className)}>
-      <ReactMarkdown remarkPlugins={plugins} components={components}>
-        {text}
-      </ReactMarkdown>
+      <SourceText.Provider value={text}>
+        <ReactMarkdown remarkPlugins={plugins} components={components}>
+          {text}
+        </ReactMarkdown>
+      </SourceText.Provider>
     </div>
   )
 })
