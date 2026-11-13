@@ -76,6 +76,14 @@ function parseBalances(testSource) {
   return rows.filter((r) => r.after && r.after !== r.before)
 }
 
+// The harm gate refused this replay. A missing proof is not a refusal: older
+// records predate the gate and still count when their own transcript passed.
+function harmBlocked(proof) {
+  if (!proof || typeof proof !== "object") return false
+  if (proof.pass === false || proof.status === "fail") return true
+  return Boolean(proof.harm) && proof.harm.ok !== true
+}
+
 // The exact assertion lines that make the proof — real strings lifted from the
 // passing PoC. These are every condition the replay actually checked, so we take
 // the whole Foundry assert family (assertEq / assertGt / assertTrue / …), not
@@ -131,9 +139,10 @@ function normalize(raw, { id, runId, finding }) {
 
   // The proving run is the submitted test passing its OWN replay. A throwaway
   // diagnostic that happens to pass never counts — if the submitted contract
-  // never passed, the run is simply not proven. (finding.poc is the contract
-  // name the agent submitted; the engine's submit gate already refused an
-  // unproven submission, so this re-derivation only mirrors that on read.)
+  // never passed, the transcript alone does not prove the run. (finding.poc is
+  // the contract name the agent submitted; the engine's submit gate already
+  // refused an unproven submission, so this re-derivation only mirrors that
+  // on read.)
   const submittedContract = finding.poc || null
   const provingIndex = submittedContract
     ? runs.findIndex((x) => x.pass && x.contract === submittedContract)
@@ -145,10 +154,25 @@ function normalize(raw, { id, runId, finding }) {
   // transfers array so a malformed or null delta falls back to the source parse.
   const engineProof = finding.proof && Array.isArray(finding.proof.transfers) ? finding.proof : null
 
-  // The exploit source shown and parsed is the proving run's own test — or, if
-  // nothing proved, the last attempt, so the report still shows what was tried.
-  const sourceCall = provingIndex >= 0 ? pocCalls[provingIndex] : pocCalls[pocCalls.length - 1]
-  const testSource = sourceCall ? sourceCall.args.test_source : null
+  // The exploit source is the test the recorder replayed (`finding.source`).
+  // A fleet child runs the PoC, and summarize() keeps only the root conversation,
+  // so that call is often missing here. The transcript's own proving call is the
+  // fallback for older records; the last attempt is what was tried when nothing
+  // proved. proof.source is the replay label ("engine-replay"), never the Solidity.
+  const submittedSource = typeof finding.source === "string" && finding.source.trim() ? finding.source : null
+  const transcriptSource = provingIndex >= 0 ? pocCalls[provingIndex]?.args?.test_source ?? null : null
+  const lastAttempt = pocCalls.length ? pocCalls[pocCalls.length - 1]?.args?.test_source ?? null : null
+  const testSource = submittedSource || transcriptSource || lastAttempt || null
+
+  // A forge finding stays proven when its recorded proof passed the harm gate,
+  // even with no root-transcript run_poc. isProven already refuses a failed
+  // replay or a harm verdict that is not ok, so a failing or absent proof
+  // cannot become proven through this path. A transcript pass still counts for
+  // records made before the harm gate, which have no proof.harm.
+  const harmOk = finding.proof?.pass === true && finding.proof?.harm?.ok === true
+  const transcriptPass = Boolean(proving && proving.pass)
+  const forgeProven = isProven(finding) && (transcriptPass || harmOk)
+
   // The write-up is this finding's own submit_finding call. A run can submit
   // several findings, so match on the test contract it names.
   const submits = (t.calls || []).filter((x) => x.name === "submit_finding")
@@ -245,8 +269,8 @@ function normalize(raw, { id, runId, finding }) {
     // so `proven` stays true and only the final stage reads "dismissed".
     stages: {
       hypothesis: other ? true : Boolean(readSrc),
-      reproduced: other ? true : runs.length > 0,
-      proven: other ? isProven(finding) : Boolean(finding.pocProved && proving && proving.pass),
+      reproduced: other ? true : runs.length > 0 || forgeProven,
+      proven: other ? isProven(finding) : forgeProven,
       accepted: finding.dismissed
         ? "dismissed"
         : r.decision === "approved"
@@ -262,7 +286,9 @@ function normalize(raw, { id, runId, finding }) {
       test: engineProof ? engineProof.test : proving ? proving.test : finding.poc,
       contract: finding.poc || null,
       gas: proving ? proving.gas : engineProof ? engineProof.gasUsed : null,
-      pass: Boolean(proving && proving.pass),
+      // A harm-gate failure is never a pass, even when a root run_poc passed.
+      // A harm-gated proof with no root run_poc still is.
+      pass: harmBlocked(finding.proof) ? false : Boolean(transcriptPass || forgeProven),
       runs,
       // The money the exploit actually moved. Preferred source is the engine's
       // structured proof delta: real signed ETH deltas per address, read from the
@@ -280,8 +306,8 @@ function normalize(raw, { id, runId, finding }) {
       logs: engineProof && Array.isArray(engineProof.logs) ? engineProof.logs : [],
       balances: parseBalances(testSource),
       assertions: parseAssertions(testSource),
-      rerunCommand: proving && proving.test
-        ? `forge test --match-test ${proving.test}`
+      rerunCommand: proving?.test || (forgeProven && engineProof?.test)
+        ? `forge test --match-test ${proving?.test || engineProof.test}`
         : null,
       testSource,
     },
