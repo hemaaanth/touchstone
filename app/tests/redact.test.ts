@@ -519,3 +519,19 @@ describe("redact: a letters-only key under a header that is always secret (delta
     for (const s of ["Bearer " + ".".repeat(MB) + "a", ("Bearer " + "a".repeat(11) + " ").repeat(MB / 19), "X-Api-Key: " + "a".repeat(MB)]) expect(timeMs(s)).toBeLessThan(2000)
   })
 })
+
+describe("redact: a header quoted inside other quotes (delta review 4)", () => {
+  const basic = "Basic dXNlcjpwYXNzd29yZDEyMw=="
+  test("the inner header is masked and the quotes stay", () => {
+    expect(text(`'Note: send "Authorization: ${basic}"'`)).toBe(`'Note: send "Authorization: Basic [REDACTED]"'`)
+    expect(text(`"Note: send 'X-Api-Key: tk_live9fakeZ' twice"`)).toBe(`"Note: send 'X-Api-Key: [REDACTED]' twice"`)
+    expect(text("'Step: run `curl -H \"Authorization: " + basic + "\"`'")).toBe("'Step: run `curl -H \"Authorization: Basic [REDACTED]\"`'")
+  })
+  test("plain quoted prose stays", () => {
+    for (const s of [`'Note: send "Authorization: Bearer junk"'`, `"Step: open 'Settings: Tokens' page"`]) expect(text(s)).toBe(s)
+  })
+  test("1 MB of nested quotes finishes in linear time", () => {
+    const MB = 1 << 20
+    for (const s of [`'a: "b: \`c: `.repeat(MB / 12), `'a: ` + `"b: `.repeat(MB / 4), `"a: 'b: x' `.repeat(MB / 11)]) expect(timeMs(s)).toBeLessThan(2000)
+  })
+})

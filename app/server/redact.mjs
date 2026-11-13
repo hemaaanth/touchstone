@@ -159,6 +159,15 @@ function maskBearer(m, tok, offset, str) {
   return secretish(t) || (LETTER_KEY.test(t) && HEADER_END.test(after)) ? `Bearer ${MARK}${tok.slice(t.length)}` : m
 }
 
+// A quoted header whose name is not secret may hold a quoted secret header
+// in the other quote kind: 'Note: send "Authorization: Basic …"'. Its value
+// is searched again. The inner value cannot hold the outer quote, so this
+// nests at most three deep (', ", `) and stays linear.
+function maskQuoteHeader(m, lead, name, sep, raw) {
+  if (secretName(name)) return maskHeader(m, lead, name, sep, raw)
+  return lead + name + sep + raw.replace(QUOTE_HEADER, maskQuoteHeader)
+}
+
 // The masked header value, or null to keep the value as it is. An
 // Authorization value keeps its scheme word: "Bearer [REDACTED]".
 function maskHeaderValue(name, value) {
@@ -272,7 +281,7 @@ function redactText(text) {
   })
   out = out.replace(LINE_HEADER, maskHeader)
   out = out.replace(TABLE_HEADER, maskHeader)
-  out = out.replace(QUOTE_HEADER, maskHeader)
+  out = out.replace(QUOTE_HEADER, maskQuoteHeader)
   out = out.replace(BEARER, maskBearer)
   out = out.replace(QUERY, maskQuery)
   out = out.replace(URL_USERINFO, (m, head, pw) => (secretish(pw, 6) ? head + MARK : m))
