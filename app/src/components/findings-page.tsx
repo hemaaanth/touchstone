@@ -1,11 +1,13 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
-import { Bot, Bug, Check, ChevronRight, FileArchive, FileText, PanelRight, Search, X } from "lucide-react"
+import { Bot, Bug, CalendarDays, Check, ChevronRight, FileArchive, FileText, PanelRight, Search, X } from "lucide-react"
 import type { Finding, FindingSummary, PackChoice, RunSummary } from "@/lib/types"
 import { fetchFinding, fetchFindingText, fetchFindings } from "@/lib/api"
 import { runTitle } from "@/lib/format"
-import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, isFiltered, moduleOf, scopeOf, SORTS, sortFindings, TOO_LONG, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
+import { ALL, BUNDLE_LABEL, DEFAULT_VIEW, filterFindings, fromDayRange, isFiltered, moduleOf, rangeLabel, scopeOf, SORTS, sortFindings, toDayRange, TOO_LONG, type DayRange, type FindingsView, type SortKey, type StateFilter } from "@/lib/findings-view"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -14,7 +16,8 @@ import { ProofIcon, SeverityMark } from "@/components/assistant-ui/elements/indi
 import { StatusMark } from "@/components/assistant-ui/elements/surfaces"
 import { ModulePill } from "@/components/module-pill"
 import { ReplayProof } from "@/components/replay-proof"
-import { Label, ListCard, ListEmpty, ListLoading, ListPage, ListRow, RowMenu, RowMenuItem, RowMenuSeparator, TruncatedText } from "@/components/page-parts"
+import { Label, ListCard, ListEmpty, ListPage, RowMenu, RowMenuItem, RowMenuSeparator, RowMeta, RowTitle, TruncatedText } from "@/components/page-parts"
+import { LIST_CARD_CLASS, rowClass } from "@/components/page-parts-style"
 
 // Every finding from every run, in one list to scan, filter and share. A row
 // opens the finding in a sheet at the right, so the list never moves. The
@@ -181,7 +184,7 @@ export function FindingsPage({
       description="Every finding from every run. Proven ones first. Open one to see its proof, or copy it to share."
     >
       {load.state === "loading" ? (
-        <ListLoading label="Loading findings…" />
+        <FindingsLoading />
       ) : load.state === "error" ? (
         <ListEmpty
           title="The findings list is unknown"
@@ -338,7 +341,6 @@ function Filters({
     const has = new Set(rows.map((f) => (f.severity ?? "").toLowerCase()))
     return SEVERITIES.filter((s) => has.has(s))
   }, [rows])
-  const date = "h-8 w-[8.5rem] shrink-0 px-2 text-[13px]"
 
   return (
     <div role="search" aria-label="Filter findings" className="flex flex-col gap-2">
@@ -354,11 +356,14 @@ function Filters({
             className="h-8 pl-8! text-[13px]"
           />
         </div>
-        <div role="group" aria-label="Run date" className="flex items-center gap-1.5">
-          <Input type="date" value={view.from} max={view.to || undefined} onChange={(e) => set("from", e.target.value)} aria-label="From date" className={date} />
-          <span aria-hidden className="text-xs text-muted-foreground">–</span>
-          <Input type="date" value={view.to} min={view.from || undefined} onChange={(e) => set("to", e.target.value)} aria-label="To date" className={date} />
-        </div>
+        <DateRangeFilter
+          from={view.from}
+          to={view.to}
+          onChange={(r) => {
+            set("from", r.from)
+            set("to", r.to)
+          }}
+        />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <FilterSelect label="Scope" value={view.scope} items={[{ value: ALL, label: "All scopes" }, ...scopes.map((s) => ({ value: s, label: s }))]} onChange={(v) => set("scope", v)} className="max-w-52" />
@@ -398,7 +403,75 @@ function Filters({
   )
 }
 
+// The run-date filter: one button that names the range, and a calendar in a
+// popover. The view keeps its two local days ("YYYY-MM-DD" or ""), so the
+// filter, the saved view and "Clear filters" work as before. The calendar
+// takes focus when it opens; the arrow keys move by day, Enter picks, and
+// Escape closes it and puts focus back on the button.
+function DateRangeFilter({ from, to, onChange }: { from: string; to: string; onChange: (r: { from: string; to: string }) => void }) {
+  const [open, setOpen] = useState(false)
+  const range = toDayRange(from, to)
+  const label = rangeLabel(from, to)
+  const set = !!(from || to)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={<Button variant="outline" aria-label={`Run date: ${label}`} className={cn("shrink-0 text-[13px] font-normal", !set && "text-muted-foreground")} />}
+      >
+        <CalendarDays aria-hidden className="text-muted-foreground" />
+        <span className="tabular-nums">{label}</span>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto gap-0 p-0">
+        <Calendar mode="range" selected={range} onSelect={(r: DayRange | undefined) => onChange(fromDayRange(r))} defaultMonth={range?.to ?? range?.from} autoFocus />
+        <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
+          <span className="text-xs text-muted-foreground tabular-nums">{label}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!set}
+            onClick={() => {
+              onChange({ from: "", to: "" })
+              setOpen(false)
+            }}
+          >
+            Clear
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 // ── One row ─────────────────────────────────────────────────────────────────
+
+// The row's columns, the same tracks in every row and in the loading rows, so
+// the severity mark and the module mark sit at one x whatever the title, the
+// meta line or the module: proof icon | title and meta (the only flexible
+// track; it truncates first in a narrow window) | severity | module (28 px,
+// the module dots' box) | the menu.
+export const FINDING_ROW_COLS = "grid grid-cols-[2rem_minmax(0,1fr)_1.25rem_1.75rem_2rem] items-center gap-x-3"
+
+// The loading rows: the same column tracks, so the list does not move when the
+// findings arrive.
+export function FindingsLoading() {
+  return (
+    <div data-slot="list-loading" role="status" aria-busy="true" className={cn("divide-y", LIST_CARD_CLASS)}>
+      <span className="sr-only">Loading findings…</span>
+      {[38, 52, 30, 44].map((w, i) => (
+        <div key={i} aria-hidden data-slot="finding-row" className={cn(FINDING_ROW_COLS, rowClass(false))}>
+          <Skeleton className="size-8 rounded-lg" />
+          <div className="flex min-w-0 flex-col gap-2 py-1">
+            <Skeleton className="h-3.5" style={{ width: `${w}%` }} />
+            <Skeleton className="h-3" style={{ width: `${w + 14}%` }} />
+          </div>
+          <Skeleton data-col="severity" className="h-3 w-[18px] justify-self-center" />
+          <Skeleton data-col="module" className="h-4 w-7 rounded-full" />
+          <span />
+        </div>
+      ))}
+    </div>
+  )
+}
 
 export const FindingListRow = memo(function FindingListRow({
   finding: f,
@@ -422,54 +495,67 @@ export const FindingListRow = memo(function FindingListRow({
 }) {
   const open = () => onOpen(f)
   return (
-    <ListRow
-      icon={<ProofIcon state={f.proven ? "proven" : "unproven"} className="size-4" />}
-      title={f.title || "Untitled finding"}
-      badges={
-        <>
-          <SeverityMark severity={f.severity} proven={f.proven} />
-        </>
-      }
-      meta={[
-        // A dismissed finding says so first; its proof state stays true.
-        f.dismissed ? <span key="dismissed" className="shrink-0 whitespace-nowrap font-medium text-foreground">Dismissed</span> : null,
-        f.proven ? (
-          <span key="state" className="shrink-0 whitespace-nowrap text-ok">Proven</span>
-        ) : (
-          "Not proven"
-        ),
-        <TruncatedText key="scope" text={scopeOf(f)} />,
-        f.at != null ? <span key="at" className="shrink-0 whitespace-nowrap tabular-nums" title="When the run started">{when(f.at)}</span> : "Date not recorded",
-      ]}
-      trailing={moduleOf(f) ? <ModulePill id={moduleOf(f)} label={moduleTitle} compact /> : null}
-      menu={
-        <RowMenu label={`Actions for ${f.title}`}>
-          <RowMenuItem onClick={open}>
-            <PanelRight /> View details
+    <li
+      data-slot="finding-row"
+      data-active={active || undefined}
+      onClick={open}
+      className={cn(FINDING_ROW_COLS, rowClass(true), f.dismissed && "[&_[data-row-main]]:text-muted-foreground")}
+    >
+      <span aria-hidden className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4">
+        <ProofIcon state={f.proven ? "proven" : "unproven"} className="size-4" />
+      </span>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <RowTitle title={f.title || "Untitled finding"} opens />
+        <RowMeta
+          items={[
+            // A dismissed finding says so first; its proof state stays true.
+            f.dismissed ? <span key="dismissed" className="shrink-0 whitespace-nowrap font-medium text-foreground">Dismissed</span> : null,
+            f.proven ? (
+              <span key="state" className="shrink-0 whitespace-nowrap text-ok">Proven</span>
+            ) : (
+              "Not proven"
+            ),
+            <TruncatedText key="scope" text={scopeOf(f)} />,
+            f.at != null ? <span key="at" className="shrink-0 whitespace-nowrap tabular-nums" title="When the run started">{when(f.at)}</span> : "Date not recorded",
+          ]}
+        />
+      </div>
+      <span data-col="severity" className="flex justify-center">
+        <SeverityMark severity={f.severity} proven={f.proven} />
+      </span>
+      {/* The module in a fixed 28 px box. Until the sidebar's module dots land
+          here, the compact pill shows its icon only; the name stays for a
+          screen reader and in the pill's title. */}
+      <span data-col="module" className="flex min-w-0 justify-end overflow-hidden">
+        {moduleOf(f) ? (
+          <span title={moduleTitle} className="flex max-w-full">
+            <ModulePill id={moduleOf(f)} label={moduleTitle} compact className="[&>span:last-child]:sr-only" />
+          </span>
+        ) : null}
+      </span>
+      <RowMenu label={`Actions for ${f.title}`}>
+        <RowMenuItem onClick={open}>
+          <PanelRight /> View details
+        </RowMenuItem>
+        <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id, f.id)}>
+          <ChevronRight /> Open in run
+        </RowMenuItem>
+        <RowMenuSeparator />
+        <RowMenuItem onClick={() => onCopy(f, "md")}>
+          <FileText /> {COPY_LABEL.md}
+        </RowMenuItem>
+        <RowMenuItem onClick={() => onCopy(f, "agent")}>
+          <Bot /> {COPY_LABEL.agent}
+        </RowMenuItem>
+        {/* Only a proven finding has a bundle. The sheet opens and asks the
+            server about it first, so the operator sees what it holds. */}
+        {f.proven && !evidence ? (
+          <RowMenuItem onClick={() => onOpen(f, true)}>
+            <FileArchive /> {BUNDLE_LABEL}
           </RowMenuItem>
-          <RowMenuItem disabled={!run} onClick={() => run && onOpenRun(run.id, f.id)}>
-            <ChevronRight /> Open in run
-          </RowMenuItem>
-          <RowMenuSeparator />
-          <RowMenuItem onClick={() => onCopy(f, "md")}>
-            <FileText /> {COPY_LABEL.md}
-          </RowMenuItem>
-          <RowMenuItem onClick={() => onCopy(f, "agent")}>
-            <Bot /> {COPY_LABEL.agent}
-          </RowMenuItem>
-          {/* Only a proven finding has a bundle. The sheet opens and asks the
-              server about it first, so the operator sees what it holds. */}
-          {f.proven && !evidence ? (
-            <RowMenuItem onClick={() => onOpen(f, true)}>
-              <FileArchive /> {BUNDLE_LABEL}
-            </RowMenuItem>
-          ) : null}
-        </RowMenu>
-      }
-      onOpen={open}
-      active={active}
-      className={f.dismissed ? "[&_[data-row-main]]:text-muted-foreground" : undefined}
-    />
+        ) : null}
+      </RowMenu>
+    </li>
   )
 })
 
