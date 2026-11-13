@@ -10,13 +10,15 @@ import { makeLabWorkspace } from "./lab.mjs";
 import { cryptoLeads, cryptoDetectors } from "./crypto.mjs";
 import { SCANNERS, scanSnapshot, scannerDetectors } from "./scanners.mjs";
 import { cosignScan, cosignDetectors, signingPin } from "./cosign.mjs";
+import { prepareNetworkedSnapshot, networkedResults, networkedDetectors } from "./networked.mjs";
 
-const detectors = () => ({ ...cryptoDetectors, ...scannerDetectors(), ...cosignDetectors() });
+const detectors = () => ({ ...cryptoDetectors, ...scannerDetectors(), ...cosignDetectors(), ...networkedDetectors() });
 const reportFile = (ws) => join(ws, "supply-chain-leads.json");
 const output = (value, isError = false) => ({ output: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const rank = { High: 0, Medium: 1, Low: 2, Informational: 3 };
 
 function rootCause(l, signers) {
+  if (l.rootCause) return l.rootCause;
   const signer = l.secret && signers.get(l.secret.sha256);
   if (signer) return `signer:${signer}`;
   if (l.secret) return `secret:${l.file}:${l.secret.sha256}`;
@@ -51,9 +53,11 @@ export async function prepass(ws, { emit = () => {} } = {}) {
   try { cfg = JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8")); if (typeof cfg.source === "string") source = cfg.source; worktree = cfg.worktree === true; } catch { /* no config: lab layout */ }
   if (cfg.github) emit({ ev: "supply-chain-github-capture-start", github: cfg.github });
   const signingPolicy = signingPin(cfg.cosign);
-  const { snapshot, snapshotHash } = cfg.github ? await prepareGithubSnapshot(ws, cfg.github, { reach: cfg.reach, signingPolicy }) : prepareSnapshot(ws, source, { worktree, signingPolicy });
+  // networkTools (opt-in) adds saved networked-tool captures before the pin.
+  const { snapshot, snapshotHash } = cfg.networkTools ? await prepareNetworkedSnapshot(ws, cfg, { source, worktree, signingPolicy }) : cfg.github ? await prepareGithubSnapshot(ws, cfg.github, { reach: cfg.reach, signingPolicy }) : prepareSnapshot(ws, source, { worktree, signingPolicy });
   const scans = await Promise.all([...Object.keys(SCANNERS).map((engine) => scanSnapshot(snapshot, engine)), cosignScan(snapshot, cfg.cosign)]);
-  const raw = [...cryptoLeads(snapshot), ...scans.flatMap((r) => r.leads).filter((l) => !["zizmor/anonymous-definition", "zizmor/concurrency-limits"].includes(l.check))];
+  const net = networkedResults(snapshot);
+  const raw = [...cryptoLeads(snapshot), ...scans.flatMap((r) => r.leads).filter((l) => !["zizmor/anonymous-definition", "zizmor/concurrency-limits"].includes(l.check)), ...net.leads];
   const signers = new Map(raw.filter((l) => l.address && l.secret && !l.addressSource).map((l) => [l.secret.sha256, l.address]));
   const groups = new Map();
   for (const lead of raw.sort((a, b) => (rank[a.impact] ?? 9) - (rank[b.impact] ?? 9) || (b.check === "dependency-reaches-signer") - (a.check === "dependency-reaches-signer"))) {
@@ -71,10 +75,10 @@ export async function prepass(ws, { emit = () => {} } = {}) {
     } else groups.set(root, { ...lead, rootCause: root, evidence, commit: snapshot.commit, engines: [lead.engine], corroborated: false, support: [] });
   }
   const leads = [...groups.values()].map((l, i) => ({ ...l, id: String(i + 1) }));
-  const coverage = scans.map(({ engine, status, code, timedOut, reason, applicable, leads }) => ({ engine, status, code, timedOut, ...(applicable === false ? { applicable } : {}), ...(reason ? { reason } : {}), leads: leads.length }));
+  const coverage = scans.map(({ engine, status, code, timedOut, reason, applicable, leads }) => ({ engine, status, code, timedOut, ...(applicable === false ? { applicable } : {}), ...(reason ? { reason } : {}), leads: leads.length })).concat(net.coverage);
   const skipped = snapshot.skipped ?? [];
   const summary = skipSummary(skipped);
-  const gaps = [...coverageGaps(snapshot, summary), ...scans.flatMap((s) => s.gaps ?? [])];
+  const gaps = [...coverageGaps(snapshot, summary), ...scans.flatMap((s) => s.gaps ?? []), ...net.gaps];
   // The full skip list lives in the workspace. The record keeps counts, so a run record stays small.
   if (skipped.length) writeFileSync(join(ws, SKIPPED_FILE), JSON.stringify(skipped), { mode: 0o600 });
   const record = { pack: "supply-chain", snapshotHash, commit: snapshot.commit, scope: snapshot.scope ?? "unknown", ...(snapshot.github ? { github: snapshot.github } : {}), coverage, gaps, ...(skipped.length ? { skipped: { ...summary, listFile: SKIPPED_FILE } } : {}), ...(snapshot.notScanned ? { notScanned: snapshot.notScanned } : {}), leads };
