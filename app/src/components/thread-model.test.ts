@@ -6,7 +6,7 @@ import { reduceEvents } from "../lib/runModel"
 import type { RunEvent } from "../lib/types"
 import type { Sent } from "../lib/sent"
 import { settleSent } from "../lib/sent"
-import { buildMessages, runHeadStatus, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
+import { buildMessages, runHeadStatus, runModules, runStartView as startView, sendCopy, sentence, withCopies } from "./thread-model"
 
 const runStartView = (...args: Parameters<typeof startView>) => {
   const view = startView(...args)
@@ -15,12 +15,15 @@ const runStartView = (...args: Parameters<typeof startView>) => {
 }
 
 const coverage = { kind: "coverage", title: "The scope was not read", hint: "h", detail: "d", message: "m", retryable: false, spentUsd: 0 }
+// The prose of a thread, in order: text parts and the agent's "say" steps.
+type Part = { type: string; text?: string; toolName?: string; args?: { step?: { label: string } } }
+const prose = (ms: ReturnType<typeof buildMessages>) =>
+  ms
+    .flatMap((m) => (Array.isArray(m.content) ? (m.content as Part[]) : []))
+    .flatMap((p) => (p.type === "text" ? [p.text ?? ""] : p.toolName === "say" ? [p.args?.step?.label ?? ""] : []))
 const texts = (events: RunEvent[]) => {
   const state = reduceEvents(events)
-  return buildMessages(state, state.steps, state.status, false)
-    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-    .filter((p) => (p as { type: string }).type === "text")
-    .map((p) => (p as { text: string }).text)
+  return prose(buildMessages(state, state.steps, state.status, false))
 }
 
 test("a run that ends as a coverage error still shows the agent's final answer", () => {
@@ -168,4 +171,55 @@ test("an accepted send adds its message once, with no second jump", async () => 
   const liveChanges = live.seen.filter((n, i) => n !== (i === 0 ? live.before : live.seen[i - 1]))
   assert.equal(liveChanges.length, 1)
   assert.equal(live.after, live.before + 1)
+})
+
+// B8 in the thread: the closing words of a run that proved nothing.
+const whole = `## Summary\n\n${"No path moves funds out of the vault. ".repeat(180)}**medium — src/utils/about.ts** ends it.`
+const cutFinal = whole.slice(0, 4000)
+const delta = (text: string): RunEvent => ({ ev: "assistant-delta", conv: "root", attempt: 1, text })
+
+test("the closing words show once, whole, when the stream holds them and the final is cut", () => {
+  const out = texts([delta(whole), { ev: "no-finding", final: cutFinal }, { ev: "status", status: "no-finding" }, { ev: "closed" }])
+  assert.deepEqual(out, [whole])
+})
+
+test("a follow-up after a no-finding end keeps the order: closing words, message, answer", () => {
+  const events: RunEvent[] = [
+    delta(whole),
+    { ev: "no-finding", final: cutFinal },
+    { ev: "status", status: "no-finding" },
+    { ev: "closed" },
+    { ev: "reply-start" },
+    { ev: "operator-message", id: "m1", text: "Check the router too." },
+    delta("The router is fine."),
+    { ev: "status", status: "no-finding" },
+    { ev: "closed" },
+  ]
+  const state = reduceEvents(events)
+  const ms = buildMessages(state, state.steps, state.status, false)
+  const order = ms.flatMap((m) => (m.role === "user" ? ["user:" + prose([m]).join("")] : prose([m]).map((t) => "agent:" + t.slice(0, 10))))
+  assert.deepEqual(order, ["agent:## Summary", "user:Check the router too.", "agent:The router"])
+  // The whole text, once.
+  assert.equal(prose(ms).filter((t) => t === whole).length, 1)
+})
+
+test("an old record with only the final text shows it once, before a later turn", () => {
+  const out = texts([
+    { ev: "thinking-delta", conv: "root", attempt: 1, text: "Read the vault" },
+    { ev: "no-finding", final: "Nothing to prove." },
+    { ev: "status", status: "no-finding" },
+    { ev: "closed" },
+    { ev: "reply-start" },
+    { ev: "operator-message", id: "m1", text: "and the router?" },
+    delta("The router is fine."),
+  ])
+  assert.deepEqual(out, ["Nothing to prove.", "and the router?", "The router is fine."])
+})
+
+test("Run Info's module line is a list: today one entry, the scope's pack", () => {
+  const scope = { id: "s", title: "S", kind: "lab", blurb: "", entry: "" }
+  assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope: { ...scope, pack: "web" } }])), ["web"])
+  // A scope saved before modules is a Contracts scope.
+  assert.deepEqual(runModules(reduceEvents([{ ev: "scope", scope }])), ["contracts"])
+  assert.deepEqual(runModules(reduceEvents([])), [])
 })
