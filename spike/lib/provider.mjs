@@ -98,6 +98,13 @@ function markTransient(e) {
 // came back, so the call is charged nothing. That includes a socket that was
 // reset after the request was sent: the SDK gives it the same text as a refused
 // host, so the two cannot be told apart.
+// Accepted gap: "Connection error." is retryable, so with maxRetries 5
+// (agent-run.mjs) one call can make up to 6 such attempts, all charged $0. If a
+// provider bills a request that it read but answered with no headers, those
+// attempts are not on the ledger, and the run can pass the cap by more than one
+// call. Streaming providers usually send headers before they start work, so
+// this is rare. Charging the estimate here instead would overcharge every
+// refused host.
 const SERVER_STATUS = statusAt("5\\d\\d");
 const TIMED_OUT = /timed out|timeout|ETIMEDOUT/i;
 function billedUsage(context, message, started) {
