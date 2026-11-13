@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, type ComponentProps } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { cn } from "cn"
 import { moduleStyle, orderModules } from "@/lib/module-colors"
@@ -6,8 +6,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 // A run's modules as small coloured dots: one per module, in the module's own
 // colour (src/lib/module-colors.ts), in the server's module order. At most
-// three show, overlapping; the rest are named in the reveal. The box has one
-// fixed width whatever the count, so a row never moves.
+// three show, overlapping; with more, a small grey dot sits behind the stack
+// to say "more", and the rest are named in the reveal. The grey dot is no
+// module's colour, so it never reads as one. The box has one fixed width
+// whatever the count, so a row never moves.
 //
 // On hover, keyboard focus or a tap, the dots spread apart inside that box and
 // a small tooltip names every module. Reduced motion: no movement, the tooltip
@@ -23,16 +25,30 @@ const REST = 5
 const OPEN = 10
 // The box fits three open dots, so the spread stays inside it.
 const WIDTH = DOT + OPEN * (SHOWN - 1)
+// The "more" dot: smaller, behind the stack's left end with a 2 px gap.
+const MORE = 5
+const MORE_RIGHT = DOT + REST * (SHOWN - 1) + 2
+// Hover opens the names sooner than the app's other tooltips (300 ms): the dots
+// say little on their own. Focus opens them at once.
+const REVEAL_DELAY = 120
+
+type Side = ComponentProps<typeof TooltipContent>["side"]
 
 export function ModuleDots({
   ids,
   packs,
+  side = "top",
+  sideOffset,
   className,
 }: {
   // Module (pack) ids. Duplicates show once.
   ids: readonly string[]
   // The server's module list: each module's title, and the order of the dots.
   packs?: readonly { id: string; title: string }[]
+  // Where the names open. Collisions with the viewport flip or shift it.
+  side?: Side
+  // The gap to the dots, in px (the tooltip's default is 8).
+  sideOffset?: number
   className?: string
 }) {
   const reduce = useReducedMotion()
@@ -51,6 +67,7 @@ export function ModuleDots({
     <Tooltip open={open} onOpenChange={setOpen}>
       <TooltipTrigger
         render={<span />}
+        delay={REVEAL_DELAY}
         data-slot="module-dots"
         data-open={open || undefined}
         tabIndex={0}
@@ -64,6 +81,18 @@ export function ModuleDots({
         className={cn(box, "rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring")}
         style={{ width: WIDTH }}
       >
+        {all.length > SHOWN ? (
+          // Open, the three dots spread over the whole box, so it fades out.
+          <motion.span
+            aria-hidden
+            data-slot="module-dots-more"
+            initial={false}
+            animate={{ opacity: spread ? 0 : 1 }}
+            transition={{ duration: reduce ? 0 : 0.12 }}
+            style={{ width: MORE, height: MORE, right: MORE_RIGHT }}
+            className="bg-muted-foreground/60 absolute rounded-full"
+          />
+        ) : null}
         {shown.map((id, i) => {
           // Right-aligned: the last dot sits at the right edge, the others step left.
           const x = -(shown.length - 1 - i) * step
@@ -82,7 +111,7 @@ export function ModuleDots({
           )
         })}
       </TooltipTrigger>
-      <TooltipContent side="top" className="flex-col items-start gap-1">
+      <TooltipContent side={side} sideOffset={sideOffset} className="flex-col items-start gap-1">
         {all.map((id) => (
           <span key={id} className="flex items-center gap-1.5">
             <span aria-hidden className="size-2 shrink-0 rounded-full bg-(--module)" style={moduleStyle(id)} />
