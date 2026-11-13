@@ -15,6 +15,7 @@
 // No docker, no model call, no network. Builds are live-target builds: they only
 // write files. A throwaway grant store stands in for the operator's.
 import "./helpers/isolated-env.mjs";
+import { isProven } from "../lib/proof-view.mjs";
 import { test, after, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -245,6 +246,29 @@ test("a finding belongs to the tool that recorded it, not to its text", async ()
   assert.equal(seen.proved[0].ws, memberDir(ws, "alpha"));
   assert.deepEqual(proven.map((f) => f.pack), ["alpha", "alpha"]);
   assert.deepEqual(seen.calls.map((c) => c.ws), [memberDir(ws, "alpha"), memberDir(ws, "alpha")]);
+});
+
+// D3b: a finding whose module is unknown is never proven. No module replayed it, so
+// a proof it carries in (from submit time, or a forged row) is dropped, and the
+// finding gets a reason. Without this, a carried-in proof with status "pass"
+// would make isProven true.
+test("a finding with no module, or an unknown module, is never proven: its proof is dropped and it gets a reason", async () => {
+  const seen = { calls: [], proved: [] };
+  const pack = multiPack([stub("alpha", seen), stub("beta", seen)]);
+  const ws = mkdtempSync(path.join(tmpdir(), "multi-stub-"));
+  roots.push(ws);
+  const carried = { kind: "http", status: "pass", pass: true };
+  const proven = await pack.prove(ws, [
+    { title: "no module", severity: "high", poc: "x1", pocProved: true, proof: carried },
+    { title: "unknown module", severity: "high", poc: "x2", pack: "gamma", proof: { kind: "evidence", status: "pass" } },
+  ], []);
+  assert.deepEqual(seen.proved, [], "no module replays them");
+  for (const f of proven) {
+    assert.equal(isProven(f), false, f.title);
+    assert.equal(f.proof, null, `${f.title}: the carried-in proof is dropped`);
+    assert.equal(f.pocProved, false);
+    assert.match(f.unprovenReason, /names no module of this run.*no module replayed it/);
+  }
 });
 
 test("two modules may record the same label without refusing each other", async () => {
