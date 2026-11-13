@@ -28,6 +28,7 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { isPublicSuffix, sharedWildcardRefusal } from "./public-suffix.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -226,26 +227,10 @@ export function ipKind(raw) {
   return "public";
 }
 
-// A short list of public suffixes we refuse to wildcard. A grant for
-// "*.<suffix>" would cover the whole registry (every .com, every .co.uk), which
-// is never a real scope. This is not the full Public Suffix List — it is the
-// common multi-party suffixes a fat-fingered or malicious grant would reach for.
-// A wildcard base must also have at least two labels, so "*.com" is refused on
-// the label count alone; this set catches the two-label public suffixes.
-export const PUBLIC_SUFFIXES = new Set([
-  "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
-  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
-  "co.nz", "net.nz", "org.nz", "govt.nz",
-  "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
-  "com.br", "net.br", "org.br", "gov.br",
-  "co.in", "net.in", "org.in", "gov.in", "ac.in",
-  "com.cn", "net.cn", "org.cn", "gov.cn",
-  "co.za", "org.za", "gov.za",
-  "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
-  "github.io", "gitlab.io", "pages.dev", "web.app", "firebaseapp.com",
-  "herokuapp.com", "vercel.app", "netlify.app", "workers.dev", "appspot.com",
-  "s3.amazonaws.com", "cloudfront.net", "azurewebsites.net", "blob.core.windows.net",
-]);
+// The public suffixes come from the Public Suffix List (lib/public-suffix.mjs),
+// the one source of truth. This name stays for the Domains CAA walk
+// (packs/domains/tls.mjs), which asks only `.has(name)`.
+export const PUBLIC_SUFFIXES = Object.freeze({ has: (name) => isPublicSuffix(name) });
 
 // True for a hostname that is loopback, unspecified, or an obvious local name
 // (not an IP — those are caught by isIP + isBlockedAddress at grant time). These
@@ -271,7 +256,10 @@ function grantEntryError(entry, allowPrivate) {
     const base = e.slice(2);
     const labels = base.split(".").filter(Boolean);
     if (labels.length < 2) return `"${e}" is too broad: a wildcard needs at least two labels after "*." (so "*.example.com", never "*.com").`;
-    if (PUBLIC_SUFFIXES.has(base)) return `"${e}" covers a whole public suffix (${base}); grant the exact subdomains instead.`;
+    // A public suffix, a name with public suffixes under it, or a shared name
+    // the PSL lacks: the wildcard would cover hosts that belong to other people.
+    const shared = sharedWildcardRefusal(base);
+    if (shared) return shared;
     return null;
   }
   if (!allowPrivate) {

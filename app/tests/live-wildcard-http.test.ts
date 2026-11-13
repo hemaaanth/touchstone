@@ -111,8 +111,8 @@ describe("a *. entry through POST /api/scopes", () => {
     }
   })
 
-  test("too broad: *.com and *.co.uk are refused at the route, a listed public suffix by the grant store", async () => {
-    for (const [bad, why] of [["*.com", /^"\*\.com" is too broad: a wildcard needs a domain name of at least two labels after "\*\.", so \*\.example\.com, never \*\.com\.$/], ["*.co.uk", /co\.uk is a country's second-level domain/], ["*.ltd.uk", /public suffix/]] as const) {
+  test("too broad: *.com is refused at the route, *.co.uk as a public suffix", async () => {
+    for (const [bad, why] of [["*.com", /^"\*\.com" is too broad: a wildcard needs a domain name of at least two labels after "\*\.", so \*\.example\.com, never \*\.com\.$/], ["*.co.uk", /^"\*\.co\.uk" covers hosts that belong to other people: co\.uk is a public suffix\. Use your own name under it, for example \*\.example\.co\.uk\.$/]] as const) {
       const r = await create(["https://example.com", bad])
       expect(r.status).toBe(400)
       expect(r.json.error).toMatch(why)
@@ -127,33 +127,43 @@ describe("a *. entry through POST /api/scopes", () => {
     expect(grants()).toEqual([])
   })
 
+  // The 2d review's lists: each one refused through the route, nothing saved.
   test("a wildcard over names that belong to other people is refused with a sentence, and nothing is saved", async () => {
+    const PRIVATE = /covers hosts that belong to other people: every customer of .+ gets a name under it\. Use your own name, for example \*\.yourapp\..+\.$/
+    const ICANN = /covers hosts that belong to other people: .+ is a public suffix\./
+    const HANDED_OUT = /covers hosts that belong to other people: names under .+ are handed out to customers\./
+    const SHARED = /covers hosts that belong to other people: names under .+ are shared or resolve to any address\./
     const cases: [string, RegExp][] = [
-      // resolves any name to any address, at any depth
-      ["*.nip.io", /^"\*\.nip\.io" covers hosts that belong to other people: names under nip\.io are shared or resolve to any address\./],
-      ["*.1.2.3.4.nip.io", /names under nip\.io/],
-      ["*.sslip.io", /names under sslip\.io/],
-      ["*.lvh.me", /names under lvh\.me/],
-      // a provider namespace, at any depth
-      ["*.amazonaws.com", /names under amazonaws\.com/],
-      ["*.eu-west-1.amazonaws.com", /names under amazonaws\.com/],
-      ["*.blob.core.windows.net", /names under windows\.net/],
-      // a shared platform itself
-      ["*.vercel.app", /^"\*\.vercel\.app" covers hosts that belong to other people: every customer of vercel\.app gets a name under it\. Use your own name, for example \*\.yourapp\.vercel\.app\.$/],
-      ["*.blogspot.com", /every customer of blogspot\.com/],
-      ["*.up.railway.app", /every customer of up\.railway\.app/],
-      ["*.ngrok-free.app", /every customer of ngrok-free\.app/],
-      // a country's second-level domain
-      ["*.com.de", /^"\*\.com\.de" covers hosts that belong to other people: com\.de is a country's second-level domain\./],
-      ["*.co.nz", /co\.nz is a country's second-level domain/],
-      ["*.gov.br", /gov\.br is a country's second-level domain/],
+      // the PSL private section: the platform itself
+      ["*.vercel.app", PRIVATE], ["*.blogspot.com", PRIVATE], ["*.eu.ngrok.io", PRIVATE], ["*.elasticbeanstalk.com", PRIVATE],
+      ["*.azurestaticapps.net", PRIVATE], ["*.r2.dev", PRIVATE], ["*.duckdns.org", PRIVATE], ["*.up.railway.app", PRIVATE],
+      ["*.ngrok-free.app", PRIVATE], ["*.com.de", PRIVATE], ["*.blob.core.windows.net", PRIVATE],
+      // the PSL ICANN section
+      ["*.ne.jp", ICANN], ["*.co.nz", ICANN], ["*.gov.br", ICANN],
+      // public suffixes under the base: a provider namespace or a wildcard rule
+      ["*.amazonaws.com", HANDED_OUT], ["*.eu-west-1.amazonaws.com", HANDED_OUT], ["*.r.appspot.com", HANDED_OUT], ["*.run.app", HANDED_OUT],
+      // the small list of names the PSL lacks, at any depth
+      ["*.nip.io", SHARED], ["*.1.2.3.4.nip.io", SHARED], ["*.sslip.io", SHARED], ["*.lvh.me", SHARED],
+      ["*.scm.azurewebsites.net", SHARED], ["*.cloudapp.azure.com", SHARED], ["*.eastus.cloudapp.azure.com", SHARED],
+      // blogspot country domains: the PSL keeps only blogspot.com
+      ["*.blogspot.co.uk", /every blog gets a name under it/],
       // letters outside ASCII: the punycode form is named
-      ["*.bücher.de", /^"\*\.bücher\.de" has letters outside plain ASCII\. Write the punycode form: \*\.xn--bcher-kva\.de\.$/],
+      ["*.bücher.de", /"\*\.bücher\.de" has letters outside plain ASCII\. Write the punycode form: \*\.xn--bcher-kva\.de\.$/],
     ]
     for (const [bad, why] of cases) {
       const r = await create(["https://example.com", bad])
       expect(r.status).toBe(400)
-      expect(r.json.error).toMatch(why)
+      expect(`${bad}: ${r.json.error}`).toMatch(why)
+      expect(scopes()).toEqual([])
+      expect(grants()).toEqual([])
+    }
+  })
+
+  test("a plain website that does not parse is refused with a sentence, not dropped", async () => {
+    for (const bad of ["exa mple.com", "ftp://files.example.com", "https://", "http://[::1", "exa_mple..com"]) {
+      const r = await create(["https://example.com", bad])
+      expect(r.status).toBe(400)
+      expect(r.json.error).toBe(`"${bad}" is not a website address Touchstone can read. Write a host name or an http(s) address, for example example.com or https://app.example.com:8443.`)
       expect(scopes()).toEqual([])
       expect(grants()).toEqual([])
     }
