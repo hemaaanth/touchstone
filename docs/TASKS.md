@@ -107,7 +107,7 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 | 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_qxi2n9w6dn` (Claude; the codex reviewer was refused by its provider) (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
 | 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6). **merged** `afce9fc` |
 | 1f Review of the base commit | K1 | read-only | done: NOT READY, see section L |
-| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth` |
+| 1g Console auth repair | L1–L4 | `app/server/runs-http.mjs` (opened for this), `settings.mjs`, `vite.config.ts`, `src/lib/api.ts` | `thr_fm47pnz5hm`, branch `fix/console-auth`; candidate `6b472f7` in review (`thr_ck6iq7pe6r`) |
 | 1h Reach + stores repair | L5–L8 | `spike/lib/reach.mjs`, eligibility in `targets.mjs`, Domains / Surface / Phishing capture, the two stores | `thr_wusej9fdjz`, branch `fix/reach-stores` |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
@@ -216,10 +216,10 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | G1 | todo | Domains: checkdmarc, testssl.sh, DNSViz (`pack/domains` 523778a). Delta review only. +3 rows. |
 | G2 | doing | Web: Schemathesis re-review; jwt_tool needs a JWT surface in the lab (`cov/web-tools` ea9b50c). +2 rows. Thread `thr_pfkgpt8m6n`. |
 | G3 | todo | Supply-chain: Scorecard + capture mode + Legitify re-review, 3 minors (`cov/supply-networked` 52ac84d). |
-| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. |
+| G4 | doing | Contracts: Halmos + Chimera. Timeout tests must fail when clean-up is removed; THIRD_PARTY.md conflict (`cov/contracts-symbolic` a2573ad). +2 rows. Thread `thr_h5uneut59c`. Head `901db64`: timeout tests repaired, Halmos gap fix. The two images were never built on this host; the author now builds them, adds them to `setup.mjs`, and reruns the skipped tests. |
 | G5 | todo | Candidate tier: Major A part 3 and 3 minors (`feat/candidate-tier` eec42f1). |
 | G6 | todo | Contracts vacuity gate: Major 2 and 4 minors (`pack/contracts-vacuity` 2320d53). Kill-rate bar is an owner decision. |
-| G7 | doing | Small: spend cap Minors B and C (`fix/wave-spend-cap` f169e19); Heimdall image comment (`cov/bytecode-brotli-note` bf21080). Thread `thr_xjgfmpmrg3`. |
+| G7 | doing | Part A merged `d1caa23` (Heimdall comment and licence note). Part B `fix/wave-spend-cap`: review of `b31b23c` NOT READY (`thr_yzqyhqy2tj`): a model with no price is charged $0 for its Strix scan. Repair round 1 with author `thr_xjgfmpmrg3`. |
 | G8 | blocked | Infra-cloud live path, 5 rows: needs a read-only cloud credential. |
 | G9 | todo | chain-bench and raven: both take the GitHub token only as a command-line flag. Plan: a small entrypoint inside each image reads the token from the environment and passes the flag inside the container, so the token never shows in the `docker run` line. Live proof needs the GitHub token. |
 | G10 | todo | Old queue: 3 missing tests + 1 legacy-run gap (large-repo review); a test that the lab network is internal; 2 PR 1 minors; live batch 2; prove the best ENS leads offline; test the 12 assumed overlap skips. |
@@ -270,10 +270,10 @@ The review of the base commit found real defects. Most are older than the base c
 
 | # | State | Item |
 |---|-------|------|
-| L1 | doing | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. |
-| L2 | doing | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. |
-| L3 | doing | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
-| L4 | doing | Token compare in constant time. Thread 1g. |
+| L1 | review | **Every console write needs the token.** Today run create, steer, stop, archive, rename, delete and scope delete take no token. A web page on another site can start a run with a plain form post. Thread 1g `thr_fm47pnz5hm`, branch `fix/console-auth`. Candidate `fix/console-auth` `6b472f7`; reviewer `thr_ck6iq7pe6r`. A non-JSON body gets 415 (accepted). |
+| L2 | review | **The token in the page can be read from another `localhost` port.** Vite's default CORS allows it. Also keep the token out of a build output. Thread 1g. Limit that stays: a local process or an admitted tunnel client can read the token from the page; an operator login would close it (not built). |
+| L3 | review | **The token is written to the server log** on the first grants read. Remove it. Thread 1g. |
+| L4 | review | Token compare in constant time. Thread 1g. |
 | L5 | doing | **Domains, Surface and Phishing can leave the scope.** They are on for every website scope, and their capture tools use the open Docker network, not the scope proxy. They can probe a private address or a host with no grant. Thread 1h `thr_wusej9fdjz`, branch `fix/reach-stores`. |
 | L6 | doing | **A run can get a wider grant.** The gate takes any grant that covers the host, and allows every host of that grant. Bind a scope to its own grant. Thread 1h. |
 | L7 | doing | **A broken store file loses data silently.** Scopes and grants: atomic write; refuse to change a file that cannot be read. Thread 1h. |
