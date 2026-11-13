@@ -712,7 +712,7 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // Which panel section is open, kept across runs. Null means all folded.
 const SECTION_KEY = "ts.panelSection"
-const SECTIONS = ["info", "agents", "bulletin", "files", "findings"]
+const SECTIONS = ["info", "agents", "bulletin", "files", "findings", "candidates"]
 
 function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => void] {
   const [value, setValue] = useState<PanelSection | null>(() => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
+import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck, ShieldQuestionMark } from "lucide-react"
 import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
 import { cn } from "cn"
@@ -9,6 +9,7 @@ import { PLAN_STEP } from "@/lib/catalog"
 import { cardFor, type CardState } from "@/components/thread-model"
 import { Bump } from "@/components/bump"
 import { useAppear } from "@/lib/motion"
+import { CandidateList } from "@/components/candidates"
 import {
   AGENT_WORD,
   agentName,
@@ -32,7 +33,7 @@ import {
 // Findings & Proofs holds what the run claims and what its replay showed.
 // Files holds what the run wrote to get there: test files, sources, reports.
 
-export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "files"
+export type PanelSection = "info" | "agents" | "bulletin" | "findings" | "candidates" | "files"
 
 export function RunPanel({
   state,
@@ -91,6 +92,7 @@ export function RunPanel({
     showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
     showBulletin ? counted(notes.length, "note") : null,
     counted(found.length, "finding"),
+    state.candidates.length ? counted(state.candidates.length, "candidate") : null,
     counted(docs.length, "file"),
   ].filter((p) => p != null)
 
@@ -181,6 +183,19 @@ export function RunPanel({
               onFile={onFile}
             />
           </Section>
+          {state.candidates.length ? (
+            <Section
+              icon={ShieldQuestionMark}
+              label="Candidates"
+              count={state.candidates.length}
+              status="Needs review"
+              warn
+              expanded={section === "candidates"}
+              onToggle={() => toggle("candidates")}
+            >
+              <CandidateList items={state.candidates} />
+            </Section>
+          ) : null}
           <Section
             icon={Files}
             label="Files"
@@ -285,6 +300,7 @@ function Section({
   pills,
   status,
   bad = false,
+  warn = false,
   expanded,
   onToggle,
   children,
@@ -295,6 +311,7 @@ function Section({
   pills?: Pill[]
   status: string | null
   bad?: boolean
+  warn?: boolean
   expanded: boolean
   onToggle: () => void
   children: React.ReactNode
@@ -328,7 +345,7 @@ function Section({
           </span>
         ) : null}
         {status ? (
-          <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : "text-muted-foreground")}>{status}</span>
+          <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : warn ? "text-warn" : "text-muted-foreground")}>{status}</span>
         ) : null}
       </button>
       {expanded ? <SectionBody>{children}</SectionBody> : null}
