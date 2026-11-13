@@ -944,30 +944,35 @@ describe("redact: every rule in the table is linear (generated, H2b repair item 
   const underCap = (f: () => number, cap: number): boolean => f() < cap || best(f, 3) < cap
   const grows = (f64: () => number, f256: () => number): boolean => growthOk(f64(), f256()) || growthOk(best(f64, 3), best(f256, 3))
 
-  test("the timing guard is not blind: it still fails quadratic growth, and only load moves the cap", () => {
-    // A quadratic workload: 4x the input, 16x the time. The growth check fails it.
-    const quad = (n: number): number => {
-      const t0 = performance.now()
-      let x = 0
-      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) x += i ^ j
-      if (x === -1) throw new Error("unreachable")
-      return performance.now() - t0
-    }
-    expect(grows(() => quad(4000), () => quad(16000))).toBe(false)
-    // A slow rule stays slow on the re-run, so the cap still catches it.
-    expect(underCap(() => 5000, capFor(10))).toBe(false)
-    // A one-off load spike (the first run only) does not fail a linear rule.
-    let first = true
-    const spike = (fast: number) => () => (first ? ((first = false), 5000) : fast)
-    expect(underCap(spike(50), capFor(10))).toBe(true)
-    first = true
-    expect(grows(() => 20, spike(80))).toBe(true)
-    // A linear rule on an idle host keeps the 1200 ms cap; the same rule on a
-    // host three times slower (the 2,117 ms failure) gets a cap that follows
-    // the host, while its growth ratio is unchanged.
+  // The check functions above, fed recorded timings (numbers), not the clock:
+  // the proof that the guard is not blind must not itself depend on host load.
+  // `seq` gives one recorded timing per call, in order (the first run, then
+  // the re-runs), and repeats its last value.
+  const seq = (...ms: number[]) => {
+    let i = 0
+    return () => ms[Math.min(i++, ms.length - 1)]
+  }
+  test("the timing guard is not blind: it fails quadratic growth and a slow rule, passes a one-off spike; only load moves the cap", () => {
+    // Quadratic growth: 4x the input, 16x the time, on every run. Failed on
+    // the first run and on the re-runs, at any host speed.
+    expect(grows(seq(60), seq(960))).toBe(false)
+    expect(grows(seq(3 * 60), seq(3 * 960))).toBe(false) // the same rule on a host 3x slower
+    expect(grows(seq(60, 55, 58, 61), seq(960, 900, 1010, 940))).toBe(false) // with run-to-run noise
+    // Linear growth (4x the input, about 4x the time) passes, at any host speed.
+    expect(grows(seq(50), seq(190))).toBe(true)
+    expect(grows(seq(3 * 50), seq(3 * 190))).toBe(true)
+    // A rule that is slow on every run fails the cap; so does one slow on the re-runs.
+    expect(underCap(seq(5000), capFor(10))).toBe(false)
+    expect(underCap(seq(5000, 4800, 5100, 4900), capFor(10))).toBe(false)
+    // A one-off spike (the first run only) does not fail a linear rule.
+    expect(underCap(seq(5000, 50, 50, 50), capFor(10))).toBe(true)
+    expect(grows(seq(20), seq(5000, 80, 80, 80))).toBe(true)
+    // The cap: 1200 ms on an idle host; it follows a slower host (the 2,117 ms
+    // run passes when the host is 3x slower), and a rule slow on every run
+    // stays above it there too.
     expect(capFor(10)).toBe(1200)
-    expect(2117).toBeLessThan(capFor(3 * 20))
-    expect(growthOk(3 * 50, 3 * 190)).toBe(true)
+    expect(underCap(seq(2117), capFor(3 * 20))).toBe(true)
+    expect(underCap(seq(9000), capFor(3 * 20))).toBe(false)
   })
 
   test("the rule table is covered", () => {
