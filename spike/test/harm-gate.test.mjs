@@ -158,6 +158,12 @@ test("isProven: a forge record with a failed harm verdict is not proven, even if
 // the token and that token's balance slot for the victim actually decreased.
 
 const TOKEN = "0x00000000000000000000000000000000000000aa";
+// A scope token: its creation code matches a scope entry, so scanTargets marks
+// TOKEN a target. The replay is offline, so a target is the ONLY emitter the
+// gate trusts for a Transfer-log drain (see realTokenEmitter / B1).
+const TOKEN_CODE = "6080a1";
+const TOKEN_SCOPE = [...SCOPE, { name: "Ext", path: "src/Ext.sol", code: TOKEN_CODE }];
+const createToken = () => node(0, { kind: "CREATE", address: TOKEN, caller: TEST, data: "0x" + TOKEN_CODE });
 const ONE = "0x0de0b6b3a7640000"; // 1 ether
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const padTopic = (addr) => "0x" + addr.slice(2).toLowerCase().padStart(64, "0");
@@ -237,9 +243,13 @@ test("harm gate: a Transfer log is not a drain when the layout's balance slot di
   assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
 });
 
-test("harm gate: an authenticated token drain (log and balance slot) is funds harm", () => {
-  // Empty layout and balance maps, as in the forgery above. The emitter is a
-  // pre-existing token, and the victim's balance slot in THAT token decreased.
+test("harm gate: a Transfer log from a pre-existing (test-placed, offline) emitter is not a token drain", () => {
+  // The B1 forgery in synthetic form. TOKEN is not created, etched or a scope
+  // target: it is a bare "pre-existing" address, exactly what cloneAccount or a
+  // 7702 delegation lands code at. The replay is offline, so no real external
+  // ERC-20 can be there — the test put it there. The emitter writes the victim's
+  // real balance slot AND emits a Transfer, yet the gate must reject it, because
+  // only a scope token authenticates a drain.
   const log = transferLog(VAULT, ATTACKER, ONE);
   const traces = [setup(), ["Execution", { arena: [
     node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
@@ -247,6 +257,21 @@ test("harm gate: an authenticated token drain (log and balance slot) is funds ha
     logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
   ] }]];
   const h = emptyMaps(traces);
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /moved no ETH out of it and took over none of its control slots/);
+});
+
+test("harm gate: an authenticated token drain (log and balance slot) is funds harm", () => {
+  // Empty layout and balance maps, as in the forgery above. The emitter is a
+  // scope token (TOKEN created from scope code), and the victim's balance slot
+  // in THAT token decreased.
+  const log = transferLog(VAULT, ATTACKER, ONE);
+  const traces = [setup(createToken()), ["Execution", { arena: [
+    node(null, { kind: "CALL", address: TEST, caller: ATTACKER, data: "0x12345678" }),
+    callVault(),
+    logged(0, { kind: "CALL", address: TOKEN, caller: TEST, steps: [sstore(balSlot(VAULT), ONE, "0x0")] }, [log]),
+  ] }]];
+  const h = emptyMaps(traces, { scope: TOKEN_SCOPE });
   assert.equal(h.ok, true);
   assert.equal(h.kind, "funds");
   assert.equal(h.asset, "token");

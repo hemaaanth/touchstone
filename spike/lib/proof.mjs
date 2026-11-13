@@ -188,11 +188,12 @@ function lowerKeys(obj) {
 //      - funds (token): a target was a net LOSER of an ERC-20 token in the body.
 //        The loss is the balance-slot decrease when the compiled layout names that
 //        slot (see balanceDrains). A `Transfer` log is only a fallback, and only
-//        when it is authenticated (see tokenDrains): the emitter is the token
-//        itself — a scope token, or a pre-existing external token — and that
-//        token's storage shows the victim's balance slot decreased. A log the
-//        test contract emits, or that an out-of-scope contract the test created
-//        or etched emits, proves nothing; or
+//        when it is authenticated (see tokenDrains): the emitter is a scope
+//        token (the replay is offline, so no real external ERC-20 can exist —
+//        any non-scope emitter was placed by the test) and that token's storage
+//        shows the victim's balance slot decreased. A log the test contract
+//        emits, or that a contract the test created, etched or cloned emits,
+//        proves nothing; or
 //      - control: the test body re-pointed one of a target's CONTROL slots to a
 //        new address, by a caller that did not already hold that authority (a
 //        takeover, not an ordinary write). Which slots are control pointers comes
@@ -475,14 +476,20 @@ function replayParties(traces) {
 // The test contract can log whatever it likes. So can a contract it deployed
 // that is not a scope target (CREATE or CREATE2), and so can an address whose
 // code it etched. A scope target is the audited token, including one the test
-// deployed in setUp. Any other emitter was already on the chain (an external
-// ERC-20) and still has to show the balance slot move.
+// deployed in setUp — that is the ONLY emitter we trust.
+//
+// The replay runs offline, in a fresh sandbox with no fork: no real external
+// ERC-20 can exist there. So any emitter that is NOT a scope target was put on
+// the chain by the test itself — as the test contract, a CREATE/CREATE2, an
+// `etch`, or a `cloneAccount`/7702 delegation that lands code at a "pre-existing"
+// address. None of those is the audited token, so none authenticates a drain.
+// We therefore trust only a scope target and reject every other emitter.
 function realTokenEmitter(token, targets, testContract, created, etched) {
   if (!token || token === testContract) return false;
   if (etched.has(token)) return false;
   if (targets.has(token)) return true;
   if (created.has(token)) return false;
-  return true;
+  return false;
 }
 
 // Where an address-keyed balance can live. The compiled layout is authoritative
