@@ -92,11 +92,15 @@ function lead(l, toolNames) {
   };
 }
 
-// A Contracts record: the static, fuzz and bytecode phases, each with a ranked top list.
+// The Contracts record's phases, each with a ranked top list. Every check of the
+// Contracts shape uses this one list, so a new phase cannot be lost in one of them.
+const CONTRACTS = [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"], ["chimera", "Chimera"], ["mythril", "Mythril"], ["heimdall", "Heimdall"]];
+const isContracts = (r) => CONTRACTS.some(([k]) => r[k]);
+
 function contracts(rec) {
   const tools = [];
   const leads = [];
-  for (const [key, label] of [["static", "Static scan"], ["fuzz", "Fuzzing"], ["symbolic", "Symbolic"], ["chimera", "Chimera"], ["mythril", "Mythril"], ["heimdall", "Heimdall"]]) {
+  for (const [key, label] of CONTRACTS) {
     const p = rec[key];
     if (!p || typeof p !== "object") continue;
     const engines = arr(p.engines).map((e) => str(e, 40)).filter(Boolean);
@@ -113,7 +117,7 @@ export function prepassView(record) {
 
   let tools;
   let leads;
-  if (rec.static || rec.fuzz || rec.mythril || rec.heimdall) {
+  if (isContracts(rec)) {
     ({ tools, leads } = contracts(rec));
   } else if (Array.isArray(rec.top) && !rec.leads && !rec.coverage && !rec.tools) {
     // One world scan with a ranked top list (the chain packs).
@@ -154,7 +158,7 @@ export function prepassView(record) {
 export function prepassFromResult(r) {
   const res = obj(r);
   if (res.prepass) return res.prepass;
-  if (res.static || res.fuzz || res.mythril || res.heimdall) return { static: res.static, fuzz: res.fuzz, mythril: res.mythril, heimdall: res.heimdall };
+  if (isContracts(res)) return Object.fromEntries(CONTRACTS.filter(([k]) => res[k] != null).map(([k]) => [k, res[k]]));
   const out = {};
   for (const k of ["coverage", "tools", "leads", "mode", "pack", "suspects", "top"]) if (res[k] != null) out[k] = res[k];
   // `top` alone is the chain packs' shape; a result with only `pack` is not a prepass.
