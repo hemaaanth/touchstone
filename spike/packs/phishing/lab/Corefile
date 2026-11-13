@@ -1,0 +1,22 @@
+# Lab DNS for the phishing pack. Every name is under the reserved .test TLD.
+# Addresses are TEST-NET-1 (192.0.2.0/24, RFC 5737). Nothing here routes.
+tidekeep.test:53 {
+  errors
+  file /lab/tidekeep.test.db tidekeep.test
+}
+tldekeep.test:53 {
+  errors
+  file /lab/tldekeep.test.db tldekeep.test
+}
+tide-keep.test:53 {
+  errors
+  file /lab/tide-keep.test.db tide-keep.test
+}
+tidekeeep.test:53 {
+  errors
+  file /lab/tidekeeep.test.db tidekeeep.test
+}
+test:53 {
+  errors
+  file /lab/test.db test
+}

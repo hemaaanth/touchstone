@@ -12,6 +12,7 @@ import web from "./web/pack.mjs";
 import aiMcp from "./ai-mcp/pack.mjs";
 import infraCloud from "./infra-cloud/pack.mjs";
 import review from "./review/pack.mjs";
+import phishing from "./phishing/pack.mjs";
 
 // NOTE: source navigation is NOT a selectable pack. It is the default code-reading
 // layer every Contracts and Review run mounts on top of its own tools — see
@@ -22,6 +23,7 @@ export const PACKS = {
   [keys.id]: keys, [chainWatch.id]: chainWatch, [web.id]: web,
   [infraCloud.id]: infraCloud,
   [aiMcp.id]: aiMcp,
+  [phishing.id]: phishing,
   // Read-only review for operator scopes with no fitting replay oracle.
   [review.id]: review,
 };

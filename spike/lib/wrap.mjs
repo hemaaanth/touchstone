@@ -20,7 +20,7 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 // same result shape. A call Daytona cannot serve runs locally.
 export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const args = [
-    "run", "--rm", "--network", network,
+    "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
