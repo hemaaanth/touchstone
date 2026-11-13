@@ -840,6 +840,29 @@ function netTokenDrains(drains, traces, targets, funded) {
   return out.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : BigInt(a.lostUnits) < BigInt(b.lostUnits) ? 1 : 0));
 }
 
+// The backstop reason, or null. Each hit names the cheatcode and how to repair.
+const BACKSTOP_FIX = {
+  outcome: "assert the revert with try/catch, or keep expectRevert out of the proof test",
+  state: "do not restore an earlier state inside the proof test",
+  exec: "remove gas metering cheatcodes from the proof test",
+  fork: "the replay is offline: do not create, select or roll a fork, or replay a transaction, in the proof test",
+  account: "do not send raw transactions in the proof test",
+  unknown: "use only the cheatcodes of the pinned forge-std Vm.sol",
+};
+function backstopNote(controlTrace) {
+  if (controlTrace?.cheatTable === "missing") return "the gate's cheatcode table (spike/lib/vm-cheatcodes.json) is missing or does not parse, so it cannot check the cheatcodes the test used; nothing is proven.";
+  const hits = controlTrace?.backstop ?? [];
+  if (!hits.length) return null;
+  const seen = new Map();
+  for (const h of hits) {
+    const label = h.name ? `vm.${h.name} (${h.class}, in ${h.where})` : `the unknown cheatcode ${h.selector} (in ${h.where})`;
+    if (!seen.has(label)) seen.set(label, BACKSTOP_FIX[h.name ? h.class : "unknown"] ?? BACKSTOP_FIX.unknown);
+  }
+  const list = [...seen.keys()].join(", ");
+  const fixes = [...new Set(seen.values())].join("; ");
+  return `the test used ${list}; after it the replay trace no longer tells what really happened, so no scope target counts. To repair: ${fixes}.`;
+}
+
 // The scope targets the test tampered with: address -> "0x… (Name) via vm.how[, vm.how]".
 // One store is exempt: a write of a scope token's balance slot, at a base the
 // compiled layout names, for a holder that is itself a scope target. That is how
@@ -894,11 +917,16 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   const funded = new Set();
   const tampered = tamperedTargets(controlTrace, targets, balances, funded);
   for (const a of tampered.keys()) targets.delete(a);
+  // The backstop (H1e 1): a cheatcode the table does not know, or one after which
+  // the trace no longer tells what happened, makes EVERY scope target unusable.
+  const unusable = backstopNote(controlTrace);
+  if (unusable) targets.clear();
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
   // Not proven. When the test impersonated or tampered with a target, say so first,
   // so the agent can repair its PoC; then keep the base reason, which may be the
   // true cause.
   const notes = [];
+  if (unusable) notes.push(unusable);
   if (impersonated.length) notes.push(`the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp().`);
   if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions, or use vm.store / vm.mockCall only on contracts outside the scope (forge-std deal() that funds a scope contract's token balance is fine).`);
   const refuse = (reason) => ({

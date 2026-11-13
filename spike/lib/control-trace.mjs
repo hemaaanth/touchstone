@@ -29,6 +29,9 @@
 //   revert does not undo it. A target the test impersonated is no target at all (not a
 //   victim, token or takeover context): the move is the test acting as that target, not
 //   an exploit (see lib/proof.mjs).
+// - backstop: VM calls whose selector is not in lib/vm-cheatcodes.json, or whose class
+//   makes the trace untrustworthy: { selector, name, class, where, kept }. `cheatTable` is
+//   "missing" when that file could not be read.
 // - ethFunded: the accounts that vm.deal or vm.coinbase acted on, in any trace and frame.
 // - tampers: cheatcodes that write a contract's storage or fake its call answers, with the
 //   address they act on: { target, how, slot?, kept }. `store` also keeps its slot. Read from
@@ -46,6 +49,7 @@
 //   SSTOREs of every trace, constructors included. A write whose caller already held
 //   authority is a legitimate change, not a takeover. control.mjs reads `authority`; the forge
 //   harm gate (lib/proof.mjs) reads `held` with the compiled storage layout. control.mjs decides.
+import { readFileSync } from "node:fs";
 import { keccak256, toUtf8Bytes } from "ethers";
 const VM = "0x7109709ecfa91a80626ff3989d68f67f5b1dd12d";
 const ETCH = "0xb4d6c782";
@@ -97,6 +101,11 @@ const TAMPER_SIGS = [
   ["setArbitraryStorage(address)", "setArbitraryStorage", 0],
   ["setArbitraryStorage(address,bool)", "setArbitraryStorage", 0],
   ["loadAllocs(string)", "loadAllocs", -1],
+  // The nonce of an account decides the addresses it creates: set by cheatcode on a
+  // scope target, it is state the test wrote.
+  ["setNonce(address,uint64)", "setNonce", 0],
+  ["setNonceUnsafe(address,uint64)", "setNonceUnsafe", 0],
+  ["resetNonce(address)", "resetNonce", 0],
   ...["mockCall", "mockCallRevert"].flatMap((name) => [
     `${name}(address,bytes,bytes)`, `${name}(address,uint256,bytes,bytes)`,
     `${name}(address,bytes4,bytes)`, `${name}(address,uint256,bytes4,bytes)`,
@@ -109,6 +118,53 @@ const TAMPER = new Map(TAMPER_SIGS.map(([sig, how, arg]) => [selector4(sig), { h
 // balance, vm.coinbase makes the account receive the block's fees. The harm gate
 // counts such ETH as the test's own (see ethLosses in lib/proof.mjs).
 const ETH_FUND = new Set(["deal(address,uint256)", "coinbase(address)"].map(selector4));
+// The selectors an existing rule records (for the backstop and its test).
+export const HANDLED = new Map([
+  [ETCH, "etch"], [CLONE_ACCOUNT, "cloneAccount"], [MOCK_FUNCTION, "mockFunction"],
+  ...[...IMPERSONATE].map((s) => [s, "prank"]),
+  ...[...ETH_FUND].map((s) => [s, "ethFunded"]),
+  ...[...TAMPER.keys()].map((s) => [s, "tamper"]),
+]);
+
+// The backstop (H1e 1). Every cheatcode of the pinned forge-std Vm.sol is in
+// lib/vm-cheatcodes.json with a class (classified and pinned by its own test; this
+// file does not classify). A VM call is a backstop hit when its selector is not in
+// the table, or its class means the trace no longer tells what really happened:
+// - state (revertTo*): the test restored an earlier state;
+// - outcome (expectRevert*): a revert the test expected reads as a success;
+// - exec (gas metering): the test changed how the run is metered;
+// - fork: the calls after it may run on another chain;
+// - and broadcastRawTransaction (class account): it runs a signed raw transaction
+//   no existing rule reads.
+// Every other class is trusted or handled per target by the rules above. A hit
+// makes every scope target unusable (see judgeHarm). If the table is missing or
+// does not parse, the gate proves nothing.
+export const BACKSTOP_CLASSES = new Set(["state", "outcome", "exec", "fork"]);
+const BACKSTOP_NAMES = new Set(["broadcastRawTransaction"]);
+// Cheatcodes of class account or mock that no rule records, and why that is safe.
+// The vm-cheatcodes test (harm-gate) fails when the table gains an account or mock
+// entry that is neither handled, nor here, nor a backstop name.
+export const TRUSTED_ACCOUNT = new Map([
+  ["stopPrank()", "ends a prank"],
+  ["stopBroadcast()", "ends a broadcast"],
+  ["clearMockedCalls()", "removes mocks"],
+  ["broadcast()", "the sender is the default sender, never a scope contract"],
+  ["startBroadcast()", "the sender is the default sender, never a scope contract"],
+  ["broadcast(uint256)", "the sender is the key's EOA; a scope target is a created contract with no key"],
+  ["startBroadcast(uint256)", "the sender is the key's EOA; a scope target is a created contract with no key"],
+  ["deployCode(string)", "a normal CREATE of a compiled artifact; judged like `new`"],
+  ["deployCode(string,bytes)", "a normal CREATE of a compiled artifact; judged like `new`"],
+]);
+function loadCheatTable() {
+  try {
+    const rows = JSON.parse(readFileSync(new URL("./vm-cheatcodes.json", import.meta.url), "utf8"));
+    if (!Array.isArray(rows) || !rows.length) return null;
+    return new Map(rows.map((r) => [String(r.selector).toLowerCase(), { name: String(r.name), signature: String(r.signature), class: String(r.class) }]));
+  } catch {
+    return null;
+  }
+}
+export const CHEAT_TABLE = loadCheatTable();
 const SAFE_SETUP = "0xb63e800d";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
@@ -119,8 +175,8 @@ export const IMPLEMENTATION_SLOT = word("0x" + (BigInt(keccak256(toUtf8Bytes("ei
 const CONTROL_SLOTS = new Set([OWNER_SLOT, ADMIN_SLOT, IMPLEMENTATION_SLOT]);
 export const asAddress = (w) => (isAddressWord(w) ? "0x" + w.slice(26) : null);
 
-export function extractControlTrace(traces) {
-  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], ethFunded: [], calls: [] };
+export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
+  const out = { created: [], testContract: null, selectors: {}, words: {}, writes: [], writeMeta: [], etches: [], pranks: [], tampers: [], ethFunded: [], backstop: [], cheatTable: cheatTable ? "ok" : "missing", calls: [] };
   const created = new Set();
   const held = {}; // context -> { [slot]: word } for the owner and admin slots only
   const addrHeld = {}; // context -> { [slot]: address } — every address-valued slot, across all traces (for the layout-aware harm gate)
@@ -195,6 +251,12 @@ export function extractControlTrace(traces) {
         const data = String(t.data).slice(10);
         // `kept`: the call succeeded and no ancestor frame reverted.
         const kept = t.success && ok(i);
+        // The backstop: any frame, kept or not (an entry can only drop targets).
+        if (cheatTable) {
+          const known = cheatTable.get(selector);
+          if (!known) out.backstop.push({ selector, name: null, class: "unknown", where: execution ? "body" : "setUp", kept });
+          else if (BACKSTOP_CLASSES.has(known.class) || BACKSTOP_NAMES.has(known.name)) out.backstop.push({ selector, name: known.name, class: known.class, where: execution ? "body" : "setUp", kept });
+        }
         // Every etch-like cheatcode is recorded, kept or not, with a `kept` flag. The
         // harm gate drops the target for EVERY entry, so it does not depend on how
         // forge journals the change (fail closed). packs/keys/control.mjs proves a

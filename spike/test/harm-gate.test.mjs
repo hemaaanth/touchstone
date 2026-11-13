@@ -16,7 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { keccak256, id } from "ethers";
 import { judgeHarm } from "../lib/proof.mjs";
-import { extractControlTrace, word } from "../lib/control-trace.mjs";
+import { extractControlTrace, word, HANDLED, TRUSTED_ACCOUNT, BACKSTOP_CLASSES, CHEAT_TABLE } from "../lib/control-trace.mjs";
 import { gate, proveFindings } from "../lib/record.mjs";
 import { isProven } from "../lib/proof-view.mjs";
 import { makeWorkspace } from "../lib/sandbox.mjs";
@@ -530,6 +530,9 @@ const TAMPER_CASES = [
   ["mockCalls(address,bytes,bytes[])", word(TOKEN).slice(2) + word("0x0").repeat(2).replace(/0x/g, "")],
   ["mockCalls(address,uint256,bytes,bytes[])", word(TOKEN).slice(2) + word("0x0").repeat(3).replace(/0x/g, "")],
   ["loadAllocs(string)", word("0x20").slice(2) + word("0x0").slice(2)],
+  ["setNonce(address,uint64)", word(TOKEN).slice(2) + word("0x5").slice(2)],
+  ["setNonceUnsafe(address,uint64)", word(TOKEN).slice(2) + word("0x5").slice(2)],
+  ["resetNonce(address)", word(TOKEN).slice(2)],
 ];
 for (const [sig, args] of TAMPER_CASES) {
   test(`harm gate: a drain after ${sig} on the scope token is not proven, also in a reverted frame (H1b)`, () => {
@@ -693,6 +696,71 @@ for (const [label, extra] of [
     assert.equal(theirs.lostWei, "1000000000000000000");
   });
 }
+
+// ---- H1e (1): the backstop, from the classified table lib/vm-cheatcodes.json --------
+const CHEAT_ROWS = JSON.parse(readFileSync(path.join(HERE, "../lib/vm-cheatcodes.json"), "utf8"));
+const firstOf = (cls) => CHEAT_ROWS.find((r) => r.class === cls);
+const vmData = (row) => row.selector + "00".repeat(64);
+const backstopReason = /the test used .*; after it the replay trace no longer tells what really happened, so no scope target counts\. To repair: /;
+
+for (const cls of ["state", "outcome", "exec", "fork"]) {
+  test(`harm gate: a ${cls} cheatcode (${firstOf(cls).name}) makes every scope target unusable, in the body or in setUp() (H1e backstop)`, () => {
+    const row = firstOf(cls);
+    const h = judgeTamper(tamperDrain(vmData(row)));
+    assert.equal(h.ok, false, JSON.stringify(h));
+    assert.match(h.reason, backstopReason);
+    assert.match(h.reason, new RegExp(`vm\\.${row.name} \\(${cls}, in body\\)`));
+    const inSetup = tamperDrain(null);
+    inSetup[0][1].arena.push(node(0, { kind: "CALL", address: VM_ADDR, caller: TEST, data: vmData(row) }));
+    const hs = judgeTamper(inSetup);
+    assert.equal(hs.ok, false);
+    assert.match(hs.reason, new RegExp(`vm\\.${row.name} \\(${cls}, in setUp\\)`));
+  });
+}
+
+test("harm gate: vm.broadcastRawTransaction makes every scope target unusable (H1e backstop)", () => {
+  const row = CHEAT_ROWS.find((r) => r.name === "broadcastRawTransaction");
+  const h = judgeTamper(tamperDrain(vmData(row)));
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /vm\.broadcastRawTransaction \(account, in body\).*do not send raw transactions/);
+});
+
+test("harm gate: a VM call with a selector the table does not know makes every scope target unusable, and the reason names it (H1e backstop)", () => {
+  assert.ok(!CHEAT_ROWS.some((r) => r.selector === "0xdeadbeef"));
+  const h = judgeTamper(tamperDrain("0xdeadbeef" + "00".repeat(32)));
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /the unknown cheatcode 0xdeadbeef \(in body\).*use only the cheatcodes of the pinned forge-std Vm\.sol/);
+  // Also when the call sits in a frame that reverted.
+  const r = judgeTamper(tamperDrain("0xdeadbeef" + "00".repeat(32), { reverted: true }));
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /the unknown cheatcode 0xdeadbeef/);
+});
+
+for (const cls of ["read", "control", "time", "fs"]) {
+  test(`harm gate: a ${cls} cheatcode (${firstOf(cls).name}) is trusted: the drain stays proven (H1e backstop)`, () => {
+    const h = judgeTamper(tamperDrain(vmData(firstOf(cls))));
+    assert.equal(h.ok, true, JSON.stringify(h));
+  });
+}
+
+test("harm gate: with the cheatcode table missing, nothing is proven (H1e backstop)", () => {
+  const traces = tamperDrain(null);
+  const h = judgeHarm(traces, { scope: TOKEN_SCOPE, controlTrace: extractControlTrace(traces, { cheatTable: null }), layouts: new Map(), balances: tokenBalances });
+  assert.equal(h.ok, false);
+  assert.match(h.reason, /cheatcode table \(spike\/lib\/vm-cheatcodes\.json\) is missing or does not parse/);
+});
+
+// Every class of the table has a decision here, and every account or mock entry is
+// handled by a rule, trusted with a reason, or a backstop name. A forge-std upgrade
+// that adds a class or such an entry fails this test until someone decides.
+test("backstop: every class and every account/mock cheatcode of the table has a decision (H1e)", () => {
+  const DECIDED = new Set(["read", "control", "time", "fs", "account", "mock", ...BACKSTOP_CLASSES]);
+  assert.deepEqual([...new Set(CHEAT_ROWS.map((r) => r.class))].filter((c) => !DECIDED.has(c)), []);
+  const open = CHEAT_ROWS.filter((r) => (r.class === "account" || r.class === "mock")
+    && !HANDLED.has(r.selector.toLowerCase()) && !TRUSTED_ACCOUNT.has(r.signature) && r.name !== "broadcastRawTransaction");
+  assert.deepEqual(open.map((r) => r.signature), []);
+  assert.equal(CHEAT_TABLE?.size, CHEAT_ROWS.length);
+});
 
 // ---- the whole impersonation family (M4, delta review) ---------------------
 //
