@@ -188,6 +188,13 @@ function commands(readme: string) {
   return [...readme.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].trim())
 }
 
+// The command under a README heading, e.g. "Replay (offline)".
+function section(readme: string, heading: string) {
+  const at = readme.indexOf(`## ${heading}\n`)
+  if (at < 0) return null
+  return commands(readme.slice(at))[0] ?? null
+}
+
 describe("report: replay bundle", () => {
   test("a forge snapshot zips the project, one replay command, and no secrets", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "replay-ws-"))
@@ -229,16 +236,25 @@ describe("report: replay bundle", () => {
         expect(files.get("src/Vault.sol")).toContain("${BEARER_TOKEN}")
         const fork = JSON.parse(files.get("fork.json") || "")
         expect(fork).toEqual({ rpc: "${RPC_URL}", block: 18000000, forked: true })
-        const sh = commands(files.get("README.md") || "")
-        expect(sh).toHaveLength(1)
-        expect(sh[0]).toContain("docker run --rm -e RPC_URL")
-        expect(sh[0]).toContain('--fork-url "$RPC_URL"')
-        expect(sh[0]).toContain("--fork-block-number 18000000")
-        expect(sh[0]).toContain("--match-contract PocTest")
-        expect(sh[0]).toContain("--match-test testDrain")
-        expect(sh[0]).not.toContain(ALCHEMY_KEY)
+        const readme = files.get("README.md") || ""
+        const cmd = section(readme, "Replay (offline)") || ""
+        const prepare = section(readme, "Prepare (once, online)") || ""
+        expect(commands(readme)).toEqual([prepare, cmd])
+        // A fork keeps the network for the RPC, and nothing else is fetched.
+        expect(cmd).toContain("docker run --rm --pull never -e RPC_URL ")
+        expect(cmd).not.toContain("--network none")
+        expect(cmd).toMatch(/ ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64} /)
+        expect(cmd).not.toContain(":latest")
+        expect(cmd).toContain("'forge test --offline --use 0.8.38 ")
+        expect(cmd).toContain('--fork-url "$RPC_URL"')
+        expect(cmd).toContain("--fork-block-number 18000000")
+        expect(cmd).toContain("--match-contract PocTest")
+        expect(cmd).toContain("--match-test testDrain")
+        expect(cmd).not.toContain(ALCHEMY_KEY)
+        expect(prepare).toContain("forge build --use 0.8.38")
         const proof = JSON.parse(files.get("proof.json") || "")
-        expect(proof.replay.command).toBe(sh[0])
+        expect(proof.replay.command).toBe(cmd)
+        expect(proof.replay.prepare).toBe(prepare)
         expect(JSON.stringify(proof)).not.toContain(ALCHEMY_KEY)
       } finally {
         rmSync(dir, { recursive: true, force: true })
@@ -320,29 +336,36 @@ describe("report: replay bundle", () => {
     }
   })
 
-  // The real vault lab, snapshotted by proveFindings, then rerun from the zip.
-  // Skips when the Foundry image is not on this machine. Needs Docker, a warmed
-  // solc, and a few minutes the first time forge fetches the compiler.
+  // The real vault lab, snapshotted by proveFindings, then rerun from the zip
+  // with the README command, offline. Opt in with TOUCHSTONE_DOCKER_TESTS=1.
+  // It needs the Foundry image and solc 0.8.38 in the foundry-svm volume
+  // already; it never pulls and never fetches solc. The shared volume is only
+  // read: the replay gets a private copy, removed at the end.
   const forgeReady = (() => {
+    if (process.env.TOUCHSTONE_DOCKER_TESTS !== "1") return false
     try {
       execFileSync("docker", ["image", "inspect", "ghcr.io/foundry-rs/foundry:latest"], { stdio: "ignore" })
+      execFileSync("docker", [
+        "run", "--rm", "--pull", "never", "--network", "none", "--entrypoint", "sh",
+        "-v", "foundry-svm:/svm:ro", "ghcr.io/foundry-rs/foundry:latest", "-c", "test -x /svm/0.8.38/solc-0.8.38",
+      ], { stdio: "ignore" })
       return true
     } catch {
       return false
     }
   })()
-  ;(forgeReady ? test : test.skip)("proveFindings snapshot reruns with the README command", async () => {
-    const { makeWorkspace, warmSolc } = await import("../../spike/lib/sandbox.mjs")
+  ;(forgeReady ? test : test.skip)("proveFindings snapshot reruns offline with the README command", async () => {
+    const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const { proveFindings } = await import("../../spike/lib/record.mjs")
-    execFileSync("docker", ["volume", "create", "foundry-svm"], { stdio: "ignore" })
+    // @ts-expect-error — plain .mjs module, no types
+    const { REPLAY_SVM_VOLUME } = await import("../../spike/lib/replay-bundle.mjs")
+    const volume = `touchstone-replay-test-${process.pid}`
+    execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" })
     execFileSync("docker", [
-      "run", "--rm", "-u", "0", "--entrypoint", "sh",
-      "-v", "foundry-svm:/svm",
-      "ghcr.io/foundry-rs/foundry:latest",
-      "-c", "mkdir -p /svm && chown 1000:1000 /svm",
-    ])
-    const warmed = await warmSolc("0.8.38")
-    expect(warmed.ok).toBe(true)
+      "run", "--rm", "--pull", "never", "--network", "none", "-u", "0", "--entrypoint", "sh",
+      "-v", "foundry-svm:/from:ro", "-v", `${volume}:/svm`,
+      "ghcr.io/foundry-rs/foundry:latest", "-c", "cp -a /from/0.8.38 /svm/ && chown -R 1000:1000 /svm",
+    ], { stdio: "ignore" })
     const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
     const source = readFileSync(new URL("../../lab/vault-reentrancy/oracle/VaultExploit.t.sol", import.meta.url), "utf8")
     const ws = makeWorkspace(lab)
@@ -367,14 +390,18 @@ describe("report: replay bundle", () => {
       }
       unzip(zip, dir)
       const readme = readFileSync(path.join(dir, "README.md"), "utf8")
-      const [cmd] = commands(readme)
-      expect(cmd.startsWith("docker run --rm ")).toBe(true)
+      const cmd = section(readme, "Replay (offline)") || ""
+      expect(cmd.startsWith("docker run --rm --pull never --network none ")).toBe(true)
+      expect(cmd).toMatch(/ ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64} /)
+      expect(cmd).toContain("'forge test --offline --use 0.8.38 ")
       expect(cmd).toContain("--match-contract VaultExploitTest")
       expect(cmd).toContain("--match-test test_reentrancy_drains_vault")
       expect(cmd).not.toContain("--fork-url")
+      expect(cmd).toContain(`-v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm `)
+      const run = cmd.replace(`-v ${REPLAY_SVM_VOLUME}:`, `-v ${volume}:`)
       let out = ""
       try {
-        out = execFileSync("bash", ["-lc", cmd], {
+        out = execFileSync("bash", ["-c", run], {
           cwd: dir,
           encoding: "utf8",
           timeout: 300_000,
@@ -388,6 +415,7 @@ describe("report: replay bundle", () => {
     } finally {
       rmSync(ws, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
+      execFileSync("docker", ["volume", "rm", "-f", volume], { stdio: "ignore" })
     }
   }, 600_000)
 })

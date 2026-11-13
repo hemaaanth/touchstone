@@ -12,9 +12,11 @@
 // files. Secrets never go in. Provider keys and bearer tokens are replaced with
 // placeholders. A file that is itself a key (a pem, an env file, a cloud
 // credential) is left out and named in the README.
+import { execFileSync } from "node:child_process";
 import { crc32 } from "node:zlib";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pinnedSolc, warmFor } from "./sandbox.mjs";
 
 const MAX_FILE = 1_500_000;
 const MAX_TOTAL = 8_000_000;
@@ -91,21 +93,60 @@ function testIdent(raw) {
   return IDENT.test(s) ? s : null;
 }
 
+// The replay runs on the image digest the proof ran on, never `:latest`.
+// FALLBACK_IMAGE is the digest the labs were proven on; it is used only when
+// Docker cannot say which digest `:latest` is on this machine.
+const IMAGE_TAG = "ghcr.io/foundry-rs/foundry:latest";
+const IMAGE_DIGEST = /^ghcr\.io\/foundry-rs\/foundry@sha256:[a-f0-9]{64}$/;
+export const FALLBACK_IMAGE = "ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
+// The judge's own solc cache. The prepare step fills it; the replay only reads it.
+export const REPLAY_SVM_VOLUME = "touchstone-replay-svm";
+const SOLC = /^\d+\.\d+\.\d+$/;
+
+function localImageDigest() {
+  try {
+    const out = execFileSync("docker", ["image", "inspect", "--format", "{{json .RepoDigests}}", IMAGE_TAG], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+    return (JSON.parse(out) || []).find((d) => IMAGE_DIGEST.test(d)) || null;
+  } catch {
+    return null;
+  }
+}
+
+const imageOf = (image) => (IMAGE_DIGEST.test(String(image ?? "")) ? image : FALLBACK_IMAGE);
+
 // One shell command, run from the unzipped folder. The Foundry image's
 // entrypoint is `sh -c`, so the forge invocation is a single argument.
-// RPC_URL is expanded inside the container from the environment, never written
-// into the bundle. No --network none: a fresh image has no solc cached, and
-// forge has to fetch the compiler the pragma names. A fork also needs the RPC.
-export function forgeCommand({ contract, test, fork } = {}) {
-  const args = ["forge", "test"];
+// --offline and --use stop forge from fetching a compiler; --pull never stops
+// Docker from fetching an image. A proof that did not fork runs with
+// --network none. A fork needs the RPC, so it keeps the network, and RPC_URL
+// is expanded inside the container from the environment, never written here.
+export function forgeCommand({ contract, test, fork, solc, image } = {}) {
+  const args = ["forge", "test", "--offline"];
+  if (SOLC.test(String(solc ?? ""))) args.push("--use", solc);
   if (fork?.forked) {
     args.push("--fork-url", '"$RPC_URL"');
     if (Number.isFinite(fork.block)) args.push("--fork-block-number", String(fork.block));
   }
   if (contract && IDENT.test(contract)) args.push("--match-contract", contract);
   if (test && IDENT.test(test)) args.push("--match-test", test);
-  const env = fork?.forked ? " -e RPC_URL" : "";
-  return `docker run --rm${env} -v "$PWD":/work -w /work ghcr.io/foundry-rs/foundry:latest '${args.join(" ")}'`;
+  const net = fork?.forked ? " -e RPC_URL" : " --network none";
+  return `docker run --rm --pull never${net} -v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${imageOf(image)} '${args.join(" ")}'`;
+}
+
+// Run once, online, before the replay: fetch the pinned image and put each
+// solc the proof used in the judge's cache volume. A fresh volume is owned by
+// root, and forge runs as uid 1000, so the volume is handed over first.
+export function prepareCommand({ solc, solcs, image } = {}) {
+  const versions = [...new Set([solc, ...(Array.isArray(solcs) ? solcs : [])].filter((v) => SOLC.test(String(v ?? ""))))];
+  if (!versions.length) return null;
+  const img = imageOf(image);
+  const warm = versions.map((v) => `mkdir -p /tmp/w${v}/src && cd /tmp/w${v} && echo "pragma solidity ${v}; contract W {}" > src/W.sol && forge build --use ${v}`).join(" && ");
+  return [
+    `docker pull ${img}`,
+    `docker volume create ${REPLAY_SVM_VOLUME}`,
+    `docker run --rm -u 0 --entrypoint sh -v ${REPLAY_SVM_VOLUME}:/svm ${img} -c 'chown 1000:1000 /svm'`,
+    `docker run --rm -v ${REPLAY_SVM_VOLUME}:/home/foundry/.svm ${img} '${warm}'`,
+  ].join(" && \\\n  ");
 }
 
 function forkFrom(toml, sources) {
@@ -166,14 +207,12 @@ function collectFiles(root) {
   return found;
 }
 
+// The solc the proof ran with, read the way forgeTest reads it: the workspace
+// pin (`--use`), or null for "auto", where forge picks per pragma. `solcs` is
+// every version the replay cache needs, the same list warmFor gives Daytona.
 function readSolc(ws) {
-  try {
-    const raw = JSON.parse(readFileSync(join(ws, ".touchstone.json"), "utf8")).solc;
-    const v = String(raw ?? "").trim().replace(/^=/, "");
-    return /^\d+\.\d+\.\d+$/.test(v) ? v : null;
-  } catch {
-    return null;
-  }
+  const pin = pinnedSolc(ws);
+  return pin === "auto" ? { solc: null, solcs: warmFor(ws) } : { solc: pin, solcs: [pin] };
 }
 
 // Snapshot the workspace that just proved a forge finding. Call this before
@@ -228,11 +267,13 @@ export function snapshotForgeReplay(ws, { contract, test } = {}) {
     kind: "forge",
     contract: testIdent(contract),
     test: testIdent(test),
-    solc: readSolc(ws),
+    ...readSolc(ws),
+    image: localImageDigest() || FALLBACK_IMAGE,
     fork,
     files,
     omitted,
   };
+  replay.prepare = prepareCommand(replay);
   replay.command = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"))
     ? forgeCommand(replay)
     : null;
@@ -290,6 +331,7 @@ function proofJson(proof, replay) {
   if (replay) {
     body.replay = {
       command: replay.command || null,
+      ...(replay.prepare ? { prepare: replay.prepare } : {}),
       fork: replay.fork || null,
       contract: replay.contract || null,
       test: replay.test || null,
@@ -366,8 +408,8 @@ export function zipStore(entries) {
   return Buffer.concat(parts);
 }
 
-function fence(command) {
-  return command ? `\n\n## Command\n\nRun this from this directory:\n\n\`\`\`sh\n${command}\n\`\`\`\n` : "";
+function fence(command, heading = "Command", lead = "Run this from this directory:") {
+  return command ? `\n\n## ${heading}\n\n${lead}\n\n\`\`\`sh\n${command}\n\`\`\`\n` : "";
 }
 
 function omittedList(omitted) {
@@ -376,7 +418,7 @@ function omittedList(omitted) {
   return `\n\n## Left out\n\n${rows.map((o) => `- ${o.path ? `\`${o.path}\` — ` : ""}${o.reason}`).join("\n")}\n`;
 }
 
-function forgeReadme({ title, replay, command, fork }) {
+function forgeReadme({ title, replay, command, prepare, fork }) {
   const block = Number.isFinite(fork?.block) ? String(fork.block) : "null";
   if (!command) {
     return `# Replay this finding
@@ -389,17 +431,23 @@ No provider key and no bearer token is included.
 ${omittedList(replay?.omitted)}`;
   }
   const forkNote = fork?.forked
-    ? `This proof forked a chain. Export \`RPC_URL\` to an archive endpoint before the command below. \`fork.json\` records the block as ${block}. The endpoint is not in this folder.`
-    : `This proof did not fork a chain. \`fork.json\` still records \`rpc\` as ${rpcShown} and \`block\` as ${block}, so a later fork has a place to put an endpoint. The command below does not fork.`;
-  const solc = replay?.solc ? ` The run pinned solc ${replay.solc}; forge will use a compiler that satisfies the sources' pragma.` : "";
+    ? `This proof forked a chain. Export \`RPC_URL\` to an archive endpoint before the replay. The fork is the only network use, so the replay keeps the network. \`fork.json\` records the block as ${block}. The endpoint is not in this folder.`
+    : `This proof did not fork a chain, so the replay runs with \`--network none\`. \`fork.json\` still records \`rpc\` as ${rpcShown} and \`block\` as ${block}, so a later fork has a place to put an endpoint.`;
+  const solc = replay?.solc
+    ? `The replay compiles with solc ${replay.solc} (\`--use\`), the version the proof used.`
+    : `The proof did not pin one solc, so forge picks per pragma from the cache.`;
+  const image = `It runs on the image digest the proof ran on, with \`--pull never\` and \`forge --offline\`, so neither Docker nor forge fetches anything.`;
+  const prep = prepare
+    ? fence(prepare, "Prepare (once, online)", `This pulls the pinned image and puts the solc the proof used into the \`${REPLAY_SVM_VOLUME}\` volume. It is the only step that uses the network for a proof that did not fork.`)
+    : `\n\n## Prepare\n\nThis record does not name the solc the proof used. Put a matching solc into the \`${REPLAY_SVM_VOLUME}\` volume before the replay, or the offline replay cannot compile.\n`;
   return `# Replay this finding
 
 **${title || "Finding"}** · Foundry
 
 The proof test, the scope sources, and the Foundry config are in this folder. \`proof.json\` is the recorded verdict. Dependency test suites under \`lib/\` are not included: the proof does not import them, and some ship sample provider keys.
 
-${forkNote}${solc} A fresh Foundry image has no compiler cached, so the command lets forge download the solc the pragma names. That download is the only network use when the proof did not fork. No provider key and no bearer token is in this folder.
-${fence(command)}${omittedList(replay?.omitted)}`;
+${forkNote} ${solc} ${image} No provider key and no bearer token is in this folder.
+${prep}${fence(command, "Replay (offline)")}${omittedList(replay?.omitted)}`;
 }
 
 function httpReadme({ title, hasScript }) {
@@ -432,9 +480,12 @@ function forgeBundle({ finding, replay, proof }) {
   const testSource = proof?.testSource || finding?.proof?.testSource || null;
   const haveProject = files.some((f) => f.path === "foundry.toml") && files.some((f) => f.path.startsWith("test/"));
   const fork = replay?.fork || { rpc: RPC_PLACEHOLDER, block: null, forked: false };
-  const command = haveProject ? (replay.command || forgeCommand({ contract: replay?.contract, test: replay?.test, fork })) : null;
+  // Rebuild the command from the recorded fields, so a record written before
+  // the offline command still gets one.
+  const command = haveProject ? forgeCommand({ ...replay, fork }) : null;
+  const prepare = haveProject ? prepareCommand(replay) : null;
   const readme = haveProject || files.length
-    ? forgeReadme({ title, replay, command, fork })
+    ? forgeReadme({ title, replay, command, prepare, fork })
     : `# Replay this finding
 
 **${title}** · Foundry
@@ -445,7 +496,7 @@ This run was recorded before the workspace was snapshotted, and the workspace is
 `;
   const entries = [];
   pushFile(entries, "README.md", readme);
-  pushFile(entries, "proof.json", proofJson(proof, replay));
+  pushFile(entries, "proof.json", proofJson(proof, replay && { ...replay, command, prepare }));
   pushFile(entries, "fork.json", JSON.stringify({ rpc: RPC_PLACEHOLDER, block: Number.isFinite(fork.block) ? fork.block : null, forked: Boolean(fork.forked) }, null, 2) + "\n");
   for (const f of files) pushFile(entries, f.path, f.text);
   if (!files.some((f) => f.path.startsWith("test/")) && testSource) pushFile(entries, "test/AgentPoc.t.sol", scrubReplayText(testSource));
