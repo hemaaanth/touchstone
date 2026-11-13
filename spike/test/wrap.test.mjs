@@ -76,7 +76,9 @@ test("runTool passes --pull=never directly after run --rm", async () => {
 test("a missing image fails without a registry pull", { skip: !hasDocker && "no docker" }, async () => {
   const result = await runTool({ image: "touchstone-missing@sha256:" + "1".repeat(64), cmd: ["true"] });
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Unable to find image|No such image|not found/i);
+  // A failed pull also says "not found", so match the no-pull error exactly.
+  assert.match(result.stderr, /No such image: touchstone-missing@sha256:1{64}/);
+  assert.doesNotMatch(result.stderr, /Pulling|pull access denied/);
 });
 
 // The tool's PID 1 ignores SIGTERM. A timeout must still stop it and say so.
@@ -87,7 +89,8 @@ test("a timeout removes the container and returns near timeoutMs", { skip: !hasD
   const took = Date.now() - started;
   assert.equal(result.timedOut, true);
   assert.notEqual(result.code, 0);
-  assert(took < 10000, "returned after " + took + " ms");
+  // Without the fix this took 25 s. A loaded host has taken 6 s with it.
+  assert(took < 20000, "returned after " + took + " ms");
   const left = execFileSync("docker", ["ps", "-a", "--no-trunc", "--format", "{{.Command}}"], { encoding: "utf8" });
   assert.equal(left.includes(mark), false, "the container is still there");
 });

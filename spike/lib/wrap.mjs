@@ -57,9 +57,10 @@ export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffe
     // by itself. The client is not killed at timeoutMs: a client killed
     // during create leaves the daemon to create a container after every
     // rm -f has run. So rm -f repeats until the client exits. SIGKILL 30 s
-    // later is only the last stop.
+    // later is only the last stop. Each rm -f gets 5 s, so a hung daemon
+    // adds at most 5 s after the client exits.
     let expired = false, exited = false, sweep = null;
-    const remove = (done) => execFile("docker", ["rm", "-f", name], { timeout: 30_000 }, () => done());
+    const remove = (done) => execFile("docker", ["rm", "-f", name], { timeout: 5_000, killSignal: "SIGKILL" }, () => done());
     const again = () => remove(() => { if (!exited) sweep = setTimeout(again, 250); });
     const timer = name ? setTimeout(() => { expired = true; again(); }, timeoutMs) : null;
     const kill = name ? { timeout: timeoutMs + 30_000, killSignal: "SIGKILL" } : { timeout: timeoutMs };
