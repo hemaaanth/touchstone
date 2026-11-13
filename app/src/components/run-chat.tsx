@@ -444,7 +444,9 @@ export function RunChat({
         ref={(el) => {
           if (el && refocusTitle.current) {
             refocusTitle.current = false
-            el.focus()
+            // After the key event ends: a focused button would take the same
+            // Enter as a click and open the editor again.
+            setTimeout(() => el.focus(), 0)
           }
         }}
         type="button"
