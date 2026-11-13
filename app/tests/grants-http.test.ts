@@ -87,6 +87,18 @@ async function call(method: string, url: string, body?: unknown, headers?: Recor
 }
 
 describe("grant endpoints", () => {
+  test("a host with a user name or password is refused, the secret is never echoed, and nothing is stored", async () => {
+    const before = (await call("GET", "/api/grants")).json.grants.length
+    for (const host of ["https://user:pw-secret-9@example.com", "admin:pw-secret-9@shop.example.com", "https://onlyuser@example.com"]) {
+      const r = await call("POST", "/api/grants", { hosts: ["safe.example.com", host], kind: "authorized", approvedBy: "test" })
+      expect(r.status).toBe(400)
+      expect(r.json.error).toMatch(/^Refused: the host entry for (shop\.)?example\.com holds a user name or password\. Touchstone never keeps a credential typed into a host\. Remove it, then add the grant again\.$/)
+      expect(r.json.error).not.toContain("pw-secret-9")
+      expect(r.json.error).not.toContain("onlyuser")
+    }
+    expect((await call("GET", "/api/grants")).json.grants.length).toBe(before)
+  })
+
   test("a non-grant path is not handled", async () => {
     const { handled } = await call("GET", "/api/runs")
     expect(handled).toBe(false)

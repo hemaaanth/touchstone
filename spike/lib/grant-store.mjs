@@ -425,6 +425,20 @@ function isLocalName(name) {
 // checked for label count and public suffixes either way — a "*.com" grant is
 // never a real scope.
 function grantEntryError(entry, allowPrivate) {
+  // A user name or password in the entry would be dropped by normalizeHost
+  // without a word. Refuse it, and name the host only, never the secret.
+  const raw = String(entry ?? "").trim();
+  if (raw.includes("@")) {
+    let u = null;
+    try {
+      u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+    } catch {
+      /* not a URL: normalizeHost decides */
+    }
+    if (u && (u.username || u.password)) {
+      return `the host entry for ${u.hostname} holds a user name or password. Touchstone never keeps a credential typed into a host. Remove it, then add the grant again.`;
+    }
+  }
   const e = normalizeHost(entry);
   // An unusable host is not this guard's concern: it is dropped by normalizeHost
   // and caught downstream by the "at least one valid host" check. This guard only
