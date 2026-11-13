@@ -113,34 +113,90 @@ export function registrableDomain(host) {
 // "s3.amazonaws.com"; "run.app" has every "<region>.run.app")?
 export const hasSuffixUnder = (name) => load().above.has(ascii(name));
 
-// Names the PSL does not hold, where every name under them can belong to
-// someone else. Kept by hand, small, at any depth:
-//   - "resolves anything": 1.2.3.4.nip.io resolves to 1.2.3.4, *.lvh.me to 127.0.0.1.
-//   - shared namespaces the PSL lacks (from the 2d review): Kudu sites under
-//     scm.azurewebsites.net, Azure VMs under <region>.cloudapp.azure.com.
-const NOT_IN_PSL = ["nip.io", "sslip.io", "xip.io", "localtest.me", "lvh.me", "scm.azurewebsites.net", "cloudapp.azure.com"];
+// ---- What the PSL cannot know ---------------------------------------------
+// A provider zone where every customer gets a name under it, but the provider
+// did not list it in the PSL. And a floor: every name the hand lists refused
+// before the PSL (main at cc2690d: live-hosts.mjs ANY_DEPTH, TENANT,
+// SECOND_LEVEL; grant-store.mjs PUBLIC_SUFFIXES). A change of the source of
+// truth may add refusals, never remove one; public-suffix.test.mjs reads those
+// old lists from git and checks every name they refused.
+//
+// HOW TO ADD ONE: find the provider's own docs that say customers get names
+// under the zone. Put it in ANY_DEPTH when customers sit at varying depths or
+// the zone resolves any name (every wildcard under it is refused), or in
+// PLATFORM when each customer is one label under it (the zone itself is
+// refused; a wildcard under one customer's own name is allowed). Add a row to
+// the provider-zone table test in public-suffix.test.mjs.
+const ANY_DEPTH = [
+  // "resolves anything": 1.2.3.4.nip.io resolves to 1.2.3.4, *.lvh.me to 127.0.0.1.
+  "nip.io", "sslip.io", "xip.io", "localtest.me", "lvh.me",
+  // Cloud namespaces that nest customers by region and service. The PSL lists
+  // only some sub-zones (s3, elb), not e.g. cache.amazonaws.com or database.windows.net.
+  "amazonaws.com", "windows.net", "cloudapp.net", "googleusercontent.com",
+  // From the 2d review: Kudu sites under scm.azurewebsites.net, Azure VMs under
+  // <region>.cloudapp.azure.com.
+  "scm.azurewebsites.net", "cloudapp.azure.com",
+];
+const PLATFORM = [
+  // main's TENANT list (live-hosts.mjs at cc2690d), kept whole.
+  "cloudfront.net", "azurewebsites.net", "appspot.com", "web.app", "firebaseapp.com", "blogspot.com",
+  "github.io", "gitlab.io", "pages.dev", "workers.dev", "vercel.app", "netlify.app", "herokuapp.com",
+  "fly.dev", "onrender.com", "railway.app", "up.railway.app", "ngrok.io", "ngrok-free.app",
+  "trycloudflare.com", "myshopify.com", "wordpress.com", "wixsite.com",
+];
+// main's grant-store PUBLIC_SUFFIXES entries that are not above (all are in the
+// PSL today; kept so a later PSL can never drop one).
+const OLD_SUFFIXES = [
+  "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
+  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au", "co.nz", "net.nz", "org.nz", "govt.nz",
+  "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", "com.br", "net.br", "org.br", "gov.br",
+  "co.in", "net.in", "org.in", "gov.in", "ac.in", "com.cn", "net.cn", "org.cn", "gov.cn",
+  "co.za", "org.za", "gov.za", "com.mx", "com.ar", "com.sg", "com.hk", "com.tw", "com.tr",
+  "s3.amazonaws.com", "blob.core.windows.net",
+];
+// main's SECOND_LEVEL rule: "<com|co|org|net|gov|edu|ac>.<two letters>", a country's
+// second-level domain, whether or not the PSL lists that one.
+const SECOND_LEVEL = new Set(["com", "co", "org", "net", "gov", "edu", "ac"]);
 const under = (name, entry) => name === entry || name.endsWith(`.${entry}`);
+
+const secondLevel = (b) => {
+  const labels = b.split(".");
+  return labels.length === 2 && SECOND_LEVEL.has(labels[0]) && /^[a-z]{2}$/.test(labels[1]);
+};
+const byList = (b) => ANY_DEPTH.some((e) => under(b, e)) || PLATFORM.includes(b) || OLD_SUFFIXES.includes(b) || secondLevel(b) || registrableDomain(b)?.split(".")[0] === "blogspot";
+const byPsl = (b) => isPublicSuffix(b) || hasSuffixUnder(b);
+
+// Which rules refuse a wildcard base, each on its own: the Public Suffix List,
+// the hand rules above. For the provider-zone table and its test.
+export function wildcardRefusalSources(base) {
+  const b = ascii(base);
+  return { psl: byPsl(b), list: byList(b) };
+}
 
 // A sentence when a wildcard grant "*.<base>" would cover names that belong to
 // other people, else null. The one rule for every caller (the create route in
 // live-hosts.mjs and the grant store):
+//   - a hand rule above (ANY_DEPTH at any depth, a PLATFORM itself, a country's
+//     second-level domain, a blogspot country domain);
 //   - the base is a public suffix (ICANN or PRIVATE): *.com, *.co.uk, *.vercel.app;
-//   - a public suffix lies under the base: *.amazonaws.com, *.r.appspot.com;
-//   - the base is in the small NOT_IN_PSL list, at any depth;
-//   - the base is a blogspot country domain (blogspot.co.uk): the PSL keeps only blogspot.com.
+//   - a public suffix lies under the base: *.r.appspot.com, *.run.app.
 // A wildcard under one tenant's own name on a platform (*.myapp.vercel.app) is
 // that tenant's space: its base is a registrable domain with no suffix under it.
 export function sharedWildcardRefusal(base) {
   const b = ascii(base);
   const shown = `*.${b}`;
-  const gap = NOT_IN_PSL.find((e) => under(b, e));
-  if (gap) return `"${shown}" covers hosts that belong to other people: names under ${gap} are shared or resolve to any address. Name the exact hosts instead.`;
+  const deep = ANY_DEPTH.find((e) => under(b, e));
+  if (deep) return `"${shown}" covers hosts that belong to other people: names under ${deep} are shared or resolve to any address. Name the exact hosts instead.`;
   if (registrableDomain(b)?.split(".")[0] === "blogspot") return `"${shown}" covers hosts that belong to other people: every blog gets a name under it. Name the exact hosts instead.`;
   const s = suffixOf(b);
-  if (s?.suffix === b) {
-    return s.section === "private"
-      ? `"${shown}" covers hosts that belong to other people: every customer of ${b} gets a name under it. Use your own name, for example *.yourapp.${b}.`
-      : `"${shown}" covers hosts that belong to other people: ${b} is a public suffix. Use your own name under it, for example *.example.${b}.`;
+  if (PLATFORM.includes(b) || (s?.suffix === b && s.section === "private")) {
+    return `"${shown}" covers hosts that belong to other people: every customer of ${b} gets a name under it. Use your own name, for example *.yourapp.${b}.`;
+  }
+  if (OLD_SUFFIXES.includes(b) || s?.suffix === b) {
+    return `"${shown}" covers hosts that belong to other people: ${b} is a public suffix. Use your own name under it, for example *.example.${b}.`;
+  }
+  if (secondLevel(b)) {
+    return `"${shown}" covers hosts that belong to other people: ${b} is a country's second-level domain. Use your own name under it, for example *.example.${b}.`;
   }
   if (hasSuffixUnder(b)) return `"${shown}" covers hosts that belong to other people: names under ${b} are handed out to customers. Name the exact hosts instead.`;
   return null;

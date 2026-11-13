@@ -6,6 +6,7 @@ import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const psl = await import("../lib/public-suffix.mjs");
@@ -111,4 +112,95 @@ test("the list is parsed once and fast", () => {
   const t0 = performance.now();
   for (let i = 0; i < 1000; i++) psl.registrableDomain(`h${i}.a.b.example.co.uk`);
   assert.ok(performance.now() - t0 < 200, "1,000 lookups in under 200 ms");
+});
+
+// ---- A change of the source of truth may add refusals, never remove one ------------
+// The hand lists on main before the PSL (cc2690d): live-hosts.mjs ANY_DEPTH,
+// TENANT, SECOND_LEVEL and grant-store.mjs PUBLIC_SUFFIXES. Read from git, the
+// old rule rebuilt from them, and every name it refused checked now.
+const BEFORE_PSL = "cc2690d";
+function oldSource(file) {
+  try {
+    return execFileSync("git", ["show", `${BEFORE_PSL}:spike/lib/${file}`], { cwd: new URL("..", import.meta.url), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return null;
+  }
+}
+const arrayIn = (src, name) => {
+  const m = src.match(new RegExp(`const ${name} = (?:new Set\\()?\\[([\\s\\S]*?)\\]`));
+  assert.ok(m, `the old list ${name} was found`);
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+};
+
+test("every wildcard the hand lists on main refused is still refused (read from git, depth 1 and 2)", (t) => {
+  const live = oldSource("live-hosts.mjs");
+  const grants = oldSource("grant-store.mjs");
+  if (!live || !grants) return t.skip(`git history with ${BEFORE_PSL} is not available here`);
+  const anyDepth = arrayIn(live, "ANY_DEPTH");
+  const tenant = arrayIn(live, "TENANT");
+  const secondLevel = arrayIn(live, "SECOND_LEVEL");
+  const oldSuffixes = arrayIn(grants, "PUBLIC_SUFFIXES");
+  assert.ok(anyDepth.includes("amazonaws.com") && tenant.includes("wordpress.com") && oldSuffixes.includes("co.uk"), "the right lists were read");
+  // main's rule, as it was.
+  const oldRefused = (b) => {
+    const labels = b.split(".");
+    return labels.length < 2 || anyDepth.some((e) => b === e || b.endsWith(`.${e}`)) || tenant.includes(b) || oldSuffixes.includes(b) ||
+      (labels.length === 2 && secondLevel.includes(labels[0]) && /^[a-z]{2}$/.test(labels[1]));
+  };
+  // The names to try: each list entry at depth 1 (*.e) and depth 2 (*.x.e), and
+  // every second-level label under every two-letter country code in the PSL.
+  const countries = [...readFileSync(new URL("../vendor/publicsuffix/public_suffix_list.dat", import.meta.url), "utf8").matchAll(/^([a-z]{2})$/gm)].map((m) => m[1]);
+  const bases = new Set();
+  for (const e of [...anyDepth, ...tenant, ...oldSuffixes]) for (const b of [e, `x.${e}`, `a.b.${e}`]) bases.add(b);
+  for (const l of secondLevel) for (const cc of [...countries, "zz"]) bases.add(`${l}.${cc}`);
+  for (const tld of ["com", "net", "org", "uk", "de"]) bases.add(tld);
+  let checked = 0;
+  for (const b of bases) {
+    if (!oldRefused(b)) continue;
+    checked++;
+    assert.ok(psl.sharedWildcardRefusal(b) || b.split(".").length < 2, `*.${b} is still refused by the rule`);
+    assert.ok(liveHostsRefusal(["example.com", `*.${b}`]), `*.${b} is still refused at the create route`);
+    assert.throws(() => addGrant({ hosts: [`*.${b}`], kind: "authorized", approvedBy: "test" }), /Refused/, `*.${b} is still refused by the grant store`);
+  }
+  assert.ok(checked > 1500, `${checked} names main refused were checked`);
+});
+
+test("the names the review found accepted after the move to the PSL are refused again", () => {
+  for (const b of ["cache.amazonaws.com", "us-east-1.es.amazonaws.com", "database.windows.net", "googleusercontent.com", "wordpress.com"]) {
+    assert.match(psl.sharedWildcardRefusal(b) ?? "", /covers hosts that belong to other people/, b);
+    assert.throws(() => addGrant({ hosts: [`*.${b}`], kind: "authorized", approvedBy: "test" }), /covers hosts that belong to other people/, b);
+  }
+  // A blog's own name under wordpress.com is that blogger's space, as on main.
+  assert.equal(psl.sharedWildcardRefusal("myblog.wordpress.com"), null);
+});
+
+// Provider zones where every customer gets a name. Refused, and by which rule:
+// the PSL alone, the hand list alone, or both.
+const ZONES = {
+  "cloudfront.net": { psl: true, list: true }, "azurewebsites.net": { psl: true, list: true },
+  "blob.core.windows.net": { psl: true, list: true }, "s3.amazonaws.com": { psl: true, list: true },
+  "elb.amazonaws.com": { psl: true, list: true }, "herokuapp.com": { psl: true, list: true },
+  "fly.dev": { psl: true, list: true }, "web.app": { psl: true, list: true }, "firebaseapp.com": { psl: true, list: true },
+  "pages.dev": { psl: true, list: true }, "workers.dev": { psl: true, list: true }, "netlify.app": { psl: true, list: true },
+  "onrender.com": { psl: true, list: true }, "ngrok.io": { psl: true, list: true }, "ngrok-free.app": { psl: true, list: true },
+  "trycloudflare.com": { psl: true, list: true },
+  "wordpress.com": { psl: false, list: true }, "googleusercontent.com": { psl: false, list: true },
+  "cache.amazonaws.com": { psl: false, list: true }, "database.windows.net": { psl: false, list: true },
+  "scm.azurewebsites.net": { psl: false, list: true }, "cloudapp.azure.com": { psl: false, list: true },
+  "eu.ngrok.io": { psl: true, list: false }, "r.appspot.com": { psl: true, list: false }, "run.app": { psl: true, list: false },
+  "duckdns.org": { psl: true, list: false }, "r2.dev": { psl: true, list: false }, "azurestaticapps.net": { psl: true, list: false },
+  "elasticbeanstalk.com": { psl: true, list: false },
+};
+test("provider zones: each one is refused, and the table names the rule that does it", () => {
+  for (const [zone, want] of Object.entries(ZONES)) {
+    assert.deepEqual(psl.wildcardRefusalSources(zone), want, zone);
+    assert.ok(psl.sharedWildcardRefusal(zone), `*.${zone} is refused`);
+  }
+});
+
+test("the refusal and the two sources agree for every name tried here", () => {
+  for (const b of [...Object.keys(ZONES), ...REFUSED, ...ACCEPTED, "example.co.uk", "edu.zz", "a.b.c.amazonaws.com"]) {
+    const { psl: p, list: l } = psl.wildcardRefusalSources(b);
+    assert.equal(Boolean(psl.sharedWildcardRefusal(b)), p || l, b);
+  }
 });

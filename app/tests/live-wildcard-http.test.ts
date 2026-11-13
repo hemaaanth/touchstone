@@ -137,11 +137,12 @@ describe("a *. entry through POST /api/scopes", () => {
       // the PSL private section: the platform itself
       ["*.vercel.app", PRIVATE], ["*.blogspot.com", PRIVATE], ["*.eu.ngrok.io", PRIVATE], ["*.elasticbeanstalk.com", PRIVATE],
       ["*.azurestaticapps.net", PRIVATE], ["*.r2.dev", PRIVATE], ["*.duckdns.org", PRIVATE], ["*.up.railway.app", PRIVATE],
-      ["*.ngrok-free.app", PRIVATE], ["*.com.de", PRIVATE], ["*.blob.core.windows.net", PRIVATE],
+      ["*.ngrok-free.app", PRIVATE], ["*.com.de", PRIVATE], ["*.blob.core.windows.net", SHARED], ["*.cache.amazonaws.com", SHARED], ["*.database.windows.net", SHARED],
+      ["*.googleusercontent.com", SHARED], ["*.wordpress.com", PRIVATE],
       // the PSL ICANN section
       ["*.ne.jp", ICANN], ["*.co.nz", ICANN], ["*.gov.br", ICANN],
       // public suffixes under the base: a provider namespace or a wildcard rule
-      ["*.amazonaws.com", HANDED_OUT], ["*.eu-west-1.amazonaws.com", HANDED_OUT], ["*.r.appspot.com", HANDED_OUT], ["*.run.app", HANDED_OUT],
+      ["*.amazonaws.com", SHARED], ["*.eu-west-1.amazonaws.com", SHARED], ["*.r.appspot.com", HANDED_OUT], ["*.run.app", HANDED_OUT],
       // the small list of names the PSL lacks, at any depth
       ["*.nip.io", SHARED], ["*.1.2.3.4.nip.io", SHARED], ["*.sslip.io", SHARED], ["*.lvh.me", SHARED],
       ["*.scm.azurewebsites.net", SHARED], ["*.cloudapp.azure.com", SHARED], ["*.eastus.cloudapp.azure.com", SHARED],
