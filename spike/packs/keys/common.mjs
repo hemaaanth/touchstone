@@ -11,8 +11,7 @@
 // A lead is not a finding. Only a replayed test with shown harm is a finding.
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative, resolve, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { forgeTest, writePoc } from "../../lib/sandbox.mjs";
@@ -29,7 +28,6 @@ import { scanSources } from "./source-checks.mjs";
 
 export const IMAGE = "touchstone-chain-tools:wave1";
 export const OBSERVATION = "chain-observation.json";
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const FILE_READ_CAP = 256 * 1024;
 // No count cap unless MAX_POC is set. The run spend budget is the stop.
 const MAX_POC = attemptCap("MAX_POC");
@@ -51,16 +49,13 @@ export const KNOWN_KEYS = [
 
 // ---------------------------------------------------------------- the world
 
-let imageReady = null;
-function ensureImage() {
-  imageReady ??= new Promise((done, fail) => {
-    execFile("docker", ["image", "inspect", IMAGE], (missing) => {
-      if (!missing) return done();
-      execFile("docker", ["build", "-q", "-f", "spike/packs/keys/runtime/Dockerfile", "-t", IMAGE, "."],
-        { cwd: ROOT, timeout: 900_000 }, (error) => (error ? fail(error) : done()));
-    });
+// A run never builds the image: setup does. A missing image is an error that says so.
+export function ensureImage(exec = execFile) {
+  return new Promise((done, fail) => {
+    exec("docker", ["image", "inspect", IMAGE], (missing) => (missing
+      ? fail(new Error(`The image ${IMAGE} is missing. Run node spike/scripts/setup.mjs to build it. A run never builds an image.`))
+      : done()));
   });
-  return imageReady;
 }
 
 // Run the lab world once. `mode` is "keys" or "chain-watch". Returns the parsed observation.
