@@ -4,6 +4,7 @@
 // Chat Completions format.
 import { createAssistantMessageEventStream, createModels, createProvider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { estimateContextTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { activeProvider, providerKey } from "./providers.mjs";
 import { charge, guard, runSpend } from "./inference.mjs";
@@ -31,9 +32,10 @@ export function budgetedApi(api, agentForSession = () => undefined) {
         for await (const e of source) {
           if (e.type === "done" || e.type === "error") {
             const message = e.type === "done" ? e.message : e.error;
-            if (message.usage) {
-              charge(model.id, message.usage);
-              event("spend", { ...runSpend(), ...contextUse(model, message.usage) });
+            const usage = e.type === "error" ? billedUsage(context, message) : message.usage;
+            if (usage) {
+              charge(model.id, usage);
+              event("spend", { ...runSpend(), ...contextUse(model, usage) });
             }
           }
           output.push(e.type === "error" ? markTransient(e) : e);
@@ -61,11 +63,17 @@ export function budgetedApi(api, agentForSession = () => undefined) {
 // or a missing model must fail fast. Budget and cap stops never match these
 // patterns. Spend is charged above, once per attempt, before this runs; a retry
 // is a new call and goes through check() again, so both budgets still apply.
-const TRANSPORT_DROP = /stream (?:was )?interrupted|\binterrupted\b|ECONNRESET|ETIMEDOUT|ECONNABORTED|EPIPE|premature close/i;
+const TRANSPORT_DROP = /stream (?:was )?interrupted|ECONNRESET|ETIMEDOUT|ECONNABORTED|EPIPE|premature close/i;
 // A 4xx where providers put the status: first ("401 Unauthorized", "400: {...}"),
 // in brackets ("Lyber (403): ..."), or after "status"/"HTTP"/"code". Not a port
-// such as ":443".
-const CLIENT_STATUS = /^\s*4(?!29)\d\d\b|\(4(?!29)\d\d\)|\b(?:status|http|code)\W{0,3}4(?!29)\d\d\b/i;
+// such as ":443". 408 (request timeout) and 429 (rate limit) are transient.
+const statusAt = (code) => new RegExp(`^\\s*${code}\\b|\\(${code}\\)|\\b(?:status|http|code)\\W{0,3}${code}\\b`, "i");
+const CLIENT_STATUS = statusAt("4(?!29|08)\\d\\d");
+// Any 4xx: the provider refused the request, so it billed no prompt tokens.
+// The others never sent it: our own budget or cap stop (raised in onPayload),
+// a missing key, or a host that could not be reached.
+const REFUSED_STATUS = statusAt("4\\d\\d");
+const NOT_SENT = /out of budget|Run budget reached|No API key|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i;
 function transientMessage(text) {
   const t = String(text ?? "");
   if (!TRANSPORT_DROP.test(t) || CLIENT_STATUS.test(t) || isRetryableAssistantError({ stopReason: "error", errorMessage: t })) return t;
@@ -75,6 +83,31 @@ function markTransient(e) {
   if (e.error?.stopReason !== "error") return e;
   const errorMessage = transientMessage(e.error.errorMessage);
   return errorMessage === e.error.errorMessage ? e : { ...e, error: { ...e.error, errorMessage } };
+}
+
+// What a failed call cost. pi-ai's openai-completions adapter gets usage only
+// in the last chunk, so a stream that drops reports zero input tokens. The
+// provider still read the whole prompt and very likely bills it, and each retry
+// reads it again. So a failed call with no reported input is charged an
+// estimate of its prompt, unless the provider refused it with a 4xx status.
+// This may overcharge a call that never reached the provider: the safe side
+// for a cap.
+function billedUsage(context, message) {
+  const usage = message.usage ?? {};
+  if (message.stopReason !== "error" || (usage.input ?? 0) > 0 || (usage.cacheRead ?? 0) > 0) return message.usage;
+  const text = String(message.errorMessage ?? "");
+  if (REFUSED_STATUS.test(text) || NOT_SENT.test(text)) return message.usage;
+  return { ...usage, input: promptTokens(context), output: usage.output ?? 0 };
+}
+function promptTokens(context) {
+  try {
+    let n = estimateContextTokens(context?.messages ?? []).tokens;
+    if (typeof context?.systemPrompt === "string") n += estimateTextTokens(context.systemPrompt);
+    if (context?.tools?.length) n += estimateTextTokens(JSON.stringify(context.tools));
+    return n;
+  } catch {
+    return 0;
+  }
 }
 
 // How full the model's context was on this call: every token it read plus the

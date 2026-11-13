@@ -20,6 +20,8 @@ process.env.TOUCHSTONE_GRANT_TOKEN = "test-grant-token"
 const runs = await import("../server/runs.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const settings = await import("../server/settings.mjs")
+// @ts-expect-error — plain .mjs module, no types
+const inference = await import("../../spike/lib/inference.mjs")
 
 const ledger = (totalUsd: unknown) => writeFileSync(LEDGER, JSON.stringify({ totalUsd, calls: 0, byModel: {} }))
 const start = () => runs.createRun({ alias: "no-such-alias" })
@@ -78,14 +80,32 @@ describe("total spend cap", () => {
   })
 
   test("a run stopped at the total cap is a budget stop, not a model failure", () => {
-    const detail = "Total spend cap reached: the ledger shows $50.8600 of the $50.85 total cap (SPEND_CAP_USD). Raise the total cap to spend more."
+    const detail = inference.spendCapMessage(50.86, 50.85)
     const info = runs.failureInfo({ settled: { status: "unanswered", reason: "model_error", detail }, events: [] })
     expect(info.kind).toBe("budget")
     expect(info.retryable).toBe(false)
     expect(info.title).toMatch(/total spend cap/i)
-    const ledgerInfo = runs.failureInfo({ settled: { status: "unanswered", reason: "model_error", detail: "The spend ledger (/x/spend.json) is unreadable or corrupt, so the total spend cap cannot be checked." }, events: [] })
+    writeFileSync(LEDGER, "{ not json")
+    const ledgerDetail = inference.ledgerState().error
+    expect(ledgerDetail).toMatch(/spend ledger/i)
+    const ledgerInfo = runs.failureInfo({ settled: { status: "unanswered", reason: "model_error", detail: ledgerDetail }, events: [] })
     expect(ledgerInfo.kind).toBe("budget")
     expect(ledgerInfo.retryable).toBe(false)
+    // Words alone do not make a budget stop: only the cap's own sentence does.
+    const other = runs.failureInfo({ settled: { status: "unanswered", reason: "model_error", detail: "Tool failed: could not parse spend ledger column in target CSV" }, events: [] })
+    expect(other.kind).not.toBe("budget")
+  })
+
+  test("a follow-up is refused when the ledger is at the cap", () => {
+    // This run has also spent its own budget, so without the cap check the
+    // next check stops the follow-up before any workspace or worker.
+    const run = () => ({ id: "r", events: [{ ev: "budget", usd: 1 }, { ev: "spend", usd: 1 }] })
+    ledger(10)
+    expect(() => runs.followUp(run(), "hi", "c")).toThrow(/spent its budget/)
+    ledger(50.85)
+    expect(() => runs.followUp(run(), "hi", "c")).toThrow(/total spend cap/i)
+    writeFileSync(LEDGER, "{ not json")
+    expect(() => runs.followUp(run(), "hi", "c")).toThrow(/spend ledger/i)
   })
 
   test("Settings shows the cap and the ledger, and does not break on a corrupt ledger", () => {

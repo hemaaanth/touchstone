@@ -17,7 +17,7 @@ import {
   readConfig,
   writeConfig,
 } from "../../spike/lib/providers.mjs"
-import { ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
+import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig } from "../../spike/lib/daytona.mjs"
 import { GRANT_TOKEN } from "../../spike/lib/grant-store.mjs"
@@ -87,16 +87,9 @@ export function appRunBudgetUsd(cfg = readConfig()) {
 // providers.json may set spendCapUsd. SPEND_CAP_USD in the server's env can
 // only lower the cap, never raise it. A value that is not a positive dollar
 // amount throws, so the cap is never "no limit". Read-only in the console.
-export const APP_DEFAULT_SPEND_CAP_USD = 50.85
+export const APP_DEFAULT_SPEND_CAP_USD = DEFAULT_SPEND_CAP_USD
 export function appSpendCapUsd(cfg = readConfig()) {
-  const raw = cfg.spendCapUsd
-  const n = Number(raw)
-  if (raw != null && (typeof raw === "boolean" || !Number.isFinite(n) || n <= 0)) {
-    throw new Error(`spendCapUsd in the provider config is "${raw}", which is not a positive dollar amount, so the total spend cap cannot be checked.`)
-  }
-  const capUsd = raw == null ? APP_DEFAULT_SPEND_CAP_USD : n
-  const env = spendCapUsd()
-  return env == null ? capUsd : Math.min(capUsd, env)
+  return spendCapUsd(cfg)
 }
 
 // Why a new run (or a follow-up) may not start under the total cap, or null.

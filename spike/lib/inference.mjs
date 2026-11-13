@@ -3,8 +3,9 @@
 // BASE_URL, MODELS and the key come from the provider active when this module
 // loads: PROVIDER=<id>, else the Settings default. Each engine run is a fresh
 // process, so this snapshot is that run's provider and budget.
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { FALLBACK_PRICE, activeProvider, runBudgetUsd, providerKey } from "./providers.mjs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { FALLBACK_PRICE, activeProvider, readConfig, runBudgetUsd, providerKey } from "./providers.mjs";
 import { createRunBudget } from "./run-budget.mjs";
 
 const budget = createRunBudget(process.env.RUN_BUDGET_USD ?? runBudgetUsd(), process.env.RUN_SPENT_USD ?? 0);
@@ -17,10 +18,13 @@ export const PROVIDER_LABEL = PROVIDER.label;
 export const BASE_URL = PROVIDER.baseUrl;
 export const MODELS = PROVIDER.models;
 
-// SPEND_LEDGER points every worktree at one shared ledger. SPEND_CAP_USD stops a
-// call once the shared lifetime total reaches it (the total spend cap). Both are
-// read on every call, so a test or a server can change them without a reload.
-const ledgerPath = () => process.env.SPEND_LEDGER || new URL("../spend.json", import.meta.url);
+// SPEND_LEDGER points every worktree at one shared ledger. The total spend cap
+// stops a call once the shared lifetime total reaches it. Both are read on every
+// call, so a test or a server can change them without a reload.
+const ledgerPath = () => {
+  const p = process.env.SPEND_LEDGER || new URL("../spend.json", import.meta.url);
+  return p instanceof URL ? fileURLToPath(p) : p;
+};
 
 export function key() {
   const k = providerKey(PROVIDER);
@@ -31,16 +35,23 @@ export function key() {
 }
 
 // ---- Spend ledger. One global ledger across providers; every paid call goes
-// through charge(). With SPEND_CAP_USD set, guard() stops a call once the ledger
-// total reaches the cap.
+// through charge(). guard() stops a call once the ledger total reaches the cap.
 //
 // Fail closed: a ledger that cannot be read, is not JSON, or has no numeric
-// totalUsd throws. It never reads as $0 spent. A missing file is a fresh ledger.
-// The messages below avoid words the engine's retry check treats as transient
-// ("error", "timeout", "unavailable"), so a cap stop is never retried.
+// totalUsd throws. It never reads as $0 spent. A missing file is a fresh ledger
+// (with a warning, so a deleted ledger is noticed).
+// Every cap message says "out of budget": pi-ai's retry check never retries a
+// message with those words, even when an amount such as $500 looks like an HTTP
+// status. So a cap stop is never retried.
+const OUT = "This call is out of budget.";
+let warnedMissing = false;
 function readLedger() {
   const file = ledgerPath();
-  if (!existsSync(file)) return { totalUsd: 0, calls: 0, byModel: {} };
+  if (!existsSync(file)) {
+    if (!warnedMissing) console.warn(`[inference] no spend ledger at ${file}; starting a new one at $0`);
+    warnedMissing = true;
+    return { totalUsd: 0, calls: 0, byModel: {} };
+  }
   let l;
   try {
     l = JSON.parse(readFileSync(file, "utf8"));
@@ -48,7 +59,7 @@ function readLedger() {
     l = null;
   }
   if (!l || typeof l !== "object" || typeof l.totalUsd !== "number" || !Number.isFinite(l.totalUsd) || l.totalUsd < 0) {
-    throw new Error(`The spend ledger (${file}) is unreadable or corrupt, so the total spend cap cannot be checked. Fix or restore it before spending more.`);
+    throw new Error(`The spend ledger (${file}) is unreadable or corrupt, so the total spend cap cannot be checked. ${OUT} Fix or restore the ledger before spending more.`);
   }
   return l;
 }
@@ -63,23 +74,59 @@ export function ledgerState() {
     return { usd: null, error: err.message };
   }
 }
-// The total spend cap from SPEND_CAP_USD, or null when it is not set. A value
-// that is set but is not a positive finite number throws: it is never "no limit".
-export function spendCapUsd(raw = process.env.SPEND_CAP_USD) {
-  if (raw == null || String(raw).trim() === "") return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`SPEND_CAP_USD is set to "${raw}", which is not a positive dollar amount, so the total spend cap cannot be checked.`);
+
+// Many processes share the ledger (fleet children, parallel app runs). Each
+// charge is a read-modify-write, so it runs under a lock file, and the new
+// ledger is written to a temp file and renamed over the old one. A reader never
+// sees a half-written file, and no charge is lost. A lock older than
+// LOCK_STALE_MS is left by a dead process and is removed.
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 30_000;
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function withLedgerLock(file, fn) {
+  const lock = `${file}.lock`;
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lock, "wx"));
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock); } catch { /* gone already */ }
+      if (Date.now() > until) throw new Error(`Could not lock the spend ledger (${lock}) to record a charge. ${OUT} Remove the lock file if no run is active.`);
+      sleepMs(2 + Math.random() * 8);
+    }
   }
-  return n;
+  try {
+    return fn();
+  } finally {
+    try { unlinkSync(lock); } catch { /* already removed */ }
+  }
+}
+
+// The total spend cap. It is the config's spendCapUsd, else DEFAULT_SPEND_CAP_USD,
+// so the CLI has a cap too. SPEND_CAP_USD can only lower it. A value that is set
+// but is not a positive finite number throws: it is never "no limit".
+export const DEFAULT_SPEND_CAP_USD = 50.85;
+const positive = (raw) => typeof raw !== "boolean" && Number.isFinite(Number(raw)) && Number(raw) > 0;
+export function spendCapUsd(cfg = readConfig(), raw = process.env.SPEND_CAP_USD) {
+  const fromCfg = cfg?.spendCapUsd;
+  if (fromCfg != null && !positive(fromCfg)) {
+    throw new Error(`spendCapUsd in the provider config is "${fromCfg}", which is not a positive dollar amount, so the total spend cap cannot be checked. ${OUT}`);
+  }
+  const cap = fromCfg == null ? DEFAULT_SPEND_CAP_USD : Number(fromCfg);
+  if (raw == null || String(raw).trim() === "") return cap;
+  if (!positive(raw)) {
+    throw new Error(`SPEND_CAP_USD is set to "${raw}", which is not a positive dollar amount, so the total spend cap cannot be checked. ${OUT}`);
+  }
+  return Math.min(cap, Number(raw));
 }
 export function spendCapMessage(usd, cap) {
-  return `Total spend cap reached: the ledger shows $${usd.toFixed(4)} of the $${cap.toFixed(2)} total cap (SPEND_CAP_USD). Raise the total cap to spend more.`;
+  return `Total spend cap reached: the ledger shows $${usd.toFixed(4)} of the $${cap.toFixed(2)} total cap (SPEND_CAP_USD). ${OUT} Raise the total cap to spend more.`;
 }
 export function guard(estimateUsd = 0) {
   budget.guard(estimateUsd);
   const cap = spendCapUsd();
-  if (cap == null) return;
   const usd = spent();
   if (usd >= cap || usd + estimateUsd > cap) throw new Error(spendCapMessage(usd, cap));
 }
@@ -97,15 +144,29 @@ export function charge(modelId, usage) {
   const inTok = usage?.prompt_tokens ?? usage?.input ?? 0;
   const outTok = usage?.completion_tokens ?? usage?.output ?? 0;
   const usd = costOf(modelId, inTok, outTok);
-  budget.charge(usd);
-  const l = readLedger();
-  l.totalUsd += usd;
-  l.calls = (l.calls ?? 0) + 1;
-  const key = `${PROVIDER.id}/${modelId}`;
-  const b = ((l.byModel ??= {})[key] ??= { usd: 0, input: 0, output: 0, calls: 0 });
-  b.usd += usd; b.input += inTok; b.output += outTok; b.calls += 1;
-  writeFileSync(ledgerPath(), JSON.stringify(l, null, 2));
+  record(modelId, usd, inTok, outTok);
   return usd;
+}
+// Spend priced elsewhere, such as an outside engine's own model calls (Strix).
+export function chargeUsd(modelId, usd) {
+  if (!(usd > 0)) return 0;
+  record(modelId, usd, 0, 0);
+  return usd;
+}
+function record(modelId, usd, inTok, outTok) {
+  budget.charge(usd);
+  const file = ledgerPath();
+  withLedgerLock(file, () => {
+    const l = readLedger();
+    l.totalUsd += usd;
+    l.calls = (l.calls ?? 0) + 1;
+    const key = `${PROVIDER.id}/${modelId}`;
+    const b = ((l.byModel ??= {})[key] ??= { usd: 0, input: 0, output: 0, calls: 0 });
+    b.usd += usd; b.input += inTok; b.output += outTok; b.calls += 1;
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(l, null, 2));
+    renameSync(tmp, file);
+  });
 }
 
 // ---- Raw Chat Completions call. Non-streaming returns the JSON body.

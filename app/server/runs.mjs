@@ -649,7 +649,8 @@ export function failureInfo(run) {
   // The total spend cap (the shared ledger) stopped the run, or the ledger or
   // cap could not be read. A ceiling, not a model fault: another run would stop
   // the same way, so it is not retryable.
-  if (/total spend cap|SPEND_CAP_USD|spend ledger/i.test(`${detail} ${run.error ?? ""}`)) {
+  // Only our own cap messages carry this exact sentence (spike/lib/inference.mjs).
+  if (/This call is out of budget\./.test(`${detail} ${run.error ?? ""}`)) {
     return {
       kind: "budget", retryable: false, reason, spentUsd, detail: detail || (run.error ?? ""),
       title: "Run stopped at the total spend cap",
@@ -922,7 +923,7 @@ function ensureFiles(run) {
 // Start a follow-up: one operator message to an idle run. The worker reopens
 // the run's saved agent session in a fresh workspace, answers, and exits. Any
 // finding it proves is replayed and added to the run record.
-function followUp(run, text, clientId) {
+export function followUp(run, text, clientId) {
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
