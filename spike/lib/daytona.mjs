@@ -109,7 +109,7 @@ export function daytonaOn(env = process.env) {
 // `--flag=value` form except `--network=` and `--pull=never`, and a second
 // network flag. `--pull=never` sets `noPull`: the machine then never pulls the
 // image. A missing image is copied up from this host instead (code 199).
-const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint"]);
+const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
 
 export function planRemote(args, ws, remoteWs) {
@@ -137,8 +137,6 @@ export function planRemote(args, ws, remoteWs) {
       } else {
         out.push(a, spec); // a named volume lives on the machine
       }
-    } else if (a === "--name") {
-      i++; // runOn names the remote container itself; its watchdog kills that name
     } else if (VALUE_FLAGS.has(a)) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {
