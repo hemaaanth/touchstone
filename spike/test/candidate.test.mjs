@@ -248,3 +248,28 @@ test("candidateState saves each new candidate and restores the guards on resume"
   assert.equal(forged[0].proven, false, "a saved file cannot make a candidate proven");
   assert.equal(forged[0].provedBy, null);
 });
+
+// Review Minor 1: hashes, topics and calldata words are not keys.
+test("64-hex values under hash names and inside calldata stay; a key under a secret name goes", () => {
+  const H = "3f".repeat(32);
+  const v = scrubValue({
+    snapshotHash: H, txHash: `0x${H}`, sha256: H, blockHash: `0x${H}`, topics: [`0x${H}`],
+    calldata: `0xa9059cbb${H}${H}`, input: `0x095ea7b3${H}`,
+    privateKey: `0x${H}`, signer: { secret: H }, note: `the key is 0x${H}`,
+  });
+  assert.equal(v.snapshotHash, H);
+  assert.equal(v.txHash, `0x${H}`);
+  assert.equal(v.sha256, H);
+  assert.equal(v.blockHash, `0x${H}`);
+  assert.deepEqual(v.topics, [`0x${H}`]);
+  assert.equal(v.calldata, `0xa9059cbb${H}${H}`);
+  assert.equal(v.input, `0x095ea7b3${H}`);
+  assert.match(v.privateKey, /^\[REDACTED/);
+  assert.match(v.signer.secret, /^\[REDACTED/);
+  assert.ok(!v.note.includes(H), "a bare 64-hex in prose may be a key");
+  assert.equal(scrubText(`"snapshotHash":"${H}"`), `"snapshotHash":"${H}"`);
+  assert.equal(scrubText(`txHash: 0x${H}`), `txHash: 0x${H}`);
+  assert.equal(scrubText(`call 0xa9059cbb${H}${H}`), `call 0xa9059cbb${H}${H}`);
+  assert.ok(!scrubText(`PRIVATE_KEY=0x${H}`).includes(H));
+  assert.ok(!scrubText(`privateKey: "0x${H}"`).includes(H));
+});

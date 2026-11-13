@@ -32,16 +32,23 @@ export const CANDIDATE_HINT = `If you are confident this is a real, serious vuln
 const SECRET_NAME = /secret|private|token|passw|api[-_]?key|credential|authorization|cookie|session|mnemonic|seed/i;
 // The name in NAME=value that marks the value as a secret.
 const SECRET_VAR = /secret|token|passw|private|credential|api_?key|access_?key|(?:^|_)key(?:$|_)|^pwd$/i;
-const BIP39 = new Set(LangEn.wordlist().getWord ? Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().getWord(i)) : []);
+// A value under one of these names is a hash, a log topic or calldata. Its
+// 64-hex words are not keys. A secret name still wins.
+const HASH_NAME = /hash|sha\d*$|digest|topics?$|calldata|^(?:data|input)$/i;
+const BIP39 = new Set(Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().getWord(i)));
 
 // Each regex is linear: every start sits at the start of a token run, and no
 // quantifier can backtrack over text another quantifier also takes. The test
 // runs each one on a 1 MB line. A `keep` group stays readable; `name` must
 // pass SECRET_VAR or the match is left alone.
+//
+// A hex signing key: exactly 64 hex, so a calldata word inside a longer run
+// stays. A value labelled as a hash in the text (snapshotHash: ...) stays.
+const HEX_KEY = /(?<![0-9A-Za-z_])(?<!(?:[Hh]ash|HASH|sha256|[Tt]opics?|[Dd]igest)["']?\s{0,3}[:=]\s{0,3}["']?)(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z_])/g;
 const SHAPES = [
   // A PEM private key, to its END line or to the end of its base64 body.
   /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g,
-  /(?:0x)?[0-9a-fA-F]{64}/g, // a hex signing key
+  HEX_KEY,
   /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
   /\bsk-[A-Za-z0-9_-]{16,}/g, // API keys shaped sk-...
   /(?<keep>\b(?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/=-]{6,}/g, // an Authorization value
@@ -83,15 +90,19 @@ function redactSeed(run) {
   return out;
 }
 
-export function scrubText(text, extra = []) {
+export function scrubText(text, extra = [], { hex = true } = {}) {
   let out = String(text ?? "");
-  for (const re of [...SHAPES, ...extra.map(globalOf)]) out = out.replace(re, redact);
+  const shapes = hex ? SHAPES : SHAPES.filter((re) => re !== HEX_KEY);
+  for (const re of [...shapes, ...extra.map(globalOf)]) out = out.replace(re, redact);
   return out.replace(WORD_RUN, redactSeed);
 }
 
 export function scrubValue(value, name = "", extra = []) {
   if (value == null) return value;
-  if (typeof value === "string") return SECRET_NAME.test(name) && value ? fp(value) : scrubText(value, extra);
+  if (typeof value === "string") {
+    if (SECRET_NAME.test(name) && value) return fp(value);
+    return scrubText(value, extra, { hex: !HASH_NAME.test(name) });
+  }
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((v) => scrubValue(v, name, extra));
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubValue(v, k, extra)]));
