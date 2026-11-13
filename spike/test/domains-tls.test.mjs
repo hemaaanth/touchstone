@@ -113,6 +113,19 @@ test('an entry without raw, grade or scans is a gap, not a clean result', () => 
   assert(tlsLeads({ root: 'example.com', tls: [{ url: 'https://x.test' }] }).length === 1);
 });
 
+// M-C: damaged elements are a gap, never a crash.
+test('a null entry, a null finding or a finding with no id is a gap, not a crash', () => {
+  const good = parseTestssl(real, endpoint);
+  const scan = { ...good.scans[0] };
+  const damaged = [
+    { ...good, scans: [{ ...scan, findings: [null] }] },
+    { ...good, scans: [{ ...scan, findings: [{ severity: 'HIGH', finding: 'x' }] }] },
+    { ...good, scans: [null] },
+  ];
+  for (const entry of damaged) assert.deepEqual(tlsLeads({ root: 'example.com', tls: [entry] }).map(l => [l.check, l.where]), [['tls-evidence-missing', entry.url]]);
+  assert.deepEqual(tlsLeads({ root: 'example.com', tls: [null] }).map(l => [l.check, l.where]), [['tls-evidence-missing', 'example.com']]);
+});
+
 test('tls checks replay from the pinned snapshot, unknown ones do not', async () => {
   const snapshot = { schema: 1, root: 'example.com', zone: '$ORIGIN example.com.\n$TTL 60\n@ IN SOA ns.example.com. hostmaster.example.com. ( 1 60 60 3600 60 )\n', dns: [], http: [], email: { dmarc: { valid: true, policy: 'reject', reports: false }, spf: { valid: true, all: '-all' } }, tls: [parseTestssl(real, endpoint)], rdap: null, contenthash: null };
   const ws = mkdtempSync(join(tmpdir(), 'domain-tls-live-'));

@@ -76,7 +76,8 @@ const SEVERITY = { CRITICAL: 'critical', HIGH: 'high', MEDIUM: 'medium', LOW: 'l
 const usable = entry => Boolean(entry && /^[0-9a-f]{64}$/.test(String(entry.raw ?? ''))
   && typeof entry.grade === 'string' && entry.grade.trim()
   && Array.isArray(entry.scans) && entry.scans.length
-  && entry.scans.every(scan => Array.isArray(scan?.findings)));
+  && entry.scans.every(scan => Array.isArray(scan?.findings) && scan.findings.every(isFinding)));
+const isFinding = f => Boolean(f && typeof f === 'object' && typeof f.id === 'string' && f.id && typeof f.severity === 'string' && typeof f.finding === 'string');
 
 // TLS leads from the stored evidence. The handshake was measured once; a lead
 // is the tool's graded opinion, not proof that a weakness is exploitable.
@@ -91,10 +92,11 @@ export function tlsLeads(snapshot) {
   }
   const leads = [];
   for (const endpoint of snapshot.tls) {
+    if (!endpoint || typeof endpoint !== 'object') { leads.push({ check: 'tls-evidence-missing', where: root, severity: 'informational', description: 'A stored TLS entry is not a report, so this run does not prove that handshake. This does not prove the endpoint is clean.' }); continue; }
     // An endpoint that was not measured keeps its own gap lead.
     if (endpoint.error) leads.push({ check: 'tls-evidence-missing', where: endpoint.url, severity: 'informational', description: 'The TLS handshake for ' + endpoint.url + ' was not measured: ' + endpoint.error + '. The other endpoints are unaffected. This does not prove the endpoint is clean.' });
     if (endpoint.error) continue;
-    if (!usable(endpoint)) { leads.push({ check: 'tls-evidence-missing', where: endpoint.url, severity: 'informational', description: 'The stored TLS report for ' + endpoint.url + ' is incomplete (no hash, grade or scans), so this run does not prove the handshake. ' + hashOf(endpoint) + 'This does not prove the endpoint is clean.' }); continue; }
+    if (!usable(endpoint)) { leads.push({ check: 'tls-evidence-missing', where: endpoint.url, severity: 'informational', description: 'The stored TLS report for ' + endpoint.url + ' is incomplete or damaged (no hash, grade, scans or finding id), so this run does not prove the handshake. ' + hashOf(endpoint) + 'This does not prove the endpoint is clean.' }); continue; }
     const seen = new Set();
     for (const scan of endpoint.scans) for (const finding of scan.findings) {
       const check = checkOf(finding.id);

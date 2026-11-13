@@ -108,6 +108,15 @@ test('evidence without complete, errors or raw is a gap, never a crash', () => {
   assert.equal(dnssecLeads({ root, dnssec: {} })[0].check, 'dnssec-evidence-missing');
 });
 
+// M-C: a damaged warning or error element is a gap, never a crash.
+test('a null warning or error element is a gap, not a crash', () => {
+  for (const change of [d => { d.warnings = [null]; }, d => { d.errors = [null]; }, d => { d.warnings = [{ code: 'X' }]; }]) {
+    const dnssec = evidence();
+    change(dnssec);
+    assert.deepEqual(dnssecLeads({ root, dnssec }).map(l => l.check), ['dnssec-evidence-missing']);
+  }
+});
+
 test('missing evidence is a coverage gap that names the failure', () => {
   const [lead] = dnssecLeads({ root, discovery: { coverage: [{ engine: 'dnsviz-probe', status: 'unavailable', reason: 'manifest unknown' }] } });
   assert.equal(lead.check, 'dnssec-evidence-missing');
