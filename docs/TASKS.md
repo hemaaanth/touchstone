@@ -88,16 +88,16 @@ A wave starts when the items it depends on are on `main`. Items inside a wave ru
 
 **Wave 0. Base (done at this commit).** All open app work is on `main` and pushed. A zip backup lives outside the repository.
 
-**Wave 1. Foundations. Needs nothing from the owner.**
+**Wave 1. Foundations. Needs nothing from the owner. Started 2026-11-13 03:25.** Assignments are in the coordinator's thread storage (`wave/`). All three cloud PR branches now hold `main` 591d9b8.
 
-| Thread | Items | Owns |
-|--------|-------|------|
-| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests |
-| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` |
-| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) |
-| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files |
-| 1e Images + green suite | K2 | no source files |
-| 1f Review of the base commit | K1 | read-only |
+| Thread | Items | Owns | Running as |
+|--------|-------|------|------------|
+| 1a Runs durability | A1, A2, A3, A4 | `app/server/runs.mjs`, workspace code in `spike/lib/targets.mjs`, tests | `thr_txmsg8rqzb`, branch `fix/run-continuity` |
+| 1b Design language + Scopes | C1, C2, C3, D1 | `page-parts.tsx`, `ui/tooltip.tsx`, new module pill, `scopes-page.tsx` | `thr_bvswpfykz6`, branch `ui/design-language` |
+| 1c Run view polish | B1, B2, B3, B5, B6 | run view components (not the sidebar file) | `thr_hvptu9ii6r`, branch `ui/run-view-polish` |
+| 1d Cloud PR 4, then PR 7 | H1, H2 | the PR files | PR 4 review `thr_hv4wbw7qis` (`merge/pr-4` 4915bde); PR 7 author `thr_vwfuw9z46v` (`merge/pr-7` 690923d). Both run now. |
+| 1e Images + green suite | K2 | no source files | `thr_9csjsxzqis`, branch `fix/green-suite` (also K6) |
+| 1f Review of the base commit | K1 | read-only | `thr_xikyvziytr`, read-only |
 
 **Wave 2. Consumers. Starts after 1a, 1b and PR 7.**
 
@@ -147,37 +147,37 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| A1 | todo | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. |
-| A2 | todo | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
-| A3 | todo | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
-| A4 | todo | **Run again must keep context.** Run again starts a fresh run today. Decide with the owner if it should continue the same chat. (Ask in the A-thread report, do not guess.) |
+| A1 | doing | **"The run stopped unexpectedly" (code `no-settle`).** The ENS metadata-service run died before it settled ($0.60 spent). Find the real cause in that run's stderr and events. Fix the cause, not only the card. Source: `app/server/runs.mjs:898`. |
+| A2 | doing | **Sources are gone after Run again or a follow-up.** The agent said "Sandbox is fresh: sources are gone". Reopening rebuilds the workspace (`prepareWorkspace`) but code fetched into `vendor/` at run time is not restored. Chat history, sources and leads must all survive. Same root as old tester MAJOR 5 (live follow-up fails after a sandbox rebuild). |
+| A3 | doing | **Follow-up is refused on runs with a generated lab** ("this run's lab was generated for that run only…", `runs.mjs:1076`). A finished run must accept a follow-up. Keep or rebuild the same lab. Never tell the user the run "marked itself done". |
+| A4 | doing | **Run again must keep context.** Checked in code: "Run again" already continues the same run and the same chat (it sends a follow-up). The loss came from A2 (the reopen rebuilt the workspace). So A4 is a test inside thread 1a: after Run again, sources and history are still there. No owner decision is needed. |
 | A5 | todo | Fleet runs do not survive a server restart. Needs a change in `coordinator.ts`, which is inside the boundary. **blocked** on the owner. |
 
 ## B. Run view polish
 
 | ID | State | Item |
 |----|-------|------|
-| B1 | todo | Run header: drop the status word ("Failed", "Running", "Proven"). The dot says it. Keep the word for screen readers and in the dot's tooltip. |
-| B2 | todo | Chat start jitter: the first box turns into an indented "tool scan" dropdown. Make the start of a run one calm, stable layout with no jump and no odd indent. |
-| B3 | todo | The side panel changes width when it opens and closes. Same width in both states. |
+| B1 | doing | Run header: drop the status word ("Failed", "Running", "Proven"). The dot says it. Keep the word for screen readers and in the dot's tooltip. |
+| B2 | doing | Chat start jitter: the first box turns into an indented "tool scan" dropdown. Make the start of a run one calm, stable layout with no jump and no odd indent. |
+| B3 | doing | The side panel changes width when it opens and closes. Same width in both states. |
 | B4 | todo | Top-left "Touchstone" header is sticky at the same height as the run header but has no bottom rule. Add the rule so both line up as one bar. |
-| B5 | todo | Finding pills show two status words ("Critical" + "Waiting"). Use icons and one indicator. Easier to scan. |
-| B6 | todo | Error states: use the assistant-ui error-state and tool-error patterns (https://www.assistant-ui.com/elements/error-state, https://www.assistant-ui.com/elements/tool-error). Sentence case, proper copy, in the theme. No flash or jitter when the user presses Enter. |
+| B5 | doing | Finding pills show two status words ("Critical" + "Waiting"). Use icons and one indicator. Easier to scan. |
+| B6 | doing | Error states: use the assistant-ui error-state and tool-error patterns (https://www.assistant-ui.com/elements/error-state, https://www.assistant-ui.com/elements/tool-error). Sentence case, proper copy, in the theme. No flash or jitter when the user presses Enter. |
 | B7 | todo | Run Info panel: modules and model are a plain text list. Modules become colored pills (see C1). Model reads cleanly. |
 
 ## C. One design language
 
 | ID | State | Item |
 |----|-------|------|
-| C1 | todo | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. |
-| C2 | todo | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
-| C3 | todo | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). |
+| C1 | doing | **Module pills with one fixed color per module.** The same module has the same color on every screen: run Info, Scopes, Modules, Settings, New run, Findings. One map in code. Restraint rules still hold: red and green stay reserved for proof. |
+| C2 | doing | Tooltips are bright white and off-theme. Fix the tooltip component once for the whole app. |
+| C3 | doing | One list pattern for Scopes, Modules and Settings: the bb Settings list (title, one muted line, "+ Add" at the top right, one bordered card, rows with icon, name, badges, muted meta, "…" menu, no per-row expand toggle). |
 
 ## D. Scopes
 
 | ID | State | Item |
 |----|-------|------|
-| D1 | todo | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
+| D1 | doing | Redesign the Scopes page in the C3 pattern. No layout shift on open. Modules as C1 pills. No row has a dropdown that others lack: every row behaves the same. |
 | D2 | todo | **Scope brief in the scope, not in the repo.** Today Touchstone writes a `BRIEF.md` into the run workspace (the repo does not need one). The owner wants a brief field on each scope, edited in the scope's settings, and applied to every run of that scope. The run view should not show "Read BRIEF.md" as if it were a repo file. |
 | D3 | todo | One multi-module run: ticking several modules builds one run, not one run per module. Needs one paid run to prove it (owner's yes). |
 
@@ -217,8 +217,8 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| H1 | todo | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
-| H2 | todo | PR 7 (report redaction), `merge/pr-7` 5b75dfb: open redaction rules. Blocks F2. |
+| H1 | review | PR 4 (harm gate), `merge/pr-4` 2c9824b: re-review. PR 3 is its twin; merge only one. |
+| H2 | doing | PR 7 (report redaction), `merge/pr-7` 5b75dfb: open redaction rules. Blocks F2. |
 | H3 | todo | PR 6 (replay bundle), `merge/pr-6` 2e51648: Major 7 and leak classes. After PR 7. |
 | H4 | parked | PR 8: parked until the owner decides. |
 
@@ -246,12 +246,12 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 | ID | State | Item |
 |----|-------|------|
 | K1 | review | The app work (scope model, console token, page edits, New run dialog, setup script) is on `main` as the new base. It still needs its independent review (thread 1f). |
-| K2 | todo | Rebuild the tool images with `spike/scripts/setup.mjs` and get a green full suite at the tip. Toolkit reviews need the images. |
+| K2 | doing | Rebuild the tool images with `spike/scripts/setup.mjs` and get a green full suite at the tip. Toolkit reviews need the images. |
 | K3 | blocked | The 22 old run files are removed from the tree at the base commit. They stay in git history and in a local trash folder (ignored by git). Open: rewrite history to drop them, or leave it. |
 | K4 | todo | Remove old worktrees after their branches merge. |
-| K6 | todo | One spike test fails on `main` (also before the base commit): `oz-monitor.test.mjs`, "a monitor run that times out…". The monitor now finishes inside the 1.5 s limit, so the timeout never fires. Fix the test so it does not depend on speed. Goes to thread 1e. |
+| K6 | doing | One spike test fails on `main` (also before the base commit): `oz-monitor.test.mjs`, "a monitor run that times out…". The monitor now finishes inside the 1.5 s limit, so the timeout never fires. Fix the test so it does not depend on speed. Goes to thread 1e. |
 | K5 | todo | Re-check old tester MINOR M1: the proof drawer hides harm numbers. |
 
 ## Owner decisions (open)
 
-chain-bench and raven · classic GitHub token for Scorecard API and Legitify · PR 3 close · PR 8 · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files · A4 (Run again behaviour).
+chain-bench and raven · classic GitHub token for Scorecard API and Legitify · PR 3 close · PR 8 · safe-hash-rs licence · GPL-3.0 package in the Mythril image · vacuity kill-rate bar · candidates for packs with no proof model · Stader fork exception + RPC URL · fleet restart (coordinator.ts) · free-roam loadouts (fleet files) · infra-cloud credential · Daytona step 0 · a paid run for D3 · the 22 run files.
