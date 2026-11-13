@@ -18,6 +18,8 @@ import { SettingsPage } from "@/components/settings-page"
 import { NewRunDialog } from "@/components/new-run-dialog"
 import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
+import { ErrorState } from "@/components/assistant-ui/elements/error-state"
+import { onStalePage } from "@/lib/console-token"
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
@@ -36,6 +38,11 @@ export function App() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  // A write the server refused because this page's console token is old (it was
+  // rotated in another tab). Shown once, with Reload, for every kind of write:
+  // a rename or an archive shows no error of its own.
+  const [stalePage, setStalePage] = useState<string | null>(null)
+  useEffect(() => onStalePage(setStalePage), [])
 
   const refreshModels = useCallback(() => {
     fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
@@ -209,7 +216,7 @@ export function App() {
         onRename={onRename}
       />
 
-      <main className="flex h-svh min-w-0 flex-1 flex-col">
+      <main className="relative flex h-svh min-w-0 flex-1 flex-col">
         {activeRun ? (
           <RunChat
             key={activeRun.id}
@@ -243,6 +250,11 @@ export function App() {
             <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
           </div>
         )}
+        {stalePage ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-50 flex justify-center px-4">
+            <ErrorState className="pointer-events-auto w-full max-w-md" title={stalePage} onRetry={() => window.location.reload()} retryLabel="Reload" />
+          </div>
+        ) : null}
       </main>
 
       <NewRunDialog
