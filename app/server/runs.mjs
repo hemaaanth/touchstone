@@ -360,7 +360,7 @@ function view(run) {
     // The module (pack) this run uses. A run saved before modules existed is Contracts.
     pack: scopeOf(run)?.pack ?? "contracts",
     // Every module this ONE run covers. One entry for a one-module run, so a
-    // reader never has to branch; absent on a record saved before modules.
+    // reader never has to branch.
     packs: run.packs?.length ? run.packs : [scopeOf(run)?.pack ?? "contracts"],
     // The module plan for this run — which parts of the pipeline are on and why,
     // so a reconnecting client can render it without replaying the event stream.

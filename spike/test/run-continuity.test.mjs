@@ -671,6 +671,7 @@ for (const packs of [["web", "ai-mcp"], ["ai-mcp", "web"]]) {
       assert.equal(root.pack, "multi");
       assert.deepEqual(root.packs, packs);
       assert.deepEqual(kept(id).packs, packs, "the record keeps the modules");
+      assert.deepEqual(runs.getRun(id).packs, packs, "and so does the view");
       // The run itself had the token in the ai-mcp module only.
       assert.ok(first.brief.includes(TOKEN), "the module that needs it had it");
       assert.deepEqual(Object.keys(first.mcp.tokens), [TOKEN, ADMIN]);

@@ -303,6 +303,16 @@ test("each module's pre-pass leads stay its own, even when another fails", async
   assert.match(sectionOf(text, "beta"), /Leads: none/, "beta must not get alpha's leads or the stray key");
 });
 
+test("contracts' symbolic and chimera parts are lifted with static and fuzz", async () => {
+  const contracts = { id: "contracts", title: "c", system: () => "", tools: () => [],
+    prepass: async () => ({ env: {}, record: { static: { a: 1 }, fuzz: { b: 2 }, symbolic: { c: 3 }, chimera: { d: 4 } } }) };
+  const pack = multiPack([contracts, stub("beta", { calls: [], proved: [] })]);
+  const ws = mkdtempSync(path.join(tmpdir(), "multi-lift-"));
+  roots.push(ws);
+  const { record } = await pack.prepass(ws, {});
+  assert.deepEqual([record.static, record.fuzz, record.symbolic, record.chimera], [{ a: 1 }, { b: 2 }, { c: 3 }, { d: 4 }]);
+});
+
 test("two tools with one name are refused, not mis-routed", () => {
   const x = { id: "x", title: "x", system: () => "", tools: () => [{ name: "shared_tool", execute: async () => ({}) }] };
   // y has the shared name too, and one that x's renamed form will collide with.
