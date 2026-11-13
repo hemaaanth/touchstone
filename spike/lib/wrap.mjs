@@ -9,24 +9,20 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
 //   image    pinned image, e.g. "ghcr.io/trufflesecurity/trufflehog:3.90.0"
+//            Never pulled: an image that is not local makes the call fail, and
+//            the caller reports a coverage gap instead of reaching a registry.
 //   cmd      the command, as an argv array
 //   network  "none" unless the pack's TOOLS.md says the tool needs more
 //   user     runs as the host user by default, so it can read the workspace
 //            with no capabilities and its output files stay ours
-//   pull     Docker --pull policy. Default "missing" matches Docker's own
-//            default (pull only if the image is absent), so the scanner images
-//            that are pulled by tag on first use keep working. A pack that
-//            ships its own pinned local image passes "never": the run then uses
-//            only that image and never reaches a registry, so a missing image
-//            fails closed instead of silently pulling.
 // Resolves (never rejects) with { code, stdout, stderr, timedOut }.
 //
 // The container runs in local Docker by default. When Settings picks Daytona,
 // it runs the same way on a Daytona machine instead (lib/daytona.mjs), with the
 // same result shape. A call Daytona cannot serve runs locally.
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, pull = "missing" }) {
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024 }) {
   const args = [
-    "run", "--rm", "--network", network, "--pull", pull,
+    "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
     "--pids-limit", "512", "--memory", "2g", "--user", user,
     ...(ws ? ["-v", `${ws}:/work`, "-w", "/work"] : []),
