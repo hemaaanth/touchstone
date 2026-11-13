@@ -154,10 +154,12 @@ two `.com` permutations, so the lab capture has no `!ServFail` row.
 A scope names a domain. `.touchstone.json` holds `domain`, and optionally
 `owned` and `blocklists`. For a live target, `prepareWorkspace` in
 `lib/targets.mjs` writes `domain` (the first host), `owned` (from the target)
-and `reach`. A live target must carry an `owned` list; `[]` means none. The platform grant fills `reach`: `network`,
-`granted`, `scope`, and optionally `resolver`. The prepass runs dnstwist once
-through `runTool()` with `--format json`, pins the snapshot, and the checks run
-on the pin. Live capture refuses a domain that `reach.scope` does not cover.
+and `reach`. A live target must carry an `owned` list; `[]` means none. The
+platform grant fills `reach`: `network`, `granted`, `scope`, and optionally
+`resolver`. The prepass runs dnstwist through `runTool()` in three steps: one
+`--format json` capture of the domain, 3 control names per zone, and one
+offline `--format list` run for the fingerprint. It pins the snapshot, and the
+checks run on the pin. Each later scan runs the offline list once more. Live capture refuses a domain that `reach.scope` does not cover.
 With no grant it stops before any tool runs. A lab network must also be
 `--internal` in Docker.
 
