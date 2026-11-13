@@ -774,7 +774,25 @@ test("a joined worker that dies after submitting still records the finding, unpr
     assert.equal(rec.findings.length, 1, "the finding is in the record");
     assert.equal(rec.findings[0].pack, undefined, "it names no module, and is kept anyway");
     assert.equal(rec.findings[0].pocProved, false, "and it is not proven without a replay");
-    made.push(spawns.at(-1).args[4]);
+    // A second worker names its module: the record and the finding event carry
+    // it, so the Findings page shows the right pill. Domains' own prepass and
+    // replay need a live capture, so they are stubbed here.
+    const real = { prepass: PACKS.domains.prepass, prove: PACKS.domains.prove };
+    PACKS.domains.prepass = undefined;
+    PACKS.domains.prove = async (ws, found) => found.map((f) => ({ ...f, pocProved: true }));
+    try {
+      scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [
+        { t: 1, ev: "finding-submitted", pack: "domains", n: 1, title: "Dangling CNAME", severity: "high", poc: "cdn-1" },
+      ], code: 1 });
+      const second = await createRun({ targetId: live.id, packs: ["web", "domains"], mode: "solo" });
+      const r2 = await settle(second.id);
+      made.push(spawns.at(-1).args[4]);
+      const rec2 = JSON.parse(readFileSync(path.join(RESULTS, `run-${second.id}.json`), "utf8")).result;
+      assert.deepEqual(rec2.findings.map((f) => f.pack), ["domains"]);
+      assert.ok(r2.events.some((e) => e.ev === "finding" && e.pack === "domains"), `${r2.status} | ${r2.error}`);
+    } finally {
+      Object.assign(PACKS.domains, real);
+    }
   });
 });
 

@@ -1006,6 +1006,9 @@ function announceFindings(run, findings, first) {
         title: f.title,
         severity: f.severity,
         poc: f.poc,
+        // The module this finding came through. The Findings page shows its pill
+        // and, since one run can hold several modules, it must be the tool's.
+        ...(f.pack ? { pack: f.pack } : {}),
         proofKind: proofKind(f),
         proven: isProven(f),
         target: scopeOf(run)?.title ?? null,
