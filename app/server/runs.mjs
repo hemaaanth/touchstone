@@ -43,6 +43,8 @@ import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
+import { isMeasured } from "../../spike/lib/candidate.mjs"
+import { recordProven } from "./findings.mjs"
 import { candidateEvents, candidatesOf, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -1022,10 +1024,12 @@ function spawnAgent(run, leads) {
 }
 
 // Broadcast one `finding` event, and one replay-proof document if it passed, per
-// recorded finding. `first` is the index of the first one in the run record.
-function announceFindings(run, findings, first) {
+// recorded finding.
+// `ids` are the findings' ledger ids, given with them: never read back by
+// position from run.findingIds, which a load-time split can shorten (N3).
+function announceFindings(run, findings, ids) {
   findings.forEach((f, k) => {
-    const id = run.findingIds[first + k]
+    const id = ids[k]
     if (!run.events.some((e) => e.ev === "finding" && e.id === id)) {
       broadcast(run, {
         ev: "finding",
@@ -1076,7 +1080,7 @@ async function recordRun(run, found, exit = {}) {
     persistRun(run, findings)
     run.findingIds = findings.map((_, k) => `${run.id}.${k + 1}`)
     run.proof = findings[0]?.proof ?? null
-    announceFindings(run, findings, 0)
+    announceFindings(run, findings, run.findingIds)
     noteCoverage(run)
     run.status = "recorded"
     run.decision = "approve"
@@ -1965,8 +1969,12 @@ async function recordMore(run, found) {
   } else {
     persistRun(run, findings)
   }
-  run.findingIds = [...run.findingIds.slice(0, first), ...findings.map((_, k) => `${run.id}.${first + k + 1}`)]
-  announceFindings(run, findings, first)
+  // The new ids follow the record's whole list (measured rows included: they
+  // keep their places in the record). They are appended to the run's list,
+  // which a load-time split may have shortened, and announced as given.
+  const newIds = findings.map((_, k) => `${run.id}.${first + k + 1}`)
+  run.findingIds = [...run.findingIds.filter((x) => !newIds.includes(x)), ...newIds]
+  announceFindings(run, findings, newIds)
   noteCoverage(run, { always: true })
   run.status = "recorded"
   run.decision = "approve"
@@ -2298,29 +2306,28 @@ function submittedFindings(id) {
 }
 
 // A `finding` event in the stream says "proven" only as a copy. The run record
-// holds the replay proof. A copy that the record does not back reads as not
-// proven: no record, an unreadable record, or a replay that did not pass. This
-// only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
-// (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
-// with one finding. The copy must also be the record's finding, not only carry
-// its number: a line that keeps the id of a proven finding but names another
-// title, severity or test is not proven.
+// holds the replay proof, and its verdict is read as the Findings page reads
+// it (findings.mjs recordProven, today's rule), in both directions: a copy the
+// record does not back reads as not proven (no record, an unreadable record,
+// a replay that did not pass, a row of another title or test), and a copy of
+// a row the record proves reads as proven (N3: a rule that changed since the
+// stream was written). Only record rows: nothing unrecorded becomes proven.
+// Ids are the ledger's (splitRun in findings.mjs): `<run>.<k>`, or the run id
+// for an older record with one finding.
 const sameFinding = (e, f) => ["poc", "title", "severity"].every((k) => (e[k] ?? null) === (f?.[k] ?? null))
 function provenByRecord(id, events) {
-  const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
+  const claims = events.filter((e) => e.ev === "finding")
   if (!claims.length) return
-  let r = {}
+  let raw = null
   try {
-    r = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8")).result ?? {}
+    raw = JSON.parse(readFileSync(path.join(RESULTS_DIR, `run-${id}.json`), "utf8"))
   } catch {
     // no readable record: nothing is proven
   }
-  const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
+  const rows = raw ? recordProven(raw, id) : new Map()
   for (const e of claims) {
-    const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
-    const entry = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id ? r.finding : null
-    const stored = list || !entry ? entry : { pocProved: r.pocProved, proof: r.proof }
-    if (!isProven(stored) || !sameFinding(e, entry)) e.proven = false
+    const row = rows.get(String(e.id))
+    e.proven = Boolean(row && row.proven && sameFinding(e, row.finding))
   }
 }
 
@@ -2520,8 +2527,11 @@ async function resumeRun(run) {
     // proof or overwrite it, even if the workspace has already been removed.
     const result = JSON.parse(readFileSync(recordFile, "utf8")).result
     if (result?.outcome === "recorded" && result.findings?.length) {
-      run.findingIds = result.findings.map((_, k) => `${run.id}.${k + 1}`)
-      announceFindings(run, result.findings, 0)
+      // An older record can hold measured rows: they are candidates, not
+      // findings. Each finding keeps its ledger id (its record position).
+      const rows = result.findings.map((f, k) => ({ f, id: `${run.id}.${k + 1}` })).filter((x) => !isMeasured(x.f))
+      run.findingIds = rows.map((x) => x.id)
+      announceFindings(run, rows.map((x) => x.f), run.findingIds)
       run.status = "recorded"
       run.decision = "approve"
       broadcast(run, { ev: "status", status: "recorded", decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
@@ -2617,6 +2627,7 @@ function loadSavedRun(id) {
       const engineFile = path.join(RESULTS_DIR, `run-${id}.events`)
       const engine = existsSync(engineFile) ? readJsonl(engineFile) : []
       events = rebuildEvents(id, JSON.parse(readFileSync(recordFile, "utf8")), engine)
+      provenByRecord(id, events)
       mtime = statSync(recordFile).mtimeMs
     } else if (existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) {
       events = []

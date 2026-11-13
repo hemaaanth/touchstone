@@ -164,9 +164,14 @@ export const recordRowOf = (id, result, rowId) => recordRows(id, result).find((x
 // The measured candidates an older record's findings read as (N3). The
 // record keeps them as findings; nothing rewrites it. Numbered after `from`.
 export function measuredOfRecord(id, result, from = 0) {
-  const rows = recordRows(id, result).filter((x) => isMeasured(x.finding))
-  const candidates = splitMeasured(rows.map((x) => x.finding), { from }).candidates.map((c) => makeCandidate({ ...c, derived: true }))
-  return { ids: new Set(rows.map((x) => x.id)), candidates }
+  const all = recordRows(id, result)
+  const rows = all.filter((x) => isMeasured(x.finding))
+  const made = splitMeasured(rows.map((x) => x.finding), { from }).candidates.map((c) => makeCandidate({ ...c, derived: true }))
+  // A later proven finding of the same record (same poc or root cause, same
+  // module) has ended a measured candidate, as the live supersede does. Both
+  // the Findings page and the run view read this one list (N3).
+  const ended = new Set(supersededBy(made, all.map((x) => x.finding)).map((x) => x.poc))
+  return { ids: new Set(rows.map((x) => x.id)), candidates: made.filter((c) => !ended.has(c.poc)) }
 }
 
 // At load, in memory only: an older record's finding that only repeated a

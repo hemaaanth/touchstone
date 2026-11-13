@@ -360,6 +360,22 @@ function normalize(raw, { id, runId, finding }) {
   }
 }
 
+// Each finding of one stored run, by its ledger id, with the verdict the
+// Findings page shows for it (normalize's stages.proven, today's rule). The
+// run view reads this too (runs.mjs provenByRecord), so the two never
+// disagree. Only rows of the record: nothing unrecorded is in it.
+export function recordProven(raw, runId) {
+  const out = new Map()
+  for (const item of splitRun(raw ?? {}, runId)) {
+    try {
+      out.set(item.id, { proven: normalize(raw, item).stages.proven === true, finding: item.finding })
+    } catch {
+      out.set(item.id, { proven: false, finding: item.finding })
+    }
+  }
+  return out
+}
+
 async function readRuns() {
   let entries = []
   try {
