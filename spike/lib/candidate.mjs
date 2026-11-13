@@ -15,7 +15,8 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import { arr, obj, str } from "@earendil-works/pi-schema";
 import { event } from "./event.mjs";
-import { redactSecret, sha256 } from "./proof-evidence.mjs";
+import { sha256 } from "./proof-evidence.mjs";
+import { redactSecrets } from "../../app/server/redact.mjs";
 import { proofDelta } from "./proof.mjs";
 import { gate } from "./record.mjs";
 import { LangEn } from "ethers";
@@ -28,38 +29,56 @@ export const SEVERITIES = ["critical", "high", "medium", "low", "informational"]
 export const CANDIDATE_HINT = `If you are confident this is a real, serious vulnerability that this pack's checks do not cover, record it with submit_candidate. It is marked unproven and queued for human review, not dropped. Use it rarely: at most ${CANDIDATE_CAP} per run.`;
 
 // ---------------------------------------------------------------- scrub
-
+// One redactor: app/server/redact.mjs (its TEXT_RULES and its 64 KB whole-text
+// mask), the same one the report, the replay bundle and the findings ledger
+// use. Every candidate text and value goes through it first. A text the
+// redactor cannot check (too long) comes back whole as its marker.
+//
+// The rules below add only what a candidate needs and the redactor does not
+// do. A candidate keeps free agent prose and raw forge traces, so it is
+// stricter than a report:
+//   HEX_KEY    a bare 64-hex value is a signing key. The redactor keeps hex on
+//              purpose (a proof needs its hashes). Here only an engine pin
+//              (PIN_NAME) keeps it; a key can sit under data, input or *Hash.
+//   WORD_RUN   a seed phrase: 12 or more BIP-39 words in a row.
+//   LABEL      any value after a secret label. The redactor masks only a value
+//              that looks like a credential, so "password: hunter2" stays
+//              there. Also a value on the next line: "DB_PASSWORD=\nvalue".
+//   SPLIT      a vendor token broken by one line break. The two halves are
+//              joined and given to the redactor again, so its shapes decide.
+//   PEM_OPEN   a private key block cut before its END line.
+//   BASIC      a bare "Basic <base64>" outside an Authorization header.
+//   secret parent: every string under a secret-named object or list.
+const MARK = "[REDACTED]";
+const MARKER = /^\[REDACTED[^\]\r\n]{0,80}\]$/;
+// A value under a secret name that is evidence, not a secret: a 0x address.
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SECRET_NAME = /secret|private|token|passw|api[-_]?key|credential|authorization|cookie|session|mnemonic|seed/i;
-// The name in NAME=value that marks the value as a secret.
-const SECRET_VAR = /secret|token|passw|private|credential|api_?key|access_?key|(?:^|_)key(?:$|_)|^pwd$/i;
-// A value under one of these names is a hash, a log topic or calldata. Its
-// 64-hex words are not keys. A secret name still wins.
-const HASH_NAME = /hash|sha\d*$|digest|topics?$|calldata|^(?:data|input)$/i;
+// The name in NAME=value or NAME: value that marks the value as a secret.
+const SECRET_VAR = /secret|token|passw|passphrase|mnemonic|private|credential|api_?key|access_?key|(?:^|_)key(?:$|_)|^pwd$/i;
+// Under these names a number or a 0x address is kept: "tokenId: 1000",
+// "tokenAddress=0x…". Under a password or secret name nothing is kept.
+const WORD_SECRET = /passw|passphrase|secret|^pwd$/i;
+// The pins the engine computes. Their 64-hex values are not keys. Any other
+// name is judged by its value.
+const PIN_NAME = /^(?:snapshotHash|evidenceHash|sha256|digest|topics?)$/i;
 const BIP39 = new Set(Array.from({ length: 2048 }, (_, i) => LangEn.wordlist().getWord(i)));
 
 // Each regex is linear: every start sits at the start of a token run, and no
 // quantifier can backtrack over text another quantifier also takes. The test
-// runs each one on a 1 MB line. A `keep` group stays readable; `name` must
-// pass SECRET_VAR or the match is left alone.
+// runs each one on a 1 MB line (scrubExtras: the redactor masks a text that
+// long whole, so the rules are timed alone). A `keep` group stays readable.
 //
-// A hex signing key: exactly 64 hex, so a calldata word inside a longer run
-// stays. A value labelled as a hash in the text (snapshotHash: ...) stays.
-const HEX_KEY = /(?<![0-9A-Za-z_])(?<!(?:[Hh]ash|HASH|sha256|[Tt]opics?|[Dd]igest)["']?\s{0,3}[:=]\s{0,3}["']?)(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z_])/g;
-const SHAPES = [
-  // A PEM private key, to its END line or to the end of its base64 body.
-  /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g,
-  HEX_KEY,
-  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
-  /\bsk-[A-Za-z0-9_-]{16,}/g, // API keys shaped sk-...
-  /(?<keep>\b(?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/=-]{6,}/g, // an Authorization value
-  // NAME=value or NAME: value, where NAME says secret: env lines, query
-  // strings, form bodies, YAML, and JSON (plain or escaped inside a string).
-  // The label alone is matched here; replaceNamed takes the value after it.
-  /(?<![A-Za-z0-9_])(?=(?<name>[A-Za-z_][A-Za-z0-9_]*))\k<name>(?:\\?["'])?[ \t]{0,3}[:=][ \t]{0,3}(?:\\?["'])?(?!\[REDACTED)(?=[^\s"'&;,<>\\{}]{3})/g,
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, // an AWS access key id
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, // a GitHub token
-  /(?<keep>:\/\/[^/\s:@]{1,128}:)[^@\s/]{1,256}(?=@)/g, // user:password@ in a URL
-];
+// Exactly 64 hex, so a calldata word inside a longer run stays. A value
+// labelled as a pin in the text ("snapshotHash": ...) stays.
+const HEX_KEY = /(?<![0-9A-Za-z_])(?<!(?:snapshotHash|evidenceHash|sha256|[Tt]opics?|[Dd]igest)["']?\s{0,3}[:=]\s{0,3}["']?)(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z_])/g;
+const PEM_OPEN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g;
+const BASIC = /(?<keep>\b[Bb]asic[ \t]+)(?=[A-Za-z0-9+/=]{0,200}(?:[0-9+/=]|[a-z][A-Z]|[A-Z][a-z]{0,3}[A-Z]))[A-Za-z0-9+/=]{8,}/g;
+const SPLIT = /\b(?:gh[pousr]_|github_pat_|glpat-|xox[baprs]-|sk-|[sr]k_(?:live|test)_|npm_|AKIA|ASIA|eyJ)[A-Za-z0-9_.-]{0,120}(?:\r?\n|\\n)[A-Za-z0-9_.-]{1,120}/g;
+// NAME=value, NAME: value, "NAME": "value", YAML and escaped JSON. The label
+// alone is matched; replaceNamed takes the value after it. The value may sit
+// on the next line.
+const LABEL = /(?<![A-Za-z0-9_])(?=(?<name>[A-Za-z_][A-Za-z0-9_]*))\k<name>(?:\\?["'])?[ \t]{0,3}[:=][ \t]{0,3}(?<nl>(?:\r?\n|\\n)[ \t]{0,12})?(?:\\?["'])?(?!\[REDACTED)(?=[^\s"'&;,<>\\{}]{3})/g;
 // A run of 12 or more words in any case. Words are split by spaces, line
 // breaks or commas, and may carry a list number ("2." or "2)"). Only its
 // BIP-39 stretches are redacted.
@@ -67,15 +86,12 @@ const WORD_SEP = String.raw`[\s,]+(?:\d{1,2}[.)][ \t]*)?`;
 const WORD_RUN = new RegExp(String.raw`(?<![A-Za-z])[A-Za-z]{3,8}(?:${WORD_SEP}[A-Za-z]{3,8}){11,}(?![A-Za-z])`, "g");
 const WORD_SPLIT = new RegExp(`(${WORD_SEP})`);
 
-const fp = (v) => `[REDACTED sha256:${redactSecret(v).sha256.slice(0, 12)}]`;
 const globalOf = (re) => (re.global ? re : new RegExp(re.source, `${re.flags}g`));
 
-function redact(m, ...rest) {
-  if (!m) return m;
+function keepGroup(m, ...rest) {
   const groups = typeof rest.at(-1) === "object" ? rest.at(-1) : null;
-  if (groups?.name !== undefined && !SECRET_VAR.test(groups.name)) return m;
   const keep = groups?.keep ?? "";
-  return keep + fp(m.slice(keep.length));
+  return keep + MARK;
 }
 
 // A seed phrase: 12 or more words in a row, each from the BIP-39 list.
@@ -86,7 +102,7 @@ function redactSeed(run) {
     let j = i;
     while (j < parts.length && BIP39.has(parts[j].toLowerCase())) j += 2;
     if ((j - i) / 2 >= 12) {
-      out += fp(parts.slice(i, j - 1).join("")) + (parts[j - 1] ?? "");
+      out += MARK + (parts[j - 1] ?? "");
       i = j;
     } else {
       out += parts[i] + (parts[i + 1] ?? "");
@@ -96,46 +112,75 @@ function redactSeed(run) {
   return out;
 }
 
-// A rule with a `name` group matches a label only. When the name passes
-// SECRET_VAR, the value after the label is redacted. When it fails, the search
-// goes on right after that name, so "Leak: TOKEN=v" still finds TOKEN. No
-// value is scanned for a name that fails, so the pass stays linear.
+const keptUnder = (name, value) => ADDRESS.test(value) || (!WORD_SECRET.test(name) && /^\d+(?:\.\d+)?$/.test(value));
+
+// When the name passes SECRET_VAR, the value after the label is redacted.
+// When it fails, the search goes on right after that name, so "Leak: TOKEN=v"
+// still finds TOKEN. No value is scanned for a name that fails, so the pass
+// stays linear. A value on the next line that is itself a label ("secrets:\n
+// password: x") is not taken: that inner label is checked on its own.
 const VALUE = /[^\s"'&;,<>\\{}]+/y;
-function replaceNamed(text, re) {
-  re.lastIndex = 0;
+const IS_LABEL = /(?:\\?["'])?[A-Za-z_][A-Za-z0-9_-]{0,63}(?:\\?["'])?[ \t]*[:=]/y;
+function replaceNamed(text) {
+  LABEL.lastIndex = 0;
   let out = "";
   let from = 0;
-  for (let m; (m = re.exec(text)); ) {
-    if (!SECRET_VAR.test(m.groups.name)) {
-      re.lastIndex = m.index + m.groups.name.length;
-      continue;
-    }
-    VALUE.lastIndex = re.lastIndex;
+  for (let m; (m = LABEL.exec(text)); ) {
+    const name = m.groups.name;
+    const skip = () => { LABEL.lastIndex = m.index + name.length; };
+    if (!SECRET_VAR.test(name)) { skip(); continue; }
+    VALUE.lastIndex = IS_LABEL.lastIndex = LABEL.lastIndex;
+    if (m.groups.nl && IS_LABEL.test(text)) { skip(); continue; }
     const value = VALUE.exec(text)[0];
-    out += text.slice(from, re.lastIndex) + fp(value);
-    from = re.lastIndex = VALUE.lastIndex;
+    if (keptUnder(name, value)) { skip(); continue; }
+    out += text.slice(from, LABEL.lastIndex) + MARK;
+    from = LABEL.lastIndex = VALUE.lastIndex;
   }
   return out + text.slice(from);
 }
 
-export function scrubText(text, extra = [], { hex = true } = {}) {
+// The two halves of a split token, joined: masked whole when the redactor
+// masks the joined form.
+function joinSplit(m) {
+  const joined = m.replace(/\r?\n|\\n/, "");
+  return redactSecrets(joined) === joined ? m : MARK;
+}
+
+// The candidate's own rules over one text, with no redactor and no length
+// check. scrubText runs the redactor first; the timing test runs this alone.
+export function scrubExtras(text, extra = [], { hex = true } = {}) {
   let out = String(text ?? "");
-  const shapes = hex ? SHAPES : SHAPES.filter((re) => re !== HEX_KEY);
-  for (const re of [...shapes, ...extra.map(globalOf)]) {
-    out = /\(\?<name>/.test(re.source) ? replaceNamed(out, re) : out.replace(re, redact);
-  }
+  if (MARKER.test(out)) return out;
+  out = out.replace(SPLIT, joinSplit);
+  out = out.replace(PEM_OPEN, MARK);
+  out = out.replace(BASIC, keepGroup);
+  out = replaceNamed(out);
+  if (hex) out = out.replace(HEX_KEY, MARK);
+  for (const re of extra) out = out.replace(globalOf(re), MARK);
   return out.replace(WORD_RUN, redactSeed);
 }
 
-export function scrubValue(value, name = "", extra = []) {
+export function scrubText(text, extra = [], { hex = true } = {}) {
+  return scrubExtras(redactSecrets(String(text ?? "")), extra, { hex });
+}
+
+// The candidate's rules over a value the redactor already walked. Under a
+// secret name every string goes, at any depth, except a 0x address.
+function walkExtras(value, name, extra, under) {
   if (value == null) return value;
+  const secret = under || SECRET_NAME.test(name);
   if (typeof value === "string") {
-    if (SECRET_NAME.test(name) && value) return fp(value);
-    return scrubText(value, extra, { hex: !HASH_NAME.test(name) });
+    if (!value || MARKER.test(value)) return value;
+    if (secret && !ADDRESS.test(value)) return MARK;
+    return scrubExtras(value, extra, { hex: !PIN_NAME.test(name) });
   }
   if (typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((v) => scrubValue(v, name, extra));
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubValue(v, k, extra)]));
+  if (Array.isArray(value)) return value.map((v) => walkExtras(v, name, extra, secret));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walkExtras(v, k, extra, secret)]));
+}
+
+export function scrubValue(value, name = "", extra = []) {
+  return walkExtras(redactSecrets(value), name, extra, false);
 }
 
 // ---------------------------------------------------------------- record

@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubText, scrubValue } from "../lib/candidate.mjs";
+import { CANDIDATE_CAP, CANDIDATE_HINT, candidateTool, checkCandidate, makeCandidate, scrubExtras, scrubText, scrubValue } from "../lib/candidate.mjs";
+import { REVIEW_INPUTS } from "./helpers/scrub-review-inputs.mjs";
 import { isProven } from "../lib/proof-view.mjs";
 
 process.env.EVENTS_FILE = join(mkdtempSync(join(tmpdir(), "cand-")), "events.jsonl");
@@ -146,7 +147,7 @@ test("secrets in the evidence and write-up are scrubbed", async () => {
   const json = JSON.stringify(r.candidate);
   assert.ok(!json.includes(key));
   assert.ok(!json.includes("tok-123456"));
-  assert.match(json, /REDACTED sha256:/);
+  assert.match(json, /\[REDACTED\]/);
   assert.equal(scrubValue({ password: "pw" + "2".repeat(6) }).password.startsWith("[REDACTED"), true);
 });
 
@@ -239,15 +240,39 @@ for (const [shape, [line, secret, kept, cited]] of Object.entries(SHAPED)) {
     assert.ok(r.candidate, `${shape}: recorded`);
     const json = JSON.stringify(r.candidate);
     for (const part of [secret].flat()) assert.ok(!json.includes(part), `${shape}: the secret is gone`);
-    assert.match(json, /REDACTED sha256:/, `${shape}: a fingerprint is left`);
+    assert.match(json, /\[REDACTED\]/, `${shape}: a marker is left`);
     assert.ok(r.candidate.explanation.includes(kept), `${shape}: the text around the secret stays`);
     assert.equal(scrubText(r.candidate.explanation), r.candidate.explanation, `${shape}: a second scrub changes nothing`);
     const secrets = shape.startsWith("k8s") ? 2 : 1;
-    assert.equal(r.candidate.explanation.match(/REDACTED/g).length, secrets, `${shape}: one fingerprint per secret`);
+    assert.equal(r.candidate.explanation.match(/REDACTED/g).length, secrets, `${shape}: one marker per secret`);
     const ev = events().filter((e) => e.ev === "candidate-submitted").at(-1);
     for (const part of [secret].flat()) assert.ok(!JSON.stringify(ev).includes(part), `${shape}: the event has no secret`);
   });
 }
+
+// Delta review Major A (parts 1, 2, 3) and Minors 2 and 3: each input the
+// review listed, as one line. The scrub is main's redactor plus the
+// candidate's own rules, so this is the proof that the two together cover them.
+for (const [id, kind, input, parts] of REVIEW_INPUTS) {
+  test(`review input is scrubbed: ${id}`, () => {
+    const out = kind === "text" ? scrubText(input) : JSON.stringify(scrubValue(input));
+    for (const part of parts) assert.ok(!out.includes(part), `${id}: ${JSON.stringify(out).slice(0, 200)}`);
+    assert.match(out, /\[REDACTED\]/);
+  });
+}
+
+// What the redactor keeps on purpose stays kept here too: a 0x address and a
+// count under a token name, a fuzz seed, a label whose value is the next label.
+test("a token address, a token count and a nested label are not taken for secrets", () => {
+  const addr = `0x${"ab".repeat(20)}`;
+  assert.equal(scrubText(`tokenAddress=${addr} tokenId: 1000`), `tokenAddress=${addr} tokenId: 1000`);
+  assert.deepEqual(scrubValue({ token: addr, transfers: [{ token: addr, amount: "5" }] }), { token: addr, transfers: [{ token: addr, amount: "5" }] });
+  for (const value of ["pw-not-kept-1", "shortpw"]) {
+    const out = scrubText(`secrets:\n  password: ${value}`);
+    assert.equal(out, "secrets:\n  password: [REDACTED]", "the inner label stays and its value goes");
+  }
+  assert.equal(scrubText("Basic authentication is off"), "Basic authentication is off");
+});
 
 test("plain prose and ordinary values are not redacted", () => {
   const prose = "the admin export route returns every customer row without a session check, so any visitor can read them";
@@ -266,10 +291,14 @@ test("no scrub regex is slow on a 1 MB line", () => {
     fill("abandon "), fill("abandon "), fill("abc ").slice(0, MB - 1) + "Z", fill("0123456789abcdef"), fill("0x"),
     fill("a=b&"), fill("PASSWORD="), fill("password: "), fill('"password":"'), fill('\\"token\\": '), fill("apiKey:"),
     fill("Abandon "), fill("ABANDON, "), fill("abandon\n"), fill("1. abandon\n"), fill("1) "), fill("Abcdefghi "),
+    fill("Basic "), fill("Basic aB"), fill("ghp_a\n"), fill("sk-\n"), fill("password:\n"), fill("PASSWORD=\n  "), fill("snapshotHash: "),
   ];
   for (const line of lines) {
     const t0 = performance.now();
     scrubText(line);
+    // The redactor masks a text this long whole, so the candidate's own rules
+    // are timed alone too.
+    scrubExtras(line);
     const ms = performance.now() - t0;
     assert.ok(ms < 2000, `scrub took ${Math.round(ms)} ms on a 1 MB line of ${JSON.stringify(line.slice(0, 16))}`);
   }
@@ -355,7 +384,7 @@ for (const [form, value] of [
   test(`a 64-hex value is scrubbed under ${form}`, () => {
     const out = JSON.stringify(scrubValue(value));
     assert.ok(!out.includes(WORD), out);
-    assert.match(out, /REDACTED sha256:/);
+    assert.match(out, /\[REDACTED\]/);
   });
 }
 
