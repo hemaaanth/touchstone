@@ -73,9 +73,11 @@ test("Review offers record_lead; a lead becomes an event with file, line and rea
   assert.match(e.id, /^lead-[0-9a-f]{8,}$/);
   assert.ok(!("proven" in e), "a lead never carries a proven flag");
 
-  // The same file:line again is the same lead, not a second one.
+  // One lead per file:line. A second lead on the same line is refused as an
+  // error, so the agent knows it was not recorded; it names the lead that holds it.
   const again = await exec(record, { ...lead, title: "SSRF again" });
-  assert.ok(!again.isError);
+  assert.equal(again.isError, true, "a second lead on the same line is not silently dropped");
+  assert.match(text({ content: again.output }), /not recorded/i);
   assert.match(text({ content: again.output }), new RegExp(e.id));
 
   // Evidence must point at real source: a file the agent may read, a line in it.

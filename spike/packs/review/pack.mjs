@@ -248,7 +248,7 @@ export function tools(ws, state = {}) {
       if (!Number.isInteger(line) || line < 1 || line > lines) return text(`Line ${args.line} is not in ${raw}, which has ${lines} line${lines === 1 ? "" : "s"}.`, true);
       const file = relative(realpathSync(ws), abs).split(sep).join("/");
       const id = "lead-" + createHash("sha1").update(`${file}:${line}`).digest("hex").slice(0, 12);
-      if (recorded.has(id)) return text(`Already recorded as ${id} (${file}:${line}). One lead per line.`);
+      if (recorded.has(id)) return text(`Not recorded: ${id} already holds the lead for ${file}:${line}. One lead per line; put a second issue on the line that shows it, or fold it into that lead.`, true);
       if (recorded.size >= LEAD_CAP) return text(`Lead cap reached: this run already recorded ${LEAD_CAP} leads, the most one run may record. This lead was not recorded. Stop recording and end with your ranked lead list.`, true);
       recorded.add(id);
       state.leads = recorded.size;
