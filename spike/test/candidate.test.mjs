@@ -147,7 +147,7 @@ test("secrets in the evidence and write-up are scrubbed", async () => {
   assert.ok(!json.includes(key));
   assert.ok(!json.includes("tok-123456"));
   assert.match(json, /REDACTED sha256:/);
-  assert.equal(scrubValue({ password: "hunter22" }).password.startsWith("[REDACTED"), true);
+  assert.equal(scrubValue({ password: "pw" + "2".repeat(6) }).password.startsWith("[REDACTED"), true);
 });
 
 test("large evidence is cut and says so", async () => {
@@ -171,26 +171,53 @@ test("the tool records through the same checks and says the record is unproven",
   assert.match(CANDIDATE_HINT, /submit_candidate/);
 });
 
-// Review Major 1: the common secret shapes inside free text.
-const SEED = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+// Review Major 1: the common secret shapes inside free text. Each value is
+// built at run time from plain pieces, so no file holds a secret-shaped literal.
+const cat = (...parts) => parts.join("");
+const run = (unit, n) => unit.repeat(n);
+const SEED_WORDS = ["abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident"];
+const SEED = SEED_WORDS.join(" ");
+const V = {
+  bearer: cat("abc", run("Q7", 10)),
+  env: cat("pw", run("-k", 9)),
+  aws: cat("wJ", run("aB3/", 9), "xy"),
+  akia: cat("AK", "IA", run("Q", 16)),
+  github: cat("gh", "p_", run("a1B2c", 8)),
+  url: cat("s3", run("q", 8)),
+  query: cat(run("ab12", 4)),
+  colon: cat("pw", run("-c", 8)),
+  apiKey: cat("sk", "_", "live", "_", run("m", 16)),
+  json: cat("j", run("9", 5)),
+  escaped: cat("e", run("7", 6)),
+  k8sPass: cat("pw", run("-y", 7)),
+  k8sKey: cat("sk", "_", "live", "_", run("n", 14)),
+};
+const K8S = cat("stringData:\n  config.yaml: |\n    password: ", V.k8sPass, "\n    apiKey: ", V.k8sKey);
 const SHAPED = {
-  bearer: ["Authorization: Bearer abcDEF1234567890ghiJKL", "abcDEF1234567890ghiJKL", "Bearer "],
-  env: ["DATABASE_PASSWORD=hunter2-correct-horse", "hunter2-correct-horse", "DATABASE_PASSWORD="],
-  awsSecret: ["AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "AWS_SECRET_ACCESS_KEY="],
-  akia: ["key id AKIAIOSFODNN7EXAMPLE in the log", "AKIAIOSFODNN7EXAMPLE", "key id "],
-  github: [`token ghp_${"a1B2c3D4e5".repeat(4)} leaked`, `ghp_${"a1B2c3D4e5".repeat(4)}`, "token "],
-  urlCreds: ["postgres://admin:s3cretpass@db.internal:5432/app", "s3cretpass", "db.internal:5432/app"],
-  query: ["GET /v1/data?api_key=abcd1234efgh5678&page=2", "abcd1234efgh5678", "&page=2"],
+  bearer: [cat("Authorization: Bearer ", V.bearer), V.bearer, "Bearer "],
+  env: [cat("DATABASE_PASSWORD=", V.env), V.env, "DATABASE_PASSWORD="],
+  awsSecret: [cat("AWS_SECRET_ACCESS_KEY=", V.aws), V.aws, "AWS_SECRET_ACCESS_KEY="],
+  akia: [cat("key id ", V.akia, " in the log"), V.akia, "key id "],
+  github: [cat("token ", V.github, " leaked"), V.github, "token "],
+  urlCreds: [cat("postgres://admin:", V.url, "@db.internal:5432/app"), V.url, "db.internal:5432/app"],
+  query: [cat("GET /v1/data?api_key=", V.query, "&page=2"), V.query, "&page=2"],
   seed: [`wallet seed: ${SEED}`, SEED, "wallet seed: "],
+  // Delta review Major A, part 1: the colon forms of NAME=value.
+  colonText: [cat("password: ", V.colon), V.colon, "password: "],
+  colonApiKey: [cat("api_key: ", V.apiKey), V.apiKey, "api_key: "],
+  jsonInString: [cat('body {"user":"bob","password": "', V.json, '"} done'), V.json, '"user":"bob"'],
+  escapedJson: [cat('body {\\"password\\":\\"', V.escaped, '\\"} done'), V.escaped, "body "],
+  k8sStringData: [K8S, V.k8sPass, "stringData:"],
+  k8sApiKey: [K8S, V.k8sKey, "stringData:"],
 };
 
-test("each common secret shape is scrubbed from the write-up, cites and evidence", async () => {
-  for (const [shape, [line, secret, kept]] of Object.entries(SHAPED)) {
+for (const [shape, [line, secret, kept]] of Object.entries(SHAPED)) {
+  test(`a secret shape is scrubbed from the write-up, cites and evidence: ${shape}`, async () => {
     const state = fresh();
     const r = await checkCandidate({
       pack: "web", state,
       lookup: () => ({ evidence: { body: `response: ${line}`, list: [line] }, text: `1. GET / -> 200 ${line}` }),
-      args: args(shape, { title: `Leak: ${line}`, evidence_lines: [line], explanation: `It printed ${line}.\nFix: stop.` }),
+      args: args(shape, { title: `Leak: ${line}`, evidence_lines: line.split("\n"), explanation: `It printed ${line}.\nFix: stop.` }),
     });
     assert.ok(r.candidate, `${shape}: recorded`);
     const json = JSON.stringify(r.candidate);
@@ -198,11 +225,12 @@ test("each common secret shape is scrubbed from the write-up, cites and evidence
     assert.match(json, /REDACTED sha256:/, `${shape}: a fingerprint is left`);
     assert.ok(r.candidate.explanation.includes(kept), `${shape}: the text around the secret stays`);
     assert.equal(scrubText(r.candidate.explanation), r.candidate.explanation, `${shape}: a second scrub changes nothing`);
-    assert.equal(r.candidate.explanation.match(/REDACTED/g).length, 1, `${shape}: one fingerprint per secret`);
+    const secrets = shape.startsWith("k8s") ? 2 : 1;
+    assert.equal(r.candidate.explanation.match(/REDACTED/g).length, secrets, `${shape}: one fingerprint per secret`);
     const ev = events().filter((e) => e.ev === "candidate-submitted").at(-1);
     assert.ok(!JSON.stringify(ev).includes(secret), `${shape}: the event has no secret`);
-  }
-});
+  });
+}
 
 test("plain prose and ordinary values are not redacted", () => {
   const prose = "the admin export route returns every customer row without a session check, so any visitor can read them";
@@ -219,7 +247,7 @@ test("no scrub regex is slow on a 1 MB line", () => {
     fill("Bearer "), fill("bearer"), fill("://a:"), fill("://aaaa:bbbb"), fill("ghp_"), fill("AKIA"),
     fill("-eyJ"), fill("eyJabcdefghij."), fill("-----BEGIN RSA PRIVATE KEY-----"), fill("sk-"),
     fill("abandon "), fill("abandon "), fill("abc ").slice(0, MB - 1) + "Z", fill("0123456789abcdef"), fill("0x"),
-    fill("a=b&"), fill("PASSWORD="),
+    fill("a=b&"), fill("PASSWORD="), fill("password: "), fill('"password":"'), fill('\\"token\\": '), fill("apiKey:"),
   ];
   for (const line of lines) {
     const t0 = performance.now();

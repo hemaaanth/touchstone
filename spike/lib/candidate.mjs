@@ -52,8 +52,10 @@ const SHAPES = [
   /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, // JWT
   /\bsk-[A-Za-z0-9_-]{16,}/g, // API keys shaped sk-...
   /(?<keep>\b(?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/=-]{6,}/g, // an Authorization value
-  // NAME=value, where NAME says secret: env lines, query strings, form bodies.
-  /(?<keep>(?<![A-Za-z0-9_])(?=(?<name>[A-Za-z_][A-Za-z0-9_]*))\k<name>=["']?)(?!\[REDACTED)[^\s"'&;,<>]{3,}/g,
+  // NAME=value or NAME: value, where NAME says secret: env lines, query
+  // strings, form bodies, YAML, and JSON (plain or escaped inside a string).
+  // The label alone is matched here; replaceNamed takes the value after it.
+  /(?<![A-Za-z0-9_])(?=(?<name>[A-Za-z_][A-Za-z0-9_]*))\k<name>(?:\\?["'])?[ \t]{0,3}[:=][ \t]{0,3}(?:\\?["'])?(?!\[REDACTED)(?=[^\s"'&;,<>\\{}]{3})/g,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, // an AWS access key id
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, // a GitHub token
   /(?<keep>:\/\/[^/\s:@]{1,128}:)[^@\s/]{1,256}(?=@)/g, // user:password@ in a URL
@@ -90,10 +92,34 @@ function redactSeed(run) {
   return out;
 }
 
+// A rule with a `name` group matches a label only. When the name passes
+// SECRET_VAR, the value after the label is redacted. When it fails, the search
+// goes on right after that name, so "Leak: TOKEN=v" still finds TOKEN. No
+// value is scanned for a name that fails, so the pass stays linear.
+const VALUE = /[^\s"'&;,<>\\{}]+/y;
+function replaceNamed(text, re) {
+  re.lastIndex = 0;
+  let out = "";
+  let from = 0;
+  for (let m; (m = re.exec(text)); ) {
+    if (!SECRET_VAR.test(m.groups.name)) {
+      re.lastIndex = m.index + m.groups.name.length;
+      continue;
+    }
+    VALUE.lastIndex = re.lastIndex;
+    const value = VALUE.exec(text)[0];
+    out += text.slice(from, re.lastIndex) + fp(value);
+    from = re.lastIndex = VALUE.lastIndex;
+  }
+  return out + text.slice(from);
+}
+
 export function scrubText(text, extra = [], { hex = true } = {}) {
   let out = String(text ?? "");
   const shapes = hex ? SHAPES : SHAPES.filter((re) => re !== HEX_KEY);
-  for (const re of [...shapes, ...extra.map(globalOf)]) out = out.replace(re, redact);
+  for (const re of [...shapes, ...extra.map(globalOf)]) {
+    out = /\(\?<name>/.test(re.source) ? replaceNamed(out, re) : out.replace(re, redact);
+  }
   return out.replace(WORD_RUN, redactSeed);
 }
 
