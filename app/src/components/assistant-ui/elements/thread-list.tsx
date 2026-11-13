@@ -2,8 +2,9 @@
 
 // Adapted from the assistant-ui `thread-list` element, base-nova registry style.
 // Copyright (c) 2026 AgentbaseAI Inc. MIT License. See THIRD_PARTY.md. Changes for Touchstone runs:
-// a status dot on each row, the running spinner and date groups read from the
-// run (`custom`), an Archived section, and no Delete (runs are evidence).
+// every row has one shape (status mark and title, then scope and module dots),
+// date groups read from the run (`custom`), an Archived section, and no Delete
+// (runs are evidence).
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +15,9 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { ModulePill } from "@/components/module-pill";
+import { ModuleDots } from "@/components/module-dots";
+import { RunStatusMark } from "@/components/assistant-ui/elements/indicators";
+import type { RunMarkKind } from "@/components/thread-model";
 import {
   AuiIf,
   ThreadListItemMorePrimitive,
@@ -27,7 +30,6 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ChevronRightIcon,
-  Loader2Icon,
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
@@ -47,8 +49,8 @@ import {
 
 // What a run puts in a thread's `custom` field.
 export type RunThreadCustom = {
-  // Tailwind class for the status dot.
-  dot: string;
+  // The run's status mark (RunStatusMark).
+  mark: RunMarkKind;
   // The status word, for screen readers and the row tooltip.
   label: string;
   // Start time in ms, for the Today / Yesterday / Earlier groups.
@@ -56,13 +58,11 @@ export type RunThreadCustom = {
   running: boolean;
   // A live run cannot be archived; it would cut the agent off.
   canArchive: boolean;
-  // A joined run's modules (two or more), shown as pills under the title.
-  modules?: { id: string; title: string }[];
+  // The second line: the scope the run used (else its target, else a dash).
+  scope: string;
+  // Every module the run covers, in the server's order, as dots on the second line.
+  modules: { id: string; title: string }[];
 };
-
-// At most three pills, then "+N". The row is a button, so the rest are named
-// in plain text (a tooltip trigger may not sit inside a button).
-const MAX_PILLS = 3;
 
 const runCustom = (custom: Record<string, unknown> | undefined) =>
   custom as RunThreadCustom | undefined;
@@ -357,22 +357,27 @@ const ThreadListSkeleton: FC = () => {
           key={i}
           aria-hidden="true"
           data-slot="aui_thread-list-skeleton-wrapper"
-          className="flex h-8 items-center px-2.5"
+          className="flex h-12 flex-col justify-center gap-1.5 px-2.5"
         >
           <Skeleton
             data-slot="aui_thread-list-skeleton"
             className="h-3.5 w-full"
           />
+          <Skeleton className="ms-[22px] h-3 w-2/5" />
         </div>
       ))}
     </div>
   );
 };
 
+// One shape for every run, so every entry is the same height and the title
+// starts at the same x: the status mark (one size in every state), the title on
+// one line and the room for the "…" menu, always kept; under it the scope on
+// the left and the module dots on the right. Nothing wraps; nothing moves on
+// hover. The dots sit beside the row button, not in it (one control may not
+// hold another), like the "…" menu.
 export const ThreadListItem: FC = () => {
   const run = useAuiState((s) => runCustom(s.threadListItem.custom));
-  const modules = run?.modules && run.modules.length > 1 ? run.modules : null;
-  const rest = modules ? modules.slice(MAX_PILLS) : [];
   const [isRenaming, setIsRenaming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef(false);
@@ -387,8 +392,9 @@ export const ThreadListItem: FC = () => {
     <ThreadListItemPrimitive.Root
       data-slot="aui_thread-list-item"
       className={cn(
-        "group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex items-center rounded-md transition-colors focus-visible:outline-none",
-        modules ? "min-h-8 py-1" : "h-8",
+        "group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex h-12 items-center rounded-md transition-colors focus-visible:outline-none",
+        // The module dots' ring takes the row's own surface.
+        "[--module-dots-ring:var(--sidebar)] hover:[--module-dots-ring:var(--muted)] data-active:[--module-dots-ring:var(--muted)] has-focus-visible:[--module-dots-ring:var(--muted)] has-data-[state=open]:[--module-dots-ring:var(--muted)]",
       )}
     >
       {isRenaming ? (
@@ -403,55 +409,36 @@ export const ThreadListItem: FC = () => {
           ref={triggerRef}
           data-slot="aui_thread-list-item-trigger"
           title={run?.label}
-          className={cn(
-            "focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 gap-2 rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1",
-            // A joined run's dot sits on the title line, above its pills
-            // (the margin on the dot and the spinner below).
-            // A joined row always keeps room for the "…" button, so hover never reflows its pills.
-            modules ? "items-start pe-9" : "items-center",
-          )}
+          className="focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 flex-col justify-center gap-0.5 rounded-md ps-2.5 pe-9 text-start outline-none focus-visible:ring-1"
         >
-          {run?.running ? (
-            <Loader2Icon
-              aria-hidden
-              data-slot="aui_thread-list-item-running"
-              className={cn("text-muted-foreground size-3.5 shrink-0 animate-spin", modules && "mt-[3px]")}
-            />
-          ) : run ? (
-            <span
-              aria-hidden
-              data-slot="aui_thread-list-item-status"
-              className={cn("size-1.5 shrink-0 rounded-full", run.dot, modules && "mt-[7px]")}
-            />
-          ) : null}
-          {modules ? (
-            <span className="flex min-w-0 flex-1 flex-col gap-1">
-              <span data-slot="aui_thread-list-item-title" className="min-w-0 truncate">
-                <ThreadListItemPrimitive.Title fallback="Untitled run" />
-              </span>
-              <span data-slot="aui_thread-list-item-modules" className="flex min-w-0 flex-wrap items-center gap-1">
-                {modules.slice(0, MAX_PILLS).map((m) => (
-                  <ModulePill key={m.id} id={m.id} label={m.title} compact />
-                ))}
-                {rest.length ? (
-                  <span title={rest.map((m) => m.title).join(", ")} className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
-                    +{rest.length}
-                    <span className="sr-only"> more: {rest.map((m) => m.title).join(", ")}</span>
-                  </span>
-                ) : null}
-              </span>
-            </span>
-          ) : (
+          <span className="flex h-5 min-w-0 items-center gap-2">
+            {run ? (
+              <RunStatusMark aria-hidden kind={run.mark} label={run.label} />
+            ) : (
+              <span aria-hidden className="size-3.5 shrink-0" />
+            )}
             <span
               data-slot="aui_thread-list-item-title"
-              className="min-w-0 flex-1 truncate"
+              className="min-w-0 flex-1 truncate text-sm"
             >
               <ThreadListItemPrimitive.Title fallback="Untitled run" />
             </span>
-          )}
+          </span>
+          {/* Under the title, beside the dots' fixed box (right). */}
+          <span
+            data-slot="aui_thread-list-item-scope"
+            className="text-muted-foreground ms-[22px] me-1 block h-4 min-w-0 truncate text-xs leading-4"
+          >
+            {run?.scope ?? "—"}
+          </span>
           {run && <span className="sr-only">{run.label}</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
+      {run && !isRenaming ? (
+        <span className="absolute end-2.5 bottom-[7px] flex">
+          <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} />
+        </span>
+      ) : null}
       <ThreadListItemMore
         canArchive={run?.canArchive ?? false}
         onRename={() => setIsRenaming(true)}
@@ -541,7 +528,7 @@ const ThreadListItemMore: FC<{ canArchive: boolean; onRename: () => void }> = ({
           variant="ghost"
           size="icon"
           data-slot="aui_thread-list-item-more"
-          className="data-[state=open]:bg-accent absolute end-1.5 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover:opacity-100 group-has-focus-visible:opacity-100 group-data-active:opacity-100 data-[state=open]:opacity-100"
+          className="data-[state=open]:bg-accent absolute end-1.5 top-[5px] size-6 p-0 opacity-0 group-hover:opacity-100 group-has-focus-visible:opacity-100 group-data-active:opacity-100 data-[state=open]:opacity-100"
         >
           <MoreHorizontalIcon className="size-3.5" />
           <span className="sr-only">More options</span>

@@ -183,6 +183,17 @@ export type CatalogState = "loading" | "ready" | "error"
 
 // A joined run's modules, in the order of the server's module list, with
 // their titles. Null for a run with one module: its row stays one line.
+// Every module of a run, in the server's module order, with its title: the
+// sidebar's module dots. A run from before modules has its scope's one pack.
+export function runModuleList(r: Pick<RunSummary, "packs">, packs: PackChoice[]): { id: string; title: string }[] {
+  const ids = [...new Set(r.packs ?? [])]
+  const at = (id: string) => {
+    const i = packs.findIndex((p) => p.id === id)
+    return i < 0 ? packs.length : i
+  }
+  return ids.sort((a, b) => at(a) - at(b)).map((id) => ({ id, title: packs.find((p) => p.id === id)?.title ?? id }))
+}
+
 export function joinedModules(r: Pick<RunSummary, "packs">, packs: PackChoice[]): { id: string; title: string }[] | null {
   const ids = [...new Set(r.packs ?? [])]
   if (ids.length < 2) return null

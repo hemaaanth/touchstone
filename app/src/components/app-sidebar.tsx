@@ -2,9 +2,9 @@ import { useMemo } from "react"
 import { Boxes, Bug, FolderGit2, Settings2 } from "lucide-react"
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react"
 import type { PackChoice, RunSummary } from "@/lib/types"
-import { ago, DOT, isTerminal, runTitle } from "@/lib/format"
-import { joinedModules } from "@/lib/catalog"
-import { runRowStatus } from "@/components/thread-model"
+import { ago, isTerminal, runTitle } from "@/lib/format"
+import { runModuleList } from "@/lib/catalog"
+import { runMarkKind, runRowStatus } from "@/components/thread-model"
 import {
   Sidebar,
   SidebarContent,
@@ -175,16 +175,16 @@ function TouchstoneMark() {
 // One run as a thread list item. `custom` carries what the row shows.
 function runThread<S extends "regular" | "archived">(r: RunSummary, status: S, packs: PackChoice[]) {
   const done = isTerminal(r.status)
-  // A restart's cut-off reads Interrupted with a neutral dot, not as a failure.
+  // A restart's cut-off reads Interrupted with a neutral mark, not as a failure.
   const row = runRowStatus(r)
   const custom: RunThreadCustom = {
-    dot: DOT[row.tone],
+    mark: runMarkKind(r),
     label: `${row.word} · ${ago(r.startedAt)}`,
     at: r.startedAt,
     running: !done,
     canArchive: done,
+    scope: r.scopeTitle || r.target || "—",
+    modules: runModuleList(r, packs),
   }
-  const modules = joinedModules(r, packs)
-  if (modules) custom.modules = modules
   return { status, id: r.id, title: runTitle(r), custom }
 }
