@@ -25,7 +25,7 @@ import { auditState } from "./lib/audit-state.mjs";
 import { inferenceModels } from "./lib/provider.mjs";
 import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
-import { getTarget, prepareRunWorkspace } from "./lib/targets.mjs";
+import { getTarget, prepareMultiWorkspace, prepareRunWorkspace } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
 import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
@@ -274,9 +274,17 @@ async function main() {
   for (const f of [db, db + "-wal", db + "-shm"]) rmSync(f, { force: true });
   // TARGET_ID selects a library target (a live scope included) and prepares it
   // the way the app does; TARGET stays the direct path for a working checkout.
+  // PACKS=web,domains makes ONE run over several modules of that target: one
+  // workspace, one per module inside it, one grant, one reach decision.
   const target = process.env.TARGET_ID ? getTarget(process.env.TARGET_ID) : null;
+  const packs = String(process.env.PACKS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (packs.length > 1 && !target) throw new Error("PACKS needs TARGET_ID: a run of several modules needs a library target");
   const reach = target ? await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy" }) : null;
-  const ws = target ? await prepareRunWorkspace(target) : makeWorkspace(TARGET);
+  const ws = !target
+    ? makeWorkspace(TARGET)
+    : packs.length > 1
+      ? await prepareMultiWorkspace(target, { packs })
+      : await prepareRunWorkspace(target);
   const pack = packFor(readTouchstone(ws));
   const env = { EVENTS_FILE: `${DIR}run-${ALIAS}.events` };
   rmSync(env.EVENTS_FILE, { force: true });
