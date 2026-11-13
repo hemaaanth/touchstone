@@ -6,7 +6,7 @@
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
-import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
@@ -184,7 +184,7 @@ export async function handleFindings(req, res) {
     return true
   }
 
-  // GET /api/findings/:id/report?format=html|md|json — the shareable report of a
+  // GET /api/findings/:id/report?format=html|md|json|agent — the shareable report of a
   // finished run's finding (the finding, its proof, the harm, the fix). json is
   // the structured report the UI renders; html is one self-contained page to
   // share; md is for a README or an issue. The report invents nothing: the fix
@@ -210,6 +210,11 @@ export async function handleFindings(req, res) {
         res.setHeader("content-type", "text/markdown; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
         res.end(renderReportMarkdown(report))
+      } else if (format === "agent") {
+        // The short brief for a coding agent (report.mjs renderReportAgent).
+        res.statusCode = 200
+        res.setHeader("content-type", "text/plain; charset=utf-8")
+        res.end(renderReportAgent(report))
       } else {
         send(res, 200, report)
       }

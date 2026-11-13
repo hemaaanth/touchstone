@@ -35,6 +35,12 @@ export interface FindingSummary {
   // The passing test contract this finding names. Lets the transcript match a
   // submitted finding to its recorded (replayed) one. Absent on old records.
   poc?: string
+  // The module id that made it (the finding's own pack, else the run's), the
+  // scope title the run used, and when the run started (ms). The list
+  // (GET /api/findings) sends these; null when the record has none.
+  pack?: string | null
+  scope?: string | null
+  at?: number | null
 }
 
 export interface PocRun {
