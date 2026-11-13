@@ -1584,8 +1584,14 @@ function ensureFiles(run) {
   run.eventsFile ??= path.join(RESULTS_DIR, `run-${run.id}.events`)
   if (!run.streamFile) {
     run.streamFile = path.join(RESULTS_DIR, `run-${run.id}.stream.jsonl`)
-    if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, run.events.map((e) => JSON.stringify(e) + "\n").join(""))
+    // A run with no stream file yet writes its events. An older record-only run
+    // writes the events as rebuilt from its record, never the load-time view
+    // (N3: measuredAtLoad's derived candidates and dropped finding events),
+    // then every event that came after the load.
+    const events = run.stored ? [...run.stored.events, ...run.events.slice(run.stored.from)] : run.events
+    if (!existsSync(run.streamFile)) writeFileSync(run.streamFile, events.map((e) => JSON.stringify(e) + "\n").join(""))
   }
+  run.stored = null
 }
 
 // Build a fresh workspace for the run's own scope: joined when the run covers
@@ -1810,7 +1816,9 @@ export function followUp(run, text, clientId) {
       if (!run.stopping) recoverSettled(run, since)
       const s = run.settled
       try {
-        if (s?.findings?.length) await recordMore(run, s.findings)
+        // What the reply recorded: findings, and findings that became measured candidates.
+        let more = { recorded: 0, measured: 0 }
+        if (s?.findings?.length) more = await recordMore(run, s.findings)
         else if (run.stopping) broadcast(run, { t: Date.now(), ev: "stopped" })
         else if (!s) {
           const tail = run.stderr.slice(errFrom).slice(-800).trim()
@@ -1819,7 +1827,7 @@ export function followUp(run, text, clientId) {
         // A failed run that a follow-up retried: if the reply finished, or the
         // operator stopped it, the old failure no longer describes the run —
         // unless part of the scope is still unread.
-        if (run.status === "error" && !s?.findings?.length && (run.stopping || s?.status === "done")) {
+        if (run.status === "error" && !more.recorded && (run.stopping || s?.status === "done")) {
           run.error = null
           run.errorInfo = null
           setRunStatus(run, coverageGap(run) ? "error" : "no-finding")
@@ -1827,7 +1835,7 @@ export function followUp(run, text, clientId) {
         }
         // A reply that added candidates, or proved a finding that superseded
         // one, writes the run's candidates into its record.
-        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && s?.candidates?.length) persistRun(run, [])
+        if ((s?.candidates?.length || s?.findings?.length) && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run) && (s?.candidates?.length || more.measured)) persistRun(run, [])
       } catch (err) {
         broadcast(run, { t: Date.now(), ev: "reply-error", error: `The reply ended, but its result could not be saved:${String(err?.message ?? err)} Send the message again to retry.` })
       } finally {
@@ -1929,9 +1937,10 @@ async function recordMore(run, found) {
   // A replay that only repeated a measurement is a candidate, not a finding.
   const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
   supersedeProven(run, findings, (e) => broadcast(run, e))
+  const measured = (proven?.length ?? 0) - findings.length
   // Only measured candidates: the record keeps its findings and its status;
   // the reply's exit writes the candidates into it.
-  if (!findings.length) return
+  if (!findings.length) return { recorded: 0, measured }
   const file = path.join(RESULTS_DIR, `run-${run.id}.json`)
   let first = 0
   if (existsSync(file)) {
@@ -1962,6 +1971,7 @@ async function recordMore(run, found) {
   run.status = "recorded"
   run.decision = "approve"
   broadcast(run, { t: Date.now(), ev: "status", status: run.status, decision: "approve", findingId: run.findingIds[0], findingIds: run.findingIds })
+  return { recorded: findings.length, measured }
 }
 
 // Archive a run, or bring it back. An archived run is locked: it takes no more
@@ -2614,15 +2624,22 @@ function loadSavedRun(id) {
     } else return
     if (!events.length && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) return
     // N3: an older record's finding that only repeated a measurement loads as
-    // a measured candidate (in memory; no file changes).
+    // a measured candidate (in memory; no file changes). For a run with no
+    // stream file, the events as rebuilt from the record are kept apart: a
+    // later write of the stream (ensureFiles) writes those, never this view.
+    let stored = null
     if (events?.length && existsSync(recordFile)) {
+      const rebuilt = events.slice()
       try {
         measuredAtLoad(id, events, JSON.parse(readFileSync(recordFile, "utf8")).result)
       } catch {
         // an unreadable record: provenByRecord already reads it as not proven
       }
+      if (!existsSync(streamFile)) stored = { rebuilt, view: events.length }
     }
     const run = savedRun(id, events, mtime)
+    // What savedRun appended (cut-offs, a restart ending) belongs to both.
+    if (stored) run.stored = { events: [...stored.rebuilt, ...events.slice(stored.view)], from: events.length }
     // Never hide an interrupted-error run: list it so a later boot can finish
     // it. Acquire its lock here (as the non-error paths below already rely on)
     // so the TERMINAL branch does not try to own it a second time. A run a live

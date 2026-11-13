@@ -85,7 +85,14 @@ export function priorCandidatesEnv(run) {
 export function recordMeasured(run, findings, send) {
   const from = Math.max(0, ...(run.candidates ?? []).map((c) => Number(c.n) || 0))
   const split = splitMeasured(findings, { from })
-  for (const candidate of split.candidates) {
+  for (const made of split.candidates) {
+    // A follow-up can reuse an attempt label (xss-1) for a new finding. A
+    // candidate's poc must be new in the run, or the run refuses it and the
+    // finding is in neither list: give it the next free suffix.
+    const taken = new Set((run.candidates ?? []).map((c) => c.poc))
+    let poc = made.poc
+    for (let k = 2; taken.has(poc); k++) poc = `${made.poc}~${k}`
+    const candidate = poc === made.poc ? made : makeCandidate({ ...made, poc })
     const e = { t: Date.now(), ev: "candidate-submitted", candidate }
     if (trackCandidate(run, e)) send(e)
   }

@@ -133,6 +133,29 @@ test("(b) the list API, the copy texts, the report and the bundle hold no measur
 
 // Repair 1 (UI review m5): an old link to a finding that is now a candidate
 // says so, with its run and its candidate, instead of a bare not found.
+// Repair 2 (engine re-review minor 4): the id and its "one per id" guard.
+test("a candidate id is built from module, origin and poc; one row stored twice lists once", async () => {
+  const { candidateId } = await import("../../app/server/findings.mjs");
+  const base = { pack: "web", poc: "probe" };
+  assert.notEqual(candidateId("r1", { ...base, origin: "agent" }), candidateId("r1", { ...base, origin: "measured" }), "origin is part of the id");
+  assert.notEqual(candidateId("r1", { ...base, origin: "agent" }), candidateId("r1", { ...base, pack: "domains", origin: "agent" }));
+  assert.equal(candidateId("r1", { ...base, origin: "agent" }), candidateId("r1", { ...base, origin: "agent" }));
+  // A record whose own candidates hold the same measured row its finding
+  // derives (as a follow-up could once write): it lists once.
+  const file = join(dir, `run-${MIXED}.json`);
+  const saved = readFileSync(file, "utf8");
+  const rec = JSON.parse(saved);
+  const derived = (await listCandidates()).find((c) => c.runId === MIXED);
+  rec.result.candidates = [{ ...site("weak-csp", 9), poc: "lead-9", kind: "candidate", candidate: true, origin: "measured", measured: { reason: "repeated" }, proven: false, provedBy: null }];
+  writeFileSync(file, JSON.stringify(rec));
+  try {
+    const listed = (await listCandidates()).filter((c) => c.runId === MIXED);
+    assert.deepEqual(listed.map((c) => c.id), [derived.id], "one row, one id, listed once");
+  } finally {
+    writeFileSync(file, saved);
+  }
+});
+
 test("(m5) an old finding link answers: this item is now a candidate", async () => {
   const api = await handleApi(`/api/findings/${ids[2]}`);
   assert.equal(api.status, 404);

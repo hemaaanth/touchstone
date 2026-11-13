@@ -301,19 +301,26 @@ export const isMeasured = (f) => Boolean(f) && typeof f === "object" && !isCandi
 // The rule a scanner's evidence names: a scanner rule (zizmor/unpinned-uses),
 // an advisory id, or the identity of one secret or package. Rows of one check
 // with different rules are different issues and never fold.
+// Each identity field a pack puts in `where`: a scanner rule, a Scorecard
+// check (`check`), one secret (`fingerprint`, infra-cloud `secretHash`), a
+// package, an advisory. All that are present make the rule.
+const RULE_FIELDS = ["rule", "check", "fingerprint", "secretHash", "package", "advisory"];
 export const measuredRule = (f) => {
   const w = f?.evidence?.where;
   if (!w || typeof w !== "object") return "";
-  const v = w.rule ?? w.fingerprint ?? w.package ?? w.advisory ?? "";
-  return typeof v === "string" ? v : JSON.stringify(v);
+  return RULE_FIELDS.filter((k) => w[k] != null && w[k] !== "").map((k) => (typeof w[k] === "string" ? w[k] : JSON.stringify(w[k]))).join(" ");
 };
+
+// Checks whose identity is not in `where` (known-vulnerable-js names its
+// library only in its prose): never folded, so two libraries stay two items.
+const NEVER_FOLD = new Set(["known-vulnerable-js"]);
 
 // The fold key. Only evidence rows fold, and only with the same pack, the
 // exact check and the exact rule: the same issue at several places (one
 // weak-csp on three hosts). A forge or http row is its own root cause (each
 // is its own exploit or script), so it never folds: its key is its poc.
 function foldKey(f, c) {
-  if (f.proof?.kind !== "evidence") return `poc\u0000${f.poc ?? ""}\u0000${f.n ?? ""}`;
+  if (f.proof?.kind !== "evidence" || NEVER_FOLD.has(c.check)) return `poc\u0000${f.poc ?? ""}\u0000${f.n ?? ""}`;
   return `ev\u0000${f.pack ?? ""}\u0000${c.check}\u0000${measuredRule(f)}`;
 }
 
@@ -345,7 +352,10 @@ export function splitMeasured(list, { from = 0 } = {}) {
     const rule = first.proof?.kind === "evidence" ? measuredRule(first) : "";
     const worst = items.reduce((w, f) => ((RANK[f.severity] ?? 9) < (RANK[w.severity] ?? 9) ? f : w), first);
     const poc = String(first.poc ?? `measured:${c.check}:${from + k + 1}`);
-    const more = items.length > 1 ? `\n\nThe same check fired at ${items.length} places; each is listed in the evidence.` : "";
+    // One item: its own write-up. A fold: the check's own words, never the
+    // first row's (its prose names its own place only).
+    const ownWords = (readableTitle("", c.check, rule) || c.check).replace(/[.\s]+$/, "");
+    const text = items.length > 1 ? `${ownWords}. The same check and rule fired at ${items.length} places; each is listed in the evidence.` : String(first.explanation ?? "");
     return makeCandidate({
       n: from + k + 1,
       pack: first.pack ?? "",
@@ -353,7 +363,7 @@ export function splitMeasured(list, { from = 0 } = {}) {
       severity: worst.severity,
       poc,
       rootCause: first.rootCause ?? null,
-      explanation: scrubText(`${String(first.explanation ?? "")}${more}`),
+      explanation: scrubText(text),
       evidence: scrubValue({
         kind: "measured",
         check: c.check,

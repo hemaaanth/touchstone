@@ -101,7 +101,7 @@ test("no input makes a measured candidate proven, or an agent one an engine one"
 // Repair 1 (E4, UI M1): fold only evidence rows, by pack, exact check and
 // exact rule. A forge or http row is its own root cause and never folds.
 const scanner = (poc, rule, line, severity = "medium") => ({
-  ...evidence("tool:zizmor", poc, { file: ".github/workflows/deploy.yml", line, rule, fingerprint: `fp-${poc}` }),
+  ...evidence("tool:zizmor", poc, { file: ".github/workflows/deploy.yml", line, rule }),
   pack: "supply-chain", title: rule, severity, file: ".github/workflows/deploy.yml", lines: [line],
 });
 test("different scanner rules never fold; the same rule at two places does, under its rule's title", () => {
@@ -144,4 +144,26 @@ test("a measured candidate's evidence and write-up are scrubbed", () => {
   const [c] = splitMeasured([f]).candidates;
   assert.ok(!JSON.stringify(c).includes(gh), "no token survives");
   assert.match(c.explanation, /\[REDACTED\]/);
+});
+
+// Repair 2 (engine re-review minor 3): the fold key reads every identity
+// field a pack writes, and a check whose identity is only in its prose never
+// folds. A folded item speaks in the check's own words.
+test("Scorecard checks, two infra keys and two JS libraries never fold into one item", () => {
+  const sc = (poc, check) => ({ ...evidence("tool:scorecard", poc, { capture: "c1", sha256: "s", check }), pack: "supply-chain" });
+  const key = (poc, secretHash) => ({ ...evidence("hot-wallet-key-in-config", poc, { file: "k8s/signer.yaml", secretHash }), pack: "infra-cloud" });
+  const js = (poc, url) => ({ ...evidence("known-vulnerable-js", poc, url), explanation: `Retire.js matched ${poc}.` });
+  const { candidates } = splitMeasured([sc("s1", "Branch-Protection"), sc("s2", "Token-Permissions"), key("k1", "aa"), key("k2", "bb"), js("jquery", "https://a.test/jq.js"), js("lodash", "https://a.test/jq.js")]);
+  assert.deepEqual(candidates.map((c) => [c.poc, c.measured.count]), [["s1", 1], ["s2", 1], ["k1", 1], ["k2", 1], ["jquery", 1], ["lodash", 1]]);
+});
+
+test("a folded item's write-up is the check's own words, not its first row's", () => {
+  const a = evidence("weak-csp", "w1", { host: "a.test" });
+  a.explanation = "Only a.test has this.";
+  const [c] = splitMeasured([a, evidence("weak-csp", "w2", { host: "b.test" })]).candidates;
+  assert.equal(c.measured.count, 2);
+  assert.ok(!c.explanation.includes("Only a.test"), c.explanation);
+  assert.match(c.explanation, /^The Content-Security-Policy allows unsafe sources\. The same check and rule fired at 2 places/);
+  // One item keeps its own write-up.
+  assert.equal(splitMeasured([a]).candidates[0].explanation, "Only a.test has this.");
 });
