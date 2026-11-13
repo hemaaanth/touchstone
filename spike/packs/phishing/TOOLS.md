@@ -20,15 +20,20 @@ for a live phishing target.
 
 ## Proof model
 
-A lead is confirmed in only two ways.
+This pack is leads only. No phishing result is proven. `prove` returns an
+empty list and the only tool is `snapshot_leads`. The two strongest leads are:
 
 1. `registered-lookalike`: dnstwist generates the name again, offline, from the
    official domain, and the pinned DNS row has a routable A or AAAA, or an MX.
-   The zone's control row must be quiet, and no value may equal a control
+   The zone's control rows must be quiet, and no value may equal a control
    answer.
 2. `known-scam-lookalike`: dnstwist generates the name again, offline, and it is
    an exact entry in a pinned blocklist. The evidence names the list, the
-   upstream line and the commit.
+   upstream line and the pin.
+
+Each lead keeps check, where and the snapshotHash in a stable shape, so a later
+step can carry it as evidence. Records alone do not show phishing, so neither
+lead is a proven finding.
 
 A bare permutation, an NS-only name, a wildcard or non-routable answer, or a
 brand word on a list stays a review lead. A tool failure or a bad list is
@@ -42,10 +47,11 @@ Two checks guard the capture itself:
 - Control rows. After the main run, capture asks the same resolver about one
   random name per zone (`ts-ctl-<12 hex>.<zone>`). That name cannot exist. If
   it answers, the resolver wildcards, and rows in that zone are review-only. A
-  snapshot with no control rows confirms no `registered-lookalike`.
+  snapshot with no control rows gives no `registered-lookalike` lead.
 - Generator fingerprint. Capture stores the sha256 and count of the offline
   `--format list` name set. Replay makes the set again and compares. A
-  different set (for example a rebuilt image under the same tag) fails closed.
+  different set (for example a rebuilt image under the same tag) gives no
+  lookalike leads and a `lookalike-evidence-missing` lead.
   This checks the output, not the Docker image ID, so it also holds on a
   remote Docker backend.
 

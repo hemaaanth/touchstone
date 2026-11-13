@@ -143,7 +143,7 @@ test('a captured row dnstwist did not generate is not confirmed', async () => {
   assert.equal(out.stats.notGenerated, 1);
 });
 
-test('the pack is registered, live-capable, and its prepass reports coverage', async () => {
+test('the pack is registered, live-capable, leads only, and its prepass reports coverage', async () => {
   assert.equal(PACKS.phishing, pack);
   assert.deepEqual(packList().find(p => p.id === 'phishing'), { id: 'phishing', title: pack.title, tier: 'P', proof: 'evidence', live: true });
   const { record } = await pack.prepass(LAB);
@@ -153,9 +153,11 @@ test('the pack is registered, live-capable, and its prepass reports coverage', a
   assert.equal(engines.dnstwist.status, 'ran');
   assert.equal(engines['blocklist:metamask-eth-phishing-detect'].status, 'ran');
   assert.equal(engines['blocklist:touchstone-lab-blocklist'].leads, 2);
-  // prove() replays submitted findings against the pin.
+  // Leads only: no phishing result may be proven, whatever is passed in.
+  assert.deepEqual(pack.tools(LAB, { found: [] }).map(t => t.name), ['snapshot_leads']);
   const found = scan.leads.filter(l => !l.reviewOnly).map((l, i) => ({ n: i + 1, title: l.check, severity: l.severity, poc: l.id, evidence: { check: l.check, where: l.where, snapshotHash: scan.snapshotHash } }));
-  const proofs = await pack.prove(LAB, found, [], () => {});
-  assert.equal(proofs.length, 2);
-  assert.ok(proofs.every(p => JSON.stringify(p).includes('"pass"')), JSON.stringify(proofs));
+  assert.equal(found.length, 2);
+  assert.deepEqual(await pack.prove(LAB, found, [], () => {}), []);
+  assert.doesNotMatch(pack.system() + pack.kickoff(LAB, {}), /submit/i);
+  assert.match(pack.system(), /leads only/i);
 });

@@ -1,9 +1,9 @@
 ---
 name: phishing
-description: Check a pinned lookalike-domain snapshot and replay each registered or known-scam lookalike of the client's brand.
+description: Check a pinned lookalike-domain snapshot and report registered or known-scam lookalikes of the client's brand as leads. Leads only; nothing is proven.
 tier: P
 proof: evidence
-tools: [snapshot_leads, submit_finding]
+tools: [snapshot_leads]
 labs: [spike/packs/phishing/lab]
 ---
 
@@ -16,24 +16,27 @@ and front end. This pack does not.
 Read only the operator-pinned snapshot. Never open a lookalike site. Never
 fetch a page, a banner, WHOIS or a screenshot. Never file a takedown.
 
+This pack is leads only. Nothing it reports is proven, and nothing from it
+enters a proven count. `prove` returns an empty list. There is no submit tool.
+
 1. Call snapshot_leads. Rank the leads by severity.
 2. Read each lead's exact check, where and description.
-3. Submit each supported lead once, with its exact lead id.
-4. Skip reviewOnly leads. A bare permutation, a parked name, a wildcard
-   answer or a brand word on a list is not proof.
-5. Continue after each submission. End with coverage and limits. Name every
-   `*-evidence-missing` lead.
+3. Report each lead once as a lead, with its exact lead id, check, severity and
+   where cells.
+4. Mark reviewOnly leads as needing review by hand. A bare permutation, a
+   parked name, a wildcard answer or a brand word on a list is weaker than a
+   registered or known-scam lead.
+5. End with coverage and limits. Name every `*-evidence-missing` lead.
 
-The gate replays the detector before recording. The prove hook replays again
-when the run ends. The evidence holds check, where and snapshotHash. The pack
-uses lib/proof-evidence.mjs and passes its allowlisted detector map. Only two
-checks can be confirmed: `registered-lookalike` and `known-scam-lookalike`.
+Each lead keeps its evidence in a stable shape: check, where and the
+snapshotHash of the pin. The detectors in checks.mjs can rebuild the scan from
+the pin and match a where exactly. They are not a proof path.
 
 ## What each lead means
 
 `registered-lookalike` (medium). dnstwist generated the name from the official
 domain, and the captured DNS row has an A, AAAA or MX record. The where cells
-are the domain, the fuzzer and the records. Replay runs dnstwist again offline
+are the domain, the fuzzer and the records. The scan runs dnstwist again offline
 (`--format list`, `--network none`). The fresh name set must have the same
 sha256 as the generator fingerprint stored at capture. The name must be in it,
 and the records must match the pin exactly. Only routable addresses count.
@@ -95,7 +98,7 @@ every row in that zone is review-only. Capture then runs dnstwist offline once
 more and stores the sha256 and count of the name set as `generator`.
 
 Write short sentences. Explain the captured risk, not an imagined attack.
-End each supported explanation with Fix: and the next step, for example a
+End each lead with Fix: and the next step, for example a
 registrar or host abuse report, a defensive registration, or a mail filter.
 
 ## Run
