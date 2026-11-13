@@ -56,8 +56,11 @@ list, the line and the pin.
 not proof of a registration. The `reason` cell says why: `wildcard` (a
 control name in the zone answers, the value equals a control answer, or more
 than 20% of the zone's generated names answer), `no-control` (the zone does
-not have 3 distinct quiet control rows), or `non-routable` (only
-0.0.0.0/8, 127.0.0.0/8, `::` or `::1`, which is often a sinkhole).
+not have 3 distinct quiet control rows), or `non-routable` (only private,
+loopback or link-local addresses, which is often a sinkhole). Non-routable
+means 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.168/16, `::`,
+`::1`, fe80::/10 and fc00::/7. An IPv4-mapped address (`::ffff:a.b.c.d`) is
+judged by the IPv4 address inside it.
 
 `parked-lookalike` (low, reviewOnly). The name has NS records but no A, AAAA or
 MX. It is registered but not live. Watch it.

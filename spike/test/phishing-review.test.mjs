@@ -186,6 +186,22 @@ test('m1: non-routable and malformed answers are not confirmed; they go to revie
   assert.ok(registered(scan, 'tldekeep.test'));
 });
 
+test('Minor 2: IPv4-mapped, private and link-local answers are sinks; the range edges stay routable', async () => {
+  const dead = ['::ffff:127.0.0.1', '::ffff:0.0.0.0', '::FFFF:10.1.2.3', '::ffff:a9fe:101', '10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.1.1',
+    '169.254.1.1', '100.64.0.1', 'fe80::1', 'FEBF::1', 'fc00::1', 'fd12:3456::1'];
+  const live = ['192.0.2.10', '172.32.0.1', '172.15.0.1', '100.128.0.1', '169.253.1.1', '11.0.0.1', '::ffff:192.0.2.10', 'fec0::1', 'fe7f::1', '2001:db8::1'];
+  const pool = NAMES.filter(n => n.endsWith('.test') && !['tidekeep.test', 'tldekeep.test'].includes(n));
+  const rows = {}, deadNames = [], liveNames = [];
+  for (const v of dead) { const d = pool[deadNames.length]; deadNames.push(d); rows[d] = { [v.includes(':') ? 'dns_aaaa' : 'dns_a']: [v] }; }
+  for (const v of live) { const d = pool[dead.length + liveNames.length]; liveNames.push(d); rows[d] = { [v.includes(':') ? 'dns_aaaa' : 'dns_a']: [v] }; }
+  const scan = await phishingLeads(snap({ rows }));
+  dead.forEach((v, i) => {
+    assert.equal(registered(scan, deadNames[i]), undefined, v + ' must not confirm');
+    assert.ok(scan.leads.some(l => l.where.domain === deadNames[i] && l.reviewOnly && l.where.reason === 'non-routable'), v + ' is a non-routable review lead');
+  });
+  live.forEach((v, i) => assert.ok(registered(scan, liveNames[i]), v + ' stays routable'));
+});
+
 test('m2: a changed MetaMask slice with a recomputed sha256 is refused; other commits are operator-stated', async () => {
   const changed = SLICE_TEXT.replace('"metamcsk.io",', '"tidekep.test",');
   assert.notEqual(changed, SLICE_TEXT);

@@ -22,9 +22,24 @@ export const ownedNames = list => (Array.isArray(list) ? list : []).map(entry =>
   if (!n || !HOST.test(n)) throw new Error('owned entry ' + JSON.stringify(entry) + ' is not a domain name. Give the bare domain, for example tide-keep.test, not a URL.');
   return n;
 });
-// An address that cannot serve anyone else: 0.0.0.0/8, 127.0.0.0/8, :: and ::1. Sinkholes use these.
+// An address that cannot serve a page on the internet. Sinkholes use these.
+// IPv4: 0/8, 10/8, 100.64/10 (carrier NAT), 127/8, 169.254/16, 172.16/12, 192.168/16.
+// IPv6: ::, ::1, fe80::/10 (link-local), fc00::/7 (unique local), and ::ffff:a.b.c.d
+// when the IPv4 address inside is one of the above.
 const canonical6 = v => { try { return new URL('http://[' + v + ']').hostname.slice(1, -1); } catch { return v; } };
-const deadIP = v => isIP(v) === 4 ? /^(?:0|127)\./.test(v) : ['::', '::1'].includes(canonical6(v));
+const dead4 = v => {
+  const [a, b] = v.split('.').map(Number);
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+};
+const dead6 = v => {
+  const c = canonical6(v);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(c); // WHATWG writes ::ffff:127.0.0.1 as ::ffff:7f00:1
+  if (mapped) { const [h, l] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)]; return dead4([h >> 8, h & 255, l >> 8, l & 255].join('.')); }
+  if (c === '::' || c === '::1') return true;
+  const first = parseInt(c.split(':')[0], 16);
+  return (first & 0xffc0) === 0xfe80 || (first & 0xfe00) === 0xfc00;
+};
+const deadIP = v => isIP(v) === 4 ? dead4(v) : dead6(v);
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/i;
 const COMMIT = /^[0-9a-f]{40}$/;
 
