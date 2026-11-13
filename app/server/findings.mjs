@@ -7,6 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { modulesEvent } from "../../spike/lib/modules.mjs"
 import { isProven, proofKind, proofView } from "../../spike/lib/proof-view.mjs"
+import { isCandidate } from "../../spike/lib/candidate.mjs"
 import { PACKS } from "../../spike/packs/index.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -109,12 +110,16 @@ function parseAssertions(testSource) {
 // `findings[]`, worst first; finding k gets the id `<runId>.<k+1>` and carries its
 // own proof, pocProved and dismissed flag. A legacy record has one `finding`,
 // keeps the run id as its id, and keeps those fields at the run level.
+// A candidate (spike/lib/candidate.mjs) is never a finding. It lives in
+// `result.candidates`; a record that holds one under `findings` (forged, or
+// written by a bug) still does not list it, count it, open it or export it.
+// The others keep their ids and indexes.
 function splitRun(raw, runId) {
   const r = raw.result || {}
   if (Array.isArray(r.findings) && r.findings.length) {
-    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f }))
+    return r.findings.map((f, k) => ({ id: `${runId}.${k + 1}`, runId, index: k, finding: f })).filter((x) => !isCandidate(x.finding))
   }
-  if (r.finding) {
+  if (r.finding && !isCandidate(r.finding)) {
     return [{
       id: runId,
       runId,

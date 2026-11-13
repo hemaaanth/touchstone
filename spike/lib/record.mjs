@@ -40,9 +40,14 @@ export function sortFindings(list) {
 // either drained its ETH or wrote its storage). `judge(proof)` lets a pack with a
 // lab model replace the generic verdict with its own (keys, chain-watch).
 // `stateTrace` keeps the large controlTrace on the proof for that judge.
+// A candidate (lib/candidate.mjs) is never replayed into a finding: the record
+// below keeps no `candidate` field, so a candidate that reached this list would
+// come out as a finding with pocProved. It is left out.
+const candidateShaped = (f) => f?.candidate === true || f?.kind === "candidate";
+
 export async function proveFindings(ws, submitted, events, log = () => {}, { stateTrace = false, judge = null } = {}) {
   const out = [];
-  for (const f of sortFindings(submitted ?? [])) {
+  for (const f of sortFindings((submitted ?? []).filter((f) => !candidateShaped(f)))) {
     const forgePassed = events.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === f.poc);
     let proof = null;
     if (forgePassed && f.source) {

@@ -164,3 +164,21 @@ for (const pack of [contracts, keys, chainWatch]) {
     } finally { done(); }
   });
 }
+
+// The forge harm gate (lib/record.mjs proveFindings) replays only findings.
+// Its record keeps no `candidate` field, so a candidate that reached the list
+// (a forged audit file, a bug) would come out as a finding with pocProved.
+test("proveFindings leaves a candidate out, even one whose replay shows harm", async () => {
+  const { proveFindings } = await import("../lib/record.mjs");
+  const { isProven } = await import("../lib/proof-view.mjs");
+  const ws = mkdtempSync(join(tmpdir(), "cand-record-"));
+  try {
+    replay = fundsDelta;
+    const events = ["Drain", "Pause"].map((contract) => ({ ev: "run_poc-done", contract, passed: 1 }));
+    const out = await proveFindings(ws, [
+      { n: 1, title: "real", severity: "high", poc: "Drain", source: "contract Drain {}" },
+      { n: 2, title: "a candidate", severity: "critical", poc: "Pause", source: "contract Pause {}", kind: "candidate", candidate: true, proven: false },
+    ], events);
+    assert.deepEqual(out.map((f) => [f.poc, isProven(f)]), [["Drain", true]]);
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
