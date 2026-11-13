@@ -49,7 +49,7 @@
 //                     operator's website.
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
 import { PACKS } from "../packs/index.mjs"
@@ -366,7 +366,7 @@ export function pickTarget({ id, pack } = {}) {
 // in one way only: two env values the agent worker puts into the agent's
 // instructions (agent-run.mjs). Nothing is written into the workspace.
 //   SCOPE_NOTES  what Touchstone knows: the members, the websites, the base
-//                URL, a token. Built from the scope record.
+//                URL. Built from the scope record. Never a token.
 //   SCOPE_BRIEF  the operator's own text for the model (scope.brief).
 // Neither one is read by reach, the grant, the fetch allow-list or the tools.
 
@@ -387,11 +387,17 @@ function scopeNotes(target) {
     "",
     "Live websites. The operator confirmed they have permission to test them.",
     "",
-    ...origins.map((o, i) => `- ${o} (host ${hosts[i] ?? reachHosts({ url: o })[0] ?? ""})`),
+    ...origins.map((o, i) => {
+      // A "*.example.com" entry is a grant pattern for discovery, not a website.
+      const name = new URL(o).hostname
+      return name.startsWith("*.") ? `- every subdomain of ${name.slice(2)} (the grant entry ${name}; not one website to call)` : `- ${o} (host ${hosts[i] ?? reachHosts({ url: o })[0] ?? ""})`
+    }),
     "",
     `Base URL for every request: ${origins[0] ?? ""}`,
   ]
-  if (target.mcp?.token) lines.push("", `Bearer token: ${target.mcp.token}`)
+  // No token here: these notes go to every agent of the run, fleet children
+  // included. A live token reaches only the root agent, in its first message
+  // (the web and ai-mcp kickoffs read it from .touchstone.json), as before.
   if (packOf(target) === "supply-chain" && Array.isArray(target.github)) lines.push("", "GitHub repos and orgs (read-only API reads, nothing is cloned or run):", ...target.github.map((g) => `- ${g}`))
   if (target.blurb) lines.push("", String(target.blurb))
   return lines.join("\n")
@@ -427,9 +433,20 @@ export function briefChange(before, now) {
 // A kept workspace from before scope briefs lived in the scope holds a
 // BRIEF.md that Touchstone wrote. Take it out before a follow-up uses the
 // workspace. A lab is left alone: its BRIEF.md is a file of the lab itself.
+// Only a file or a link is removed; anything else (a directory the agent made)
+// is left alone. It never throws: a follow-up calls it after the run is marked
+// as replying and its lock is taken. Returns true when a file was removed.
 export function dropOldBriefFile(ws, target) {
-  if (!ws || !["brief", "scope", "live"].includes(target?.kind)) return
-  rmSync(path.join(ws, "BRIEF.md"), { force: true })
+  if (!ws || !["brief", "scope", "live"].includes(target?.kind)) return false
+  try {
+    const file = path.join(ws, "BRIEF.md")
+    const st = lstatSync(file, { throwIfNoEntry: false })
+    if (!st || st.isDirectory()) return false
+    unlinkSync(file)
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Build the run's workspace for any runnable target, and write the per-workspace

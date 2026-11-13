@@ -29,6 +29,7 @@ import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } fro
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { briefChange, briefOf, dropOldBriefFile, getTarget, listTargets, pickTarget, prepareRunWorkspace, scopeEnv, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
+import { liveHostsRefusal } from "../../spike/lib/live-hosts.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -141,6 +142,10 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     for (const id of pack == null || pack === "" ? [] : [pack].flat()) {
       if (typeof id !== "string" || !Object.hasOwn(PACKS, id)) throw new Error(`unknown module: ${id}`)
     }
+    // A star in any spelling other than "*.example.com" would be dropped from
+    // the grant without a word. Refuse it here, before anything is saved.
+    const refusal = liveHostsRefusal(hosts)
+    if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
     const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
     return { ...targetSummary(live), runnable: true }
@@ -2007,6 +2012,9 @@ async function resumeRun(run) {
   }
   checkRestarts(run)
   if (!existsSync(path.join(run.ws, ".touchstone.json"))) throw new Error("the saved workspace is missing; start a new run")
+  // A run in flight across the upgrade may hold the BRIEF.md Touchstone used to
+  // write. A live run has no mark yet, so the check is the path one only.
+  dropOldBriefFile(checkedWorkspace(run.ws), run.target)
   run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
   // This event is a real retry marker. The old stream is never renumbered.
   broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: state.phase })
