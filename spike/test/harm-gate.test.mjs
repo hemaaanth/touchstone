@@ -1168,6 +1168,48 @@ contract DealFixTest is Test {
   });
 }
 
+// H1e (4): forge-std stdstore ends in vm.store, so a stdstore write on a scope
+// target is refused like vm.store. Honest shape (a known loss, not a forgery): the
+// fixture sets an unrelated config slot of the scope vault; the drain is the
+// vault's real withdraw bug.
+const FEE_TOKENS = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Tok {
+  mapping(address => uint256) public balanceOf;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  function mint(address to, uint256 a) external { balanceOf[to] += a; emit Transfer(address(0), to, a); }
+  function transfer(address to, uint256 a) public returns (bool) { balanceOf[msg.sender] -= a; balanceOf[to] += a; emit Transfer(msg.sender, to, a); return true; }
+}
+contract TokVault {
+  Tok public tok;
+  uint256 public fee; // config only; withdraw ignores it
+  constructor(Tok t) { tok = t; }
+  function withdraw(uint256 a) external { tok.transfer(msg.sender, a); } // BUG: anyone drains it
+}
+`;
+test("forge: a stdstore fixture on a scope contract is refused with the tamper reason (H1e stdstore)", { skip, timeout: 300_000 }, async () => {
+  const ws = makeWorkspace(LAB); workspaces.push(ws);
+  const f = await proveScope(ws, { "Tokens.sol": FEE_TOKENS }, "StdStoreFixTest", `import "../src/Tokens.sol";
+contract StdStoreFixTest is Test {
+  using stdStorage for StdStorage;
+  Tok tok; TokVault vault;
+  function setUp() public {
+    tok = new Tok(); vault = new TokVault(tok); tok.mint(address(vault), 100);
+    stdstore.target(address(vault)).sig("fee()").checked_write(uint256(5));
+  }
+  function test_x() public {
+    assertEq(vault.fee(), 5);
+    vm.prank(address(0xBEEF)); vault.withdraw(100);
+    assertEq(tok.balanceOf(address(0xBEEF)), 100);
+  }
+}
+`);
+  assert.equal(f.forgePassed, true);
+  assert.equal(f.proof.harm.ok, false, JSON.stringify(f.proof.harm));
+  assert.match(f.proof.harm.reason, /the test set the state of scope target 0x[0-9a-f]{40} \(TokVault\) via vm\.store;/);
+  assert.equal(isProven(f), false);
+});
+
 // Guard for the other side of B2: code is journaled EVM state, so an etch in a
 // reverted frame is undone and the gate need not record it. If a forge version
 // ever kept such an etch, the fake drain below would run at the real token's
