@@ -22,7 +22,7 @@ copies for inspection. It emits one JSON verdict; exit 0 means `pass: true`.
 always runs. When the flag is given, the verdict's `notes` say so.
 
 The Forge image is pinned to
-`ghcr.io/foundry-rs/foundry@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39`.
+`ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39`.
 Install that exact digest and populate a `foundry-svm` or
 `touchstone_svm_cache` volume **before** running. Every Forge invocation,
 including `forge inspect`, goes through `runTool()` (`spike/lib/wrap.mjs`) with
