@@ -6,9 +6,10 @@
 // findings router.
 import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope } from "./runs.mjs"
 import { dismissFinding, getFinding } from "./findings.mjs"
-import { buildReport, renderReportHtml, renderReportMarkdown } from "./report.mjs"
+import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
+import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
 
 function send(res, status, json) {
@@ -182,16 +183,17 @@ export async function handleFindings(req, res) {
     return true
   }
 
-  // GET /api/findings/:id/report?format=html|md|json|bundle — the shareable report
-  // of a finished run's finding (the finding, its proof, the harm, the fix).
-  // json is the structured report the UI renders; html is one self-contained
-  // page to share; md is for a README or an issue. bundle is a zip a judge can
-  // unzip and rerun: the proof sources, foundry config, proof JSON, and fork
-  // parameters, with one command in README.md. The report invents nothing: the
-  // fix is shown only when the run stated one (report.mjs). bundle-check is the
-  // same build as bundle, answered as JSON: the values the zip could not judge,
-  // counted by shape, for the line next to the download.
-  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "bundle", "zip", "bundle-check"])
+  // GET /api/findings/:id/report?format=html|md|json|agent|bundle — the shareable
+  // report of a finished run's finding (the finding, its proof, the harm, the
+  // fix). json is the structured report the UI renders; html is one
+  // self-contained page to share; md is for a README or an issue; agent is a
+  // short brief for a coding agent. bundle is a zip a judge can unzip and
+  // rerun: the proof sources, foundry config, proof JSON, and fork parameters,
+  // with one command in README.md. The report invents nothing: the fix is shown
+  // only when the run stated one (report.mjs). bundle-check is the same build
+  // as bundle, answered as JSON: the values the zip could not judge, counted by
+  // shape, for the line next to the download.
+  const REPORT_FORMATS = new Set(["json", "md", "markdown", "html", "agent", "bundle", "zip", "bundle-check"])
   if (parts.length === 4 && parts[3] === "report" && req.method === "GET") {
     const id = decodeURIComponent(parts[2])
     const format = (url.searchParams.get("format") || "json").toLowerCase()
@@ -245,6 +247,11 @@ export async function handleFindings(req, res) {
         res.setHeader("content-type", "text/markdown; charset=utf-8")
         res.setHeader("content-disposition", `inline; filename="touchstone-report-${slug}.md"`)
         res.end(renderReportMarkdown(report))
+      } else if (format === "agent") {
+        // The short brief for a coding agent (report.mjs renderReportAgent).
+        res.statusCode = 200
+        res.setHeader("content-type", "text/plain; charset=utf-8")
+        res.end(renderReportAgent(buildReport(finding)))
       } else {
         send(res, 200, buildReport(finding))
       }
@@ -263,6 +270,8 @@ export async function handleFindings(req, res) {
 //                                folders, mixed), or a legacy { title, files },
 //                                { title, repo }, or { title, brief, blurb }
 //   DELETE /api/scopes/:id     — remove one
+//   POST   /api/scopes/:id/brief — set or clear its brief ({ brief }); text for
+//                                the model only, it changes no reach or grant
 export async function handleScopes(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean) // ["api","scopes",...]
@@ -282,6 +291,19 @@ export async function handleScopes(req, res) {
     const body = await readBody(req)
     try {
       send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
+    } catch (err) {
+      send(res, 400, { error: String(err?.message ?? err) })
+    }
+    return true
+  }
+
+  if (parts.length === 4 && parts[3] === "brief" && req.method === "POST") {
+    const body = await readBody(req)
+    try {
+      // A body that did not parse reads as {}. It must not clear the brief.
+      if (typeof body.brief !== "string") throw new Error("Send the brief as text: { brief }. An empty text clears it.")
+      const scope = setScopeBrief(decodeURIComponent(parts[2]), body.brief)
+      send(res, 200, { id: scope.id, brief: scope.brief ?? "" })
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

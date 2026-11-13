@@ -97,6 +97,9 @@ export interface Step {
   // A "say" step made from the run's closing words, when the stream did not
   // already hold them (an old record).
   closing?: boolean
+  // A child's handoff or end that a server restart cut off (the server's
+  // `subagent-done` with `interrupted: true`). It did not fail.
+  cut?: boolean
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -120,6 +123,12 @@ export interface RunFailure {
   reason?: string
 }
 
+// The step label of one read_source call.
+function readLabel(file: string, scope: TargetScope | null): string {
+  if (file.replace(/^\.\//, "") !== "BRIEF.md") return `Read ${file || "a source file"}`
+  return scope && ["brief", "scope", "live"].includes(scope.kind) ? "Read the scope brief" : "Looked for a BRIEF.md file"
+}
+
 export interface RunState {
   events: RunEvent[]
   steps: Step[]
@@ -127,6 +136,9 @@ export interface RunState {
   // until it arrives (or on an old run that predates the event). The header
   // reads this so a live run names its real target instead of a hardcoded one.
   scope: TargetScope | null
+  // The operator's scope brief the agent got, from the last `brief` event.
+  // Null when the run had none or it was removed in a later follow-up.
+  brief: string | null
   status: RunStatus
   // The worst finding submitted so far (null until the first one).
   pending: PendingApproval | null
@@ -189,6 +201,9 @@ export interface RunState {
   // The provider and model id the run started with, from the `provider` event.
   // Null on a run that predates the event.
   provider: { id: string; model: string } | null
+  // The agents a server restart cut off mid-turn, each with the server's plain
+  // reason. An agent leaves this list when it works again.
+  cutOff: Record<string, string>
   // The operator stopped the run's last piece of work. A follow-up clears it.
   stopped: boolean
 }
@@ -213,6 +228,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let name: string | null = null
   let phase: "run" | "decide" = "run"
   let scope: TargetScope | null = null
+  let brief: string | null = null
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
@@ -225,6 +241,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let prepass: PrepassView | null = null
   let modules: ModulePlanEntry[] | null = null
   let provider: { id: string; model: string } | null = null
+  const cutOff: Record<string, string> = {}
   let stopped = false
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
@@ -285,6 +302,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         if (e.scope && typeof e.scope === "object") scope = e.scope as TargetScope
         break
       }
+      case "brief":
+        // The scope brief went into the agent's instructions. Run Info shows it;
+        // it is not a step. "" means a follow-up removed it.
+        brief = str(e.text) || null
+        break
       case "provider":
         // The provider and model the run started with. No step.
         if (str(e.provider) && str(e.model)) provider = { id: str(e.provider), model: str(e.model) }
@@ -333,7 +355,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "list", phase, label: "Listed the contract sources" })
         break
       case "read_source":
-        steps.push({ key, kind: "read", phase, label: `Read ${str(e.file) || "a source file"}` })
+        // Older runs of a scope got its text as a BRIEF.md file that Touchstone
+        // wrote; it was never a file of the repo. A lab never had one (the two
+        // labs that ship a BRIEF.md hand it over in the first message), so there
+        // the agent only looked for it.
+        steps.push({ key, kind: "read", phase, label: readLabel(str(e.file), scope) })
         break
       case "run_poc":
         steps.push({
@@ -475,6 +501,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       }
       case "subagent-spawned": {
         const id = str(e.id)
+        delete cutOff[id]
         const area = str(e.area) || "subagent"
         const title = str(e.title) || area
         steps.push({
@@ -511,11 +538,17 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "subagent-done": {
         const id = str(e.id)
         const st = e.status === "failed" ? "fail" : "pass"
+        // The server ends a child that a restart cut off as "failed" with
+        // `interrupted: true`. It shows as interrupted, not as failed.
+        const cut = e.interrupted === true
+        if (cut) cutOff[id] = str(e.error) || "The server restarted while this agent was working."
+        else delete cutOff[id]
         for (let j = steps.length - 1; j >= 0; j--) {
           const s = steps[j]
           if (s.kind === "subagent" && s.subId === id) {
             s.subState = e.status === "failed" ? "failed" : "done"
             s.state = st
+            if (cut) s.cut = true
             break
           }
         }
@@ -528,7 +561,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         // A failed child gets its own row in the main chat (Retry / Reassign).
         if (failed)
-          steps.push({ key, kind: "agent-error", phase, label: str(e.error) || "Stopped with an error", subId: id })
+          steps.push({ key, kind: "agent-error", phase, label: str(e.error) || "Stopped with an error", subId: id, ...(cut ? { cut } : {}) })
         break
       }
       case "agent-graph": {
@@ -542,6 +575,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       }
       case "agent-status": {
         const st = e.state === "idle" ? "idle" : "working"
+        if (st === "working") delete cutOff[str(e.id)]
         patchAgent(str(e.id), { state: st, ...(st === "idle" ? { activity: "idle" as const } : {}) })
         break
       }
@@ -845,6 +879,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     events,
     steps,
     scope,
+    brief,
     status,
     pending,
     submitted,
@@ -872,6 +907,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     prepass,
     modules,
     provider,
+    cutOff,
     stopped,
   }
 }

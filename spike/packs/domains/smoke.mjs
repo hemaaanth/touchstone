@@ -51,7 +51,7 @@ try {
     // Live path: a scope with a domain and no snapshot. The prepass captures it with the real tools and pins it.
     const live=mkdtempSync(join(tmpdir(),'touchstone-domains-live-'));
     try {
-      const reach={network,resolver:lab_.resolver,ports:[{scheme:'http',port:8080}],granted:lab_.granted,scope:lab_.scope};
+      const reach={network,resolver:lab_.resolver,ports:[{scheme:'http',port:8080},{scheme:'https',port:8443}],granted:lab_.granted,scope:lab_.scope};
       writeFileSync(join(live,'.touchstone.json'),JSON.stringify({pack:'domains',domain:'touchstone.test',reach}));
       const liveRun=await domains.prepass(live,{emit:()=>{}});
       const snap=JSON.parse(readFileSync(join(live,'snapshot.json'),'utf8'));
@@ -59,7 +59,15 @@ try {
       assert(snap.discovery.nuclei.some(h=>h.template==='github-takeover' && h.url.includes('docs.touchstone.test')));
       assert(snap.discovery.coverage.every(c=>c.status==='ran'),JSON.stringify(snap.discovery.coverage));
       const checks=new Set(liveRun.record.leads.map(l=>l.check));
-      for(const check of ['wallet-drainer-behavior','subdomain-takeover-fingerprint','dangling-cname','weak-csp','wallet-cdn-without-sri','missing-frame-protection']) assert(checks.has(check),'live capture must show '+check);
+      for(const check of ['wallet-drainer-behavior','subdomain-takeover-fingerprint','dangling-cname','weak-csp','wallet-cdn-without-sri','missing-frame-protection','email-dmarc-missing','email-spf-missing']) assert(checks.has(check),'live capture must show '+check);
+      // The lab serves TLS on 8443 with a self-signed cert. The tool must grade the chain, not the port.
+      assert(snap.tls.length===2 && snap.tls.every(e=>e.url.endsWith(':8443')),JSON.stringify(snap.tls?.map(e=>e.url)));
+      assert(checks.has('tls-cert_chain_of_trust'),'live capture must grade the self-signed chain');
+      const tlsProof=await replayEvidence(live,{check:'tls-cert_chain_of_trust',where:snap.tls[0].url,snapshotHash:liveRun.record.snapshotHash},{detectors:detectorsFor('domains')});
+      assert.equal(tlsProof.status,'pass');
+      // The lab zone is unsigned. The chain must be read as insecure, not as unread.
+      assert(checks.has('dnssec-unsigned'),'live capture must report the unsigned lab zone');
+      assert.equal(checks.has('dnssec-evidence-missing'),false);
       assert.deepEqual(liveRun.record.leads.find(l=>l.check==='subdomain-takeover-fingerprint').engines,['touchstone','nuclei']);
       const lead=liveRun.record.leads.find(l=>l.check==='wallet-drainer-behavior');
       const proof=await replayEvidence(live,{check:lead.check,where:lead.where,snapshotHash:liveRun.record.snapshotHash},{detectors:detectorsFor('domains')});

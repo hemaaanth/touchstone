@@ -1,0 +1,722 @@
+{
+    ".": {
+        "status": "NOERROR",
+        "queries": {
+            "./IN/DNSKEY": {
+                "nodata": [
+                    {
+                        "id": "./IN/DNSKEY",
+                        "soa": [
+                            {
+                                "id": "./IN/SOA",
+                                "description": "RRset for ./SOA",
+                                "name": ".",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "a.root. hostmaster.root. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K",
+                            "UDP_+_EDNS0_512_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    },
+    "test.": {
+        "status": "NOERROR",
+        "queries": {
+            "test./IN/DS": {
+                "nodata": [
+                    {
+                        "id": "test./IN/DS",
+                        "soa": [
+                            {
+                                "id": "test./IN/SOA",
+                                "description": "RRset for test/SOA",
+                                "name": "test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.test. hostmaster.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            },
+                            {
+                                "description": "An SOA RR with owner name (test) not matching the zone name (.) was returned with the NODATA response.",
+                                "code": "SOA_NOT_OWNER_FOR_NODATA",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "test./IN/DNSKEY": {
+                "nodata": [
+                    {
+                        "id": "test./IN/DNSKEY",
+                        "soa": [
+                            {
+                                "id": "test./IN/SOA",
+                                "description": "RRset for test/SOA",
+                                "name": "test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.test. hostmaster.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K",
+                            "UDP_+_EDNS0_512_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+        "delegation": {
+            "status": "INSECURE"
+        }
+    },
+    "touchstone.test.": {
+        "status": "NOERROR",
+        "queries": {
+            "touchstone.test./IN/A": {
+                "answer": [
+                    {
+                        "id": "touchstone.test./IN/A",
+                        "description": "RRset for touchstone.test/A",
+                        "name": "touchstone.test.",
+                        "ttl": 60,
+                        "type": "A",
+                        "rdata": [
+                            "172.30.44.20"
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/NS": {
+                "answer": [
+                    {
+                        "id": "touchstone.test./IN/NS",
+                        "description": "RRset for touchstone.test/NS",
+                        "name": "touchstone.test.",
+                        "ttl": 60,
+                        "type": "NS",
+                        "rdata": [
+                            "ns.touchstone.test."
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/CNAME": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/CNAME",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/SOA": {
+                "answer": [
+                    {
+                        "id": "touchstone.test./IN/SOA",
+                        "description": "RRset for touchstone.test/SOA",
+                        "name": "touchstone.test.",
+                        "ttl": 60,
+                        "type": "SOA",
+                        "rdata": [
+                            "ns.TOUCHsToNe.test. hostmaster.TOUCHsToNe.test. 1 60 60 3600 60"
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "TCP_+_EDNS0_4096_D",
+                            "UDP_+_EDNS0_4096_D_K",
+                            "UDP_+_EDNS0_4096_D_K_0x20"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "NO_COOKIE",
+                                "response": "NO_COOKIE_OPT"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "TCP_+_EDNS0_4096_D",
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_4096_D_K_0x20"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/MX": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/MX",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K",
+                            "UDP_+_EDNS0_512_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/TXT": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/TXT",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/AAAA": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/AAAA",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/DS": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/DS",
+                        "soa": [
+                            {
+                                "id": "test./IN/SOA",
+                                "description": "RRset for test/SOA",
+                                "name": "test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.test. hostmaster.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "touchstone.test./IN/DNSKEY": {
+                "nodata": [
+                    {
+                        "id": "touchstone.test./IN/DNSKEY",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K",
+                            "UDP_+_EDNS0_512_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K",
+                                    "UDP_+_EDNS0_512_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "c5jfr74wpq.touchstone.test./IN/A": {
+                "nxdomain": [
+                    {
+                        "id": "c5jfr74wpq.touchstone.test./IN/A",
+                        "soa": [
+                            {
+                                "id": "touchstone.test./IN/SOA",
+                                "description": "RRset for touchstone.test/SOA",
+                                "name": "touchstone.test.",
+                                "ttl": 60,
+                                "type": "SOA",
+                                "rdata": [
+                                    "ns.touchstone.test. hostmaster.touchstone.test. 1 60 60 3600 60"
+                                ],
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "ns_names": [
+                                    "ns1._dnsviz.*."
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ],
+                        "servers": [
+                            "172.30.44.53"
+                        ],
+                        "ns_names": [
+                            "ns1._dnsviz.*."
+                        ],
+                        "query_options": [
+                            "UDP_+_EDNS0_4096_D_K"
+                        ],
+                        "cookie_status": {
+                            "172.30.44.53": {
+                                "request": "CLIENT_COOKIE_ONLY",
+                                "response": "CLIENT_COOKIE_ONLY"
+                            }
+                        },
+                        "errors": [
+                            {
+                                "description": "Recursion was desired, but the Recursion Available (RA) flag was not set in the response.",
+                                "code": "RECURSION_NOT_AVAILABLE",
+                                "servers": [
+                                    "172.30.44.53"
+                                ],
+                                "query_options": [
+                                    "UDP_+_EDNS0_4096_D_K"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+        "delegation": {
+            "status": "INSECURE"
+        }
+    }
+}

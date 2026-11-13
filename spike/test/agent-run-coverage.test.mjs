@@ -37,7 +37,6 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 const target = path.join(dir, "target");
 mkdirSync(path.join(target, "src"), { recursive: true });
 writeFileSync(path.join(target, ".touchstone.json"), JSON.stringify({ pack: "review", links: [REPO] }));
-writeFileSync(path.join(target, "BRIEF.md"), `Audit ${REPO}\n`);
 process.env.TARGET = target;
 process.env.AGENT_RESULTS_DIR = path.join(dir, "results");
 process.env.SPEND_LEDGER = path.join(dir, "spend.json");

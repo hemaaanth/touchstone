@@ -58,6 +58,16 @@ export function fetchFinding(id: string): Promise<Finding> {
   return getJson<Finding>(`/api/findings/${encodeURIComponent(id)}`)
 }
 
+// A finding's report as text, built and redacted by the server (report.mjs):
+// "md" is the Markdown report, "agent" the short brief for a coding agent.
+// Never build these in the browser: the stored record is not redacted.
+export async function fetchFindingText(id: string, format: "md" | "agent"): Promise<string> {
+  const url = `/api/findings/${encodeURIComponent(id)}/report?format=${format}`
+  const res = await fetch(url)
+  if (!res.ok) throw new HttpError(url, res.status)
+  return res.text()
+}
+
 // ---- Live runs.
 
 export async function fetchModels(): Promise<{
@@ -126,6 +136,12 @@ export function attachScope(body: {
   files?: { path: string; content: string }[]
 }): Promise<TargetChoice> {
   return postJson<TargetChoice>("/api/scopes", body)
+}
+
+// Set or clear a scope's brief (at most 8,000 characters; the server refuses more
+// with a sentence). Every run of the scope gets it in the agent's instructions.
+export function saveScopeBrief(id: string, brief: string): Promise<{ id: string; brief: string }> {
+  return postJson<{ id: string; brief: string }>(`/api/scopes/${encodeURIComponent(id)}/brief`, { brief })
 }
 
 export async function removeScope(id: string): Promise<void> {

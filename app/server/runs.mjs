@@ -27,8 +27,9 @@ import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
-import { getTarget, listTargets, pickTarget, prepareRunWorkspace, targetSummary, withPack } from "../../spike/lib/targets.mjs"
+import { briefChange, briefOf, dropOldBriefFile, getTarget, listTargets, pickTarget, prepareRunWorkspace, scopeEnv, targetSummary, withPack } from "../../spike/lib/targets.mjs"
 import { enforceReach, openReach } from "../../spike/lib/reach.mjs"
+import { liveHostsRefusal } from "../../spike/lib/live-hosts.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
@@ -141,6 +142,10 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     for (const id of pack == null || pack === "" ? [] : [pack].flat()) {
       if (typeof id !== "string" || !Object.hasOwn(PACKS, id)) throw new Error(`unknown module: ${id}`)
     }
+    // A star in any spelling other than "*.example.com" would be dropped from
+    // the grant without a word. Refuse it here, before anything is saved.
+    const refusal = liveHostsRefusal(hosts)
+    if (refusal) throw new Error(refusal)
     // allowPrivate reaches the store only on this live path, and only `true` opts in.
     const live = addLiveScope({ title, hosts, pack, blurb, permission, token, tokens, toolScope, assistant, allowPrivate: allowPrivate === true })
     return { ...targetSummary(live), runnable: true }
@@ -405,6 +410,9 @@ export function listRuns() {
       name: r.name ?? null,
       scopeTitle: scopeOf(r)?.title ?? null,
       title: r.pending?.title ?? null,
+      // How an error run ended (`errorInfo.kind`), so the list can tell a
+      // restart's cut-off ("cutoff") from a failure.
+      errorKind: r.errorInfo?.kind ?? null,
       // The target this run audits — its stable headline, so the sidebar shows a
       // real name from the first second instead of the model alias.
       target: scopeOf(r)?.title ?? null,
@@ -542,6 +550,8 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, mod
   // resource this run is pointed at — the reason every run used to look the
   // same. It lands in run.events, so a late subscriber replays it too.
   broadcast(run, { t: Date.now(), ev: "scope", scope: targetSummary(run.target) })
+  // The operator's scope brief this run hands the agent. Run Info shows it.
+  if (briefOf(target)) broadcast(run, { t: Date.now(), ev: "brief", text: briefOf(target) })
   broadcast(run, { t: Date.now(), ev: "budget", usd: budget })
   // Fleet or Solo. A follow-up reads it back from this event.
   broadcast(run, { t: Date.now(), ev: "mode", mode })
@@ -858,7 +868,7 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...(run.reach?.env ?? {}), ...leads }
+  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -1073,7 +1083,8 @@ function unbindWorkspace(id) {
 
 // ---- The credential of a live AI/MCP scope. The scope library holds it
 // (spike/data/scopes.json, fields mcp.token and mcp.tokens). A run's workspace
-// gets a copy in BRIEF.md and .touchstone.json. A kept workspace must not hold
+// gets a copy in .touchstone.json (the agent gets it in its instructions, see
+// targets.mjs scopeEnv), and the agent may write it into files. A kept workspace must not hold
 // one, so the copies leave when the run ends and come back for a follow-up.
 const secretsOf = (target) => [...new Set([target?.mcp?.token, ...Object.keys(target?.mcp?.tokens ?? {})])].filter((s) => typeof s === "string" && s)
 function withoutSecrets(target) {
@@ -1358,6 +1369,10 @@ export function followUp(run, text, clientId) {
     unbindWorkspace(run.id)
     ws = null
   }
+  // The scope's current brief, from the library. When it differs from the last
+  // one this run had, the follow-up message carries it and Run Info shows it.
+  const brief = briefOf((target?.id ? getTarget(target.id) : null) ?? libraryTarget(run) ?? target)
+  const briefNote = briefChange(run.events.findLast((e) => e.ev === "brief")?.text, brief)
   const prior = run.submitted.map(({ n, title, severity, poc }) => ({ n, title, severity, poc }))
   run.settled = null
   run.error = null
@@ -1365,6 +1380,7 @@ export function followUp(run, text, clientId) {
   run.stopping = false
   run.replying = true
   broadcast(run, { t: Date.now(), ev: "reply-start" })
+  if (briefNote) broadcast(run, { t: Date.now(), ev: "brief", text: brief })
 
   const end = async () => {
     if (run.ws) await endWorkspace(run).catch(() => {})
@@ -1388,6 +1404,8 @@ export function followUp(run, text, clientId) {
         RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`),
         ...money,
         ...fleetEnv(run),
+        ...scopeEnv({ ...target, brief }),
+        ...(briefNote ? { BRIEF_CHANGE: briefNote } : {}),
         FOLLOWUP: text,
         ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
         ...(note ? { WORKSPACE_NOTE: note } : {}),
@@ -1433,6 +1451,7 @@ export function followUp(run, text, clientId) {
 
   if (ws) {
     run.ws = ws
+    dropOldBriefFile(ws, target)
     if (noCredential) {
       broadcast(run, { t: Date.now(), ev: "workspace", state: "kept", message: noCredential })
       start(`Operator follow-up. Your workspace is the one you left: the files you wrote and the sources you fetched are still there. ${noCredential} A placeholder text stands where a file held it.`)
@@ -1827,6 +1846,8 @@ function savedRun(id, events, mtime) {
   let model = null
   let archived = false
   let name = null
+  // How the stream's last error ended, so the run list keeps its kind.
+  let streamInfo = null
   const submitted = []
   for (const e of events) {
     if (e.ev === "archived") archived = Boolean(e.archived)
@@ -1842,6 +1863,7 @@ function savedRun(id, events, mtime) {
       if (e.decision) decision = e.decision
       if (Array.isArray(e.findingIds)) findingIds = e.findingIds
       if (typeof e.error === "string") error = e.error
+      streamInfo = e.status === "error" && e.errorInfo && typeof e.errorInfo === "object" ? e.errorInfo : null
     }
   }
   // A terminal status always lands in the stream file. Without one, the server
@@ -1872,22 +1894,35 @@ function savedRun(id, events, mtime) {
   // The children that were mid-turn end here. loadSavedRun writes these to the file.
   const cut = interrupted || replyCut ? cutOffEvents(events) : []
   events.push(...cut)
+  // A restart ending is stamped at the run's last event, like a cut-off child,
+  // so the run's time is the time it worked, not the time the server came back.
+  const end = events.findLast((e) => typeof e.t === "number")?.t ?? Date.now()
   let errorInfo = null
   // Only a solo run starts its agent again. A fleet goes on by itself only from
   // its proof phase, where every agent has already ended.
   if (interrupted && (!saved || (mode !== "solo" && saved.phase !== "proof" && !stopPending))) {
     status = "error"
-    if (saved !== false && mode === "fleet") errorInfo = fleetCutOff(id, events)
-    error = saved === false
-      ? "saved recovery state is unreadable; start a new run"
-      : errorInfo?.message ?? "the server restarted during this run, so it stopped"
-    events.push({ t: Date.now(), ev: "status", status, error, ...(errorInfo ? { errorInfo } : {}) })
+    // Every restart ending is a cut-off (kind "cutoff"), not a failure.
+    const session = saved !== false && existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events) : {
+      kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
+      spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
+      title: "This run stopped at the server restart",
+      hint: saved === false
+        ? "The server restarted during this run, and its saved state could not be read, so it cannot go on. Start a new run on the same scope."
+        : session
+          ? "The server restarted during this run. It was not started again, so nothing more was spent. Press Run again to continue in this chat."
+          : "The server restarted before this run started its agent. Start a new run on the same scope.",
+      message: saved === false ? "saved recovery state is unreadable; start a new run" : "the server restarted during this run, so it stopped",
+    }
+    error = errorInfo.message
+    events.push({ t: end, ev: "status", status, error, errorInfo })
   }
   if (replyCut) {
-    events.push({ t: Date.now(), ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
-    events.push({ t: Date.now(), ev: "closed" })
+    events.push({ t: end, ev: "reply-error", error: "The server restarted during this reply, so the reply stopped. Send the message again to continue." })
+    events.push({ t: end, ev: "closed" })
   }
-  if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: Date.now(), ev: "closed" })
+  if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
   return {
     id,
     alias,
@@ -1907,7 +1942,7 @@ function savedRun(id, events, mtime) {
     findingIds,
     decision,
     error,
-    errorInfo,
+    errorInfo: errorInfo ?? streamInfo,
     interrupted,
     saved,
     cut,
@@ -1996,6 +2031,9 @@ async function resumeRun(run) {
   }
   checkRestarts(run)
   if (!existsSync(path.join(run.ws, ".touchstone.json"))) throw new Error("the saved workspace is missing; start a new run")
+  // A run in flight across the upgrade may hold the BRIEF.md Touchstone used to
+  // write. A live run has no mark yet, so the check is the path one only.
+  dropOldBriefFile(checkedWorkspace(run.ws), run.target)
   run.reach = await openReach(run.target, { mode: run.target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
   // This event is a real retry marker. The old stream is never renumbered.
   broadcast(run, { t: Date.now(), ev: "phase-restarted", phase: state.phase })

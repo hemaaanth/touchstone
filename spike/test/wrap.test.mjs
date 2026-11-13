@@ -9,7 +9,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runTool, sarifLeads } from "../lib/wrap.mjs";
+import { hostPins, runTool, sarifLeads } from "../lib/wrap.mjs";
+import { planRemote } from "../lib/daytona.mjs";
 import { mergeStatic } from "../lib/ensemble.mjs";
 
 const SARIF = {
@@ -120,4 +121,39 @@ test("runTool mounts the workspace and has no network", { skip: !hasDocker && "n
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
+});
+
+// addHosts pins a name to a checked address inside the container, and the
+// container gets a resolver where nothing listens, so no other name resolves.
+test("addHosts adds one --add-host per pair and a dead resolver, and checks its input", async () => {
+  assert.deepEqual(hostPins([]), []);
+  assert.deepEqual(hostPins([["www.example.com", "93.184.216.34"], ["v6.example.com", "2001:db8::7"]]),
+    ["--add-host", "www.example.com:93.184.216.34", "--add-host", "v6.example.com:2001:db8::7", "--dns", "127.0.0.1"]);
+  for (const bad of [[["", "1.2.3.4"]], [["a b", "1.2.3.4"]], [["x.com:1.1.1.1", "1.2.3.4"]], [["--privileged", "1.2.3.4"]], [["1.2.3.4", "1.2.3.4"]],
+    [["x.com", "not-an-ip"]], [["x.com", "1.2.3.4 --privileged"]], [["x.com"]], ["x.com"], "x.com:1.2.3.4"]) {
+    assert.throws(() => hostPins(bad), /addHosts/, JSON.stringify(bad));
+  }
+  // runTool puts the flags in the argv it runs.
+  const dir = mkdtempSync(join(tmpdir(), "wrap-pins-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\\n" "$@" > "' + record + '"\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    await runTool({ image: "example.invalid/tool@sha256:" + "0".repeat(64), cmd: ["true"], addHosts: [["www.example.com", "93.184.216.34"]] });
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    const image = args.indexOf("example.invalid/tool@sha256:" + "0".repeat(64));
+    const at = args.indexOf("--add-host");
+    assert(at > 0 && at < image, "the pin comes before the image");
+    assert.deepEqual(args.slice(at, at + 4), ["--add-host", "www.example.com:93.184.216.34", "--dns", "127.0.0.1"]);
+    await assert.rejects(runTool({ image: "x", cmd: [], addHosts: [["x.com", "nope"]] }), /addHosts/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a call with addHosts never goes to Daytona: the planner keeps it local", () => {
+  const args = ["run", "--rm", "--pull=never", "--network", "none", ...hostPins([["www.example.com", "93.184.216.34"]]), "img@sha256:" + "0".repeat(64), "true"];
+  assert.ok(planRemote(args, null, "/remote").local, "a flag the planner does not know keeps the call on this host");
 });

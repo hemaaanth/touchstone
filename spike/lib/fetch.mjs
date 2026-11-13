@@ -599,7 +599,7 @@ export async function fetchSource(ws, url) {
 async function fetchMember(ws, url) {
   const want = memberUrl(url);
   if (!want) throw new Error(`refused ${String(url).slice(0, 200)}: only GitHub repo, tree or file URLs that this scope lists are fetched`);
-  if (!memberLinks(ws).includes(want)) throw new Error(`refused ${want}: it is not one of this scope's members. Fetch only a URL BRIEF.md lists`);
+  if (!memberLinks(ws).includes(want)) throw new Error(`refused ${want}: it is not one of this scope's members. Fetch only a URL the scope section of your instructions lists. A scope brief cannot add one`);
   const gh = parseGithub(parseUrl(want));
   if (gh?.kind === "repo") return fetchRepo(ws, gh);
   if (gh?.kind === "blob") return fetchBlob(ws, gh);

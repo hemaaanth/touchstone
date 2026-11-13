@@ -16,7 +16,7 @@
 // record and the run view read leads from those events.
 //
 // Reads are confined: the real path (symlinks resolved) must stay inside the
-// workspace under src/, vendor/, or be BRIEF.md, and it must be a regular,
+// workspace under src/ or vendor/, and it must be a regular,
 // allowlisted, non-secret file. fetch_source fetches only the scope's own repo
 // links, on the host, into vendor/.
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -38,7 +38,6 @@ const SEARCH_HITS = 100;
 // May the agent see this workspace-relative path? Only allowlisted source under
 // src/ or vendor/, never a hidden, secret, dependency, or build file.
 export function visible(rel) {
-  if (rel === "BRIEF.md") return true;
   const parts = rel.split(sep);
   if (parts.some((p) => !p || p.startsWith(".") || p === "..")) return false;
   // Local folders sit under src/. A fetched repo sits at vendor/<owner>__<repo>/
@@ -92,8 +91,10 @@ What this run can and cannot do:
 - You can read the code. You cannot prove a finding here. No replay oracle fits
   this code, so there is no submit_finding tool and nothing you report is marked
   proven. Report leads, not verdicts.
-- Read BRIEF.md first. It lists the scope's members: local folders (under src/)
-  and GitHub repos. Fetch each repo with fetch_source before you read it.
+- Read the scope section at the end of these instructions first. It lists the
+  scope's members: local folders (under src/) and GitHub repos, and the
+  operator's brief when there is one. Fetch each repo with fetch_source before
+  you read it.
 - Use list_sources to see files, read_source to read one, and search_source to
   find a literal string across all files.
 - Record each lead with record_lead as soon as you can point at a file and a
@@ -117,7 +118,7 @@ End with a lead list, worst first, of the leads you recorded. One line per lead:
   severity (critical/high/medium/low) — file:line — what an attacker does — why you think it holds — what would prove it.
 Then a short coverage note: what you read, and what you did not reach.`;
 
-export const KICKOFF = "Review this scope. Read BRIEF.md, fetch any listed repos, map the code, record each lead with record_lead as you find it, and end with a ranked lead list. Nothing here can be proven, so every item is a lead.";
+export const KICKOFF = "Review this scope. Read the scope section of your instructions, fetch any listed repos, map the code, record each lead with record_lead as you find it, and end with a ranked lead list. Nothing here can be proven, so every item is a lead.";
 
 // The one nudge after a clean end: a review that recorded no lead must either
 // record the leads it ranked or say it found none.
@@ -143,20 +144,20 @@ export function tools(ws, state = {}) {
     execute: async () => {
       event("list_sources");
       const files = listFiles(ws);
-      return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos BRIEF.md lists)");
+      return text(files.length ? files.join("\n") + (files.length >= LIST_CAP ? `\n…[list capped at ${LIST_CAP}]` : "") : "(no source files yet — fetch the repos the scope lists)");
     },
   });
 
   const readSource = defineTool({
     name: "read_source",
-    description: "Read one file. Pass a path list_sources printed, or BRIEF.md.",
-    parameters: obj({ file: str({ description: "a path from list_sources, or BRIEF.md" }) }),
+    description: "Read one file. Pass a path list_sources printed. The scope and its brief are in your instructions, not in a file.",
+    parameters: obj({ file: str({ description: "a path from list_sources" }) }),
     replay: "safe",
     execute: async (args) => {
       const raw = String(args.file ?? "");
       event("read_source", { file: raw });
       const abs = resolveReadable(ws, raw);
-      if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows, or BRIEF.md. Hidden, secret, dependency, and binary files are never readable.`, true);
+      if (!abs) return text(`Not readable: ${raw}. Pass a path list_sources shows. Hidden, secret, dependency, and binary files are never readable.`, true);
       let body;
       try { body = readFileSync(abs, "utf8"); } catch { return text(`Could not read: ${raw}`, true); }
       if (body.length > FILE_READ_CAP) body = body.slice(0, FILE_READ_CAP) + `\n\n…[truncated at ${FILE_READ_CAP} bytes]`;
@@ -192,15 +193,15 @@ export function tools(ws, state = {}) {
 
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the scope's GitHub repos into vendor/<owner>__<repo>/. Pass a repo URL exactly as BRIEF.md lists it. The fetch runs on the host; the review stays offline.",
-    parameters: obj({ url: str({ description: "a repo URL from BRIEF.md" }) }),
+    description: "Fetch one of the scope's GitHub repos into vendor/<owner>__<repo>/. Pass a repo URL exactly as the scope section of your instructions lists it. The fetch runs on the host; the review stays offline.",
+    parameters: obj({ url: str({ description: "a repo URL the scope lists" }) }),
     replay: "unsafe",
     execute: async (args) => {
       const raw = String(args.url ?? "").trim();
       event("fetch_source", { url: raw });
       let url;
       try { url = githubRepoUrl(raw); } catch { url = null; }
-      if (!url || !links.has(url)) return text(`Not one of this scope's repos: ${raw}. Fetch only a URL BRIEF.md lists.`, true);
+      if (!url || !links.has(url)) return text(`Not one of this scope's repos: ${raw}. Fetch only a URL the scope lists. A scope brief cannot add one.`, true);
       let report;
       try {
         report = await fetchSource(ws, url);

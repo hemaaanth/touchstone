@@ -8,9 +8,17 @@
 // A live capture runs on an open network, so the tool inputs are the boundary:
 //   - `scope` holds the grant's hosts. A name is covered by its exact entry or by a "*." entry.
 //   - dnsx gets covered names only. A generated name the grant does not cover is not resolved.
-//   - httpx, katana and nuclei get only names whose every address is public.
+//   - httpx, katana, nuclei and testssl.sh get only names whose every address is public.
 //     `allowPrivate: true` (from the grant) lifts the address rule, not the cover rule.
 //   - katana does not follow redirects. A redirect could name any host.
+//   - katana looks each name up again by itself. So a live crawl runs on the run's
+//     confined network and goes through its scope proxy (`confine`), which checks the
+//     address and connects to that same address. With no proxy, katana does not run.
+//   - testssl.sh gets the checked address (--ip) for the handshake. Some of its
+//     checks still use the name (the Winshock check fetches http://<name>/), so
+//     the container also pins the name to that address and gets no working resolver.
+//   - checkdmarc and DNSViz get the granted domain. They send DNS questions to the
+//     resolver only. checkdmarc's own HTTP fetches (MTA-STS, BIMI) are blocked.
 // The lab keeps its own rule (a listed name or a subdomain of one): its network has no route out.
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -20,6 +28,9 @@ import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot, sha256 } from '../../lib/proof-evidence.mjs';
 import { hostCovers, ipKind } from '../../lib/grant-store.mjs';
 import { IMAGE, ensureImage, missingImage } from './checks.mjs';
+import { checkEmail, emailLeads } from './email.mjs';
+import { captureTls, testsslTargets, tlsLeads } from './tls.mjs';
+import { assessmentCoverage, captureDnssec, dnssecLeads } from './dnssec.mjs';
 import { assertInternal } from './labctl.mjs';
 
 const DNSX = 'projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec';
@@ -120,9 +131,10 @@ const hostPattern = h => h.startsWith('*.') ? '([a-z0-9-]+\\.)+' + quote(h.slice
 export const crawlScope = (scope, ports = PORTS, exact = false) => '^(?:' + ports.map(p => p.scheme + '://' + (exact ? '(' + scope.map(hostPattern).join('|') + ')' : '([a-z0-9-]+\\.)*(' + scope.map(quote).join('|') + ')') + (isDefault(p) ? '(:' + p.port + ')?' : ':' + p.port)).join('|') + ')(?:/|$)';
 const portAllowed = (u, ports) => ports.some(p => p.scheme + ':' === u.protocol && Number(u.port || (u.protocol === 'https:' ? 443 : 80)) === p.port);
 // exact: a live crawl. The scope is exact and redirects are off (-dr): katana follows a redirect to any host.
-export const katanaArgs = (list, scope, resolver, ports = PORTS, exact = false) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
+// proxy: the scope proxy URL. katana then sends every request through it and needs no resolver.
+export const katanaArgs = (list, scope, resolver, ports = PORTS, exact = false, proxy = null) => ['-list', list, '-jsonl', '-silent', '-duc', '-jc', '-kf', 'robotstxt,sitemapxml', '-d', '3', '-ct', '120s', '-iqp',
   '-rl', '5', '-c', '2', '-p', '2', '-timeout', '10', '-retry', '1', '-mrs', '2097152', '-cs', crawlScope(scope, ports, exact),
-  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver ? ['-r', 'udp:' + resolver + ':53'] : []), ...(exact ? ['-dr'] : [])];
+  '-ef', 'png,jpg,jpeg,gif,svg,ico,webp,css,woff,woff2,ttf,eot,mp4', ...(resolver && !proxy ? ['-r', 'udp:' + resolver + ':53'] : []), ...(exact ? ['-dr'] : []), ...(proxy ? ['-proxy', proxy] : [])];
 // katana -jsonl rows to crawl rows. Seed URLs have no source, and httpx already has them.
 // A row with no status_code is a URL katana requested whose answer it did not keep (often an SPA fallback page).
 export function parseKatana(stdout, scope, ports = PORTS) {
@@ -211,7 +223,11 @@ export function failReason(result, image) {
 }
 
 // crawl: also run katana over the live pages. Surface sets it. Domains does not need it.
-export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false }) {
+// deep: also run checkdmarc, DNSViz and testssl.sh. Only the domains pack sets
+// it; surface leaves it off, so its capture is the same as on main.
+// confine: the run's reach boundary (lib/reach-confine.mjs): `netClient`, the network
+// whose only way out is the scope proxy, and `gateUrl`, the proxy. A live crawl needs it.
+export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, crawl = false, deep = true, confine = null }) {
   const scope = assertReach(reach, domain);
   // lab: the lab network, with no route out. open: no address rule (the lab, or a grant that allows private addresses).
   const lab = isLab(reach), open = lab || reach.allowPrivate === true, covered = coveredBy(reach);
@@ -235,6 +251,38 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
     const passive = await run('subfinder', { image: SUBFINDER, env: { ...env, HOME: '/tmp' }, cmd: ['-d', domain, '-silent', '-oJ', '-duc', ...(covered(wild) ? ['-nW'] : []), '-timeout', '5', '-max-time', '1'], timeoutMs: 120000 });
     const found = parseSubfinder(passive.stdout, covered);
     passive.note(found.length);
+    // With an exact-host grant, no generated name is covered. Say so: a quiet skip reads as "no subdomains".
+    if (!lab && !covered(wild)) coverage.push({ engine: 'subdomain-discovery', status: 'skipped', reason: 'Not run: the grant names ' + domain + ' but has no *.' + domain + ' entry, so no subdomain was resolved or probed. Add *.' + domain + ' to the grant to cover them.', leads: 0 });
+    // Email authentication is DNS only. It keeps its own evidence key, so a
+    // failed run is a coverage gap, never a clean result.
+    let email, dnssec;
+    // checkdmarc and DNSViz send DNS questions. On a live run the resolver must be
+    // a checked address the grant names; with none, the tools would fall back to
+    // the container's own resolver, which nobody checked. So they do not run: the
+    // rows are gaps with the reason. A lab keeps its own internal resolver.
+    if (deep && !lab && reach.resolver == null) {
+      const why = 'Not run: a live run needs a resolver the grant names, so every DNS question goes to a checked address. This run has none, and the tool is not given the container\'s own resolver. Set reach.resolver for the scope.';
+      for (const engine of ['checkdmarc', 'dnsviz-probe', 'dnsviz-grok']) coverage.push({ engine, status: 'unavailable', reason: why, leads: 0 });
+    } else if (deep) {
+      const emailCheck = await checkEmail(run, domain, reach.resolver);
+      // The snapshot stores the tool output and its hash; leads re-parse it.
+      email = emailCheck.record;
+      const emailCoverage = coverage.find(c => c.engine === 'checkdmarc');
+      if (email) {
+        emailCoverage.leads = emailLeads({ root: domain, email }).length;
+        if (emailCheck.partial) { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCheck.error; }
+      } else { emailCoverage.status = 'unavailable'; emailCoverage.reason = emailCoverage.reason || emailCheck.error; }
+      // The DNSSEC chain is probed through the granted resolver. A failed chain
+      // read is a coverage gap, not an unsigned zone.
+      const dnssecCheck = await captureDnssec(run, ws, domain, reach.resolver);
+      dnssec = dnssecCheck.record;
+      const dnssecCoverage = coverage.find(c => c.engine === 'dnsviz-probe');
+      if (dnssec) {
+        dnssecCoverage.leads = dnssecLeads({ root: domain, dnssec }).length;
+        const gap = assessmentCoverage(dnssecCheck.evidence);
+        if (gap) for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = gap.status; row.reason = gap.reason; }
+      } else for (const row of coverage.filter(c => String(c.engine).startsWith('dnsviz'))) { row.status = 'unavailable'; row.reason = row.reason || dnssecCheck.error || 'the chain was not read'; }
+    }
     // Names the grant lists one by one. Under the domain they are hosts to check. The others are resolved only,
     // so the crawl may follow a link to them.
     const listed = lab ? [] : scope.filter(s => DOMAIN.test(s)), others = listed.filter(s => !inScope(s, [domain]));
@@ -312,8 +360,15 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       const secrets = parseJsluiceSecrets(k.stdout, scripts); k.note(secrets.length);
       return { scripts: scripts.map(s => s.url), urls, secrets };
     };
-    if (crawl && pages.length) {
-      const katana = (engine, seeds) => { put('crawl.txt', seeds); return run(engine, { image: KATANA, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: lab ? katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports) : katanaArgs('/work/.live/crawl.txt', open ? scope : checked, reach.resolver, ports, true), timeoutMs: 180000 }); };
+    // katana looks each name up again. Without the scope proxy it could reach an address the capture did not check.
+    const unconfined = !lab && !(confine?.netClient && confine?.gateUrl);
+    if (crawl && pages.length && unconfined) {
+      coverage.push({ engine: 'katana', status: 'unavailable', reason: 'Not run: this run has no scope proxy. katana looks each name up again by itself, so without the proxy it could reach an address the capture did not check.', leads: 0 });
+      js = await readScripts(scriptBodies('', http, within, ports));
+    } else if (crawl && pages.length) {
+      // A live crawl runs on the confined network, so the scope proxy is its only way out.
+      const proxied = lab ? {} : { network: confine.netClient };
+      const katana = (engine, seeds) => { put('crawl.txt', seeds); return run(engine, { image: KATANA, ...proxied, env: { ...env, HOME: '/tmp', XDG_CONFIG_HOME: '/tmp/.config' }, cmd: lab ? katanaArgs('/work/.live/crawl.txt', scope, reach.resolver, ports) : katanaArgs('/work/.live/crawl.txt', open ? scope : checked, reach.resolver, ports, true, confine.gateUrl), timeoutMs: 180000 }); };
       // A live crawl follows no redirect. A redirect that stays inside the checked hosts and ports becomes a seed.
       const target = (from, to) => { try { const u = new URL(to, from); u.hash = ''; return /^https?:$/.test(u.protocol) && within(u.hostname) && portAllowed(u, ports) ? [u.href] : []; } catch { return []; } };
       const moved = rows => lab ? [] : rows.flatMap(r => r.status >= 300 && r.status < 400 && r.location ? target(r.url, r.location) : []);
@@ -326,6 +381,26 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       crawled = rows.slice(0, MAX_CRAWL);
       js = await readScripts(scriptBodies(out, http, within, ports));
     }
+    // TLS is measured only where the capture already found an https endpoint.
+    // The A record is passed as --ip, so the lab needs no resolver in the container.
+    const tlsTargets = deep ? testsslTargets(http.map(r => r.url)) : [];
+    // The https origins are httpx rows, so their hosts already passed the input filter.
+    // testssl.sh gets an address the capture checked, so it never looks the name up again.
+    // IPv4 first. Outside an open reach, only a public address. None: the endpoint is a gap.
+    const tlsAddress = host => {
+      if (ipKind(host)) return open || ipKind(host) === 'public' ? host : null;
+      const ips = addresses(host).filter(ip => open || ipKind(ip) === 'public');
+      return ips.find(ip => !ip.includes(':')) ?? ips[0] ?? null;
+    };
+    const tlsCheck = deep ? await captureTls(run, ws, tlsTargets, tlsAddress) : null;
+    // Nothing to measure is still a gap row, never a missing row that reads as clean.
+    if (deep && !tlsTargets.length) coverage.push({ engine: 'testssl', status: 'unavailable', reason: 'no https endpoint was found to measure', leads: 0 });
+    for (const check of tlsCheck?.runs ?? []) {
+      // An endpoint with no checked address did not run, so it has no row yet.
+      const row = coverage.find(c => c.engine === check.engine) ?? coverage[coverage.push({ engine: check.engine, status: 'unavailable', leads: 0 }) - 1];
+      if (check.entry) row.leads = tlsLeads({ root: domain, tls: [check.entry] }).length;
+      else { row.status = 'unavailable'; row.reason = row.reason || check.error || 'the handshake was not measured'; }
+    }
     const hits = [];
     if (pages.length) {
       copyFileSync(TEMPLATE, join(dir, 'github-takeover.yaml'));
@@ -335,7 +410,7 @@ export async function captureDomain({ ws, domain, reach, wordlist = WORDLIST, cr
       for (const hit of jsonl(nuclei.stdout)) hits.push({ template: hit['template-id'], url: new URL(hit['matched-at']).href, severity: hit.info?.severity });
       nuclei.note(hits.length);
     }
-    return { schema: 1, root: domain, zone, dns, http, rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : listed.includes(h) ? ['grant'] : [])]])), wildcard: Boolean(wildAnswers), ...(refused.length ? { refused } : {}), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
+    return { schema: 1, root: domain, zone, dns, http, ...(deep ? { email, tls: tlsCheck.entries, dnssec } : {}), rdap: null, contenthash: null, discovery: { source: 'live', hosts: live.sort(), sources: Object.fromEntries(live.map(h => [h, [...(found.includes(h) ? ['subfinder'] : []), ...(h === domain || wordlist.some(w => w + '.' + domain === h) ? [h === domain ? 'apex' : 'wordlist'] : listed.includes(h) ? ['grant'] : [])]])), wildcard: Boolean(wildAnswers), ...(refused.length ? { refused } : {}), nuclei: hits, ...(crawled ? { crawl: crawled } : {}), ...(js ? { jsluice: js } : {}), coverage } };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 // Capture a domain and pin the snapshot in the workspace. The run then replays against the pin.
