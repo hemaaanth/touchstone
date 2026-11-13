@@ -157,3 +157,20 @@ describe("redact: the engine fact the canary relies on (Bun)", () => {
     expect(redactOnePass(s.slice(s.indexOf("\n") + 1))).not.toContain("tk_after9zz")
   })
 })
+
+describe("redact: a text of 64 KB or less gets no canary and no cut (review 3 Minor 3)", () => {
+  test("the result is byte-identical to one pass", () => {
+    const open = '{"token":"tk_open9fakeZ'
+    for (const s of [
+      "",
+      "X-Api-Key: tk_small9z",
+      prose(64 * KB - open.length - 1) + "\n" + open,
+      fill(64 * KB),
+      "a1".repeat(32 * KB),
+      prose(30 * KB) + "Bearer\ntk_line9fakeZ\n" + prose(30 * KB),
+    ]) {
+      expect(s.length).toBeLessThanOrEqual(64 * KB)
+      expect(text(s)).toBe(redactOnePass(s))
+    }
+  })
+})
