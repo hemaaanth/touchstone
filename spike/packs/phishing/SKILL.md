@@ -90,7 +90,9 @@ lookalikes exist".
 
 Names in `owned` are the client's own defensive registrations. They never
 raise a lead. Names are compared in ASCII form (`url.domainToASCII`), so a
-Unicode owned name matches its `xn--` row. A `!ServFail` answer is not a
+Unicode owned name matches its `xn--` row. Each entry must be a bare domain
+name. A URL or any entry that is not a domain name stops the capture and the
+scan with an error. It is never dropped. A `!ServFail` answer is not a
 record.
 
 ## Control rows
@@ -147,7 +149,7 @@ two `.com` permutations, so the lab capture has no `!ServFail` row.
 A scope names a domain. `.touchstone.json` holds `domain`, and optionally
 `owned` and `blocklists`. For a live target, `prepareWorkspace` in
 `lib/targets.mjs` writes `domain` (the first host), `owned` (from the target)
-and `reach`. The platform grant fills `reach`: `network`,
+and `reach`. A live target must carry an `owned` list; `[]` means none. The platform grant fills `reach`: `network`,
 `granted`, `scope`, and optionally `resolver`. The prepass runs dnstwist once
 through `runTool()` with `--format json`, pins the snapshot, and the checks run
 on the pin. Live capture refuses a domain that `reach.scope` does not cover.

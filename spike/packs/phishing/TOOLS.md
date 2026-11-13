@@ -134,8 +134,9 @@ Real holes (work nobody has done yet):
    the same.
 10. Lookalikes under other TLDs depend on dnstwist's built-in TLD swaps only.
     No custom TLD list is pinned.
-11. A live target has no UI field for `owned`. Without it, the client's own
-    defensive registrations are reported as lookalikes.
+11. A live target has no UI field for `owned`. `prepareWorkspace` refuses a
+    live phishing target without an `owned` list, so the operator must set it
+    in the target file (`[]` means none).
 
 ## Runtime notes
 

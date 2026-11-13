@@ -9,7 +9,7 @@ import { runTool } from '../../lib/wrap.mjs';
 import { pinSnapshot } from '../../lib/proof-evidence.mjs';
 import { inScope, failReason } from '../domains/live.mjs';
 import { assertInternal } from '../domains/labctl.mjs';
-import { IMAGE, METAMASK, CONTROLS_PER_ZONE, name, zoneOf, regenerate, fingerprint } from './checks.mjs';
+import { IMAGE, METAMASK, CONTROLS_PER_ZONE, name, ownedNames, zoneOf, regenerate, fingerprint } from './checks.mjs';
 
 const PACK = fileURLToPath(new URL('.', import.meta.url));
 const DOMAIN = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
@@ -57,6 +57,7 @@ async function dnstwistJson(cmd, network, timeoutMs) {
 // Then it runs dnstwist offline once more and stores the fingerprint of the name set.
 export async function captureLookalikes({ ws, domain, owned = [], reach, blocklists = [], lab = false }) {
   assertReach(reach, domain);
+  ownedNames(owned); // a bad owned entry stops the capture before any tool runs
   const ns = reach.resolver ? ['--nameservers', reach.resolver] : [];
   const cmd = ['--format', 'json', ...ns, domain];
   const started = new Date().toISOString();

@@ -15,6 +15,13 @@ const sameWhere = (a, b) => (typeof a === 'string' || (a && typeof a === 'object
 // One DNS name in ASCII (punycode) form, so a Unicode name and its xn-- form are equal.
 // An invalid name becomes '' and is dropped.
 export const name = value => { const s = String(value ?? '').trim().replace(/\.$/, ''); return s ? domainToASCII(s).toLowerCase() : ''; };
+// The client's owned names. A dropped entry would make the owner's own domain a lookalike,
+// so an entry that is not a domain name (a URL, a typo) throws instead.
+export const ownedNames = list => (Array.isArray(list) ? list : []).map(entry => {
+  const n = name(entry);
+  if (!n || !HOST.test(n)) throw new Error('owned entry ' + JSON.stringify(entry) + ' is not a domain name. Give the bare domain, for example tide-keep.test, not a URL.');
+  return n;
+});
 // An address that cannot serve anyone else: 0.0.0.0/8, 127.0.0.0/8, :: and ::1. Sinkholes use these.
 const canonical6 = v => { try { return new URL('http://[' + v + ']').hostname.slice(1, -1); } catch { return v; } };
 const deadIP = v => isIP(v) === 4 ? /^(?:0|127)\./.test(v) : ['::', '::1'].includes(canonical6(v));
@@ -137,7 +144,7 @@ export async function phishingLeads(snapshot) {
   if (snapshot?.schema !== 1 || snapshot.kind !== 'phishing' || !Array.isArray(snapshot.official) || !snapshot.official.length) throw new Error('Invalid phishing snapshot');
   const official = snapshot.official.map(name).filter(Boolean);
   if (!official.length) throw new Error('Invalid phishing snapshot');
-  const skip = new Set([...official, ...(Array.isArray(snapshot.owned) ? snapshot.owned : []).map(name).filter(Boolean)]);
+  const skip = new Set([...official, ...ownedNames(snapshot.owned)]);
   const ownHost = domain => [...skip].some(d => domain === d || domain.endsWith('.' + d));
   const leads = [];
   const coverage = [...(snapshot.coverage ?? [])].map(row => ({ ...row }));

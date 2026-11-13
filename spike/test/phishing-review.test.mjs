@@ -160,6 +160,18 @@ test('M4: the owner\'s Unicode IDN domain is not reported as a lookalike', async
   assert.ok(registered(scan, 'tldekeep.test'), 'other lookalikes still confirm');
 });
 
+test('Minor 1: an owned entry that is not a domain name throws; it is never dropped', async () => {
+  const bad = 'https://тіԁекеер.test/';
+  await assert.rejects(phishingLeads(snap({ owned: [bad], rows: { 'tldekeep.test': HIT } })), /owned entry .* is not a domain name/);
+  await assert.rejects(phishingLeads(snap({ owned: ['tide-keep.test', ''] })), /owned entry "" is not a domain name/);
+  liveCalls.length = 0; calls.length = 0;
+  const reach = { network: 'bridge', granted: true, scope: ['tidekeep.test'], resolver: '172.30.47.53' };
+  await assert.rejects(captureLookalikes({ ws: join(PACK, 'lab'), domain: 'tidekeep.test', owned: [bad], reach }), /owned entry .* is not a domain name/);
+  assert.equal(liveCalls.length + calls.length, 0, 'no tool runs');
+  const ok = await phishingLeads(snap({ owned: ['Tide-Keep.test.'], rows: { 'tide-keep.test': HIT } }));
+  assert.equal(ok.leads.filter(l => l.where.domain === 'tide-keep.test').length, 0, 'a bare owned name still works');
+});
+
 test('m1: non-routable and malformed answers are not confirmed; they go to review', async () => {
   const rows = {
     'tidekeap.test': { dns_a: ['0.0.0.0'] }, 'tidekeip.test': { dns_a: ['127.0.0.1'] },
