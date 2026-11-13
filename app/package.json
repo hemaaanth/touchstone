@@ -19,6 +19,7 @@
     "date-fns": "^4.4.0",
     "lucide-react": "^1.70.0",
     "motion": "^14.10.1",
+    "pele": "^1",
     "react": "^19.3.1",
     "react-day-picker": "^10.0.2",
     "react-dom": "^19.3.1",

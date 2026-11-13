@@ -519,7 +519,7 @@ export function renderReportMarkdown(report) {
 // code blocks and headings, cut to three sentences.
 function firstSentences(text, n = 3) {
   const prose = String(text || "")
-    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
     .split("\n")
     .filter((l) => !/^\s*#/.test(l))
     .join(" ")

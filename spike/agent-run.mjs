@@ -33,6 +33,7 @@ import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
+import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 import { splitMeasured, supersededBy } from "./lib/candidate.mjs";
@@ -81,7 +82,8 @@ async function openHarness(db, ws, state) {
   const navText = navy ? (typeof pack.renameText === "function" ? pack.renameText(ws, NAV_SYSTEM) : NAV_SYSTEM) : "";
   // The scope's notes and the operator's brief close the instructions, so the
   // root agent and every fleet child start with them (targets.mjs scopeEnv).
-  const system = pack.system(ws) + navText + scopeInstructions(process.env);
+  // The diagram rule (lib/diagram-rule.mjs) comes just before them.
+  const system = pack.system(ws) + navText + DIAGRAM_RULE + scopeInstructions(process.env);
   const registry = createRegistry();
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
