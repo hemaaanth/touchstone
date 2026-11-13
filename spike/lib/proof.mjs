@@ -709,6 +709,167 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 // compiled artifacts) the gate falls back to the slot-0/EIP-1967 heuristic in
 // control-trace.mjs; a real replay always passes the layout, so production harm
 // is judged from the layout, never a position guess.
+// The ETH channel, net per counterparty (H1f). `net` is the old measure: each
+// target's net ETH in the test body. That alone counts a setUp() deposit and the
+// same address's own withdraw in the body as a drain. So a loss counts only as the
+// excess of what a counterparty took out of the target over what that same
+// counterparty put in, across setUp() AND the body (value CALLs, and the value of
+// a CREATE). The reported loss is the smaller of the two measures, so it can only
+// shrink: a verdict the old measure did not prove stays not proven.
+// Counterparties:
+// - The test contract and every non-scope contract it deployed are ONE party, "the
+//   test": they all run the test's code.
+// - Every other address (a pranked EOA, a makeAddr user) is its own party. The gate
+//   cannot tell an attacker address from an honest user: both are pranked
+//   addresses. So a deposit by one address and a withdraw by another counts.
+// - ETH that the test put on a target without a value CALL (vm.deal, vm.coinbase)
+//   is the test's own. The test side's take from that target is not counted. A
+//   selfdestruct by a test contract does the same for every target, because the
+//   trace does not name its beneficiary.
+// Returns [{ victim, lostWei, gross }] for every target the old measure saw lose ETH.
+const TEST_PARTY = "the test";
+// The party an address belongs to: the test contract and every non-scope contract
+// it deployed are one party; every other address is its own.
+function partyOf(traces, targets) {
+  const { testContract, created } = replayParties(traces);
+  return { testContract, side: (a) => (a && (a === testContract || (created.has(a) && !targets.has(a))) ? TEST_PARTY : a) };
+}
+
+function ethLosses(traces, targets, net, controlTrace) {
+  const TEST = TEST_PARTY;
+  const { side } = partyOf(traces, targets);
+  const flows = new Map(); // target -> Map(party -> put in minus took out)
+  const bump = (target, party, wei) => {
+    const m = flows.get(target) ?? new Map();
+    m.set(party, (m.get(party) ?? 0n) + wei);
+    flows.set(target, m);
+  };
+  const forced = new Set((controlTrace?.ethFunded ?? []).map(lc));
+  let selfDestructed = false;
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      const t = node?.trace ?? {};
+      if (!ok(i)) return;
+      const to = lc(t.address), from = lc(t.caller);
+      if (t.status === "SelfDestruct" && side(to) === TEST) selfDestructed = true;
+      let wei = 0n;
+      try { wei = BigInt(t.value ?? "0x0"); } catch { wei = 0n; }
+      if (wei <= 0n) return;
+      if (t.kind === "CALL" || t.kind === "CREATE" || t.kind === "CREATE2") {
+        if (targets.has(to)) bump(to, side(from), wei);
+        if (t.kind === "CALL" && targets.has(from)) bump(from, side(to), -wei);
+      }
+    });
+  }
+  const out = [];
+  for (const [victim, w] of net.entries()) {
+    if (!targets.has(victim) || w >= 0n) continue;
+    const gross = -w;
+    let excess = 0n;
+    for (const [party, v] of flows.get(victim) ?? []) {
+      if (v >= 0n) continue;
+      if (party === TEST && (selfDestructed || forced.has(victim))) continue;
+      excess += -v;
+    }
+    out.push({ victim, lostWei: excess < gross ? excess : gross, gross });
+  }
+  return out.sort((a, b) => (a.lostWei > b.lostWei ? -1 : a.lostWei < b.lostWei ? 1 : 0));
+}
+
+// The token channels, net per counterparty (H1f B). A drain is a real drop of a
+// holder's balance slot; the storage channel does not know where the tokens went.
+// The recipient comes from the token's authenticated Transfer logs (the emitter is
+// the scope token itself, as in tokenDrains), read from setUp() AND the body:
+// - `bodyOut`: the units the body's logs moved out of the holder. The part of the
+//   drop they do not cover has no recipient: it stays counted, as before (the drop
+//   is real; a token that logs nothing keeps the old measure).
+// - The covered part counts only as the per-party excess: what a party took out of
+//   the holder over what it put in, across both traces. The test is one party (see
+//   partyOf), and tokens an exempt funding store put on the holder are the test's own.
+// The result is never more than the drop, so a loss can only shrink.
+function netTokenDrains(drains, traces, targets, funded) {
+  if (!drains.length) return drains;
+  const { testContract, side } = partyOf(traces, targets);
+  const rec = new Map(); // "token:holder" -> { parties: Map(party -> put in minus took out), bodyOut }
+  const get = (k) => { let r = rec.get(k); if (!r) { r = { parties: new Map(), bodyOut: 0n }; rec.set(k, r); } return r; };
+  for (const entry of Array.isArray(traces) ? traces : []) {
+    const label = Array.isArray(entry) ? entry[0] : null;
+    const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
+    if (!Array.isArray(arena)) continue;
+    const ok = (i) => { for (let n = arena[i]; n; n = arena[n.parent]) if (!n.trace?.success) return false; return true; };
+    arena.forEach((node, i) => {
+      if (!ok(i)) return;
+      const t = node?.trace ?? {};
+      const token = (t.kind === "DELEGATECALL" || t.kind === "CALLCODE") ? lc(t.caller) : lc(t.address);
+      if (!token || token === testContract || !targets.has(token)) return;
+      for (const log of node?.logs ?? []) {
+        const raw = log?.raw_log ?? log;
+        const topics = raw?.topics;
+        if (!Array.isArray(topics) || topics.length < 3 || lc(topics[0]) !== TRANSFER_TOPIC) continue;
+        let amount = 0n;
+        try { amount = BigInt(raw.data ?? "0x0"); } catch { amount = 0n; }
+        if (amount <= 0n) continue;
+        const from = topicAddr(topics[1]), to = topicAddr(topics[2]);
+        if (to && targets.has(to)) { const r = get(`${token}:${to}`); r.parties.set(side(from), (r.parties.get(side(from)) ?? 0n) + amount); }
+        if (from && targets.has(from)) {
+          const r = get(`${token}:${from}`);
+          r.parties.set(side(to), (r.parties.get(side(to)) ?? 0n) - amount);
+          if (label === "Execution") r.bodyOut += amount;
+        }
+      }
+    });
+  }
+  const out = drains.map((d) => {
+    const key = `${d.token}:${d.victim}`;
+    const r = rec.get(key);
+    const drop = BigInt(d.lostUnits);
+    if (!r) return d;
+    const unmatched = drop > r.bodyOut ? drop - r.bodyOut : 0n;
+    let excess = 0n;
+    for (const [party, v] of r.parties) {
+      if (v >= 0n || (party === TEST_PARTY && funded.has(key))) continue;
+      excess += -v;
+    }
+    let lost = unmatched + (excess < r.bodyOut ? excess : r.bodyOut);
+    if (lost > drop) lost = drop;
+    return { ...d, lostUnits: lost.toString() };
+  });
+  return out.sort((a, b) => (BigInt(a.lostUnits) > BigInt(b.lostUnits) ? -1 : BigInt(a.lostUnits) < BigInt(b.lostUnits) ? 1 : 0));
+}
+
+// The backstop reason, or null. Each hit names the cheatcode and how to repair.
+const BACKSTOP_FIX = {
+  state: "do not restore an earlier state inside the proof test",
+  exec: "remove gas metering cheatcodes from the proof test",
+  fork: "the replay is offline: do not create, select or roll a fork, or replay a transaction, in the proof test",
+  account: "do not send raw transactions in the proof test",
+  unknown: "use only the cheatcodes of the pinned forge-std Vm.sol",
+};
+function backstopNote(controlTrace) {
+  if (controlTrace?.cheatTable === "missing") return "the gate's cheatcode table (spike/lib/vm-cheatcodes.json) is missing or does not parse, so it cannot check the cheatcodes the test used; nothing is proven.";
+  // outcome is trusted, with one guard: the call an expectation was armed for must
+  // be a reverted frame. If the trace shows it successful, or no call followed, the
+  // trace and the test disagree: refuse.
+  const broken = (controlTrace?.expects ?? []).filter((e) => !e.armed || e.armed.success);
+  if (broken.length) {
+    const what = [...new Set(broken.map((e) => `vm.${e.name} (in ${e.where})`))].join(", ");
+    return `the test used ${what}, but the trace shows no reverted call for it to expect (the call it was armed for succeeded, or no call followed), so the trace and the test disagree and no scope target counts. To repair: make the expected call really revert, or remove the expectation from the proof test.`;
+  }
+  const hits = controlTrace?.backstop ?? [];
+  if (!hits.length) return null;
+  const seen = new Map();
+  for (const h of hits) {
+    const label = h.name ? `vm.${h.name} (${h.class}, in ${h.where})` : `the unknown cheatcode ${h.selector} (in ${h.where})`;
+    if (!seen.has(label)) seen.set(label, BACKSTOP_FIX[h.name ? h.class : "unknown"] ?? BACKSTOP_FIX.unknown);
+  }
+  const list = [...seen.keys()].join(", ");
+  const fixes = [...new Set(seen.values())].join("; ");
+  return `the test used ${list}; after it the replay trace no longer tells what really happened, so no scope target counts. To repair: ${fixes}.`;
+}
+
 // The scope targets the test tampered with: address -> "0x… (Name) via vm.how[, vm.how]".
 // One store is exempt: a write of a scope token's balance slot, at a base the
 // compiled layout names, for a holder that is itself a scope target. That is how
@@ -716,13 +877,17 @@ function layoutTakeovers(controlTrace, targets, layouts) {
 // sets what the victim holds, and the gate measures the loss from that value.
 // A balance written for any other holder (the attacker, the test) is refused:
 // in a share token it would be a forged claim on the victim's assets.
-function tamperedTargets(controlTrace, targets, balances) {
+function tamperedTargets(controlTrace, targets, balances, funded = new Set()) {
   const out = new Map();
   const scope = [...targets.keys()];
+  // `funded` gets "token:holder" for every exempt store: tokens the test put on
+  // that holder (see netTokenDrains).
   const funding = (t) => {
     if (t.how !== "store" || !t.slot) return false;
     const bases = balances?.get(targets.get(lc(t.target)) ?? "") ?? [];
-    return bases.some((base) => scope.some((holder) => mappingSlot(holder, base) === word(t.slot)));
+    const holder = scope.find((h) => bases.some((base) => mappingSlot(h, base) === word(t.slot)));
+    if (holder) funded.add(`${lc(t.target)}:${holder}`);
+    return Boolean(holder);
   };
   for (const t of controlTrace?.tampers ?? []) {
     const hit = t.target === "*" ? scope : [lc(t.target)].filter((a) => targets.has(a));
@@ -756,13 +921,19 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   // mockCalls, mockCallRevert), cannot be the source of proven harm: the loss may be
   // what the cheatcode granted (an allowance, an owner slot, a credit). Kept or not,
   // in setUp() or the body: fail closed, like an etch.
-  const tampered = tamperedTargets(controlTrace, targets, balances);
+  const funded = new Set();
+  const tampered = tamperedTargets(controlTrace, targets, balances, funded);
   for (const a of tampered.keys()) targets.delete(a);
+  // The backstop (H1e 1): a cheatcode the table does not know, or one after which
+  // the trace no longer tells what happened, makes EVERY scope target unusable.
+  const unusable = backstopNote(controlTrace);
+  if (unusable) targets.clear();
   const names = [...targets.entries()].map(([address, name]) => ({ address, name }));
   // Not proven. When the test impersonated or tampered with a target, say so first,
   // so the agent can repair its PoC; then keep the base reason, which may be the
   // true cause.
   const notes = [];
+  if (unusable) notes.push(unusable);
   if (impersonated.length) notes.push(`the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp().`);
   if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions, or use vm.store / vm.mockCall only on contracts outside the scope (forge-std deal() that funds a scope contract's token balance is fine).`);
   const refuse = (reason) => ({
@@ -772,22 +943,28 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   });
   if (!targets.size) return refuse("the replay deployed no contract from the audited scope (src/ or vendor/), so it proves nothing about the target");
   if (!invoked) return refuse("the test never made a successful call into a scope target");
-  const losses = [...net.entries()].filter(([a, w]) => targets.has(a) && w < 0n).sort((a, b) => (a[1] < b[1] ? -1 : 1));
+  const eth = ethLosses(traces, targets, net, controlTrace);
   const takeovers = layouts == null ? controlTakeovers(controlTrace, targets) : layoutTakeovers(controlTrace, targets, layouts);
-  if (losses.length) {
-    const [victim, wei] = losses[0];
-    return { ok: true, kind: "funds", victim, lostWei: (-wei).toString(), targets: names };
+  if (eth.length && eth[0].lostWei > 0n) {
+    return { ok: true, kind: "funds", victim: eth[0].victim, lostWei: eth[0].lostWei.toString(), targets: names };
   }
+  // ETH left a target, but only back to addresses that had put it in.
+  const returned = eth.map((e) => `${e.victim} (${targets.get(e.victim)})`);
   // Prefer the ground-truth storage read. Fall back to Transfer logs only for a
   // token the layout does not cover (a real external ERC-20, or a balance under
   // a name we don't track). The fallback still requires the balance slot to have
   // moved in that token — a log on its own is not a drain.
+  // Then net each drop per counterparty (H1f B), after the channel is chosen, so
+  // the choice is the same as before and a loss can only shrink.
   const storageDrains = balanceDrains(controlTrace, targets, balances);
-  const drains = storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances);
+  const netted = netTokenDrains(storageDrains.length ? storageDrains : tokenDrains(traces, targets, controlTrace, balances), traces, targets, funded);
+  const drains = netted.filter((d) => BigInt(d.lostUnits) > 0n);
   if (drains.length) {
     const d = drains[0];
     return { ok: true, kind: "funds", asset: "token", victim: d.victim, token: d.token, lostUnits: d.lostUnits, targets: names };
   }
+  for (const d of netted) returned.push(`${d.victim} (${targets.get(d.victim)}, token ${d.token})`);
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
+  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: show an address that takes out more than it put in. It took over none of its control slots either`);
   return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }
