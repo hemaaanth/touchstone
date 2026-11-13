@@ -22,6 +22,7 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdir
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { createHash } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
@@ -39,6 +40,7 @@ import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
 import { MULTI_DIR, prepassViewOf } from "../../spike/packs/multi.mjs"
+import { pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -337,6 +339,7 @@ function broadcast(run, event) {
   }
   if (event.ev === "closed") {
     release(run)
+    if (registry.pruneOwed) pruneReplays(run)
     if (TERMINAL.includes(run.status) && !run.replying) {
       if (run.stateFile) rmSync(run.stateFile, { force: true })
       if (run.db) rmSync(`${run.db}.audit.json`, { force: true })
@@ -1058,9 +1061,15 @@ async function recordRun(run, found) {
 // names the workspace and holds the run's own scope snapshot. It survives a
 // restart, and it moves to the trash with the run's other files.
 const workspaceFile = (id) => path.join(RESULTS_DIR, `run-${id}.workspace.json`)
+// undefined: the run has no record. null: the record file is there but cannot
+// be read (torn, closed to this user, or not a record). The two are not the
+// same. A record that cannot be read may name a workspace, so no reader may
+// take it as "not there".
 function readWorkspace(id) {
   try {
-    return JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+    if (!lstatSync(workspaceFile(id), { throwIfNoEntry: false })) return undefined
+    const rec = JSON.parse(readFileSync(workspaceFile(id), "utf8"))
+    return rec && typeof rec === "object" && !Array.isArray(rec) ? rec : null
   } catch {
     return null
   }
@@ -1076,7 +1085,32 @@ function writeWorkspace(id, rec) {
 const WS_NAME = /^(redteam-run|touchstone-supply)-[A-Za-z0-9]{6}$/
 // The server writes the run id into this file when it keeps a workspace. A
 // record alone does not bind a directory to a run: the directory names the run too.
+// A second line names the results folder of the server that wrote the mark (a
+// hash, so the agent does not learn the path). The temp folder is shared with
+// other servers and with tests, and the boot sweep must know its own folders.
 const WS_MARK = ".touchstone-run"
+function resultsHome() {
+  let dir = path.resolve(RESULTS_DIR)
+  try {
+    dir = realpathSync(dir)
+  } catch {
+    // not made yet
+  }
+  return createHash("sha256").update(dir).digest("hex").slice(0, 32)
+}
+const markText = (id) => `${id}\n${resultsHome()}`
+// The mark of a folder: { id, home }, or null when it has no real mark file.
+// `home` is undefined for a mark from before the second line.
+function readMark(dir) {
+  try {
+    const file = path.join(dir, WS_MARK)
+    if (!lstatSync(file).isFile()) return null // a link is not a mark
+    const [id, home] = readFileSync(file, "utf8").split("\n")
+    return id ? { id, home } : null
+  } catch {
+    return null
+  }
+}
 // Where a joined run keeps one sub-workspace per module (spike/packs/multi.mjs).
 const MODULES_DIR = MULTI_DIR
 
@@ -1093,23 +1127,25 @@ function checkedWorkspace(ws, id) {
     const real = realpathSync(ws)
     if (path.dirname(real) !== realpathSync(tmpdir()) || !WS_NAME.test(path.basename(real))) return null
     if (id === undefined) return real
-    const mark = path.join(real, WS_MARK)
-    return lstatSync(mark).isFile() && readFileSync(mark, "utf8") === id ? real : null
+    return readMark(real)?.id === id ? real : null
   } catch {
     return null
   }
 }
 
 // Delete the kept workspace of a run. A path that fails the check is left alone.
-function removeKept(id) {
-  const ws = checkedWorkspace(readWorkspace(id)?.ws, id)
+const removeKept = (id) => removeChecked(readWorkspace(id)?.ws, id)
+
+// The checked delete: only a folder that passes the check and carries the mark of `id`.
+function removeChecked(dir, id) {
+  const ws = checkedWorkspace(dir, id)
   if (!ws) return
   try {
     rmSync(ws, { recursive: true, force: true })
   } catch (err) {
     // A part stayed. Put the mark back, so a later delete still passes the check.
     try {
-      writeFileSync(path.join(ws, WS_MARK), id, { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
+      writeFileSync(path.join(ws, WS_MARK), markText(id), { flag: "wx", mode: 0o600 }) // wx: a link here is not followed
     } catch {
       // the mark is still there, or the folder itself is gone or closed
     }
@@ -1293,6 +1329,87 @@ function cleanRestored(run) {
   }
 }
 
+// The record of a run's workspace: the path, the run's scope snapshot without
+// the credential, and whether the scope has a credential at all.
+const workspaceRecord = (run, real, target, old, secrets) => ({ ws: real, target: withoutSecrets(target), ...(run.packs ? { packs: run.packs } : {}), modules: run.modules ?? old?.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+
+// A workspace that a follow-up just built belongs to the run from that moment:
+// the record names it, then the folder carries the run's mark. The record comes
+// first, so a marked folder is never without one. If the server stops before
+// the follow-up ends, the next boot finds the folder through the record and
+// takes the credential out (cleanRestored). Best effort: on a failure the
+// follow-up goes on as before, and its ending keeps or deletes the workspace.
+function bindWorkspace(run, ws, target, old) {
+  try {
+    const real = checkedWorkspace(ws)
+    if (!real) return
+    const secrets = secretsOf(credentialTarget(target, run.packs))
+    writeWorkspace(run.id, { ...workspaceRecord(run, real, target, old, secrets), ...(secrets.length ? { restored: true } : {}) })
+    const mark = path.join(real, WS_MARK)
+    // The copied source can bring a file or a link with this name. It goes
+    // first (a link is removed, never followed), as in keepWorkspace.
+    rmSync(mark, { recursive: true, force: true })
+    writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
+  } catch {
+    // see above
+  }
+}
+
+// ---- Orphan workspaces. A folder in the temp folder that carries this
+// server's mark, but that the run's record does not name, belongs to nobody: its
+// run was deleted, or the record points to another folder. A follow-up never
+// finds it again, and it can hold what the agent wrote. The boot removes it,
+// through the checked delete. A folder without a mark is never touched: it may
+// be a live run's, another server's or a test's. Neither is a folder whose
+// mark another results folder wrote, nor one with a mark of the older form,
+// nor one whose mark holds something that is not a run id (the id goes into
+// file paths). A folder whose run has a record that cannot be read stays too:
+// that record may name it. Those are only counted, in one log line.
+function sweepOrphans() {
+  const seen = { unmarked: 0, foreign: 0, removed: 0, unread: 0, kept: 0 }
+  try {
+    const tmp = realpathSync(tmpdir())
+    const home = resultsHome()
+    for (const name of readdirSync(tmp)) {
+      if (!WS_NAME.test(name)) continue
+      const dir = checkedWorkspace(path.join(tmp, name))
+      if (!dir) continue // a link, or a folder of another user
+      const mark = readMark(dir)
+      if (!mark) seen.unmarked += 1
+      else if (mark.home !== home || !isRunId(mark.id)) seen.foreign += 1
+      else seen[removeOrphan(dir, mark.id)] += 1
+    }
+  } catch {
+    // Best effort: the boot goes on.
+  }
+  if (seen.unmarked || seen.foreign || seen.removed || seen.unread) {
+    console.warn(`[runs] temp folders with a workspace name: ${seen.removed} with this server's mark and no run record were removed; ${seen.unread} with a run record that cannot be read, ${seen.unmarked} with no mark and ${seen.foreign} with another mark were left alone.`)
+  }
+}
+
+// "removed", or why the folder stays: "kept" (a run uses it, or the delete
+// failed), "unread" (the run's record is there but cannot be read).
+function removeOrphan(dir, id) {
+  const lock = { id }
+  let mine = false
+  try {
+    // A server may work on the run right now: this one (a run it resumes at
+    // boot) or another live one. The run's lock says so.
+    if (existsSync(path.join(RESULTS_DIR, `run-${id}.owner.sqlite`)) && !(mine = own(lock))) return "kept"
+    // No record: the run has no workspace. A record that cannot be read may
+    // name this folder, so the folder stays.
+    const rec = readWorkspace(id)
+    if (rec === null) return "unread"
+    if (checkedWorkspace(rec?.ws, id) === dir) return "kept" // the run's own kept workspace
+    removeChecked(dir, id)
+    return existsSync(dir) ? "kept" : "removed"
+  } catch {
+    return "kept" // a part stayed: the mark is back, so the next boot tries again
+  } finally {
+    if (mine) release(lock)
+  }
+}
+
 // Keep the workspace of a run that has an agent session: only that run can take
 // a follow-up. Returns false when there is nothing to keep, or when the
 // credential could not be taken out: the workspace is then deleted as before.
@@ -1304,12 +1421,13 @@ function keepWorkspace(run, ws) {
     const target = run.target ?? (run.saved ? run.saved.target : null) ?? old?.target ?? null
     const secrets = secretsOf(credentialTarget(target, run.packs))
     // A restored credential that is not known here cannot be scrubbed: do not keep.
-    if (old?.restored && !secrets.length) return false
+    // The same when the old record cannot be read: it may have said `restored`.
+    if ((old === null || old?.restored) && !secrets.length) return false
     if (secrets.length) scrubSecrets(real, secrets)
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
-    writeFileSync(mark, run.id, { flag: "wx", mode: 0o600 })
-    writeWorkspace(run.id, { ws: real, target: withoutSecrets(target), ...(run.packs ? { packs: run.packs } : {}), modules: run.modules ?? [], ...(secrets.length || old?.credential ? { credential: true } : {}) })
+    writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
+    writeWorkspace(run.id, workspaceRecord(run, real, target, old, secrets))
   } catch {
     return false // no record, no way back to the files: remove them as before
   }
@@ -1456,6 +1574,9 @@ export function followUp(run, text, clientId) {
   // snapshot; its scope may allow several modules now, so it comes back under
   // the module this run used.
   const kept = readWorkspace(run.id)
+  // A record that cannot be read is not a lost workspace. Nothing is built and
+  // nothing is changed: the operator repairs the file, or deletes it on purpose.
+  if (kept === null) throw new Error(`The workspace record of this run cannot be read, so this follow-up did not start. Repair the file ${workspaceFile(run.id)}, or delete it to continue in a new workspace. Then send the message again.`)
   // The record's path is used only when the directory passes the check and
   // carries this run's mark. Otherwise the path leaves the record.
   let ws = checkedWorkspace(kept?.ws, run.id)
@@ -1604,6 +1725,7 @@ export function followUp(run, text, clientId) {
   buildWorkspace(run, target, kept).then(
     (made) => {
       run.ws = made
+      bindWorkspace(run, made, target, kept)
       const lost = run.events.filter((e) => e.ev === "source-fetch" && e.ok && e.where).map((e) => `${e.url} (was in ${e.where})`)
       const message = [
         "The earlier workspace of this run is gone, so this is a new workspace built from the same scope.",
@@ -1707,8 +1829,24 @@ export function deleteRun(id) {
       if (f.startsWith(prefix)) renameSync(path.join(RESULTS_DIR, f), path.join(trash, f))
     }
   }
+  // The run's record is in the trash now, so it names no replay file any more.
+  pruneReplays(run)
   runs.delete(id)
   return { ok: true }
+}
+
+// Remove each stored replay file (replay/<sha256>.json) that no run record
+// names any more. A run in its proof check stores a replay file before its
+// record names it, so nothing is removed while another run works: the prune is
+// owed then, and runs when a run closes. `self` is the run that is ending.
+function pruneReplays(self) {
+  registry.pruneOwed = [...runs.values()].some((r) => r !== self && !idle(r))
+  if (registry.pruneOwed) return
+  try {
+    pruneReplayStore(RESULTS_DIR) // removes nothing when a record cannot be read
+  } catch {
+    // Best effort: the delete or the close itself is done.
+  }
 }
 
 // Assemble the engine's canonical { result, transcript } record and write it
@@ -1807,6 +1945,8 @@ function finalize(run) {
 // its `run-<id>.json` record; we rebuild the same event shape from those two.
 // CLI runs (`run-<alias>.json`, no stamp) are not app runs and are skipped.
 const APP_RUN = /^run-([a-z0-9.-]+-\d{10}-\d+)\.(stream\.jsonl|state\.json|json)$/
+// The same form, for an id that comes from file content and goes into a path.
+const isRunId = (id) => APP_RUN.test(`run-${id}.json`)
 
 function readJsonl(file) {
   const out = []
@@ -1912,17 +2052,20 @@ function cutOffEvents(events) {
 
 // The error card of a fleet run that a restart cut off: who was mid-turn, that
 // nothing was started again, and the one next step.
-function fleetCutOff(id, events) {
+function fleetCutOff(id, events, saved) {
   const names = fleetChildren(events).cut.map((c) => events.find((e) => e.ev === "subagent-spawned" && e.id === c)?.name || c)
   const who = names.length > 1 ? `, and ${names.slice(0, -1).join(", ")} and ${names.at(-1)} were cut off mid-turn` : names.length ? `, and ${names[0]} was cut off mid-turn` : ""
   // Without a saved agent session there is nothing a message could continue.
   const session = existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
+  // The files are there when a follow-up would reuse the workspace: the kept one
+  // of this run, or the one the run worked in at the stop (it is kept just after).
+  const files = checkedWorkspace(readWorkspace(id)?.ws, id) ?? checkedWorkspace(saved?.ws)
   return {
     kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
     spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
     title: "This fleet run stopped at the server restart",
     hint: session
-      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history, its agents and its files.`
+      ? `The server restarted while this fleet was working${who}. No agent was started again, so nothing more was spent. Press Run again to continue in this chat. The run keeps its history${files ? ", its agents and its files" : " and its agents"}.`
       : "The server restarted before the agents of this fleet started. Start a new run on the same scope.",
     message: "this fleet run stopped at the server restart; its agents were not started again",
   }
@@ -1944,7 +2087,10 @@ function submittedFindings(id) {
 // proven: no record, an unreadable record, or a replay that did not pass. This
 // only ever takes `proven` away. Nothing at load sets it. Ids are the ledger's
 // (splitRun in findings.mjs): `<run>.<k>`, or the run id for an older record
-// with one finding.
+// with one finding. The copy must also be the record's finding, not only carry
+// its number: a line that keeps the id of a proven finding but names another
+// title, severity or test is not proven.
+const sameFinding = (e, f) => ["poc", "title", "severity"].every((k) => (e[k] ?? null) === (f?.[k] ?? null))
 function provenByRecord(id, events) {
   const claims = events.filter((e) => e.ev === "finding" && e.proven !== false)
   if (!claims.length) return
@@ -1957,8 +2103,9 @@ function provenByRecord(id, events) {
   const list = Array.isArray(r.findings) && r.findings.length ? r.findings : null
   for (const e of claims) {
     const k = String(e.id).startsWith(`${id}.`) ? Number(String(e.id).slice(id.length + 1)) : NaN
-    const stored = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id && r.finding ? { pocProved: r.pocProved, proof: r.proof } : null
-    if (!isProven(stored)) e.proven = false
+    const entry = list ? (Number.isInteger(k) ? list[k - 1] : null) : e.id === id ? r.finding : null
+    const stored = list || !entry ? entry : { pocProved: r.pocProved, proof: r.proof }
+    if (!isProven(stored) || !sameFinding(e, entry)) e.proven = false
   }
 }
 
@@ -2037,7 +2184,7 @@ function savedRun(id, events, mtime) {
     status = "error"
     // Every restart ending is a cut-off (kind "cutoff"), not a failure.
     const session = saved !== false && existsSync(path.join(RESULTS_DIR, `run-${id}.sqlite`))
-    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events) : {
+    errorInfo = saved !== false && mode === "fleet" ? fleetCutOff(id, events, saved) : {
       kind: "cutoff", retryable: session, reason: "interrupted", detail: "",
       spentUsd: Number(events.findLast((e) => e.ev === "spend")?.usd ?? 0),
       title: "This run stopped at the server restart",
@@ -2212,12 +2359,17 @@ function loadSavedRuns() {
   }
   for (const id of ids) loadSavedRun(id)
   for (const id of ids) cleanRestored(runs.get(id))
+  // Once per server process, not at each reload of this module.
+  if (!registry.swept) sweepOrphans()
+  registry.swept = true
 }
 
 // Another process owned these runs at load. Follow their saved streams, and
 // take a run over once its owner exits.
 function adoptOrphans() {
-  for (const [id, old] of runs) {
+  // A copy: the loop takes a run out and puts it back, and a Map visits a key
+  // that is put back again, so the loop would never end.
+  for (const [id, old] of [...runs]) {
     if (old.owner || !old.interrupted || TERMINAL.includes(old.status)) continue
     runs.delete(id)
     loadSavedRun(id)
