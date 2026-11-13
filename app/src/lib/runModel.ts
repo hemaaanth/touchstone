@@ -15,6 +15,7 @@ import type {
   PrepassTool,
   PrepassView,
   RunEvent,
+  RunLead,
   RunStatus,
   Severity,
   SteerEntry,
@@ -92,7 +93,7 @@ export const severityRank = (s: string | undefined) => SEV_RANK[String(s ?? "").
 // the headline action; `detail` is the real engine/gateway error text; `hint`
 // is the one concrete next step; `spentUsd` is what the run actually cost.
 export interface RunFailure {
-  kind: "transient" | "account" | "budget" | "cutoff" | "model" | "crash" | "unknown"
+  kind: "transient" | "account" | "budget" | "cutoff" | "coverage" | "model" | "crash" | "unknown"
   title: string
   hint: string
   detail: string
@@ -119,6 +120,9 @@ export interface RunState {
   // The structured, classified failure behind `error`. Null unless the run ended
   // in an error state. Drives the error card; `error` stays the plain fallback.
   errorInfo: RunFailure | null
+  // A recorded run that did not read its whole scope: what was not read. A
+  // warning beside the finding, not an error. Null when the scope was covered.
+  coverage: RunFailure | null
   finalText: string | null // the agent's words when it could not prove anything
   // No worker is running. A follow-up message reopens the run (`reply-start`)
   // and a later `closed` ends it again.
@@ -142,6 +146,8 @@ export interface RunState {
   agents: AgentNode[]
   // Fleet: the run's shared Bulletin, in post order. Empty without a fleet.
   bulletin: BulletinNote[]
+  // Leads the agents recorded, worst first, one per id. Never proven.
+  leads: RunLead[]
   // Findings this run has proven, scoped to the run (no global rail). In order
   // of arrival, deduped by id.
   findings: FindingSummary[]
@@ -175,6 +181,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let decision: Verdict | null = null
   let error: string | null = null
   let errorInfo: RunFailure | null = null
+  let coverage: RunFailure | null = null
   let finalText: string | null = null
   let closed = false
   let replying = false
@@ -186,6 +193,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let activity: Activity = "working"
   let agents: AgentNode[] = []
   const bulletin: BulletinNote[] = []
+  const leads: RunLead[] = []
   const findings: FindingSummary[] = []
   const steers: SteerEntry[] = []
   const artifacts: ArtifactDoc[] = []
@@ -526,6 +534,30 @@ export function reduceEvents(events: RunEvent[]): RunState {
         })
         break
       }
+      case "lead": {
+        // One lead per id. A later event for the same id replaces it in place.
+        const id = str(e.id)
+        const file = str(e.file)
+        const line = num(e.line)
+        if (!id || !file || line == null || line < 1) break
+        const sev = str(e.severity).toLowerCase()
+        const lead: RunLead = {
+          id,
+          author: who || COORDINATOR,
+          t: num(e.t),
+          severity: sev in SEV_RANK ? (sev as Severity) : null,
+          file,
+          line,
+          title: str(e.title),
+          reason: str(e.reason),
+          proof: str(e.proof) || null,
+          stepKey: key,
+        }
+        const at = leads.findIndex((l) => l.id === id)
+        if (at >= 0) leads[at] = lead
+        else leads.push(lead)
+        break
+      }
       case "agent-spend": {
         const usd = num(e.usd)
         if (usd != null) patchAgent(str(e.id), { spendUsd: usd })
@@ -646,6 +678,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
       case "no-finding":
         finalText = str(e.final) || null
         break
+      case "coverage":
+        coverage = e.info && typeof e.info === "object" ? (e.info as RunFailure) : null
+        break
       case "settled": {
         // The streamed prose can end one chunk short. The settled event holds the
         // whole answer, so the last prose step takes it. Old records get the same repair.
@@ -749,6 +784,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
     decision,
     error,
     errorInfo,
+    coverage,
     finalText,
     closed,
     replying,
@@ -759,6 +795,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
     activity,
     agents,
     bulletin,
+    // Worst first; the sort is stable, so equal severities keep arrival order.
+    leads: leads.toSorted((a, b) => severityRank(a.severity ?? undefined) - severityRank(b.severity ?? undefined)),
     findings,
     steers,
     artifacts,

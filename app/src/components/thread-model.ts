@@ -238,8 +238,10 @@ export function buildMessages(
   flushSpawn()
   flushGroup()
 
-  // Closing prose (the agent's words when nothing could be proven).
-  if (owner == null && status === "no-finding" && state.finalText) {
+  // Closing prose (the agent's words when nothing could be proven). A run that
+  // did not read its whole scope ends as a coverage error, but its words stay.
+  const closing = status === "no-finding" || (status === "error" && state.errorInfo?.kind === "coverage")
+  if (owner == null && closing && state.finalText) {
     if (!buf) buf = open("final")
     ;(buf.parts as unknown[]).push({ type: "text", text: state.finalText })
   }

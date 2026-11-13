@@ -312,6 +312,22 @@ export interface PackChoice {
   proof: string
   // The module's tools can be aimed at a real host.
   live?: boolean
+  // What the pack's own lab stands in for. "rule-based" means the lab
+  // assistant is a rule-based stand-in, not a model.
+  labTarget?: string
+  // Where the pack's tools reach. The engine sends each field only when the pack
+  // sets it (spike/packs/index.mjs packList). See spike/packs/README.md.
+  // true: no tool reaches a network.
+  offline?: boolean
+  // What the host fetches for a run: "github" (the scope's GitHub links),
+  // "solc" (the compilers those files pin).
+  fetches?: string[]
+  // "open": a live run's scanners use the open bridge network.
+  scanNet?: string
+  // "github": a live grant names GitHub repos or orgs, not hosts.
+  grants?: string
+  // "cloud-http": one check also gets an HTTP replay on a private practice cloud.
+  extraProof?: string
 }
 
 // A target as the launcher offers it: a scope plus whether it can run right now.
@@ -367,6 +383,8 @@ export interface RunEvent {
 //   bulletin-post    { id, author, text, kind?, severity?,        fleet: a Bulletin note
 //                      tags?, lane? }
 //   agent-spend      { id, usd }                                  fleet: child's spend SNAPSHOT
+//   lead             { id, severity, file, line, title, reason,   a recorded lead with its
+//                      proof?, agent? }                           evidence; never proven
 //   finding-submitted { n, title, severity, poc }                 agent submits one of
 //                                                                 many; audit goes on
 //   submit-rejected  { poc, reason }                              not passed / duplicate
@@ -460,6 +478,22 @@ export interface BulletinNote {
   tags: string[]
   lane: "trusted" | "evidence"
   stepKey: string // key of the event that posted it, for linking back
+}
+
+// One lead an agent recorded (Review's record_lead), with its evidence. A lead
+// is not a finding: nothing marks it proven. `author` is a child id or
+// COORDINATOR (the root agent, also a solo run's one agent).
+export interface RunLead {
+  id: string
+  author: string
+  t: number | null
+  severity: Severity | null
+  file: string
+  line: number
+  title: string
+  reason: string
+  proof: string | null
+  stepKey: string
 }
 
 // One operator steer across its two-phase life. "pending" — typed, shown as a

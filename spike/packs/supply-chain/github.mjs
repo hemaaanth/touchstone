@@ -193,10 +193,10 @@ export async function captureGithub(targets, { reach, token = process.env.GITHUB
 
 // Load the pin, or capture the granted GitHub targets and pin them. A replay
 // never refetches: it reads the pinned snapshot only.
-export async function prepareGithubSnapshot(ws, entries, { reach, ...opts } = {}) {
+export async function prepareGithubSnapshot(ws, entries, { reach, signingPolicy, ...opts } = {}) {
   try { return loadSnapshot(ws); }
   catch (err) { if (err.code !== "ENOENT" && !String(err.message).includes("Missing snapshot SHA-256 pin")) throw err; }
   const list = (Array.isArray(entries) ? entries : [entries]).map(githubTarget);
-  const snapshot = await captureGithub(list, { reach, ...opts });
+  const snapshot = { ...await captureGithub(list, { reach, ...opts }), ...(signingPolicy ? { signingPolicy } : {}) };
   return { snapshot, snapshotHash: pinSnapshot(ws, snapshot) };
 }
