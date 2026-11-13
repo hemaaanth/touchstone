@@ -796,6 +796,24 @@ test("a joined worker that dies after submitting still records the finding, unpr
   });
 });
 
+test("a joined run that read its scope is not a coverage error; one that did not is", async () => {
+  // 2d removed BRIEF.md, so the coverage count is the only honest "was it read".
+  scripts.push({ act: work, events: [fetched, done] });
+  const read = await createRun({ targetId: scope.id, packs: ["review", "contracts"], mode: "solo" });
+  const r = await settle(read.id);
+  made.push(spawns.at(-1).args[4]);
+  assert.equal(r.status === "error", false, r.error ?? "");
+  assert.notEqual(r.errorInfo?.kind, "coverage");
+
+  scripts.push({ act: (call) => writeFileSync(call.args[3], ""), events: [done] });
+  const unread = await createRun({ targetId: scope.id, packs: ["review", "contracts"], mode: "solo" });
+  const r2 = await settle(unread.id);
+  made.push(spawns.at(-1).args[4]);
+  assert.equal(r2.status, "error");
+  assert.equal(r2.errorInfo?.kind, "coverage");
+  assert.match(r2.error, /1 of 1 scope member was not read/);
+});
+
 test("a joined follow-up refuses a duplicate of a finding the run already holds", async () => {
   await withLivePack(async () => {
     const live = livePair(["web", "ai-mcp"]);

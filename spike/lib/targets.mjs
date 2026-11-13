@@ -699,6 +699,14 @@ export async function prepareMultiWorkspace(target, { packs = [], modules = [] }
         rmSync(built, { recursive: true, force: true })
       }
     }
+    // One `src/` at the root too, for the symbol index the engine builds over the
+    // run root: the same files, copied once. Member reads keep their own `src/`.
+    if (ids.some((id) => id === "contracts" || id === "review")) {
+      for (const id of ids) {
+        const src = path.join(memberDir(ws, id), "src")
+        if (existsSync(src)) cpSync(src, path.join(ws, "src"), { recursive: true, force: true })
+      }
+    }
     const links = [...new Set(ids.flatMap((id) => readTouchstone(memberDir(ws, id)).links ?? []))]
     writeTouchstone(ws, { kind: target.kind, pack: MULTI, packs: ids, modules, links })
     return ws

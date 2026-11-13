@@ -11,9 +11,15 @@
 //   - Its own proof. Every finding a module's tool records carries `pack` (the
 //     module id). Only that module's prove() replays it. The proven gate after
 //     prove() is unchanged.
+//   - ONE fetched source tree. The scope's links are fetched once, into the run
+//     root's `vendor/`, and copied into every module that reads code, so each
+//     module's read tools work on its own paths and the coverage count sees one
+//     `source-fetch` per link, not one per module.
 // A run with one module never comes here: packFor returns that module's pack.
 import path from "node:path";
+import { cpSync } from "node:fs";
 import { prepassView } from "../lib/prepass-view.mjs";
+import { fetchSource } from "../lib/fetch.mjs";
 
 export const MULTI = "multi";
 export const MULTI_DIR = "modules";
@@ -166,10 +172,54 @@ export function multiPack(members) {
 
   const section = (p, text) => `## Module: ${p.title ?? p.id} (${p.id})\n\n${text}`;
 
+  // The modules that read code (and get the fetched tree copied in). A run of
+  // capture modules only fetches nothing and the members' own tool is left alone.
+  const codeMembers = members.filter((p) => p.id === "contracts" || p.id === "review");
+  const fetched = new Map(); // url -> report, so a second call copies and never re-clones
+  let queue = Promise.resolve();
+
+  // One fetch for the run: into the root's vendor/ (the run's shared tree), then
+  // copied into each code member so its own read tools see the files.
+  function sharedFetch(ws) {
+    return async (args) => {
+      const url = String(args?.url ?? "").trim();
+      let report = fetched.get(url);
+      if (!report) {
+        try {
+          // Serialized: two modules' texts can ask for the same link at once.
+          queue = queue.then(async () => {
+            report = await fetchSource(ws, url);
+            fetched.set(url, report);
+          });
+          await queue;
+        } catch (err) {
+          return { output: [{ type: "text", text: `Could not fetch ${url}: ${String(err?.message ?? err)}` }], isError: true };
+        }
+      }
+      const where = report?.where;
+      if (where) {
+        for (const p of codeMembers) {
+          try {
+            cpSync(path.join(ws, where), path.join(memberDir(ws, p.id), where), { recursive: true, force: true });
+          } catch {
+            // one module's copy must not fail the fetch
+          }
+        }
+      }
+      const files = (report?.files ?? []).length;
+      return {
+        output: [{ type: "text", text: `Fetched ${url} into ${where ?? "(not saved)"}${files ? `: ${files} file${files === 1 ? "" : "s"}` : ""}. Every module that reads code can see it: call its list_sources.` }],
+      };
+    };
+  }
+
   return {
     id: MULTI,
     title: titles.join(" + "),
     packs: ids,
+    // Some module here reads source, so the engine mounts the index layer over
+    // the run's shared tree (agent-run.mjs).
+    readsCode: ids.some((id) => id === "contracts" || id === "review"),
     members,
 
     system(ws) {
@@ -186,6 +236,7 @@ export function multiPack(members) {
     },
 
     tools(ws, state) {
+      const fetch = sharedFetch(ws);
       const out = members.flatMap((p) => {
         const rename = renameFor(ws, p.id);
         // Every tool is wrapped, not only a renamed one: a plain name can still
@@ -195,7 +246,9 @@ export function multiPack(members) {
           name: rename(t.name),
           description: rename(t.description),
           ...(t.parameters ? { parameters: renameSchema(t.parameters, rename) } : {}),
-          execute: async (...args) => renameResult(await t.execute(...args), rename),
+          // A fetch brings the tree in once, for the run, and hands every module
+          // that reads code its own copy: a scope is read, not re-cloned.
+          execute: async (...args) => renameResult(await (t.name === "fetch_source" && codeMembers.length ? fetch(...args) : t.execute(...args)), rename),
         }));
       });
       // The registry routes a call by name. Two tools with one name would send a
@@ -214,6 +267,26 @@ export function multiPack(members) {
     // out of `env` here and every other module's key goes. A plain key of
     // another module would otherwise read as its own (`LEADS`); real environment
     // (PATH and the rest) passes through untouched.
+    // Text the engine appends outside a module's own prompt (the nav layer): its
+    // tool names get the same forms, joined with "or" because it speaks for the
+    // whole run.
+    // The name one module's tool really has in this run (for tests and callers
+    // that hold a pack's own name).
+    nameFor(ws, id, name) {
+      return renameFor(ws, id)(name);
+    },
+
+    renameText(ws, text) {
+      const owners = new Map();
+      for (const p of members) for (const t of p.tools?.(memberDir(ws, p.id), scratchState()) ?? []) owners.set(t.name, [...(owners.get(t.name) ?? []), p.id]);
+      let out = text;
+      for (const [name, who] of owners) {
+        const forms = who.length > 1 ? who.map((id) => `${name}_${slug(id)}`).join(" or ") : name;
+        out = out.replace(new RegExp(`\\b${escape(name)}\\b`, "g"), forms);
+      }
+      return out;
+    },
+
     kickoff(ws, env = {}) {
       const prefixes = members.map((p) => [p.id, envKey(p.id, "")]);
       const produced = new Set((env[PRODUCED] ?? "").split(",").filter(Boolean));
