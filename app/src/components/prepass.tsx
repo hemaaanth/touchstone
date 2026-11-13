@@ -82,8 +82,10 @@ export function PrepassFold({ prepass }: { prepass: PrepassView }) {
           {prepass.tools.map((t, i) => (
             <li key={`${t.name}-${i}`} className="flex flex-wrap items-baseline gap-x-2 text-xs">
               <span className="font-medium text-foreground">{t.name}</span>
-              <span className="text-muted-foreground">
-                {t.status === "ran" ? `ran · ${plural(t.leads, "lead")}` : `unavailable${t.reason ? ` · ${t.reason}` : ""}`}
+              <span className="min-w-0 break-words text-muted-foreground">
+                {t.status === "ran"
+                  ? `ran · ${plural(t.leads, "lead")}${t.reason ? ` · ${t.reason}` : ""}`
+                  : `unavailable${t.reason ? ` · ${t.reason}` : ""}`}
               </span>
             </li>
           ))}

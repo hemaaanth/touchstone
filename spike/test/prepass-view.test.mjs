@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prepassView, prepassFailed, prepassFromResult } from "../lib/prepass-view.mjs";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { scanSchemathesis } from "../packs/web/schemathesis.mjs";
 
 test("a Contracts record shows static and fuzz as tools, worst lead first", () => {
   const v = prepassView({
@@ -104,4 +107,35 @@ test("a ZAP lead shows its rule id and CWE, also from an older record", () => {
   assert.equal(by["Info leak"].rule, "10027");
   assert.equal(by.sqli.rule, "");
   assert.equal(by.sqli.detail, "Raw query.");
+});
+
+test("a partly errored Schemathesis run shows its reason in the view (real wrapper, real view)", async () => {
+  // The reviewer's input: exit 1, 1 of 8 operations tested, 7 errored, no failures.
+  const run = async ({ ws }) => {
+    writeFileSync(join(ws, "report.json"), JSON.stringify({
+      complete: true, operations: { total: 8, selected: 8, tested: 1, errored: 7, skipped: 0 },
+      failures: [], errors: [{ title: "connection error" }],
+    }));
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const scan = await scanSchemathesis({ net: "netx", baseUrl: "http://lab:8080", run });
+  const v = prepassView(scan);
+  const row = v.tools.find((t) => t.name === "schemathesis");
+  assert.equal(row.status, "ran");
+  assert.match(row.reason, /7 of 8 operations errored/);
+});
+
+test("a timed-out row keeps its reason; a clean ran row still has reason null", () => {
+  const v = prepassView({ coverage: [
+    { engine: "slow", status: "timed-out", leads: 2 },
+    { engine: "clean", status: "ran", leads: 0 },
+    { engine: "noted", status: "ok", reason: "no package-lock.json in snapshot", leads: 0 },
+  ], leads: [] });
+  const by = Object.fromEntries(v.tools.map((t) => [t.name, t]));
+  assert.equal(by.slow.status, "ran");
+  assert.match(by.slow.reason, /time cap/);
+  assert.equal(by.clean.status, "ran");
+  assert.equal(by.clean.reason, null);
+  assert.equal(by.noted.status, "ran");
+  assert.equal(by.noted.reason, "no package-lock.json in snapshot");
 });

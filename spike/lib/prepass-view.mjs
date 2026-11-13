@@ -43,7 +43,9 @@ function statusOf(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (t.applicable === false) return { status: "unavailable", reason: str(t.reason) || "Does not apply to this target." };
   if (s === "timed-out") return { status: "ran", reason: "Stopped at the time cap; the leads it found before that are kept." };
-  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: null };
+  // A run that finished can still carry a caveat (e.g. "7 of 8 operations
+  // errored"). Keep it, so a partial run never reads as a clean pass.
+  if (s === "" || s === "ok" || s === "ran" || s === "done" || s === "pass") return { status: "ran", reason: str(t.reason) || null };
   const reason = str(t.reason)
     || (t.timedOut ? "Timed out." : t.code != null && t.code !== 0 ? `Exited with code ${str(t.code, 10)}.` : "")
     || (s === "unavailable" ? "Not available." : "The tool failed.");
