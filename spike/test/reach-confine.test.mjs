@@ -87,6 +87,16 @@ after(async () => {
   await removeLabNetwork(netTargets, { docker });
 }, { timeout: 60_000 });
 
+// The boundary is the network flag, so read it from Docker, not from our code.
+// A call site that drops --internal fails here (labnet-review Major 1).
+const isInternal = async (net) => (await docker(["network", "inspect", "-f", "{{.Internal}}", net])).stdout.trim();
+
+test("0. the client network and the targets network are --internal in Docker", { skip, timeout: 60_000 }, async () => {
+  assert.ok(confine?.netClient, "confineReach returns its client network");
+  assert.equal(await isInternal(confine.netClient), "true", "the confine client network has no route off the host");
+  assert.equal(await isInternal(netTargets), "true");
+});
+
 test("1. THROUGH the gate, the granted host answers (200)", { skip, timeout: 60_000 }, async () => {
   const gate = confine.gateUrl;
   const r = await confine.runClient(["-e",
