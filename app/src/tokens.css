@@ -33,6 +33,21 @@
     --ok: oklch(0.52 0.075 165);
     --bad: oklch(0.55 0.12 25);
     --warn: oklch(0.6 0.09 70);
+    /* Module tones. One per module (src/lib/module-colors.ts). Same lightness
+       and chroma for every hue, so no module is louder than another. No hue
+       near red or green: those two belong to proof. */
+    --module-clay: oklch(0.48 0.085 50);
+    --module-sand: oklch(0.48 0.085 95);
+    --module-cyan: oklch(0.48 0.075 200);
+    --module-sky: oklch(0.48 0.085 219);
+    --module-blue: oklch(0.48 0.085 238);
+    --module-indigo: oklch(0.48 0.085 256);
+    --module-iris: oklch(0.48 0.085 275);
+    --module-violet: oklch(0.48 0.085 294);
+    --module-purple: oklch(0.48 0.085 312);
+    --module-orchid: oklch(0.48 0.085 331);
+    --module-pink: oklch(0.48 0.085 350);
+    --module-neutral: oklch(0.48 0 0);
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -62,6 +77,18 @@
     --ok: oklch(0.8 0.07 165);
     --bad: oklch(0.75 0.09 25);
     --warn: oklch(0.83 0.08 80);
+    --module-clay: oklch(0.8 0.075 50);
+    --module-sand: oklch(0.8 0.075 95);
+    --module-cyan: oklch(0.8 0.075 200);
+    --module-sky: oklch(0.8 0.075 219);
+    --module-blue: oklch(0.8 0.075 238);
+    --module-indigo: oklch(0.8 0.075 256);
+    --module-iris: oklch(0.8 0.075 275);
+    --module-violet: oklch(0.8 0.075 294);
+    --module-purple: oklch(0.8 0.075 312);
+    --module-orchid: oklch(0.8 0.075 331);
+    --module-pink: oklch(0.8 0.075 350);
+    --module-neutral: oklch(0.8 0 0);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
