@@ -15,9 +15,17 @@ import type {
 } from "./types"
 import { tokenHeaders } from "./console-token"
 
+export class HttpError extends Error {
+  status: number
+  constructor(url: string, status: number) {
+    super(`${url} -> ${status}`)
+    this.status = status
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`)
+  if (!res.ok) throw new HttpError(url, res.status)
   return (await res.json()) as T
 }
 
@@ -164,7 +172,7 @@ export function fetchRun(id: string): Promise<RunView> {
 
 // Follow a run's event stream from event index `since` on (the events before
 // it came from fetchRun). Returns an unsubscribe function. `onEnd` fires once
-// when the stream stops, for any reason.
+// when the run closes or the caller unsubscribes.
 export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0, onEnd?: () => void): () => void {
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/stream?since=${since}`)
   let ended = false
@@ -184,7 +192,8 @@ export function streamRun(id: string, onEvent: (e: RunEvent) => void, since = 0,
     onEvent(e)
     if (e.ev === "closed") end()
   }
-  // The server ends the stream after "closed"; any other drop also ends it.
+  // A native reconnect repeats the original since= URL and duplicates live events.
+  // The store reloads the authoritative snapshot after this stream ends.
   source.onerror = end
   return end
 }
