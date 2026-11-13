@@ -259,3 +259,16 @@ describe("redact: secrets in commands and URLs (review Minor 1)", () => {
     expect(text(`{"mnemonic":"test test test test test test test test test test test junk"}`)).toBe(`{"mnemonic":"[REDACTED]"}`)
   })
 })
+
+describe("redact: an existing marker (review Minor 3)", () => {
+  const fp = "[REDACTED sha256:abcdef123456]"
+
+  test("a sha256 fingerprint under a secret key is kept", () => {
+    expect(redactSecrets({ token: fp, password: [fp] })).toEqual({ token: fp, password: [fp] })
+    expect(text(fp)).toBe(fp)
+  })
+
+  test("text that starts with a marker is still redacted after it", () => {
+    expect(text("[REDACTED] then Authorization: Bearer FAKEtoken1234567")).toBe("[REDACTED] then Authorization: Bearer [REDACTED]")
+  })
+})

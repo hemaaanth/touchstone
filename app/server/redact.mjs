@@ -11,6 +11,9 @@
 // redacts to the same marker, so running this twice does not nest markers.
 
 const MARK = "[REDACTED]"
+// A whole value that is already a marker: ours, or the engine's own
+// "[REDACTED sha256:…]" fingerprint, which must be kept.
+const MARKER = /^\[REDACTED[^\]\r\n]{0,80}\]$/
 
 // Object keys and header-cell names whose value is a credential.
 const SECRET_KEY = /^(?:token|bearer|password|passwd|secret|session(?:id|[-_]id)?|(?:x-)?(?:api[-_]?key|auth(?:orization|[-_]token)|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|proxy-authorization|private[-_]?key|mnemonic|seed[-_]?phrase|cookie|set-cookie))$/i
@@ -143,7 +146,7 @@ function maskEnv(m, name, dq, sq, bare) {
 }
 
 function redactText(text) {
-  if (!text || text.startsWith(MARK)) return text
+  if (!text || MARKER.test(text)) return text
   for (const re of [JSON_PAIR, JSON_PAIR_ESC, LINE_HEADER, QUOTE_HEADER, BEARER, QUERY, URL_USERINFO, CURL_USER, CURL_COOKIE, ENV_ASSIGN, ...SHAPES]) re.lastIndex = 0
   let out = text
   out = out.replace(JSON_PAIR, (m, name, sep, v) => {
@@ -179,13 +182,13 @@ function copyRedactedCell(value) {
 function walk(value, key) {
   if (value == null || typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "string") {
-    if (value.startsWith(MARK)) return value
+    if (MARKER.test(value)) return value
     if (key && secretName(key)) return MARK
     return redactText(value)
   }
   if (Array.isArray(value)) {
     const blank = key && secretName(key)
-    return value.map((item) => (blank && typeof item === "string" ? MARK : walk(item, "")))
+    return value.map((item) => (blank && typeof item === "string" && !MARKER.test(item) ? MARK : walk(item, "")))
   }
   if (typeof value !== "object") return value
   if (value.redacted === true && typeof value.sha256 === "string") return copyRedactedCell(value)
