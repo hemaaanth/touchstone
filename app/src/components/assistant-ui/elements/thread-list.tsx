@@ -405,21 +405,23 @@ export const ThreadListItem: FC = () => {
           title={run?.label}
           className={cn(
             "focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 gap-2 rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1",
-            // A joined run's dot sits on the title line, above its pills.
-            modules ? "items-start [&>[data-slot=aui_thread-list-item-running]]:mt-[3px] [&>[data-slot=aui_thread-list-item-status]]:mt-[7px]" : "items-center",
+            // A joined run's dot sits on the title line, above its pills
+            // (the margin on the dot and the spinner below).
+            // A joined row always keeps room for the "…" button, so hover never reflows its pills.
+            modules ? "items-start pe-9" : "items-center",
           )}
         >
           {run?.running ? (
             <Loader2Icon
               aria-hidden
               data-slot="aui_thread-list-item-running"
-              className="text-muted-foreground size-3.5 shrink-0 animate-spin"
+              className={cn("text-muted-foreground size-3.5 shrink-0 animate-spin", modules && "mt-[3px]")}
             />
           ) : run ? (
             <span
               aria-hidden
               data-slot="aui_thread-list-item-status"
-              className={cn("size-1.5 shrink-0 rounded-full", run.dot)}
+              className={cn("size-1.5 shrink-0 rounded-full", run.dot, modules && "mt-[7px]")}
             />
           ) : null}
           {modules ? (
@@ -427,7 +429,7 @@ export const ThreadListItem: FC = () => {
               <span data-slot="aui_thread-list-item-title" className="min-w-0 truncate">
                 <ThreadListItemPrimitive.Title fallback="Untitled run" />
               </span>
-              <span data-slot="aui_thread-list-item-modules" className="flex min-w-0 items-center gap-1 overflow-hidden">
+              <span data-slot="aui_thread-list-item-modules" className="flex min-w-0 flex-wrap items-center gap-1">
                 {modules.slice(0, MAX_PILLS).map((m) => (
                   <ModulePill key={m.id} id={m.id} label={m.title} compact />
                 ))}
