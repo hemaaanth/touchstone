@@ -460,6 +460,7 @@ export function RunChat({
                   live={live}
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
+                  coverage={status === "recorded" ? state?.coverage ?? null : null}
                   onRetry={onRetry}
                   retrying={retrying}
                   archived={archived}
@@ -709,7 +710,7 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // Which panel section is open, kept across runs. Null means all folded.
 const SECTION_KEY = "ts.panelSection"
-const SECTIONS = ["info", "agents", "bulletin", "files", "findings"]
+const SECTIONS = ["info", "agents", "bulletin", "leads", "files", "findings"]
 
 function useStoredSection(): [PanelSection | null, (s: PanelSection | null) => void] {
   const [value, setValue] = useState<PanelSection | null>(() => {

@@ -16,7 +16,9 @@ owner change, a role grant) and PROVE its harm with a runnable Foundry test.
 Rules of the environment:
 - The sandbox has no network. forge-std is vendored. Solidity is 0.8.38.
 - list_sources and read_source show the lab code under src/. ChainWatchLab.sol is the
-  proxy, with the benign and the drain implementations.
+  proxy, with the benign and the drain implementations. VaultImplementationV2.sol is a
+  second implementation the owner could upgrade to. It is not deployed in the lab world:
+  to prove a bug in it, deploy it in setUp and fund it with vm.deal.
 - chain_state returns what the lab recorded for the block range: a snapshot of the
   implementation slot, admin slot, owner and role state at each block, the logs, the
   transactions, and the proxy balance.
@@ -72,7 +74,7 @@ const kickoff = (ws, env) => {
   if (!hasWorld(ws, "chain-watch")) return sourceKickoff("chain-watch", env.CHAIN_BRIEF);
   const base = "Review the watched block range for this proxy. Call watch_leads and chain_state, read the lab source, list every suspect change worst first, then prove each one you can with its own passing Foundry test that replays the change and moves ETH out of the proxy. Submit each proven finding as soon as its test passes. End with the coverage summary.";
   return env.CHAIN_BRIEF
-    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, source checks and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the full list. Some leads come from source checks and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
+    ? `${base}\n\n${env.CHAIN_BRIEF}\n\nThese are leads from the state diff, Forta, OpenZeppelin Monitor, source checks, Slither and Aderyn, scariest first. A lead is real only once your test proves it. Call watch_leads for the state diff, Forta and source-check leads. OpenZeppelin Monitor, Slither and Aderyn leads come only in this brief. Some leads come from source checks, Slither and Aderyn. They are guesses from the code text. Drop one fast if it cannot move ETH or change control. Do not reason at length: write your first test as soon as you know the setup.`
     : base;
 };
 
@@ -81,6 +83,8 @@ export default {
   title: "Chain watch",
   tier: "P", // passive: Anvil runs only in our offline sandbox
   proof: "forge",
+  // No tool reaches a network. The Modules page reads this.
+  offline: true,
   system: (ws) => (hasWorld(ws, "chain-watch") ? SYSTEM : sourceSystem("chain-watch")),
   tools: (ws, state) => chainTools(ws, state, {
     mode: "chain-watch",
@@ -91,6 +95,6 @@ export default {
   }),
   kickoff,
   nudge: (state) => chainNudge(state, "suspect"),
-  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "chain-watch", analyze: watchLeads }),
+  prepass: (ws, ctx) => chainPrepass(ws, ctx, { mode: "chain-watch", analyze: watchLeads, slither: true, monitor: true }),
   prove: proveWithHarm,
 };

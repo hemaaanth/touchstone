@@ -1,0 +1,22 @@
+{
+  "pack": "phishing",
+  "kind": "lab",
+  "domain": "tidekeep.test",
+  "owned": [
+    "tide-keep.test"
+  ],
+  "blocklists": [
+    {
+      "name": "touchstone-lab-blocklist",
+      "format": "metamask-config",
+      "file": "blocklists/touchstone-lab-blocklist.json",
+      "source": "spike/packs/phishing/lab/blocklists/touchstone-lab-blocklist.json",
+      "synthetic": true,
+      "license": "Synthetic lab data. Not a vendor detection."
+    }
+  ],
+  "evidenceSnapshot": {
+    "file": "snapshot.json",
+    "sha256": "782e4f2574f0e5344ecdd27659af598d0a2b904a6bec7529365f0f3287b8f99f"
+  }
+}
