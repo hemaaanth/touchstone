@@ -204,7 +204,7 @@ export async function scanSchemathesis({
     const leads = parseSchemathesis(report);
     const row = { engine: "schemathesis", status: "ran", code: r.code, timedOut: false, leads: leads.length };
     const caveat = partialReason(report, errored, errorsLen);
-    if (caveat) row.reason = cap(`${caveat}; coverage is partial, not a clean pass. ${cap(r.stderr, 80)}`, 220);
+    if (caveat) row.reason = cap(`${caveat}; coverage is partial, not a clean pass. ${cap(r.stderr, 80)}`.trim(), 220);
     return { coverage: [row], leads };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

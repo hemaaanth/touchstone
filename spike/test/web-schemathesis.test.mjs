@@ -148,6 +148,7 @@ test("scanSchemathesis: a partly errored run (exit 1, tested 1, errored 7, no fa
   // ...but it is not a clean pass: the row carries a reason naming the errors,
   // which a clean ran never has. 7 of 8 operations never ran.
   assert.match(r.coverage[0].reason, /7 of 8 operations errored/);
+  assert.equal(r.coverage[0].reason, "7 of 8 operations errored; coverage is partial, not a clean pass.", "no stray trailing space when stderr is empty");
   assert.equal(r.leads.length, 0, "no failures means no leads, but the row is still flagged");
 });
 
