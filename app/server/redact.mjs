@@ -398,10 +398,10 @@ const CANARY = [
 const CANARY_OUT = redactText(CANARY)
 if (CANARY_OUT.includes("c4n4ry")) throw new Error("redact: a canary line is not masked")
 
-// Where to cut the piece that starts at `start`: just after a line end, at
-// most PIECE characters on. Some rules read across a line end: a PEM block,
-// a JSON pair or HAR cell over several lines ("name": … ,\n "value": …). So
-// a cut is ranked, and the latest cut of the best rank wins:
+// Where a piece may end. A cut is just after a line end: LF, CRLF or a lone
+// CR. A cut is used only when it is proven safe (seamSafe); the rank below
+// only sets the order in which candidates are tried, best rank first, then
+// the latest:
 //   0  outside a PEM block, the next line starts at column 0 with a
 //      character that cannot continue the line before (not a space, quote,
 //      backslash, ":", ",", "}" or "]"), and the line before does not end
@@ -410,48 +410,97 @@ if (CANARY_OUT.includes("c4n4ry")) throw new Error("redact: a canary line is not
 //      "]" or "],");
 //   2  outside a PEM block;
 //   3  any line end.
-// -1 when the line at `start` is longer than PIECE.
+// An empty list when the line at `start` is longer than PIECE.
 const PEM_EDGE = /-----(BEGIN|END) [A-Z0-9 ]{0,32}PRIVATE KEY-----/g
-function cutAt(text, start) {
+const LINE_BREAK = /\r\n?|\n/g
+function cutsAt(text, start) {
   const limit = start + PIECE
+  const window = text.slice(start, limit)
   const pem = []
   PEM_EDGE.lastIndex = 0
-  const window = text.slice(start, limit)
   for (let m; (m = PEM_EDGE.exec(window)); ) pem.push([start + m.index, m[1] === "BEGIN"])
-  let best = -1
-  let bestRank = 4
+  const cuts = []
   let p = 0
   let inPem = false
-  for (let i = text.indexOf("\n", start); i !== -1 && i < limit; i = text.indexOf("\n", i + 1)) {
-    while (p < pem.length && pem[p][0] < i) inPem = pem[p++][1]
-    let j = i - 1
-    while (j > start && (text[j] === " " || text[j] === "\t" || text[j] === "\r")) j--
+  LINE_BREAK.lastIndex = 0
+  for (let m; (m = LINE_BREAK.exec(window)); ) {
+    const at = start + m.index
+    const c = at + m[0].length
+    // A CR at the window edge whose LF is outside it: never split a CRLF.
+    if (c >= text.length || (text[c - 1] === "\r" && text[c] === "\n")) continue
+    while (p < pem.length && pem[p][0] < at) inPem = pem[p++][1]
+    let j = at - 1
+    while (j > start && (text[j] === " " || text[j] === "\t")) j--
     const last = text[j]
-    const next = text[i + 1]
+    const next = text[c]
     let rank = 3
     if (!inPem) {
       rank = 2
       if ((last === "}" || last === "]") || (last === "," && (text[j - 1] === "}" || text[j - 1] === "]"))) rank = 1
-      if (next !== undefined && !/[\s"'`\\:,}\]]/.test(next) && !/[,:{[\\]/.test(last)) rank = 0
+      if (!/[\s"'`\\:,}\]]/.test(next) && !/[,:{[\\]/.test(last)) rank = 0
     }
-    if (rank <= bestRank) {
-      best = i + 1
-      bestRank = rank
-    }
+    cuts.push([rank, c])
   }
-  return best
+  return cuts.sort((x, y) => x[0] - y[0] || y[1] - x[1]).map((x) => x[1])
 }
 
+// A cut is safe when the SEAM characters on each side of it redact to the
+// same text joined as apart. Then no rule reads across it: not BEARER's \s+
+// (Bearer\n<token>), not a quoted value that holds a raw line end, not a
+// PEM block, and not any rule added later. This is a test of the result,
+// not a list of rules. Its limit: a match that reaches more than SEAM
+// characters from the cut on one side is not seen. Only the first TRIES
+// candidates are tried, which bounds the extra work.
+const SEAM = 4 * 1024
+const TRIES = 8
+function seamSafe(text, c) {
+  const a = text.slice(Math.max(0, c - SEAM), c)
+  const b = text.slice(c, c + SEAM)
+  return redactText(a + b) === redactText(a) + redactText(b)
+}
+
+const lineEnd = (text, from) => {
+  LINE_BREAK.lastIndex = from
+  const m = LINE_BREAK.exec(text)
+  return m ? m.index : text.length
+}
+
+// The text is redacted piece by piece. When no cut can be proven safe, or
+// the right edge of a line that is too long is not safe, the text is held:
+// everything from there to the next cut that is proven safe becomes one
+// "could not be checked" mark. The left edge of a held run is a safe cut
+// (or the start), so a match that crosses it was redacted whole; its right
+// edge is a proven cut. So nothing is returned unchecked.
 function redactLong(text) {
   if (text.length <= PIECE) return redactText(text)
   let out = ""
+  let hold = -1
   for (let start = 0; start < text.length; ) {
-    const end = text.length - start <= PIECE ? text.length : cutAt(text, start)
-    if (end === -1) {
-      const nl = text.indexOf("\n", start)
-      const stop = nl === -1 ? text.length : nl
-      out += tooLong(stop - start)
-      start = stop
+    let end = text.length
+    let safe = true
+    if (text.length - start > PIECE) {
+      const cuts = cutsAt(text, start)
+      if (cuts.length === 0) {
+        // The line at start is longer than PIECE. Its line end must be a safe cut too.
+        const stop = lineEnd(text, start)
+        if (hold < 0 && !seamSafe(text, stop)) hold = start
+        if (hold < 0) out += tooLong(stop - start)
+        start = stop
+        continue
+      }
+      end = cuts.slice(0, TRIES).find((c) => seamSafe(text, c)) ?? -1
+      if (end === -1) {
+        end = cuts[0]
+        safe = false
+      }
+    }
+    if (hold < 0 && !safe) hold = start
+    if (hold >= 0) {
+      if (safe) {
+        out += notChecked(end - hold)
+        hold = -1
+      }
+      start = end
       continue
     }
     const piece = text.slice(start, end)

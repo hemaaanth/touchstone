@@ -158,6 +158,66 @@ describe("redact: the engine fact the canary relies on (Bun)", () => {
   })
 })
 
+describe("redact: a cut is proven safe, not ranked safe (review 3 B1)", () => {
+  const TOK = "tk_live_9fQ2xLmZ81aBcD"
+  // Each construct holds a line end; the line after it starts at column 0.
+  const rows: [string, string, string][] = [
+    ["Bearer at a line end", `The client sends Authorization: Bearer\n${TOK} in each call.\n`, TOK],
+    ["Bearer token at a line end", `It used Bearer token\n${TOK} for the call.\n`, TOK],
+    ["a JSON value with a raw line end", `{"password": "correct horse\n${TOK} battery"}\n`, "correct horse"],
+    ["a JSON value that starts with a line end", `{"token": "\n${TOK}"}\n`, TOK],
+    ["a mnemonic over two lines", `"mnemonic": "abandon abandon abandon abandon abandon abandon\nzebra zoo wolf ${TOK} about"\n`, "zebra zoo wolf"],
+    ["a HAR cell value with a raw line end", `{"name":"x-api-key","value":"part-one\n${TOK}"}\n`, "part-one"],
+    ["an escaped JSON value with a raw line end", `{\\"token\\":\\"part-one\n${TOK}\\"}\n`, "part-one"],
+  ]
+  for (const [label, construct, part] of rows) {
+    test(`${label}, across the 64 KB mark, is masked`, () => {
+      const inner = construct.indexOf("\n")
+      // The inner line end is the last one before 64 KB; the next is after it.
+      const s = fill(64 * KB - inner - 8) + construct + prose(20 * KB)
+      expect(s.indexOf("\n", 64 * KB - inner - 8 + inner + 1)).toBeGreaterThan(64 * KB)
+      const out = text(s)
+      expect(out).not.toContain(TOK)
+      expect(out).not.toContain(part)
+      expect(out).not.toContain("could not be checked")
+      expect(out).not.toContain("too long to check")
+    })
+  }
+
+  test("when no cut can be proven safe, the text is held and masked, never returned", () => {
+    // Every line ends in "Bearer" and the next starts with its token.
+    let s = ""
+    for (let i = 0; s.length < 150 * KB; i++) s += `tk_hold9${String(i).padStart(6, "0")} then use Bearer\n`
+    const out = text(s)
+    expect(out).not.toMatch(/tk_hold9\d{6}/)
+    expect(out).toContain("could not be checked")
+  })
+
+  test("a too-long line whose line end is not safe is held with what follows", () => {
+    const s = "x".repeat(100 * KB) + " Bearer\n" + TOK + " ok\n" + prose(70 * KB)
+    const out = text(s)
+    expect(out).not.toContain(TOK)
+    expect(out).toContain("could not be checked")
+  })
+})
+
+describe("redact: CR, LF and CRLF are all line ends for the cut (review 3 Minor 1)", () => {
+  for (const [label, eol] of [["CR", "\r"], ["CRLF", "\r\n"]] as const) {
+    test(`a 200 KB text with ${label} line ends is cut, not replaced whole`, () => {
+      const lines = prose(200 * KB).split("\n")
+      lines[1000] = "X-Api-Key: tk_eol9fakeZ1"
+      lines[2000] = '{"token":"tk_eol9fakeZ2"}'
+      const s = lines.join(eol)
+      const out = text(s)
+      expect(out).not.toContain("tk_eol9fakeZ")
+      expect(out).not.toContain("too long to check")
+      expect(out).not.toContain("could not be checked")
+      expect(out.split(eol).length).toBe(lines.length)
+      expect(out).toBe(redactOnePass(s))
+    })
+  }
+})
+
 describe("redact: a text of 64 KB or less gets no canary and no cut (review 3 Minor 3)", () => {
   test("the result is byte-identical to one pass", () => {
     const open = '{"token":"tk_open9fakeZ'
