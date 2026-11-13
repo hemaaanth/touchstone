@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prepassView, prepassFailed, prepassFromResult } from "../lib/prepass-view.mjs";
+import { halmosRecord } from "../packs/contracts/halmos.mjs";
+import { chimeraRecord } from "../packs/contracts/chimera.mjs";
 
 test("a Contracts record shows static and fuzz as tools, worst lead first", () => {
   const v = prepassView({
@@ -87,6 +89,33 @@ test("a CLI record keeps its prepass at the top level; the fold is built from it
   assert.equal(prepassFromResult({ prepass: own, leads: [{ check: "other" }] }), own);
   assert.equal(prepassFromResult({ alias: "a", findings: [], pack: "domains" }), null);
   assert.equal(prepassFromResult(null), null);
+});
+
+test("a CLI Contracts record keeps its Halmos and Chimera rows next to static", () => {
+  // The shape agent-run.mjs writes: the pack record spread into the result.
+  const symbolic = halmosRecord({
+    tool: "halmos", available: true, applicable: true, reason: null, gaps: [], trust: {},
+    results: [{ name: "check_withdraw", status: "counterexample" }],
+    leads: [{ check: "symbolic-counterexample", impact: "High", where: "test/Vault.t.sol", property: "check_withdraw" }],
+  });
+  const chimera = chimeraRecord({
+    tool: "chimera", engines: ["echidna", "medusa"], available: false, applicable: true,
+    reason: "the suite did not compile", gaps: [], trust: {}, results: [], leads: [],
+  });
+  const cli = {
+    alias: "qwen-abl", status: "recorded", findings: [],
+    static: { tool: "slither", engines: ["slither"], suspects: 0, top: [] },
+    symbolic, chimera,
+  };
+  const view = prepassView(prepassFromResult(cli));
+  assert.deepEqual(view.tools.map((t) => t.name), ["slither", "halmos", "chimera"]);
+  assert.equal(view.tools[2].status, "unavailable");
+  assert.equal(view.tools[2].reason, "the suite did not compile");
+  assert.equal(view.leads.length, 1);
+  assert.equal(view.leads[0].check, "symbolic-counterexample");
+  // A record with only the new phases is still a Contracts record.
+  assert.equal(prepassView(prepassFromResult({ alias: "a", symbolic })).leads.length, 1);
+  assert.equal(prepassView({ chimera }).tools[0].name, "chimera");
 });
 
 test("a ZAP lead shows its rule id and CWE, also from an older record", () => {

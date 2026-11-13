@@ -61,6 +61,25 @@ test("a stop request shows before the run stops", () => {
   assert.deepEqual(rows([ev("stop-requested"), ev("stopped")]), ["note:Stopping the run", "note:You stopped the run. Send a message to continue."])
 })
 
+test("a rebuilt workspace shows its message once, as a quiet system line", () => {
+  const message = "The earlier workspace of this run is gone. Files the agent wrote before are not in it."
+  const events = [ev("reply-start"), ev("workspace", { state: "rebuilt", message }), say(0, "Looking again")]
+  assert.deepEqual(rows(events), [`system:${message}`, "say:Looking again"])
+  // Not grouped with tool rows, not an error, and nothing for another state.
+  assert.equal(reduceEvents(events).error, null)
+  assert.deepEqual(rows([ev("workspace", { state: "kept", message })]), [])
+})
+
+test("a follow-up error keeps its sentence apart from the raw output", () => {
+  const error = "The agent process ended before it gave an answer: it exited with the code 1. Send the message again to retry.\n\nError: spawn ENOENT\n    at run (agent.mjs:4)"
+  const [step] = reduceEvents([ev("reply-error", { error })]).steps
+  assert.equal(step.kind, "reply-error")
+  assert.equal(step.label, "The agent process ended before it gave an answer: it exited with the code 1. Send the message again to retry.")
+  assert.equal(step.detail, "Error: spawn ENOENT\n    at run (agent.mjs:4)")
+  // A plain sentence has no raw part.
+  assert.equal(reduceEvents([ev("reply-error", { error: "The server restarted during this reply." })]).steps[0].detail, undefined)
+})
+
 class FakeEventSource {
   static sources: FakeEventSource[] = []
   closed = false
