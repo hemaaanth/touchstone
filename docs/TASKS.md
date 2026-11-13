@@ -28,7 +28,7 @@ These rules are fixed. A thread does not guess around them.
 |-----|------------------|
 | Author, normal work | `claude-code` / `claude-opus-5-5`, reasoning high |
 | Author, root-cause or cross-cutting work (A, C) | `claude-code` / `claude-fable-5-2`, reasoning high |
-| Author, fallback when a Claude route has trouble | `acp-omp` / DeepSeek V4.1 Flash abliterated ("DSF4.1-A"). Its commits end with `Authored-by: DSF4.1-A (omp)` |
+| Author or reviewer, fallback when a Claude or codex route has trouble (refusal, provider block, limit) | `acp-omp` / DeepSeek V4.1 Flash abliterated ("DSF4.1-A"). Its commits end with `Authored-by: DSF4.1-A (omp)`. A reviewer is still never the author |
 | Reviewer | `codex` / `gpt-6.1-sol`, reasoning high |
 | Tiny follow-up fix (minors only) | `claude-code` / `claude-sonnet-5-5` |
 
