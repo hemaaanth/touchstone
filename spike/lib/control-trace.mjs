@@ -115,6 +115,7 @@ const TAMPER_SIGS = [
   ].map((sig) => [sig, name, 0])),
   ["mockCalls(address,bytes,bytes[])", "mockCalls", 0],
   ["mockCalls(address,uint256,bytes,bytes[])", "mockCalls", 0],
+  ["mockCall(address,bytes,bytes,bool)", "mockCall", 0], // forge 1.9.0 overload (skipRevertableData)
 ];
 const TAMPER = new Map(TAMPER_SIGS.map(([sig, how, arg]) => [selector4(sig), { how, arg }]));
 // Cheatcodes that put ETH on an account without a value CALL: vm.deal sets the
@@ -161,6 +162,12 @@ export const TRUSTED_ACCOUNT = new Map([
   ["startBroadcast(uint256)", "the sender is the key's EOA; a scope target is a created contract with no key"],
   ["deployCode(string)", "a normal CREATE of a compiled artifact; judged like `new`"],
   ["deployCode(string,bytes)", "a normal CREATE of a compiled artifact; judged like `new`"],
+  ["deployCode(string,uint256)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
+  ["deployCode(string,bytes,uint256)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
+  ["deployCode(string,bytes32)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
+  ["deployCode(string,bytes,bytes32)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
+  ["deployCode(string,uint256,bytes32)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
+  ["deployCode(string,bytes,uint256,bytes32)", "a CREATE of a compiled artifact with value; the child CREATE carries the value and has the test as its caller, so the value is credited to the test party"],
 ]);
 // The runtime is an ALLOW-list (H1e minor 5). A known cheatcode is allowed only when
 // its class is trusted, an existing rule records it (HANDLED), or TRUSTED_ACCOUNT
@@ -171,6 +178,14 @@ export const TRUSTED_CLASSES = new Set(["read", "control", "time", "fs", "outcom
 function allowedCheat(selector, known) {
   return TRUSTED_CLASSES.has(known.class) || HANDLED.has(selector) || TRUSTED_ACCOUNT.has(known.signature);
 }
+// The classified table lib/vm-cheatcodes.json is the union of forge-std 1.9.4's
+// Vm.sol and the forge binary's own cheatcode spec, vendored at the pinned image's
+// commit: spike/vendor/foundry/cheatcodes-1.9.0.json (forge 1.9.0, commit
+// 6056c5845d34205a83cf7108042adb137325c9df), fetched from the Foundry repo
+// (crates/cheatcodes/assets/cheatcodes.json; MIT OR Apache-2.0),
+// sha256 3d24b985848efe9c72e222e33ad1fbcefb69fe7eabc9d21ca31606bba659957e.
+// test/vm-cheatcodes.test.mjs pins that sha and that the table is complete to the
+// binary, so a forge upgrade fails until someone classifies the new cheatcodes.
 function loadCheatTable() {
   try {
     const rows = JSON.parse(readFileSync(new URL("./vm-cheatcodes.json", import.meta.url), "utf8"));
@@ -182,6 +197,11 @@ function loadCheatTable() {
 }
 export const CHEAT_TABLE = loadCheatTable();
 const SAFE_SETUP = "0xb63e800d";
+// A contract creation: CREATE and CREATE2 both run a constructor and make a new
+// account. Everywhere the gate skips, credits or attributes a constructor it must
+// treat the two alike — forge rewrites `new X{salt: s}()` to a salted deployCode,
+// whose child frame is a CREATE2 (H1h major: a salted deploy was judged as a write).
+const isCreation = (kind) => kind === "CREATE" || kind === "CREATE2";
 const lc = (v) => String(v ?? "").toLowerCase();
 export const word = (v) => "0x" + String(v ?? "0x0").replace(/^0x/, "").padStart(64, "0").toLowerCase();
 export const isAddressWord = (w) => /^0x0{24}[0-9a-f]{40}$/.test(w) && !/^0x0{64}$/.test(w);
@@ -206,8 +226,8 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
       const t = node.trace ?? {};
       const address = lc(t.address), caller = lc(t.caller), selector = lc(String(t.data ?? "").slice(0, 10));
       if (label === "Execution" && i === 0 && address) out.testContract = address;
-      if (t.kind === "CREATE" && address) created.add(address);
-      if (address && t.kind !== "CREATE") (out.selectors[address] ??= new Set()).add(selector);
+      if (isCreation(t.kind) && address) created.add(address);
+      if (address && !isCreation(t.kind)) (out.selectors[address] ??= new Set()).add(selector);
       const execution = label === "Execution";
       const context = t.kind === "DELEGATECALL" || t.kind === "CALLCODE" ? caller : address;
       // msg.sender: a DELEGATECALL keeps the sender of the frame that made it.
@@ -237,7 +257,7 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
         // target even when it was set in setUp — see lib/proof.mjs. We snapshot here, then
         // record this write's own effect below, so the snapshot is the pre-write state.
         const heldSnap = { ...(addrHeld[context] ?? {}) };
-        if (execution && !under(i, (x) => x.kind === "CREATE")) {
+        if (execution && !under(i, (x) => isCreation(x.kind))) {
           const setup = under(i, (x) => lc(String(x.data ?? "").slice(0, 10)) === SAFE_SETUP);
           out.writes.push({ context, slot: key, before: word(change.had_value), after: word(change.value), ...(setup ? { setup: true } : {}) });
           out.writeMeta.push({ caller, authority, held: heldSnap });
@@ -256,7 +276,7 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
         // - the first write to an empty slot by the test contract (its own initialization).
         // An outsider's takeover is NOT adopted, so it cannot hide the writes that follow it.
         let building = null;
-        for (let n = arena[i]; n && !building; n = arena[n.parent]) if (n.trace?.kind === "CREATE") building = lc(n.trace.address);
+        for (let n = arena[i]; n && !building; n = arena[n.parent]) if (isCreation(n.trace?.kind)) building = lc(n.trace.address);
         const first = word(change.had_value) === word("0x0") && caller === out.testContract;
         const entitled = building !== null ? building === context : !execution || authority.includes(caller) || first;
         if (entitled) (held[context] ??= {})[key] = word(change.value);
@@ -277,16 +297,21 @@ export function extractControlTrace(traces, { cheatTable = CHEAT_TABLE } = {}) {
             const depth = (j) => { let d = 0; for (let n = arena[j]; n && n.parent != null; n = arena[n.parent]) d++; return d; };
             const mine = depth(i);
             let armed = null;
-            let nextCheat = null; // the first later VM call at that depth
+            let sawCreation = false; // a deployCode cheatcode at that depth before any armed call
             for (let j = i + 1; j < arena.length; j++) {
               if (depth(j) > mine) continue;
-              if (lc(arena[j]?.trace?.address) === VM) { nextCheat ??= lc(String(arena[j]?.trace?.data ?? "").slice(0, 10)); continue; }
+              if (lc(arena[j]?.trace?.address) === VM) {
+                if (cheatTable.get(lc(String(arena[j]?.trace?.data ?? "").slice(0, 10)))?.name === "deployCode") sawCreation = true;
+                continue;
+              }
               armed = { index: j, success: arena[j]?.trace?.success === true };
               break;
             }
             // `new ScopeContract(…)` under expectRevert: forge makes the creation a
-            // deployCode cheatcode call, so no call follows for the expectation.
-            const creation = !armed && cheatTable.get(nextCheat)?.name === "deployCode";
+            // deployCode cheatcode call, so no call follows for the expectation. A
+            // vm.prank (or any cheatcode) between the arming and the creation does not
+            // hide it: any deployCode at that depth before an armed call is the shape.
+            const creation = !armed && sawCreation;
             out.expects.push({ selector, name: known.name, where: execution ? "body" : "setUp", armed, ...(creation ? { creation: true } : {}) });
           }
           if (!known) out.backstop.push({ selector, name: null, class: "unknown", where: execution ? "body" : "setUp", kept });

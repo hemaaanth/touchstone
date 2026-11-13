@@ -54,6 +54,7 @@ import { createLabNetwork, removeLabNetwork } from "./lab-net.mjs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { JsonRpcProvider, Contract, id, keccak256 } from "ethers";
+import { formatAmount } from "../../app/src/lib/amount.mjs"; // the shared amount formatter: no cut harm numbers
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SPIKE = join(HERE, "..");
@@ -392,7 +393,7 @@ export function drainOracle(before, after, receipts = [], targets = []) {
   if (victims.length === 0) {
     return { pass: false, victims: [], detail: "no anchored target lost ETH or control on the real lab chain" };
   }
-  const eth = (w) => `${w / 10n ** 18n}.${((w % 10n ** 18n) / 10n ** 14n).toString().padStart(4, "0")} ETH`;
+  const eth = (w) => formatAmount(w.toString()).text;
   const parts = victims.map((v) => {
     const bits = [];
     if (v.lostWei > 0n) bits.push(`lost ${eth(v.lostWei)}`);
