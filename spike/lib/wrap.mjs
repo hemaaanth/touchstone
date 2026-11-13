@@ -6,7 +6,11 @@
 // ensemble layer (ensemble.mjs) merges. A lead is never a finding.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { isIP } from "node:net";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { daytonaOn, remoteDocker } from "./daytona.mjs";
 
 // Run one tool in Docker over the workspace, mounted at /work.
@@ -33,15 +37,16 @@ import { daytonaOn, remoteDocker } from "./daytona.mjs";
 //               default entrypoint is another tool). A plain binary name or an
 //               absolute path only; anything with shell text throws. Omitted
 //               (the default) means the argv is exactly as before.
-//   mounts      extra mounts after the workspace: [[source, target, "ro"?], ...].
-//               source is an absolute host path or a named volume; target is an
-//               absolute container path. See mountFlags. A host path other than
-//               ws keeps a Daytona call on this host (planRemote).
-export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [], entrypoint = null, mounts = [] }) {
+//   mounts      extra mounts after the workspace: [[source, target, mode?], ...].
+//               Read-only unless mode is "rw". See mountFlags for what is allowed.
+//               A host path other than ws keeps a Daytona call on this host (planRemote).
+//   mountRoots  host folders the caller made (for example its own mkdtemp
+//               folder). A host-path mount must resolve under ws or one of these.
+export async function runTool({ image, cmd, ws, network = "none", user = `${process.getuid()}:${process.getgid()}`, timeoutMs = 180_000, env = {}, maxBuffer = 64 * 1024 * 1024, addHosts = [], entrypoint = null, mounts = [], mountRoots = [] }) {
   const name = "touchstone-tool-" + randomBytes(6).toString("hex");
   const pins = hostPins(addHosts);
   const entry = entrypointFlag(entrypoint);
-  const extra = mountFlags(mounts);
+  const extra = mountFlags(mounts, [...(ws ? [ws] : []), ...mountRoots]);
   const args = [
     "run", "--rm", "--pull=never", "--network", network,
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -70,21 +75,61 @@ export function entrypointFlag(entrypoint) {
   return ["--entrypoint", entrypoint];
 }
 
-// The -v flags for runTool's mounts, or []. A source is an absolute host path or
-// a plain volume name; a target is an absolute path; neither holds ":" or ","
-// or a "." / ".." segment, so a value cannot add a mount option or a docker word.
-// The third item may only be "ro".
+// The -v flags for runTool's mounts, or [].
+//   [hostPath, target]        read-only. hostPath is resolved with realpath
+//                             (so a symlink is followed first) and must lie under
+//                             one of roots (also resolved). It may not be, hold or
+//                             lie inside "/", the home folder, spike/data or a
+//                             docker socket.
+//   [volume, target, "rw"]    read-write, only for a volume in RW_VOLUMES.
+//   [volume, target]          read-only, same allow-list.
+// target is an absolute container path. No value may hold ":" or "," or a
+// "." / ".." segment, so it cannot add a mount option or a docker word.
+export const RW_VOLUMES = new Set(["foundry-svm", "touchstone_svm_cache"]); // the solc cache
 const MOUNT_PATH = /^(?:\/[A-Za-z0-9_.@+-]+)+$/;
-const VOLUME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-export function mountFlags(mounts) {
+const SPIKE_DATA = resolve(dirname(fileURLToPath(import.meta.url)), "..", "data");
+const under = (child, parent) => {
+  const r = relative(parent, child);
+  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+};
+const real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+export function mountFlags(mounts, roots = []) {
   if (!Array.isArray(mounts)) throw new Error("mounts must be a list of [source, target, mode?]");
+  if (!mounts.length) return [];
+  if (!Array.isArray(roots)) throw new Error("mounts: roots must be a list of folders");
+  const syntax = (p) => typeof p === "string" && MOUNT_PATH.test(p) && !p.split("/").some((seg) => seg === "." || seg === "..");
+  const home = real(homedir());
+  const forbidden = ["/", home, real(SPIKE_DATA)];
+  const allowed = roots.map((r) => {
+    if (!syntax(r)) throw new Error("mounts: bad root: " + String(r).slice(0, 80));
+    const rr = real(r);
+    if (forbidden.some((f) => under(f, rr))) throw new Error("mounts: root is too wide: " + rr);
+    return rr;
+  });
   return mounts.flatMap((m) => {
     const [src, dst, mode, ...rest] = Array.isArray(m) ? m : [];
-    const ok = (p) => typeof p === "string" && MOUNT_PATH.test(p) && !p.split("/").some((seg) => seg === "." || seg === "..");
-    if (!(ok(src) || (typeof src === "string" && VOLUME.test(src)))) throw new Error("mounts: bad source: " + String(src).slice(0, 80));
-    if (!ok(dst)) throw new Error("mounts: bad target: " + String(dst).slice(0, 80));
-    if (rest.length || (mode !== undefined && mode !== "ro")) throw new Error("mounts: mode may only be \"ro\"");
-    return ["-v", `${src}:${dst}${mode ? ":ro" : ""}`];
+    if (!syntax(dst)) throw new Error("mounts: bad target: " + String(dst).slice(0, 80));
+    if (rest.length || (mode !== undefined && mode !== "ro" && mode !== "rw")) throw new Error('mounts: mode must be "ro" or "rw"');
+    if (typeof src === "string" && RW_VOLUMES.has(src)) return ["-v", `${src}:${dst}${mode === "rw" ? "" : ":ro"}`];
+    if (!syntax(src)) throw new Error("mounts: source must be an absolute host path or an allowed volume (" + [...RW_VOLUMES].join(", ") + "): " + String(src).slice(0, 80));
+    if (mode === "rw") throw new Error("mounts: a host path is read-only; rw is only for " + [...RW_VOLUMES].join(", "));
+    if (under(resolve(src), SPIKE_DATA)) throw new Error("mounts: refused, spike/data is never mounted: " + src);
+    let path;
+    try {
+      path = realpathSync(src);
+    } catch {
+      throw new Error("mounts: source does not exist: " + src);
+    }
+    if (/(^|\/)docker\.sock$/.test(path) || /(^|\/)docker\.sock$/.test(src)) throw new Error("mounts: a docker socket is never mounted: " + src);
+    if (forbidden.some((f) => under(f, path)) || under(path, real(SPIKE_DATA))) throw new Error("mounts: refused, the folder is / , the home folder, spike/data, or holds one of them: " + path);
+    if (!allowed.some((r) => under(path, r))) throw new Error("mounts: " + path + " is outside the allowed roots (the workspace or a folder the caller made)");
+    return ["-v", `${path}:${dst}:ro`];
   });
 }
 
