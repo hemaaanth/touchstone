@@ -744,7 +744,20 @@ function ethLosses(traces, targets, net, controlTrace) {
     m.set(party, (m.get(party) ?? 0n) + wei);
     flows.set(target, m);
   };
-  const forced = new Set((controlTrace?.ethFunded ?? []).map(lc));
+  // vm.deal(target, x) credits x to the test party as "put in" for that target (the
+  // test gave the target this ETH, so the test taking it back is not a drain). Sum
+  // the dealt balances per target. A deal with an unknown amount (none today) or
+  // vm.coinbase (no amount) marks the target `forcedUnknown`: the test party's whole
+  // take is dropped, as before. A selfdestruct of a test contract names no target or
+  // amount, so it drops the test take from EVERY target (strict).
+  const dealt = new Map(); // target -> summed dealt balance credited to the test party
+  const forcedUnknown = new Set();
+  for (const e of controlTrace?.ethFunded ?? []) {
+    const target = lc(e?.target ?? e);
+    if (e && typeof e === "object" && e.amount != null) {
+      try { dealt.set(target, (dealt.get(target) ?? 0n) + BigInt(e.amount)); } catch { forcedUnknown.add(target); }
+    } else forcedUnknown.add(target);
+  }
   let selfDestructed = false;
   for (const entry of Array.isArray(traces) ? traces : []) {
     const arena = (Array.isArray(entry) ? entry[1] : entry)?.arena;
@@ -770,9 +783,13 @@ function ethLosses(traces, targets, net, controlTrace) {
     const gross = -w;
     let excess = 0n;
     for (const [party, v] of flows.get(victim) ?? []) {
-      if (v >= 0n) continue;
-      if (party === TEST && (selfDestructed || forced.has(victim))) continue;
-      excess += -v;
+      // The test party credits the ETH it dealt to the victim as "put in". When the
+      // amount is unknown (coinbase, or a selfdestruct into a test contract), the
+      // whole test take is dropped (strict, fail closed).
+      const put = party === TEST ? v + (dealt.get(victim) ?? 0n) : v;
+      if (put >= 0n) continue;
+      if (party === TEST && (selfDestructed || forcedUnknown.has(victim))) continue;
+      excess += -put;
     }
     out.push({ victim, lostWei: excess < gross ? excess : gross, gross });
   }
@@ -845,7 +862,8 @@ const BACKSTOP_FIX = {
   state: "do not restore an earlier state inside the proof test",
   exec: "remove gas metering cheatcodes from the proof test",
   fork: "the replay is offline: do not create, select or roll a fork, or replay a transaction, in the proof test",
-  account: "do not send raw transactions in the proof test",
+  account: "the gate has no rule for this cheatcode: keep it out of the proof test",
+  mock: "the gate has no rule for this cheatcode: keep it out of the proof test",
   unknown: "use only the cheatcodes of the pinned forge-std Vm.sol",
 };
 function backstopNote(controlTrace) {
@@ -854,6 +872,10 @@ function backstopNote(controlTrace) {
   // be a reverted frame. If the trace shows it successful, or no call followed, the
   // trace and the test disagree: refuse.
   const broken = (controlTrace?.expects ?? []).filter((e) => !e.armed || e.armed.success);
+  if (broken.length && broken.every((e) => e.creation)) {
+    const what = [...new Set(broken.map((e) => `vm.${e.name} (in ${e.where})`))].join(", ");
+    return `the test used ${what} on the creation of a contract (new X(…)). Forge makes that creation a cheatcode call (deployCode), so the expectation does not apply to a call the trace can show as reverted, and no scope target counts. To repair: create the contract in an external helper call (for example this.make(…)) under the expectation, or use try/catch.`;
+  }
   if (broken.length) {
     const what = [...new Set(broken.map((e) => `vm.${e.name} (in ${e.where})`))].join(", ");
     return `the test used ${what}, but the trace shows no reverted call for it to expect (the call it was armed for succeeded, or no call followed), so the trace and the test disagree and no scope target counts. To repair: make the expected call really revert, or remove the expectation from the proof test.`;
@@ -863,7 +885,7 @@ function backstopNote(controlTrace) {
   const seen = new Map();
   for (const h of hits) {
     const label = h.name ? `vm.${h.name} (${h.class}, in ${h.where})` : `the unknown cheatcode ${h.selector} (in ${h.where})`;
-    if (!seen.has(label)) seen.set(label, BACKSTOP_FIX[h.name ? h.class : "unknown"] ?? BACKSTOP_FIX.unknown);
+    if (!seen.has(label)) seen.set(label, h.name ? (BACKSTOP_FIX[h.class] ?? BACKSTOP_FIX.account) : BACKSTOP_FIX.unknown);
   }
   const list = [...seen.keys()].join(", ");
   const fixes = [...new Set(seen.values())].join("; ");
@@ -935,7 +957,7 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   const notes = [];
   if (unusable) notes.push(unusable);
   if (impersonated.length) notes.push(`the test impersonated scope target ${impersonated.join(", ")} with a prank or broadcast cheatcode; a target the test acts as cannot be the victim (nor the token or the contract taken over), so it is not counted. Prank the attacker or an outside address, never a scope contract, also not in setUp().`);
-  if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions, or use vm.store / vm.mockCall only on contracts outside the scope (forge-std deal() that funds a scope contract's token balance is fine).`);
+  if (tampered.size) notes.push(`the test set the state of scope target ${[...tampered.values()].join(", ")}; a target whose storage or call answers the test wrote cannot be the source of proven harm, so it is not counted. Build the fixture through the target's own functions (fund a holder through a pranked user's deposit), or use vm.store / vm.mockCall only on contracts outside the scope. A deal() that funds a scope contract's token balance is counted as the test's own, so do not drain that balance from the test side.`);
   const refuse = (reason) => ({
     ok: false,
     reason: notes.length ? `${notes.join(" ")} Without that target: ${reason}` : reason,
@@ -965,6 +987,6 @@ export function judgeHarm(traces, { scope = [], controlTrace = null, layouts = n
   }
   for (const d of netted) returned.push(`${d.victim} (${targets.get(d.victim)}, token ${d.token})`);
   if (takeovers.length) return { ok: true, kind: "control", victim: lc(takeovers[0].context), writes: takeovers.length, targets: names };
-  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: show an address that takes out more than it put in. It took over none of its control slots either`);
+  if (returned.length) return refuse(`ETH or tokens left scope target ${returned.join(", ")} in the test body, but no address took out more than it had put in, across setUp() and the body (the test contract and the contracts it deployed count as one party, and what the test put on a target with vm.deal, vm.coinbase, a selfdestruct or a funding deal() counts as the test's own). Taking back a deposit is not a drain: fund the victim through a pranked user's deposit, then drain it with a pranked attacker address — not with vm.deal, deal() or a constructor value, whose funds count as the test's own. It took over none of its control slots either`);
   return refuse("the test called a scope target but moved no ETH out of it and took over none of its control slots (owner, EIP-1967 admin or implementation)");
 }
