@@ -164,8 +164,10 @@ test("retry: the budget stop itself is never retried", () => {
 });
 
 // What the harness sees after budgetedApi forwards one provider error event.
-async function budgetedForward(errorMessage, context = { messages: [] }, usage) {
+// `started`: pi-ai sent "start" first, as it does once the provider answered 2xx.
+async function budgetedForward(errorMessage, context = { messages: [] }, usage, started = false) {
   const inner = () => (async function* () {
+    if (started) yield { type: "start", partial: { role: "assistant", content: [] } };
     yield { type: "error", reason: "error", error: { role: "assistant", content: [], stopReason: "error", errorMessage, ...(usage ? { usage } : {}) } };
   })();
   const out = budgetedApi({ stream: inner, streamSimple: inner }).stream({ id: "faux-1", api: "faux", provider: "faux" }, context, {});
@@ -202,7 +204,7 @@ test("drop: a dropped stream with zero usage is charged an estimate of its promp
   t.mock.method(console, "warn", () => {});
   // 35,000 chars is about 10k tokens: about $0.01 at the $1/1M fallback price.
   const context = { systemPrompt: "Audit.", messages: [{ role: "user", content: "x".repeat(35_000), timestamp: 0 }] };
-  await budgetedForward("Stream interrupted", context, ZERO);
+  await budgetedForward("Stream interrupted", context, ZERO, true);
   const first = total();
   assert.ok(first > 0.009 && first < 0.012, `ledger ${first}`);
   // A refusal (4xx), our own cap stop, or a host that was never reached billed nothing.
@@ -211,8 +213,27 @@ test("drop: a dropped stream with zero usage is charged an estimate of its promp
     assert.equal(total(), first, msg);
   }
   // Reported usage wins over the estimate.
-  await budgetedForward("Stream interrupted", context, { ...ZERO, input: 1_000_000 });
+  await budgetedForward("Stream interrupted", context, { ...ZERO, input: 1_000_000 }, true);
   assert.ok(Math.abs(total() - first - 1) < 1e-9, `ledger ${total()}`);
+});
+
+test("drop: a call is charged an estimate only when it reached the provider", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const context = { systemPrompt: "Audit.", messages: [{ role: "user", content: "x".repeat(35_000), timestamp: 0 }] };
+  // The texts pi-ai gives when no answer came back: a refused or unknown host
+  // (openai SDK, undici). No "start" came first, so nothing is charged.
+  for (const msg of ["Connection error.", "fetch failed"]) {
+    await budgetedForward(msg, context, ZERO);
+    assert.equal(total(), 0, msg);
+  }
+  // The request reached a server: it answered 5xx, or it timed out after the
+  // request was sent, or the stream had started and then broke.
+  let before = 0;
+  for (const [msg, started] of [["502 Bad Gateway", false], ['504: {"message":"upstream timed out"}', false], ["Request timed out.", false], ["terminated", true], ["Connection error.", true]]) {
+    await budgetedForward(msg, context, ZERO, started);
+    assert.ok(total() - before > 0.009, `${msg}: ledger ${total()}`);
+    before = total();
+  }
 });
 
 test("drop: a stream that keeps dropping with zero usage still charges every attempt", { timeout: 10000 }, async (t) => {

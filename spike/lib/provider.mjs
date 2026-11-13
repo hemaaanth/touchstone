@@ -29,10 +29,13 @@ export function budgetedApi(api, agentForSession = () => undefined) {
             return options?.onPayload ? options.onPayload(payload, m) : undefined;
           },
         });
+        // pi-ai sends "start" once the provider has answered with a 2xx.
+        let started = false;
         for await (const e of source) {
+          if (e.type !== "done" && e.type !== "error") started = true;
           if (e.type === "done" || e.type === "error") {
             const message = e.type === "done" ? e.message : e.error;
-            const usage = e.type === "error" ? billedUsage(context, message) : message.usage;
+            const usage = e.type === "error" ? billedUsage(context, message, started) : message.usage;
             if (usage) {
               charge(model.id, usage);
               event("spend", { ...runSpend(), ...contextUse(model, usage) });
@@ -89,14 +92,20 @@ function markTransient(e) {
 // in the last chunk, so a stream that drops reports zero input tokens. The
 // provider still read the whole prompt and very likely bills it, and each retry
 // reads it again. So a failed call with no reported input is charged an
-// estimate of its prompt, unless the provider refused it with a 4xx status.
-// This may overcharge a call that never reached the provider: the safe side
-// for a cap.
-function billedUsage(context, message) {
+// estimate of its prompt when the request reached the provider: the stream had
+// started, or a server answered with a 5xx, or the request timed out after it
+// was sent. With none of these ("Connection error.", "fetch failed") no answer
+// came back, so the call is charged nothing. That includes a socket that was
+// reset after the request was sent: the SDK gives it the same text as a refused
+// host, so the two cannot be told apart.
+const SERVER_STATUS = statusAt("5\\d\\d");
+const TIMED_OUT = /timed out|timeout|ETIMEDOUT/i;
+function billedUsage(context, message, started) {
   const usage = message.usage ?? {};
   if (message.stopReason !== "error" || (usage.input ?? 0) > 0 || (usage.cacheRead ?? 0) > 0) return message.usage;
   const text = String(message.errorMessage ?? "");
   if (REFUSED_STATUS.test(text) || NOT_SENT.test(text)) return message.usage;
+  if (!started && !SERVER_STATUS.test(text) && !TIMED_OUT.test(text)) return message.usage;
   return { ...usage, input: promptTokens(context), output: usage.output ?? 0 };
 }
 function promptTokens(context) {
