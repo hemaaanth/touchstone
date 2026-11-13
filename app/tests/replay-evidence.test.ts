@@ -93,6 +93,26 @@ describe("evidence replay keeps no snapshot text", () => {
     }
   })
 
+  test("an old record that still holds snapshot text gets a 409, and no format sends that text", async () => {
+    // The shape the first version of this PR wrote: the whole snapshot as text
+    // on proof.replay.files. Made-up values.
+    const snapshot = { version: 1, files: { ".env": `DB_PASSWORD=${SECRETS[0]}\nOPENAI_API_KEY=${SECRETS[1]}\n`, "deploy/key.txt": `${SECRETS[3]}\n` } }
+    const replay = { version: 1, kind: "evidence", snapshotHash: "c".repeat(64), scrubbed: false, files: [{ path: "snapshot.json", text: JSON.stringify(snapshot) }], omitted: [] }
+    const row = { title: "committed key", severity: "critical", proven: true, proof: { kind: "evidence", check: "key", status: "pass", replay } }
+    writeFileSync(path.join(results, "run-ev-old.json"), JSON.stringify({ result: { findingSubmitted: true, recorded: true, decision: "approved", findings: [row] } }))
+    for (const format of ["bundle", "zip", "bundle-check"]) {
+      const r = await call(`/api/findings/ev-old.1/report?format=${format}`)
+      expect([format, r.status]).toEqual([format, 409])
+      expect(JSON.parse(r.body).error).toContain("no replay bundle")
+      for (const s of SECRETS) expect(r.body.includes(s)).toBe(false)
+    }
+    for (const format of ["json", "md", "html"]) {
+      const r = await call(`/api/findings/ev-old.1/report?format=${format}`)
+      expect([format, r.status]).toEqual([format, 200])
+      for (const s of SECRETS) expect([format, r.body.includes(s)]).toEqual([format, false])
+    }
+  })
+
   test("the bundle route answers 409 for an http record that holds a key the redactor cannot mask", async () => {
     // Made up. The oracle detail holds a bare 64-hex key with a key word.
     const hex = "9c4f1a7e3b8d2f6a0c5e9b1d7f3a8c2e6b0d4f9a1c7e3b5d8f2a6c0e4b9d1f7a"
