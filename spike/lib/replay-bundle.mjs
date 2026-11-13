@@ -97,7 +97,8 @@ export function bundleText(text, { forge = false } = {}) {
   return s.replace(ASSIGN, maskAssign);
 }
 
-// A JSON value for the zip: no controlTrace, no stored replay snapshot, every
+// A JSON value for the zip: no controlTrace, no stored replay snapshot, no
+// normalized rerunCommand (the forge bundle has no re-run command), every
 // string through bundleText. A two-string array (a header list as
 // [name, value] pairs) is shown to the module as a {name, value} cell.
 const PAIR = "__touchstonePair";
@@ -105,7 +106,7 @@ function dropKeys(v) {
   if (Array.isArray(v)) return v.map(dropKeys);
   if (!v || typeof v !== "object") return v;
   const out = {};
-  for (const [k, x] of Object.entries(v)) if (k !== "controlTrace" && k !== "replay") out[k] = dropKeys(x);
+  for (const [k, x] of Object.entries(v)) if (k !== "controlTrace" && k !== "replay" && k !== "rerunCommand") out[k] = dropKeys(x);
   return out;
 }
 function toCells(v) {
@@ -965,7 +966,7 @@ function provenDate({ finding, recorded } = {}) {
 function forgeLine1({ finding, recorded, harm }) {
   const date = provenDate({ finding, recorded });
   const noun = harmNoun(harm);
-  return `PROVEN: Touchstone proved this finding by its own replay on the operator's machine${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}. This folder holds the proof's source files for reading; it has no re-run command yet.\n\n`;
+  return `PROVEN: Touchstone proved this finding by its own replay${date ? ` on ${date}` : ""}${noun ? ` (harm: ${noun})` : ""}. This folder holds the proof's source files for reading; it has no re-run command yet.\n\n`;
 }
 
 function forgeBundle({ finding, recorded, replay, proof }) {

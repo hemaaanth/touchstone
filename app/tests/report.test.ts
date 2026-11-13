@@ -244,7 +244,7 @@ describe("report: replay bundle", () => {
         expect(readme).not.toContain("re-checked")
         expect(files.has("check-harm.mjs")).toBe(false)
         expect(files.has("harm.json")).toBe(false)
-        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on the operator's machine on 2026-01-15 (harm: an ETH drain). This folder holds the proof's source files for reading; it has no re-run command yet.")
+        expect(readme.split("\n")[0]).toBe("PROVEN: Touchstone proved this finding by its own replay on 2026-01-15 (harm: an ETH drain). This folder holds the proof's source files for reading; it has no re-run command yet.")
         // The hashes of every shipped file, and nothing about a command in proof.json.
         const sums = files.get("SHA256SUMS") || ""
         expect(sums).toContain("  test/AgentPoc.t.sol\n")
@@ -542,7 +542,8 @@ describe("report: replay bundle", () => {
         expect([rel, commands(readme)]).toEqual([rel, []])
         expect([rel, readme.includes("re-checked")]).toEqual([rel, false])
         expect([rel, readme.includes("forge test")]).toEqual([rel, false])
-        expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay on the operator's machine")).toBe(true)
+        expect(readme.split("\n")[0].startsWith("PROVEN: Touchstone proved this finding by its own replay")).toBe(true)
+        expect(readme).not.toContain("on the operator's machine")
       } finally {
         rmSync(ws, { recursive: true, force: true })
         rmSync(dir, { recursive: true, force: true })
@@ -571,6 +572,24 @@ describe("report: replay bundle", () => {
       const proofJson = JSON.parse(files.get("proof.json") || "")
       expect(proofJson.replay.command).toBeUndefined()
       expect(proofJson.replay.prepare).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a normalized proof's rerunCommand never reaches proof.json", () => {
+    // findings.mjs can put a rerunCommand on the normalized proof. The bundle
+    // falls back to it when there is no recorded proof, so it must be dropped.
+    const proof = { kind: "forge", pass: true, test: "testDrain()", rerunCommand: "forge test --match-test testDrain", harm: { ok: true, kind: "funds", victim: "0x" + "aa".repeat(20), lostWei: "1" } }
+    const replay = { version: 1, kind: "forge", contract: "PocTest", test: "testDrain", fork: { rpc: "${RPC_URL}", block: null, forked: false }, files: [{ path: "foundry.toml", text: "[profile.default]\n" }, { path: "test/AgentPoc.t.sol", text: "contract PocTest {}\n" }], omitted: [] }
+    const dir = mkdtempSync(path.join(tmpdir(), "replay-rerun-"))
+    try {
+      // No recorded.proof: the builder uses finding.proof, which carries rerunCommand.
+      unzip(buildReplayBundle({ finding: { stages: { proven: true }, title: "t", proofKind: "forge", proof }, recorded: { replay } }), dir)
+      const files = readTree(dir)
+      expect(JSON.parse(files.get("proof.json") || "").rerunCommand).toBeUndefined()
+      expect((files.get("proof.json") || "").includes("forge test")).toBe(false)
+      expect(files.get("README.md")).not.toContain("forge test")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
