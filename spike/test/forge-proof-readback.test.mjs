@@ -104,11 +104,14 @@ test("a harm-gated forge proof with no root run_poc reads as proven and shows it
       pocProved: true,
       proof: { ...passing.proof, source: "engine-replay" },
     },
+    // Neither half of the harm gate is enough alone.
+    { ...passing, n: 6, title: "Pass but no harm verdict", poc: "NoHarmField", proof: (({ harm, ...p }) => p)(passing.proof) },
+    { ...passing, n: 7, title: "Harm ok but no pass", poc: "NoPassField", proof: (({ pass, ...p }) => p)(passing.proof) },
   ])
   try {
     const list = await listFindings()
     const rows = list.filter((f) => f.runId === stamp)
-    assert.deepEqual(rows.map((f) => f.proven), [true, false, false, false, true])
+    assert.deepEqual(rows.map((f) => f.proven), [true, false, false, false, true, false, false])
 
     const proved = await getFinding(`${stamp}.1`)
     assert.equal(proved.stages.proven, true)
@@ -142,6 +145,12 @@ test("a harm-gated forge proof with no root run_poc reads as proven and shows it
     assert.equal(absent.proof.pass, false)
     assert.equal(absent.proof.testSource, null)
     assert.match(renderReportHtml(buildReport(absent)), /Not proven/)
+
+    for (const k of [6, 7]) {
+      const half = await getFinding(`${stamp}.${k}`)
+      assert.equal(half.stages.proven, false)
+      assert.equal(half.proof.pass, false)
+    }
 
     const label = await getFinding(`${stamp}.5`)
     assert.equal(label.stages.proven, true)
