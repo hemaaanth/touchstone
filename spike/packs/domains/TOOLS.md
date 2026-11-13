@@ -196,6 +196,10 @@ missing image is reported as unavailable coverage with the Docker reason.
   spoofed.
 - Several SPF or DMARC records at one name are read as `unread`, so they raise
   only `email-auth-evidence-missing`, not a misconfiguration lead.
+- For a domain that does not exist, checkdmarc's SPF text is "The domain does
+  not exist." with no name, so SPF reads as `unread`; the DMARC text is "The
+  domain <name> does not exist.", so DMARC reads as `absent`. The two answers differ, but neither one
+  gives a false clean result.
 - A lowercase DNSSEC verdict (for example `secure`) is treated as incomplete,
   with a reason naming the verdict. Only the exact upper-case words are known.
 - A signed zone that DNSViz rates `INSECURE` raises `dnssec-no-ds`. The text

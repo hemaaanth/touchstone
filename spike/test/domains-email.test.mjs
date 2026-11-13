@@ -65,6 +65,15 @@ test('the parent-domains absence text for a three-label name is absent', () => {
   assert.equal(parseCheckdmarc(JSON.stringify({ domain: name, dmarc: { error: 'A DMARC record does not exist for some other reason.' } }), name).dmarc.state, 'unread');
 });
 
+// m6: checkdmarc's SPF text for a missing domain has no name. It stays unread.
+test('a missing domain reads SPF as unread and the named DMARC text as absent', () => {
+  const output = JSON.stringify({ domain: root, spf: { record: null, valid: false, error: 'The domain does not exist.' }, dmarc: { record: null, valid: false, error: 'The domain example.com does not exist.' } });
+  const email = parseCheckdmarc(output, root);
+  assert.equal(email.spf.state, 'unread');
+  assert.equal(email.dmarc.state, 'absent');
+  assert.deepEqual(emailLeads({ root, email: stored(output) }).map(l => l.check), ['email-auth-evidence-missing', 'email-dmarc-missing']);
+});
+
 test('an answer with no record field is unread, not absent', () => {
   const output = JSON.stringify({ domain: root });
   const email = parseCheckdmarc(output, root);
