@@ -6,7 +6,8 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { chimeraBrief, chimeraRecord, chimeraScan, chimeraSuites, parseEchidna, parseMedusa } from "../packs/contracts/chimera.mjs";
 import { makeWorkspace, cleanupWorkspace } from "../lib/sandbox.mjs";
@@ -111,18 +112,24 @@ test("Chimera reports unavailable when the image runs but writes no report", { s
   } finally { delete process.env.CHIMERA_IMAGE; await cleanupWorkspace(ws); }
 });
 
-test("Chimera reports unavailable on a timeout and leaves no container running", { skip: !hasChimera && "image not built" }, async () => {
+// The docker client hits its limit before the in-container kill. runTool must
+// report timedOut and remove the container. This needs the shared wrap.mjs
+// timeout commit (6526bbe on pack/domains): without it a container can stay
+// behind in the "Created" state.
+test("a client-side timeout reports timedOut for both engines, returns near the limit and leaves no container", { skip: !hasChimera && "image not built" }, async () => {
   const ws = makeWorkspace(LAB);
   try {
-    // 6s: the in-container kill (1s) ends both engines before the client limit.
-    const scan = await chimeraScan(ws, { timeoutMs: 6000 });
+    const t0 = Date.now();
+    const scan = await chimeraScan(ws, { timeoutMs: 1000 });
+    assert.ok(Date.now() - t0 < 10_000, `took ${Date.now() - t0} ms`);
     assert.equal(scan.available, false);
-    assert.match(scan.reason, /Echidna timed out.*Medusa timed out/);
+    assert.equal(scan.reason, "Echidna timed out after 1s; Medusa timed out after 1s");
+    assert.deepEqual(scan.engines.map((e) => [e.engine, e.timedOut]), [["Echidna", true], ["Medusa", true]]);
     assert.deepEqual(scan.leads, []);
     assert.equal(scan.gaps.length, 1);
     let left = "";
     for (let i = 0; i < 10; i++) {
-      left = execFileSync("docker", ["ps", "-q", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim();
+      left = execFileSync("docker", ["ps", "-aq", "--filter", `ancestor=${IMAGE}`, "--filter", `volume=${ws}`]).toString().trim();
       if (!left) break;
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -205,4 +212,128 @@ test("one engine down is a gap; the other engine's lead still counts", async () 
     assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join(), l.confidence, l.supportsProof]), [["CryticTester.property_solvent", "Echidna", "one engine", false]]);
     assert.match(mod.chimeraBrief(scan), /GAP Medusa: Medusa output could not be read/);
   } finally { mock.reset(); await cleanupWorkspace(ws); }
+});
+
+// A PATH docker shim stands in for the real client. It sees the real argv and
+// answers per engine with a given stdout and exit code.
+async function withShim({ echidna = ECHIDNA, medusa = MEDUSA, ecode = 1, mcode = 7 }, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "chimera-shim-"));
+  const path = process.env.PATH;
+  for (const [e, out, code] of [["echidna", echidna, ecode], ["medusa", medusa, mcode]]) {
+    writeFileSync(join(dir, `${e}.out`), out);
+    writeFileSync(join(dir, `${e}.code`), String(code));
+  }
+  writeFileSync(join(dir, "docker"), [
+    "#!/bin/sh",
+    'case "$*" in *"echidna ."*) e=echidna;; *) e=medusa;; esac',
+    `printf "%s\\n" "$@" > "${dir}/args.$e"`,
+    `cat "${dir}/$e.out"`,
+    `exit "$(cat "${dir}/$e.code")"`,
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const ws = makeWorkspace(LAB);
+  process.env.PATH = `${dir}:${path}`;
+  try {
+    const scan = await chimeraScan(ws, { timeoutMs: 20_000 });
+    const args = (e) => readFileSync(join(dir, `args.${e}`), "utf8").trim().split("\n");
+    return await fn(scan, args);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+    await cleanupWorkspace(ws);
+  }
+}
+const STATIC = { tool: "Slither", engines: [], suspects: 0, top: [] };
+const viewOf = (scan) => prepassView({ static: STATIC, chimera: chimeraRecord(scan) }).tools.find((t) => t.name === "Chimera");
+// The final-report line only; the same failure is also printed live above it.
+const lastReplace = (text, from, to) => { const i = text.lastIndexOf(from); return text.slice(0, i) + to + text.slice(i + from.length); };
+
+test("the Chimera argv is pinned for both engines: --pull=never, --network none, the exact image", async () => {
+  await withShim({}, (scan, args) => {
+    assert.equal(scan.available, true, scan.reason);
+    assert.equal(scan.leads.length, 1);
+    for (const [e, run] of [["echidna", /echidna \. --contract CryticTester /], ["medusa", /medusa fuzz --config /]]) {
+      const a = args(e);
+      assert.deepEqual(a.slice(0, 3), ["run", "--rm", "--pull=never"]);
+      assert.equal(a[a.indexOf("--network") + 1], "none");
+      assert.equal(a.filter((x) => x === "--network").length, 1);
+      const img = a.indexOf(IMAGE);
+      assert.ok(img > 0, a.join(" "));
+      assert.deepEqual(a.slice(img + 1, img + 3), ["sh", "-c"]);
+      assert.match(a[img + 3], run);
+    }
+  });
+});
+
+test("an exit code that does not match the report is a failed run, never a lead or a pass", async () => {
+  const clean = ECHIDNA.replace("property_solvent(): failed!💥", "property_solvent(): passing");
+  const cases = [
+    [{ ecode: 0 }, "Echidna exited with code 0, but its report has a broken test (expected 1)"],
+    [{ mcode: 1 }, "Medusa exited with code 1, but its report has a broken test (expected 7)"],
+    [{ echidna: clean, ecode: 1 }, "Echidna exited with code 1, but its report has no broken test (expected 0)"],
+  ];
+  for (const [opts, reason] of cases) {
+    await withShim(opts, (scan) => {
+      assert.equal(scan.available, true);
+      assert.ok(scan.gaps.some((g) => g.reason === reason), JSON.stringify(scan.gaps));
+      assert.ok(scan.engines.some((e) => e.status === "unavailable" && e.reason === reason));
+    });
+  }
+  // Both engines fail: nothing ran, so nothing is a lead or a pass.
+  await withShim({ ecode: 125, mcode: 125 }, (scan) => {
+    assert.equal(scan.available, false);
+    assert.equal(scan.reason, "Echidna exited with code 125, but its report has a broken test (expected 1); Medusa exited with code 125, but its report has a broken test (expected 7)");
+    assert.deepEqual([scan.leads, scan.results], [[], []]);
+    assert.equal(chimeraRecord(scan).status, "unavailable");
+    assert.equal(viewOf(scan).status, "unavailable");
+  });
+});
+
+test("a test on another contract, or one this suite does not declare, is a gap and never a lead", async () => {
+  const medusa = lastReplace(MEDUSA, "[FAILED] Assertion Test: CryticTester.property_solvent()", "[FAILED] Assertion Test: OtherTarget.property_solvent()");
+  const echidna = ECHIDNA.replace("vault_withdraw(uint256): passing", "vault_withdraw(uint256): passing\nproperty_drain(): failed!💥");
+  await withShim({ echidna, medusa }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.dropped, ["Echidna: property_drain()", "Medusa: OtherTarget.property_solvent()"]);
+    assert.deepEqual(scan.leads.map((l) => [l.where, l.engines.join()]), [["CryticTester.property_solvent", "Echidna"]]);
+    assert.ok(!scan.results.some((r) => r.name === "property_drain()"));
+    assert.deepEqual(scan.gaps.filter((g) => g.engine === "Medusa").map((g) => [g.name, g.reason]), [
+      ["property_solvent()", "Medusa reported a test that is not in this suite"],
+      ["property_solvent()", "Medusa reported no result for this property"],
+    ]);
+  });
+});
+
+test("a property the engine did not report is a gap, and the run view says some checks did not run", async () => {
+  const echidna = ECHIDNA.replace("property_shareSupply(): passing\n", "");
+  await withShim({ echidna }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.gaps, [{ suite: SUITE, engine: "Echidna", name: "property_shareSupply()", reason: "Echidna reported no result for this property" }]);
+    assert.equal(scan.reason, "1 of 12 engine checks unchecked (Echidna reported no result for this property)");
+    assert.deepEqual(viewOf(scan), { name: "Chimera", status: "ran", reason: scan.reason, leads: 1 });
+  });
+});
+
+test("a finished report with no tests is unavailable, not clean", async () => {
+  const echidna = "Unique instructions: 1\nTotal calls: 1\n";
+  const medusa = "⇾ Fuzzer stopped, test results follow below ...\n⇾ Test summary: 0 test(s) passed, 0 test(s) failed\n";
+  await withShim({ echidna, medusa, ecode: 0, mcode: 0 }, (scan) => {
+    assert.equal(scan.available, false);
+    assert.equal(scan.reason, "Echidna output could not be read; Medusa output could not be read");
+    assert.deepEqual(scan.leads, []);
+    assert.equal(viewOf(scan).status, "unavailable");
+  });
+});
+
+test("when every check is a gap the run view shows unavailable with a reason, not ran", async () => {
+  const echidna = "property_solvent(): something new\nproperty_shareSupply(): something new\n\nUnique instructions: 1\nTotal calls: 1\n";
+  const medusa = "⇾ Fuzzer stopped, test results follow below ...\n⇾ [RUNNING] Assertion Test: CryticTester.property_solvent()\n⇾ Test summary: 0 test(s) passed, 0 test(s) failed\n";
+  await withShim({ echidna, medusa, ecode: 0, mcode: 0 }, (scan) => {
+    assert.equal(scan.available, true);
+    assert.deepEqual(scan.leads, []);
+    assert.ok(scan.results.every((r) => r.status === "error"));
+    assert.match(scan.reason, /^4 of 4 engine checks unchecked \(/);
+    const view = viewOf(scan);
+    assert.deepEqual([view.status, view.reason], ["unavailable", scan.reason]);
+  });
 });

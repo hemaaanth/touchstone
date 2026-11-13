@@ -90,11 +90,28 @@ This is the worked example of the table in `packs/README.md`. Licenses marked
   Today it returns `trusted: false`, so every Chimera lead has
   `supportsProof: false` and a property that did not break is `unverified`.
   Results are leads only and cannot support proof until the gate merges.
-- **Fails closed.** A missing image, a timeout (in-container kill at the limit
-  minus 5 s), a build error, no report, a report cut short (no summary lines),
-  a test Echidna or Medusa could not run, or output we cannot read is a gap.
-  One engine down is a gap for that engine; the other engine's results still
-  count. Both down: the scan is `unavailable`.
+- **Fails closed.** These are a gap, never a clean result: a missing image; a
+  timeout (an in-container kill at the limit minus 5 s; if the docker client
+  times out first, the engine reports `timedOut` and the shared runTool fix
+  6526bbe, not yet merged here, removes the container); a kill by signal 9
+  (exit 137 is the time limit or the 2 GB memory limit; we cannot tell which,
+  and say so); a build error; no report; a report cut short (no summary
+  lines); a report with no tests; a test Echidna or Medusa could not run;
+  output we cannot read.
+  - **Exit codes.** Only the documented pairs count: Echidna 0 with no broken
+    test or 1 with one, Medusa 0 with no broken test or 7 with one. Any other
+    code, or a code that does not match the report, fails that engine.
+  - **Bound to this suite.** A test on a contract other than `CryticTester`,
+    or a function not declared in a `.sol` file under the suite's folder, is
+    dropped (`dropped`) and is a gap, never a lead. Each `property_*` function
+    declared there that an engine did not report is a gap for that engine.
+    `property_` is a naming convention, so a property with another name is
+    checked only if an engine reports it.
+  - **Run view.** Any gap puts a reason on the "Chimera" row, for example
+    "1 of 12 engine checks unchecked (...)". When nothing was checked, the
+    row is `unavailable`, not `ran`.
+  - One engine down is a gap for that engine; the other engine's results still
+    count. Both down: the scan is `unavailable`.
 - **Text, not JSON.** Echidna 2.3.3 `--format json` names every test "name",
   leaves the contract empty and mixes log lines into stdout, so we parse the
   text report. A change to either engine's text format makes the parser throw,

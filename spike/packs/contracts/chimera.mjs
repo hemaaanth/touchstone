@@ -24,7 +24,7 @@
 // assert(false), so every property and target function that uses them is
 // checked. A property written as a bool-returning echidna_ function is not.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
 import { suiteTrust } from "./suite-trust.mjs";
 
@@ -36,19 +36,25 @@ const KILLED = "CHIMERA_KILLED";
 const TESTER = /\bcontract\s+CryticTester\b/;
 const USES_CHIMERA = /import\s[^;]*["'](@chimera\/|chimera\/|[^"']*lib\/chimera\/)/;
 
+// The engine's exit code when it found a broken test. 0 means none broke.
+// Any other code, or a code that does not match the report, is a failed run.
+const FAIL_RC = { Echidna: 1, Medusa: 7 };
+
 // Copy the workspace to /tmp, write the engine config from $CFG, run the engine
 // with an inner kill so the container never outlives the limit, then print the
 // report on stdout. With no report, print a marker and the log tail on stderr.
+// The container exits with the engine's own exit code (99 if it never started).
 const scanCmd = (engine, secs) => {
   const run = engine === "Echidna"
     ? `printf '%s' "$CFG" > /tmp/e.yaml && { timeout -s KILL ${secs} echidna . --contract ${ENTRY} --config /tmp/e.yaml --format text >/tmp/out.txt 2>/tmp/err.txt; rc=$?; };`
     : `printf '%s' "$CFG" > /tmp/m.json && { timeout -s KILL ${secs} medusa fuzz --config /tmp/m.json >/tmp/out.txt 2>/tmp/err.txt; rc=$?; };`;
   return [
-    "cp -a /work/. /tmp/p && cd /tmp/p &&",
+    "rc=99; cp -a /work/. /tmp/p && cd /tmp/p &&",
     run,
     `[ "$rc" = 137 ] && echo ${KILLED} >&2;`,
     `if [ "$rc" != 137 ] && [ -s /tmp/out.txt ]; then tail -c 2000000 /tmp/out.txt; else echo ${NO_REPORT} >&2; fi;`,
-    "tail -c 4000 /tmp/err.txt >&2",
+    "tail -c 4000 /tmp/err.txt >&2;",
+    'exit "$rc"',
   ].join(" ");
 };
 
@@ -97,6 +103,21 @@ export function chimeraSuites(ws) {
   };
   walk(root);
   return out.sort();
+}
+
+// Function names declared in the .sol files under dir (recursive).
+function declared(dir) {
+  const names = new Set();
+  const walk = (d) => {
+    if (!existsSync(d)) return;
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (n.endsWith(".sol")) for (const m of readFileSync(p, "utf8").matchAll(/\bfunction\s+(\w+)\s*\(/g)) names.add(m[1]);
+    }
+  };
+  walk(dir);
+  return names;
 }
 
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -148,10 +169,11 @@ export function parseMedusa(text) {
   const lines = all.slice(start + 1, summary);
   const tests = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/\[([A-Z ]+)\]\s+\w+ Test:\s+(?:\w+\.)?(\w+\([^)]*\))\s*$/);
+    const m = lines[i].match(/\[([A-Z ]+)\]\s+\w+ Test:\s+(?:(\w+)\.)?(\w+\([^)]*\))\s*$/);
     if (!m) continue;
-    const [, state, name] = m;
-    if (state === "PASSED") tests.push({ name, status: "pass", sequence: [] });
+    const [, state, contract, name] = m;
+    const at = contract ? { contract } : {};
+    if (state === "PASSED") tests.push({ name, ...at, status: "pass", sequence: [] });
     else if (state === "FAILED") {
       const sequence = [];
       let j = i + 1;
@@ -160,8 +182,8 @@ export function parseMedusa(text) {
         const c = lines[j].match(/^\d+\)\s+(?:\w+\.)?(\w+)\([^)]*\)\(([^)]*)\)/);
         if (c) sequence.push(`${c[1]}(${c[2].trim()})`);
       }
-      tests.push({ name, status: "broken", sequence });
-    } else tests.push({ name, status: "error", sequence: [], note: `Medusa left the test ${state.toLowerCase()}` });
+      tests.push({ name, ...at, status: "broken", sequence });
+    } else tests.push({ name, ...at, status: "error", sequence: [], note: `Medusa left the test ${state.toLowerCase()}` });
   }
   if (!tests.length) throw new Error("Medusa report lists no tests");
   return { tests };
@@ -169,21 +191,31 @@ export function parseMedusa(text) {
 
 const PARSE = { Echidna: parseEchidna, Medusa: parseMedusa };
 
-// Run one engine. Never throws. Returns { engine, ok, reason, tests }.
+// Run one engine. Never throws. Returns { engine, ok, reason, tests, timedOut? }.
 async function runEngine(engine, ws, { fuzzSecs, testLimit, timeoutMs }) {
   const cfg = engine === "Echidna" ? echidnaCfg({ fuzzSecs, testLimit }) : medusaCfg({ fuzzSecs, testLimit });
   const secs = Math.max(1, Math.floor(timeoutMs / 1000) - 5);
   const r = await runTool({ image: IMAGE, cmd: ["sh", "-c", scanCmd(engine, secs)], ws, timeoutMs, env: { CFG: cfg }, maxBuffer: 16 * 1024 * 1024 });
-  const fail = (reason) => ({ engine, ok: false, reason, tests: [] });
-  if (r.timedOut || r.stderr.includes(KILLED)) return fail(`${engine} timed out after ${Math.round(timeoutMs / 1000)}s`);
+  const fail = (reason) => ({ engine, ok: false, reason, tests: [], timedOut: Boolean(r.timedOut) });
+  if (r.timedOut) return fail(`${engine} timed out after ${Math.round(timeoutMs / 1000)}s`);
+  // SIGKILL (137) is our time limit or the 2g memory limit; we cannot tell which.
+  if (r.stderr.includes(KILLED)) return fail(`${engine} was killed after at most ${secs}s (time limit or out of memory)`);
   if (/unable to find image|no such image|pull access denied/i.test(r.stderr)) return fail(`image ${IMAGE} not built (spike/packs/contracts/images/build.sh chimera)`);
+  let tests;
   try {
-    return { engine, ok: true, reason: null, tests: PARSE[engine](r.stdout).tests };
+    tests = PARSE[engine](r.stdout).tests;
   } catch {
     const log = `${r.stdout.slice(-4000)}\n${r.stderr}`;
     if (/not found in the compilation artifacts|compil\w* (error|fail)|Error \(\d+\)|ParserError|DeclarationError|TypeError|not found: File/i.test(log)) return fail(`the Chimera suite did not build for ${engine}`);
-    return fail(r.stderr.includes(NO_REPORT) ? `${engine} wrote no report` : `${engine} output could not be read`);
+    if (r.stderr.includes(NO_REPORT)) return fail(`${engine} wrote no report`);
+    if (r.code !== 0 && r.code !== FAIL_RC[engine]) return fail(`${engine} exited with code ${r.code}`);
+    return fail(`${engine} output could not be read`);
   }
+  // Accept only the documented pairs: 0 with no broken test, FAIL_RC with one.
+  const broken = tests.some((t) => t.status === "broken");
+  const want = broken ? FAIL_RC[engine] : 0;
+  if (r.code !== want) return fail(`${engine} exited with code ${r.code}, but its report ${broken ? "has a broken test (expected " : "has no broken test (expected "}${want})`);
+  return { engine, ok: true, reason: null, tests };
 }
 
 // Run the project's Chimera suite under Echidna and Medusa. Never throws.
@@ -203,10 +235,28 @@ export async function chimeraScan(ws, { fuzzSecs = 60, testLimit = 50_000, timeo
 
   const engines = await Promise.all(["Echidna", "Medusa"].map((e) => runEngine(e, ws, { fuzzSecs, testLimit, timeoutMs })));
   const ran = engines.filter((e) => e.ok);
-  const engineView = engines.map((e) => ({ engine: e.engine, status: e.ok ? "ran" : "unavailable", reason: e.reason }));
+  const engineView = engines.map((e) => ({ engine: e.engine, status: e.ok ? "ran" : "unavailable", reason: e.reason, ...(e.timedOut ? { timedOut: true } : {}) }));
   if (!ran.length) return down(engines.map((e) => e.reason).join("; "), engineView);
 
   const gaps = engines.filter((e) => !e.ok).map((e) => ({ suite, engine: e.engine, reason: e.reason }));
+  // Bind the report to this suite. A test on another contract, or one whose
+  // function is not declared under the suite's folder, is a gap, never a lead.
+  // Each property_ function declared there that an engine did not report is a
+  // gap for that engine.
+  const known = declared(join(ws, dirname(suite)));
+  const props = [...known].filter((n) => n.startsWith("property_"));
+  const dropped = [];
+  for (const e of ran) {
+    e.tests = e.tests.filter((t) => {
+      const fn = t.name.replace(/\(.*$/, "");
+      if ((t.contract ?? ENTRY) === ENTRY && known.has(fn)) return true;
+      dropped.push(`${e.engine}: ${t.contract ? `${t.contract}.` : ""}${t.name}`);
+      gaps.push({ suite, engine: e.engine, name: t.name, reason: `${e.engine} reported a test that is not in this suite` });
+      return false;
+    });
+    const seen = new Set(e.tests.map((t) => t.name.replace(/\(.*$/, "")));
+    for (const p of props) if (!seen.has(p)) gaps.push({ suite, engine: e.engine, name: `${p}()`, reason: `${e.engine} reported no result for this property` });
+  }
   // Merge per test: broken by any engine wins; an error is a gap.
   const byName = new Map();
   for (const e of ran) {
@@ -247,7 +297,20 @@ export async function chimeraScan(ws, { fuzzSecs = 60, testLimit = 50_000, timeo
       description: `${x.brokenBy.join(" and ")} broke ${x.name} in the Chimera suite ${suite} after: ${sequence.join(" -> ") || "(no sequence reported)"}.`,
     };
   });
-  return { tool, available: true, applicable: true, reason: null, suites, engines: engineView, trust, results, gaps, leads };
+  return { tool, available: true, applicable: true, reason: gapSummary(engines, results, props, gaps), suites, engines: engineView, trust, results, gaps, leads, dropped };
+}
+
+// "6 of 12 engine checks unchecked (...)", or null with no gap. One engine
+// check is one test under one engine. A test counts as checked under an engine
+// only if that engine ran and reported it broken or passing.
+function gapSummary(engines, results, props, gaps) {
+  if (!gaps.length) return null;
+  const base = (n) => n.replace(/\(.*$/, "");
+  const names = new Set([...results.map((x) => base(x.name)), ...props]);
+  const total = names.size * engines.length;
+  let checked = 0;
+  for (const e of engines) if (e.ok) checked += new Set(e.tests.filter((t) => t.status === "broken" || t.status === "pass").map((t) => base(t.name))).size;
+  return `${total - checked} of ${total} engine checks unchecked (${[...new Set(gaps.map((g) => g.reason))].join("; ")})`;
 }
 
 // The kickoff block for the agent. Empty when Chimera did not apply.
@@ -265,13 +328,15 @@ export function chimeraBrief(scan) {
 }
 
 // The record and event fields the run view reads (prepass-view.mjs).
+// A run where nothing was checked (every check a gap) is "unavailable", not "ran".
 export function chimeraRecord(scan) {
+  const checked = scan.results.filter((x) => x.status === "broken" || x.status === "pass").length;
   return {
     tool: scan.tool,
     engines: [scan.tool],
     runners: scan.engines,
     applicable: scan.applicable,
-    status: scan.available ? "ran" : "unavailable",
+    status: scan.available && (checked > 0 || scan.applicable === false) ? "ran" : "unavailable",
     reason: scan.reason,
     suspects: scan.leads.length,
     gaps: scan.gaps.length,
