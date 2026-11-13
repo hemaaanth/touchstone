@@ -10,6 +10,7 @@
 // put back is still there at the end, so this fails in every file order.
 // Set one in a test file with `useEnv` (./env.ts), which puts it back.
 import { afterAll } from "bun:test"
+import { envLeaks } from "./env"
 
 const GUARDED = ["TOUCHSTONE_", "SPEND_"]
 const touchstone = () =>
@@ -20,11 +21,8 @@ const touchstone = () =>
   )
 const start = touchstone()
 
+// The message names the keys only, never a value (envLeaks).
 afterAll(() => {
-  const end = touchstone()
-  const changed = [...new Set([...Object.keys(start), ...Object.keys(end)])].filter((k) => start[k] !== end[k])
-  if (changed.length) {
-    const what = changed.map((k) => `${k}: ${start[k] ?? "(unset)"} -> ${end[k] ?? "(unset)"}`).join("; ")
-    throw new Error(`a test file changed process env and did not put it back (use useEnv from tests/helpers/env.ts): ${what}`)
-  }
+  const leak = envLeaks(start, touchstone())
+  if (leak) throw new Error(leak)
 })

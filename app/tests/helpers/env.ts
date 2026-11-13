@@ -20,3 +20,15 @@ export function useEnv(vars: Record<string, string | undefined>): void {
   put(vars)
   afterAll(() => put(before))
 }
+
+// What changed between two snapshots of guarded env, for env-guard.ts. It names
+// each key and the kind of change only, never a value: a guarded variable can
+// hold a token, and a path is not needed to find the leak. Null when nothing
+// changed.
+export function envLeaks(start: Record<string, string | undefined>, end: Record<string, string | undefined>): string | null {
+  const keys = [...new Set([...Object.keys(start), ...Object.keys(end)])].sort()
+  const changed = keys.filter((k) => start[k] !== end[k])
+  if (!changed.length) return null
+  const kind = (k: string) => (start[k] === undefined ? "was unset, now set" : end[k] === undefined ? "was set, now unset" : "value changed")
+  return `a test file changed process env and did not put it back (use useEnv from tests/helpers/env.ts): ${changed.map((k) => `${k} (${kind(k)})`).join("; ")}`
+}
