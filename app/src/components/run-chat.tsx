@@ -8,8 +8,7 @@ import {
 } from "@assistant-ui/react"
 import { Archive, ArchiveRestore, ChevronLeft, MoreHorizontal, Trash2, Loader2, X } from "lucide-react"
 import type { Finding, RunSummary } from "@/lib/types"
-import { isRunningNow, reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
-import { startProgress } from "@/lib/startup"
+import { reloadRun, threadSteps, useRun, type RunState } from "@/lib/runModel"
 import { steerRun, stopRun, fetchFinding } from "@/lib/api"
 import { awaitingReply, messageId, settleSent, type Sent } from "@/lib/sent"
 import { runTitle } from "@/lib/format"
@@ -20,7 +19,8 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 import { ResizeHandle, useStoredWidth } from "@/components/resize-handle"
 import { ArtifactPane } from "@/components/assistant-ui/elements/artifact-pane"
 import { Thread } from "@/components/run-thread"
-import { buildMessages, OpenArtifact, waitingMessage } from "@/components/thread-model"
+import { buildMessages, OpenArtifact, runHeadStatus, runStartView, waitingMessage, type HeadTone } from "@/components/thread-model"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RunPanel, TierTag, type PanelSection } from "@/components/run-panel"
 import {
   AGENT_WORD,
@@ -71,6 +71,10 @@ import {
 // One page in the drawer. A file's version is null until the operator picks
 // one, which means "the latest".
 type DrawerItem = { kind: "agent"; id: string; key?: string } | { kind: "file"; id: string; version: string | null }
+
+// How long a sent copy waits before it shows. Long enough to hide a refused
+// send, short enough to feel instant.
+const HOLD_MS = 180
 
 export function RunChat({
   run,
@@ -179,8 +183,11 @@ export function RunChat({
   // stays in `sent` until the next send prunes it, so this is pure.
   const events = state?.events
   const outcomes = useMemo(() => settleSent(sent, events ?? []), [sent, events])
-  // What the run did before the agent session opened. Read while the thread is empty.
-  const startup = useMemo(() => (events ? startProgress(events) : null), [events])
+  // The run's setup card, from "starting" to the agent session. A stage cannot
+  // keep running once the run stopped or failed.
+  const startLive = live && status !== "error"
+  const prepass = state?.prepass ?? null
+  const start = useMemo(() => (events ? runStartView(events, prepass, startLive) : null), [events, prepass, startLive])
   const settled = useRef(outcomes)
   useEffect(() => {
     settled.current = outcomes
@@ -189,14 +196,29 @@ export function RunChat({
     const composer = runtimeRef.current?.thread.composer
     if (composer && !composer.getState().text) composer.setText(text)
   }
+  // A send that fails fast (spend cap, no saved session) must not flash a
+  // copy and a "Thinking" row that vanish a moment later. So a copy waits a
+  // short moment before it shows, unless the server answered first. The last
+  // error stays until a send succeeds, so it never blinks off and on.
+  const [held, setHeld] = useState<ReadonlySet<string>>(() => new Set())
+  const release = (id: string) =>
+    setHeld((h) => {
+      if (!h.has(id)) return h
+      const next = new Set(h)
+      next.delete(id)
+      return next
+    })
   const send = async (text: string, restore = true) => {
     if (!text || !state || archived) return
-    setSendError(null)
     const id = messageId()
     const base = state.events.length
+    setHeld((h) => new Set(h).add(id))
+    window.setTimeout(() => release(id), HOLD_MS)
     setSent((xs) => [...xs.filter((x) => !settled.current.has(x.id)), { id, text, base, mode: "sending", restore }])
     try {
       const res = await steerRun(run.id, text, id)
+      setSendError(null)
+      release(id)
       setSent((xs) => xs.map((x) => (x.id === id ? { ...x, mode: res.followUp ? "follow-up" : "steer" } : x)))
       if (res.followUp) reloadRun(run.id)
     } catch (err) {
@@ -243,7 +265,7 @@ export function RunChat({
     const ms = buildMessages(state, mainSteps, status, live, fleet, null)
     // The local copies trail the thread until their echoes land. While the
     // agent owes an answer, a waiting row stands where the answer will go.
-    const copies = sent.filter((x) => !outcomes.has(x.id))
+    const copies = sent.filter((x) => !outcomes.has(x.id) && !held.has(x.id))
     const wait = state ? awaitingReply(mainSteps, live, null, copies) : null
     if (state && wait?.after === "steps") ms.push(waitingMessage(state, wait.id, fleet, null))
     for (const x of copies) {
@@ -256,7 +278,7 @@ export function RunChat({
     }
     if (state && wait?.after === "copies") ms.push(waitingMessage(state, wait.id, fleet, null))
     return ms
-  }, [state, mainSteps, status, live, fleet, sent, outcomes])
+  }, [state, mainSteps, status, live, fleet, sent, outcomes, held])
 
   // assistant-ui blocks Send while a run is live unless the runtime has a
   // queue. The server is the queue here: a message to a live run steers it, and
@@ -454,10 +476,8 @@ export function RunChat({
             <div ref={mainRef} inert={drawerOpen} className="flex min-h-0 flex-1 flex-col">
               <AssistantRuntimeProvider runtime={runtime}>
                 <Thread
-                  empty={messages.length === 0}
-                  prepass={state?.prepass ?? null}
-                  startup={startup}
-                  live={live}
+                  prepass={prepass}
+                  start={start}
                   error={status === "error" ? state?.error ?? null : null}
                   errorInfo={status === "error" ? state?.errorInfo ?? null : null}
                   coverage={status === "recorded" ? state?.coverage ?? null : null}
@@ -543,7 +563,6 @@ export function RunChat({
                         <AssistantRuntimeProvider runtime={peekRuntime}>
                           <Thread
                             key={top.id}
-                            empty={peekMessages.length === 0}
                             prepass={null}
                             error={null}
                             errorInfo={null}
@@ -601,29 +620,42 @@ function RunHeader({
   title: React.ReactNode
   actions: React.ReactNode
 }) {
-  const running = isRunningNow(state, status)
-  // A stop is the newest fact about the run, so it wins over an older failure.
-  const stopped = !!state?.stopped
-  const failed = status === "error" && !stopped
-  const word = running ? "Running" : stopped ? "Stopped" : failed ? "Failed" : "Done"
+  // The dot is the status. The word lives in its tooltip and its accessible
+  // name, so the title never moves when the status changes.
+  const head = runHeadStatus(state, status)
   return (
     <header className="flex h-12 shrink-0 items-center gap-2.5 border-b px-5 pe-2 max-md:px-3">
       <SidebarTrigger className="-ml-1 md:hidden" />
-      <span
-        className={cn(
-          "size-[7px] shrink-0 rounded-full max-md:mt-[13px] max-md:self-start",
-          dotClass(running ? "working" : failed ? "failed" : "done"),
-        )}
-      />
-      {/* On a phone the status goes under the title. */}
-      <div className="flex min-w-0 items-baseline gap-2.5 max-md:flex-col max-md:items-stretch max-md:gap-0">
-        {title}
-        <span className="shrink-0 text-xs text-muted-foreground">{word}</span>
-      </div>
+      <TooltipProvider delay={300}>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label={`Status: ${head.word}`}
+                className="-m-1.5 flex size-[19px] shrink-0 items-center justify-center"
+              />
+            }
+          >
+            <span aria-hidden className={cn("size-[7px] rounded-full", HEAD_DOT[head.tone])} />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{head.word}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <div className="flex min-w-0 items-baseline">{title}</div>
       <span className="ml-auto" />
       {actions}
     </header>
   )
+}
+
+// The top bar's dot, one tone per state. Green only for a proven run; a live
+// run pulses, and stops pulsing when reduced motion is on.
+const HEAD_DOT: Record<HeadTone, string> = {
+  working: "bg-muted-foreground animate-pulse motion-reduce:animate-none",
+  proven: "bg-ok",
+  failed: "bg-bad",
+  neutral: "bg-muted-foreground/45",
 }
 
 // "‹ Name": back to the drawer page this one was opened from.

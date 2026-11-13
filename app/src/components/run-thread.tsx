@@ -13,33 +13,29 @@ import {
   ArrowDown,
   Brain,
   ChevronRight,
-  CircleX,
   FileCode2,
   GitBranch,
   Network,
   Play,
-  Shield,
-  ShieldCheck,
   ShieldX,
   TerminalSquare,
-  Loader2,
   TriangleAlert,
   CreditCard,
   Gauge,
   CloudOff,
   Scissors,
   FolderX,
-  RefreshCw,
   Square,
 } from "lucide-react"
 import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
 import type { ContextUse } from "@/components/fleet-view"
-import { PrepassFold } from "@/components/prepass"
-import { StartProgress } from "@/components/assistant-ui/elements/start-progress"
-import type { StartProgress as StartProgressModel } from "@/lib/startup"
+import { PrepassDetail } from "@/components/prepass"
+import { RunStart } from "@/components/assistant-ui/elements/start-progress"
+import { ErrorState } from "@/components/assistant-ui/elements/error-state"
+import { ToolError } from "@/components/assistant-ui/elements/tool-error"
+import { ProofMark, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import type { RunFailure, Step } from "@/lib/runModel"
-import { INK, severityTone } from "@/lib/format"
 import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
@@ -50,7 +46,7 @@ import { Markdown } from "@/components/markdown"
 import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
 import { agentName, dotClass, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
-import { OpenArtifact, type CardState } from "@/components/thread-model"
+import { OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -76,16 +72,9 @@ const ERROR_ICON: Record<RunFailure["kind"], typeof TriangleAlert> = {
   unknown: TriangleAlert,
 }
 
-// One sentence as the card shows it: a capital first letter and an end mark.
 // The server's plain reasons ("the server restarted during this run, so it
-// stopped") are lower case with no period.
-function sentence(text: string): string {
-  const t = text.trim()
-  if (!t) return t
-  const s = t[0].toUpperCase() + t.slice(1)
-  return /[.!?]$/.test(s) ? s : `${s}.`
-}
-
+// stopped") are lower case with no period. `sentence` gives them a capital and
+// an end mark.
 const same = (a: string, b: string) => sentence(a).toLowerCase() === sentence(b).toLowerCase()
 
 // The run failed before it proved anything. This is the one place the operator
@@ -130,57 +119,51 @@ function RunErrorCard({
   const retryable = (info?.retryable ?? true) && !archived && !warning
 
   return (
-    <div className={cn(card, "px-4 py-3.5")}>
-      <Collapsible className="flex gap-3">
-        <Icon className="mt-0.5 size-4 shrink-0 text-warn" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-foreground">{title}</p>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+    <Collapsible>
+      <ErrorState
+        icon={Icon}
+        title={sentence(title).replace(/\.$/, "")}
+        detail={
+          <>
             {sentence(hint)} {warning ? null : cost}
-          </p>
-          {retryable || technical ? (
-            <div className="mt-3 flex items-center gap-3">
-              {retryable ? (
-                <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
-                  {retrying ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                  Run again
-                </Button>
+          </>
+        }
+        onRetry={retryable ? onRetry : undefined}
+        retrying={retrying}
+        retryLabel="Run again"
+        actions={
+          technical ? (
+            <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
+              <ChevronRight className="size-3 transition-transform group-data-[panel-open]:rotate-90" />
+              Technical details
+            </CollapsibleTrigger>
+          ) : null
+        }
+      >
+        {technical ? (
+          <CollapsibleContent>
+            <div className="mt-3 space-y-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              {code ? (
+                <p>
+                  Code <span className="font-mono text-foreground/80">{code}</span>
+                </p>
               ) : null}
-              {technical ? (
-                <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
-                  <ChevronRight className="size-3 transition-transform group-data-[panel-open]:rotate-90" />
-                  Technical details
-                </CollapsibleTrigger>
+              {raw ? (
+                <pre className="max-h-40 overflow-auto font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+                  {raw}
+                </pre>
               ) : null}
             </div>
-          ) : null}
-          {technical ? (
-            <CollapsibleContent>
-              <div className="mt-3 space-y-1.5 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                {code ? (
-                  <p>
-                    Code <span className="font-mono text-foreground/80">{code}</span>
-                  </p>
-                ) : null}
-                {raw ? (
-                  <pre className="max-h-40 overflow-auto font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap">
-                    {raw}
-                  </pre>
-                ) : null}
-              </div>
-            </CollapsibleContent>
-          ) : null}
-        </div>
-      </Collapsible>
-    </div>
+          </CollapsibleContent>
+        ) : null}
+      </ErrorState>
+    </Collapsible>
   )
 }
 
 export function Thread({
-  empty,
   prepass,
-  startup = null,
-  live = true,
+  start = null,
   error,
   errorInfo,
   coverage = null,
@@ -192,13 +175,10 @@ export function Thread({
   to = "the agent",
   readOnly = false,
 }: {
-  empty: boolean
   prepass: PrepassView | null
-  // What the run did before the agent session opened. Shown while the thread
-  // is still empty.
-  startup?: StartProgressModel | null
-  // A worker is running. A stage cannot keep running once this is false.
-  live?: boolean
+  // The run's setup, from "starting" to the agent session. One card at the top
+  // of the thread that stays in place once the agent works.
+  start?: RunStartView | null
   error: string | null
   errorInfo: RunFailure | null
   // A recorded run that did not read its whole scope. Shown as a warning card.
@@ -225,9 +205,9 @@ export function Thread({
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col gap-5 px-5 py-6",
           )}
         >
-          {prepass && !readOnly ? <PrepassFold prepass={prepass} /> : null}
-
-          {empty && !readOnly && startup ? <StartProgress progress={startup} live={live && !error && !errorInfo} /> : null}
+          {start && !readOnly ? (
+            <RunStart {...start}>{prepass ? <PrepassDetail prepass={prepass} /> : null}</RunStart>
+          ) : null}
 
           <ThreadPrimitive.Messages components={{ Message }} />
 
@@ -264,8 +244,9 @@ export function Thread({
 // an action row under it. The operator talks to the coordinator, which passes
 // work on to the agents, or to the one agent of a solo run. While the run works,
 // Send steers it and Stop ends the work. A failed send (spend cap, no saved
-// session) shows one line above the box. An archived run reads as quiet rather
-// than broken.
+// session) shows as one quiet line in the action row's free left side, a place
+// that is always there, so the box never moves. The text stays in the input.
+// An archived run reads as quiet rather than broken.
 function Composer({
   to,
   archived,
@@ -280,7 +261,6 @@ function Composer({
   return (
     <div className="px-5 pt-2 pb-5 max-md:px-3 max-md:pb-3">
       <div className="mx-auto max-w-(--thread-max-width)">
-        {error ? <p className="mb-1.5 px-3 text-xs text-bad">{error}</p> : null}
         <ComposerPrimitive.Root
           className={cn(
             "flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border border-foreground/10 bg-(--composer-bg) p-(--composer-padding)",
@@ -297,9 +277,12 @@ function Composer({
             placeholder={archived ? "This run is archived." : `Message ${to}…`}
             className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 caret-primary outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed md:text-sm"
           />
-          <div className="relative flex items-center justify-between">
-            {context ? <ContextRing use={context} /> : <span />}
-            <div className="flex items-center gap-1.5">
+          <div className="relative flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              {context ? <ContextRing use={context} /> : null}
+              {error ? <ErrorState compact title="Message not sent" detail={sentence(error)} /> : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
               <AuiIf condition={(s) => s.thread.isRunning}>
                 <ComposerPrimitive.Cancel asChild>
                   <Button size="icon" variant="outline" className="size-7 rounded-full" aria-label="Stop">
@@ -495,8 +478,6 @@ function MessageCard({ step }: { step: Step }) {
 }
 
 const fleetRow = "flex max-w-160 items-center gap-2.5 rounded-[10px] border bg-background px-3 py-2.5"
-const quietButton =
-  "rounded-md border border-foreground/15 bg-background px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
 
 // Fleet: the coordinator started agents. A run of spawns folds into one row
 // that names the first two. A name opens that agent's peek. "+N" or the
@@ -565,8 +546,9 @@ function SpawnRow({ steps }: { steps: Step[] }) {
   )
 }
 
-// Fleet: a child agent stopped with an error. Retry and Reassign send a plain
-// operator message to the coordinator, the same as typing it. Nothing else.
+// Fleet: a child agent stopped with an error, as a tool-error row. Retry and
+// Reassign send a plain operator message to the coordinator, the same as
+// typing it. Nothing else. Amber, not red: an agent error is not a finding.
 function AgentErrorRow({ step }: { step: Step }) {
   const fleet = useContext(FleetContext)
   const [busy, setBusy] = useState(false)
@@ -579,37 +561,19 @@ function AgentErrorRow({ step }: { step: Step }) {
     setBusy(true)
     fleet.steer(text).finally(() => setBusy(false))
   }
-  const off = busy || !fleet.canSteer
   return (
-    <div data-step-key={step.key} className={fleetRow}>
-      <CircleX className="size-3.5 shrink-0 text-bad" />
-      <div className="flex min-w-0 flex-1 items-baseline gap-2 max-sm:flex-col max-sm:gap-0.5">
-        <button
-          type="button"
-          onClick={() => id && fleet.openPeek(id)}
-          className="shrink-0 rounded-sm text-[13px] font-medium outline-none hover:underline"
-        >
-          {name} failed
-        </button>
-        <span className="min-w-0 truncate text-xs text-muted-foreground max-sm:max-w-full">
-          {step.label}
-          {age ? ` · ${age}` : ""}
-        </span>
-      </div>
-      <div className="ml-auto flex shrink-0 items-center gap-1.5">
-        <button type="button" className={quietButton} disabled={off} onClick={() => send(`Retry ${name}.`)}>
-          Retry
-        </button>
-        <button
-          type="button"
-          className={quietButton}
-          disabled={off}
-          onClick={() => send(task ? `Reassign ${name}'s task: ${task}` : `Reassign ${name}'s task.`)}
-        >
-          Reassign
-        </button>
-      </div>
-    </div>
+    <ToolError
+      data-step-key={step.key}
+      name={`${name} stopped`}
+      onName={id ? () => fleet.openPeek(id) : undefined}
+      target={age || undefined}
+      message={sentence(step.label)}
+      retrying={busy}
+      disabled={!fleet.canSteer}
+      onRetry={() => send(`Retry ${name}.`)}
+      onSkip={() => send(task ? `Reassign ${name}'s task: ${task}` : `Reassign ${name}'s task.`)}
+      skipLabel="Reassign"
+    />
   )
 }
 
@@ -895,15 +859,13 @@ function FindingCard({
   const openArtifact = useContext(OpenArtifact)
   const proven = state === "proven"
   const clickable = proven && !!proofArtifactId
-  const sevInk = proven ? INK[severityTone(pending.severity)] : "text-muted-foreground"
   const m = CARD_MARK[state]
   const body = (
     <>
       <div className="px-4 pt-3.5 pb-3">
         <div className="flex items-center gap-2 text-[11px] font-medium tracking-wide uppercase">
           <span className="text-muted-foreground">Finding</span>
-          <span aria-hidden className="text-muted-foreground/50">·</span>
-          <span className={sevInk}>{pending.severity}</span>
+          <SeverityMark severity={pending.severity} proven={proven} />
           <StatusMark className="ml-auto tracking-normal normal-case" mark={m.mark} word={m.word} />
         </div>
         <p className="mt-1.5 text-[15px] leading-snug font-semibold text-pretty">{pending.title}</p>
@@ -954,24 +916,17 @@ function FindingRow({
 }) {
   const openArtifact = useContext(OpenArtifact)
   const proven = state === "proven"
-  const m = CARD_MARK[state]
   const note = proven ? `Reproduced on oracle replay${pending.poc ? ` · ${pending.poc}` : ""}` : CARD_NOTE[proofKind][state]
-  const Icon = proven ? ShieldCheck : Shield
+  // One text label at most: the title. The proof state is the leading icon and
+  // the severity is the bars on the right, each with a tooltip and a name.
   const body = (
     <>
-      <Icon className={cn("size-3.5 shrink-0", proven ? "text-ok" : "text-muted-foreground")} />
+      <ProofMark state={state} tip={CARD_NOTE[proofKind][state]} className="mt-0.5 self-start" />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
         <span className="text-[13px] leading-[18px] font-medium text-pretty">{pending.title}</span>
         <span className="truncate text-xs text-muted-foreground">{note}</span>
       </span>
-      <span className="ml-auto flex shrink-0 items-center gap-2">
-        <span className={cn("text-xs capitalize", proven ? "text-warn" : "text-muted-foreground")}>{pending.severity}</span>
-        {proven ? (
-          <span className="rounded-full bg-ok/10 px-2 py-0.5 text-xs font-medium text-ok">Proven</span>
-        ) : (
-          <StatusMark mark={m.mark} word={m.word} />
-        )}
-      </span>
+      <SeverityMark severity={pending.severity} proven={proven} className="ml-auto" />
     </>
   )
   if (proven && proofArtifactId)
