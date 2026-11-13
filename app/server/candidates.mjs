@@ -1,0 +1,70 @@
+// Candidates in the run record. A candidate is an agent-asserted, unproven
+// record: the agent ran a real attempt and saw harm, but the pack's proof
+// model does not cover it. It waits for human review.
+//
+// The engine emits one `candidate-submitted` event per candidate, with the
+// whole record. The server keeps them on `run.candidates`, writes them to the
+// run record as `result.candidates`, and reads them back from the saved event
+// stream on reload. A candidate is never a finding: it is not in `submitted`,
+// `pending`, `findingIds`, the run status or `result.findings`.
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { makeCandidate, priorCandidate } from "../../spike/lib/candidate.mjs"
+
+// The one shape the server stores and sends. makeCandidate sets the fixed
+// fields, so no input can make a candidate proven. The engine already cut the
+// evidence to size; cutting it again would rewrite its "[cut N]" notes.
+export function normalizeCandidate(c) {
+  const { evidence = null, ...rest } = c ?? {}
+  return { ...makeCandidate({ ...rest, evidence: null }), evidence }
+}
+
+// The candidates in an event list, in submit order, one per poc.
+export function candidatesOf(events) {
+  const out = []
+  for (const e of events ?? []) addCandidate(out, e)
+  return out
+}
+
+// Add the candidate an event carries, if it is a new one. Returns true if added.
+export function addCandidate(list, e) {
+  if (e?.ev !== "candidate-submitted" || !e.candidate) return false
+  const c = normalizeCandidate(e.candidate)
+  if (list.some((x) => x.poc === c.poc)) return false
+  list.push(c)
+  return true
+}
+
+// Track one engine event on the live run.
+export function trackCandidate(run, e) {
+  run.candidates ??= []
+  return addCandidate(run.candidates, e)
+}
+
+// What a follow-up worker gets, so its cap, numbering and guards count the
+// candidates the run already holds.
+export function priorCandidatesEnv(run) {
+  return JSON.stringify((run.candidates ?? []).map(priorCandidate))
+}
+
+// The candidates field of the run record.
+export const recordCandidates = (run) => (run.candidates ?? []).map(normalizeCandidate)
+
+// Write the run's candidates into an existing run record, leaving every
+// other field as it is. Returns false if there is no record yet.
+export function writeCandidates(file, run) {
+  if (!existsSync(file)) return false
+  const rec = JSON.parse(readFileSync(file, "utf8"))
+  rec.result = { ...(rec.result ?? {}), candidates: recordCandidates(run) }
+  writeFileSync(file, JSON.stringify(rec, null, 2))
+  return true
+}
+
+// For an older run with no saved stream: the candidate events its record
+// holds that the engine events do not already have.
+export function candidateEvents(result, have, t) {
+  const seen = candidatesOf(have)
+  return (result?.candidates ?? [])
+    .map(normalizeCandidate)
+    .filter((c) => !seen.some((x) => x.poc === c.poc))
+    .map((candidate) => ({ t, ev: "candidate-submitted", candidate }))
+}

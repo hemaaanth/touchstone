@@ -34,6 +34,7 @@ import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassView, prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
+import { candidateEvents, candidatesOf, priorCandidatesEnv, recordCandidates, trackCandidate, writeCandidates } from "./candidates.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -331,6 +332,8 @@ function view(run) {
     decision: run.decision,
     findingId: run.status === "recorded" ? (run.findingIds?.[0] ?? null) : null,
     findingIds: run.findingIds ?? [],
+    // Unproven, agent-asserted records for human review. Never findings.
+    candidates: run.candidates ?? [],
     error: run.error,
     // Structured failure for the error card: kind, retryable, real detail, spend
     // and a next step. Null unless the run ended in error.
@@ -583,6 +586,7 @@ function engineEvents(run) {
         calls: (e.summary?.calls ?? []).length,
         summary: e.summary ?? {},
         findings: e.findings ?? [],
+        candidates: e.candidates ?? [],
         usage: e.usage ?? null,
         reports: e.reports ?? [],
       }
@@ -592,6 +596,7 @@ function engineEvents(run) {
       return
     }
     broadcast(run, e)
+    trackCandidate(run, e)
     if (e.ev === "finding-submitted") {
       // The agent proved one more bug and keeps going. Track it, and keep the
       // worst one as the run's headline for the sidebar.
@@ -940,6 +945,7 @@ function followUp(run, text, clientId) {
       FOLLOWUP: text,
       ...(clientId ? { FOLLOWUP_ID: clientId } : {}),
       PRIOR_FOUND: JSON.stringify(prior),
+      PRIOR_CANDIDATES: priorCandidatesEnv(run),
       ATTEMPT_BASE: String(Math.max(-1, ...attempts) + 1),
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -966,6 +972,8 @@ function followUp(run, text, clientId) {
         setRunStatus(run, "no-finding")
         finalize(run)
       }
+      // A reply that added only candidates still updates the record.
+      if (s?.candidates?.length && !writeCandidates(path.join(RESULTS_DIR, `run-${run.id}.json`), run)) persistRun(run, [])
     } catch (err) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: String(err?.message ?? err) })
     } finally {
@@ -1116,6 +1124,9 @@ function persistRun(run, findings) {
     // What the agent submitted. With no recorded finding these are claims
     // that were never proven, so the findings ledger does not read them.
     submitted: (run.submitted ?? []).map(({ title, severity, poc }) => ({ title, severity, poc })),
+    // Unproven, agent-asserted records with their captured evidence. Kept
+    // apart from findings: they never count toward any finding total.
+    candidates: recordCandidates(run),
     decision: recorded ? "approved" : null,
     recorded,
     calls: (summary.calls ?? []).map((c) => c.name),
@@ -1197,6 +1208,7 @@ function rebuildEvents(id, record, engineEvents) {
     evs.push({ t: e.t, ev: "artifact-delta", id: artId, text: call.args.test_source })
     evs.push({ t: e.t, ev: "artifact-done", id: artId })
   }
+  evs.push(...candidateEvents(r, evs, tN))
   evs.push({ t: tN, ev: "status", status: "deciding" })
   // New records list every finding (ids `<runId>.<k>`); an older record has
   // one finding whose id is the run id (see splitRun in findings.mjs).
@@ -1287,6 +1299,7 @@ function savedRun(id, events, mtime) {
     pending: sortFindings(submitted)[0] ?? null,
     submitted,
     findingIds,
+    candidates: candidatesOf(events),
     decision,
     error,
     interrupted,
