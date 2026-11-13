@@ -43,6 +43,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // daytona = true for the images that reach a Daytona sandbox on main today.
 
 export const MANIFEST = [
+  // ---- base (plain images the code and tests run directly) ----
+  { tag: "node:20-slim", group: "base", kind: "pull",
+    ref: "node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0",
+    note: "Web lab recording proxy, reach-confine proxy, jwt token capture." },
+  { tag: "alpine:3.20", group: "base", kind: "pull",
+    ref: "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+    note: "Capture-mode tests; the base of the scorecard and legitify images." },
+
   // ---- contracts (EVM static/dynamic analysis + proof replay) ----
   { tag: "ghcr.io/foundry-rs/foundry:latest", group: "contracts", kind: "pull",
     ref: "ghcr.io/foundry-rs/foundry:latest", daytona: true,
@@ -134,6 +142,12 @@ export const MANIFEST = [
     ref: "drwetter/testssl.sh:3.2@sha256:64bab3c1fd8eee440f68d5e020dd633c1f2d375fe0ae593bdfec2725110a7e29" },
   { tag: "dnsviz/dnsviz", group: "domains", kind: "pull",
     ref: "dnsviz/dnsviz@sha256:5a4c5e8293d591010bd57fb2e79a803865607d72457e74335229130f69265932" },
+  { tag: "coredns/coredns:1.12.0", group: "domains", kind: "pull",
+    ref: "coredns/coredns:1.12.0@sha256:40384aa1f5ea6bfdc77997d243aec73da05f27aed0c5e9d65bfa98933c519d97",
+    note: "The Domains and Phishing labs' DNS server." },
+  { tag: "node:22-alpine", group: "domains", kind: "pull",
+    ref: "node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+    note: "The Domains lab's web server." },
   { tag: "touchstone-observatory:1.7.2", group: "domains", kind: "build", optional: true,
     file: "spike/packs/domains/Dockerfile.observatory", context: "spike/packs/domains",
     note: "Used by the domains smoke test only." },
@@ -188,7 +202,7 @@ export const MANIFEST = [
 
   // ---- strix (its own sandbox; carries a docker client) ----
   { tag: "touchstone/strix:1.7.0", group: "strix", kind: "build",
-    file: "tools/strix/Dockerfile", context: ".", optional: true,
+    file: "spike/tools/strix/Dockerfile", context: "spike", optional: true,
     note: "Carries the Strix CLI + a docker client + the loopback model shim." },
 ];
 
@@ -196,7 +210,13 @@ export const MANIFEST = [
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
-const val = (f) => { const a = argv.find((x) => x.startsWith(f + "=")); return a ? a.slice(f.length + 1) : null; };
+// A value flag takes both forms: `--only=web,contracts` and `--only web,contracts`.
+const val = (f) => {
+  const a = argv.find((x) => x.startsWith(f + "="));
+  if (a) return a.slice(f.length + 1);
+  const i = argv.indexOf(f);
+  return i >= 0 && i + 1 < argv.length && !argv[i + 1].startsWith("--") ? argv[i + 1] : null;
+};
 
 const opt = {
   list: has("--list"),
