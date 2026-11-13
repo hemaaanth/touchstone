@@ -16,6 +16,7 @@ import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool } from "../../lib/wrap.mjs";
+import { classifyCode, isTimeout } from "./toolrun.mjs";
 
 // Built by spike/scripts/build-labs.sh from packs/web/Dockerfile.ffuf.
 export const FFUF_IMAGE = "touchstone/web-ffuf:2.3.0";
@@ -60,41 +61,57 @@ export function parseFfuf(text) {
   return [...byPath.values()];
 }
 
+// True only when `text` is a ffuf report that carries a `results` array. ffuf
+// always writes this file and this key, even for a scan that matched nothing
+// (`results: []`). So a MISSING file, non-JSON, or a JSON object with no
+// `results` array is not a clean "found nothing" -- it is an unparsable report,
+// and the run is treated as a gap, never as clean. (Checklist item 2.)
+export function ffufHasResults(text) {
+  let j;
+  try { j = JSON.parse(text); } catch { return false; }
+  return Boolean(j) && typeof j === "object" && Array.isArray(j.results);
+}
+
 // ---- runner
 
 const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
 
-// Run ffuf against { net, baseUrl } with the shipped wordlist. Always resolves.
-// A tool that fails is reported "unavailable" with its exit code; it never
-// throws. Returns { coverage: [one entry], leads } in scanWeb's shape.
+// Run ffuf against { net, baseUrl } with the shipped wordlist. Always resolves;
+// never throws. Fails closed: a timeout, a non-zero exit, or an exit-0 run that
+// left no parsable report is reported "unavailable" with a reason, never a
+// clean "found nothing". Only an exit-0 run with a real results array is "ran"
+// (possibly with zero leads). Returns { coverage: [one entry], leads }.
 export async function scanFfuf({ net, baseUrl, run = runTool, timeoutMs = 120_000 } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "web-ffuf-"));
   chmodSync(scratch, 0o777);
   cpSync(WORDLIST, join(scratch, "content.txt"));
   try {
     const r = await run({
-      image: FFUF_IMAGE, ws: scratch, network: net, pull: "never", timeoutMs,
+      image: FFUF_IMAGE, ws: scratch, network: net, timeoutMs,
       cmd: [
         "ffuf", "-u", `${baseUrl}/FUZZ`, "-w", "/work/content.txt",
         "-of", "json", "-o", "/work/ffuf.json",
         "-t", "20", "-timeout", "10", "-s", "-noninteractive",
       ],
     });
-    const leads = parseFfuf(read(join(scratch, "ffuf.json")));
-    // ffuf exits 0 on a clean scan. Non-zero AND no parsed leads = it failed:
-    // report it unavailable, never a clean "found nothing".
-    const status = r.code === 0 || leads.length ? "ran" : "unavailable";
+    const text = read(join(scratch, "ffuf.json"));
+    const unavailable = (reason) => ({
+      coverage: [{ engine: "ffuf", status: "unavailable", code: r.code, timedOut: Boolean(r.timedOut), leads: 0, reason: cap(reason, 220) }],
+      leads: [],
+    });
+    // Order matters: a timeout can also carry a non-zero code, so test it first.
+    if (isTimeout(r.code, r.timedOut)) {
+      return unavailable(`ffuf timed out after ~${Math.round(timeoutMs / 1000)}s (exit ${r.code}); no result from a killed scan is trustworthy. ${cap(r.stderr, 120)}`);
+    }
+    if (classifyCode(r.code) !== "ok") {
+      return unavailable(`ffuf exited ${r.code}; it did not complete a scan. ${cap(r.stderr, 140)}`);
+    }
+    if (!ffufHasResults(text)) {
+      return unavailable("ffuf exited 0 but wrote no parsable report (missing file or no results array); a gap, not a clean scan.");
+    }
+    const leads = parseFfuf(text);
     return {
-      coverage: [{
-        engine: "ffuf",
-        status,
-        code: r.code,
-        timedOut: Boolean(r.timedOut),
-        leads: leads.length,
-        ...(status === "unavailable"
-          ? { reason: `ffuf exited ${r.code}${r.timedOut ? " (timed out)" : ""} with no parsable results. ${cap(r.stderr, 160)}` }
-          : {}),
-      }],
+      coverage: [{ engine: "ffuf", status: "ran", code: r.code, timedOut: false, leads: leads.length }],
       leads,
     };
   } finally {

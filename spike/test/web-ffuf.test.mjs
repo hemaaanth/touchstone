@@ -8,9 +8,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseFfuf, scanFfuf, FFUF_IMAGE } from "../packs/web/ffuf.mjs";
+import { parseFfuf, ffufHasResults, scanFfuf, FFUF_IMAGE } from "../packs/web/ffuf.mjs";
 import web from "../packs/web/pack.mjs";
 import { makeWorkspace, cleanupWorkspace } from "../lib/sandbox.mjs";
 
@@ -100,6 +101,113 @@ test("scanFfuf: a timeout is reported unavailable with timedOut set", async () =
   assert.equal(r.coverage[0].status, "unavailable");
   assert.equal(r.coverage[0].timedOut, true);
   assert.match(r.coverage[0].reason, /timed out/);
+});
+
+// The shared runDocker() timeout fix (named container + `docker rm -f`) sets
+// timedOut:true even when the killed client reports a 0 exit. The tool must
+// honor the flag on its own, never read a killed run as a clean scan. (The
+// "container is actually gone" half of checklist item 6 lives in that shared
+// lib/wrap.mjs commit, not here; see this file's note and the final report.)
+test("scanFfuf: timedOut:true alone is unavailable, even with a 0 exit code", async () => {
+  const r = await scanFfuf({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(ffufJson(row("internal/metrics", 200)), 0), // would-be-clean output...
+    // ...but override to flag the timeout the shared kill sets:
+  });
+  assert.equal(r.coverage[0].status, "ran"); // sanity: without the flag it is ran
+  const t = await scanFfuf({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: async ({ ws }) => { writeFileSync(join(ws, "ffuf.json"), ffufJson(row("internal/metrics", 200))); return { code: 0, stdout: "", stderr: "", timedOut: true }; },
+  });
+  assert.equal(t.coverage[0].status, "unavailable");
+  assert.equal(t.leads.length, 0, "a killed run yields no leads even if a partial report was written");
+  assert.match(t.coverage[0].reason, /timed out/);
+});
+
+test("scanFfuf: exit 0 with no results array is a gap, not a clean scan (item 2)", async () => {
+  // ffuf always writes a results array; a report without one, or no file at all,
+  // must not be read as 'found nothing'.
+  for (const body of ['{"success":true}', '{"results":null}', "{}"]) {
+    const r = await scanFfuf({
+      net: "netx", baseUrl: "http://lab:8080",
+      run: mockWrite(body, 0),
+    });
+    assert.equal(r.coverage[0].status, "unavailable", `body ${body}`);
+    assert.equal(r.leads.length, 0);
+    assert.match(r.coverage[0].reason, /no parsable report|results array/);
+  }
+  // No file written at all, exit 0.
+  const none = await scanFfuf({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: async () => ({ code: 0, stdout: "", stderr: "" }),
+  });
+  assert.equal(none.coverage[0].status, "unavailable");
+});
+
+test("scanFfuf: a non-zero exit is unavailable even if a stale report parses (item 1)", async () => {
+  // A run that exits non-zero did not complete; its leftover report is not trusted.
+  const r = await scanFfuf({
+    net: "netx", baseUrl: "http://lab:8080",
+    run: mockWrite(ffufJson(row("internal/metrics", 200)), 2),
+  });
+  assert.equal(r.coverage[0].status, "unavailable");
+  assert.equal(r.coverage[0].code, 2);
+  assert.equal(r.leads.length, 0);
+});
+
+test("ffufHasResults: only a report carrying a results array counts (item 2)", () => {
+  assert.equal(ffufHasResults(ffufJson(row("x", 200))), true);
+  assert.equal(ffufHasResults(JSON.stringify({ results: [] })), true);
+  assert.equal(ffufHasResults('{"success":true}'), false);
+  assert.equal(ffufHasResults('{"results":null}'), false);
+  assert.equal(ffufHasResults(""), false);
+  assert.equal(ffufHasResults("{not json"), false);
+});
+
+// Pin the EXACT Docker argv the runner produces (checklist item 5). scanFfuf
+// picks the image and the network; the shared runTool turns them into the
+// `docker run` argv, where --pull=never now lives. So this runs the REAL runTool
+// (its default `run`) behind a docker PATH shim that records its argv and writes
+// a minimal report, pinning: --pull=never right after `run --rm`, the pinned
+// local image tag, the ffuf command after it, and the named INTERNAL lab network
+// it was handed -- never "bridge"/"host"/"none". A rewire to the internet, a
+// dropped --pull=never, or a changed tag fails this test.
+test("scanFfuf: pins image, --pull=never and the internal lab network in the real docker argv (item 5)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ffuf-argv-"));
+  const record = join(dir, "args");
+  const path = process.env.PATH;
+  try {
+    // Record argv; find the `-v host:/work` mount and write a report there, so
+    // scanFfuf sees an exit-0 run with a parsable (empty) results array.
+    writeFileSync(join(dir, "docker"),
+      '#!/bin/sh\n' +
+      'printf "%s\\n" "$@" > "' + record + '"\n' +
+      'prev=""\nfor a in "$@"; do\n' +
+      '  if [ "$prev" = "-v" ]; then host="${a%%:*}"; printf \'{"results":[]}\' > "$host/ffuf.json"; fi\n' +
+      '  prev="$a"\ndone\nexit 0\n',
+      { mode: 0o755 });
+    process.env.PATH = dir + ":" + path;
+    const r = await scanFfuf({ net: "ts-internal-net", baseUrl: "http://lab:8080" });
+    assert.equal(r.coverage[0].status, "ran");
+  } finally {
+    process.env.PATH = path;
+  }
+  try {
+    const args = readFileSync(record, "utf8").trim().split("\n");
+    assert.deepEqual(args.slice(0, 3), ["run", "--rm", "--pull=never"]);
+    const ni = args.indexOf("--network");
+    assert.ok(ni >= 0, "argv carries --network");
+    assert.equal(args[ni + 1], "ts-internal-net"); // the net it was given
+    assert.notEqual(args[ni + 1], "bridge");
+    assert.notEqual(args[ni + 1], "host");
+    assert.notEqual(args[ni + 1], "none");
+    const ii = args.indexOf(FFUF_IMAGE);
+    assert.ok(ii >= 0, `pinned image ${FFUF_IMAGE} in argv`);
+    assert.equal(FFUF_IMAGE, "touchstone/web-ffuf:2.3.0"); // exact pinned tag
+    assert.equal(args[ii + 1], "ffuf"); // the ffuf command follows the image
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- real run against the lab ----------------------------------------------
