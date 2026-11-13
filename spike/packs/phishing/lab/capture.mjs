@@ -9,10 +9,10 @@ import { captureLookalikes } from '../live.mjs';
 import { pinSnapshot } from '../../../lib/proof-evidence.mjs';
 
 const cfg = JSON.parse(readFileSync(join(LAB, '.touchstone.json'), 'utf8'));
-const lab = startLab();
+const lab = await startLab();
 try {
   await sleep(1500);
   const snapshot = await captureLookalikes({ ws: LAB, domain: cfg.domain, owned: cfg.owned, reach: lab, blocklists: cfg.blocklists, lab: true });
   if (snapshot.coverage[0].status !== 'ran') throw new Error('Capture failed: ' + snapshot.coverage[0].reason);
   console.log('rows', snapshot.dnstwist.rows.length, 'hash', pinSnapshot(LAB, snapshot));
-} finally { lab.stop(); }
+} finally { await lab.stop(); }

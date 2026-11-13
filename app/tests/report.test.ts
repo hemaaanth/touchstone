@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -14,7 +15,7 @@ import { buildReport, buildReplayBundle, renderReportHtml, renderReportMarkdown,
 import { loadRecordedReplay } from "../server/replay-bundle.mjs"
 // @ts-expect-error — plain .mjs module, no types
 import { bundleRefusal, bundleText, evidenceReplay, leakShapes, loadReplayFiles, NOT_PROVEN_REFUSAL, planReplayBundle, provenDate, replayStoreDir, snapshotForgeReplay, storeReplayFiles, vendoredLibs } from "../../spike/lib/replay-bundle.mjs"
-// @ts-expect-error — resolved from spike/node_modules; the app does not depend on ethers
+// Resolved from spike/node_modules (the app does not depend on ethers); ethers ships its own types.
 import { Mnemonic } from "../../spike/node_modules/ethers/lib.esm/index.js"
 
 // A proven forge finding, with a "Fix:" line in its explanation.
@@ -360,6 +361,7 @@ describe("report: replay bundle", () => {
   })
 
   test("vendored forge-std ships byte for byte, the record keeps its hash, and no file in the zip is the cap mark", async () => {
+    // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
     const ws = makeWorkspace(lab)
@@ -451,6 +453,7 @@ describe("report: replay bundle", () => {
   })
 
   test("a library file whose bytes differ from the engine's copy is not vendored, and is redacted", async () => {
+    // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const lab = new URL("../../lab/vault-reentrancy/", import.meta.url).pathname
     const ws = makeWorkspace(lab)
@@ -524,6 +527,7 @@ describe("report: replay bundle", () => {
   })
 
   test("no forge bundle of any lab holds a re-run command or the word re-checked, and the keys bundle reads like the rest", async () => {
+    // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
     const labs = ["lab/vault-accounting", "lab/vault-reentrancy", "lab/vault-shares", "spike/packs/keys/lab", "spike/packs/chain-watch/lab"]
     for (const rel of labs) {
@@ -803,11 +807,12 @@ describe("report: replay bundle", () => {
     const aws = "Rb3Nc6Kd1Fg5Jy0Ts/Ua+Pe2Hq7Lm2Xp9Rt4Vw8Q"
     for (const [detail, shape] of [[`the route returned signer key 0x${hex}`, "a 64-hex key"], [`the route returned aws ${aws}`, "an AWS secret key"]]) {
       const proof = { kind: "http", status: "pass", oracle: { name: "debug-route-signer-key-leak", detail, passed: true }, log: [] }
-      let err: { refused?: boolean; name?: string; message?: string } | null = null
+      type Refusal = { refused?: boolean; name?: string; message?: string }
+      let err: Refusal | null = null
       try {
         buildReplayBundle({ finding: { stages: { proven: true }, title: "leak", proofKind: "http", script: "await request(\"GET\", \"/\");\n", proof }, recorded: { proof, pack: "web" } })
       } catch (e) {
-        err = e as typeof err
+        err = e as Refusal
       }
       expect(err?.refused).toBe(true)
       expect(err?.name).toBe("BundleRefused")
@@ -1031,7 +1036,9 @@ describe("report: replay bundle", () => {
     }
   })()
   ;(forgeReady ? test : test.skip)("a lab bundle's folder is complete enough to compile and pass offline", async () => {
+    // @ts-expect-error — plain .mjs module, no types
     const { makeWorkspace } = await import("../../spike/lib/sandbox.mjs")
+    // @ts-expect-error — plain .mjs module, no types
     const { proveFindings } = await import("../../spike/lib/record.mjs")
     const volume = `touchstone-replay-test-${process.pid}`
     execFileSync("docker", ["volume", "create", volume], { stdio: "ignore" })
