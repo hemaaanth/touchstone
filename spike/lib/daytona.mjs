@@ -109,7 +109,10 @@ export function daytonaOn(env = process.env) {
 // cannot find the image after it. Such a call stays local. So does any
 // `--flag=value` form except `--network=` and `--pull=never`, and a second
 // network flag. `--pull=always` stays local, since the machine would pull.
-const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint", "--name"]);
+// An incoming `--name` is dropped. The remote script names the container
+// itself, and its watchdog kills that name. Docker uses the last `--name`, so
+// a kept one would make the watchdog miss the container on a timeout.
+const VALUE_FLAGS = new Set(["-w", "--user", "-u", "-e", "--memory", "--pids-limit", "--cap-drop", "--security-opt", "--entrypoint"]);
 const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
 
 // The shell guard that runs the container only when the image is there.
@@ -146,6 +149,8 @@ export function planRemote(args, ws, remoteWs) {
       } else {
         out.push(a, spec); // a named volume lives on the machine
       }
+    } else if (a === "--name") {
+      i++;
     } else if (VALUE_FLAGS.has(a)) {
       out.push(a, args[++i]);
     } else if (BARE_FLAGS.has(a)) {

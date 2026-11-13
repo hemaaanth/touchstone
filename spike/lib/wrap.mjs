@@ -53,17 +53,29 @@ export async function runDocker(args, { ws = null, timeoutMs = 180_000, maxBuffe
     if (remote) return remote;
   }
   return new Promise((resolve) => {
-    let expired = false;
-    const timer = name ? setTimeout(() => { expired = true; execFile("docker", ["rm", "-f", name], { timeout: 30_000 }, () => {}); }, timeoutMs) : null;
-    const child = execFile("docker", args, { timeout: timeoutMs, maxBuffer }, (err, stdout, stderr) => {
+    // With a name, a timeout removes the container, and the client then exits
+    // by itself. The client is not killed at timeoutMs: a client killed
+    // during create leaves the daemon to create a container after every
+    // rm -f has run. So rm -f repeats until the client exits. SIGKILL 30 s
+    // later is only the last stop.
+    let expired = false, exited = false, sweep = null;
+    const remove = (done) => execFile("docker", ["rm", "-f", name], { timeout: 30_000 }, () => done());
+    const again = () => remove(() => { if (!exited) sweep = setTimeout(again, 250); });
+    const timer = name ? setTimeout(() => { expired = true; again(); }, timeoutMs) : null;
+    const kill = name ? { timeout: timeoutMs + 30_000, killSignal: "SIGKILL" } : { timeout: timeoutMs };
+    const child = execFile("docker", args, { ...kill, maxBuffer }, (err, stdout, stderr) => {
+      exited = true;
       clearTimeout(timer);
+      clearTimeout(sweep);
       // A removed container can still exit 0. A timeout is never a success.
-      resolve({
+      const done = () => resolve({
         code: expired ? (err && typeof err.code === "number" && err.code ? err.code : 124) : err ? (typeof err.code === "number" ? err.code : 1) : 0,
         stdout: String(stdout ?? ""),
         stderr: String(stderr ?? ""),
         timedOut: expired || Boolean(err?.killed),
       });
+      // One last rm -f, and wait for it, so nothing is left at return.
+      if (expired) remove(done); else done();
     });
     // Optional live tee. The callback still receives the full buffers; this is
     // only so a long engine can report progress before it exits.
