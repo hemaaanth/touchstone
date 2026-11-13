@@ -8,8 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pinSnapshot, replayEvidence } from '../lib/proof-evidence.mjs';
 import { analyzeSnapshot, detectorsFor, domainLeads } from '../packs/domains/checks.mjs';
-import { captureDomain } from '../packs/domains/live.mjs';
 import { startLab } from '../packs/domains/labctl.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-live-tools-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { captureDomain } = await import('../packs/domains/live.mjs');
 let lab, ws, snapshot, leads, snapshotHash;
 before(async () => {
   lab = startLab();

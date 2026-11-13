@@ -7,10 +7,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256 } from '../lib/proof-evidence.mjs';
-import { captureDomain } from '../packs/domains/live.mjs';
 import { CHECKDMARC, emailLeads } from '../packs/domains/email.mjs';
 import { TESTSSL, tlsLeads } from '../packs/domains/tls.mjs';
 import { DNSVIZ } from '../packs/domains/dnssec.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-tool-argv-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { captureDomain } = await import('../packs/domains/live.mjs');
 const FIXTURES = new URL('../packs/domains/fixtures/', import.meta.url).pathname;
 const fixture = name => readFileSync(FIXTURES + name, 'utf8');
 const root = 'example.com';

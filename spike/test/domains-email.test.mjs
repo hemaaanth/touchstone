@@ -7,7 +7,14 @@ import { runTool } from '../lib/wrap.mjs';
 import { pinSnapshot, replayEvidence, sha256 } from '../lib/proof-evidence.mjs';
 import { analyzeSnapshot, detectorsFor, domainLeads } from '../packs/domains/checks.mjs';
 import { CHECKDMARC, checkEmail, emailLeads, parseCheckdmarc } from '../packs/domains/email.mjs';
-import { captureDomain } from '../packs/domains/live.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-email-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { captureDomain } = await import('../packs/domains/live.mjs');
 const fixture = readFileSync(new URL('../packs/domains/fixtures/checkdmarc-example.com.json', import.meta.url), 'utf8');
 const root = 'example.com';
 const evidence = () => parseCheckdmarc(fixture, root);

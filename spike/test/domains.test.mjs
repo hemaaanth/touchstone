@@ -3,9 +3,16 @@ import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import domains from '../packs/domains/pack.mjs';
 import {analyzeSnapshot,domainLeads,detectorsFor} from '../packs/domains/checks.mjs';
 import {pinSnapshot,replayEvidence,loadSnapshot,sha256} from '../lib/proof-evidence.mjs';
+// grant-store reads the console token when it loads (via live.mjs). Point it at test
+// values first, so no real token, grant or scope file is read (1h review F4).
+const tokenStore = mkdtempSync(join(tmpdir(), 'domains-store-'));
+process.env.TOUCHSTONE_GRANT_TOKEN = 'test-token-not-real';
+process.env.TOUCHSTONE_GRANTS_FILE = join(tokenStore, 'grants.json');
+process.env.TOUCHSTONE_SCOPES_FILE = join(tokenStore, 'scopes.json');
+process.on('exit', () => rmSync(tokenStore, { recursive: true, force: true }));
+const { default: domains } = await import('../packs/domains/pack.mjs');
 const snapshot=JSON.parse(readFileSync(new URL('../packs/domains/lab/snapshot.json',import.meta.url),'utf8'));
 let analysis;
 before(async()=>{analysis=await analyzeSnapshot(snapshot);});
