@@ -922,9 +922,7 @@ contract HarmlessBodyTest is Test {
 async function prove(ws, poc, source) {
   const submitted = [{ title: poc, severity: "high", poc, explanation: "x", source }];
   const events = [{ ev: "run_poc-done", passed: true, contract: poc }];
-  // This suite checks the harm gate, not the replay bundle, so skip the
-  // offline re-run verify (it would double each proof's forge run).
-  const [f] = await proveFindings(ws, submitted, events, () => {}, { verifyReplay: null });
+  const [f] = await proveFindings(ws, submitted, events);
   return f;
 }
 
