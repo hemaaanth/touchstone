@@ -17,7 +17,7 @@
 // The parts above the "List pattern" line are the old ones. They stay until
 // every page has moved.
 
-import { Children, isValidElement, useRef, useState } from "react"
+import { Children, isValidElement, useLayoutEffect, useRef, useState } from "react"
 import { Ellipsis, type LucideIcon } from "lucide-react"
 import type { ScopedRun } from "@/lib/catalog"
 import { ago, DOT, runTitle, statusLabel, statusTone } from "@/lib/format"
@@ -309,6 +309,22 @@ export function RowMenu({ label = "More actions", children }: { label?: string; 
 
 export { DropdownMenuItem as RowMenuItem, DropdownMenuSeparator as RowMenuSeparator }
 
+// True while the text in `ref` is cut. It checks again when the box resizes
+// or the text changes.
+function useIsCut(ref: React.RefObject<HTMLSpanElement | null>, text: string) {
+  const [cut, setCut] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setCut(el.scrollWidth > el.clientWidth)
+    check()
+    const watch = new ResizeObserver(check)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [ref, text])
+  return cut
+}
+
 // Text that may not fit. It ends in "…" (or keeps its last characters with
 // `middle`, for a URL, a path or a hash). The full value shows in a tooltip,
 // only when the text is cut. A screen reader always gets the full value.
@@ -329,10 +345,23 @@ export function TruncatedText({
 }) {
   const head = useRef<HTMLSpanElement>(null)
   const cut = useCutTooltip(head)
+  const isCut = useIsCut(head, text)
   const split = middle && text.length > tail * 2
   return (
     <Tooltip open={cut.open} onOpenChange={cut.onOpenChange}>
-      <TooltipTrigger render={<span />} data-slot="truncated-text" className={cn("flex min-w-0", mono && "font-mono text-[0.92em]", className)}>
+      {/* Cut text is a Tab stop, so a keyboard can open the tooltip. Text that
+          fits is not: it has nothing more to show. */}
+      <TooltipTrigger
+        render={<span />}
+        data-slot="truncated-text"
+        data-cut={isCut || undefined}
+        tabIndex={isCut ? 0 : undefined}
+        className={cn(
+          "flex min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          mono && "font-mono text-[0.92em]",
+          className,
+        )}
+      >
         <span ref={head} className="overflow-hidden text-ellipsis whitespace-pre">
           {split ? text.slice(0, -tail) : text}
         </span>

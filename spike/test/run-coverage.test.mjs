@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import * as realChild from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -47,7 +47,15 @@ mock.module("node:child_process", { exports: { ...realChild, default: { ...realC
 const dir = mkdtempSync(path.join(tmpdir(), "run-coverage-"));
 process.env.TOUCHSTONE_RESULTS_DIR = path.join(dir, "results");
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
-after(() => rmSync(dir, { recursive: true, force: true }));
+after(() => {
+  // A run with a session keeps its workspace for a follow-up. Remove those too.
+  const results = process.env.TOUCHSTONE_RESULTS_DIR;
+  for (const f of existsSync(results) ? readdirSync(results) : []) {
+    const ws = f.endsWith(".workspace.json") ? JSON.parse(readFileSync(path.join(results, f), "utf8")).ws : null;
+    if (ws) rmSync(ws, { recursive: true, force: true });
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
 
 const { addScope } = await import("../lib/scopes-store.mjs");
 const { createRun, getRun, stopRun, steerRun } = await import("../../app/server/runs.mjs");
