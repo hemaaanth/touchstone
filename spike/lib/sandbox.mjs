@@ -253,11 +253,42 @@ const run = (args, timeoutMs) =>
     });
   });
 
+// The pinned Foundry image and solc cache volume, so a bundle README can print
+// the exact offline command and the replay verifier can run it.
+export const FOUNDRY_IMAGE = IMG;
+export const FOUNDRY_SVM_VOLUME = SVM_VOLUME;
+
+// The forge invocation forgeTest runs, as one string. matchContract limits to
+// one test contract; solc is a pinned version or "auto" (let forge pick).
+export function forgeTestCmd({ matchContract, solc } = {}) {
+  const use = solc && solc !== "auto" ? `--use ${solc} ` : "";
+  const mc = matchContract ? ` --match-contract ${matchContract}` : "";
+  return `forge test --offline ${use}-vv${mc}`;
+}
+
+// The standalone offline command a human runs from a bundle folder: the same
+// forge invocation inside the pinned image, with $PWD mounted. It is the exact
+// command the replay verifier runs, so the README never claims a different one.
+export function forgeReplayCommand({ matchContract, solc } = {}) {
+  return `docker run --rm --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
+}
+
+// Run once, online, before a replay on a fresh machine: pull nothing (the image
+// is pinned by digest), create the solc cache volume and warm the pinned solc.
+export function forgePrepareCommand({ solc } = {}) {
+  const v = solc && solc !== "auto" ? solc : null;
+  if (!v) return null;
+  return [
+    `docker volume create ${SVM_VOLUME}`,
+    `docker run --rm -u 0 --entrypoint sh -v ${SVM_VOLUME}:/svm ${IMG} -c 'chown 1000:1000 /svm'`,
+    `printf 'pragma solidity ${v}; contract W {}' > W.sol && docker run --rm -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} 'forge build --use ${v} W.sol' && rm -f W.sol`,
+  ].join(" && \\\n  ");
+}
+
 // Run `forge test` on the workspace inside the offline container. matchContract,
 // if given, limits to one test contract. Returns combined output and a pass flag.
 export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {}) {
-  let cmd = `forge test --offline ${solcUse(ws)} -vv`;
-  if (matchContract) cmd += ` --match-contract ${matchContract}`;
+  const cmd = forgeTestCmd({ matchContract, solc: pinnedSolc(ws) });
   const args = [
     "run", "--rm", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,

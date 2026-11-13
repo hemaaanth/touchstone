@@ -13,7 +13,7 @@
 // folder (replay/<sha256>.json); the proof keeps the hash and the paths only.
 // The snapshot never includes a provider key or a bearer token.
 import { proofDelta } from "./proof.mjs";
-import { snapshotForgeReplay, storeReplayFiles } from "./replay-bundle.mjs";
+import { snapshotForgeReplay, storeReplayFiles, verifyForgeReplay } from "./replay-bundle.mjs";
 
 const RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -40,7 +40,10 @@ export function sortFindings(list) {
 // either drained its ETH or wrote its storage). `judge(proof)` lets a pack with a
 // lab model replace the generic verdict with its own (keys, chain-watch).
 // `stateTrace` keeps the large controlTrace on the proof for that judge.
-export async function proveFindings(ws, submitted, events, log = () => {}, { stateTrace = false, judge = null } = {}) {
+// `verifyReplay` re-runs each Foundry proof from its own bundle files on
+// offline forge and stores the verdict; a test injects a stub so the unit
+// path runs no Docker. Pass null to skip the re-run check.
+export async function proveFindings(ws, submitted, events, log = () => {}, { stateTrace = false, judge = null, verifyReplay = verifyForgeReplay } = {}) {
   const out = [];
   for (const f of sortFindings(submitted ?? [])) {
     const forgePassed = events.some((e) => e.ev === "run_poc-done" && e.passed && e.contract === f.poc);
@@ -53,7 +56,20 @@ export async function proveFindings(ws, submitted, events, log = () => {}, { sta
         if (delta) {
           let replay = null;
           try {
-            replay = storeReplayFiles(snapshotForgeReplay(ws, { contract: f.poc, test: delta.test }));
+            const snap = snapshotForgeReplay(ws, { contract: f.poc, test: delta.test });
+            // Re-run the proof from the bundle's own files, offline, before the
+            // workspace is deleted, and store the verdict. The download never
+            // runs Docker; this is the only place the re-run claim is earned.
+            let rerun = null;
+            if (verifyReplay) {
+              try {
+                rerun = await verifyReplay({ replay: snap, proof: { kind: "forge", ...delta } });
+              } catch (err) {
+                log(`replay re-run check for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);
+              }
+            }
+            replay = storeReplayFiles(snap);
+            if (rerun) replay = { ...replay, rerun };
             if (replay?.filesLost) log(`replay snapshot for ${f.poc}: ${replay.filesLost}`);
           } catch (err) {
             log(`replay snapshot failed for ${f.poc}: ${String(err?.message || err).slice(0, 200)}`);

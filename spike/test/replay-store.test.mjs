@@ -29,9 +29,18 @@ test("proveFindings stores the replay files under replay/ and the proof keeps th
   writeFileSync(path.join(ws, "src", "Vault.sol"), "contract Vault { function withdraw() external {} }\n");
   writeFileSync(path.join(ws, "test", "AgentPoc.t.sol"), "contract PocTest { function testDrain() public {} }\n");
   const events = [{ ev: "run_poc-done", passed: true, contract: "PocTest" }];
-  const [f] = await proveFindings(ws, [{ n: 1, title: "drain", severity: "high", poc: "PocTest", source: "contract PocTest {}" }], events);
+  // A stub verifier so this unit path runs no Docker. It receives the snapshot
+  // (with files) and returns a verdict that the record must store on the replay.
+  let sawFiles = false;
+  const verifyReplay = async ({ replay }) => {
+    sawFiles = Array.isArray(replay?.files) && replay.files.length > 0;
+    return { checked: true, pass: true, command: "docker run ... forge test", image: "img@sha256:dead", matchContract: "PocTest", ms: 1200 };
+  };
+  const [f] = await proveFindings(ws, [{ n: 1, title: "drain", severity: "high", poc: "PocTest", source: "contract PocTest {}" }], events, () => {}, { verifyReplay });
   assert.equal(f.pocProved, true);
   const replay = f.proof.replay;
+  assert.equal(sawFiles, true);
+  assert.deepEqual(replay.rerun, { checked: true, pass: true, command: "docker run ... forge test", image: "img@sha256:dead", matchContract: "PocTest", ms: 1200 });
   assert.equal(replay.files, undefined);
   assert.equal(replay.version, 3);
   assert.deepEqual([...replay.paths].sort(), ["foundry.toml", "src/Vault.sol", "test/AgentPoc.t.sol"]);
