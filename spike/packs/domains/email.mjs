@@ -10,7 +10,7 @@ const text = value => typeof value === 'string' && value.trim() ? value.trim() :
 // "does not exist" answer; a missing field alone proves nothing.
 const stateOf = part => {
   if (text(part?.record)) return 'present';
-  return /^(?:An? (?:SPF|DMARC) record does not exist\.?|The domain .+ does not exist\.?)$/i.test(text(part?.error) ?? '') ? 'absent' : 'unread';
+  return /^(?:An? (?:SPF|DMARC) record does not exist(?: for this domain or its parent domains)?\.?|The domain .+ does not exist\.?)$/i.test(text(part?.error) ?? '') ? 'absent' : 'unread';
 };
 
 // One checkdmarc JSON result to the snapshot's email evidence.

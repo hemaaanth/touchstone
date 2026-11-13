@@ -49,6 +49,17 @@ test('a timeout text is unread, only the tool\'s exact absence text is absent', 
   assert.deepEqual(checks, ['email-auth-evidence-missing', 'email-dmarc-missing']);
 });
 
+// M-B: checkdmarc 6.0.3 (dmarc.py) adds " for this domain or its parent
+// domains." when the name has three or more labels.
+test('the parent-domains absence text for a three-label name is absent', () => {
+  const name = 'shop.example.co.uk';
+  const email = parseCheckdmarc(JSON.stringify({ domain: name, spf: { record: 'v=spf1 -all', valid: true, parsed: { all: 'fail' }, warnings: [] }, dmarc: { record: null, valid: false, error: 'A DMARC record does not exist for this domain or its parent domains.' } }), name);
+  assert.equal(email.dmarc.state, 'absent');
+  assert.deepEqual(emailLeads({ root: name, email }).map(l => l.check), ['email-dmarc-missing']);
+  // Another tail is still not an absence.
+  assert.equal(parseCheckdmarc(JSON.stringify({ domain: name, dmarc: { error: 'A DMARC record does not exist for some other reason.' } }), name).dmarc.state, 'unread');
+});
+
 test('an answer with no record field is unread, not absent', () => {
   const email = parseCheckdmarc(JSON.stringify({ domain: root }), root);
   assert.equal(email.spf.state, 'unread');
