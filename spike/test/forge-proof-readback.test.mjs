@@ -211,7 +211,9 @@ test("a passing root run_poc does not prove a forge finding the harm gate failed
   }
 })
 
-test("an older forge record with a passing root run_poc and no harm field stays proven", async () => {
+// N3 (B7): a record made before the harm gate has no harm verdict. Harm was
+// not judged, so it is not proven (it reads as a candidate). Its proof stays readable.
+test("an older forge record with a passing root run_poc and no harm field is not proven: harm not judged", async () => {
   const stamp = "zz-forge-readback-0000000000-3"
   const legacy = "contract LegacyExploit is Test { function test_pwn() public { assertTrue(true); } }\n"
   const file = writeRun(stamp, [{
@@ -227,7 +229,7 @@ test("an older forge record with a passing root run_poc and no harm field stays 
   })
   try {
     const found = await getFinding(`${stamp}.1`)
-    assert.equal(found.stages.proven, true)
+    assert.equal(found.stages.proven, false)
     assert.equal(found.proof.pass, true)
     assert.equal(found.proof.testSource, legacy)
   } finally {

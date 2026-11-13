@@ -17,7 +17,7 @@ const http = {
   proven: true,
   proof: {
     kind: "http", status: "pass",
-    oracle: { name: "cross-user-read", detail: "user B's response held user A's email", passed: true },
+    oracle: { name: "bola-wallet-idor", detail: "user B's response held user A's email", passed: true },
     log: [{ label: "B reads A's order", request: { method: "GET", url: "/api/orders/1", headers: { authorization: "Bearer abc123", accept: "json" } }, response: { status: 200, headers: { "content-type": "json" }, body: '{"email":"a@x.test"}' } }],
   },
 }
@@ -28,11 +28,12 @@ const evidence = {
 }
 const forgeOld = { title: "Reentrancy", severity: "high", poc: "Exploit", pocProved: true, proof: { tool: "Foundry", pass: true, transfers: [], logs: [] } }
 
-test("proofKind defaults to forge; isProven reads each kind's own pass", () => {
+test("proofKind defaults to forge; isProven reads each kind's own pass, and harm", () => {
   assert.equal(proofKind(forgeOld), "forge")
   assert.equal(proofKind(http), "http")
   assert.equal(proofKind({ proof: { kind: "weird" } }), "forge")
-  assert.equal(isProven(forgeOld), true)
+  // N3 (B7): an old forge record has no harm verdict, so harm was not judged.
+  assert.equal(isProven(forgeOld), false)
   assert.equal(isProven({ pocProved: false }), false)
   assert.equal(isProven(http), true)
   assert.equal(isProven({ ...http, proof: { ...http.proof, status: "fail" } }), false)
@@ -85,7 +86,8 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
     assert.equal(h.staticScan, null)
     const e = await getFinding(`${stamp}.2`)
     assert.equal(e.proofKind, "evidence")
-    assert.equal(e.stages.proven, true)
+    // N3: an evidence replay repeats a measurement; it is not proof of harm.
+    assert.equal(e.stages.proven, false)
     assert.ok(!JSON.stringify(e).includes("sk-live-123"))
     const f = await getFinding(`${stamp}.3`)
     assert.equal(f.proofKind, "forge")
@@ -96,18 +98,21 @@ test("the app serves a recorded http, evidence and old forge finding", async () 
   }
 })
 
-test("one rule: a finding is proven when its proof passed, for every kind", () => {
+test("one rule: a finding is proven when its proof passed and shows harm, for every kind", () => {
   const [h, e, hFail] = withProven([http, evidence, { ...http, proof: { ...http.proof, status: "fail" } }])
   assert.equal(h.pocProved, true)
   assert.equal(e.pocProved, true)
   assert.equal(hFail.pocProved, false)
   assert.equal(isProven(h), true)
+  // N3: the evidence replay passed (the measurement repeated), but it shows no harm.
+  assert.equal(isProven(e), false)
   // A finding that already has pocProved (Contracts) is returned as is, same object.
   const contracts = { ...forgeOld, pocProved: false }
   const [c] = withProven([contracts])
   assert.equal(c, contracts)
   assert.equal(c.pocProved, false)
   assert.deepEqual(withProven(undefined), [])
-  // An old record saved with pocProved:false still reads proven for a passing evidence proof.
-  assert.equal(isProven({ ...evidence, pocProved: false }), true)
+  // N3: an old record with a passing evidence proof is not proven, whatever pocProved says.
+  assert.equal(isProven({ ...evidence, pocProved: false }), false)
+  assert.equal(isProven({ ...evidence, pocProved: true }), false)
 })

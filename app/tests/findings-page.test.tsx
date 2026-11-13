@@ -51,7 +51,7 @@ const records: Record<string, string> = {
             // KNOWN GAP (server/redact.mjs, not this page): a bare value in prose
             // after the word "token" ("returned token tk_…") matches no rule and
             // stays in the Markdown report. Here the value carries its header.
-            oracle: { name: "token-leak", detail: `the reply held Authorization: Bearer ${TOKEN}` },
+            oracle: { name: "debug-route-signer-key-leak", detail: `the reply held Authorization: Bearer ${TOKEN}` },
             log: [
               {
                 label: "1. GET /debug",
@@ -192,7 +192,7 @@ describe("copied texts (server): built by the report builder and redacted", () =
     expect(body).toContain("State: Proven by a replay.")
     expect(body).toContain("Where: GET http://lab:8080/debug?token=[REDACTED]")
     expect(body).toMatch(/^What is wrong: The debug route answers with Authorization: Bearer \[REDACTED\]/m)
-    expect(body).toContain('How it was proven: An HTTP replay; the oracle "token-leak" fired.')
+    expect(body).toContain('How it was proven: An HTTP replay; the oracle "debug-route-signer-key-leak" fired.')
     expect(body).toContain("Fix hint: remove the route.")
     // A short form: no chat history, no proof record.
     expect(body.split("\n").length).toBeLessThanOrEqual(8)

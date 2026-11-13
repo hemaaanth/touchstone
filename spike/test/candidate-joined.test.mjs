@@ -66,7 +66,7 @@ function stub(id, proved) {
     ],
     prove: async (_ws, found) => {
       proved.push(...found.map((f) => [id, f.poc]));
-      return found.map((f) => ({ ...f, proof: { kind: "http", status: "pass" } }));
+      return found.map((f) => ({ ...f, proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } }));
     },
   };
 }

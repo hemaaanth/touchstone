@@ -53,7 +53,7 @@ describe("bundle-check says what the bundle is, in its README's own first words 
     const proof = {
       kind: "http",
       status: "pass",
-      oracle: { name: "replayed-withdrawal", detail: "the lab accepted the same withdrawal twice", passed: true },
+      oracle: { name: "siwe-nonce-replay", detail: "the lab accepted the same withdrawal twice", passed: true },
       log: [{ label: "1", request: { method: "POST", url: "http://origin:8080/withdraw" }, response: { status: 200, body: { txHash: "0x" + "7d".repeat(32) } } }],
     }
     write("zz-bundle-http", { result: { findingSubmitted: true, recorded: true, pack: "web", findings: [{ title: "withdrawal replay", severity: "high", pocProved: true, script: 'await request("POST", "/withdraw");\n', proof }] } })
@@ -146,7 +146,7 @@ describe("a joined run: each finding's write-up is its own module's call (D3b a)
       result: {
         packs: ["contracts", "web", "domains"],
         findings: [
-          { title: "Web leak", severity: "high", pack: "web", poc: "replay-1", pocProved: true, proof: { kind: "http", status: "pass", oracle: { name: "leak", passed: true }, log: [] } },
+          { title: "Web leak", severity: "high", pack: "web", poc: "replay-1", pocProved: true, proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor", passed: true }, log: [] } },
           { title: "Vault drain", severity: "critical", pack: "contracts", poc: "VaultTest", pocProved: true, proof: { kind: "forge", pass: true, contract: "VaultTest", transfers: [] } },
         ],
       },

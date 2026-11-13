@@ -141,7 +141,7 @@ describe("evidence replay keeps no snapshot text", () => {
     const proof = {
       kind: "http",
       status: "pass",
-      oracle: { name: "replayed-withdrawal", detail: "the lab accepted the same withdrawal twice", passed: true },
+      oracle: { name: "siwe-nonce-replay", detail: "the lab accepted the same withdrawal twice", passed: true },
       log: [{ label: "1", request: { method: "POST", url: "http://origin:8080/withdraw" }, response: { status: 200, body: { txHash } } }],
     }
     const row = { title: "withdrawal replay", severity: "high", pocProved: true, script: 'await request("POST", "/withdraw");\n', proof }

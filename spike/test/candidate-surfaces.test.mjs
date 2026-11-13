@@ -25,7 +25,7 @@ const realPacks = await import("../packs/index.mjs");
 mock.module("../packs/index.mjs", { exports: { ...realPacks, packFor: () => ({
   prepass: async () => ({ record: { pack: "web", coverage: [], leads: [] }, env: {} }),
   teardown: async () => {},
-  prove: async (_ws, found) => found.map((f) => ({ ...f, proof: { kind: "http", status: replay.get(f.poc) ?? "pass" } })),
+  prove: async (_ws, found) => found.map((f) => ({ ...f, proof: { kind: "http", status: replay.get(f.poc) ?? "pass", oracle: { name: "bola-wallet-idor" } } })),
 }) } });
 const workers = [];
 const realChild = await import("node:child_process");

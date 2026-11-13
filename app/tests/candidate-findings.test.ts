@@ -19,7 +19,7 @@ const { getFinding, listFindings } = await import("../server/findings.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")
 
-const proof = { kind: "http", status: "pass", pass: true }
+const proof = { kind: "http", status: "pass", pass: true, oracle: { name: "bola-wallet-idor", passed: true } }
 const candidate = (poc: string) => ({
   n: 1, pack: "web", title: `Candidate ${poc}`, severity: "critical", poc, explanation: "Agent says so.\nFix: x.",
   evidence: { kind: "transcript" }, cites: [], kind: "candidate", candidate: true, assertedBy: "agent", proven: false, provedBy: null,
