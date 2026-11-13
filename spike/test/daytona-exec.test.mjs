@@ -258,6 +258,7 @@ test("closeRun keeps machines Daytona will not delete yet, and retries them late
 // "ok" answers, "fail" returns HTTP 500. warmCode is the solc warm exit code.
 function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
   const log = [];
+  const scripts = [];
   const state = new Map();
   let n = 0;
   const tarDir = mkdtempSync(join(tmpdir(), "dtn-fake-"));
@@ -287,6 +288,7 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
       if (cmd.includes("dockerd")) return json({ exitCode: 0, result: "" });
       if (cmd.includes("base64 -d")) {
         log.push(`run ${id}`);
+        scripts.push(Buffer.from(cmd.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d/)[1], "base64").toString());
         const mode = modes[Number(id.slice(2)) - 1] ?? "ok";
         return mode === "fail" ? new Response("toolbox down", { status: 500 }) : json({ exitCode: 0, result: "" });
       }
@@ -296,7 +298,7 @@ function fakeDaytona({ modes = [], warmCode = 0 } = {}) {
     }
     return new Response("unexpected", { status: 500 });
   };
-  return { fetch, log, state };
+  return { fetch, log, scripts, state };
 }
 
 // Run fn against a fresh copy of daytona.mjs and the fake API.
@@ -340,6 +342,20 @@ async function withFake(opts, fn) {
 }
 
 const ARGS = (ws) => ["run", "--rm", "--network", "none", "-v", `${ws}:/work`, "-w", "/work", "img:1", "true"];
+
+test("the full remote script parses in sh for both image guards (--pull=never and default)", async () => {
+  await withFake({}, async ({ mod, ws, fake }) => {
+    const never = ARGS(ws).toSpliced(2, 0, "--pull=never");
+    assert.equal((await mod.remoteDocker(never, { ws }))?.stdout, "hi");
+    assert.equal((await mod.remoteDocker(ARGS(ws), { ws }))?.stdout, "hi");
+    assert.equal(fake.scripts.length, 2);
+    const [guarded, pulled] = fake.scripts;
+    assert.doesNotMatch(guarded, /docker pull/);
+    assert.match(pulled, /docker pull -q 'img:1'/);
+    // sh -n parses without running. A syntax error exits non-zero and execFileSync throws.
+    for (const script of fake.scripts) execFileSync("sh", ["-n"], { input: script, stdio: ["pipe", "ignore", "pipe"] });
+  });
+});
 
 test("M1: a failed machine is deleted and the call retries once on a new one", async () => {
   await withFake({ modes: ["fail", "ok"] }, async ({ mod, ws, fake, events, sidecar }) => {

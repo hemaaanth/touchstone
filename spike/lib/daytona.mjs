@@ -118,7 +118,7 @@ const BARE_FLAGS = new Set(["--rm", "-i", "-t", "-it", "--init"]);
 export function imageGuard(args, image, dir) {
   const inspect = `docker image inspect ${shq(image)} >/dev/null 2>&1`;
   return args.includes("--pull=never")
-    ? `if ${inspect} then`
+    ? `if ${inspect}; then`
     : `if ${inspect} || docker pull -q ${shq(image)} >${dir}/pull 2>&1; then`;
 }
 
