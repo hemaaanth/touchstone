@@ -734,8 +734,10 @@ async function runOn(m, plan, { wsAbs, remoteWs, timeoutMs, maxBuffer, owner, pu
   const timedOut = files.has("meta/timedout");
   const stdout = clip(files.get("meta/out"), maxBuffer);
   const stderr = clip(files.get("meta/err"), maxBuffer);
+  // Like the local path: output above maxBuffer is cut, and the caller must know.
+  const overflow = [files.get("meta/out"), files.get("meta/err")].some((buf) => (buf ? buf.toString("utf8").length : 0) > maxBuffer);
   // A local timeout reports code 1, so this does too.
-  const result = { code: timedOut ? 1 : code, stdout, stderr, timedOut };
+  const result = { code: timedOut ? 1 : code, stdout, stderr, timedOut, overflow };
   event("exec", { backend: "daytona", sandbox: m.id, image: plan.image, code: result.code, ms: Date.now() - t0, synced: sync.send.length });
   return result;
 }
