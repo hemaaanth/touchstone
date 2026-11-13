@@ -140,10 +140,8 @@ Real holes (work nobody has done yet):
 
 ## Runtime notes
 
-- Daytona: `runTool()` now passes `--pull=never`. The Daytona `planRemote` in
-  `lib/daytona.mjs` does not know that flag yet, so on this branch every tool
-  call stays on local Docker. Two tests in `test/daytona-exec.test.mjs` fail
-  for that reason. The fix (accept `--pull`) is on the pack/domains branch.
+- Daytona: `runTool()` passes `--pull=never`, and the Daytona `planRemote` in
+  `lib/daytona.mjs` accepts it. Both come from main (merge 027be28).
 - The lab CoreDNS image is `coredns/coredns:1.12.0@sha256:40384aa1…`, 90.8 MiB.
   It needs NET_BIND_SERVICE because the binary carries a file capability.
   dnstwist drops every capability. No port is published.
