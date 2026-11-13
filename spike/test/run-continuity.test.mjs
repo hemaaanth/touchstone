@@ -785,7 +785,7 @@ test("safety: a scope store that cannot be read is not a scope that is gone: the
     writeFileSync(store, "{ this is not a list");
     try {
       server = await restart();
-      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2, "the boot leaves the workspace alone") // .touchstone.json and notes.md;
+      assert.equal(holding(a.ws, [TOKEN, ADMIN]).length, 2, "the boot leaves the workspace alone"); // .touchstone.json and notes.md
       assert.equal(kept(a.id).restored, true, "and the mark stays for the next boot");
       const before = spawns.length;
       const refused = (run) => {
