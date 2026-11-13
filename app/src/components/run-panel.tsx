@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Bot, ChevronDown, ChevronRight, Files, Info, MessagesSquare, Shield, ShieldCheck } from "lucide-react"
 import type { AgentNode, ArtifactDoc, BulletinNote, RunMode, Severity } from "@/lib/types"
 import type { RunState } from "@/lib/runModel"
@@ -7,6 +7,8 @@ import { Markdown } from "@/components/markdown"
 import { FileTree } from "@/components/assistant-ui/elements/file-tree"
 import { PLAN_STEP } from "@/lib/catalog"
 import { cardFor, type CardState } from "@/components/thread-model"
+import { Bump } from "@/components/bump"
+import { useAppear } from "@/lib/motion"
 import {
   AGENT_WORD,
   agentName,
@@ -84,14 +86,13 @@ export function RunPanel({
   const noteStatus = held ? `${held} quarantined` : leads ? `${leads} ${leads === 1 ? "lead" : "leads"}` : null
 
   const toggle = (s: PanelSection) => onSection(section === s ? null : s)
+  // The folded line. Each count bumps when it goes up.
   const summary = [
-    showAgents ? plural(agents.length, "agent") : "Solo",
-    showBulletin ? plural(notes.length, "note") : null,
-    plural(found.length, "finding"),
-    plural(docs.length, "file"),
-  ]
-    .filter(Boolean)
-    .join(" · ")
+    showAgents ? counted(agents.length, "agent") : { key: "solo", n: null, word: "Solo" },
+    showBulletin ? counted(notes.length, "note") : null,
+    counted(found.length, "finding"),
+    counted(docs.length, "file"),
+  ].filter((p) => p != null)
 
   return (
     <div
@@ -106,7 +107,20 @@ export function RunPanel({
         aria-expanded={open}
         className="flex shrink-0 items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
-        <span className="min-w-0 truncate tabular-nums">{summary}</span>
+        <span className="min-w-0 truncate tabular-nums">
+          {summary.map(({ key, n, word }, i) => (
+            <span key={key}>
+              {i ? " · " : null}
+              {n != null ? (
+                <>
+                  <Bump n={n} /> {word}
+                </>
+              ) : (
+                word
+              )}
+            </span>
+          ))}
+        </span>
         {(live && active) || writing ? (
           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" />
         ) : null}
@@ -243,13 +257,19 @@ const PILL_WORD: Record<CardState, string> = {
 function statePills(items: PanelFinding[]): Pill[] {
   return PILL_ORDER.map((card) => ({ card, n: items.filter((f) => f.card === card).length }))
     .filter((p) => p.n > 0)
-    .map(({ card, n }) => ({ key: card, text: `${n} ${PILL_WORD[card]}`, title: `${n} ${CARD_WORD[card]}`, ok: card === "proven" }))
+    .map(({ card, n }) => ({ key: card, n, text: PILL_WORD[card], title: `${n} ${CARD_WORD[card]}`, ok: card === "proven" }))
 }
 
-const plural = (n: number, word: string) => `${n} ${n === 1 ? word : `${word}s`}`
+// One count of the folded line, like "3 files". Its number bumps on its own.
+const counted = (n: number, word: string): { key: string; n: number | null; word: string } => ({
+  key: word,
+  n,
+  word: n === 1 ? word : `${word}s`,
+})
 
 interface Pill {
   key: string
+  n: number
   text: string
   title: string
   ok: boolean
@@ -302,7 +322,7 @@ function Section({
                   p.ok ? "bg-ok/10 text-ok" : "bg-foreground/[0.07] text-muted-foreground",
                 )}
               >
-                {p.text}
+                <Bump n={p.n} /> {p.text}
               </span>
             ))}
           </span>
@@ -311,7 +331,19 @@ function Section({
           <span className={cn("ml-auto shrink-0 text-[11px]", bad ? "text-bad" : "text-muted-foreground")}>{status}</span>
         ) : null}
       </button>
-      {expanded ? <div className="min-h-0 overflow-y-auto pb-1">{children}</div> : null}
+      {expanded ? <SectionBody>{children}</SectionBody> : null}
+    </div>
+  )
+}
+
+// An open section's body. It mounts when the section opens, so the rows already
+// there do not animate. Rows added after that ease in.
+function SectionBody({ children }: { children: React.ReactNode }) {
+  const body = useRef<HTMLDivElement>(null)
+  useAppear(body)
+  return (
+    <div ref={body} className="min-h-0 overflow-y-auto pb-1">
+      {children}
     </div>
   )
 }
@@ -319,7 +351,7 @@ function Section({
 function Count({ n }: { n: number }) {
   return (
     <span className="rounded-full bg-foreground/[0.07] px-1.5 py-px text-[11px] leading-[14px] font-medium text-muted-foreground tabular-nums">
-      {n}
+      <Bump n={n} />
     </span>
   )
 }
