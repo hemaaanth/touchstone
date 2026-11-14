@@ -14,6 +14,7 @@
 // never blocks and never ends the run. When the run settles, the engine replays
 // every submitted test once more and records each finding with its own proof.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -28,7 +29,7 @@ import { activeProvider, defaultAlias } from "./lib/providers.mjs";
 import { cleanupWorkspace, makeWorkspace, readTouchstone } from "./lib/sandbox.mjs";
 import { briefChange, getTarget, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, scopeInstructions } from "./lib/targets.mjs";
 import { openReach } from "./lib/reach.mjs";
-import { event, exitAfterEvents } from "./lib/event.mjs";
+import { currentAgent, event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
 import { askHumanTool, answerAsk, disposeAsks } from "./lib/ask.mjs";
@@ -38,7 +39,11 @@ import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
 import { resolveCbmBinary } from "./lib/cbm.mjs";
 import { withProven } from "./lib/proof-view.mjs";
 import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, splitMeasured, supersededBy } from "./lib/candidate.mjs";
-import { roamTools } from "./lib/roam.mjs";
+import { roamTools, pauseRoamShell, resumeRoamShell, closeRoamShell } from "./lib/roam.mjs";
+import { roamBrowserTools, pauseRoamBrowser, resumeRoamBrowser, closeRoamBrowser } from "./lib/roam-browser.mjs";
+import { roamMachine } from "./lib/daytona.mjs";
+import { createRoamControl } from "./lib/roam-control.mjs";
+import { captureSessionArtifacts } from "./lib/session-artifacts.mjs";
 import { EGRESS_ENV, startEgressLog, pullEgressLog } from "./lib/roam-egress.mjs";
 import { sourceCoverage, coverageFailure } from "./lib/source-coverage.mjs";
 import { leadsFrom } from "./lib/leads.mjs";
@@ -66,6 +71,86 @@ mkdirSync(DIR, { recursive: true });
 //   poc     run_poc attempts so far
 //   passed  test contract name -> the exact source that last passed
 //   found   submitted findings, in submit order
+function createRuntimeRoam(db, ws, state, { pack, isAgent }) {
+  const slots = new Map();
+  let disposed = false, disposal;
+  const unavailable = () => new Error("Managed automation is unavailable. Keep human input disabled.");
+  function slotFor(agent) {
+    if (disposed) throw unavailable();
+    if (!slots.has(agent)) slots.set(agent, { machine: Promise.resolve().then(() => roamMachine(ws, agent)), tail: Promise.resolve(), closed: false, failed: false });
+    return slots.get(agent);
+  }
+  const machine = async (_ws, agent) => {
+    const slot = slotFor(agent);
+    const value = await slot.machine;
+    if (disposed || slot.closed || slot.failed) throw unavailable();
+    return value;
+  };
+  const both = (m, browser, shell) => Promise.allSettled([
+    Promise.resolve().then(() => browser(m)), Promise.resolve().then(() => shell(m)),
+  ]);
+  async function closeSlot(slot) {
+    slot.closed = true;
+    return slot.closing ??= (async () => {
+      // A late resume must settle before terminal close, never after it.
+      await slot.tail;
+      const m = await slot.machine;
+      const results = await both(m, closeRoamBrowser, closeRoamShell);
+      if (results.some((r) => r.status !== "fulfilled") || results[0].value?.ok !== true || results[0].value?.closed !== true || results[1].value?.ack !== true || results[1].value?.state !== "closed" || results[1].value?.scope !== "managed-shell") throw unavailable();
+    })();
+  }
+  function operate(agent, paused) {
+    const slot = slotFor(agent);
+    const job = slot.tail.then(async () => {
+      const m = await slot.machine;
+      if (disposed || slot.closed || slot.failed) throw unavailable();
+      const results = await both(m, paused ? pauseRoamBrowser : resumeRoamBrowser, paused ? pauseRoamShell : resumeRoamShell);
+      const [browser, shell] = results.map((r) => r.status === "fulfilled" ? r.value : null);
+      if (results.some((r) => r.status !== "fulfilled") || browser?.ok !== true || browser.paused !== paused || browser.active !== false || browser.closed !== false || browser.failed !== false || shell?.ack !== true || shell.state !== (paused ? "paused" : "active") || shell.scope !== "managed-shell") {
+        slot.failed = true;
+        await both(m, closeRoamBrowser, closeRoamShell);
+        throw unavailable();
+      }
+      if (disposed || slot.closed) throw unavailable();
+    });
+    slot.tail = job.catch(() => {});
+    return job;
+  }
+  const gate = createRoamControl({
+    epoch: process.env.ROAM_CONTROL_EPOCH ?? randomUUID(), isAgent,
+    emit: ({ ev, ...data }) => event(ev, data),
+    remote: {
+      pause: (agent) => operate(agent, true),
+      // Only trusted APP IPC resumes: APP closes the viewer and revokes its grant first.
+      resume: (agent) => operate(agent, false),
+      close: (agent) => slots.has(agent) ? closeSlot(slots.get(agent)) : Promise.resolve(),
+    },
+  });
+  const record = (entry) => recordSession(state, entry);
+  const egress = { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog };
+  const session = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack, state, lookup: sessionLookup(state), poc: SESSION_POC });
+  const tools = [...roamTools(ws, { record, egress, machine }), ...roamBrowserTools(ws, { record, egress, machine }), session].map((tool) => ({
+    ...tool,
+    execute: (args, api, context) => gate.run(currentAgent(), async () => {
+      if (tool === session) {
+        try {
+          const run = /^run-([A-Za-z0-9_-]+)\.sqlite$/.exec(path.basename(db))?.[1];
+          if (!run || !process.env.SESSION_ARTIFACT_DIR) throw unavailable();
+          captureSessionArtifacts(process.env.SESSION_ARTIFACT_DIR, { run, agent: currentAgent(), poc: args.poc, state });
+        } catch { throw new Error("The session snapshot is unavailable. No candidate was submitted."); }
+      }
+      return tool.execute(args, api, context);
+    }),
+  }));
+  return { tools, control: { ...gate, dispose() {
+    if (disposal) return disposal;
+    disposed = true;
+    gate.dispose();
+    disposal = Promise.allSettled([...slots.values()].map(closeSlot));
+    return disposal;
+  } } };
+}
+
 async function openHarness(db, ws, state) {
   try {
     const options = JSON.parse(process.env.ROAM_OPTIONS ?? "[]");
@@ -96,11 +181,11 @@ async function openHarness(db, ws, state) {
   const registry = createRegistry();
   // Always offer the tools, even with FREE_ROAM off, so confined children keep
   // their remove list across workers. Construction opens no machine.
-  const sessionTool = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack: pack.id, state, lookup: sessionLookup(state), poc: SESSION_POC });
-  const offered = [...roamTools(ws, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog } }), sessionTool];
+  let fleet;
+  const { tools: offered, control } = createRuntimeRoam(db, ws, state, { pack: pack.id, isAgent: (id) => fleet?.isRoamAgent(id) === true });
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool] });
+  fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool] });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
@@ -118,11 +203,12 @@ async function openHarness(db, ws, state) {
   }, ctx);
   try {
     const root = await harness.root(ctx, {
-      agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : "") },
+      agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : ""), tools: { remove: offered } },
     });
     await fleet?.attach(harness, ctx);
-    return { harness, root, reports, pack, fleet };
+    return { harness, root, reports, pack, fleet, control };
   } catch (error) {
+    await control.dispose();
     disposeAsks();
     try { await fleet?.close(); } finally { await harness.close(ctx); }
     throw error;
@@ -258,8 +344,12 @@ async function chat({ harness, root, reports, state, fleet, control }) {
 async function child([, , , mode, db, ws]) {
   let opened, completed = false;
   // Preserve immediate stop: a dead parent must not leave model work running.
-  const stop = (code) => {
-    try { opened?.control?.dispose(); disposeAsks(); } finally { process.exit(code); }
+  const stop = async (code) => {
+    try {
+      const closing = opened?.control?.dispose();
+      disposeAsks();
+      await closing;
+    } finally { process.exit(code); }
   };
   process.once("SIGTERM", () => stop(143));
   process.once("SIGINT", () => stop(130));
@@ -267,6 +357,7 @@ async function child([, , , mode, db, ws]) {
   // keep charging or writing the session while a new server recovers it.
   if (process.env.TOUCHSTONE_PARENT_PIPE === "1") {
     process.stdin.on("end", () => stop(1));
+    process.stdin.on("error", () => stop(1));
     process.stdin.resume();
   }
   try {
@@ -308,7 +399,7 @@ async function child([, , , mode, db, ws]) {
     event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
     completed = true;
   } finally {
-    opened?.control?.dispose();
+    await opened?.control?.dispose();
     disposeAsks();
     try { await opened?.fleet?.close(); } finally { await opened?.harness.close(ctx); }
     if (completed) exitAfterEvents(0);
