@@ -21,6 +21,7 @@ import {
 } from "../../spike/lib/providers.mjs"
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
+import { STRIX_DEFAULTS, STRIX_LIMITS, strixSettings, validateStrixSetting } from "../../spike/lib/strix.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
 import { roamSetupView } from "../../spike/lib/daytona-setup.mjs"
 import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
@@ -229,7 +230,35 @@ export function getSettings() {
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
+    modules: { web: { strix: strixState(cfg) } },
   }
+}
+
+// The Web module's Strix limits: the values a scan uses now, where each came
+// from (saved, env or default), and the defaults and bounds for the form.
+function strixState(cfg) {
+  const { source, ...values } = strixSettings(cfg)
+  return { ...values, source, defaults: STRIX_DEFAULTS, limits: STRIX_LIMITS }
+}
+
+// Save the Strix limits. A null or empty value clears the saved one, so the
+// env value or the default applies again. Every value is checked first, so a
+// bad one saves nothing.
+export function setStrixSettings(body = {}) {
+  const next = {}
+  for (const name of Object.keys(STRIX_DEFAULTS)) {
+    if (!(name in body)) continue
+    next[name] = body[name] == null || body[name] === "" ? null : validateStrixSetting(name, body[name])
+  }
+  const cfg = readConfig()
+  const saved = { ...(cfg.modules?.web?.strix ?? {}) }
+  for (const [name, v] of Object.entries(next)) {
+    if (v == null) delete saved[name]
+    else saved[name] = v
+  }
+  cfg.modules = { ...(cfg.modules ?? {}), web: { ...(cfg.modules?.web ?? {}), strix: saved } }
+  writeConfig(cfg)
+  return getSettings()
 }
 
 // Where tool calls run: local Docker (the default) or Daytona sandboxes.

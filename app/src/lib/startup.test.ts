@@ -118,3 +118,19 @@ test("a joined final summary uses full tool totals even when the detail list is 
   assert.equal(p.ran, 30)
   assert.equal(p.partial, false)
 })
+
+test("strix stopped at its turn cap is done, with its leads and the reason", () => {
+  const running = view([{ ev: "web-strix-started", turns: 15 }])
+  const r = running.stages.find((s) => s.key === "strix")!
+  assert.equal(r.state, "running")
+  assert.equal(r.detail, "up to 15 turns")
+  const p = view([
+    { ev: "web-strix-started", turns: 15 },
+    { ev: "web-strix-done", status: "timed-out", leads: 3, reason: "stopped at the 15-turn cap; leads found before that are kept" },
+  ])
+  const s = p.stages.find((st) => st.key === "strix")!
+  assert.equal(s.state, "done")
+  assert.equal(s.detail, "3 leads · stopped at the 15-turn cap")
+  const none = view([{ ev: "web-strix-done", status: "unavailable", leads: 0, reason: "no provider key for strix's model calls" }])
+  assert.equal(none.stages.find((st) => st.key === "strix")!.state, "unavailable")
+})

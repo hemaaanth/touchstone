@@ -781,6 +781,19 @@ export interface SettingsState {
   spend: SpendState
   fallbackPrice: { input: number; output: number }
   setupError?: string | null
+  // Per-module settings. Absent on an older server.
+  modules?: { web?: { strix?: StrixSettings } }
+}
+
+// The Web module's Strix limits. `source` says where each value came from.
+export type StrixSettingName = "turns" | "budgetUsd" | "timeoutMin"
+export interface StrixSettings {
+  turns: number
+  budgetUsd: number
+  timeoutMin: number
+  source: Record<StrixSettingName, "saved" | "env" | "default">
+  defaults: Record<StrixSettingName, number>
+  limits: Record<StrixSettingName, { min: number; max: number; integer?: boolean }>
 }
 
 export interface DiscoveredModel {

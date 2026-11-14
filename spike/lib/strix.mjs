@@ -47,9 +47,56 @@ export const STRIX_IMAGE = "touchstone/strix:1.7.0";
 // The budget is checked after each model response, so a large prompt can
 // overshoot it. Observed on a long DAST target: 25 turns cost about $4.30. Keep
 // the turn count low; that is the real brake.
-export const DEFAULT_BUDGET_USD = Number(process.env.STRIX_BUDGET_USD ?? 0.5);
-const DEFAULT_TURNS = Number(process.env.STRIX_TURNS ?? 15);
-const DEFAULT_TIMEOUT_MS = Number(process.env.STRIX_TIMEOUT_MS ?? 8 * 60_000);
+//
+// The three limits are Web module settings (Modules > Web). A saved setting
+// wins; else STRIX_TURNS / STRIX_BUDGET_USD / STRIX_TIMEOUT_MS; else these.
+export const STRIX_DEFAULTS = { turns: 15, budgetUsd: 0.5, timeoutMin: 8 };
+export const STRIX_LIMITS = {
+  turns: { min: 1, max: 200, integer: true },
+  budgetUsd: { min: 0.01, max: 100 },
+  timeoutMin: { min: 1, max: 120 },
+};
+const STRIX_WORDS = { turns: "The Strix turn cap", budgetUsd: "The Strix budget", timeoutMin: "The Strix time limit" };
+const STRIX_ENV = {
+  turns: () => process.env.STRIX_TURNS,
+  budgetUsd: () => process.env.STRIX_BUDGET_USD,
+  timeoutMin: () => (process.env.STRIX_TIMEOUT_MS == null ? undefined : Number(process.env.STRIX_TIMEOUT_MS) / 60_000),
+};
+
+// One limit, checked. Throws a sentence the console can show.
+export function validateStrixSetting(name, value) {
+  const lim = STRIX_LIMITS[name];
+  if (!lim) throw new Error(`Unknown Strix setting: ${name}.`);
+  const n = Number(value);
+  if (value === "" || value == null || !Number.isFinite(n) || n < lim.min || n > lim.max || (lim.integer && !Number.isInteger(n))) {
+    throw new Error(`${STRIX_WORDS[name]} must be ${lim.integer ? "a whole number" : "a number"} from ${lim.min} to ${lim.max}.`);
+  }
+  return n;
+}
+
+// The limits a scan uses now, and where each came from. `cfg` is the provider
+// config (readConfig()); its `modules.web.strix` holds the saved values. A bad
+// saved or env value falls back to the next source rather than break a run.
+export function strixSettings(cfg = {}) {
+  const saved = cfg?.modules?.web?.strix ?? {};
+  const out = { source: {} };
+  for (const name of Object.keys(STRIX_DEFAULTS)) {
+    out[name] = STRIX_DEFAULTS[name];
+    out.source[name] = "default";
+    for (const [source, raw] of [["saved", saved[name]], ["env", STRIX_ENV[name]()]]) {
+      if (raw == null || raw === "") continue;
+      try {
+        out[name] = validateStrixSetting(name, raw);
+        out.source[name] = source;
+        break;
+      } catch { /* try the next source */ }
+    }
+  }
+  return out;
+}
+
+// The default per-scan budget, for callers that do not pass the settings.
+export const DEFAULT_BUDGET_USD = strixSettings().budgetUsd;
 
 // error/warning/note is all SARIF guarantees; Strix keeps the real label in
 // properties.strix.severity.
@@ -179,7 +226,7 @@ export async function runStrix(opts = {}) {
   }
 }
 
-async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, timeoutMs = DEFAULT_TIMEOUT_MS, emit }) {
+async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, turns = STRIX_DEFAULTS.turns, timeoutMs = STRIX_DEFAULTS.timeoutMin * 60_000, emit }) {
   // Gateways serve model ids LiteLLM cannot price, and without a price
   // --max-budget never fires. Always hand Strix our own per-token prices.
   const ready = await strixReady();
@@ -219,11 +266,11 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, ti
     "--target", baseUrl,
     "--scan-mode", "quick",
     "--max-budget", String(budgetUsd),
-    "--max-turns", String(DEFAULT_TURNS),
+    "--max-turns", String(turns),
     "--instruction",
     `Black-box audit of ${baseUrl}. Report only vulnerabilities with a working PoC. It may not be a SIWE dApp: follow the site's actual surface.`,
   ];
-  emit({ ev: "web-strix-started", baseUrl, budgetUsd });
+  emit({ ev: "web-strix-started", baseUrl, budgetUsd, turns });
 
   const tail = [];
   let seen = 0;
@@ -299,7 +346,7 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, ti
   const reason = broke
     ? (leads.length ? `strix did not finish; the ${leads.length} leads it reported are kept: ${broke}` : `strix did not finish and reported nothing: ${broke}`)
     : status === "unavailable" ? tail.slice(-3).join(" | ")
-    : hitCap ? "stopped at the turn cap; leads found before that are kept" : undefined;
+    : hitCap ? `stopped at the ${turns}-turn cap; leads found before that are kept` : undefined;
   emit({ ev: "web-strix-done", status, leads: leads.length, costUsd: Number(costUsd.toFixed(4)), ...(reason ? { reason } : {}) });
   return { status, leads, reason, timedOut, costUsd, coverage: { engine: "strix", status, leads: leads.length, ...(reason ? { reason } : {}), ...(costUsd ? { costUsd: Number(costUsd.toFixed(4)) } : {}) } };
 }

@@ -1,9 +1,12 @@
-import { useMemo, useRef, useState } from "react"
-import { Boxes, PanelRight } from "lucide-react"
-import type { PackChoice, RunSummary, TargetChoice } from "@/lib/types"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Boxes, Loader2, PanelRight } from "lucide-react"
+import type { PackChoice, RunSummary, StrixSettingName, StrixSettings, TargetChoice } from "@/lib/types"
+import { fetchSettings, setStrixSettings } from "@/lib/api"
 import type { RunBrief } from "@/lib/runModel"
 import { moduleNote, packOf, proofKind, scopedRuns, type CatalogState, type ScopedRun } from "@/lib/catalog"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ModulePill } from "@/components/module-pill"
 import { ScopeIcon } from "@/components/new-run-dialog"
@@ -16,7 +19,8 @@ const modulesOf = (t: TargetChoice) => t.packs ?? [packOf(t)]
 // (GET /api/models `packs`), in its order. A row shows the module's pill, what
 // it tests and how its replay proves a finding. A click on a row opens the
 // rest in a sheet at the right, so the list never moves. Every row has the
-// same parts and the same menu. The page writes nothing.
+// same parts and the same menu. The only thing the page writes is the Web
+// module's Strix limits, in its sheet.
 export function ModulesPage({
   catalog,
   packs,
@@ -132,6 +136,8 @@ function ModuleDetail({
           </section>
         ) : null}
 
+        {p.id === "web" ? <StrixSection /> : null}
+
         <section className="flex flex-col gap-2">
           <Label>Scopes</Label>
           {scopes.length ? (
@@ -159,5 +165,124 @@ function ModuleDetail({
         </section>
       </div>
     </>
+  )
+}
+
+// The three Strix limits, in the order they show.
+const STRIX_FIELDS: { name: StrixSettingName; label: string; unit: string; hint: string }[] = [
+  { name: "turns", label: "Turn cap", unit: "turns", hint: "Strix stops after this many model turns. Leads found before that are kept." },
+  { name: "budgetUsd", label: "Budget per scan", unit: "USD", hint: "The most one Strix scan may spend. It is also cut to what is left of the run budget." },
+  { name: "timeoutMin", label: "Time limit", unit: "minutes", hint: "Strix stops after this long. Leads found before that are kept." },
+]
+
+const SOURCE_WORD = { saved: "Saved", env: "Set by the server", default: "Default" } as const
+
+// The Web module's Strix limits. Strix runs in live mode only, at the same
+// time as the tool scan. Its spend counts against the run budget.
+function StrixSection() {
+  const [state, setState] = useState<StrixSettings | null | "error">(null)
+  useEffect(() => {
+    let live = true
+    fetchSettings().then(
+      (s) => live && setState(s.modules?.web?.strix ?? "error"),
+      () => live && setState("error"),
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return (
+    <section className="flex flex-col gap-2">
+      <Label>Strix</Label>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Live runs only. Strix runs at the same time as the tool scan. Its results are leads, never findings. What it spends counts against the run budget.
+      </p>
+      {state === null ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : state === "error" ? (
+        <p className="text-xs text-muted-foreground">The server did not send the Strix settings.</p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {STRIX_FIELDS.map((f) => (
+            <StrixField key={`${f.name}:${state[f.name]}`} field={f} state={state} onSaved={setState} />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function StrixField({
+  field: f,
+  state,
+  onSaved,
+}: {
+  field: (typeof STRIX_FIELDS)[number]
+  state: StrixSettings
+  onSaved: (s: StrixSettings) => void
+}) {
+  const saved = state[f.name]
+  const limit = state.limits[f.name]
+  const [value, setValue] = useState(String(saved))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const n = Number(value)
+  const valid = value.trim() !== "" && Number.isFinite(n) && n >= limit.min && n <= limit.max && (!limit.integer || Number.isInteger(n))
+  const save = async (next: number | null) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const s = await setStrixSettings({ [f.name]: next })
+      if (s.modules?.web?.strix) onSaved(s.modules.web.strix)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The server did not save it.")
+    } finally {
+      setBusy(false)
+    }
+  }
+  const source = state.source[f.name]
+  return (
+    <li className="flex flex-col gap-1">
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid && n !== saved && !busy) void save(n)
+        }}
+      >
+        <span className="flex-1 text-xs">{f.label}</span>
+        <Input
+          aria-label={`Strix ${f.label.toLowerCase()}, in ${f.unit}`}
+          className="h-8 w-20 text-xs tabular-nums md:text-xs"
+          inputMode={limit.integer ? "numeric" : "decimal"}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          aria-invalid={!valid}
+        />
+        <span className="w-14 text-xs text-muted-foreground">{f.unit}</span>
+        {valid && n !== saved ? (
+          <Button type="submit" variant="outline" size="sm" disabled={busy}>
+            {busy ? <Loader2 className="animate-spin" /> : "Save"}
+          </Button>
+        ) : source === "saved" ? (
+          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void save(null)} title={`Back to ${state.defaults[f.name]} ${f.unit}`}>
+            Reset
+          </Button>
+        ) : null}
+      </form>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        {error ? (
+          <span role="alert">{error}</span>
+        ) : !valid ? (
+          <span role="alert">
+            Enter {limit.integer ? "a whole number " : ""}from {limit.min} to {limit.max}.
+          </span>
+        ) : (
+          <>
+            {f.hint} {SOURCE_WORD[source]}.
+          </>
+        )}
+      </p>
+    </li>
   )
 }

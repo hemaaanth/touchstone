@@ -139,14 +139,19 @@ export function startProgress(events: RunEvent[]): StartProgress {
         detail: `${cov.length ? `${ran} of ${plural(cov.length, "tool")} ran · ` : ""}${plural(num(e.leads) ?? 0, "lead")}`,
       })
     } else if (ev.endsWith("-strix-started")) {
-      put({ key: "strix", label: "Strix is exploring the site", state: "running" })
+      const turns = num(e.turns)
+      put({ key: "strix", label: "Strix is exploring the site", state: "running", detail: turns ? `up to ${plural(turns, "turn")}` : undefined })
     } else if (ev.endsWith("-strix-done")) {
-      const ok = str(e.status) === "ran" || str(e.status) === "ok"
+      // A scan stopped at its turn cap or time limit still ran, and its leads
+      // are kept: it is done, with the stop as a note beside the lead count.
+      const status = str(e.status)
+      const ok = status === "ran" || status === "ok" || status === "timed-out"
+      const stop = status === "timed-out" ? str(e.reason).split(";")[0] || "stopped at its time limit" : ""
       put({
         key: "strix",
         label: "Strix",
         state: ok ? "done" : "unavailable",
-        detail: ok ? plural(num(e.leads) ?? 0, "lead") : str(e.reason) || undefined,
+        detail: ok ? [plural(num(e.leads) ?? 0, "lead"), stop].filter(Boolean).join(" · ") : str(e.reason) || undefined,
       })
     } else if (ev.endsWith("-strix-failed")) {
       put({ key: "strix", label: "Strix", state: "failed", detail: "Strix stopped with an error." })

@@ -716,3 +716,14 @@ test("joined prepass progress identifies completed and failed modules without le
   assert.equal(final.tools.find((t) => t.pack === "web").status, "unavailable");
   assert.ok(!JSON.stringify(final).includes("SECRET"));
 });
+
+test("each module's pre-pass sees the run spend so far, and the total comes back", async () => {
+  const seen = [];
+  const member = (id, spentUsd) => ({ id, title: id, system: () => "", kickoff: () => "", tools: () => [],
+    prepass: async (_ws, opts) => { seen.push(opts.budget); return { env: {}, record: {}, spentUsd }; } });
+  const ws = mkdtempSync(path.join(tmpdir(), "multi-spend-"));
+  roots.push(ws);
+  const prep = await multiPack([member("alpha", 0.3), member("beta", 0.2)]).prepass(ws, { budget: { limitUsd: 2, spentUsd: 0.5 } });
+  assert.deepEqual(seen, [{ limitUsd: 2, spentUsd: 0.5 }, { limitUsd: 2, spentUsd: 0.8 }]);
+  assert.ok(Math.abs(prep.spentUsd - 0.5) < 1e-9, `spent ${prep.spentUsd}`);
+});

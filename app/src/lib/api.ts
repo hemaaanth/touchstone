@@ -9,6 +9,7 @@ import type {
   RunSummary,
   RunView,
   SettingsState,
+  StrixSettingName,
   SpendState,
   TargetChoice,
   PackChoice,
@@ -440,6 +441,11 @@ export function setDefaultModel(provider: string, model: string): Promise<Settin
 
 export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
+}
+
+// The Web module's Strix limits. A null value clears the saved one.
+export function setStrixSettings(body: Partial<Record<StrixSettingName, number | null>>): Promise<SettingsState> {
+  return postJson<SettingsState>("/api/settings/strix", body)
 }
 
 // Where tool calls run. An empty apiUrl or target clears the saved value.

@@ -373,10 +373,15 @@ export function multiPack(members) {
     async prepass(ws, opts = {}) {
       const done = [];
       const failed = [];
+      // Model spend inside a pre-pass (Strix) counts against the run budget.
+      // Each module sees what the modules before it spent.
+      let spentUsd = 0;
       for (const p of members) {
         if (typeof p.prepass !== "function") continue;
         try {
-          const result = (await p.prepass(memberDir(ws, p.id), { ...opts, emit: (ev) => opts.emit?.({ ...ev, pack: p.id }) })) ?? {};
+          const budget = opts.budget ? { ...opts.budget, spentUsd: Number(opts.budget.spentUsd ?? 0) + spentUsd } : undefined;
+          const result = (await p.prepass(memberDir(ws, p.id), { ...opts, budget, emit: (ev) => opts.emit?.({ ...ev, pack: p.id }) })) ?? {};
+          if (result.spentUsd > 0) spentUsd += result.spentUsd;
           done.push([p.id, result]);
           const view = prepassView(result.record);
           if (view) opts.emit?.({ ev: "module-prepass", pack: p.id, ...view });
@@ -401,7 +406,7 @@ export function multiPack(members) {
       // Contracts keeps each of its pre-pass parts at the top, as a one-module
       // run does, so its own panels still find them.
       for (const k of ["static", "fuzz", "symbolic", "chimera"]) if (byPack.contracts?.[k]) record[k] = byPack.contracts[k];
-      return { env, record };
+      return { env, record, spentUsd };
     },
 
     // Each finding goes to its own module's prove(), in that module's workspace.

@@ -461,9 +461,12 @@ async function main() {
   // agent can still audit with no leads. The record keeps the reason.
   let prep = null;
   let prepassError = null;
+  const money = runSpend();
   try {
     prep = await pack.prepass?.(ws, {
       reach,
+      // Strix's spend inside the pre-pass counts against this run's budget.
+      budget: { limitUsd: money.budgetUsd, spentUsd: money.usd },
       emit: (ev) => {
         appendFileSync(env.EVENTS_FILE, JSON.stringify(ev) + "\n");
         console.log("· " + ev.ev + " " + JSON.stringify(ev));
@@ -486,6 +489,8 @@ async function main() {
     // has to be killed or resumed; the run settles on its own.
     console.log(`\n== agent run (${ALIAS}) ==`);
     const runEnv = { ...env, ...(reach?.env ?? {}), ...prep?.env };
+    // The agent worker starts with the pre-pass spend already on its budget.
+    if (prep?.spentUsd > 0) Object.assign(runEnv, { RUN_BUDGET_USD: String(money.budgetUsd), RUN_SPENT_USD: String(money.usd + prep.spentUsd) });
     const first = await runChild("run", db, ws, runEnv);
     all = first.events;
     settled = all.find((e) => e.ev === "settled") ?? null;

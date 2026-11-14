@@ -10,7 +10,7 @@ import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown 
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, setStrixSettings, consoleWriteRefusal } from "./settings.mjs"
 
 import { execConfig } from "../../spike/lib/daytona.mjs"
 import { discoverRoamSnapshots, checkRoamSelection, startRoamSnapshotBuild, startRoamShellTest, reconcileRoamShellTest, reconcileRoamSnapshot, roamSetupView } from "../../spike/lib/daytona-setup.mjs"
@@ -450,6 +450,7 @@ export function handleModels(req, res) {
 //   POST   /api/settings/default           — { provider, model } for new runs
 //   POST   /api/settings/budget            — { budgetUsd } default per-run budget
 //   POST   /api/settings/execution         — { backend, apiKey?, clearKey? } where tools run
+//   POST   /api/settings/strix             — { turns?, budgetUsd?, timeoutMin? } Web module's Strix limits; null clears
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
@@ -480,6 +481,7 @@ export async function handleSettings(req, res) {
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
     if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
     if (parts.length === 3 && route === "POST execution") return send(res, 200, setExecution(await readBody(req))), true
+    if (parts.length === 3 && route === "POST strix") return send(res, 200, setStrixSettings(await readBody(req))), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true

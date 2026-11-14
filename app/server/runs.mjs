@@ -785,10 +785,13 @@ function endFoundNothing(run, s, { code = null, signal = null } = {}) {
 async function startEngine(run) {
   let leads = {}
   try {
+    const money = budgetEnv(run)
     const prep = await packFor(readTouchstone(run.ws)).prepass?.(run.ws, {
       emit: (ev) => broadcast(run, ev),
       reach: run.reach,
+      budget: { limitUsd: Number(money.RUN_BUDGET_USD), spentUsd: Number(money.RUN_SPENT_USD) },
     })
+    chargePrepass(run, prep?.spentUsd)
     run.prepass = prep?.record ?? null
     run.static = prep?.record?.static
     run.fuzz = prep?.record?.fuzz
@@ -815,6 +818,17 @@ async function startEngine(run) {
   run.leads = leads
   savePhase(run, "agent")
   spawnAgent(run, leads)
+}
+
+// Model spend inside the pre-pass (a Strix scan) is run spend. It goes in the
+// charge file and as a `spend` event, like a worker's own charge, so the agent
+// worker starts with it already spent (budgetEnv) and the view shows it.
+function chargePrepass(run, usd) {
+  if (!(Number(usd) > 0)) return
+  const money = budgetEnv(run)
+  const e = { usd: Number(money.RUN_SPENT_USD) + Number(usd), budgetUsd: Number(money.RUN_BUDGET_USD) }
+  appendFileSync(path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), JSON.stringify(e) + "\n")
+  broadcast(run, { t: Date.now(), ev: "spend", ...e, source: "strix" })
 }
 
 // The part of the engine's `settled` event the run view may see: the whole final text.

@@ -30,16 +30,31 @@ mock.module("../lib/providers.mjs", { namedExports: {
 mock.module("../lib/proof-http.mjs", { namedExports: { requireImage: async () => {} } });
 mock.module("../lib/sandbox.mjs", { namedExports: { readTouchstone: () => ({ baseUrl: "http://site.test" }) } });
 mock.module("../lib/live.mjs", { namedExports: { SCAN_NETWORK: "scan-net", bindLive: () => {} } });
+// When set, the tool scan waits for Strix to start: only a parallel prepass finishes it.
+let waitForStrix = false;
+let strixStarted = () => {};
 mock.module("../packs/web/scan.mjs", { namedExports: {
-  scanWeb: async () => ({ coverage: [], leads: [] }),
+  scanWeb: async () => {
+    if (waitForStrix) {
+      await new Promise((resolve, reject) => {
+        strixStarted = resolve;
+        setTimeout(() => reject(new Error("strix did not start while the tool scan ran")), 2000).unref();
+      });
+    }
+    return { coverage: [], leads: [] };
+  },
   docQueryUrls: () => [],
   mergeLeads: (leads) => leads,
 } });
 let scans = 0;
+const asks = [];
 mock.module("../lib/strix.mjs", { namedExports: {
   DEFAULT_BUDGET_USD: 0.5,
-  runStrix: async () => {
+  strixSettings: () => ({ turns: 15, budgetUsd: 0.5, timeoutMin: 8 }),
+  runStrix: async (opts) => {
     scans++;
+    asks.push(opts);
+    strixStarted();
     return { status: "ok", leads: [], costUsd: 4.3, coverage: { engine: "strix", status: "ok", leads: 0, costUsd: 4.3 } };
   },
 } });
@@ -48,12 +63,14 @@ const { livePrepass, strixWorstUsd } = await import("../packs/web/live.mjs");
 const { runSpend } = await import("../lib/inference.mjs");
 
 const ledger = (totalUsd) => writeFileSync(LEDGER, JSON.stringify({ totalUsd, calls: 0, byModel: {} }));
+const near = (a, b) => Math.abs(a - b) < 1e-9;
 const total = () => JSON.parse(readFileSync(LEDGER, "utf8")).totalUsd;
 const strixOf = (r) => r.record.coverage.find((c) => c.engine === "strix");
-const prepass = () => livePrepass(dir, { reach: { confine: { netClient: "n", gateUrl: "http://gate" }, hosts: [] } });
+const prepass = (budget) => livePrepass(dir, { reach: { confine: { netClient: "n", gateUrl: "http://gate" }, hosts: [] }, budget });
 
 beforeEach(() => {
   scans = 0;
+  asks.length = 0;
   ledger(0);
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -96,4 +113,39 @@ test("strix: a model with no window, answer size or price counts as an expensive
   // 1M in at $1/1M plus 65536 out at $5/1M, on top of the $0.50 budget.
   assert.ok(Math.abs(strixWorstUsd({ id: "x" }) - (0.5 + 1 + 0.32768)) < 1e-9);
   assert.ok(Math.abs(strixWorstUsd({ id: "x", input: 0, output: 0 }) - 0.5) < 1e-9);
+});
+
+test("strix: the run budget cuts the scan's budget and the result carries its spend", async () => {
+  // $2 run budget, $1.80 spent: $0.20 left, below the $0.50 Strix budget.
+  const r = await prepass({ limitUsd: 2, spentUsd: 1.8 });
+  assert.equal(scans, 1);
+  assert.ok(near(asks[0].budgetUsd, 0.2), `budget ${asks[0].budgetUsd}`);
+  assert.equal(asks[0].turns, 15);
+  assert.equal(asks[0].timeoutMs, 8 * 60_000);
+  assert.equal(r.spentUsd, 4.3);
+  // Plenty left: the Strix budget is the limit.
+  await prepass({ limitUsd: 20, spentUsd: 1 });
+  assert.equal(asks[1].budgetUsd, 0.5);
+});
+
+test("strix: a run budget with nothing left starts no scan", async () => {
+  const r = await prepass({ limitUsd: 2, spentUsd: 2 });
+  assert.equal(scans, 0);
+  assert.equal(strixOf(r).status, "unavailable");
+  assert.match(strixOf(r).reason, /run budget has no money left/);
+  assert.equal(r.spentUsd, 0);
+});
+
+test("strix: the tool scan and strix run at the same time", async () => {
+  // The tool scan only finishes once Strix has started. In a serial prepass
+  // it times out first and the tool scan fails.
+  const events = [];
+  waitForStrix = true;
+  try {
+    await livePrepass(dir, { reach: { confine: { netClient: "n", gateUrl: "http://gate" }, hosts: [] }, emit: (e) => events.push(e) });
+  } finally {
+    waitForStrix = false;
+  }
+  assert.equal(scans, 1);
+  assert.ok(!events.some((e) => e.ev === "web-scan-failed"), JSON.stringify(events.find((e) => e.ev === "web-scan-failed")));
 });
