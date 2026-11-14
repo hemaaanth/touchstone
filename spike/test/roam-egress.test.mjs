@@ -91,14 +91,25 @@ function viaProxy(port, method, url, body) {
 function tunnel(port, target, wait = 0) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port, method: "CONNECT", path: target, agent: false });
-    req.on("error", reject);
+    let ownedSocket, sendTimer;
+    const finish = (error, result) => {
+      clearTimeout(deadline);
+      clearTimeout(sendTimer);
+      req.destroy();
+      ownedSocket?.destroy();
+      if (error) reject(error); else resolve(result);
+    };
+    // Bound the wait even when the production connect timer is missing.
+    const deadline = setTimeout(() => finish(new Error("CONNECT helper deadline exceeded")), 5000);
+    req.on("error", (error) => finish(error));
     req.on("connect", (res, socket) => {
-      if (res.statusCode !== 200) { socket.destroy(); resolve({ status: res.statusCode, body: "" }); return; }
+      ownedSocket = socket;
+      if (res.statusCode !== 200) { finish(null, { status: res.statusCode, body: "" }); return; }
       let text = "";
       socket.on("data", (d) => { text += d; });
-      socket.on("end", () => resolve({ status: res.statusCode, body: text }));
-      socket.on("error", reject);
-      setTimeout(() => socket.write("GET /in-tunnel HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), wait);
+      socket.on("end", () => finish(null, { status: res.statusCode, body: text }));
+      socket.on("error", (error) => finish(error));
+      sendTimer = setTimeout(() => socket.write("GET /in-tunnel HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), wait);
     });
     req.end();
   });
@@ -178,6 +189,41 @@ test("the real proxy on 127.0.0.1: start, one HTTP request and one CONNECT, both
     assert.deepEqual(await pullEgressLog(m), []);
   } finally {
     await new Promise((r) => target.close(r));
+  }
+});
+
+test("nonstandard upstream statuses survive the proxy, log file and pull", async () => {
+  const target = http.createServer((req, res) => { res.writeHead(Number(req.url.slice(1))); res.end("odd"); });
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const port = await freePort();
+  const m = localMachine("m-status", port);
+  try {
+    await startEgressLog(m);
+    for (const status of [600, 999]) {
+      assert.deepEqual(await viaProxy(port, "GET", `http://127.0.0.1:${target.address().port}/${status}`), { status, body: "odd" });
+    }
+    assert.deepEqual(readFileSync(m.log, "utf8").trim().split("\n").map((l) => JSON.parse(l).status), [600, 999]);
+    assert.deepEqual((await pullEgressLog(m)).map((r) => r.status), [600, 999]);
+  } finally {
+    await new Promise((r) => target.close(r));
+  }
+});
+
+test("invalid CONNECT timer arguments still answer a refused loopback connection", async () => {
+  const dead = await freePort();
+  for (const arg of ["-5", "Infinity", "0", "2147483648"]) {
+    const port = await freePort();
+    const log = join(dir, `invalid-timer-${arg}.jsonl`);
+    const proxy = spawn(process.execPath, [fileURLToPath(new URL("../roam/egress-log.mjs", import.meta.url)), String(port), log, arg], { stdio: "ignore" });
+    try {
+      await until(() => answers(port), `the proxy listens with timer ${arg}`);
+      assert.equal((await tunnel(port, `127.0.0.1:${dead}`)).status, 502, arg);
+      assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l).status), [502], arg);
+    } finally {
+      const ended = new Promise((r) => proxy.once("close", r));
+      proxy.kill();
+      await ended;
+    }
   }
 });
 
@@ -296,8 +342,10 @@ test("a CONNECT to an address that does not answer is logged when the connect ti
     assert.deepEqual(lines().at(-1), ["CONNECT", `127.0.0.1:${target.address().port}`, null]);
   } finally {
     for (const s of fill) s.destroy();
+    const ended = [proxy, silent].map((child) => new Promise((r) => child.once("close", r)));
     proxy.kill();
     silent.kill();
+    await Promise.all(ended);
     await new Promise((r) => target.close(r));
   }
 });
@@ -339,12 +387,13 @@ test("pullEgressLog drops a line that is not JSON and a line with a wrong shape"
     // The machine's own words are not kept: decision and reason are set by the host, extra fields go.
     line({ host: "b.example", decision: "block", reason: "the child wrote this", proven: true, extra: { deep: 1 } }),
     line({ host: longHost, url: longUrl, method: "CONNECT", status: null }),
-    // The ends of the ranges are kept.
+    // The ends of the timestamp range are kept.
     line({ host: "low.example", t: 0, status: 100 }),
     line({ host: "high.example", t: 8.64e15, status: 599 }),
   ].join("\n") + "\n");
   assert.deepEqual(await pullEgressLog(m), [
     rec(),
+    ...[99, 600, -1, 1e21].map((status) => rec({ status })), // integer or null, not a standard-status range
     rec({ host: "b.example" }),
     rec({ host: longHost, url: longUrl, method: "CONNECT", status: null }),
     rec({ host: "low.example", t: 0, status: 100 }),

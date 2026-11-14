@@ -18,7 +18,8 @@ import { dirname } from "node:path";
 
 const port = Number(process.argv[2]);
 const file = process.argv[3];
-const connectMs = Number(process.argv[4]) || 30_000;
+const timerArg = Number(process.argv[4]);
+const connectMs = Number.isFinite(timerArg) && timerArg > 0 && timerArg <= 2_147_483_647 ? timerArg : 30_000;
 mkdirSync(dirname(file), { recursive: true });
 
 // The host drops a line with a longer host or URL (lib/roam-egress.mjs), so

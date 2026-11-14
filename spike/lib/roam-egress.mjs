@@ -80,7 +80,7 @@ function parseLine(line) {
   if (typeof host !== "string" || host.length > 253 || NOT_PLAIN.test(host)) return null;
   if (typeof url !== "string" || url.length > 2000 || NOT_PLAIN.test(url)) return null;
   if (!METHOD.has(method)) return null;
-  if (status !== null && !(Number.isInteger(status) && status >= 100 && status <= 599)) return null;
+  if (status !== null && !Number.isInteger(status)) return null;
   return { t, host, method, url, decision: "allow", reason: "free-roam", status };
 }
 
