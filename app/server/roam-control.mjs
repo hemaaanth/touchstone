@@ -13,6 +13,33 @@ export function roamSelection(freeRoam, options = [], mode = "fleet") {
   return { freeRoam, options: [...options] }
 }
 
+function askPresentation(kind, value) {
+  if (kind !== "question" || !value || typeof value !== "object" || Array.isArray(value)) return undefined
+  try {
+    if (Buffer.byteLength(JSON.stringify(value)) > 16384 || Object.keys(value).some((k) => !["options", "select", "min", "max"].includes(k))) return undefined
+    const { options, select = "single", min = 1, max = options?.length } = value
+    if (!Array.isArray(options) || options.length < 2 || options.length > 12 || !["single", "multiple"].includes(select)) return undefined
+    if (select === "single" && ("min" in value || "max" in value)) return undefined
+    if (select === "multiple" && (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || min > max || max > options.length)) return undefined
+    const seen = new Set()
+    const clean = []
+    for (const option of options) {
+      if (!option || typeof option !== "object" || Array.isArray(option) || Object.keys(option).some((k) => !["id", "label", "description"].includes(k))) return undefined
+      if (typeof option.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(option.id) || seen.has(option.id)) return undefined
+      if (typeof option.label !== "string" || !option.label.trim() || option.label.trim().length > 200 || ("description" in option && (typeof option.description !== "string" || option.description.length > 500))) return undefined
+      seen.add(option.id)
+      const label = redactSecrets(option.label.trim()).trim()
+      const description = "description" in option ? redactSecrets(option.description) : undefined
+      if (!label || label.length > 200 || (description !== undefined && description.length > 500)) return undefined
+      clean.push({ id: option.id, label, ...(description !== undefined ? { description } : {}) })
+    }
+    const presentation = { options: clean, select, ...(select === "multiple" ? { min, max } : {}) }
+    return Buffer.byteLength(JSON.stringify(presentation)) <= 16384 ? presentation : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // Capabilities and pending replies stay only in this process, never in run records.
 export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000, now = Date.now, schedule = setTimeout, unschedule = clearTimeout }) {
   const workers = new Map()
@@ -152,6 +179,8 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
         const detail = JSON.stringify(redactSecrets(e.detail))
         if (detail && Buffer.byteLength(detail) <= 8192) ask.detail = detail
       }
+      const presentation = askPresentation(e.kind, e.presentation)
+      if (presentation) ask.presentation = presentation
       s.asks.set(e.id, ask)
       emit(run, { ev: "ask-human", ...ask })
       return true

@@ -237,3 +237,89 @@ test("first release refuses desktop and screenshot release even for the authenti
     expect(bodyRead).toBe(false)
   }
 })
+
+const choices = { options: [{ id: "first", label: "First choice" }, { id: "second", label: "Second choice" }], select: "single" }
+
+test("Ask presentation validates every frozen malformed combination and falls back to a plain question", async () => {
+  const f = fixture()
+  const bad = [
+    null, [], "options", {}, { select: "single" }, { options: {} },
+    { options: [] }, { options: choices.options.slice(0, 1) },
+    { options: Array.from({ length: 13 }, (_, i) => ({ id: `id-${i}`, label: "Choice" })) },
+    { ...choices, select: "any" }, { ...choices, select: null },
+    { ...choices, extra: true }, { ...choices, min: 1 }, { ...choices, max: 2 },
+    ...["", "_first", "Upper", "has space", "x".repeat(65)].map((id) => ({ ...choices, options: [{ id, label: "Choice" }, choices.options[1]] })),
+    { ...choices, options: [choices.options[0], choices.options[0]] },
+    ...[null, "", "  ", 7, "x".repeat(201)].map((label) => ({ ...choices, options: [{ id: "first", label }, choices.options[1]] })),
+    ...[null, 1, "x".repeat(501)].map((description) => ({ ...choices, options: [{ ...choices.options[0], description }, choices.options[1]] })),
+    { ...choices, options: [{ ...choices.options[0], disabled: true }, choices.options[1]] },
+    { ...choices, options: [null, choices.options[1]] },
+    ...[{ min: 0 }, { max: 0 }, { min: 1.5 }, { max: 1.5 }, { min: 2, max: 1 }, { max: 3 }, { min: "1" }, { max: "2" }, { min: null }, { max: null }].map((range) => ({ ...choices, select: "multiple", ...range })),
+    { ...choices, options: Array.from({ length: 12 }, (_, i) => ({ id: `id-${i}`, label: "Choice", description: "界".repeat(500) })) },
+  ]
+  try {
+    for (let i = 0; i < bad.length; i++) {
+      f.api.consume(f.run, f.child, "epoch-1", { ...ask(`bad-${i}`), kind: "question", presentation: bad[i] })
+      expect(f.events.at(-1)).toMatchObject({ id: `bad-${i}`, question: "Open the test account" })
+      expect(f.events.at(-1)).not.toHaveProperty("presentation")
+    }
+    for (const kind of ["login", "payment", "wallet-spend", "takeover"]) {
+      f.api.consume(f.run, f.child, "epoch-1", { ...ask(`action-${kind}`), kind, presentation: choices })
+      expect(f.events.at(-1)).not.toHaveProperty("presentation")
+    }
+    f.api.consume(f.run, f.child, "epoch-1", ask("old"))
+    expect(f.events.at(-1)).not.toHaveProperty("presentation")
+  } finally { await f.end() }
+})
+
+test("Ask presentation bounds, defaults and scrubbed display strings survive server ingestion", async () => {
+  const f = fixture()
+  try {
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask("defaults"), kind: "question", presentation: { options: choices.options } })
+    expect(f.events.at(-1).presentation).toEqual(choices)
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask("multi-default"), kind: "question", presentation: { options: choices.options, select: "multiple" } })
+    expect(f.events.at(-1).presentation).toEqual({ ...choices, select: "multiple", min: 1, max: 2 })
+    const options = Array.from({ length: 12 }, (_, i) => ({ id: i ? `choice-${i}` : "a".repeat(64), label: ` ${"x".repeat(200)} `, description: "x".repeat(500) }))
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask("bounds"), kind: "question", presentation: { options, select: "multiple", min: 1, max: 12 } })
+    expect(f.events.at(-1).presentation.options[0].label).toBe("x".repeat(200))
+    expect(f.events.at(-1).presentation.max).toBe(12)
+    const secretLabel = "Authorization: Bearer secret-label-value"
+    const secretDescription = "password=secret-description-value"
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask("scrubbed"), kind: "question", presentation: { ...choices, options: [{ id: "first", label: secretLabel, description: secretDescription }, choices.options[1]] } })
+    const stored = JSON.stringify(f.events.at(-1))
+    expect(stored).not.toContain("secret-label-value")
+    expect(stored).not.toContain("secret-description-value")
+    expect(stored).toContain("[REDACTED]")
+  } finally { await f.end() }
+})
+
+test("Choice Reply waits for exact worker/epoch/agent ack; retry clears sending and reply never enters telemetry", async () => {
+  const f = fixture()
+  const reply = "Selected option: first (First choice)"
+  try {
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask(), kind: "question", presentation: choices })
+    let completed = false
+    const pending = f.api.answer("r1", { ask: "ask-1", reply }).then(() => { completed = true })
+    await tick()
+    expect(f.lines.at(-1)).toEqual({ ask: "ask-1", reply })
+    f.api.consume(f.run, f.child, "old-epoch", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply" })
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-2", answer: "reply" })
+    await tick()
+    expect(completed).toBe(false)
+    await expect(f.api.answer("r1", { ask: "ask-1", reply })).rejects.toThrow()
+    await expect(pending).rejects.toThrow("timed out")
+    expect(completed).toBe(false)
+    const retried = f.api.answer("r1", { ask: "ask-1", reply })
+    await tick()
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", reply, selected: ["first"] })
+    expect(await retried).toEqual({ ok: true })
+    expect(f.events.at(-1)).toEqual({ ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", t: 1 })
+    expect(JSON.stringify(f.events)).not.toContain(reply)
+    await expect(f.api.answer("r1", { ask: "ask-1", reply })).rejects.toThrow()
+    f.api.consume(f.run, f.child, "epoch-1", { ...ask("terminated"), kind: "question", presentation: choices })
+    const terminated = f.api.answer("r1", { ask: "terminated", reply })
+    await f.api.invalidate(f.run)
+    await expect(terminated).rejects.toThrow("ended")
+    await expect(f.api.answer("r1", { ask: "terminated", reply })).rejects.toThrow()
+  } finally { await f.end() }
+})
