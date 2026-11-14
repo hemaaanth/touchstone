@@ -145,6 +145,15 @@ Started 2026-11-13: a planner (`thr_j9x637fuk6`, read-only worktree `redteam-w4-
 
 **Owner decision, 2026-11-13:** Playwright is fine for I3 (inside the Daytona machine). No port of the bb browser control and no cloud browser. The plugin is read only for the Voxl live view.
 
+**Plan written, 2026-11-14 (UTC):** `wave/wave4-plan.md` in the coordinator's thread storage, frozen at sha256 `fffc8aa4…bb70` (697 lines), with one addendum (`wave/wave4-plan-addendum.md`: the egress log is not complete, so a record says "requests seen by the log"). The planner (`thr_j9x637fuk6`) is finished. A different thread (`thr_kbdp6b77m9`, read-only worktree `redteam-rv-w4plan`) reviews the plan now. The plan in short:
+
+- **First vertical slice (before the deadline):** I1, I2, the smallest I6, and I7a. The coordinator starts one free-roam child. The child gets a `shell` tool on its own Daytona container machine. A small proxy on the machine logs each request. The child submits a session Candidate (`proven: false`). The run end deletes the machine. No browser, no ask row, no desktop view, no wallet, no UI change.
+- **I7 is split.** I7a (the `loadout` field on `spawn_agent` in `spike/lib/fleet.mjs`) is in the slice and does not touch the protected files. I7b (loadouts in `app/src/lib/{fleet,coordinator}.ts`) is after the deadline.
+- **I4 is split.** I4a (the ask row: Done, Reply, Cancel) is a Should for the deadline. I4b (the Voxl desktop view and takeover) is after the deadline.
+- **I6 does not wait for G5 any more:** G5 is done; the session record sits beside `recordScript` in `spike/lib/candidate.mjs`.
+- **Lanes:** A = I1, B = I2, C = I6, D = I7a, built at the same time; then one real Daytona run of the slice; then E = I3 (smallest) and F = I4a if lane D is merged by 14:00 UTC. Merge cut-off 21:00 UTC.
+- **Open for the owner:** the Daytona tier (an open network may need Tier 3); `daytona-medium` as the free-roam base, with one exemption line for the stop condition "a third-party tool that would run outside Docker `runTool()`"; who asks the human; the yes for the real slice run.
+
 **Wave 5. Live proof. Needs a paid-run budget.**
 
 One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 2. The best ENS leads offline. Then a full pass through the app by hand with `bb-browser`, and the final progress page.
@@ -285,7 +294,7 @@ One multi-module run (D3). One follow-up on a finished run (A2, A3). Live batch 
 
 | ID | State | Item |
 |----|-------|------|
-| J1 | doing | Step 0: one real snapshot test on the owner's Daytona account. **Owner, 2026-11-13: yes, make the first real Daytona call.** No longer blocked. Order from the same answer: N3, N5 and N6 are finished first; J1 is then the first Wave 4 step. Report the cost of the call. **Unblocked 2026-11-13:** N3 is on origin/main at `153dc31`. Started 2026-11-13: author `thr_sfn46di74u`, brief `wave/j1-brief.md`. No repo change: a probe script with a dry run against a fake API first; a second thread (`thr_x53ciuvjud`) reviews the script before the real run. Limits: at most 3 machines, 1 at a time, 60 minutes, only ids the probe created are deleted. |
+| J1 | doing | Step 0: one real snapshot test on the owner's Daytona account. **Owner, 2026-11-13: yes, make the first real Daytona call.** No longer blocked. Order from the same answer: N3, N5 and N6 are finished first; J1 is then the first Wave 4 step. Report the cost of the call. **Unblocked 2026-11-13:** N3 is on origin/main at `153dc31`. Started 2026-11-13: author `thr_sfn46di74u`, brief `wave/j1-brief.md`. No repo change: a probe script with a dry run against a fake API first; a second thread (`thr_x53ciuvjud`) reviews the script before the real run. Limits: at most 3 machines, 1 at a time, 60 minutes, only ids the probe created are deleted. **State 2026-11-14 (UTC):** the dry run passed 10 of 10 cases. The script review said NOT READY: one major (clean-up could leave the probe snapshot and still say "clean") and seven minors. Repair round 1 is done: every finding is fixed, the dry run passes 12 of 12 cases, candidate hashes in `wave/j1-candidate-r1.sha256`. The re-review runs now. No real Daytona call has been made yet. |
 | J2 | todo | Steps 1 to 7 after J1. |
 
 ## K. Cleanup and housekeeping
