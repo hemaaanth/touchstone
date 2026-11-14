@@ -11,7 +11,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ROAM_SNAPSHOT, closeRun, remoteDocker, roamMachine, shq } from "../lib/daytona.mjs";
+import { execConfig, closeRun, remoteDocker, roamMachine, shq } from "../lib/daytona.mjs";
+import { checkRoamSelection, SHELL_PROBE_VERSION } from "../lib/daytona-setup.mjs";
+import { beginRoamOperation, roamBinding, roamAccountBinding, setRoamSelectionState, updateRoamOperation } from "../lib/daytona-state.mjs";
+import { createHash } from "node:crypto";
 import { withAgent } from "../lib/event.mjs";
 let REPLACED_NOTICE, roamTools;
 let moduleId = 0;
@@ -210,7 +213,7 @@ test("roam.mjs starts no host process and reads no host environment", () => {
 
 // ---- Part 2: roamMachine against a fake Daytona API
 
-const KEYS = ["TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS", "EVENTS_FILE", "ROAM_TEST_HOST_SECRET"];
+const KEYS = ["TOUCHSTONE_ROAM_SNAPSHOT", "TOUCHSTONE_DAYTONA_STATE_FILE","TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS", "EVENTS_FILE", "ROAM_TEST_HOST_SECRET"];
 
 function fakeDaytona(dir) {
   // The result tar of a confined tool run (only the confined test reads it).
@@ -226,7 +229,8 @@ function fakeDaytona(dir) {
     const u = String(url);
     const method = init.method || "GET";
     fake.calls.push({ method, u, body: typeof init.body === "string" ? init.body : "", headers: JSON.stringify(init.headers ?? {}) });
-    if (u.includes("/snapshots")) return json({ state: "active" });
+    if (u.endsWith("/regions")) return json([{ id: "r-west", name: "us-west-3" }]);
+    if (u.includes("/snapshots")) return json({ id: "selected-shell", name: "selected-shell", state: "active", regionIds: ["r-west"], sandboxClass: "container", ref: "test-ref" });
     if (method === "POST" && u.endsWith("/api/sandbox")) {
       if (fake.createStatus !== 200) return new Response("Snapshot not found", { status: fake.createStatus });
       const id = `m-${++fake.n}`;
@@ -275,6 +279,8 @@ async function withFake(fn) {
   try {
     process.env.TOUCHSTONE_EXEC = "daytona";
     process.env.DAYTONA_API_KEY = "test-key-not-real";
+    process.env.TOUCHSTONE_DAYTONA_STATE_FILE = join(d, "setup.json");
+    process.env.TOUCHSTONE_ROAM_SNAPSHOT = "selected-shell";
     process.env.DAYTONA_PENDING = join(d, "pending.json");
     process.env.DAYTONA_RETRY_MS = "1";
     process.env.ROAM_TEST_HOST_SECRET = "host-secret-value";
@@ -282,6 +288,10 @@ async function withFake(fn) {
     delete process.env.EVENTS_FILE;
     globalThis.fetch = fake.fetch;
     console.log = (line) => String(line).startsWith("EVENT ") && events.push(JSON.parse(String(line).slice(6)));
+    const config = execConfig();
+    const selected = await checkRoamSelection(config);
+    setRoamSelectionState(roamBinding(config), "verified", { ...selected, probeVersion: SHELL_PROBE_VERSION, verificationId: "test-proof" });
+    fake.calls.length = 0;
     await fn({ ws, fake, events });
   } finally {
     await closeRun(ws).catch(() => {});
@@ -294,7 +304,18 @@ async function withFake(fn) {
   }
 }
 
-const sidecarOf = (ws) => JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8"));
+const sidecarOf = (ws) => Object.fromEntries(Object.entries(JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8"))).map(([key, { id, toolbox }]) => [key, { id, toolbox }]));
+function seedSidecar(ws, entries) {
+  const config = execConfig();
+  const run = createHash("sha256").update(ws).digest("hex");
+  for (const [key, entry] of Object.entries(entries)) {
+    const slot = createHash("sha256").update(JSON.stringify([ws, key.slice(5), "test-proof"])).digest("hex");
+    const { operation } = beginRoamOperation(config, "runtime", slot, { run });
+    updateRoamOperation(operation.binding, operation.id, "intent", "created", entry.id);
+    Object.assign(entry, { account: roamAccountBinding(config), binding: operation.binding, operationId: operation.id });
+  }
+  writeFileSync(`${ws}.daytona.json`, JSON.stringify(entries));
+}
 // A real shell tool on the real roamMachine. Only record() and egress are fakes.
 function realShell(ws) {
   const f = fakes();
@@ -316,7 +337,7 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
 
     // A container snapshot that Daytona has, root, and the long lifecycle.
     const { labels, ...body } = fake.creates[0];
-    assert.deepEqual(body, { snapshot: ROAM_SNAPSHOT, target: "us-west-3", user: "root", autoStopInterval: 60, autoDeleteInterval: 240 });
+    assert.deepEqual(body, { snapshot: "selected-shell", target: "us-west-3", user: "root", autoStopInterval: 60, autoDeleteInterval: 240 });
     assert.deepEqual({ ...labels, nonce: "", run: "" }, { touchstone: "1", agent: "a-1", nonce: "", run: "", loadout: "free-roam" });
     assert.deepEqual(events.map(({ t, run, ...e }) => e), [
       { ev: "exec-machine", agent: "a-1", backend: "daytona", sandbox: "m-1", loadout: "free-roam" },
@@ -330,8 +351,8 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
       { id: "m-1", command: `${ENV}ls /root`, timeout: 120 },
       { id: "m-2", command: `${ENV}id`, timeout: 120 },
     ]);
-    // It never asks for a snapshot, and nothing from the host goes along.
-    assert.ok(!fake.calls.some((c) => c.u.includes("/snapshots")));
+    // Snapshot metadata is checked without registering a snapshot.
+    assert.ok(!fake.calls.some((c) => c.method === "POST" && c.u.includes("/snapshots")));
     assert.ok(fake.calls.every((c) => c.headers.includes("test-key-not-real")));
     for (const c of fake.calls) assert.ok(!/test-key-not-real|host-secret-value/.test(c.body + c.u), c.u);
 
@@ -395,7 +416,7 @@ test("a machine from an earlier worker of the run: used when it runs, replaced w
   await withFake(async ({ ws, fake, events }) => {
     fake.state.old1 = "started";
     fake.state.old2 = "stopped";
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" }, "roam:a-2": { id: "old2", toolbox: "https://tb.test/old2" } }));
+    seedSidecar(ws, { "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" }, "roam:a-2": { id: "old2", toolbox: "https://tb.test/old2" } });
     const kept = await roamMachine(ws, "a-1");
     assert.deepEqual([kept.id, kept.fresh, kept.replaced], ["old1", false, false]);
     const made = await roamMachine(ws, "a-2");
@@ -408,23 +429,14 @@ test("a machine from an earlier worker of the run: used when it runs, replaced w
   });
 });
 
-test("a 404 on the snapshot is an error for the operator; no snapshot is created", async () => {
+test("a create rejection is fixed and stays blocked until explicit verification", async () => {
   await withFake(async ({ ws, fake }) => {
     fake.createStatus = 404;
-    const { f, shell } = realShell(ws);
-    await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.match(e.message, /^Daytona answered 404 to the create call\. The most likely cause is that the snapshot /);
-      assert.ok(e.message.includes(`the snapshot "${ROAM_SNAPSHOT}" does not exist`));
-      assert.match(e.message, /TOUCHSTONE_ROAM_SNAPSHOT/);
-      assert.match(e.message, /never creates/);
-      return true;
-    });
-    assert.ok(!fake.calls.some((c) => c.u.includes("/snapshots")));
-    assert.deepEqual(f.steps, []);
-    assert.ok(!existsSync(`${ws}.daytona.json`));
-    // The failure is not kept: the next call asks Daytona again.
+    await assert.rejects(roamMachine(ws, "a-1"), { code: "daytona_rejected" });
+    assert.ok(!fake.calls.some((c) => c.method === "POST" && c.u.includes("/snapshots")));
     fake.createStatus = 200;
-    assert.match(textOf(await as("a-1", shell, { command: "id" })), /^session session:a-1:1\n/);
+    await assert.rejects(roamMachine(ws, "a-1"), { code: "daytona_shell_unverified" });
+    assert.equal(fake.creates.length, 0);
   });
 });
 
@@ -476,7 +488,7 @@ test("the ready check fails once: the next call still starts the log before the 
 test("a machine from the sidecar gets its log before the first command", async () => {
   await withFake(async ({ ws, fake }) => {
     fake.state.old1 = "started";
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" } }));
+    seedSidecar(ws, { "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" } });
     const { f, shell } = orderedShell(ws, fake);
     await as("a-1", shell, { command: "id" });
     await as("a-1", shell, { command: "id" });

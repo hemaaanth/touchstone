@@ -165,6 +165,7 @@ export async function fetchModels(): Promise<{
   packs: PackChoice[]
   spend: SpendState
   provider: ProviderInfo
+  roam: { ready: boolean; backend: string }
 }> {
   return getJson<{
     models: ModelChoice[]
@@ -172,6 +173,7 @@ export async function fetchModels(): Promise<{
     packs: PackChoice[]
     spend: SpendState
     provider: ProviderInfo
+    roam: { ready: boolean; backend: string }
   }>("/api/models")
 }
 
@@ -426,6 +428,23 @@ export function setExecution(body: {
   clearKey?: boolean
   apiUrl?: string
   target?: string
+  roamSnapshot?: string
 }): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/execution", body)
 }
+
+export interface ShellSetup {
+  state: "not_configured" | "not_checked" | "needs_test" | "ready" | "unavailable" | "rejected" | "pending" | "unknown" | "state_error"
+  ready: boolean
+  previousPending?: number
+  operation?: { id: string; action: "snapshot" | "probe"; phase: string; probePassed: boolean; errorCode: string | null; canReconcile: boolean; snapshotId?: string | null; snapshotName?: string | null } | null
+}
+export interface ShellDiscovery {
+  regions: { id: string; name: string }[]
+  snapshots: { id: string; name: string; state: string; available: boolean }[]
+}
+export const fetchShellSetup = () => getJson<ShellSetup>("/api/settings/execution/status")
+export const discoverShellSnapshots = () => postJson<ShellDiscovery>("/api/settings/execution/discover", {})
+export const checkShellSnapshot = () => postJson<ShellSetup>("/api/settings/execution/check", {})
+export const startShellSetup = (action: "build" | "test", requestId: string) => postJson<ShellSetup>(`/api/settings/execution/${action}`, { confirm: true, requestId })
+export const reconcileShellSetup = (id: string, action: "snapshot" | "probe") => postJson<ShellSetup>("/api/settings/execution/reconcile", { id, action })

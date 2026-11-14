@@ -12,6 +12,9 @@ import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
 
+import { execConfig } from "../../spike/lib/daytona.mjs"
+import { discoverRoamSnapshots, checkRoamSelection, startRoamSnapshotBuild, startRoamShellTest, reconcileRoamShellTest, reconcileRoamSnapshot, roamSetupView } from "../../spike/lib/daytona-setup.mjs"
+
 function send(res, status, json) {
   res.statusCode = status
   res.setHeader("content-type", "application/json")
@@ -434,7 +437,7 @@ export async function handleGrants(req, res) {
 export function handleModels(req, res) {
   const url = new URL(req.url, "http://localhost")
   if (url.pathname !== "/api/models" || req.method !== "GET") return false
-  send(res, 200, { models: availableModels(), targets: availableTargets(), packs: availablePacks(), spend: spendState(), provider: providerInfo() })
+  send(res, 200, { models: availableModels(), targets: availableTargets(), packs: availablePacks(), spend: spendState(), provider: providerInfo(), roam: { ...roamSetupView(execConfig()), backend: execConfig().backend } })
   return true
 }
 
@@ -454,6 +457,21 @@ export async function handleSettings(req, res) {
   // Every write is guarded: a cross-site page must not repoint a key or a baseUrl.
   if (refusedWrite(req, res)) return true
   try {
+    if (parts.length === 4 && parts[2] === "execution") {
+      const config = execConfig()
+      const action = parts[3]
+      if (req.method === "GET" && action === "status") return send(res, 200, roamSetupView(config)), true
+      if (req.method === "POST") {
+        const body = await readBody(req)
+        if (action === "discover") return send(res, 200, await discoverRoamSnapshots(config)), true
+        if (action === "check") { await checkRoamSelection(config); return send(res, 200, roamSetupView(config)), true }
+        if (action === "build" || action === "test") {
+          if (body.confirm !== true) throw new Error("Confirm the Daytona resource action before starting it.")
+          return send(res, 202, action === "build" ? startRoamSnapshotBuild(config, body.requestId) : startRoamShellTest(config, body.requestId)), true
+        }
+        if (action === "reconcile") return send(res, 200, body.action === "snapshot" ? await reconcileRoamSnapshot(config, body.id) : await reconcileRoamShellTest(config, body.id)), true
+      }
+    }
     if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
     if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true
     if (parts.length === 4 && route === "DELETE providers") return send(res, 200, deleteProvider(decodeURIComponent(parts[3]))), true

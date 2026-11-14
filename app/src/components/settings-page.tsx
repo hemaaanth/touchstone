@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Cloud, Container, Info, KeyRound, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react"
 import type { DiscoveredModel, ModelDraft, ProviderSetting, SettingsState } from "@/lib/types"
-import { StalePageError, deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
+import { type ShellSetup, type ShellDiscovery, fetchShellSetup, discoverShellSnapshots, checkShellSnapshot, startShellSetup, reconcileShellSetup, StalePageError, deleteProvider, discoverModels, fetchSettings, rotateConsoleToken, saveProvider, setDefaultModel, setExecution, setRunBudget } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ProviderLogo } from "@/components/provider-logo"
@@ -37,7 +38,9 @@ interface ExecutionSetting {
   // The host DAYTONA_API_KEY is bound to, or null with no env key.
   envKeyHost?: string | null
   target: string
-  envNames: { apiUrl: string | null; target: string | null }
+  roamSnapshot: string
+  shellSetup: ShellSetup
+  envNames: { apiUrl: string | null; target: string | null; roamSnapshot: string | null }
   defaults: { apiUrl: string; target: string }
 }
 
@@ -237,10 +240,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
             <DaytonaEditor
               ex={ex}
               use={daytona.use}
-              onSaved={(s) => {
-                apply(s)
-                setDaytona((d) => ({ ...d, open: false }))
-              }}
+              onSaved={apply}
               onCancel={() => setDaytona((d) => ({ ...d, open: false }))}
             />
           </SheetContent>
@@ -939,6 +939,44 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
   const [apiKey, setApiKey] = useState("")
   const [apiUrl, setApiUrl] = useState(ex.envNames.apiUrl || ex.apiUrl === ex.defaults.apiUrl ? "" : ex.apiUrl)
   const [target, setTarget] = useState(ex.envNames.target || ex.target === ex.defaults.target ? "" : ex.target)
+  const [roamSnapshot, setRoamSnapshot] = useState(ex.roamSnapshot)
+  const [shell, setShell] = useState(ex.shellSetup)
+  const [discovery, setDiscovery] = useState<ShellDiscovery | null>(null)
+  const [actionBusy, setActionBusy] = useState(false)
+  const [confirm, setConfirm] = useState<"build" | "test" | null>(null)
+  const requestIds = useRef<Partial<Record<"build" | "test", string>>>({})
+  const unsaved = Boolean(apiKey.trim()) || (!ex.envNames.apiUrl && (apiUrl.trim() || ex.defaults.apiUrl) !== ex.apiUrl) || (!ex.envNames.target && (target.trim() || ex.defaults.target) !== ex.target) || (!ex.envNames.roamSnapshot && roamSnapshot.trim() !== ex.roamSnapshot)
+  const pending = shell.state === "pending" || shell.state === "unknown"
+  useEffect(() => { setShell(ex.shellSetup) }, [ex.shellSetup])
+  useEffect(() => {
+    if (!pending) return
+    let live = true
+    const timer = setInterval(() => {
+      fetchShellSetup().then((state) => {
+        if (!live) return
+        setShell(state)
+        if (state.state !== "pending" && state.state !== "unknown") fetchSettings().then((s) => { if (live) onSaved(s) }).catch(() => {})
+      }).catch(() => {})
+    }, 2000)
+    return () => { live = false; clearInterval(timer) }
+  }, [pending, onSaved])
+  const action = async (fn: () => Promise<ShellSetup>) => {
+    setActionBusy(true); setError(null)
+    try { setShell(await fn()); onSaved(await fetchSettings()) }
+    catch (e) { setError((e as Error).message) }
+    finally { setActionBusy(false) }
+  }
+  const provision = (kind: "build" | "test") => {
+    const requestId = requestIds.current[kind] ??= crypto.randomUUID()
+    setConfirm(null)
+    void action(async () => {
+      const result = await startShellSetup(kind, requestId)
+      // A confirmed saved operation owns the request; the next explicit test
+      // gets a fresh ID. Transport failures retain this ID for a safe retry.
+      if (result.operation) delete requestIds.current[kind]
+      return result
+    })
+  }
   const [busy, setBusy] = useState<"save" | "clear" | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Daytona in use, or about to be, needs a key: the server refuses it without one.
@@ -967,7 +1005,9 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
     setBusy(kind)
     setError(null)
     try {
-      onSaved(await setExecution(body))
+      const saved = await setExecution(body)
+      setApiKey("")
+      onSaved(saved)
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
@@ -980,6 +1020,7 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
       apiKey: apiKey.trim() || undefined,
       apiUrl: ex.envNames.apiUrl ? undefined : apiUrl.trim(),
       target: ex.envNames.target ? undefined : target.trim(),
+      roamSnapshot: ex.envNames.roamSnapshot ? undefined : roamSnapshot.trim(),
     })
 
   const keyHint = !ex.key.set
@@ -1030,6 +1071,42 @@ function DaytonaEditor({ ex, use, onSaved, onCancel }: { ex: ExecutionSetting; u
           />
           {ex.envNames.target ? <span className="text-xs text-muted-foreground">Set by {ex.envNames.target} on the server.</span> : null}
         </label>
+        <section className="flex flex-col gap-3 text-xs" aria-label="Free-roam shell setup">
+          <Label>Free-roam shell</Label>
+          <p className="text-muted-foreground">Free-roam needs a container snapshot in your region. Saving the key does not create resources.</p>
+          <label className="flex flex-col gap-2">
+            <span>Snapshot</span>
+            <Input value={ex.envNames.roamSnapshot ? ex.roamSnapshot : roamSnapshot} onChange={(e) => setRoamSnapshot(e.target.value)} disabled={Boolean(ex.envNames.roamSnapshot)} placeholder="Choose or create a snapshot" />
+            {ex.envNames.roamSnapshot ? <span className="text-muted-foreground">Set by {ex.envNames.roamSnapshot} on the server.</span> : null}
+          </label>
+          {discovery ? <>
+            {!ex.envNames.target ? <Select value={target || ex.defaults.target} onValueChange={(v) => { if (v) { setTarget(v); setDiscovery(null) } }} items={discovery.regions.map((r) => ({ value: r.name, label: r.name }))}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Available regions" /></SelectTrigger>
+              <SelectContent>{discovery.regions.map((r) => <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>)}</SelectContent>
+            </Select> : null}
+            {!ex.envNames.roamSnapshot && discovery.snapshots.length ? <Select value={roamSnapshot} onValueChange={(v) => { if (v) setRoamSnapshot(v) }} items={discovery.snapshots.filter((s) => s.available).map((s) => ({ value: s.id, label: s.name }))}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Available snapshots" /></SelectTrigger>
+              <SelectContent>{discovery.snapshots.filter((s) => s.available).map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+            </Select> : null}
+            <p className="text-muted-foreground">{discovery.snapshots.filter((s) => s.available).length} usable snapshots in {ex.target}.</p>
+          </> : null}
+          <p role="status" className="text-muted-foreground">{({ not_configured: "Save the configuration to begin shell setup.", not_checked: "Check the snapshot, then test the shell.", needs_test: "Snapshot is available. Test the shell before starting a run.", ready: "Shell test passed and its test machine was deleted.", unavailable: "The snapshot is unavailable in this region. Choose another or create the shell snapshot.", rejected: "Daytona refused creation. Check the configuration and run the shell test again.", pending: "Daytona setup is running. You can leave this page and return later.", unknown: "Setup needs an outcome check. Another create will remain blocked.", state_error: "Setup state cannot be read. Resource creation is blocked." })[shell.state]}</p>
+          {shell.operation?.errorCode ? <p className="text-muted-foreground">The last setup action did not finish successfully. Check its outcome before retrying.</p> : null}
+          {shell.previousPending ? <p className="text-muted-foreground">An earlier configuration has {shell.previousPending} unresolved operations. Restore its account configuration to check them.</p> : null}
+          {shell.operation?.action === "snapshot" && shell.operation.phase === "complete" && shell.operation.snapshotId && !ex.envNames.roamSnapshot ? <Button type="button" variant="outline" size="sm" onClick={() => setRoamSnapshot(shell.operation!.snapshotId!)}>Select the new shell snapshot</Button> : null}
+          {unsaved ? <p className="text-muted-foreground">Save your changes before checking or creating Daytona resources.</p> : null}
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={unsaved || actionBusy || !ex.key.set} onClick={() => { setActionBusy(true); setError(null); discoverShellSnapshots().then(setDiscovery, (e) => setError(e.message)).finally(() => setActionBusy(false)) }}>Find snapshots</Button>
+            <Button type="button" variant="outline" size="sm" disabled={unsaved || actionBusy || pending || !ex.roamSnapshot} onClick={() => void action(checkShellSnapshot)}>Check snapshot</Button>
+            <Button type="button" variant="outline" size="sm" disabled={unsaved || actionBusy || pending || !ex.roamSnapshot} onClick={() => setConfirm("test")}>Test shell</Button>
+            <Button type="button" variant="outline" size="sm" disabled={unsaved || actionBusy || pending || !ex.key.set} onClick={() => setConfirm("build")}>Create shell snapshot</Button>
+            {shell.operation?.canReconcile ? <Button type="button" variant="outline" size="sm" disabled={actionBusy || unsaved} onClick={() => void action(() => reconcileShellSetup(shell.operation!.id, shell.operation!.action))}>Check outcome and clean up</Button> : null}
+          </div>
+          {confirm ? <div className="flex flex-col gap-2 rounded-lg border p-3">
+            <p>{confirm === "build" ? "Build the fixed Touchstone shell recipe in your Daytona account. Daytona may charge for snapshot storage. No local files are uploaded." : "Create one disposable Daytona machine. This may incur a small charge. The test uses its own loopback server and deletes the machine afterward; a ten-minute TTL is the backstop."}</p>
+            <div className="flex gap-2"><Button type="button" size="sm" onClick={() => provision(confirm)}>Confirm {confirm === "build" ? "build" : "test"}</Button><Button type="button" size="sm" variant="outline" onClick={() => setConfirm(null)}>Cancel</Button></div>
+          </div> : null}
+        </section>
         {error ? (
           <p role="alert" className="text-xs leading-relaxed text-bad">
             {error}

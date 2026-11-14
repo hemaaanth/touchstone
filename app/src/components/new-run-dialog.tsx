@@ -32,6 +32,7 @@ export function NewRunDialog({
   busy,
   error,
   setupError = null,
+  roamReady = false,
   onOpenSettings,
   onStart,
 }: {
@@ -43,6 +44,7 @@ export function NewRunDialog({
   busy: boolean
   error: string | null
   setupError?: string | null
+  roamReady?: boolean
   onOpenSettings?: () => void
   // One run covers every module in `modules`.
   onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => void
@@ -68,7 +70,8 @@ export function NewRunDialog({
   const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && !setupError && runnable.length > 0 && !busy && budgetOk && modules.length > 0
+  const needsRoamSetup = mode === "fleet" && freeRoam && !roamReady
+  const canStart = !needsRoamSetup && alias !== "" && !setupError && runnable.length > 0 && !busy && budgetOk && modules.length > 0
 
   const submit = () => {
     if (!canStart) return
@@ -77,7 +80,7 @@ export function NewRunDialog({
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
 
-  const notice = setupError || (!budgetOk
+  const notice = setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : alias === ""
       ? "Set up a provider key and model in Settings. NEAR AI Cloud is recommended."
@@ -211,7 +214,7 @@ export function NewRunDialog({
           </label>
 
           {notice ? <p role="alert" className="text-xs text-bad">{notice}</p> : null}
-          {(setupError || alias === "") && onOpenSettings ? (
+          {(setupError || needsRoamSetup || alias === "") && onOpenSettings ? (
             <Button type="button" variant="outline" onClick={onOpenSettings}>Set up provider</Button>
           ) : null}
           {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}

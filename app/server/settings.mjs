@@ -22,6 +22,7 @@ import {
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
+import { roamSetupView } from "../../spike/lib/daytona-setup.mjs"
 import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
 import { consoleToken, rotateConsoleToken, sameToken } from "../../spike/lib/grant-store.mjs"
 // The page gets the token from here (vite.config.ts), read at serve time.
@@ -251,10 +252,13 @@ function executionState(cfg) {
     envKeyHost: c.envKeyHost,
     target: c.target,
     snapshot: c.snapshot,
+    roamSnapshot: c.roamSnapshot,
+    shellSetup: roamSetupView(c),
     // A server env var wins over the saved value. Name it, so the form can say so.
     envNames: {
       apiUrl: process.env.DAYTONA_API_URL ? "DAYTONA_API_URL" : null,
       target: process.env.DAYTONA_TARGET ? "DAYTONA_TARGET" : null,
+      roamSnapshot: process.env.TOUCHSTONE_ROAM_SNAPSHOT ? "TOUCHSTONE_ROAM_SNAPSHOT" : null,
     },
     defaults: { apiUrl: DEFAULT_API_URL, target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
   }
@@ -268,7 +272,7 @@ export function setExecution(body = {}) {
   const backend = body.backend ?? prev.backend ?? "local"
   if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
   const next = { backend }
-  for (const f of ["target", "snapshot"]) {
+  for (const f of ["target", "snapshot", "roamSnapshot"]) {
     const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
     if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
     if (v) next[f] = v

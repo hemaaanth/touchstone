@@ -24,7 +24,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash, randomUUID } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
-import { closeRun } from "../../spike/lib/daytona.mjs"
+import { requireRoamReady } from "../../spike/lib/daytona-setup.mjs"
+import { execConfig, closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, providerSetupError, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
@@ -559,6 +560,7 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
   const setupError = providerSetupError(provider, alias)
   if (setupError) throw new Error(setupError)
+  if (roam.freeRoam) requireRoamReady(execConfig())
   // The modules the run covers. `packs` is the operator's ticked list from the
   // New run dialog; two or more distinct ids make ONE run over all of them. A
   // list that dedupes to one, or no list, is today's one-module run: `pack`.
@@ -1633,7 +1635,7 @@ async function endWorkspace(run) {
   }
   if (keepWorkspace(run, ws)) {
     // The files stay. The run's Daytona machines do not: they open again on demand.
-    if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {})
+    await closeRun(ws).catch(() => {})
     return
   }
   await cleanupWorkspace(ws)
@@ -1816,6 +1818,7 @@ export function followUp(run, text, clientId) {
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error(`This run has spent its budget of $${money.RUN_BUDGET_USD}. Start a new run with a higher budget to continue the work.`)
+  if (roamSelectionOf(run).freeRoam) requireRoamReady(execConfig())
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
   // The run's own snapshot comes first. Never replace it with a newer, wider
@@ -2629,6 +2632,7 @@ async function resumeRun(run) {
   run.static = run.prepass?.static ?? null
   run.fuzz = run.prepass?.fuzz ?? null
   run.settled = state.settled ?? null
+  if (state.phase !== "proof" && roamSelectionOf(run).freeRoam) requireRoamReady(execConfig())
   if (state.phase === "setup") {
     checkRestarts(run)
     run.modules = state.modules ?? run.modules

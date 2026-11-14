@@ -121,7 +121,7 @@ export async function cleanupWorkspace(ws) {
   // A Daytona run leaves `<ws>.daytona.json` with its machine ids. Delete those
   // machines, and wait for it: a process that exits now would lose the ids.
   // An id Daytona will not delete yet goes to the pending file.
-  if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {});
+  await closeRun(ws).catch(() => {});
 }
 
 // Resolve a pragma expression to one concrete solc version we can pre-install.

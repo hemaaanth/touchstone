@@ -40,6 +40,7 @@ export function App() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [roamReady, setRoamReady] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
   // A write the server refused because this page's console token is old (it was
   // rotated in another tab). Shown once, with Reload, for every kind of write:
@@ -50,7 +51,8 @@ export function App() {
   const refreshModels = useCallback(() => {
     fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
     fetchModels()
-      .then(({ models, targets, packs, provider }) => {
+      .then(({ models, targets, packs, provider, roam }) => {
+        setRoamReady(roam?.ready === true && roam.backend === "daytona")
         setModels(models)
         setSetupError(provider?.setupError ?? null)
         // The operator's own scopes first, newest on top; then the labs that ship with the app.
@@ -279,6 +281,7 @@ export function App() {
         busy={busy}
         error={startError}
         setupError={setupError}
+        roamReady={roamReady}
         onOpenSettings={() => { setDialogOpen(false); select({ kind: "page", id: "settings" }) }}
         onStart={onStart}
       />

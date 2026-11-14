@@ -38,8 +38,8 @@ test("a fresh installation requires a key instead of advertising runnable preset
   expect(state.setupError).toContain("API key for NEAR AI Cloud")
   expect(runs.availableModels()).toEqual([])
   const before = runs.listRuns()
-  await expect(runs.createRun({ alias: "qwen-abl", targetId: "not-a-target" })).rejects.toThrow("Add an API key for NEAR AI Cloud in Settings")
-  expect(() => runs.acceptRun({ alias: "qwen-abl", targetId: "not-a-target" })).toThrow("Add an API key")
+  await expect(runs.createRun({ alias: "qwen-abl", targetId: "not-a-target", freeRoam: false })).rejects.toThrow("Add an API key for NEAR AI Cloud in Settings")
+  expect(() => runs.acceptRun({ alias: "qwen-abl", targetId: "not-a-target", freeRoam: false })).toThrow("Add an API key")
   expect(runs.listRuns()).toEqual(before)
   expect(existsSync(results)).toBe(false)
 })
@@ -49,7 +49,7 @@ test("a configured provider passes admission without requiring an unrelated RPC 
   expect(settings.getSettings().setupError).toBeNull()
   expect(runs.availableModels().some((m: { alias: string }) => m.alias === "qwen-abl")).toBe(true)
   // The target check is the next boundary; it refuses before any workspace, Docker, or worker.
-  await expect(runs.createRun({ alias: "qwen-abl", targetId: "not-a-target" })).rejects.toThrow("unknown target")
+  await expect(runs.createRun({ alias: "qwen-abl", targetId: "not-a-target", freeRoam: false })).rejects.toThrow("unknown target")
   expect(existsSync(results)).toBe(false)
 })
 
@@ -117,5 +117,13 @@ test("product model selection preserves every configured model family", async ()
   expect(runs.availableModels().map((m: { alias: string }) => m.alias)).toEqual(["kimi-test", "deepseek-test", "qwen-test"])
   expect(settings.setDefault({ provider: "lyber", model: "qwen-test" }).default.model).toBe("qwen-test")
   // Stop at target validation: this does not call any model.
-  await expect(runs.createRun({ alias: "kimi-test", targetId: "not-a-target" })).rejects.toThrow("unknown target")
+  await expect(runs.createRun({ alias: "kimi-test", targetId: "not-a-target", freeRoam: false })).rejects.toThrow("unknown target")
+})
+
+test("unverified free-roam is refused before target preparation or model work", async () => {
+  settings.saveProvider({ id: "near", apiKey: "synthetic-near-key-only-for-tests" })
+  const before = runs.listRuns()
+  expect(() => runs.acceptRun({ alias: "qwen-abl", targetId: "not-a-target", freeRoam: true })).toThrow("Verify a free-roam snapshot")
+  expect(runs.listRuns()).toEqual(before)
+  expect(existsSync(results)).toBe(false)
 })

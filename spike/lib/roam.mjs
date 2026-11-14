@@ -110,6 +110,16 @@ async function supervisedShell(m, command, seconds) {
   } catch (e) { if (!e.notLaunched) await unknown(m, s); throw e; }
 }
 
+// Setup exercises the same supervisor used by real children, including its
+// pause/resume/close acknowledgements. It never runs an owner-supplied command.
+export async function probeManagedShell(machine) {
+  const result = await supervisedShell(machine, "printf touchstone-shell-ready", 5);
+  if (result.exitCode !== 0 || result.result !== "touchstone-shell-ready") throw new Error(CONTROL_ERROR);
+  await pauseRoamShell(machine);
+  await resumeRoamShell(machine);
+  await closeRoamShell(machine);
+}
+
 export function roamTools(ws, { record, egress, machine = roamMachine }) {
   const turn = new Map(); // agent -> the end of its last shell call
   const logged = new Set(); // ids of machines whose request log this worker started
