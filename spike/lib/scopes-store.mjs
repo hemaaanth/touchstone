@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { addGrant, loadGrants, loadStore, saveStore, removeGrant, privateLabHostError, withStoreLock } from "./grant-store.mjs";
+import { pinFork } from "./fork.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(HERE, "../data");
@@ -429,7 +430,7 @@ export function scopeOutline(scope) {
 
 // Add a scope with members. `pack` is only a hint: it counts only for repos,
 // whose content is not known yet (see scopePack). Returns the stored scope.
-export function addScope({ title, members, pack: declared, blurb } = {}) {
+export function addScope({ title, members, pack: declared, blurb, fork } = {}) {
   const list = validateMembers(members);
   const label = (m) => (m.kind === "repo" ? new URL(m.url).pathname.split("/")[2] : m.name);
   const t = String(title || "").trim() || list.map(label).join(" + ").slice(0, 120);
@@ -437,11 +438,19 @@ export function addScope({ title, members, pack: declared, blurb } = {}) {
   const pack = scopePack(list, declared);
   const files = memberFilePaths(list);
   const links = list.filter((m) => m.kind === "repo").map((m) => m.url);
+  // A fork pins this scope to one real chain block (lib/fork.mjs). Validated here,
+  // before it is stored, so a scope cannot be saved in a state the engine would
+  // refuse: an unknown chain, or a fork with no block.
+  const pin = fork ? pinFork(fork) : null;
   const scope = {
     id: `scope-${slugify(t)}-${randomUUID().slice(0, 8)}`,
     kind: "scope",
     title: t,
     blurb: String(blurb || "").trim(),
+    // The pinned addresses ride with the pin. Without them the deployed oracle has
+    // no victim, and a forked replay could only ever prove harm to code it deploys
+    // itself, which is the offline case it exists to replace.
+    ...(pin ? { fork: { chain: pin.chain, block: pin.block, ...(pin.addresses ? { addresses: pin.addresses } : {}) } } : {}),
     pack,
     entry: files[0]?.path ?? links[0],
     signal: pack === "contracts" && files.some((f) => isSolidity(f.path)) ? "static" : "agent",

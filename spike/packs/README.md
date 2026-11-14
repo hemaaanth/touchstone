@@ -32,7 +32,7 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `tier`    | `"P" \| "S" \| "I" \| "F"`  | The highest tier the pack can reach. See 08-proposed-ui.md §5.4. |
 | `proof`   | `"forge" \| "http" \| "evidence" \| "none"` | How a finding becomes real. See "Proof kinds". |
 | `live`    | boolean                     | The tools can be aimed at a real host, so the pack may run a live scope. Without it a live scope under this pack is refused rather than silently scanning the pack's lab. |
-| `offline` | `true`                      | Optional. No tool reaches a network. Only then does the Modules page say the pack runs only in the offline sandbox. |
+| `offline` | `true`                      | Optional. **Every** tool of this pack stays offline in every run. Only then may the pack claim it. A pack whose tools may reach an outbound network leaves this unset and says what it reaches in TOOLS.md. `true` is a claim about code, never a product-wide promise: see `docs/network.md`. |
 | `fetches` | `("github" \| "solc")[]`     | Optional. What the host fetches for a run: the scope's GitHub links, and the Solidity compilers those files pin. |
 | `scanNet` | `"open"`                    | Optional. A live run's scanners use the open bridge network, not the grant gate. |
 | `grants`  | `"github"`                  | Optional. A live grant names GitHub repos or orgs, not hosts. |
@@ -62,9 +62,12 @@ reads `found` when the run settles.
    `THIRD_PARTY.md`. GPL and AGPL code runs as a separate program only.
    Non-commercial or unlicensed code is read, or run as a separate program, and
    never pasted. All third-party code runs in Docker, never on the host.
-3. **Offline by default.** Every tool runs in Docker with `--network none`. A
-   tool that needs the network says so in TOOLS.md. It runs only against a lab
-   until the scope proxy and the grant exist (I tier).
+3. **Say what a tool reaches.** A tool that needs no network runs in Docker with
+   `--network none`; a tool that needs one says so in TOOLS.md, and what it talks
+   to. A pack with no outbound path may set `offline: true`. Offline is a property
+   of a tool, not a promise the product makes about a run: a live scope reads a
+   real host by design, and a forked replay reads a real chain. See
+   `docs/network.md`.
 4. **A lead is not a finding.** Tool output is a lead. A finding needs a proof
    that the engine can replay. The `submit_finding` gate refuses anything else.
 5. **One finding per root cause.** One fix closes one finding.

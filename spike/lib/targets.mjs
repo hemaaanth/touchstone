@@ -52,6 +52,7 @@ import { fileURLToPath } from "node:url"
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { makeWorkspace, makeBriefWorkspace, readTouchstone, writeTouchstone } from "./sandbox.mjs"
+import { applyForkToWorkspace } from "./fork.mjs"
 import { PACKS } from "../packs/index.mjs"
 import { MULTI, MULTI_DIR, memberDir } from "../packs/multi.mjs"
 import { readScopes, getUserScope, sourceFiles, memberFilePaths, memberProof, scopeOutline, safeRelPath, solidityKnown, SCOPE_PACKS } from "./scopes-store.mjs"
@@ -297,6 +298,9 @@ export function targetSummary(target, { paths = false } = {}) {
     entry: target.entry,
     signal: target.signal,
     proofSurface: target.proofSurface,
+    // The chain pin a forked scope carries (lib/fork.mjs). Absent on every target
+    // that does not fork, so no existing summary changes shape.
+    ...(target.fork ? { fork: { chain: target.fork.chain, block: target.fork.block } } : {}),
   }
   if (target.kind === "brief") s.links = Array.isArray(target.links) ? target.links : []
   // The scope list carries the operator's brief, so the Scopes page can edit
@@ -639,7 +643,11 @@ function prepareScopeWorkspace(target, { modules }) {
 // it. It must live outside the repo tree, so a lab can never be committed by
 // accident. Every other target goes through prepareWorkspace.
 export async function prepareRunWorkspace(target, { modules = [] } = {}) {
-  if (!target?.generated) return prepareWorkspace(target, { modules })
+  if (!target?.generated) {
+    const built = prepareWorkspace(target, { modules })
+    applyForkToWorkspace(built, target, { readCfg: () => readTouchstone(built), writeCfg: (cfg) => writeTouchstone(built, cfg) })
+    return built
+  }
   const pack = packOf(target)
   const make = PACKS[pack]?.lab?.make
   if (typeof make !== "function") throw new Error(`target ${target.id} has no lab generator`)
@@ -649,6 +657,7 @@ export async function prepareRunWorkspace(target, { modules = [] } = {}) {
     throw new Error(`the generated lab for ${target.id} is inside the repository: refused`)
   }
   writeTouchstone(ws, { ...readTouchstone(ws), kind: "lab", pack, modules })
+  applyForkToWorkspace(ws, target, { readCfg: () => readTouchstone(ws), writeCfg: (cfg) => writeTouchstone(ws, cfg) })
   return ws
 }
 

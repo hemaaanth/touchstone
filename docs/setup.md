@@ -25,12 +25,16 @@ Pulls run a few at a time (network-bound). Builds run one at a time (CPU and IO
 heavy). The full set is 45 images; a from-scratch run takes a while and needs
 network and free disk.
 
-## Build needs network; runs do not
+## Build needs network, and so may a run
 
 Building an image fetches packages (npm, pip, binaries), so this setup step
-reaches the network. That is the sanctioned provisioning moment. The tool **runs**
-stay offline: every tool container runs with `--network none` and `--pull=never`.
-Restoring images does not weaken that.
+reaches the network. A **run** may also reach the network, by design: a live
+scope reads a real host, a GitHub scope is cloned on the host, and a forked
+replay reads a real chain through an RPC. A tool container that needs no network
+still runs with `--network none` and `--pull=never`; that is a property of the
+tool, not a promise the product makes. See [network.md](network.md) for the
+exact per-module table and the one boundary that does not move (no transaction
+on a live chain).
 
 ## Flags
 
