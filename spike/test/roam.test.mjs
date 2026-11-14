@@ -21,7 +21,7 @@ const RAW = "raw output with sk-secret-0000";
 const textOf = (res) => res.output[0].text;
 
 // A fake record(), egress and machine. `steps` holds what ran, in order.
-function fakes({ id = "m-1", fresh = true, replaced = false, exitCode = 0, startFails = 0, pulled = [] } = {}) {
+function fakes({ id = "m-1", fresh = true, replaced = false, exitCode = 0, startFails = 0, pullFails = 0, pulled = [] } = {}) {
   const steps = [];
   const entries = [];
   let n = 0;
@@ -54,6 +54,7 @@ function fakes({ id = "m-1", fresh = true, replaced = false, exitCode = 0, start
       },
       pull: async (x) => {
         steps.push(`pull ${x.id}`);
+        if (pullFails-- > 0) throw new Error("pull failed: machine text sk-secret-0000");
         return pulled;
       },
     },
@@ -145,6 +146,43 @@ test("shell: two calls of one child run one after the other", async () => {
   assert.match(textOf(b), /^session session:a-1:2\n/);
 });
 
+test("shell: a machine that is not new still gets its log before the first command", async () => {
+  // roamMachine gives `fresh: false` for a machine it took from the sidecar.
+  const f = fakes({ id: "old1", fresh: false });
+  const shell = shellOf(f);
+  await as("a-1", shell, { command: "id" });
+  await as("a-1", shell, { command: "id" });
+  assert.deepEqual(f.steps, ["machine a-1", "start old1", "exec", "record shell", "pull old1", "machine a-1", "exec", "record shell", "pull old1"]);
+});
+
+test("shell: the log cannot be read after the command; the model still gets the result", async () => {
+  const f = fakes({ pullFails: 1 });
+  const shell = shellOf(f);
+  const res = await as("a-1", shell, { command: "curl https://x.test" });
+  assert.equal(textOf(res), "session session:a-1:1\nexit 0\nscrubbed output\nThe request log could not be read after this command. It is read again on the next call.");
+  assert.ok(!JSON.stringify(res).includes("sk-secret"));
+  assert.deepEqual(f.entries.map((e) => e.kind), ["shell"]);
+  // The next call starts the log again, before it runs anything.
+  f.m.fresh = false;
+  f.steps.length = 0;
+  assert.equal(textOf(await as("a-1", shell, { command: "id" })), "session session:a-1:2\nexit 0\nscrubbed output");
+  assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1"]);
+});
+
+test("shell: no exit code from the machine gives `exit unknown`", async () => {
+  const f = fakes();
+  f.m.exec = async () => ({ exitCode: undefined, result: RAW });
+  assert.equal(textOf(await as("a-1", shellOf(f), { command: "id" })), "session session:a-1:1\nexit unknown\nscrubbed output");
+  assert.ok("exit_code" in f.entries[0]);
+  assert.equal(f.entries[0].exit_code, undefined);
+});
+
+test("shell: the description does not say that the session line is first", () => {
+  const { description } = shellOf(fakes());
+  assert.match(description, /a line that starts with "session"/);
+  assert.ok(!/starts with a session id line|first line/.test(description));
+});
+
 test("roam.mjs starts no host process and reads no host environment", () => {
   const src = readFileSync(new URL("../lib/roam.mjs", import.meta.url), "utf8");
   assert.ok(!/child_process|process\.env|node:fs|runTool/.test(src));
@@ -163,7 +201,8 @@ function fakeDaytona(dir) {
   writeFileSync(join(tarDir, "meta", "code"), "0\n");
   writeFileSync(join(tarDir, "meta", "out"), "hi");
   const resTar = execFileSync("tar", ["-cf", "-", "-C", tarDir, "."]);
-  const fake = { calls: [], creates: [], deletes: [], execs: [], state: {}, createStatus: 200, n: 0 };
+  // onExec(body) may return a Response for one toolbox exec call.
+  const fake = { calls: [], creates: [], deletes: [], execs: [], state: {}, createStatus: 200, n: 0, onExec: null };
   const json = (o) => new Response(JSON.stringify(o), { status: 200 });
   fake.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -191,6 +230,8 @@ function fakeDaytona(dir) {
     if (u.includes("/process/execute")) {
       const body = JSON.parse(init.body);
       fake.execs.push({ id: u.split("/process/")[0].split("/").pop(), ...body });
+      const own = fake.onExec?.(body);
+      if (own) return own;
       return json({ exitCode: 0, result: body.command === "true" ? "" : RAW });
     }
     return new Response("unexpected", { status: 500 });
@@ -248,7 +289,6 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
 
     // A container snapshot that Daytona has, root, and the long lifecycle.
     const { labels, ...body } = fake.creates[0];
-    assert.equal(ROAM_SNAPSHOT, "daytona-medium");
     assert.deepEqual(body, { snapshot: ROAM_SNAPSHOT, target: "us-west-3", user: "root", autoStopInterval: 60, autoDeleteInterval: 240 });
     assert.deepEqual({ ...labels, nonce: "", run: "" }, { touchstone: "1", agent: "a-1", nonce: "", run: "", loadout: "free-roam" });
     assert.deepEqual(events.map(({ t, run, ...e }) => e), [
@@ -346,7 +386,8 @@ test("a 404 on the snapshot is an error for the operator; no snapshot is created
     fake.createStatus = 404;
     const { f, shell } = realShell(ws);
     await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.match(e.message, /snapshot "daytona-medium"/);
+      assert.match(e.message, /^Daytona answered 404 to the create call\. The most likely cause is that the snapshot /);
+      assert.ok(e.message.includes(`the snapshot "${ROAM_SNAPSHOT}" does not exist`));
       assert.match(e.message, /TOUCHSTONE_ROAM_SNAPSHOT/);
       assert.match(e.message, /never creates/);
       return true;
@@ -368,5 +409,113 @@ test("a confined tool machine still gets its own snapshot, 15 idle minutes and d
     const { labels, ...body } = fake.creates[0];
     assert.deepEqual(body, { snapshot: "touchstone-exec-dind-v1", target: "us-west-3", user: "root", autoStopInterval: 15, autoDeleteInterval: 0 });
     assert.equal(labels.loadout, undefined);
+  });
+});
+
+// A real shell that notes, at each egress.start, the commands that already ran.
+function orderedShell(ws, fake) {
+  const { f, shell } = realShell(ws);
+  const start = f.egress.start;
+  f.ranBeforeStart = [];
+  f.egress.start = async (m) => {
+    f.ranBeforeStart.push(fake.execs.filter((x) => x.command !== "true").map((x) => x.id));
+    return start(m);
+  };
+  return { f, shell };
+}
+
+test("the ready check fails once: the next call still starts the log before the command", async () => {
+  await withFake(async ({ ws, fake }) => {
+    const { f, shell } = orderedShell(ws, fake);
+    fake.onExec = () => {
+      fake.onExec = null;
+      return new Response("toolbox text sk-secret-0000", { status: 404 });
+    };
+    // The error is a fixed text. It holds nothing of what the toolbox answered.
+    await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
+      assert.equal(e.message, "The free-roam machine is not ready (HTTP 404).");
+      return true;
+    });
+    assert.deepEqual(f.steps, []);
+    // The machine is in the sidecar now. So the next call does not make it, and gets `fresh: false`.
+    await as("a-1", shell, { command: "id" });
+    assert.equal(fake.creates.length, 1);
+    assert.deepEqual(f.steps, ["start m-1", "record shell", "pull m-1"]);
+    assert.deepEqual(f.ranBeforeStart, [[]]);
+    assert.deepEqual(fake.execs.map((x) => x.command), ["true", "true", `sh -c ${shq(`${ENV}id`)}`]);
+  });
+});
+
+test("a machine from the sidecar gets its log before the first command", async () => {
+  await withFake(async ({ ws, fake }) => {
+    fake.state.old1 = "started";
+    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" } }));
+    const { f, shell } = orderedShell(ws, fake);
+    await as("a-1", shell, { command: "id" });
+    await as("a-1", shell, { command: "id" });
+    assert.equal(fake.creates.length, 0);
+    assert.deepEqual(f.steps, ["start old1", "record shell", "pull old1", "record shell", "pull old1"]);
+    assert.deepEqual(f.ranBeforeStart, [[]]);
+    assert.deepEqual(f.entries.map((e) => e.sandbox), ["old1", "old1"]);
+  });
+});
+
+test("the command call fails: a shell entry is recorded and the model sees a fixed text", async () => {
+  await withFake(async ({ ws, fake }) => {
+    const { f, shell } = realShell(ws);
+    fake.onExec = (body) => (body.command === "true" ? null : new Response("machine text sk-secret-0000 from the toolbox", { status: 500 }));
+    await assert.rejects(as("a-1", shell, { command: "sleep 9999" }), (e) => {
+      assert.equal(e.message, "The command did not finish on the machine (HTTP 500). It may still be running.");
+      assert.equal(e.cause, undefined);
+      return true;
+    });
+    assert.deepEqual(f.steps, ["start m-1", "record shell"]);
+    assert.deepEqual({ ...f.entries[0], t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "sleep 9999", exit_code: undefined, output: "" });
+    // No answer at all (the connection broke) has no status.
+    fake.onExec = (body) => {
+      if (body.command !== "true") throw new Error("socket text sk-secret-0000");
+    };
+    await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
+      assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+      return true;
+    });
+    assert.equal(f.entries.length, 2);
+  });
+});
+
+test("a huge answer of a roam exec: this computer keeps only its last 4 MB", async () => {
+  await withFake(async ({ ws, fake }) => {
+    const MAX = 4 * 1024 * 1024;
+    const out = Array.from({ length: 300_000 }, (_, i) => `line ${i} "quoted" \\ é\n`).join("") + "THE END";
+    assert.ok(Buffer.byteLength(JSON.stringify(out)) > MAX + 500_000);
+    // The body comes in small parts, like a real HTTP answer.
+    const stream = (text) => {
+      const bytes = Buffer.from(text);
+      let at = 0;
+      return new Response(new ReadableStream({
+        pull(c) {
+          if (at >= bytes.length) return c.close();
+          c.enqueue(bytes.subarray(at, (at += 65_536)));
+        },
+      }), { status: 200 });
+    };
+    const m = await roamMachine(ws, "a-1");
+    for (const [body, code] of [
+      [`{"exitCode":7,"result":${JSON.stringify(out)}}`, 7],
+      [`{"result":${JSON.stringify(out)},"exitCode":7}`, 7],
+      [`{"code":7,"result":${JSON.stringify(out)}}`, undefined],
+    ]) {
+      fake.onExec = () => stream(body);
+      const r = await m.exec("yes", 5);
+      assert.equal(r.exitCode, code);
+      assert.ok(Buffer.byteLength(r.result) <= MAX);
+      assert.ok(r.result.length > 2_000_000);
+      assert.ok(r.result.endsWith('"quoted" \\ é\nTHE END'));
+      // It is the tail of the output. Only its first characters may be damaged by the cut.
+      assert.ok(out.endsWith(r.result.slice(8)));
+    }
+    // A small answer is read whole, as before.
+    fake.onExec = () => stream(JSON.stringify({ exitCode: 0, result: "small \n \"x\"" }));
+    assert.deepEqual(await m.exec("id", 5), { exitCode: 0, result: 'small \n "x"' });
   });
 });

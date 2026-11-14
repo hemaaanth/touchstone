@@ -24,35 +24,54 @@ import { currentAgent } from "./event.mjs";
 const DEFAULT_S = 120;
 const MAX_S = 900;
 export const REPLACED_NOTICE = "The machine was replaced. Files from before are gone.";
+const PULL_NOTICE = "The request log could not be read after this command. It is read again on the next call.";
 
 const text = (value) => ({ output: [{ type: "text", text: value }] });
 
 export function roamTools(ws, { record, egress, machine = roamMachine }) {
   const turn = new Map(); // agent -> the end of its last shell call
-  const unlogged = new Set(); // ids of new machines whose request log has not started
+  const logged = new Set(); // ids of machines whose request log this worker started
   const owed = new Set(); // agents that have not seen the replaced notice yet
 
   async function run(agent, command, seconds) {
     const m = await machine(ws, agent);
     if (m.replaced) owed.add(agent);
-    // No log, no shell. A start that failed is tried again on the next call.
-    if (m.fresh) unlogged.add(m.id);
-    if (unlogged.has(m.id)) {
+    // No log, no shell. A machine this worker did not start the log on gets it
+    // first: a new one, one from the sidecar, one whose last start or pull failed.
+    if (!logged.has(m.id)) {
       await egress.start(m);
-      unlogged.delete(m.id);
+      logged.add(m.id);
     }
-    const r = await m.exec(`sh -c ${shq(egress.env + command)}`, seconds);
+    let r;
+    try {
+      r = await m.exec(`sh -c ${shq(egress.env + command)}`, seconds);
+    } catch (e) {
+      // The command may have run, so it gets its entry. The error is a fixed
+      // text: what the machine answered is not scrubbed, and the model reads it.
+      record({ agent, kind: "shell", t: Date.now(), sandbox: m.id, command, exit_code: undefined, output: "" });
+      throw new Error(`The command did not finish on the machine (HTTP ${Number.isInteger(e?.status) ? e.status : "no answer"}). It may still be running.`);
+    }
     const s = record({ agent, kind: "shell", t: Date.now(), sandbox: m.id, command, exit_code: r.exitCode, output: r.result });
-    for (const rec of await egress.pull(m)) {
+    let recs = [];
+    let note = "";
+    try {
+      recs = await egress.pull(m);
+    } catch {
+      // The command ran and is recorded, so the model still gets its result.
+      // The next call starts (and so checks) the log before it runs anything.
+      logged.delete(m.id);
+      note = `\n${PULL_NOTICE}`;
+    }
+    for (const rec of recs) {
       record({ agent, kind: "egress", t: rec.t, method: rec.method, url: rec.url, status: rec.status });
     }
     // The model gets the text that record() returned, never the raw output.
-    return `${owed.delete(agent) ? `${REPLACED_NOTICE}\n` : ""}session ${s.poc}\nexit ${r.exitCode}\n${s.output}`;
+    return `${owed.delete(agent) ? `${REPLACED_NOTICE}\n` : ""}session ${s.poc}\nexit ${r.exitCode ?? "unknown"}\n${s.output}${note}`;
   }
 
   const shell = defineTool({
     name: "shell",
-    description: `Run one shell command as root on your own remote Linux machine. The machine is yours for the whole run: files and installed packages stay between calls. It has open network access, and requests that use the proxy variables are logged. The result starts with a session id line; give that id to submit_session_candidate. Output is cut to its last part. Default time limit ${DEFAULT_S} s, at most ${MAX_S} s.`,
+    description: `Run one shell command as root on your own remote Linux machine. The machine is yours for the whole run: files and installed packages stay between calls. It has open network access, and requests that use the proxy variables are logged. The result holds a line that starts with "session"; give the id on that line to submit_session_candidate. Output is cut to its last part. Default time limit ${DEFAULT_S} s, at most ${MAX_S} s.`,
     parameters: obj({
       command: str({ description: "the command, run with sh -c" }),
       timeout_s: opt(int({ description: `time limit in seconds, default ${DEFAULT_S}, at most ${MAX_S}` })),

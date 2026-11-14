@@ -237,7 +237,7 @@ export function shq(s) {
 function client(c) {
   const API = c.apiUrl;
   const auth = { Authorization: `Bearer ${c.apiKey}` };
-  async function call(method, url, body, { raw = false, timeoutMs = 60_000 } = {}) {
+  async function call(method, url, body, { raw = false, timeoutMs = 60_000, cap = 0 } = {}) {
     const init = { method, headers: { ...auth }, signal: AbortSignal.timeout(timeoutMs) };
     if (body instanceof FormData) init.body = body;
     else if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
@@ -250,11 +250,15 @@ function client(c) {
       throw scrubError(err, API);
     }
     if (!r.ok) {
-      const text = (await r.text()).slice(0, 300);
+      // `cap` marks a call to a free-roam machine. Its answer is the child's
+      // text and may be huge, so an error does not read it.
+      if (cap) r.body?.cancel().catch(() => {});
+      const text = cap ? "" : (await r.text()).slice(0, 300);
       const e = new Error(scrubUrl(`Daytona ${method} ${url.replace(/\?.*/, "")} -> ${r.status}: ${text}`, API));
       e.status = r.status;
       throw e;
     }
+    if (cap) return cappedExec(r, cap);
     if (raw) return Buffer.from(await r.arrayBuffer());
     const t = await r.text();
     return t ? JSON.parse(t) : null;
@@ -276,6 +280,9 @@ function client(c) {
     remove: (id) => call("DELETE", `${API}/sandbox/${id}`),
     exec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
       { timeoutMs: (seconds + 30) * 1000 }),
+    // The same call for a free-roam machine: the answer is read with a size limit.
+    roamExec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES }),
     upload: (m, path, buf) => {
       const form = new FormData();
       form.append("file", new Blob([buf]), "f");
@@ -837,6 +844,41 @@ export function warmScript(v) {
 export const ROAM_SNAPSHOT = process.env.TOUCHSTONE_ROAM_SNAPSHOT ?? "daytona-medium";
 const ROAM_STOP_MIN = 60;
 const ROAM_DELETE_MIN = 240;
+// The child is root on its machine and can print gigabytes. This computer
+// keeps at most this much of one answer in memory.
+const ROAM_ANSWER_BYTES = 4 * 1024 * 1024;
+
+// Read the answer of a roam `exec` ({ exitCode, result } as JSON), with at
+// most `max` bytes kept. A larger answer loses its head: `result` is the tail
+// of the output, and `exitCode` is known only when it stands at the start or
+// the end of the JSON.
+async function cappedExec(r, max) {
+  const chunks = [];
+  let kept = 0;
+  let total = 0;
+  let first = null;
+  for await (const chunk of r.body ?? []) {
+    const b = Buffer.from(chunk);
+    first ??= b.subarray(0, 64);
+    total += b.length;
+    kept += b.length;
+    chunks.push(b);
+    while (kept - chunks[0].length >= max) kept -= chunks.shift().length;
+  }
+  const buf = Buffer.concat(chunks);
+  if (total <= max) return total ? JSON.parse(buf.toString("utf8")) : null;
+  const s = buf.subarray(buf.length - max).toString("utf8");
+  const last = s.match(/"\s*,\s*"exitCode"\s*:\s*(-?\d+)\s*\}\s*$/);
+  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"exitCode"\s*:\s*(-?\d+)\s*,/);
+  const end = last ? last.index : s.search(/"\s*\}\s*$/);
+  // The cut may fall inside an escape. Skip a few characters until the rest reads.
+  for (let k = 0; end > 0 && k < 8; k++) {
+    try {
+      return { exitCode: code ? Number(code[1]) : undefined, result: JSON.parse(`"${s.slice(k, end)}"`) };
+    } catch {}
+  }
+  return { exitCode: code ? Number(code[1]) : undefined, result: "" };
+}
 
 // The machine of one free-roam child, opened on first use.
 //   -> { id, fresh, replaced, exec(command, seconds) -> { exitCode, result }, upload(path, bytes) }
@@ -874,7 +916,7 @@ export async function roamMachine(ws, agent) {
     replaced: opened && m.replaced,
     exec: async (command, seconds) => {
       try {
-        const r = await m.api.exec(m, command, seconds);
+        const r = await m.api.roamExec(m, command, seconds);
         m.used = Date.now();
         return { exitCode: r?.exitCode, result: String(r?.result ?? "") };
       } catch (e) {
@@ -915,8 +957,8 @@ async function openRoam(c, root, agent, key, lost) {
         if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
       }
     }).catch(() => {});
-    if (e.status === 404 || /snapshot/i.test(String(e.message))) {
-      throw new Error(`Daytona could not make a free-roam machine from the snapshot "${ROAM_SNAPSHOT}". Touchstone never creates this snapshot. Set TOUCHSTONE_ROAM_SNAPSHOT to a container snapshot that your Daytona organisation has. (${e.message})`, { cause: e });
+    if (e.status === 404) {
+      throw new Error(`Daytona answered 404 to the create call. The most likely cause is that the snapshot "${ROAM_SNAPSHOT}" does not exist. Touchstone never creates this snapshot. Set TOUCHSTONE_ROAM_SNAPSHOT to a container snapshot that your Daytona organisation has. (${e.message})`, { cause: e });
     }
     throw e;
   }
@@ -930,19 +972,21 @@ async function openRoam(c, root, agent, key, lost) {
 }
 
 // The toolbox answers once the machine is up. A container machine has no
-// dockerd, so the check is `true`, not START_DOCKER.
+// dockerd, so the check is `true`, not START_DOCKER. The error is a fixed
+// text: what the toolbox answered comes from the child's machine, and the
+// model reads this error.
 async function roamReady(m) {
-  let last;
+  let why = "no answer";
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await m.api.exec(m, "true", 30);
+      const r = await m.api.roamExec(m, "true", 30);
       if (r?.exitCode === 0) return;
-      last = new Error(`the free-roam machine is not ready: ${String(r?.result).slice(-200)}`);
+      why = "the check command failed";
     } catch (e) {
-      last = e;
-      if (e.status === 404) throw e;
+      why = Number.isInteger(e?.status) ? `HTTP ${e.status}` : "no answer";
+      if (e?.status === 404) break;
     }
     await new Promise((r) => setTimeout(r, Number(process.env.DAYTONA_RETRY_MS) || 2000));
   }
-  throw last;
+  throw new Error(`The free-roam machine is not ready (${why}).`);
 }
