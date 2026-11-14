@@ -4,9 +4,12 @@ import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer, createConnection } from "node:net";
 import { withAgent } from "../lib/event.mjs";
 import { createBrowserDriver, serveBrowser, requestBrowser, SESSION_DIR, DRIVER_PATH, RESPONSE_BYTES } from "../roam/browser-driver.mjs";
 
@@ -290,4 +293,138 @@ test("persistent Unix driver shares one fake context across separate request con
   assert.equal((await requestBrowser({ action: "pause" }, { directory })).paused, true);
   assert.deepEqual(await requestBrowser({ action: "click", selector: "button" }, { directory }), { ok: false, error: "BROWSER_PAUSED" });
   assert.equal((await requestBrowser({ action: "close" }, { directory })).closed, true);
+});
+
+// The child runs the real listener and persistence path. Only Chromium is fake.
+// SIGKILL leaves the actual socket inode behind, unlike server.close().
+async function ownedDriverChild(t, directory) {
+  const source = `
+    import { serveBrowser } from ${JSON.stringify(new URL("../roam/browser-driver.mjs", import.meta.url).href)};
+    import { appendFileSync, writeFileSync } from "node:fs";
+    const directory = process.argv[1];
+    const chromium = { launch: async () => {
+      appendFileSync(directory + "/launches", "launch\\n");
+      return {
+        newContext: async ({ recordHar }) => ({
+          setDefaultTimeout() {}, setDefaultNavigationTimeout() {},
+          newPage: async () => ({ evaluate: async () => ({title:"fake",url:"https://example.test",text:"page"}) }),
+          close: async () => writeFileSync(recordHar.path, JSON.stringify({log:{entries:[]}})),
+        }),
+        close: async () => {},
+      };
+    }};
+    try {
+      await serveBrowser({ directory, chromium, timeoutMs: 500 });
+      process.send({ ready: true });
+    } catch (e) {
+      process.send({ ready: false, code: e.code });
+      process.disconnect();
+      process.exitCode = 1;
+    }
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", source, directory], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let stderr = "";
+  child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-16000); });
+  const stop = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit");
+    child.kill("SIGKILL");
+    await exited;
+  };
+  t.after(stop);
+  const ready = await new Promise((yes, no) => {
+    const timer = setTimeout(() => no(new Error(`Owned driver did not start: ${stderr}`)), 5000);
+    child.once("message", (message) => { clearTimeout(timer); yes(message); });
+    child.once("error", (error) => { clearTimeout(timer); no(error); });
+    child.once("exit", (code) => { clearTimeout(timer); no(new Error(`Owned driver exited ${code}: ${stderr}`)); });
+  });
+  return { child, stop, ...ready };
+}
+
+test("completed terminal capture survives owned process SIGKILL and socket restart without launch", async (t) => {
+  const { directory } = local(t);
+  const first = await ownedDriverChild(t, directory);
+  assert.equal(first.ready, true);
+  await requestBrowser({ action: "read" }, { directory });
+  const manifest = await requestBrowser({ action: "capture" }, { directory });
+  assert.equal(manifest.ok, true);
+  assert.equal(manifest.closed, true);
+  await first.stop();
+  assert.equal(lstatSync(join(directory, "browser.sock")).isSocket(), true);
+  const restarted = await ownedDriverChild(t, directory);
+  assert.equal(restarted.ready, true);
+  assert.deepEqual(await requestBrowser({ action: "capture" }, { directory }), manifest);
+  assert.deepEqual(await requestBrowser({ action: "close" }, { directory }), manifest);
+  assert.deepEqual(await requestBrowser({ action: "read" }, { directory }), { ok: false, error: "BROWSER_CLOSED" });
+  assert.equal(readFileSync(join(directory, "launches"), "utf8"), "launch\n");
+  await restarted.stop();
+});
+
+test("owned process restart still refuses an interrupted context and preserves its HAR", async (t) => {
+  const { directory } = local(t);
+  const first = await ownedDriverChild(t, directory);
+  assert.equal(first.ready, true);
+  await requestBrowser({ action: "read" }, { directory });
+  writeFileSync(join(directory, "browser.har"), "interrupted HAR");
+  await first.stop();
+  const restarted = await ownedDriverChild(t, directory);
+  assert.equal(restarted.ready, true);
+  assert.equal((await requestBrowser({ action: "status" }, { directory })).failed, true);
+  assert.deepEqual(await requestBrowser({ action: "read" }, { directory }), { ok: false, error: "BROWSER_FAILED" });
+  assert.deepEqual(await requestBrowser({ action: "capture" }, { directory }), { ok: false, error: "CAPTURE_FAILED" });
+  assert.equal(readFileSync(join(directory, "browser.har"), "utf8"), "interrupted HAR");
+  assert.equal(readFileSync(join(directory, "launches"), "utf8"), "launch\n");
+  await restarted.stop();
+});
+
+test("competing process starters recover stale socket once and leave winner reachable", async (t) => {
+  const { directory } = local(t);
+  const first = await ownedDriverChild(t, directory);
+  assert.equal(first.ready, true);
+  const manifest = await requestBrowser({ action: "capture" }, { directory });
+  await first.stop();
+  const rivals = await Promise.all([ownedDriverChild(t, directory), ownedDriverChild(t, directory)]);
+  assert.equal(rivals.filter((r) => r.ready).length, 1);
+  assert.equal(rivals.find((r) => !r.ready).code, "EADDRINUSE");
+  const inode = lstatSync(join(directory, "browser.sock")).ino;
+  assert.deepEqual(await requestBrowser({ action: "capture" }, { directory }), manifest);
+  assert.equal(lstatSync(join(directory, "browser.sock")).ino, inode);
+  assert.equal(existsSync(join(directory, "launches")), false);
+  await Promise.all(rivals.map((r) => r.stop()));
+});
+
+test("a live listener without our startup lock is never unlinked", async (t) => {
+  const { directory, fake } = local(t);
+  const path = join(directory, "browser.sock");
+  const live = createServer((socket) => {
+    // A recovery probe connects then closes without consuming this fixture's reply.
+    socket.on("error", (error) => assert.equal(error.code, "ECONNRESET"));
+    socket.end("alive");
+  });
+  await new Promise((yes, no) => { live.once("error", no); live.listen(path, yes); });
+  t.after(() => new Promise((yes) => live.close(yes)));
+  chmodSync(path, 0o600);
+  const inode = lstatSync(path).ino;
+  await assert.rejects(serveBrowser({ directory, chromium: fake.chromium }), { code: "EADDRINUSE" });
+  assert.equal(lstatSync(path).ino, inode);
+  const client = createConnection(path);
+  const [reply] = await once(client, "data");
+  assert.equal(reply.toString(), "alive");
+  client.destroy();
+  assert.deepEqual(fake.calls, []);
+});
+
+test("non-socket and symlink paths are never removed during recovery", async (t) => {
+  const { directory, fake } = local(t);
+  const path = join(directory, "browser.sock");
+  writeFileSync(path, "not ours");
+  await assert.rejects(serveBrowser({ directory, chromium: fake.chromium }), { code: "EADDRINUSE" });
+  assert.equal(readFileSync(path, "utf8"), "not ours");
+  rmSync(path);
+  const target = join(directory, "keep");
+  writeFileSync(target, "keep");
+  symlinkSync(target, path);
+  await assert.rejects(serveBrowser({ directory, chromium: fake.chromium }), { code: "EADDRINUSE" });
+  assert.equal(lstatSync(path).isSymbolicLink(), true);
+  assert.equal(readFileSync(target, "utf8"), "keep");
 });

@@ -6,9 +6,10 @@
 // capture/close are terminal and idempotent. Only context.close() flushes recordHar;
 // never use browser.close() first. Raw HAR and PNG files stay remote for I6 policy.
 import { createServer, createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 export const SESSION_DIR = "/var/lib/touchstone/session";
 export const DRIVER_PATH = "/opt/touchstone/roam/browser-driver.mjs";
@@ -231,22 +232,63 @@ async function readJson(stream, max, ms) {
   }), ms, () => stream.destroy());
 }
 
-export async function serveBrowser({ directory = SESSION_DIR, chromium, timeoutMs = ACTION_MS } = {}) {
-  const driver = createBrowserDriver({ directory, chromium, timeoutMs });
-  const socketPath = join(directory, "browser.sock");
-  // Do not unlink an owned live socket. Host startup probes before starting us.
-  const server = createServer({ allowHalfOpen: true }, async (socket) => {
-    let reply;
-    try { reply = await driver.dispatch(await readJson(socket, REQUEST_BYTES, timeoutMs)); }
-    catch { reply = fail("INVALID_REQUEST"); }
-    let json = JSON.stringify(reply);
-    if (Buffer.byteLength(json) > RESPONSE_BYTES) json = JSON.stringify(fail("RESPONSE_LIMIT"));
-    if (!socket.destroyed) socket.end(json);
+const listen = (server, path) => new Promise((yes, no) => {
+  server.once("error", no);
+  server.listen(path, yes);
+});
+const inUse = () => Object.assign(new Error("DRIVER_UNAVAILABLE"), { code: "EADDRINUSE" });
+
+async function removeStaleSocket(path) {
+  let before;
+  try { before = lstatSync(path); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+  if (!before.isSocket() || before.uid !== process.getuid() || (before.mode & 0o077)) throw inUse();
+  const refused = await new Promise((yes) => {
+    const socket = createConnection(path);
+    const done = (value) => { socket.destroy(); yes(value); };
+    socket.once("connect", () => done(false));
+    socket.once("error", (e) => done(e.code === "ECONNREFUSED"));
+    socket.setTimeout(1000, () => done(false));
   });
-  await new Promise((yes, no) => { server.once("error", no); server.listen(socketPath, yes); });
-  server.maxConnections = 32;
-  chmodSync(socketPath, 0o600);
-  return { server, driver };
+  if (!refused) throw inUse();
+  const after = lstatSync(path);
+  // Cooperating starters hold the kernel lock across probe, unlink and bind.
+  // Refuse a changed inode too: never remove a competing listener's endpoint.
+  if (!after.isSocket() || before.dev !== after.dev || before.ino !== after.ino || before.uid !== after.uid || before.mode !== after.mode) throw inUse();
+  unlinkSync(path);
+}
+
+export async function serveBrowser({ directory = SESSION_DIR, chromium, timeoutMs = ACTION_MS } = {}) {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  // Daytona is Linux. Abstract sockets are kernel-owned and vanish on SIGKILL.
+  // Hold this lock for the listener's lifetime: stale filesystem locks need no
+  // PID guessing, and competing starters cannot unlink each other's endpoint.
+  const ownership = createServer((socket) => socket.destroy());
+  const lock = "\0touchstone-browser-" + createHash("sha256").update(realpathSync(directory)).digest("hex");
+  await listen(ownership, lock);
+  const release = () => { if (ownership.listening) ownership.close(); };
+  let server;
+  try {
+    const socketPath = join(directory, "browser.sock");
+    await removeStaleSocket(socketPath);
+    const driver = createBrowserDriver({ directory, chromium, timeoutMs });
+    server = createServer({ allowHalfOpen: true }, async (socket) => {
+      let reply;
+      try { reply = await driver.dispatch(await readJson(socket, REQUEST_BYTES, timeoutMs)); }
+      catch { reply = fail("INVALID_REQUEST"); }
+      let json = JSON.stringify(reply);
+      if (Buffer.byteLength(json) > RESPONSE_BYTES) json = JSON.stringify(fail("RESPONSE_LIMIT"));
+      if (!socket.destroyed) socket.end(json);
+    });
+    server.once("close", release);
+    await listen(server, socketPath);
+    server.maxConnections = 32;
+    chmodSync(socketPath, 0o600);
+    return { server, driver };
+  } catch (e) {
+    if (server?.listening) await new Promise((yes) => server.close(yes));
+    release();
+    throw e;
+  }
 }
 
 export async function requestBrowser(request, { directory = SESSION_DIR, timeoutMs = ACTION_MS + 5000 } = {}) {
