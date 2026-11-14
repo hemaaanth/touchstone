@@ -939,16 +939,29 @@ async function cappedExec(r, max) {
   tail.subarray(at).reverse();
   tail.reverse();
   const s = tail.toString("utf8");
-  const last = s.match(/"\s*,\s*"(?:exitCode|code)"\s*:\s*(-?\d+)\s*\}\s*$/);
-  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"(?:exitCode|code)"\s*:\s*(-?\d+)\s*,/);
-  const end = last ? last.index : s.search(/"\s*\}\s*$/);
+  // Parse only the retained metadata around result. A fallback code may never
+  // override an authoritative exitCode, including an explicitly invalid one.
+  const start = first.toString("utf8");
+  const resultAt = start.search(/"result"\s*:/);
+  let before;
+  try {
+    if (resultAt < 0) throw new Error();
+    before = JSON.parse(`${start.slice(0, resultAt)}"result":""}`);
+  } catch { throw daytonaError("daytona_response_invalid"); }
+  const suffixStart = Math.max(0, s.length - 1024);
+  const suffix = s.slice(suffixStart).match(/"\s*,\s*("(?:exitCode|code)"[\s\S]*)\}\s*$/);
+  let after = {};
+  if (suffix) {
+    try { after = JSON.parse(`{${suffix[1]}}`); }
+    catch { throw daytonaError("daytona_response_invalid"); }
+  }
+  const status = daytonaExecution({ ...before, ...after, result: "" }).exitCode;
+  const end = suffix ? suffixStart + suffix.index : s.search(/"\s*\}\s*$/);
   // The cut may fall inside an escape. Skip a few characters until the rest reads.
   for (let k = 0; end > 0 && k < 8; k++) {
-    try {
-      return { exitCode: code ? Number(code[1]) : undefined, result: JSON.parse(`"${s.slice(k, end)}"`) };
-    } catch {}
+    try { return { exitCode: status, result: JSON.parse(`"${s.slice(k, end)}"`) }; } catch {}
   }
-  return { exitCode: code ? Number(code[1]) : undefined, result: "" };
+  return { exitCode: status, result: "" };
 }
 
 // The machine of one free-roam child, opened on first use.

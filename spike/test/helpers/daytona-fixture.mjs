@@ -44,7 +44,10 @@ export async function daytonaFixture(fn) {
       return json(f.sandbox);
     }
     if (u.pathname === "/api/sandbox") return json({ items: f.sandbox && !f.hideMachine ? [f.sandbox] : [] });
-    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "GET") return f.sandbox ? json({ ...f.sandbox, state: f.neverStarts || f.bootReads-- > 0 ? "creating" : "started" }) : json({}, 404);
+    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "GET") {
+      f.onSandboxRead?.();
+      return f.sandbox ? json({ ...f.sandbox, ...(f.omitToolboxOnGet ? { toolboxProxyUrl: undefined } : {}), state: f.neverStarts || f.bootReads-- > 0 ? "creating" : "started" }) : json({}, 404);
+    }
     if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "DELETE") {
       f.deletes++;
       if (f.cleanupFails) return json({ message: "synthetic-secret" }, 409);

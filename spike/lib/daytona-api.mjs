@@ -156,9 +156,9 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
       if (!id(sandboxId)) invalid();
       return call("DELETE", `/sandbox/${encodeURIComponent(sandboxId)}`, undefined, { empty: true });
     },
-    sandbox: (sandboxId) => {
+    sandbox: (sandboxId, { timeoutMs = 15_000 } = {}) => {
       if (!id(sandboxId)) invalid();
-      return call("GET", `/sandbox/${encodeURIComponent(sandboxId)}`);
+      return call("GET", `/sandbox/${encodeURIComponent(sandboxId)}`, undefined, { timeout: timeoutMs });
     },
     machine(sandbox) {
       if (!id(sandbox?.id) || typeof sandbox.toolboxProxyUrl !== "string" || sandbox.toolboxProxyUrl.length > 2048) invalid();
@@ -170,7 +170,7 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
       const baseUrl = `${toolbox.href.replace(/\/$/, "")}/${encodeURIComponent(sandbox.id)}`;
       return {
         id: sandbox.id, fresh: true,
-        exec: async (command, seconds) => daytonaExecution(await call("POST", "/process/execute", { command, timeout: seconds }, { baseUrl, timeout: (seconds + 15) * 1000 })),
+        exec: async (command, seconds, { timeoutMs = (seconds + 15) * 1000 } = {}) => daytonaExecution(await call("POST", "/process/execute", { command, timeout: seconds }, { baseUrl, timeout: Math.min(timeoutMs, (seconds + 15) * 1000) })),
         upload: (path, bytes) => {
           const form = new FormData();
           form.append("file", new Blob([bytes]), "file");

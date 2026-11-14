@@ -544,6 +544,8 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
       [`{"result":${JSON.stringify(out)},"exitCode":7}`, 7],
       [`{"code":7,"result":${JSON.stringify(out)}}`, 7],
       [`{"result":${JSON.stringify(out)},"code":7}`, 7],
+      [`{"exitCode":7,"result":${JSON.stringify(out)},"code":0}`, 7],
+      [`{"code":0,"result":${JSON.stringify(out)},"exitCode":7}`, 7],
     ]) {
       fake.onExec = () => stream(body);
       const r = await m.exec("yes", 5);
@@ -554,6 +556,8 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
       // It is the tail of the output. Only its first characters may be damaged by the cut.
       assert.ok(out.endsWith(r.result.slice(8)));
     }
+    fake.onExec = () => stream(`{"exitCode":"invalid","result":${JSON.stringify(out)},"code":0}`);
+    await assert.rejects(m.exec("yes", 5), { code: "daytona_response_invalid" });
     // A small answer is read whole, as before.
     fake.onExec = () => stream(JSON.stringify({ exitCode: 0, result: "small \n \"x\"" }));
     assert.deepEqual(await m.exec("id", 5), { exitCode: 0, result: 'small \n "x"' });

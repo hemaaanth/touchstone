@@ -189,3 +189,27 @@ test("a machine that never starts is cleaned up without testing capabilities or 
   assert.equal(allRoamOperations()[0].errorCode, "daytona_sandbox_start_failed");
   assert.ok(!f.calls.some((c) => c.path.endsWith("/process/execute")));
 }));
+
+test("startup retains the validated POST toolbox URL when the same-ID GET omits it", async () => fixture(async ({ config, f, deps }) => {
+  f.omitToolboxOnGet = true;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(roamSetupView(config).ready, true);
+  assert.equal(f.posts, 1);
+  assert.equal(f.deletes, 1);
+}));
+
+test("slow GET responses cannot admit toolbox commands after the startup deadline", async () => fixture(async ({ config, f, deps }) => {
+  let clock = 0;
+  deps.now = () => clock;
+  deps.sleep = async (ms) => { clock += ms; };
+  f.onSandboxRead = () => { clock += 10_000; };
+  f.initialBootReads = 5;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(roamSetupView(config).ready, false);
+  assert.equal(f.posts, 1);
+  assert.equal(f.deletes, 1);
+  assert.ok(!f.calls.some((c) => c.path.endsWith("/process/execute")));
+  assert.equal(allRoamOperations()[0].errorCode, "daytona_sandbox_start_failed");
+}));

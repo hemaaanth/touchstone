@@ -213,22 +213,36 @@ async function removeTestMachine(api, id, dependencies) {
 // POST /sandbox accepts the resource before it necessarily starts. Match the
 // SDK lifecycle: observe this same ID, then check its toolbox before probing.
 // Polling never sends another create.
-async function waitForTestMachine(api, id, dependencies) {
+async function waitForTestMachine(api, accepted, dependencies) {
   const pause = dependencies?.sleep ?? sleep;
-  const deadline = Date.now() + 60_000;
-  for (let i = 0; i < 60 && Date.now() < deadline; i++) {
+  const now = dependencies?.now ?? Date.now;
+  const deadline = now() + 60_000;
+  const id = accepted.id;
+  let toolbox = accepted.toolboxProxyUrl;
+  if (toolbox != null) api.machine({ id, toolboxProxyUrl: toolbox }); // validate before retaining
+  for (let i = 0; i < 60 && now() < deadline; i++) {
     let sandbox;
-    try { sandbox = await api.sandbox(id); }
+    try { sandbox = await api.sandbox(id, { timeoutMs: Math.min(15_000, deadline - now()) }); }
     catch (error) { if (error.status !== 404 && error.code !== "daytona_unreachable") throw error; }
+    if (now() >= deadline) break;
     if (sandbox && sandbox.id !== id) throw daytonaError("daytona_response_invalid");
+    if (sandbox?.toolboxProxyUrl != null) {
+      api.machine(sandbox);
+      toolbox = sandbox.toolboxProxyUrl;
+    }
     if (sandbox?.state === "started") {
-      const machine = api.machine(sandbox);
-      try { if ((await machine.exec("true", 5))?.exitCode === 0) return machine; }
+      const machine = api.machine({ ...sandbox, toolboxProxyUrl: toolbox });
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      let ready = false;
+      try { ready = (await machine.exec("true", 5, { timeoutMs: remaining }))?.exitCode === 0; }
       catch (error) { if (!["daytona_unreachable", "daytona_response_invalid"].includes(error.code) && error.status !== 404) throw error; }
+      if (now() >= deadline) break;
+      if (ready) return machine;
     } else if (sandbox && !["creating", "starting", "pending", "pending_build", "pulling", "queued"].includes(sandbox.state)) {
       throw daytonaError("daytona_sandbox_start_failed");
     }
-    await pause(1000);
+    await pause(Math.min(1000, Math.max(0, deadline - now())));
   }
   throw daytonaError("daytona_sandbox_start_failed");
 }
@@ -243,7 +257,7 @@ async function testShell(config, op, dependencies, api) {
     sandbox = await api.createSandbox({ touchstone: "1", loadout: "shell-setup", nonce: op.nonce, operation: op.id }, selected.snapshotId, { stopMin: 5, deleteMin: 0, ttlMinutes: 10 });
     if (!sandbox || typeof sandbox.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sandbox.id)) throw daytonaError("daytona_response_invalid");
     move(op.id, "created", sandbox.id);
-    const machine = await waitForTestMachine(api, sandbox.id, dependencies);
+    const machine = await waitForTestMachine(api, sandbox, dependencies);
     await probeDaytonaShell(machine);
     passed = true;
   } catch (error) {
