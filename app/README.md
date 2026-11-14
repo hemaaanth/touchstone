@@ -31,6 +31,53 @@ If you are developing a production application, we recommend enabling type-aware
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
 
+## First-run setup
+
+Open Settings before starting a run. Add an inference provider key and keep at least
+one model selected. NEAR AI Cloud is the recommended preset and the default on a
+fresh installation. The first configured provider becomes the saved default;
+a saved default is used only while it is configured. Otherwise another configured
+provider is selected. A server `PROVIDER` override is preserved and still must
+pass setup checks. All model families remain available.
+
+The console shows a setup action and disables Start until the selected provider
+has a key and model. The server checks again before creating a run, workspace,
+or scanners. This is a local configuration check, not a claim that the key is
+valid or the provider has credit. Use Fetch models to check the provider's catalog.
+
+NEAR AI Cloud has its own Private inference section and Recommended badge.
+Other providers and their configured models remain available.
+
+Website scans and local EVM labs do not require a production RPC key. Configurable
+live-network RPC endpoints are not supported by the current chain modules.
+Do not collect an unused RPC key during onboarding. A live-chain design must bind
+each endpoint to a network, scope, read/fork policy, and credential boundary first.
+
+If the connection drops during Start, acceptance is unknown: the run may already
+exist. Reload the run list before starting another run. A transport failure is not
+evidence that the inference key is missing.
+
+## Run history and scan progress
+
+Run files live under `TOUCHSTONE_RESULTS_DIR`: the `.stream.jsonl` file records
+server events, `.events` records engine events, `.sqlite` keeps the agent session,
+and `.json` holds the final result and transcript. A `.state.json` checkpoint
+exists while recovery is needed. These are private files, not safe raw exports.
+They do not form a complete HTTP wire trace. Browser response failures and every
+scanner's internal operation are not automatically captured.
+
+Joined scans report each module separately. Early tool counts are marked as
+reports so far. A later module's leads cannot turn a failed web scan into success.
+Module lead totals replace their earlier partial totals, rather than being
+counted twice. Final totals include tools beyond the bounded detail list; the
+detail says when rows are omitted. Leads are candidates to investigate, not
+proven vulnerabilities.
+
+Domain capture collects a pinned DNS and front-end snapshot: DNS answers, HTTP
+responses, TLS checks, scripts, and (for Surface) a scoped crawl. It is not just a
+homepage visit. Each tool's scope and recorded coverage still govern what was
+actually checked; unavailable tools do not count as a clean scan.
+
 ## Free-roam operator controls
 
 Fleet starts default to `freeRoam: true`. Solo starts opt out. The start body

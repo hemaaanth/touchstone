@@ -12,6 +12,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Label, ListCard, ListLoading, ListPage, ListRow, ListSection, RowMenu, RowMenuItem, RowMenuSeparator, TruncatedText } from "@/components/page-parts"
+import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 
 // Settings: four short lists. Providers, Run budget, Execution, Console. A row never
 // expands in place: a provider and Daytona open in a sheet, a new provider in
@@ -91,22 +92,41 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const makeDefaultOf = (p: ProviderSetting) =>
     p.key.set && !settings.envOverride ? (alias: string) => attempt(() => setDefaultModel(p.id, alias)) : null
   const ex = executionOf(settings)
+  const privateProviders = settings.providers.filter((p) => p.id === "near" && originOf(p.baseUrl) === "https://cloud-api.near.ai")
+  const groups = [
+    { title: "Private inference", description: undefined, providers: privateProviders, private: true },
+    { title: "Other providers", description: settings.envOverride ? `The server fixes the provider to ${settings.envOverride}. Restart without PROVIDER to change it.` : undefined, providers: settings.providers.filter((p) => !privateProviders.includes(p)), private: false },
+  ]
 
   return (
     <ListPage title="Settings">
       <SettingsRefusal text={error} />
 
+      {settings.setupError ? (
+        <ErrorState
+          title="Finish provider setup"
+          detail={settings.setupError}
+          actions={<Button size="sm" onClick={() => setEditing({ id: settings.envOverride ?? settings.default.provider ?? "near", open: true })}>Set up provider</Button>}
+        />
+      ) : null}
+
+      {groups.filter((group) => !group.private || group.providers.length > 0).map((group) => (
       <ListSection
-        title="Providers"
-        description={settings.envOverride ? `The server fixes the provider to ${settings.envOverride}. Restart without PROVIDER to change it.` : undefined}
+        key={group.title}
+        title={group.title}
+        description={group.description}
         action={
-          <Button size="sm" onClick={() => setAdding(true)}>
+          group.private ? (
+            <Button size="sm" onClick={() => setEditing({ id: group.providers[0]?.id ?? "near", open: true })}>
+              Set up NEAR AI Cloud
+            </Button>
+          ) : <Button size="sm" onClick={() => setAdding(true)}>
             <Plus /> Add provider
           </Button>
         }
       >
-        <ListCard aria-label="Providers">
-          {settings.providers.map((p) => {
+        <ListCard aria-label={group.title}>
+          {group.providers.map((p) => {
             const isDefault = settings.default.provider === p.id
             const first = p.models[0]?.alias
             const makeDefault = makeDefaultOf(p)
@@ -114,15 +134,15 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
             return (
               <ListRow
                 key={p.id}
+                className={group.private ? "min-h-20" : undefined}
                 icon={<ProviderLogo id={p.id} label={p.label} className="size-full rounded-none bg-transparent text-muted-foreground ring-0 [&>span]:size-4" />}
                 title={p.label}
                 badges={
-                  isDefault || !p.key.set ? (
-                    <>
-                      {isDefault ? defaultBadge : null}
-                      {p.key.set ? null : noKeyBadge}
-                    </>
-                  ) : null
+                  <>
+                    {group.private ? <Badge variant="outline" className={badge}>Recommended</Badge> : null}
+                    {isDefault ? defaultBadge : null}
+                    {p.key.set ? null : noKeyBadge}
+                  </>
                 }
                 meta={[<TruncatedText key="url" mono middle tail={18} text={p.baseUrl} />, plural(p.models.length, "model")]}
                 menu={
@@ -146,6 +166,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
           })}
         </ListCard>
       </ListSection>
+      ))}
 
       <BudgetSection settings={settings} onSave={(n) => attempt(() => setRunBudget(n))} />
 

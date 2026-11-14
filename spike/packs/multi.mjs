@@ -376,9 +376,13 @@ export function multiPack(members) {
       for (const p of members) {
         if (typeof p.prepass !== "function") continue;
         try {
-          done.push([p.id, (await p.prepass(memberDir(ws, p.id), opts)) ?? {}]);
+          const result = (await p.prepass(memberDir(ws, p.id), { ...opts, emit: (ev) => opts.emit?.({ ...ev, pack: p.id }) })) ?? {};
+          done.push([p.id, result]);
+          const view = prepassView(result.record);
+          if (view) opts.emit?.({ ev: "module-prepass", pack: p.id, ...view });
         } catch (err) {
           failed.push([p.id, String(err?.message ?? err)]);
+          opts.emit?.({ ev: "module-prepass", pack: p.id, total: 0, tools: [{ name: "module scan", status: "unavailable", reason: "The module scan did not finish.", leads: 0 }], failed: true });
         }
       }
       if (!done.length && failed.length) throw new Error(failed.map(([id, e]) => `${id}: ${e}`).join("; "));
@@ -444,8 +448,12 @@ export function prepassViewOf(record) {
     const view = prepassView(rec);
     return view ? [{ id, view }] : [];
   });
+  for (const id of record.failed ?? []) {
+    parts.push({ id, view: { total: 0, tools: [{ name: "module scan", status: "unavailable", reason: "The module scan did not finish.", leads: 0 }], leads: [] } });
+  }
   if (!parts.length) return null;
   const tag = (rows) => parts.flatMap(({ id, view }) => rows(view).map((row) => ({ pack: id, ...row })));
   const leads = tag((v) => v.leads).map((l, i) => ({ l, i })).sort((a, b) => rank(a.l.impact) - rank(b.l.impact) || a.i - b.i).map((x) => x.l);
-  return { total: parts.reduce((n, { view }) => n + view.total, 0), tools: tag((v) => v.tools).slice(0, 20), leads: leads.slice(0, 50) };
+  const tools = tag((v) => v.tools);
+  return { total: parts.reduce((n, { view }) => n + view.total, 0), tools: tools.slice(0, 20), toolsTotal: tools.length, toolsRan: tools.filter((t) => t.status === "ran").length, leads: leads.slice(0, 50) };
 }

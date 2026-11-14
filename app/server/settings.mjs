@@ -14,6 +14,7 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  providerSetupError,
   envKeyHome,
   readConfig,
   writeConfig,
@@ -217,11 +218,13 @@ export function getSettings() {
     models: modelRows(p),
   }))
   const ap = all[active]
+  const setupError = providerSetupError(ap, ap ? defaultAlias(ap, cfg) : null)
   return {
     providers,
-    default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
+    default: { provider: setupError ? null : active, model: !setupError && ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
+    setupError,
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
@@ -386,6 +389,12 @@ export function saveProvider(body = {}) {
   }
   if (!entry.models && !preset) throw new Error("add at least one model")
   cfg.providers[id] = entry
+  // The first configured provider becomes the default; later saves preserve the choice.
+  if (!cfg.default && !process.env.PROVIDER) {
+    const p = allProviders(cfg)[id]
+    const model = defaultAlias(p, cfg)
+    if (!providerSetupError(p, model)) cfg.default = { provider: id, model }
+  }
   writeConfig(cfg)
   return getSettings()
 }
@@ -405,7 +414,8 @@ export function setDefault({ provider, model } = {}) {
   const p = allProviders(cfg)[provider]
   if (!p) throw new Error(`unknown provider "${provider}"`)
   if (!p.models?.[model]) throw new Error(`unknown model "${model}" for ${p.label}`)
-  if (!providerKey(p)) throw new Error(`${p.label} has no API key yet`)
+  const setupError = providerSetupError(p, model)
+  if (setupError) throw new Error(setupError)
   cfg.default = { provider, model }
   writeConfig(cfg)
   return getSettings()

@@ -48,6 +48,9 @@ mock.module("node:child_process", { exports: { ...realChild, default: { ...realC
 const dir = mkdtempSync(path.join(tmpdir(), "run-coverage-"));
 process.env.TOUCHSTONE_RESULTS_DIR = path.join(dir, "results");
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
+process.env.SPEND_LEDGER = path.join(dir, "spend.json");
+process.env.PROVIDER = "near";
+process.env.NEARAI_API_KEY = "synthetic-key-for-mocked-engine";
 after(() => {
   // A run with a session keeps its workspace for a follow-up. Remove those too.
   const results = process.env.TOUCHSTONE_RESULTS_DIR;

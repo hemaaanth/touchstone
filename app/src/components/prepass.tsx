@@ -84,7 +84,7 @@ export function PrepassDetail({ prepass }: { prepass: PrepassView }) {
               <span className="flex size-3.5 shrink-0 items-center justify-center">
                 <Icon aria-hidden className="size-3 text-muted-foreground" />
               </span>
-              <span className={cn(mono, "shrink-0 text-foreground/80")}>{t.name}</span>
+              <span className={cn(mono, "shrink-0 text-foreground/80")}>{t.pack ? `${t.pack} · ` : ""}{t.name}</span>
               {/* A ran row's caveat ("7 of 8 operations errored") follows the
                   lead count and wraps, so a partial run never reads as clean. */}
               <span className={cn("min-w-0 flex-1 text-xs text-muted-foreground", t.status === "ran" && t.reason ? "break-words" : "truncate")}>
@@ -94,6 +94,9 @@ export function PrepassDetail({ prepass }: { prepass: PrepassView }) {
           )
         })}
       </ul>
+      {(prepass.toolsTotal ?? 0) > prepass.tools.length ? (
+        <p className="px-3.5 pb-3 text-[11px] text-muted-foreground">Showing {prepass.tools.length} of {prepass.toolsTotal} tools. Full coverage is kept in the run record.</p>
+      ) : null}
       {prepass.leads.length > 0 ? (
         <div className="px-3.5 pb-3">
           <DataTable columns={LEAD_COLUMNS} rows={prepass.leads} rowKey={(_, i) => String(i)} />

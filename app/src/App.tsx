@@ -21,6 +21,7 @@ import { loadRun, onRunSettled, reloadRun, useRunBriefs } from "@/lib/runModel"
 import { useStoredWidth } from "@/components/resize-handle"
 import { ErrorState } from "@/components/assistant-ui/elements/error-state"
 import { onStalePage } from "@/lib/console-token"
+import { Button } from "@/components/ui/button"
 
 export function App() {
   const [models, setModels] = useState<ModelChoice[]>([])
@@ -39,6 +40,7 @@ export function App() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [setupError, setSetupError] = useState<string | null>(null)
   // A write the server refused because this page's console token is old (it was
   // rotated in another tab). Shown once, with Reload, for every kind of write:
   // a rename or an archive shows no error of its own.
@@ -48,8 +50,9 @@ export function App() {
   const refreshModels = useCallback(() => {
     fetchStoreErrors().then(setStoreErrors, () => setStoreErrors([]))
     fetchModels()
-      .then(({ models, targets, packs }) => {
+      .then(({ models, targets, packs, provider }) => {
         setModels(models)
+        setSetupError(provider?.setupError ?? null)
         // The operator's own scopes first, newest on top; then the labs that ship with the app.
         const own = (t: TargetChoice) => isOwnScope(t.id) || t.kind === "live"
         setTargets([...targets.filter(own).reverse(), ...targets.filter((t) => !own(t))])
@@ -218,6 +221,14 @@ export function App() {
       />
 
       <main className="relative flex h-svh min-w-0 flex-1 flex-col">
+        {setupError && catalog === "ready" && page !== "settings" ? (
+          <ErrorState
+            className="shrink-0"
+            title="Finish provider setup"
+            detail={setupError}
+            actions={<Button size="sm" onClick={() => select({ kind: "page", id: "settings" })}>Set up provider</Button>}
+          />
+        ) : null}
         {activeRun ? (
           <RunChat
             key={activeRun.id}
@@ -248,7 +259,7 @@ export function App() {
           />
         ) : (
           <div className="grid flex-1 place-items-center p-8">
-            <p className="text-sm text-muted-foreground">Start a run to watch the agent work.</p>
+            <p className="text-sm text-muted-foreground">{setupError ? "Set up an inference provider before starting your first run." : "Start a run to watch the agent work."}</p>
           </div>
         )}
         {stalePage ? (
@@ -267,6 +278,8 @@ export function App() {
         packs={packs}
         busy={busy}
         error={startError}
+        setupError={setupError}
+        onOpenSettings={() => { setDialogOpen(false); select({ kind: "page", id: "settings" }) }}
         onStart={onStart}
       />
     </SidebarProvider>

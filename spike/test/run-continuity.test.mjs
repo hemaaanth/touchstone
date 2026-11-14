@@ -133,6 +133,9 @@ const RESULTS = path.join(dir, "results");
 process.env.TOUCHSTONE_RESULTS_DIR = RESULTS;
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
+process.env.SPEND_LEDGER = path.join(dir, "spend.json");
+process.env.PROVIDER = "near";
+process.env.NEARAI_API_KEY = "synthetic-key-for-mocked-engine";
 const made = []; // workspaces a test deleted from the record's view; removed at the end
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {
@@ -166,6 +169,64 @@ const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-stor
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
 const { createRun, getRun, steerRun, deleteRun, archiveRun } = runs;
+
+// Exercise the HTTP route with real registration and a deliberately blocked setup.
+const { handleRuns } = await import("../../app/server/runs-http.mjs");
+async function postRun(body) {
+  const req = new PassThrough();
+  Object.assign(req, {
+    method: "POST", url: "/api/runs",
+    headers: { "content-type": "application/json", host: "localhost:5173", origin: "http://localhost:5173", "x-touchstone-grant-token": "test-grant-token" },
+  });
+  const res = { statusCode: 0, setHeader() {}, end(text) { this.json = JSON.parse(text); } };
+  const handled = handleRuns(req, res);
+  req.end(JSON.stringify(body));
+  await handled;
+  return res;
+}
+
+for (const outcome of ["success", "failure", "stop"]) test(`HTTP run creation returns before setup: ${outcome}`, async () => {
+  const live = addLiveScope({ title: "Slow setup", hosts: ["https://example.com"], permission: true, pack: "web" });
+  let release;
+  const gate = new Promise((resolve, reject) => { release = outcome === "failure" ? () => reject(new Error("setup failed")) : resolve; });
+  const prepass = PACKS.web.prepass;
+  PACKS.web.prepass = undefined;
+  reachHook = () => gate;
+  const pending = postRun({ targetId: live.id, pack: "web", mode: "solo" });
+  let response;
+  try {
+    response = await Promise.race([pending, new Promise((resolve) => setImmediate(() => resolve(null)))]);
+    assert.ok(response, "POST must answer while setup is still blocked");
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.json.status, "starting");
+    assert.equal(getRun(response.json.id).status, "starting");
+    assert.ok(runs.listRuns().some((r) => r.id === response.json.id));
+    if (outcome === "stop") runs.stopRun(response.json.id);
+    if (outcome === "success") scripts.push({ events: [done] });
+  } finally {
+    reachHook = null;
+    release();
+    await pending;
+  }
+  const result = await settle(response.json.id);
+  PACKS.web.prepass = prepass;
+  if (outcome === "failure") {
+    assert.equal(result.status, "error");
+    assert.equal(result.error, "setup failed");
+    assert.ok(result.events.some((e) => e.ev === "status" && e.error === "setup failed"));
+  } else if (outcome === "stop") {
+    assert.ok(result.events.some((e) => e.ev === "stopped"));
+  } else {
+    assert.ok(result.events.some((e) => e.ev === "status" && e.status === "running"));
+  }
+});
+
+test("HTTP run validation still refuses before creating a run", async () => {
+  const before = runs.listRuns().length;
+  const response = await postRun({ targetId: "does-not-exist", pack: "web" });
+  assert.equal(response.statusCode, 400);
+  assert.equal(runs.listRuns().length, before);
+});
 
 const REPO = "https://github.com/acme/lib";
 const WHERE = "vendor/acme__lib";

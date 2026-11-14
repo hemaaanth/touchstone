@@ -49,6 +49,8 @@ process.env.TOUCHSTONE_RESULTS_DIR = RESULTS;
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
 process.env.SPEND_LEDGER = path.join(dir, "spend.json"); // never the real ledger
+process.env.PROVIDER = "near";
+process.env.NEARAI_API_KEY = "synthetic-key-for-mocked-engine";
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {
     if (f.endsWith(".workspace.json")) rmSync(JSON.parse(readFileSync(path.join(RESULTS, f), "utf8")).ws ?? path.join(dir, "none"), { recursive: true, force: true });

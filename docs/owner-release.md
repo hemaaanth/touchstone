@@ -139,3 +139,12 @@ bun --no-env-file test spike/test/reach-confine-release.test.mjs
 ```
 
 This test copies only proxy source modules into an owner-only temporary directory. It starts disposable containers on internal Docker networks, reaches a fake allowed website, and checks that an unlisted host is blocked. It never pulls images, reads real stores or credentials, or calls external services. It skips when Docker or the pinned image is unavailable, or when the source owner is root. Passing this test proves the sealed-source proxy boundary, not a complete owner run.
+
+Sealed source templates also retain read-only directory modes when copied.
+The web scanner makes only its disposable template copy writable so cleanup
+cannot discard completed scan results. Source permissions stay unchanged.
+Check this boundary without Docker or external calls:
+
+```sh
+node --test spike/test/web-scan-release.test.mjs
+```

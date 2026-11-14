@@ -4,7 +4,7 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, runSessionArtifacts } from "./runs.mjs"
+import { acceptRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, runSessionArtifacts } from "./runs.mjs"
 import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
@@ -78,7 +78,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options }))
+      send(res, 201, acceptRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }

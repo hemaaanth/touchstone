@@ -21,6 +21,8 @@ export interface StartProgress {
   ran: number
   // Leads found so far. Null until a tool reports a count.
   leads: number | null
+  // Until the final prepass event, these are reports so far, not whole-run coverage.
+  partial: boolean
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -48,6 +50,10 @@ const host = (url: string) => {
 export function startProgress(events: RunEvent[]): StartProgress {
   const stages: StartStage[] = []
   const tools = new Map<string, boolean>() // engine → ran
+  const leadCounts = new Map<string, number>()
+  const joined = events.some((e) => e.ev === "packs" && Array.isArray(e.packs) && e.packs.length > 1)
+  let toolsTotal: number | null = null
+  let toolsRan: number | null = null
   let leads: number | null = null
   let summary = false
   let opened = false
@@ -57,8 +63,12 @@ export function startProgress(events: RunEvent[]): StartProgress {
     if (at === -1) stages.push(stage)
     else stages[at] = { ...stages[at], ...stage }
   }
-  const addLeads = (n: number | null) => {
-    if (n != null) leads = (leads ?? 0) + n
+  const reportLeads = (key: string, n: number | null) => {
+    if (n == null) return
+    leadCounts.set(key, n)
+    let total = 0
+    for (const count of leadCounts.values()) total += count
+    leads = total
   }
   const ranTool = (engine: string, ran: boolean) => {
     if (engine) tools.set(engine, (tools.get(engine) ?? false) || ran)
@@ -67,6 +77,10 @@ export function startProgress(events: RunEvent[]): StartProgress {
   for (const e of events) {
     if (opened) break
     const ev = str(e.ev)
+    const pack = joined ? str(e.pack) || ev.split("-")[0] : ""
+    const scanKey = pack ? `${pack}:scan` : "scan"
+    const captureKey = pack ? `${pack}:capture` : "capture"
+    const scanLabel = pack ? `${pack} tool scan` : "Tool scan"
     if (ev === "opened") {
       opened = true
       break
@@ -77,35 +91,50 @@ export function startProgress(events: RunEvent[]): StartProgress {
       summary = true
       tools.clear()
       for (const t of Array.isArray(e.tools) ? e.tools : []) {
-        const o = t as { name?: unknown; status?: unknown }
-        ranTool(str(o.name), o.status === "ran")
+        const o = t as { name?: unknown; status?: unknown; pack?: unknown }
+        ranTool(`${str(o.pack)}:${str(o.name)}`, o.status === "ran")
+      }
+      const total = num(e.toolsTotal)
+      const ran = num(e.toolsRan)
+      if (total != null && ran != null && Number.isInteger(total) && Number.isInteger(ran) && total >= 0 && total <= 1000 && ran >= 0 && ran <= total) {
+        toolsTotal = total
+        toolsRan = ran
       }
       leads = num(e.total) ?? 0
       for (const s of stages) if (s.state === "running") s.state = "done"
       if (e.failed) put({ key: "scan", label: "Tool scan", state: "failed", detail: "The scan did not finish." })
       continue
     }
-    if (ev.endsWith("-lab-started")) {
+    if (ev === "module-prepass") {
+      for (const key of tools.keys()) if (key.startsWith(`${pack}:`)) tools.delete(key)
+      for (const key of leadCounts.keys()) if (key === pack || key.startsWith(`${pack}:`)) leadCounts.delete(key)
+      const reported = Array.isArray(e.tools) ? e.tools as { name?: unknown; status?: unknown }[] : []
+      for (const t of reported) ranTool(`${pack}:${str(t.name)}`, t.status === "ran")
+      reportLeads(pack, num(e.total))
+      const ran = reported.filter((t) => t.status === "ran").length
+      put({ key: scanKey, label: scanLabel, state: e.failed || (reported.length > 0 && !ran) ? "failed" : "done", detail: `${ran} of ${plural(reported.length, "tool")} ran · ${plural(num(e.total) ?? 0, "lead")}` })
+      for (const s of stages) if (s.key === captureKey) s.state = "done"
+    } else if (ev.endsWith("-lab-started")) {
       put({ key: "target", label: "Started the lab", state: "done" })
     } else if (ev.endsWith("-live-target")) {
       const h = host(str(e.baseUrl))
       put({ key: "target", label: "Bound the live target", state: "done", detail: h || undefined })
     } else if (ev.endsWith("-capture-start")) {
-      put({ key: "capture", label: "Capturing the domain", state: "running", detail: str(e.domain) || undefined })
+      put({ key: captureKey, label: pack ? `${pack} domain capture` : "Capturing the domain", state: "running", detail: str(e.domain) || undefined })
     } else if (ev.endsWith("-scan-started")) {
       const list = names(e.engines)
-      put({ key: "scan", label: "Running the tool scan", state: "running", detail: list.join(", ") || undefined })
+      put({ key: scanKey, label: pack ? `${pack} tool scan` : "Running the tool scan", state: "running", detail: list.join(", ") || undefined })
     } else if (ev.endsWith("-scan-failed")) {
       // The error text can hold a secret, so only the fact shows.
-      put({ key: "scan", label: "Tool scan", state: "failed", detail: "The scan stopped with an error." })
+      put({ key: scanKey, label: scanLabel, state: "failed", detail: "The scan stopped with an error." })
     } else if (ev.endsWith("-scan-done")) {
       const cov = coverage(e.coverage)
-      for (const c of cov) ranTool(c.engine, c.ran)
-      leads = num(e.leads) ?? leads
+      for (const c of cov) ranTool(`${pack}:${c.engine}`, c.ran)
+      reportLeads(pack, num(e.leads))
       const ran = cov.filter((c) => c.ran).length
       put({
-        key: "scan",
-        label: "Tool scan",
+        key: scanKey,
+        label: scanLabel,
         state: cov.length && !ran ? "failed" : "done",
         detail: `${cov.length ? `${ran} of ${plural(cov.length, "tool")} ran · ` : ""}${plural(num(e.leads) ?? 0, "lead")}`,
       })
@@ -124,8 +153,8 @@ export function startProgress(events: RunEvent[]): StartProgress {
     } else if (ev === "static-scan" || ev === "fuzz-scan") {
       const list = names(e.engines)
       const n = num(e.suspects) ?? (Array.isArray(e.findings) ? e.findings.length : null)
-      for (const t of list) ranTool(t, true)
-      addLeads(n)
+      for (const t of list) ranTool(`${pack}:${t}`, true)
+      reportLeads(`${pack}:${ev}`, n)
       put({
         key: ev,
         label: ev === "static-scan" ? "Static analysis" : "Property fuzzing",
@@ -134,8 +163,8 @@ export function startProgress(events: RunEvent[]): StartProgress {
       })
     } else if (ev === "chain-scan") {
       const list = names(e.engines)
-      for (const t of list) ranTool(t, true)
-      addLeads(num(e.suspects))
+      for (const t of list) ranTool(`${pack}:${t}`, true)
+      reportLeads(`${pack}:${ev}`, num(e.suspects))
       put({
         key: ev,
         label: "Chain scan",
@@ -143,10 +172,10 @@ export function startProgress(events: RunEvent[]): StartProgress {
         detail: [list.join(" + "), plural(num(e.suspects) ?? 0, "lead")].filter(Boolean).join(" · "),
       })
     } else if (ev.endsWith("-prepass-done") || ev.endsWith("-prepass")) {
-      for (const c of coverage(e.coverage)) ranTool(c.engine, c.ran)
-      leads = num(e.leads) ?? leads
-      for (const s of stages) if (s.key === "capture") s.state = "done"
-      put({ key: "scan", label: "Tool scan", state: "done", detail: plural(num(e.leads) ?? 0, "lead") })
+      for (const c of coverage(e.coverage)) ranTool(`${pack}:${c.engine}`, c.ran)
+      reportLeads(pack, num(e.leads))
+      for (const s of stages) if (s.key === captureKey) s.state = "done"
+      put({ key: scanKey, label: scanLabel, state: "done", detail: plural(num(e.leads) ?? 0, "lead") })
     }
   }
 
@@ -155,12 +184,12 @@ export function startProgress(events: RunEvent[]): StartProgress {
   // the agent session is starting.
   if (!opened) {
     if (!summary) {
-      if (!stages.some((s) => s.state === "running") && !stages.some((s) => s.key === "scan"))
+      if (!stages.some((s) => s.state === "running") && !stages.some((s) => s.key === "scan" || s.key.endsWith(":scan")))
         stages.push({ key: "scan", label: "Running the tool scan", state: "running" })
     } else {
       stages.push({ key: "session", label: "Starting the agent session", state: "running" })
     }
   }
 
-  return { stages, tools: tools.size, ran: [...tools.values()].filter(Boolean).length, leads }
+  return { stages, tools: toolsTotal ?? tools.size, ran: toolsRan ?? [...tools.values()].filter(Boolean).length, leads, partial: !summary }
 }

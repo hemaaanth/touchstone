@@ -31,6 +31,8 @@ export function NewRunDialog({
   packs,
   busy,
   error,
+  setupError = null,
+  onOpenSettings,
   onStart,
 }: {
   open: boolean
@@ -40,6 +42,8 @@ export function NewRunDialog({
   packs: PackChoice[]
   busy: boolean
   error: string | null
+  setupError?: string | null
+  onOpenSettings?: () => void
   // One run covers every module in `modules`.
   onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => void
 }) {
@@ -64,7 +68,7 @@ export function NewRunDialog({
   const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk && modules.length > 0
+  const canStart = alias !== "" && !setupError && runnable.length > 0 && !busy && budgetOk && modules.length > 0
 
   const submit = () => {
     if (!canStart) return
@@ -73,13 +77,13 @@ export function NewRunDialog({
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
 
-  const notice = !budgetOk
+  const notice = setupError || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : alias === ""
-      ? "No model is set up. Add a provider key in Settings."
+      ? "Set up a provider key and model in Settings. NEAR AI Cloud is recommended."
       : runnable.length === 0
         ? "No runnable scopes are available right now."
-        : error
+        : error)
   // Not an error: the Start button waits for a tick.
   const hint = !notice && scope && modules.length === 0 ? "Tick the modules to run." : null
 
@@ -206,7 +210,10 @@ export function NewRunDialog({
             </span>
           </label>
 
-          {notice ? <p className="text-xs text-bad">{notice}</p> : null}
+          {notice ? <p role="alert" className="text-xs text-bad">{notice}</p> : null}
+          {(setupError || alias === "") && onOpenSettings ? (
+            <Button type="button" variant="outline" onClick={onOpenSettings}>Set up provider</Button>
+          ) : null}
           {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
         </form>
 

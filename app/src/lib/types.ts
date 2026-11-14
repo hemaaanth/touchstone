@@ -177,6 +177,7 @@ export interface FuzzSuspect {
 // every pack (built by spike/lib/prepass-view.mjs). Leads are not findings.
 export interface PrepassTool {
   name: string
+  pack?: string
   status: "ran" | "unavailable"
   reason: string | null
   leads: number
@@ -194,6 +195,8 @@ export interface PrepassLead {
 export interface PrepassView {
   total: number
   tools: PrepassTool[]
+  toolsTotal?: number
+  toolsRan?: number
   leads: PrepassLead[]
   failed?: boolean
 }
@@ -388,6 +391,7 @@ export interface TargetChoice extends TargetScope {
 export interface ProviderInfo {
   id: string
   label: string
+  setupError?: string | null
 }
 
 // One raw event as the engine prints it. `ev` names the step; the rest varies.
@@ -768,10 +772,11 @@ export interface ProviderSetting {
 
 export interface SettingsState {
   providers: ProviderSetting[]
-  default: { provider: string; model: string | null }
+  default: { provider: string | null; model: string | null }
   envOverride: string | null
   spend: SpendState
   fallbackPrice: { input: number; output: number }
+  setupError?: string | null
 }
 
 export interface DiscoveredModel {

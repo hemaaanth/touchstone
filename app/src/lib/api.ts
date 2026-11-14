@@ -206,7 +206,7 @@ export function runStartBody(alias: string, targetId: string | undefined, budget
   return { alias, targetId, budgetUsd, mode, ...roam, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
 }
 
-export function startRun(
+export async function startRun(
   alias: string,
   targetId?: string,
   budgetUsd?: number,
@@ -214,7 +214,14 @@ export function startRun(
   mode?: RunMode,
   roam?: RoamSelection,
 ): Promise<RunView> {
-  return postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
+  try {
+    return await postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("The connection was lost before the server response arrived. The run may already exist. Reload the run list before starting another run.", { cause: error })
+    }
+    throw error
+  }
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.

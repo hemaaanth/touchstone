@@ -489,7 +489,7 @@ export function runStartView(events: RunEvent[], prepass: PrepassView | null, li
 
   const meta =
     [
-      p.tools ? `${count(p.tools, "tool")}${p.ran < p.tools ? ` (${p.ran} ran)` : ""}` : null,
+      p.tools ? `${count(p.tools, p.partial ? "reported tool" : "tool")}${p.ran < p.tools ? ` (${p.ran} ran)` : ""}` : null,
       p.leads != null ? count(p.leads, "lead") : null,
     ]
       .filter(Boolean)

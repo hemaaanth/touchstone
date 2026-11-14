@@ -388,6 +388,8 @@ export function reduceEvents(events: RunEvent[]): RunState {
         prepass = {
           total: num(e.total) ?? 0,
           tools: Array.isArray(e.tools) ? (e.tools as PrepassView["tools"]) : [],
+          toolsTotal: num(e.toolsTotal) ?? undefined,
+          toolsRan: num(e.toolsRan) ?? undefined,
           leads: Array.isArray(e.leads) ? (e.leads as PrepassView["leads"]) : [],
           ...(e.failed ? { failed: true } : {}),
         }
