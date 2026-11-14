@@ -63,3 +63,12 @@ test("a dead Caido proxy is reported as a gap and does not fail the scan", async
   assert.match(r.reason, /Caido proxy did not start/);
   rmSync(base, { recursive: true, force: true });
 });
+
+test("a scan that runs out of clock is timed-out and names the limit", async () => {
+  scenario = async () => ({ code: null, timedOut: true, stdout: "", stderr: "" });
+  const r = await runStrix({ baseUrl: "https://example.com", provider, timeoutMs: 60_000 });
+  assert.equal(r.status, "timed-out");
+  assert.match(r.reason, /1-minute limit/);
+  assert.doesNotMatch(r.reason, /did not finish/);
+  rmSync(base, { recursive: true, force: true });
+});

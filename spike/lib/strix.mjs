@@ -56,7 +56,7 @@ export const STRIX_IMAGE = "touchstone/strix:1.7.0";
 //
 // The three limits are Web module settings (Modules > Web). A saved setting
 // wins; else STRIX_TURNS / STRIX_BUDGET_USD / STRIX_TIMEOUT_MS; else these.
-export const STRIX_DEFAULTS = { turns: 60, budgetUsd: 0.5, timeoutMin: 8 };
+export const STRIX_DEFAULTS = { turns: 60, budgetUsd: 0.5, timeoutMin: 15 };
 export const STRIX_LIMITS = {
   turns: { min: 1, max: 200, integer: true },
   budgetUsd: { min: 0.01, max: 100 },
@@ -354,13 +354,19 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, tu
   // shell and browser tools, but it loses its traffic view. That is a recorded
   // coverage gap, never a silent one.
   const hitCap = hitTurnCap;
+  // Time ran out. That is the normal end when the clock is the brake, so say so
+  // instead of calling it a crash. Its own report says "interrupted" when it was
+  // stopped too; that alone is only a clock-out when no crash line was found,
+  // because a real agent crash also ends interrupted.
+  const clockOut = timedOut || (!crashLine && /status 'interrupted'/i.test(String(incomplete ?? "")));
   // Its agent crashed, or its own report says the scan did not complete. With
   // no leads that is a coverage gap, never a clean scan: "unavailable",
   // whatever the exit code. Leads it did report are real and are kept.
-  const broke = hitCap ? null : crashLine ?? incomplete;
+  const broke = hitCap || clockOut ? null : crashLine ?? incomplete;
   const status = broke && !leads.length ? "unavailable"
-    : timedOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
+    : clockOut || hitCap ? "timed-out" : r.code === 0 || r.code === 2 ? "ran" : "unavailable";
   const gaps = [
+    clockOut ? `stopped at the ${Math.round(timeoutMs / 60_000)}-minute limit; leads found before that are kept` : null,
     hitCap ? `stopped at the ${turns}-turn-per-agent cap; leads found before that are kept` : null,
     proxyDown ? "Caido proxy did not start in its sandbox, so its recorded-traffic tools were unavailable" : null,
   ].filter(Boolean);
