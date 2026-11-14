@@ -123,8 +123,8 @@ async function open(t, route, { fleet: useFleet }) {
   registry.install(defineExtension({ name: "review", tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
   const harness = await Harness.open(new MemoryStorage(), { models, registry, settings: { retry: { maxRetries: 0 } } }, ctx);
-  await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? COORDINATOR_INSTRUCTIONS : SYSTEM } });
+  await fleet?.attach(harness, ctx);
   t.after(async () => { await fleet?.close(); await harness.close(ctx); });
   return { events, root, fleet };
 }

@@ -389,8 +389,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
     // `enforce: false` is for operator follow-ups: they never get the split turn.
     async drain(ctx, { enforce = true } = {}) {
       const stopped = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
-      if (stopped?.runFailure) return { status: "unanswered", reason: stopped.runFailure.reason, detail: stopped.runFailure.detail };
-      if (freeRoam) {
+      if (freeRoam && !stopped?.runFailure) {
         await createChild({ name: "FreeRoam", task: "Investigate the audit scope from the open web. Read the Bulletin first, avoid duplicating another child's work, and report captured evidence as unproven candidates only.", area: "open-web", loadout: "free-roam", options: runOptions }, (fn, c) => harness.commit(fn, c), DEFAULT_ROAM_JOB, ctx, true);
       }
       let turn;
@@ -405,7 +404,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
           if (Object.keys(before.jobs).length === Object.keys(after.jobs).length) break;
         }
         const live = await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, ctx);
-        if (live?.runFailure) return { status: "unanswered", reason: live.runFailure.reason, detail: live.runFailure.detail };
+        const failure = stopped?.runFailure ?? live?.runFailure;
+        if (failure) return { status: "unanswered", reason: failure.reason, detail: failure.detail };
         if (turn && turn.status !== "done") return turn;
         // A fleet run that answered inside its survey, without spawning, gets one turn to split.
         if (!required || spawned || split || !enforce) return turn;
