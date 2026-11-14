@@ -14,9 +14,9 @@ function route(uid, permission, fn) {
   const log = join(dir, "calls");
   try {
     symlinkSync("/bin/sh", join(dir, "sh"));
-    writeFileSync(join(dir, "id"), `#!/bin/sh\nprintf '%s\\n' '${uid}'\n`, { mode: 0o755 });
-    if (permission !== "missing") writeFileSync(join(dir, "sudo"), `#!/bin/sh\nprintf 'sudo-call\\n' >> ${quote(log)}\n[ "$1" = -n ] || exit 97\nshift\n[ "$ALLOW" = 1 ] || exit 1\nexec "$@"\n`, { mode: 0o755 });
-    const env = { PATH: permission === "missing" ? dir : `${dir}:/usr/bin:/bin`, HOME: "/synthetic-home", ALLOW: permission === "allowed" ? "1" : "0" };
+    writeFileSync(join(dir, "id"), `#!/bin/sh\nprintf '%s\\n' \"\${FAKE_ROOT:-${uid}}\"\n`, { mode: 0o755 });
+    if (permission !== "missing") writeFileSync(join(dir, "sudo"), `#!/bin/sh\nprintf 'sudo-call\\n' >> ${quote(log)}\n[ "$1" = -n ] || exit 97\nshift\n[ "$ALLOW" = 1 ] || { [ "$ALLOW" = true-only ] && [ "$1" = true ]; } || exit 1\nexport FAKE_ROOT=0\nexec "$@"\n`, { mode: 0o755 });
+    const env = { PATH: permission === "missing" ? dir : `${dir}:/usr/bin:/bin`, HOME: "/synthetic-home", ALLOW: permission === "allowed" ? "1" : permission === "true-only" ? "true-only" : "0" };
     fn({ env, log });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -30,8 +30,13 @@ test("a non-root shell uses only non-interactive sudo and preserves command byte
   assert.equal(execFileSync("/bin/sh", ["-c", rootShellCommand(`printf %s ${quote(expected)}`)], { env, encoding: "utf8" }), expected);
   assert.equal(readFileSync(log, "utf8"), "sudo-call\nsudo-call\n");
 }));
-for (const permission of ["denied", "missing"]) test(`${permission} sudo fails closed before dispatching the requested command`, () => route(1000, permission, ({ env }) => {
+for (const permission of ["denied", "missing", "true-only"]) test(`${permission} sudo fails closed before dispatching the requested command`, () => route(1000, permission, ({ env }) => {
   const r = spawnSync("/bin/sh", ["-c", rootShellCommand("printf should-not-run")], { env, encoding: "utf8", timeout: 1000 });
   assert.equal(r.status, 76);
   assert.equal(r.stdout, "");
+}));
+
+test("payload failures retain their own status after permitted root entry", () => route(1000, "allowed", ({ env }) => {
+  const r = spawnSync("/bin/sh", ["-c", rootShellCommand("exit 1")], { env, encoding: "utf8" });
+  assert.equal(r.status, 1);
 }));

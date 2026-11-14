@@ -74,7 +74,7 @@ function snapshot(value) {
 }
 
 const quoteShell = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-const ROOT_SHELL = `if [ "$(id -u)" = 0 ]; then exec sh -c "$1"; fi; command -v sudo >/dev/null 2>&1 || exit 76; sudo -n true >/dev/null 2>&1 || exit 76; exec sudo -n env "PATH=$PATH" sh -c "$1"`;
+const ROOT_SHELL = `if [ "$(id -u)" = 0 ]; then exec sh -c "$1"; fi; command -v sudo >/dev/null 2>&1 || exit 76; sudo -n env "PATH=$PATH" sh -c 'test "$(id -u)" = 0' >/dev/null 2>&1 || exit 76; exec sudo -n env "PATH=$PATH" sh -c "$1"`;
 
 // The standard image's toolbox can run as its image user despite the create
 // request's user=root. Use only its existing passwordless-sudo permission.
