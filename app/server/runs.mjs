@@ -1182,8 +1182,7 @@ async function recordRun(run, found, exit = {}) {
     const proven = withProven(await packFor(readTouchstone(run.ws)).prove?.(run.ws, found, run.events, (m) => {
       run.stderr += `[proof-delta] ${m}\n`
     }))
-    // A replay that only repeated a measurement is a candidate, not a finding.
-    const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
+  const findings = recordMeasured(run, proven, (e) => broadcast(run, e))
     supersedeProven(run, findings, (e) => broadcast(run, e))
     if (!findings.length && proven.length) {
       // Only measured candidates: the run ends as a run with nothing found
@@ -1971,6 +1970,11 @@ export function followUp(run, text, clientId) {
     })
     child.stdin.on("error", () => {})
     run.child = child
+    // A resumed run is working again. Without this the top bar keeps the terminal
+    // word of the earlier ending ("error", "no-finding") the whole time its
+    // agents run. Set here, not at the message: the earlier turn's `closed` event
+    // must still see the terminal status it cleans up after.
+    run.status = "running"
     roamControl.begin(run, child, epoch)
     pipeEvents(child, engineEvents(run, child, epoch), (line) => {
       run.stderr += line + "\n"

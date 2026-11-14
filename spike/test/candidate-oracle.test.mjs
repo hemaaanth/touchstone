@@ -22,7 +22,7 @@ const { default: web } = await import("../packs/web/pack.mjs");
 const { default: aiMcp } = await import("../packs/ai-mcp/pack.mjs");
 
 const LEAK_KEY = "sk-lab-0123456789abcdef";
-const harmless = (n) => [{ method: "GET", path: `/admin/export/${n}`, status: 200, reqHeaders: {}, reqBody: null, resHeaders: {}, resBody: { rows: n, note: `exported ${n} customer rows`, apiKey: LEAK_KEY } }];
+const harmless = (n) => [{ method: "GET", path: `/admin/export/${n}`, status: 200, reqHeaders: {}, reqBody: null, resHeaders: {}, resBody: { rows: n, note: `exported ${n} customer rows` } }]; // no secret: the generic oracles must stay quiet
 // The web siwe-nonce-replay oracle: one signed message accepted twice.
 const replay = () => {
   const same = { message: "m", signature: "s" };

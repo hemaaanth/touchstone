@@ -75,6 +75,8 @@ writeFileSync(join(dir, `run-${oldId}.json`), JSON.stringify({ result: { outcome
 const found = [measured(1, "weak-csp", "a.test"), measured(2, "tls-breach", "a.test")];
 const sub = (f) => ({ t: 21 + f.n, ev: "finding-submitted", n: f.n, title: f.title, severity: f.severity, poc: f.poc });
 const unansweredMeasured = save("unanswered-measured", [...head("solo"), ...found.map(sub), { t: 30, ev: "status", status: "deciding" }], { ws: workspace(), phase: "proof", settled: { status: "unanswered", findings: found, candidates: [], summary: { calls: [] } } }, "solo");
+// Saved before the import below: runs.mjs registers what exists at load time.
+const restatusId = save("restatus", [...head("solo"), { t: 9, ev: "status", status: "error" }], { ws: workspace(), phase: "agent" }, "solo");
 const unansweredNone = save("unanswered-none", [...head("solo"), { t: 30, ev: "status", status: "deciding" }], { ws: workspace(), phase: "proof", settled: { status: "unanswered", findings: [], candidates: [], summary: { calls: [] } } }, "solo");
 
 const { getRun, steerRun } = await import("../../app/server/runs.mjs");
@@ -84,8 +86,15 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// Settled, then finished replying with no live worker. A run keeps `closed` from
+// an earlier ending, so the event alone returns at once and the next message can
+// land while the previous reply is still proving.
 const closed = async (id) => {
-  for (let i = 0; i < 300 && !getRun(id)?.events.some((e) => e.ev === "closed"); i++) await new Promise((r) => setTimeout(r, 10));
+  const done = () => {
+    const run = getRun(id);
+    return run && !run.replying && !run.child && (run.submitted ?? []).length === 0;
+  };
+  for (let i = 0; i < 300 && !done(); i++) await new Promise((r) => setTimeout(r, 10));
   return getRun(id);
 };
 const recordOf = (id) => JSON.parse(readFileSync(join(dir, `run-${id}.json`), "utf8")).result;
@@ -104,6 +113,18 @@ async function follow(id, findings, candidates = []) {
 }
 const placesOf = (cands) => (cands ?? []).flatMap((c) => c.evidence?.items?.map((i) => i.poc) ?? []);
 
+test("a follow-up makes a settled run read as working again", async () => {
+  // The top bar kept the terminal word ("error") while its agents ran, because
+  // nothing set the status back. The worker start does it now.
+  const id = restatusId;
+  assert.equal(getRun(id).status, "error");
+  await closed(id);
+  assert.deepEqual(steerRun(id, "continue"), { ok: true, followUp: true });
+  const w = workers.filter((x) => x.env.EVENTS_FILE?.includes(id)).at(-1);
+  assert.equal(getRun(id).status, "running", "the run reads as working again");
+  assert.ok(w, "the follow-up started a worker");
+});
+
 test("E1: two follow-ups that each fold one check at new places keep every place; nothing replayed is lost", async () => {
   replayed.length = 0;
   await follow(foldId, [measured(1, "weak-csp", "a.test"), measured(2, "weak-csp", "b.test")]);
@@ -111,10 +132,11 @@ test("E1: two follow-ups that each fold one check at new places keep every place
   const r = recordOf(foldId);
   assert.deepEqual(placesOf(r.candidates).sort(), ["lead-1", "lead-2", "lead-3", "lead-4"]);
   assert.deepEqual(placesOf(run.candidates).sort(), ["lead-1", "lead-2", "lead-3", "lead-4"]);
-  // The invariant: each replayed finding is in exactly one place.
+  // The invariant: each replayed finding is in exactly one place. A replay may
+  // be repeated by the second proof pass, so compare the places, not the count.
   const places = [...(r.findings ?? []).map((f) => f.poc), ...placesOf(r.candidates)];
-  assert.deepEqual([...places].sort(), [...replayed].sort());
-  assert.equal(new Set(places).size, places.length);
+  assert.deepEqual([...new Set(places)].sort(), [...new Set(replayed)].sort());
+  assert.equal(new Set(places).size, places.length, "no place is in two records");
 });
 
 test("E2: a follow-up on an older record does not write its load-time candidates into the record", async () => {

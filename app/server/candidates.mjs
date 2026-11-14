@@ -8,7 +8,7 @@
 // stream on reload. A candidate is never a finding: it is not in `submitted`,
 // `pending`, `findingIds`, the run status or `result.findings`.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { isMeasured, makeAgentFinding, makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
+import { isMeasured, isCandidate, makeAgentFinding, makeCandidate, priorCandidate, splitMeasured, supersededBy } from "../../spike/lib/candidate.mjs"
 import { redactSecrets } from "./redact.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 
@@ -110,7 +110,17 @@ export function priorCandidatesEnv(run) {
 // view, the saved stream and the record all hold it. Returns the findings left.
 export function recordMeasured(run, findings, send) {
   const from = Math.max(0, ...(run.candidates ?? []).map((c) => Number(c.n) || 0))
-  const split = splitMeasured(findings, { from })
+  // Two passes reach here for one reply (the exit handler's proof delta and the
+  // restore), so the same places arrive twice and became two candidates folding
+  // the same rows. A place already folded is not folded again, and a group with
+  // nothing new is not recorded at all.
+  const already = measuredPocs(run.candidates)
+  const fresh = []
+  for (const f of findings ?? []) {
+    if (isMeasuredRow(f) && f?.poc != null && already.has(String(f.poc))) continue;
+    fresh.push(f)
+  }
+  const split = splitMeasured(fresh, { from })
   for (const made of split.candidates) {
     // A follow-up can reuse an attempt label (xss-1) for a new finding. A
     // candidate's poc must be new in the run, or the run refuses it and the
@@ -125,6 +135,8 @@ export function recordMeasured(run, findings, send) {
   dropMeasuredSubmitted(run)
   return split.findings
 }
+
+const isMeasuredRow = (f) => isMeasured(f)
 
 // The pocs of the findings that became measured candidates (their evidence
 // lists each one it folds).
