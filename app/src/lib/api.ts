@@ -51,7 +51,10 @@ export class StalePageError extends Error {}
 // is told (reportStalePage), and the caller gets the server's sentence as a
 // StalePageError.
 async function writeResult<T>(url: string, res: Response): Promise<T> {
-  const json = await res.json().catch(() => ({}))
+  const json = await res.json().catch((error: unknown) => {
+    if (res.ok) throw error
+    return {}
+  })
   if (!res.ok) {
     const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
     if (res.status === 403) {
@@ -214,11 +217,19 @@ export async function startRun(
   mode?: RunMode,
   roam?: RoamSelection,
 ): Promise<RunView> {
+  const requestId = crypto.randomUUID()
   try {
-    return await postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
+    return await postJson<RunView>("/api/runs", { ...runStartBody(alias, targetId, budgetUsd, modules, mode, roam), requestId })
   } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error("The connection was lost before the server response arrived. The run may already exist. Reload the run list before starting another run.", { cause: error })
+    if (error instanceof TypeError || error instanceof SyntaxError) {
+      // A lost POST response is not a failed run. Confirm this exact request; never resubmit it.
+      try {
+        const { run } = await getJson<{ run: RunView | null }>(`/api/runs?requestId=${encodeURIComponent(requestId)}`)
+        if (run && typeof run.id === "string") return run
+      } catch {
+        // The confirmation may be unreachable too. Keep acceptance explicitly unknown.
+      }
+      throw new Error("The connection was lost and the run could not be confirmed. The run may already exist. Reload the run list before starting another run.", { cause: error })
     }
     throw error
   }

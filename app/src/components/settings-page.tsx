@@ -106,7 +106,7 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
         <ErrorState
           title="Finish provider setup"
           detail={settings.setupError}
-          actions={<Button size="sm" onClick={() => setEditing({ id: settings.default.provider, open: true })}>Set up provider</Button>}
+          actions={<Button size="sm" onClick={() => setEditing({ id: settings.envOverride ?? settings.default.provider ?? "near", open: true })}>Set up provider</Button>}
         />
       ) : null}
 
@@ -504,7 +504,7 @@ function ProviderEditor({
           return f && f.input != null && f.output != null && !m.input && !m.output ? draftOf(f) : m
         }),
       )
-      if (r.models.length === 0) setError("The gateway listed no models. Add model ids by hand below.")
+      if (r.models.length === 0) setError("The gateway listed no DeepSeek models. Choose another provider, or add a supported DeepSeek model id below.")
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
@@ -623,10 +623,10 @@ function ProviderEditor({
             })}
           </ul>
         ) : (
-          <p className="text-xs text-muted-foreground">No models yet. Fetch them, or add an id by hand.</p>
+          <p className="text-xs text-muted-foreground">DeepSeek only. Fetch models, or add a supported DeepSeek id by hand.</p>
         )}
         <div className="flex gap-2">
-          <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="Add a model id by hand" aria-label="Model id" className="font-mono text-xs md:text-xs" spellCheck={false} autoCapitalize="off" />
+          <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="DeepSeek model id" aria-label="Model id" className="font-mono text-xs md:text-xs" spellCheck={false} autoCapitalize="off" />
           <Button
             variant="outline"
             disabled={!manual.trim() || chosen.some((m) => m.id === manual.trim())}

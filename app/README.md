@@ -34,9 +34,13 @@ See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rule
 ## First-run setup
 
 Open Settings before starting a run. Add an inference provider key and keep at least
-one model selected. NEAR AI Cloud is the recommended preset and the default on a
-fresh installation. The first configured provider becomes the saved default;
-existing selections and a server `PROVIDER` override are preserved.
+one model selected. NEAR AI Cloud is the recommended preset. With no configured
+provider there is no runnable default. A configured saved default wins; otherwise
+NEAR is preferred when configured, then another configured provider is selected.
+An explicit server `PROVIDER` override is preserved and blocks starts if unusable.
+Only DeepSeek models are enabled. Other stored model families are left on disk,
+but are not offered or used. Model discovery and manual saves enforce the same
+rule. A key alone is not enough when the provider has no known DeepSeek model.
 
 The console shows a setup action and disables Start until the selected provider
 has a key and model. The server checks again before creating a run, workspace,
@@ -52,9 +56,35 @@ live-network RPC endpoints are not supported by the current chain modules.
 Do not collect an unused RPC key during onboarding. A live-chain design must bind
 each endpoint to a network, scope, read/fork policy, and credential boundary first.
 
-If the connection drops during Start, acceptance is unknown: the run may already
-exist. Reload the run list before starting another run. A transport failure is not
-evidence that the inference key is missing.
+Each browser submission has a unique request ID. Acceptance stores that ID and a
+fingerprint in the recovery state, run stream, and final record. Repeating the same
+ID and inputs returns the original run; different inputs with that ID are refused.
+If the POST response is lost or truncated, the client makes one read-only request
+to confirm that exact ID. It never automatically submits another run. When the
+confirmation also fails, acceptance is explicitly unknown: reload the run list
+before starting another run. This does not diagnose or repair an underlying tunnel
+or browser connection failure.
+
+## Run history and scan progress
+
+Run files live under `TOUCHSTONE_RESULTS_DIR`: the `.stream.jsonl` file records
+server events, `.events` records engine events, `.sqlite` keeps the agent session,
+and `.json` holds the final result and transcript. A `.state.json` checkpoint
+exists while recovery is needed. These are private files, not safe raw exports.
+They do not form a complete HTTP wire trace. Browser response failures and every
+scanner's internal operation are not automatically captured.
+
+Joined scans report each module separately. Early tool counts are marked as
+reports so far. A later module's leads cannot turn a failed web scan into success.
+Module lead totals replace their earlier partial totals, rather than being
+counted twice. Final totals include tools beyond the bounded detail list; the
+detail says when rows are omitted. Leads are candidates to investigate, not
+proven vulnerabilities.
+
+Domain capture collects a pinned DNS and front-end snapshot: DNS answers, HTTP
+responses, TLS checks, scripts, and (for Surface) a scoped crawl. It is not just a
+homepage visit. Each tool's scope and recorded coverage still govern what was
+actually checked; unavailable tools do not count as a clean scan.
 
 ## Free-roam operator controls
 

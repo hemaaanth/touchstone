@@ -85,3 +85,44 @@ test("a refused start preserves the server's actionable setup error", async () =
     g.fetch = savedFetch
   }
 })
+
+test("a dropped start response opens the exact accepted run without submitting another run", async () => {
+  const savedFetch = g.fetch
+  let requestId = ""
+  let posts = 0
+  g.fetch = async (url: string, init: { method?: string; body?: string } = {}) => {
+    if (init.method === "POST") {
+      posts += 1
+      requestId = JSON.parse(init.body ?? "{}").requestId
+      throw new TypeError("Failed to fetch")
+    }
+    expect(url).toBe(`/api/runs?requestId=${requestId}`)
+    return new Response(JSON.stringify({ run: { id: "accepted-run", alias: "alias", status: "starting" } }), { status: 200 })
+  }
+  try {
+    const run = await api.startRun("alias", "scope")
+    expect(run.id).toBe("accepted-run")
+    expect(posts).toBe(1)
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/)
+  } finally {
+    g.fetch = savedFetch
+  }
+})
+
+test("a truncated success response is reconciled instead of returning an empty run", async () => {
+  const savedFetch = g.fetch
+  let posts = 0
+  g.fetch = async (_url: string, init: { method?: string } = {}) => {
+    if (init.method === "POST") {
+      posts += 1
+      return new Response("{", { status: 201 })
+    }
+    return new Response(JSON.stringify({ run: { id: "accepted-before-truncation" } }), { status: 200 })
+  }
+  try {
+    expect((await api.startRun("alias", "scope")).id).toBe("accepted-before-truncation")
+    expect(posts).toBe(1)
+  } finally {
+    g.fetch = savedFetch
+  }
+})

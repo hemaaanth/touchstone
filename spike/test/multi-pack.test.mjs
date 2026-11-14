@@ -692,3 +692,22 @@ async function build2(target, packs) {
   roots.push(ws);
   return ws;
 }
+
+test("joined prepass progress identifies completed and failed modules without leaking errors", async () => {
+  const events = [];
+  const good = {
+    id: "domains", tools: () => [],
+    prepass: async (_ws, { emit }) => {
+      emit({ ev: "domains-capture-start", domain: "allowed.test" });
+      return { record: { coverage: [{ engine: "httpx", status: "ran", leads: 0 }], leads: [{ check: "fixture", impact: "low" }] } };
+    },
+  };
+  const bad = { id: "web", tools: () => [], prepass: async () => { throw new Error("SECRET"); } };
+  await multiPack([good, bad]).prepass("/fixture", { emit: (e) => events.push(e) });
+  assert.equal(events[0].pack, "domains");
+  const completed = events.find((e) => e.ev === "module-prepass" && e.pack === "domains");
+  assert.equal(completed.total, 1);
+  assert.equal(completed.tools[0].status, "ran");
+  assert.equal(events.find((e) => e.ev === "module-prepass" && e.pack === "web").failed, true);
+  assert.ok(!JSON.stringify(events).includes("SECRET"));
+});

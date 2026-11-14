@@ -37,8 +37,6 @@ export const PROVIDERS = {
     baseUrl: "https://cloud-api.near.ai/v1",
     keyEnv: "NEARAI_API_KEY",
     models: {
-      "qwen-abl": { id: "Qwen/Qwen3.8-27B-abliterated", input: 0.04, output: 1.35, context: 262144, maxOut: 65536, structured: true },
-      "qwen": { id: "Qwen/Qwen3.8-27B", input: 0.04, output: 1.35, context: 262144, maxOut: 65536, structured: true },
       "ds-abl": { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated", input: 0.3, output: 1.2, context: 1000000, maxOut: 65536, structured: false },
       "ds": { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", input: 0.3, output: 1.2, context: 1000000, maxOut: 65536, structured: false },
     },
@@ -52,8 +50,7 @@ export const PROVIDERS = {
   // Discovery (2026-11) returned exactly one served model for this account:
   // the abliterated DeepSeek — the refusal-removed model Touchstone's premise
   // needs. The account's credits unlock it directly (no "Defensive Access"
-  // gating applied here). Re-add the other open Boundless models (ds / qwen /
-  // gpt-oss / glm) here if the account's /v1/models catalog grows to serve them.
+  // gating applied here). Only DeepSeek models are enabled for this console.
   boundless: {
     id: "boundless",
     label: "Boundless",
@@ -64,26 +61,14 @@ export const PROVIDERS = {
     },
   },
 
-  // Lyber (lyber.ai). One OpenAI-compatible API for uncensored/abliterated
-  // models. Early access — launch prices are provisional, so the model below
-  // carries the conservative FALLBACK_PRICE until Lyber publishes real numbers.
-  // Wired "out of the box"; not yet validated (no account/key yet).
+  // Lyber (lyber.ai). Discover a supported DeepSeek model before using it.
+  // Do not invent a DeepSeek preset for a gateway whose catalog is unverified.
   lyber: {
     id: "lyber",
     label: "Lyber",
     baseUrl: "https://lyber-paid-acceptance-gateway-production.up.railway.app/v1",
     keyEnv: "LYBER_API_KEY",
-    models: {
-      "kimi-abl": {
-        id: "kimi-k31-pro-abliterated",
-        input: FALLBACK_PRICE.input,
-        output: FALLBACK_PRICE.output,
-        context: 262144,
-        maxOut: 65536,
-        structured: true,
-        provisional: true,
-      },
-    },
+    models: {},
   },
 };
 
@@ -113,6 +98,10 @@ export function writeConfig(cfg) {
   chmodSync(file, 0o600);
 }
 
+export function isDeepSeekModel(id) {
+  return typeof id === "string" && /(?:^|\/)deepseek(?:[-/]|$)/i.test(id.trim());
+}
+
 // Every provider: presets merged with saved entries. Read fresh on each call,
 // so the app server sees a Settings change without a restart.
 export function allProviders(cfg = readConfig()) {
@@ -129,6 +118,10 @@ export function allProviders(cfg = readConfig()) {
       models: saved.models && Object.keys(saved.models).length ? saved.models : base.models ?? {},
     };
   }
+  // Keep stored selections intact, but never advertise or execute another model family.
+  for (const p of Object.values(out)) {
+    p.models = Object.fromEntries(Object.entries(p.models ?? {}).filter(([, model]) => isDeepSeekModel(model?.id)));
+  }
   return out;
 }
 
@@ -139,11 +132,11 @@ export function allProviders(cfg = readConfig()) {
 // saveProvider). An env key is bound to the provider's built-in base URL
 // (envKeyHome): when the base URL points elsewhere, it is not used.
 export function providerKey(p) {
-  if (p?.apiKey) return p.apiKey;
+  if (typeof p?.apiKey === "string" && p.apiKey.trim()) return p.apiKey.trim();
   const env = p?.keyEnv ? process.env[p.keyEnv] : null;
-  if (!env) return null;
+  if (typeof env !== "string" || !env.trim()) return null;
   const home = envKeyHome(p);
-  return home && home === originOf(p.baseUrl) ? env : null;
+  return home && home === originOf(p.baseUrl) ? env.trim() : null;
 }
 
 // The scheme, host and port an env key is sent to: the built-in base URL of
@@ -153,7 +146,14 @@ export function envKeyHome(p) {
 }
 
 export function activeId(cfg = readConfig()) {
-  return process.env.PROVIDER || cfg.default?.provider || FALLBACK_ID;
+  if (process.env.PROVIDER) return process.env.PROVIDER;
+  const all = allProviders(cfg);
+  for (const id of new Set([cfg.default?.provider, FALLBACK_ID, ...Object.keys(all)])) {
+    const p = all[id];
+    if (p && !providerSetupError(p, defaultAlias(p, cfg))) return id;
+  }
+  // Preset metadata is still needed for first-run setup; it is not a runnable default.
+  return FALLBACK_ID;
 }
 
 export function getProvider(id, cfg = readConfig()) {
@@ -178,7 +178,8 @@ export function defaultAlias(p, cfg = readConfig()) {
 // Check locally before a run creates workspaces or starts scanners. No provider call.
 export function providerSetupError(p, alias) {
   if (!p) return "Choose an inference provider in Settings before starting a run.";
-  if (!p.models?.[alias]?.id) return `Choose a model for ${p.label} in Settings before starting a run.`;
+  if (!p.baseUrl) return `Add a base URL for ${p.label} in Settings before starting a run.`;
+  if (!isDeepSeekModel(p.models?.[alias]?.id)) return `Choose a DeepSeek model for ${p.label} in Settings before starting a run.`;
   const key = providerKey(p);
   if (typeof key !== "string" || !key.trim()) return `Add an API key for ${p.label} in Settings before starting a run.`;
   return null;

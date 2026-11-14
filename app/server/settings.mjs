@@ -15,6 +15,7 @@ import {
   defaultAlias,
   providerKey,
   providerSetupError,
+  isDeepSeekModel,
   envKeyHome,
   readConfig,
   writeConfig,
@@ -218,12 +219,13 @@ export function getSettings() {
     models: modelRows(p),
   }))
   const ap = all[active]
+  const setupError = providerSetupError(ap, ap ? defaultAlias(ap, cfg) : null)
   return {
     providers,
-    default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
+    default: { provider: setupError ? null : active, model: !setupError && ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
-    setupError: providerSetupError(ap, ap ? defaultAlias(ap, cfg) : null),
+    setupError,
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
@@ -345,6 +347,7 @@ function modelTable(rows) {
   for (const r of Array.isArray(rows) ? rows : []) {
     const id = String(r?.id ?? "").trim()
     if (!id) continue
+    if (!isDeepSeekModel(id)) throw new Error("Only DeepSeek models are enabled. Choose a DeepSeek model served by this provider.")
     let alias = aliasFor(id)
     for (let i = 2; out[alias]; i++) alias = `${aliasFor(id)}-${i}`
     const priced = r.input != null && r.input !== "" && r.output != null && r.output !== ""
@@ -413,7 +416,8 @@ export function setDefault({ provider, model } = {}) {
   const p = allProviders(cfg)[provider]
   if (!p) throw new Error(`unknown provider "${provider}"`)
   if (!p.models?.[model]) throw new Error(`unknown model "${model}" for ${p.label}`)
-  if (!providerKey(p)) throw new Error(`${p.label} has no API key yet`)
+  const setupError = providerSetupError(p, model)
+  if (setupError) throw new Error(setupError)
   cfg.default = { provider, model }
   writeConfig(cfg)
   return getSettings()
@@ -469,7 +473,7 @@ export async function discoverModels(body = {}) {
   const models = list
     .map((m) => {
       const id = m?.id ?? m?.name
-      if (!id) return null
+      if (!isDeepSeekModel(id)) return null
       const p = m.pricing ?? {}
       return {
         id: String(id),

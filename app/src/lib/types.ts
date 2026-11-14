@@ -177,6 +177,7 @@ export interface FuzzSuspect {
 // every pack (built by spike/lib/prepass-view.mjs). Leads are not findings.
 export interface PrepassTool {
   name: string
+  pack?: string
   status: "ran" | "unavailable"
   reason: string | null
   leads: number
@@ -194,6 +195,8 @@ export interface PrepassLead {
 export interface PrepassView {
   total: number
   tools: PrepassTool[]
+  toolsTotal?: number
+  toolsRan?: number
   leads: PrepassLead[]
   failed?: boolean
 }
@@ -769,7 +772,7 @@ export interface ProviderSetting {
 
 export interface SettingsState {
   providers: ProviderSetting[]
-  default: { provider: string; model: string | null }
+  default: { provider: string | null; model: string | null }
   envOverride: string | null
   spend: SpendState
   fallbackPrice: { input: number; output: number }
