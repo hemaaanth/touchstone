@@ -91,6 +91,12 @@ This is the part that decides whether the finding has money behind it.
 So: the bug is real in shipped EVM source, is *not* in the newer V2 the Base script deploys, and the
 tracked TVL sits on a different (AVM) implementation that our Foundry proof cannot execute.
 
+Saying "it is on Base" would be too strong. The affected contracts are the **Phase 0** pools
+(`script/LendingPool.s.sol`, chain-agnostic), which V2 supersedes. Base mainnet's documented path
+deploys V2, so Base is exposed only where a phase-0 pool is still deployed. The repo records no
+address, and Base's explorer APIs are key-gated (Blockscout behind a challenge, Etherscan v2 needs a
+key), so that last step is unconfirmed.
+
 ## TVL at risk
 
 Tracked supplied TVL is ~$220 k (Algorand $149.3 k, Voi $70.6 k); borrowed $43.6 k. Free liquidity,
