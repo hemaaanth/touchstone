@@ -5,6 +5,7 @@ import { closingHeld, repairFinalSay } from "./final-text"
 import type {
   Activity,
   AgentNode,
+  HumanAsk,
   ArtifactDoc,
   BulletinNote,
   ArtifactVersion,
@@ -218,6 +219,9 @@ export interface RunState {
   cutOff: Record<string, string>
   // The operator stopped the run's last piece of work. A follow-up clears it.
   stopped: boolean
+  humanAsks: HumanAsk[]
+  freeRoam: boolean
+  options: ("wallet" | "email")[]
 }
 
 export function reduceEvents(events: RunEvent[]): RunState {
@@ -263,6 +267,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
   let provider: { id: string; model: string } | null = null
   const cutOff: Record<string, string> = {}
   let stopped = false
+  const humanAsks: HumanAsk[] = []
+  let freeRoam = false
+  let options: ("wallet" | "email")[] = []
 
   const num = (v: unknown) => (typeof v === "number" ? v : null)
   const str = (v: unknown) => (typeof v === "string" ? v : "")
@@ -318,6 +325,22 @@ export function reduceEvents(events: RunEvent[]): RunState {
     const stepsBefore = steps.length
     const activityBefore = activity
     switch (e.ev) {
+      case "roam-options":
+        freeRoam = e.freeRoam === true
+        options = Array.isArray(e.options) ? e.options.filter((v): v is "wallet" | "email" => v === "wallet" || v === "email") : []
+        break
+      case "ask-human":
+        if (str(e.id) && str(e.agent) && str(e.question) && !humanAsks.some((a) => a.id === e.id))
+          humanAsks.push({ id: str(e.id), agent: str(e.agent), kind: str(e.kind), question: str(e.question), t: num(e.t) ?? 0, ...(typeof e.detail === "string" ? { detail: e.detail } : {}) })
+        break
+      case "ask-answered": {
+        const ask = humanAsks.find((a) => a.id === e.id && a.agent === e.agent)
+        if (ask && ["done", "cancel", "reply"].includes(str(e.answer))) {
+          ask.answer = e.answer as HumanAsk["answer"]
+          ask.interrupted = e.interrupted === true
+        }
+        break
+      }
       case "scope": {
         // The run's opening event: which resource it is pointed at. Carries no
         // visible step — it sets the header, not the transcript.
@@ -554,6 +577,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
               name: str(e.name) || undefined,
               tier: e.tier === "T2" ? "T2" : "T1",
               conv: str(e.conv) || undefined,
+              loadout: e.loadout === "free-roam" ? "free-roam" : "confined",
+              options: Array.isArray(e.options) ? e.options.filter((v): v is "wallet" | "email" => v === "wallet" || v === "email") : [],
+              model: str(e.model) || undefined,
               activity: "working",
               spendUsd: null,
               startedAt: num(e.t),
@@ -861,11 +887,13 @@ export function reduceEvents(events: RunEvent[]): RunState {
         }
         break
       case "closed":
+        for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         closed = true
         replying = false
         break
       // An operator message to an idle run starts a follow-up worker.
       case "reply-start":
+        for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         newTurn()
         restoring = null // a restore line of an earlier turn is history
         closed = false
@@ -882,9 +910,11 @@ export function reduceEvents(events: RunEvent[]): RunState {
         steps.push({ key, kind: "note", phase, label: "You stopped the run. Send a message to continue." })
         break
       case "stop-requested":
+        for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         steps.push({ key, kind: "note", phase, label: "Stopping the run" })
         break
       case "phase-restarted": {
+        for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
         const step = ({ setup: "setup", prepass: "tool scan", agent: "agent turn", proof: "proof check" } as Record<string, string>)[str(e.phase)] ?? "step"
         newTurn()
         steps.push({ key, kind: "note", phase, label: `The server restarted, so the ${step} started again` })
@@ -959,6 +989,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
   // Once the run has settled there is nothing in flight — the status pill, not
   // the activity pill, carries the outcome.
   if (closed || (isTerminal(status as RunStatus) && !replying)) activity = "idle"
+  if (closed || stopped) for (const ask of humanAsks) if (!ask.answer) { ask.answer = "cancel"; ask.interrupted = true }
 
   return {
     events,
@@ -998,6 +1029,9 @@ export function reduceEvents(events: RunEvent[]): RunState {
     provider,
     cutOff,
     stopped,
+    humanAsks,
+    freeRoam,
+    options,
   }
 }
 

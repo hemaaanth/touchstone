@@ -511,6 +511,9 @@ export interface AgentNode {
   spendUsd?: number | null // cumulative; null = unknown
   startedAt?: number | null
   endedAt?: number | null
+  loadout?: "confined" | "free-roam"
+  options?: ("wallet" | "email")[]
+  model?: string
 }
 
 // The coordinator's id in `agent-message` and `bulletin-post`.
@@ -632,6 +635,36 @@ export interface RunView {
   name?: string | null
   // A follow-up worker is answering an operator message right now.
   replying?: boolean
+}
+
+export type RoamOption = "wallet" | "email"
+export interface RoamSelection { freeRoam: boolean; options: RoamOption[] }
+export type AskAnswer = { ask: string; done: boolean } | { ask: string; reply: string }
+export interface HumanAsk {
+  id: string
+  agent: string
+  kind: string
+  question: string
+  detail?: string
+  t: number
+  answer?: "done" | "cancel" | "reply"
+  interrupted?: boolean
+}
+export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean }
+export interface SessionArtifact {
+  id: string
+  kind: "transcript" | "har" | "screenshot"
+  sha256: string
+  bytes: number
+  mime: string
+  approval: "not-required" | "pending" | "released"
+}
+export interface SessionManifest {
+  version: 1
+  run: string
+  agent: string
+  sequence: number
+  files: SessionArtifact[]
 }
 
 export interface RunSummary {

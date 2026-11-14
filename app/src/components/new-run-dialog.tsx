@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
-import type { ModelChoice, PackChoice, RunMode, TargetChoice } from "@/lib/types"
+import type { ModelChoice, PackChoice, RoamSelection, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope, type ScopeMember } from "@/lib/api"
 import { DEFAULT_PACK, packOf, plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
@@ -41,7 +41,7 @@ export function NewRunDialog({
   busy: boolean
   error: string | null
   // One run covers every module in `modules`.
-  onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode) => void
+  onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => void
 }) {
   const alias = models[0]?.alias ?? ""
   // The modules a scope allows that the server also lists.
@@ -52,6 +52,7 @@ export function NewRunDialog({
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
+  const [freeRoam, setFreeRoam] = useState(true)
   const setMode = (m: RunMode) => {
     setModeState(m)
     localStorage.setItem(MODE_KEY, m)
@@ -67,7 +68,7 @@ export function NewRunDialog({
 
   const submit = () => {
     if (!canStart) return
-    onStart(alias, scope?.id, budgetN, modules, mode)
+    onStart(alias, scope?.id, budgetN, modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
   }
 
   const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
@@ -179,6 +180,11 @@ export function NewRunDialog({
             </div>
             <span className="text-xs text-muted-foreground">{MODES.find((m) => m.value === mode)?.hint}</span>
           </div>
+
+          {mode === "fleet" ? <fieldset className="flex flex-col gap-2 text-xs">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} disabled={busy} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
+            <p className="text-muted-foreground">Free-roam agents use a remote sandbox. Their session candidates remain unproven.</p>
+          </fieldset> : null}
 
           <label className="flex flex-col gap-1.5">
             <span className={label}>BUDGET</span>

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Hint, SeverityMark } from "@/components/assistant-ui/elements/indicators"
 import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, rowFocusStep, scheduleRowFocus, type Candidate } from "@/lib/candidate"
+import { SessionEvidence } from "@/components/session-evidence"
 
 // The run's candidates. A candidate is unproven. Either the agent saw harm the
 // pack's checks do not cover (agent-asserted), or the engine's replay only
@@ -17,12 +18,12 @@ import { MASK_NOTE, MEASURED_SHORT, WHY_UNPROVEN, rowFocusStep, scheduleRowFocus
 // the cited lines, and (one fold deeper) the raw evidence.
 // `focus`: a candidate the Findings page opened the run at. Its row opens,
 // scrolls into view and is marked for a moment (a quiet surface step).
-export function CandidateList({ items, focus = null }: { items: Candidate[]; focus?: { poc: string; at: number } | null }) {
+export function CandidateList({ items, focus = null, runId }: { items: Candidate[]; focus?: { poc: string; at: number } | null; runId?: string }) {
   if (!items.length) return <p className="px-3 py-2.5 text-xs text-muted-foreground">No candidates.</p>
   return (
     <div className="flex flex-col py-1">
       {items.map((c) => (
-        <CandidateRow key={c.poc} candidate={c} focusAt={focus?.poc === c.poc ? focus.at : null} />
+        <CandidateRow key={c.poc} runId={runId} candidate={c} focusAt={focus?.poc === c.poc ? focus.at : null} />
       ))}
     </div>
   )
@@ -44,7 +45,7 @@ const stateOf = (c: Candidate) => (c.measured ? MEASURED_SHORT[c.measured.reason
 
 const ROW = "flex w-full gap-2.5 px-3 py-[7px] text-left outline-none transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.03] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 
-function CandidateRow({ candidate: c, focusAt = null }: { candidate: Candidate; focusAt?: number | null }) {
+function CandidateRow({ candidate: c, focusAt = null, runId }: { candidate: Candidate; focusAt?: number | null; runId?: string }) {
   const [open, setOpen] = useState(false)
   const [marked, setMarked] = useState(false)
   // A new focus opens and marks the row, set while rendering (React's way to
@@ -85,13 +86,13 @@ function CandidateRow({ candidate: c, focusAt = null }: { candidate: Candidate; 
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <CandidateDetail candidate={c} />
+        <CandidateDetail runId={runId} candidate={c} />
       </CollapsibleContent>
     </Collapsible>
   )
 }
 
-export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
+export function CandidateDetail({ candidate: c, runId }: { candidate: Candidate; runId?: string }) {
   const m = c.measured
   return (
     <div className="flex flex-col gap-2.5 px-3 pt-0.5 pb-3 pl-9 text-xs">
@@ -113,6 +114,7 @@ export function CandidateDetail({ candidate: c }: { candidate: Candidate }) {
           </ul>
         </Field>
       ) : null}
+      {c.evidence && typeof c.evidence === "object" && "kind" in c.evidence && c.evidence.kind === "session" ? <SessionEvidence runId={runId} candidate={c} /> : null}
       {c.evidence != null ? <Evidence value={c.evidence} /> : null}
       <p className="text-[11px] text-muted-foreground">{MASK_NOTE}</p>
     </div>

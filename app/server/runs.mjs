@@ -22,7 +22,7 @@ import { mkdirSync, writeFileSync, appendFileSync, rmSync, readFileSync, readdir
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
 import { closeRun } from "../../spike/lib/daytona.mjs"
 import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
@@ -45,7 +45,8 @@ import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-b
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { isMeasured } from "../../spike/lib/candidate.mjs"
 import { recordProven } from "./findings.mjs"
-import { candidateEvents, candidatesOf, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { candidateEvents, candidatesOf, createSessionArtifactsApi, dropMeasuredSubmitted, measuredAtLoad, priorCandidatesEnv, recordCandidates, recordMeasured, supersedeProven, trackCandidate, writeCandidates } from "./candidates.mjs"
+import { createRoamControlApi, roamSelection } from "./roam-control.mjs"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, "../..")
@@ -278,6 +279,30 @@ export function deleteScope(id) {
 // their workers and their locks in one process-wide registry so the new copy adopts them.
 const registry = (globalThis.__touchstoneRuns ??= { runs: new Map(), retry: null })
 const runs = registry.runs
+const roamControl = (registry.roamControl ??= createRoamControlApi({
+  getRun: (id) => runs.get(id),
+  emit: (run, event) => broadcast(run, { t: Date.now(), ...event }),
+  machine: async (ws, agent) => {
+    const daytona = await import("../../spike/lib/daytona.mjs")
+    if (typeof daytona.findRoamMachine !== "function") throw new Error("Desktop adapter is not installed.")
+    return daytona.findRoamMachine(ws, agent)
+  },
+}))
+
+export const answerRunAsk = (id, body) => roamControl.answer(id, body)
+export const openRunDesktop = (id, agent, viewOnly, origin) => roamControl.desktop(id, agent, viewOnly, origin)
+export const closeRunDesktop = (id, agent) => roamControl.close(id, agent)
+const sessionArtifacts = createSessionArtifactsApi({
+  getRun: (id) => runs.get(id),
+  rootOf: (id) => path.join(RESULTS_DIR, `run-${id}.session`),
+  store: () => import("../../spike/lib/session-artifacts.mjs"),
+})
+export async function runSessionArtifacts(id, body, action, artifact) {
+  const run = runs.get(id)
+  const acquired = action === "release" && run && !run.owner && idle(run) && own(run)
+  try { return await sessionArtifacts(id, body, action, artifact) }
+  finally { if (acquired) release(run) }
+}
 let seq = 0
 const TERMINAL = ["recorded", "denied", "error", "no-finding"]
 
@@ -306,7 +331,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -380,6 +405,7 @@ function view(run) {
     modules: run.modules ?? null,
     // "fleet", "solo", or null for a run from before the choice.
     mode: modeOf(run),
+    ...roamSelectionOf(run),
     status: run.status,
     archived: Boolean(run.archived),
     // The operator's own name for the run, or null. Set by renameRun.
@@ -484,7 +510,8 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export async function createRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet" } = {}) {
+export async function createRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [] } = {}) {
+  const roam = roamSelection(freeRoam, options, mode)
   const cfg = readConfig()
   // The total spend cap comes first: at or above it, or with a ledger that
   // cannot be read, nothing is prepared and nothing is spent.
@@ -568,6 +595,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
     grantIds,
     modules: plan,
     mode,
+    ...roam,
     budget,
     model: provider.models[alias].id,
     status: "starting",
@@ -606,6 +634,7 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   broadcast(run, { t: Date.now(), ev: "budget", usd: budget })
   // Fleet or Solo. A follow-up reads it back from this event.
   broadcast(run, { t: Date.now(), ev: "mode", mode })
+  broadcast(run, { t: Date.now(), ev: "roam-options", ...roam })
   // The modules this ONE run covers. A follow-up, a restart and the view read
   // them back from this event, so a joined workspace is rebuilt joined.
   if (multi) broadcast(run, { t: Date.now(), ev: "packs", packs: picked })
@@ -745,8 +774,9 @@ function slimSettled(e) {
 
 // Handle one engine event for a run. Shared by the audit worker and the
 // follow-up worker.
-function engineEvents(run) {
+function engineEvents(run, child = run.child, epoch = run.roamEpoch) {
   return (e) => {
+    if (roamControl.consume(run, child, epoch, e)) return
     if (e.ev === "budget-reached") run.error = e.error
     if (e.ev === "settled") {
       // Internal: carries the summary and every finding with its passing
@@ -811,9 +841,14 @@ const RUN_MODES = ["fleet", "solo"]
 function modeOf(run) {
   return run.events.findLast((e) => e.ev === "mode")?.mode ?? null
 }
+function roamSelectionOf(run) {
+  const e = run.events.findLast((e) => e.ev === "roam-options") ?? run.saved ?? run
+  return { freeRoam: e?.freeRoam === true, options: Array.isArray(e?.options) ? e.options.filter((v) => v === "wallet" || v === "email") : [] }
+}
 function fleetEnv(run) {
   const mode = modeOf(run)
-  return mode ? { FLEET: mode === "solo" ? "0" : "1" } : {}
+  const roam = roamSelectionOf(run)
+  return { ...(mode ? { FLEET: mode === "solo" ? "0" : "1" } : {}), FREE_ROAM: roam.freeRoam ? "1" : "0", ROAM_OPTIONS: "[]", ROAM_CONTROL_EPOCH: run.roamEpoch, SESSION_ARTIFACT_DIR: path.join(RESULTS_DIR, `run-${run.id}.session`) }
 }
 
 // The run's budget and what it has spent so far, from its own events. A
@@ -976,6 +1011,7 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
+  run.roamEpoch = randomUUID()
   const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
@@ -988,6 +1024,7 @@ function spawnAgent(run, leads) {
   })
   child.stdin.on("error", () => {})
   run.child = child
+  roamControl.begin(run, child, run.roamEpoch)
 
   pipeEvents(child, engineEvents(run), (line) => {
     run.stderr += line + "\n"
@@ -996,6 +1033,7 @@ function spawnAgent(run, leads) {
     run.stderr += d
   })
   child.on("exit", async (code, signal) => {
+    await roamControl.invalidate(run).catch(() => {})
     if (run.status !== "running" && run.status !== "starting") return
     if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
@@ -1503,6 +1541,7 @@ function pruneWorkspaces() {
 // left running there (the web lab's container), or that would outlive the run.
 // The files stay when the run can take a follow-up; otherwise they are deleted.
 async function endWorkspace(run) {
+  await roamControl.invalidate(run).catch(() => {})
   const ws = run?.ws ?? run
   try {
     await packFor(readTouchstone(ws)).teardown?.(ws)
@@ -1561,6 +1600,7 @@ export function stopRun(id) {
   const preparing = run.replying && !child
   if (!alive && !preparing && run.status !== "running" && run.status !== "starting") throw new Error(`the run is ${run.status}; it ends on its own`)
   run.stopping = true
+  void roamControl.invalidate(run).catch(() => {})
   broadcast(run, { t: Date.now(), ev: "stop-requested" })
   if (alive) child.kill("SIGTERM")
   return { ok: true }
@@ -1696,6 +1736,7 @@ const sourceLines = (sources) => [
 // the workspace is gone, a new one is built from the run's scope, and one
 // `workspace` event tells the operator and the agent the same true thing.
 export function followUp(run, text, clientId) {
+  run.roamEpoch = randomUUID()
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
@@ -1810,6 +1851,7 @@ export function followUp(run, text, clientId) {
     })
     child.stdin.on("error", () => {})
     run.child = child
+    roamControl.begin(run, child, run.roamEpoch)
     pipeEvents(child, engineEvents(run), (line) => {
       run.stderr += line + "\n"
     })
@@ -1817,6 +1859,7 @@ export function followUp(run, text, clientId) {
       run.stderr += d
     })
     child.on("exit", async (code, signal) => {
+      await roamControl.invalidate(run).catch(() => {})
       if (!run.stopping) recoverSettled(run, since)
       const s = run.settled
       try {
@@ -2072,6 +2115,7 @@ function persistRun(run, findings) {
     // The module plan this run used — which parts of the pipeline were on, and the
     // reason for any that were off — so history shows the honest configuration.
     modules: run.modules ?? null,
+    ...roamSelectionOf(run),
     // The app has no manual gate: a proven run records itself. Mark approvals
     // "auto" so the ledger reads "Accepted · auto" rather than implying a click.
     approveMode: "auto",
