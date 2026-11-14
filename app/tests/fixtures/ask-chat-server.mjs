@@ -37,8 +37,8 @@ const reset = (next) => {
   mode = next; held = []; lines = []; failedOnce = false
   run = { id: "fixture", alias: "fixture", model: "fixture", mode: "fleet", owner: {}, status: "running", roamEpoch: "synthetic-epoch", events: [
     { ev: "status", status: "running" }, { ev: "mode", mode: "fleet" },
-    { ev: "subagent-spawned", id: "a-1", name: "Scout", title: "Source checks", loadout: "free-roam", model: "fixture", t: 1 },
-    { ev: "subagent-spawned", id: "a-2", name: "Reviewer", title: "Review checks", loadout: "free-roam", model: "fixture", t: 1 },
+    { ev: "subagent-spawned", id: "a-1", name: "Scout", title: "Source checks", loadout: "free-roam", tier: "T2", model: "fixture", t: Date.now() },
+    { ev: "subagent-spawned", id: "a-2", name: "Reviewer", title: "Review checks", loadout: "free-roam", tier: "T2", model: "fixture", t: Date.now() },
     { ev: "assistant-delta", conv: "root", attempt: 1, text: "Before the question." },
   ] }
   const child = { stdin: { writable: true, write(raw, cb) {
@@ -47,7 +47,7 @@ const reset = (next) => {
     if (line.ask && mode !== "uncertain") queueMicrotask(() => control.consume(run, child, run.roamEpoch, { ev: "ask-answered", id: line.ask, agent: run.events.find((e) => e.ev === "ask-human" && e.id === line.ask).agent, answer: "reply" in line ? "reply" : line.done ? "done" : "cancel" }))
   } } }
   run.child = child
-  control = createRoamControlApi({ getRun: () => run, emit: (_, e) => broadcast(e), machine: async () => { throw Error("Desktop network forbidden") }, timeoutMs: 100 })
+  control = createRoamControlApi({ getRun: () => run, emit: (emittedRun, e) => { if (emittedRun === run) broadcast(e) }, machine: async () => { throw Error("Desktop network forbidden") }, timeoutMs: 100 })
   control.begin(run, child, run.roamEpoch)
   const options = [{ id: "source", label: "Inspect source", description: "Read the selected source" }, { id: "tests", label: "Run isolated tests" }, { id: "unicode", label: "確認 · Unicode long choice wraps without widening the conversation" }]
   control.consume(run, child, run.roamEpoch, { ev: "ask-human", id: "root-q", agent: "coordinator", kind: "question", question: "Which check should I run?", presentation: { options, select: "single" } })
@@ -56,7 +56,7 @@ const reset = (next) => {
   control.consume(run, child, run.roamEpoch, { ev: "ask-human", id: "child-q2", agent: "a-2", kind: "login", question: "Which test environment should I use?" })
 }
 reset("http-first")
-const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, async fetch(request) {
   const url = new URL(request.url)
   if (url.pathname === "/") return new Response('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } })
   if (url.pathname === "/fixture.js") return new Response(Bun.file(join(directory, "bundle/ask-chat.js")), { headers: { "content-type": "text/javascript" } })
