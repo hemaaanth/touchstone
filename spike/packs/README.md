@@ -32,7 +32,7 @@ Register the pack in `packs/index.mjs`. A run picks its pack from the
 | `tier`    | `"P" \| "S" \| "I" \| "F"`  | The highest tier the pack can reach. See 08-proposed-ui.md §5.4. |
 | `proof`   | `"forge" \| "http" \| "evidence" \| "none"` | How a finding becomes real. See "Proof kinds". |
 | `live`    | boolean                     | The tools can be aimed at a real host, so the pack may run a live scope. Without it a live scope under this pack is refused rather than silently scanning the pack's lab. |
-| `offline` | `true`                      | Optional. **Every** tool of this pack stays offline in every run. Only then may the pack claim it. A pack whose tools may reach an outbound network leaves this unset and says what it reaches in TOOLS.md. `true` is a claim about code, never a product-wide promise: see `docs/network.md`. |
+| `offline` | `true`                      | Optional. No tool reaches a network. Only then does the Modules page say the pack runs only in the offline sandbox. |
 | `fetches` | `("github" \| "solc")[]`     | Optional. What the host fetches for a run: the scope's GitHub links, and the Solidity compilers those files pin. |
 | `scanNet` | `"open"`                    | Optional. A live run's scanners use the open bridge network, not the grant gate. |
 | `grants`  | `"github"`                  | Optional. A live grant names GitHub repos or orgs, not hosts. |
@@ -62,12 +62,9 @@ reads `found` when the run settles.
    `THIRD_PARTY.md`. GPL and AGPL code runs as a separate program only.
    Non-commercial or unlicensed code is read, or run as a separate program, and
    never pasted. All third-party code runs in Docker, never on the host.
-3. **Say what a tool reaches.** A tool that needs no network runs in Docker with
-   `--network none`; a tool that needs one says so in TOOLS.md, and what it talks
-   to. A pack with no outbound path may set `offline: true`. Offline is a property
-   of a tool, not a promise the product makes about a run: a live scope reads a
-   real host by design, and a forked replay reads a real chain. See
-   `docs/network.md`.
+3. **Offline by default.** Every tool runs in Docker with `--network none`. A
+   tool that needs the network says so in TOOLS.md. It runs only against a lab
+   until the scope proxy and the grant exist (I tier).
 4. **A lead is not a finding.** Tool output is a lead. A finding needs a proof
    that the engine can replay. The `submit_finding` gate refuses anything else.
 5. **One finding per root cause.** One fix closes one finding.
@@ -90,23 +87,39 @@ Use these. Do not write a second Docker runner or SARIF parser in a pack.
 ## Fleet runs
 
 `agent-run.mjs` adds `lib/fleet.mjs` beside the pack extension by default.
-The root conversation coordinates trusted T1 children. Each child gets the
-same model and pack tools, plus `message_agent`, `bulletin_post`, and
-`bulletin_read`. Only the root gets `spawn_agent`.
+The root conversation coordinates confined T1 children and, when enabled,
+free-roam T2 children. Confined children get the same model and pack tools.
+Free-roam children get their own remote machines and no pack proof tools.
+Both get `message_agent`, `bulletin_post`, and `bulletin_read`. Only the root
+gets `spawn_agent`.
 
-- `spawn_agent({name, task, area})` starts one child in a background-owned
-  conversation. Use one clear angle per child. `FLEET_MAX` caps the number
-  of children in the run. The default is eight. The coordinator sizes the
-  fleet to the scope within that cap.
+- `spawn_agent({name, task, area, loadout?})` starts one child in a
+  background-owned conversation. Use one clear angle per child. The default
+  cap is **50 total lifetime children**, shared by both loadouts. Explicit
+  `createFleet({max})` overrides `FLEET_MAX`; otherwise `FLEET_MAX` overrides
+  the default. The effective maximum must be a positive integer.
+  This is not a concurrent-machine quota or a request to spawn 50 children.
+  The coordinator sizes the fleet to the scope within the existing run budget.
+- An unspecified loadout is `confined`. With free-roam enabled, explicitly
+  spawn multiple `free-roam` children for independent angles as needed.
+  One slot is reserved until a free-roam child exists. This is a minimum
+  fallback, not a maximum: if none was chosen, the engine starts exactly one
+  before a healthy run settles.
 - `message_agent({to, text})` accepts a child name, child id, or
   `coordinator`. It steers a busy child and starts a new turn for an idle
   or failed child. To retry, message the same child. To reassign, read its
   task from `bulletin_read` and send that task to another child.
 - `bulletin_post({text, kind, severity?, tags?})` saves a note or lead.
-  All current authors are T1, so all posts use the trusted lane.
-  `bulletin_read()` returns the posts and the child roster with tasks.
+  Confined posts use the trusted lane; free-roam posts always use the evidence
+  lane. Neither a post nor a message is a proven finding or an authorization.
+  `bulletin_read()` returns the posts and the child roster with tasks and
+  status. Read it before assigning work and when leads change. Posts are
+  pulled by reads, not automatically broadcast; message affected siblings
+  and the coordinator when coordination is needed.
 - The roster, posts, delivery tasks, and child conversations are stored in
-  pi-durable. A follow-up can reopen them from the run's SQLite session.
+  pi-durable. Completed and failed children keep their slots. Follow-ups
+  reopen the same lifetime roster from the run's SQLite session; slots are
+  not recycled. `message_agent` can resume an existing identity at the cap.
   Child failures produce `subagent-done` with plain error text. They do
   not throw into the coordinator.
 

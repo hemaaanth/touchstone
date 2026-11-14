@@ -83,6 +83,7 @@ test("stop and parent-pipe end dispose pending asks before exit", async () => {
     const w = worker({ openHarness: () => new Promise(() => {}) });
     void w.run([null, null, null, "run"]);
     (event === "end" ? w.input : w.proc).emit(event);
+    await Promise.resolve();
     assert.deepEqual(w.order, ["dispose", `exit:${code}`]);
   }
 });
@@ -106,9 +107,47 @@ test("stop disposes an attached gate before pending asks", async () => {
   const running = w.run([null, null, null, "chat"]);
   await ready;
   w.proc.emit("SIGTERM");
+  await Promise.resolve();
   assert.deepEqual(w.order, ["gate-dispose", "dispose", "exit:143"]);
   finish();
   await running;
+});
+
+test("stop and pipe loss latch the gate immediately but await remote cleanup before exit", { timeout: 5000 }, async () => {
+  for (const [event, code] of [["SIGTERM", 143], ["SIGINT", 130], ["end", 1], ["error", 1]]) {
+    let entered, finish, cleaned, exited;
+    const exit = new Promise((r) => { exited = r; });
+    const ready = new Promise((r) => { entered = r; });
+    const turn = new Promise((r) => { finish = r; });
+    const cleanup = new Promise((r) => { cleaned = r; });
+    const w = worker({ chat: () => { entered(); return turn; } });
+    w.proc.exit = (code) => { w.order.push(`exit:${code}`); exited(); };
+    w.opened.control = { dispose: () => { w.order.push("gate-dispose"); return cleanup; } };
+    const running = w.run([null, null, null, "chat"]);
+    await ready;
+    (event === "end" || event === "error" ? w.input : w.proc).emit(event);
+    await Promise.resolve();
+    assert.deepEqual(w.order, ["gate-dispose", "dispose"]);
+    cleaned();
+    await exit;
+    assert.deepEqual(w.order, ["gate-dispose", "dispose", `exit:${code}`]);
+    finish();
+    await running;
+  }
+});
+
+test("normal completion awaits remote cleanup before fleet and harness close", async () => {
+  let entered, cleaned;
+  const ready = new Promise((r) => { entered = r; });
+  const cleanup = new Promise((r) => { cleaned = r; });
+  const w = worker();
+  w.opened.control = { dispose: () => { w.order.push("gate-dispose"); entered(); return cleanup; } };
+  const running = w.run([null, null, null, "run"]);
+  await ready;
+  assert.deepEqual(w.order, ["gate-dispose"]);
+  cleaned();
+  await running;
+  assert.deepEqual(w.order, ["gate-dispose", "dispose", "fleet-close", "harness-close", "exit:0"]);
 });
 
 test("runner supplies shared Ask separately from pack and roam tools", () => {

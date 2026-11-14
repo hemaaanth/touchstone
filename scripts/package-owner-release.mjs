@@ -21,7 +21,10 @@ export function sourceAllowed(path) {
   if (!(["app", "spike", "lab", "tools", "scripts", "docs"].includes(parts[0]) || /^(?:LICENSE(?:\..*)?|NOTICE(?:\..*)?|THIRD_PARTY\.md|README\.md)$/.test(path))) return false;
   if (parts.some((p) => /^\.env/i.test(p) || /^(?:\.git|\.npmrc|\.netrc|\.bunfig\.toml|bunfig\.toml|node_modules|results|logs|tmp|cache|workspaces|\.cache|\.vite|dist|coverage)$/i.test(p))) return false;
   if (/^(?:spike|app)\/(?:data|state|cache)\//.test(path)) return false;
-  if (parts.some((p) => /^(?:providers\.json|grants\.json|scopes\.json|console-token(?:\..*)?|spend\.json|daytona-pending\.json)$/.test(p) || /\.(?:env|pem|key|p12|pfx|sqlite(?:-wal|-shm)?|log|events|jsonl)$/.test(p))) return false;
+  if (parts.some((p) => /^(?:providers\.json|grants\.json|scopes\.json|spend\.json|daytona-pending\.json)$/.test(p) || /\.(?:env|pem|key|p12|pfx|sqlite(?:-wal|-shm)?|log|events|jsonl)$/.test(p))) return false;
+  // These exact reviewed code modules are not runtime token files; other token-like paths stay excluded.
+  if (parts.some((p) => /^console-token(?:\..*)?$/.test(p)) &&
+      !["app/src/lib/console-token.ts", "spike/test/console-token.test.mjs"].includes(path)) return false;
   return true;
 }
 

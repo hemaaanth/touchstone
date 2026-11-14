@@ -39,7 +39,7 @@ function oursSourceFiles(ws) {
       if (OUR_SKIP.has(e.name)) continue;
       const child = rel ? join(rel, e.name) : e.name;
       if (e.isDirectory()) { walk(child); continue; }
-      if (!e.name.endsWith(".sol")) continue;
+      if (!e.isFile() || !e.name.endsWith(".sol")) continue;
       try { out.push({ path: child.split(sep).join("/"), content: readFileSync(join(ws, child), "utf8") }); } catch { /* unreadable: skipped, never silently "clean" */ }
     }
   };
@@ -66,11 +66,7 @@ function sourceCheckLeads(ws) {
   }
 }
 
-// Fold our leads into the merged board. Our rows are candidates, never
-// corroborators: a rule of ours is a guess about the code, so it must be able to
-// stand alone (Slither and Aderyn do not have these checks at all). An existing
-// suspect at the same line gains our engine name, which raises its rank exactly
-// as a second analyzer would.
+// Merge source-check leads with the existing board, preserving its provenance.
 function mergeOurs(findings, ours) {
   return mergeStatic([...findings, ...ours]);
 }
@@ -147,6 +143,7 @@ export async function runPrepass(ws, { onStaticStart, onStatic, onFuzzStart, onF
   if (runFuzz) {
     onFuzzStart?.();
     fuzz = await fuzzScan(ws);
+    fuzzBriefText = fuzzBrief(fuzz);
     fuzzGapText = fuzzGap(fuzz);
     fuzzEvent = fuzzScanEvent(fuzz);
     onFuzz?.(fuzzEvent, fuzz, fuzzBriefText);

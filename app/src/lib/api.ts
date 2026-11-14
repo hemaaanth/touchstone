@@ -14,8 +14,10 @@ import type {
   PackChoice,
   RunMode,
   AskAnswer,
+  AskAccepted,
   RoamSelection,
   SandboxDesktopView,
+  SandboxDesktopIdentity,
   SessionManifest,
 } from "./types"
 import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
@@ -51,7 +53,10 @@ export class StalePageError extends Error {}
 // is told (reportStalePage), and the caller gets the server's sentence as a
 // StalePageError.
 async function writeResult<T>(url: string, res: Response): Promise<T> {
-  const json = await res.json().catch(() => ({}))
+  const json = await res.json().catch((error: unknown) => {
+    if (res.ok) throw error
+    return {}
+  })
   if (!res.ok) {
     const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
     if (res.status === 403) {
@@ -162,6 +167,7 @@ export async function fetchModels(): Promise<{
   packs: PackChoice[]
   spend: SpendState
   provider: ProviderInfo
+  roam: { ready: boolean; backend: string }
 }> {
   return getJson<{
     models: ModelChoice[]
@@ -169,6 +175,7 @@ export async function fetchModels(): Promise<{
     packs: PackChoice[]
     spend: SpendState
     provider: ProviderInfo
+    roam: { ready: boolean; backend: string }
   }>("/api/models")
 }
 
@@ -206,7 +213,10 @@ export function runStartBody(alias: string, targetId: string | undefined, budget
   return { alias, targetId, budgetUsd, mode, ...roam, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
 }
 
-export function startRun(
+// Keep an unconfirmed submission identity for an explicit retry of the same inputs.
+let pendingRunStart: { body: string; requestId: string } | null = null
+
+export async function startRun(
   alias: string,
   targetId?: string,
   budgetUsd?: number,
@@ -214,7 +224,34 @@ export function startRun(
   mode?: RunMode,
   roam?: RoamSelection,
 ): Promise<RunView> {
-  return postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
+  const body = runStartBody(alias, targetId, budgetUsd, modules, mode, roam)
+  const key = JSON.stringify(body)
+  if (pendingRunStart?.body !== key) pendingRunStart = { body: key, requestId: crypto.randomUUID() }
+  const { requestId } = pendingRunStart
+  try {
+    const run = await postJson<RunView>("/api/runs", { ...body, requestId })
+    pendingRunStart = null
+    return run
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof SyntaxError) {
+      // Docker interface changes can make Chromium discard an accepted POST response.
+      for (const delay of [0, 200, 500, 1000, 2000, 3000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        try {
+          const { run } = await getJson<{ run: RunView | null }>(`/api/runs?requestId=${encodeURIComponent(requestId)}`)
+          if (run && typeof run.id === "string") {
+            pendingRunStart = null
+            return run
+          }
+        } catch {
+          // The interface change can interrupt confirmation requests too.
+        }
+      }
+      throw new Error("Could not confirm the run. Check your connection and try again. Retrying this submission will not create a duplicate.", { cause: error })
+    }
+    pendingRunStart = null
+    throw error
+  }
 }
 
 // One member of a scope: a GitHub repo, or a local folder with its files.
@@ -248,9 +285,6 @@ export function attachScope(body: {
   repo?: string
   brief?: string
   files?: { path: string; content: string }[]
-  // Pin this scope to a real chain block (docs/network.md). `addresses` are the
-  // contracts a forked replay may treat as victims; the deployed oracle judges them.
-  fork?: { chain: string; block: number; addresses?: string[]; label?: string }
 }): Promise<TargetChoice> {
   return postJson<TargetChoice>("/api/scopes", body)
 }
@@ -312,11 +346,30 @@ export function fetchRun(id: string): Promise<RunView> {
   return getJson<RunView>(`/api/runs/${encodeURIComponent(id)}`)
 }
 
-export const answerRunAsk = (run: string, answer: AskAnswer) => postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(run)}/ask`, answer)
-export const openRunDesktop = (run: string, agent: string, viewOnly: boolean) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly })
-export async function closeRunDesktop(run: string, agent: string): Promise<SandboxDesktopView> {
+export class AskAnswerError extends Error {
+  uncertain: boolean
+  constructor(message: string, uncertain: boolean) { super(message); this.uncertain = uncertain }
+}
+export async function answerRunAsk(run: string, answer: AskAnswer): Promise<AskAccepted> {
+  const url = `/api/runs/${encodeURIComponent(run)}/ask`
+  let res: Response
+  try {
+    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify(answer) })
+  } catch {
+    throw new AskAnswerError("Answer delivery is uncertain. Retry the original answer or refresh its status.", true)
+  }
+  if (!res.ok) {
+    const data = await res.clone().json().catch(() => ({}))
+    try { await writeResult(url, res) } catch (error) {
+      throw new AskAnswerError(error instanceof Error ? error.message : "The answer was not accepted.", data.delivery !== "not-sent")
+    }
+  }
+  return writeResult<AskAccepted>(url, res)
+}
+export const openRunDesktop = (run: string, agent: string, viewOnly: boolean, desktop: SandboxDesktopIdentity) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly, desktop })
+export async function closeRunDesktop(run: string, agent: string, desktop: SandboxDesktopIdentity): Promise<SandboxDesktopView> {
   const url = `/api/runs/${encodeURIComponent(run)}/desktop`
-  const res = await fetch(url, { method: "DELETE", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ agent }) })
+  const res = await fetch(url, { method: "DELETE", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ agent, desktop }) })
   return writeResult<SandboxDesktopView>(url, res)
 }
 const sessionPath = (run: string, id?: string, action?: string) => `/api/runs/${encodeURIComponent(run)}/session-artifacts${id ? `/${encodeURIComponent(id)}/${action}` : ""}`
@@ -389,12 +442,6 @@ export function setRunBudget(budgetUsd: number): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/budget", { budgetUsd })
 }
 
-// One chain's RPC for forked replays. An empty url clears it. The server keeps the
-// URL; the response carries only whether it is set and its last 4 characters.
-export function setRpc(body: { chain: string; url: string }): Promise<SettingsState> {
-  return postJson<SettingsState>("/api/settings/rpc", body)
-}
-
 // Where tool calls run. An empty apiUrl or target clears the saved value.
 export function setExecution(body: {
   backend: "local" | "daytona"
@@ -402,6 +449,24 @@ export function setExecution(body: {
   clearKey?: boolean
   apiUrl?: string
   target?: string
+  roamSnapshot?: string
 }): Promise<SettingsState> {
   return postJson<SettingsState>("/api/settings/execution", body)
 }
+
+export interface ShellSetup {
+  state: "not_configured" | "not_checked" | "needs_test" | "ready" | "unavailable" | "rejected" | "pending" | "unknown" | "state_error"
+  ready: boolean
+  legacyPending?: number
+  previousPending?: number
+  operation?: { id: string; action: "snapshot" | "probe"; phase: string; probePassed: boolean; errorCode: string | null; errorStatus?: number | null; errorMessage?: string | null; canReconcile: boolean; snapshotId?: string | null; snapshotName?: string | null } | null
+}
+export interface ShellDiscovery {
+  regions: { id: string; name: string }[]
+  snapshots: { id: string; name: string; state: string; available: boolean }[]
+}
+export const fetchShellSetup = () => getJson<ShellSetup>("/api/settings/execution/status")
+export const discoverShellSnapshots = () => postJson<ShellDiscovery>("/api/settings/execution/discover", {})
+export const checkShellSnapshot = () => postJson<ShellSetup>("/api/settings/execution/check", {})
+export const startShellSetup = (action: "build" | "test", requestId: string) => postJson<ShellSetup>(`/api/settings/execution/${action}`, { confirm: true, requestId })
+export const reconcileShellSetup = (id: string, action: "snapshot" | "probe") => postJson<ShellSetup>("/api/settings/execution/reconcile", { id, action })

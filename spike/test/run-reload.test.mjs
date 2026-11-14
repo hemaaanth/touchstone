@@ -11,6 +11,7 @@ import { PassThrough } from "node:stream";
 
 const dir = mkdtempSync(join(tmpdir(), "run-reload-"));
 process.env.TOUCHSTONE_RESULTS_DIR = dir;
+process.env.SPEND_LEDGER = join(dir, "spend.json");
 const workers = [];
 const realChild = await import("node:child_process");
 mock.module("node:child_process", { exports: { ...realChild, spawn: () => {
@@ -36,6 +37,7 @@ test("a reloaded runs module adopts a live run and can stop it", async () => {
   const target = { id: "lab-web", title: "Web lab", kind: "lab", pack: "web" };
   const events = [
     { ev: "scope", t: 1, scope: target },
+    { ev: "run-request", t: 1, requestId: "3f12a0c7-d984-4e02-9334-c67b98a7ebf3", requestHash: "fixture-hash" },
     { ev: "mode", t: 2, mode: "solo" },
     { ev: "status", t: 3, status: "running" },
   ];
@@ -45,9 +47,11 @@ test("a reloaded runs module adopts a live run and can stop it", async () => {
   const first = await import("../../app/server/runs.mjs");
   await wait(() => workers.length === 1);
   assert.equal(workers.length, 1);
+  assert.equal(first.getRunByRequest("3f12a0c7-d984-4e02-9334-c67b98a7ebf3").id, id, "acceptance is restored from the stored stream");
 
   const second = await import(`../../app/server/runs.mjs?reload-${Date.now()}`);
   assert.ok(second.listRuns().some((r) => r.id === id && r.status === "running"));
+  assert.equal(second.getRunByRequest("3f12a0c7-d984-4e02-9334-c67b98a7ebf3").id, id);
   const seen = [];
   second.subscribe(id, (e) => seen.push(e), second.getRun(id).events.length);
   workers[0].stdout.write(`EVENT ${JSON.stringify({ ev: "tool", name: "after-reload" })}\n`);

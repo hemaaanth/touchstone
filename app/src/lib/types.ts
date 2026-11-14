@@ -177,6 +177,7 @@ export interface FuzzSuspect {
 // every pack (built by spike/lib/prepass-view.mjs). Leads are not findings.
 export interface PrepassTool {
   name: string
+  pack?: string
   status: "ran" | "unavailable"
   reason: string | null
   leads: number
@@ -194,6 +195,8 @@ export interface PrepassLead {
 export interface PrepassView {
   total: number
   tools: PrepassTool[]
+  toolsTotal?: number
+  toolsRan?: number
   leads: PrepassLead[]
   failed?: boolean
 }
@@ -378,28 +381,9 @@ export interface PackChoice {
   extraProof?: string
 }
 
-// One thing a module needs before it can run on a target (spike/lib/module-needs.mjs).
-// `kind` says where the operator fixes it: "settings" (an RPC, a key) or "run"
-// (the target's own chain and pinned block). The Modules page and the New run
-// dialog both read this one list, so they cannot disagree.
-export interface ModuleNeed {
-  id: string
-  label: string
-  kind: "settings" | "run"
-  met: boolean
-  detail: string
-}
-
 // A target as the launcher offers it: a scope plus whether it can run right now.
 export interface TargetChoice extends TargetScope {
   runnable: boolean
-  // The unmet needs that make it unrunnable. Absent or empty when there are none.
-  needs?: ModuleNeed[]
-  // The unmet needs of each module on this target, keyed by module id. A target can
-  // be runnable overall while one of its modules is not: a forked scope allows
-  // Contracts (which reads the chain) and Review (which does not), so with no RPC
-  // the target runs under Review and Contracts is the module that cannot start.
-  needsByPack?: Record<string, ModuleNeed[]>
 }
 
 // The active inference gateway (NEAR / Boundless / Lyber) that new runs will
@@ -407,6 +391,7 @@ export interface TargetChoice extends TargetScope {
 export interface ProviderInfo {
   id: string
   label: string
+  setupError?: string | null
 }
 
 // One raw event as the engine prints it. `ev` names the step; the rest varies.
@@ -659,6 +644,8 @@ export interface RunView {
 export type RoamOption = "wallet" | "email"
 export interface RoamSelection { freeRoam: boolean; options: RoamOption[] }
 export type AskAnswer = { ask: string; done: boolean } | { ask: string; reply: string }
+export interface AskReceipt { id: string; agent: string; answer: "done" | "cancel" | "reply"; text?: string }
+export interface AskAccepted { ok: true; receipt: AskReceipt }
 
 export interface AskOption {
   id: string
@@ -711,8 +698,10 @@ export interface HumanAsk {
   t: number
   answer?: "done" | "cancel" | "reply"
   interrupted?: boolean
+  receipt?: AskReceipt
 }
-export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean }
+export interface SandboxDesktopIdentity { id: string; epoch?: string }
+export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean; desktop: SandboxDesktopIdentity & { epoch: string } }
 export interface SessionArtifact {
   id: string
   kind: "transcript" | "har" | "screenshot"
@@ -785,26 +774,13 @@ export interface ProviderSetting {
   models: ProviderModel[]
 }
 
-// One chain RPC for a forked replay. The URL itself never leaves the server: this
-// is the chain, whether a URL is set, where it came from, and its last 4
-// characters, the same rule the provider keys follow.
-export interface RpcSetting {
-  chain: string
-  chainId: number
-  envName: string
-  set: boolean
-  source: "settings" | "env" | null
-  last4: string | null
-  saved: boolean
-}
-
 export interface SettingsState {
   providers: ProviderSetting[]
-  default: { provider: string; model: string | null }
+  default: { provider: string | null; model: string | null }
   envOverride: string | null
   spend: SpendState
   fallbackPrice: { input: number; output: number }
-  rpc: RpcSetting[]
+  setupError?: string | null
 }
 
 export interface DiscoveredModel {

@@ -24,8 +24,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash, randomUUID } from "node:crypto"
 import { cleanupWorkspace, readTouchstone } from "../../spike/lib/sandbox.mjs"
-import { closeRun } from "../../spike/lib/daytona.mjs"
-import { activeProvider, allProviders, defaultAlias, readConfig } from "../../spike/lib/providers.mjs"
+import { requireRoamReady } from "../../spike/lib/daytona-setup.mjs"
+import { execConfig, closeRun } from "../../spike/lib/daytona.mjs"
+import { activeProvider, allProviders, defaultAlias, providerSetupError, readConfig } from "../../spike/lib/providers.mjs"
 import { appRunBudgetUsd, appSpendCapUsd, spendCapRefusal, totalSpendState } from "./settings.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { briefChange, briefOf, dropOldBriefFile, eligiblePacks, getTarget, listTargets, pickTarget, prepareMultiWorkspace, prepareRunWorkspace, scopeEnv, targetSummary, withPack } from "../../spike/lib/targets.mjs"
@@ -34,10 +35,8 @@ import { liveHostsRefusal } from "../../spike/lib/live-hosts.mjs"
 import { readScopes, loadScopes, addBriefScope, addSourceScope, addRepoScope, addLiveScope, addScope as addMembersScope, removeScope, validateMembers, classifyPath, safeRelPath, SKIP_DIRS, MAX_FILES, MAX_BYTES } from "../../spike/lib/scopes-store.mjs"
 import { planModules, modulesEvent, moduleOn } from "../../spike/lib/modules.mjs"
 import { packFor, packList, PACKS } from "../../spike/packs/index.mjs"
-import { targetsWithNeeds, targetNeeds } from "../../spike/lib/module-needs.mjs"
 import { sortFindings } from "../../spike/lib/record.mjs"
 import { sourceCoverage, coverageFailure } from "../../spike/lib/source-coverage.mjs"
-import { forkEnv } from "../../spike/lib/rpc-store.mjs"
 import { leadsFrom } from "../../spike/lib/leads.mjs"
 import { isProven, proofKind, withProven } from "../../spike/lib/proof-view.mjs"
 import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.mjs"
@@ -92,6 +91,7 @@ export function availableModels() {
   const cfg = readConfig()
   const p = activeProvider(cfg)
   const first = defaultAlias(p, cfg)
+  if (providerSetupError(p, first)) return []
   return Object.entries(p.models)
     .map(([alias, m]) => ({ alias, id: m.id, abliterated: /-abl$|abliterat|uncensor/i.test(`${alias} ${m.id}`) }))
     .sort((a, b) => (b.alias === first) - (a.alias === first))
@@ -103,8 +103,9 @@ export function spendState() {
 
 // The active inference provider, so the UI can show which gateway a run drives.
 export function providerInfo() {
-  const p = activeProvider()
-  return { id: p.id, label: p.label }
+  const cfg = readConfig()
+  const p = activeProvider(cfg)
+  return { id: p.id, label: p.label, setupError: providerSetupError(p, defaultAlias(p, cfg)) }
 }
 
 // The provider a run used. Runs from before Settings did not record one; they
@@ -119,10 +120,7 @@ function runProvider(run) {
 // The target library the UI picks a scope from. The only filesystem path in it
 // is one the operator typed: a folder scope the server reads in place.
 export function availableTargets() {
-  // A target carries its modules' unmet needs, and is not runnable while it has
-  // one. The console greys out the module; the run start refuses from the same
-  // table, so the button and the server cannot disagree.
-  return targetsWithNeeds(listTargets())
+  return listTargets()
 }
 
 // The modules (packs) the New run dialog may offer. Read from the pack loader,
@@ -135,10 +133,7 @@ export function availablePacks() {
 // brief markdown never leaves the server; the summary carries only the links a run
 // will fetch. These three back the /api/scopes routes.
 export function listScopes() {
-  // Same needs table as availableTargets: a forked scope with no RPC is not
-  // runnable, and the Scopes page must say so rather than let it be picked and
-  // fail at run start.
-  return targetsWithNeeds(readScopes().map(targetSummary))
+  return readScopes().map(targetSummary)
 }
 
 // Add an operator scope. Returns its summary so the UI can select it at once.
@@ -152,7 +147,7 @@ export function listScopes() {
 //   { kind: "live", title, hosts, pack?, permission: true }
 //       real websites. `permission` is the operator's checkbox; it becomes the
 //       grant that lets a run reach these hosts.
-export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate, fork } = {}) {
+export function addScope({ kind, title, brief, blurb, files, repo, members, pack, hosts, permission, token, tokens, toolScope, assistant, allowPrivate } = {}) {
   if (kind === "live") {
     // Checked before the grant is written, so an unknown module saves nothing.
     // `pack` is one module or the list the operator ticked.
@@ -168,11 +163,9 @@ export function addScope({ kind, title, brief, blurb, files, repo, members, pack
     return { ...targetSummary(live), runnable: true }
   }
   const scope = members !== undefined
-    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb, fork })
+    ? addMembersScope({ title, members: readLocalFolders(members), pack, blurb })
     : files ? addSourceScope({ title, files }) : repo ? addRepoScope({ title, repo }) : addBriefScope({ title, brief, blurb })
-  // Never a hard-coded `runnable: true`: a forked scope with no RPC is created but
-  // not runnable, and the response must say the same thing the list will.
-  return targetsWithNeeds([targetSummary(scope)])[0]
+  return { ...targetSummary(scope), runnable: true }
 }
 
 // A local folder is read IN PLACE, on this machine: the operator names its path
@@ -300,8 +293,8 @@ const roamControl = (registry.roamControl ??= createRoamControlApi({
 }))
 
 export const answerRunAsk = (id, body) => roamControl.answer(id, body)
-export const openRunDesktop = (id, agent, viewOnly, origin) => roamControl.desktop(id, agent, viewOnly, origin)
-export const closeRunDesktop = (id, agent) => roamControl.close(id, agent)
+export const openRunDesktop = (id, agent, viewOnly, origin, desktop) => roamControl.desktop(id, agent, viewOnly, origin, desktop)
+export const closeRunDesktop = (id, agent, desktop) => roamControl.close(id, agent, desktop)
 const sessionArtifacts = createSessionArtifactsApi({
   getRun: (id) => runs.get(id),
   rootOf: (id) => path.join(RESULTS_DIR, `run-${id}.session`),
@@ -338,7 +331,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -476,6 +469,17 @@ export function getRun(id) {
   return run ? view(run) : null
 }
 
+function runForRequest(requestId) {
+  if (!requestId) return null
+  for (const run of runs.values()) if (run.requestId === requestId) return run
+  return null
+}
+
+export function getRunByRequest(requestId) {
+  const run = runForRequest(requestId)
+  return run ? view(run) : null
+}
+
 // `since` skips events the client already holds (it loaded a snapshot first).
 export function subscribe(id, send, since = 0) {
   const run = runs.get(id)
@@ -517,7 +521,33 @@ function pipeEvents(child, onEvent, onNoise) {
   })
 }
 
-export async function createRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [] } = {}) {
+// HTTP callers need the saved run before potentially slow confinement/setup.
+export function acceptRun(options) {
+  const { run, setup } = registerRun(options)
+  // Setup records its failure on the run and closes the event stream.
+  setup.catch(() => {})
+  return view(run)
+}
+
+// Await setup for callers that need the prepared workspace.
+export async function createRun(options) {
+  const { run, setup } = registerRun(options)
+  await setup
+  return view(run)
+}
+
+function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [], requestId } = {}) {
+  if (requestId != null && (typeof requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId))) {
+    throw new Error("The run request ID is invalid. Reload the console before starting a run.")
+  }
+  const requestHash = requestId == null ? null : createHash("sha256").update(JSON.stringify([alias ?? null, targetId ?? null, modules ?? null, budgetUsd ?? null, pack ?? null, packs ?? null, mode, freeRoam ?? null, options])).digest("hex")
+  if (requestId) {
+    const accepted = runForRequest(requestId)
+    if (accepted) {
+      if (accepted.requestHash !== requestHash) throw new Error("This request ID already belongs to a different run request.")
+      return { run: accepted, setup: Promise.resolve() }
+    }
+  }
   const roam = roamSelection(freeRoam, options, mode)
   const cfg = readConfig()
   // The total spend cap comes first: at or above it, or with a ledger that
@@ -526,7 +556,11 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   if (capRefusal) throw new Error(capRefusal)
   const provider = activeProvider(cfg)
   alias ??= defaultAlias(provider, cfg)
+  if (alias == null) throw new Error(providerSetupError(provider, alias))
   if (!provider.models[alias]) throw new Error(`unknown model alias for ${provider.label}: ${alias}`)
+  const setupError = providerSetupError(provider, alias)
+  if (setupError) throw new Error(setupError)
+  if (roam.freeRoam) requireRoamReady(execConfig())
   // The modules the run covers. `packs` is the operator's ticked list from the
   // New run dialog; two or more distinct ids make ONE run over all of them. A
   // list that dedupes to one, or no list, is today's one-module run: `pack`.
@@ -557,16 +591,6 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
     const allowed = eligiblePacks(target)
     const denied = picked.filter((id) => !allowed.includes(id))
     if (denied.length) throw new Error(`target ${target.id} belongs to pack "${allowed.join('", "')}", not "${denied.join('", "')}"`)
-  }
-  // A module's needs, refused before the reach opens and before anything is
-  // spent. Same table the console greys the module with, so a target the console
-  // offers as unrunnable cannot be started by a direct API call either.
-  for (const id of multi ? picked : [one ?? target.pack ?? "contracts"]) {
-    const wanted = targetNeeds(target, id)
-    if (!wanted.ok) {
-      // Name every unmet need, so one round trip fixes all of them.
-      throw new Error(`${PACKS[id]?.title ?? id} cannot run on "${target.title ?? target.id}" yet: ${wanted.needs.filter((n) => !n.met).map((n) => n.label).join("; ")}.`)
-    }
   }
   // A joined run keeps the credential of an AI/MCP scope, but only when it has
   // that module: otherwise the token would sit in the state file for nothing.
@@ -601,6 +625,8 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
 
   const run = {
+    requestId,
+    requestHash,
     reach: null,
     id,
     alias,
@@ -660,8 +686,16 @@ export async function createRun({ alias, targetId, modules, budgetUsd, pack, pac
   broadcast(run, modulesEvent(plan))
   // The provider and model, so a follow-up after a restart uses the same pair.
   broadcast(run, { t: Date.now(), ev: "provider", provider: provider.id, model: run.model })
+  if (requestId) broadcast(run, { t: Date.now(), ev: "run-request", requestId, requestHash })
 
   setRunStatus(run, "starting")
+  return { run, setup: prepareNewRun(run) }
+}
+
+async function prepareNewRun(run) {
+  const { target, modules: plan } = run
+  const picked = run.packs
+  const multi = picked?.length > 1
   try {
     run.reach = await openReach(target, { mode: target.kind === "live" ? "confine" : "proxy", grantIds: run.grantIds })
     run.ws = multi ? await prepareMultiWorkspace(target, { packs: picked, modules: plan }) : await prepareRunWorkspace(target, { modules: plan })
@@ -976,6 +1010,14 @@ export function failureInfo(run) {
   }
 
   if (reason === "model_error") {
+    if (/Provider is not configured|No API key for provider|Unknown (?:provider|model)|model .*(?:not found|does not exist)/i.test(detail)) {
+      return {
+        kind: "account", retryable: false, reason, spentUsd, detail,
+        title: "Provider setup is incomplete",
+        hint: "Open Settings, add the provider's API key, and choose a model. Fix the configuration before starting another run.",
+        message: `provider setup is incomplete — ${spentNote}`,
+      }
+    }
     if (ACCOUNT_ERR.test(detail)) {
       return {
         kind: "account", retryable: false, reason, spentUsd, detail,
@@ -1028,13 +1070,9 @@ function spawnAgent(run, leads) {
   // reach.env confines a live run: it carries the scope proxy's URL and allow-list
   // so the module's network seam routes target-bound traffic through the gate. It
   // is empty for an offline run, so a lab child's env is unchanged.
-  run.roamEpoch = randomUUID()
-  // A forked run needs its chain RPC in the worker's env. `forkEnv()` returns only
-  // the chains the operator configured in Settings, so an unforked run gets
-  // nothing and its env is unchanged. The URL is passed in the environment and
-  // never written into the workspace, so it cannot reach a finding or a bundle.
-  const forkVars = run.target?.fork ? forkEnv() : {}
-  const env = { ...process.env, ...forkVars, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
+  roamControl.assertIdle(run)
+  const epoch = run.roamEpoch = randomUUID()
+  const env = { ...process.env, TOUCHSTONE_PARENT_PIPE: "1", PROVIDER: runProvider(run), ALIAS: run.alias, EVENTS_FILE: run.eventsFile, RUN_CHARGE_FILE: path.join(RESULTS_DIR, `run-${run.id}.charges.jsonl`), ATTEMPT_BASE: attemptBase(run), ...budgetEnv(run), ...fleetEnv(run), ...scopeEnv(run.target, run.packs), ...(run.reach?.env ?? {}), ...leads }
   // stdin is a pipe (not "ignore") so the operator can steer the live run: we
   // write one JSON line per message to the worker, which injects it into the
   // agent's current turn. Swallow EPIPE if we race a worker that just exited.
@@ -1046,16 +1084,18 @@ function spawnAgent(run, leads) {
   })
   child.stdin.on("error", () => {})
   run.child = child
-  roamControl.begin(run, child, run.roamEpoch)
+  roamControl.begin(run, child, epoch)
 
-  pipeEvents(child, engineEvents(run), (line) => {
+  pipeEvents(child, engineEvents(run, child, epoch), (line) => {
     run.stderr += line + "\n"
   })
   child.stderr.on("data", (d) => {
     run.stderr += d
   })
   child.on("exit", async (code, signal) => {
-    await roamControl.invalidate(run).catch(() => {})
+    if (run.child !== child || run.roamEpoch !== epoch) return
+    await roamControl.invalidate(run, child, epoch).catch(() => {})
+    if (run.child !== child || run.roamEpoch !== epoch) return
     if (run.status !== "running" && run.status !== "starting") return
     if (!run.stopping) recoverSettled(run, since)
     const s = run.settled
@@ -1598,7 +1638,7 @@ async function endWorkspace(run) {
   }
   if (keepWorkspace(run, ws)) {
     // The files stay. The run's Daytona machines do not: they open again on demand.
-    if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {})
+    await closeRun(ws).catch(() => {})
     return
   }
   await cleanupWorkspace(ws)
@@ -1776,11 +1816,12 @@ const sourceLines = (sources) => [
 // the workspace is gone, a new one is built from the run's scope, and one
 // `workspace` event tells the operator and the agent the same true thing.
 export function followUp(run, text, clientId) {
-  run.roamEpoch = randomUUID()
+  roamControl.assertIdle(run)
   const capRefusal = spendCapRefusal()
   if (capRefusal) throw new Error(capRefusal)
   const money = budgetEnv(run)
   if (Number(money.RUN_SPENT_USD) >= Number(money.RUN_BUDGET_USD)) throw new Error(`This run has spent its budget of $${money.RUN_BUDGET_USD}. Start a new run with a higher budget to continue the work.`)
+  if (roamSelectionOf(run).freeRoam) requireRoamReady(execConfig())
   ensureFiles(run)
   if (!existsSync(run.db)) throw new Error("This run stopped before its agent session started. Start a new run to chat with an agent.")
   // The run's own snapshot comes first. Never replace it with a newer, wider
@@ -1870,6 +1911,7 @@ export function followUp(run, text, clientId) {
       broadcast(run, { t: Date.now(), ev: "reply-error", error: "The workspace's old live route could not be cleared, so this follow-up did not start. Start a new run for live testing." })
       return void end()
     }
+    const epoch = run.roamEpoch = randomUUID()
     const env = { ...process.env }
     delete env.TOUCHSTONE_SCOPE_PROXY
     delete env.TOUCHSTONE_SCOPE_ALLOW
@@ -1880,8 +1922,6 @@ export function followUp(run, text, clientId) {
       // No inherited reach env: follow-ups keep files, not a live route.
       env: {
         ...env,
-        // A follow-up on a forked run still replays on that chain, so it keeps the RPC.
-        ...(target?.fork ? forkEnv() : {}),
         TOUCHSTONE_PARENT_PIPE: "1",
         PROVIDER: runProvider(run),
         ALIAS: run.alias,
@@ -1902,15 +1942,17 @@ export function followUp(run, text, clientId) {
     })
     child.stdin.on("error", () => {})
     run.child = child
-    roamControl.begin(run, child, run.roamEpoch)
-    pipeEvents(child, engineEvents(run), (line) => {
+    roamControl.begin(run, child, epoch)
+    pipeEvents(child, engineEvents(run, child, epoch), (line) => {
       run.stderr += line + "\n"
     })
     child.stderr.on("data", (d) => {
       run.stderr += d
     })
     child.on("exit", async (code, signal) => {
-      await roamControl.invalidate(run).catch(() => {})
+      if (run.child !== child || run.roamEpoch !== epoch) return
+      await roamControl.invalidate(run, child, epoch).catch(() => {})
+      if (run.child !== child || run.roamEpoch !== epoch) return
       if (!run.stopping) recoverSettled(run, since)
       const s = run.settled
       try {
@@ -2156,6 +2198,8 @@ function persistRun(run, findings) {
   const worst = findings[0] ?? null
   const result = {
     alias: run.alias,
+    requestId: run.requestId,
+    requestHash: run.requestHash,
     provider: runProvider(run),
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
@@ -2270,6 +2314,7 @@ function rebuildEvents(id, record, engineEvents) {
   const tN = engineEvents[engineEvents.length - 1]?.t ?? t0
   const evs = []
   if (r.target) evs.push({ t: t0, ev: "scope", scope: r.target })
+  if (r.requestId) evs.push({ t: t0, ev: "run-request", requestId: r.requestId, requestHash: r.requestHash })
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
@@ -2522,8 +2567,11 @@ function savedRun(id, events, mtime) {
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
   const loaded = { submitted, candidates: candidatesOf(events) }
   dropMeasuredSubmitted(loaded) // a finding that became a measured candidate is not one of the run's findings
+  const request = events.find((e) => e.ev === "run-request") ?? saved ?? {}
   return {
     id,
+    requestId: request.requestId,
+    requestHash: request.requestHash,
     alias,
     target: null,
     scope,
@@ -2590,6 +2638,7 @@ async function resumeRun(run) {
   run.static = run.prepass?.static ?? null
   run.fuzz = run.prepass?.fuzz ?? null
   run.settled = state.settled ?? null
+  if (state.phase !== "proof" && roamSelectionOf(run).freeRoam) requireRoamReady(execConfig())
   if (state.phase === "setup") {
     checkRestarts(run)
     run.modules = state.modules ?? run.modules

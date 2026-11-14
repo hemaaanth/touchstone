@@ -133,7 +133,7 @@ test("B: handleSettings refuses each bad write before it reaches Settings", asyn
     [{ ...good, "content-type": "text/plain" }, 415],
     [without("x-touchstone-grant-token"), 403],
   ];
-  for (const url of ["/api/settings/execution", "/api/settings/providers"]) {
+  for (const url of ["/api/settings/execution", "/api/settings/providers", ...["discover", "check", "test", "build", "reconcile"].map((a) => `/api/settings/execution/${a}`)]) {
     for (const [headers, status] of cases) {
       const res = fakeRes();
       assert.equal(await handleSettings({ method: "POST", url, headers }, res), true);
@@ -152,4 +152,31 @@ test("B: handleSettings lets a good write through to Settings", async () => {
   assert.equal(await handleSettings(r, res), true);
   assert.equal(res.statusCode, 400, res.body);
   assert.match(res.body, /backend must be/);
+});
+
+test("saving shell configuration and reading status never queries or provisions Daytona", async () => {
+  const { handleSettings } = await import("../../app/server/runs-http.mjs");
+  const savedFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new Error("no provider calls allowed"); };
+  try {
+    store = {};
+    const state = setExecution({ backend: "daytona", apiKey: "synthetic-shell-key", target: "fixture-region", roamSnapshot: "fixture-snapshot" });
+    assert.equal(state.execution.roamSnapshot, "fixture-snapshot");
+    assert.equal(state.execution.shellSetup.ready, false);
+    assert.equal(store.execution.roamSnapshot, "fixture-snapshot");
+    const res = fakeRes();
+    await handleSettings({ method: "GET", url: "/api/settings/execution/status", headers: { host: HOST } }, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(JSON.parse(res.body).ready, false);
+    assert.equal(calls, 0);
+    assert.ok(!res.body.includes("synthetic-shell-key"));
+    for (const action of ["build", "test"]) {
+      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ requestId: "ignored" }))]), { method: "POST", url: `/api/settings/execution/${action}`, headers: good });
+      const denied = fakeRes();
+      await handleSettings(req, denied);
+      assert.equal(denied.statusCode, 400);
+      assert.equal(calls, 0, "a missing resource confirmation cannot provision");
+    }
+  } finally { store = {}; globalThis.fetch = savedFetch; }
 });

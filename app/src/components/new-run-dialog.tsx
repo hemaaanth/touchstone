@@ -2,11 +2,13 @@ import { useRef, useState } from "react"
 import { FileCode2, FlaskConical, Folder, FolderGit2, Globe, Loader2, Plus, Upload, X } from "lucide-react"
 import type { ModelChoice, PackChoice, RoamSelection, RunMode, TargetChoice } from "@/lib/types"
 import { attachScope, type ScopeMember } from "@/lib/api"
-import { DEFAULT_PACK, packOf, plural } from "@/lib/catalog"
+import { DEFAULT_PACK, isOwnScope, packOf, plural } from "@/lib/catalog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Badge } from "@/components/ui/badge"
 
 const RANDOM = "random"
 const DEFAULT_BUDGET = "5.00"
@@ -18,9 +20,8 @@ const MODES: { value: RunMode; label: string; hint: string }[] = [
 const MODE_KEY = "ts.runMode"
 
 // The New Run window picks the scope, its modules, Fleet or Solo, and budget.
-// A scope allows one or more modules. Nothing is assumed: the operator ticks the
-// modules to run, and each ticked module is its own run. The model is the
-// server's default (the first in the list), so there is no model picker.
+// A scope allows one or more modules; the selected modules share one run.
+// The model is the server's default, so there is no model picker.
 // "Random" omits targetId, so the server picks and repeat runs do not re-break
 // one bug. Scopes are added on the Scopes page.
 export function NewRunDialog({
@@ -31,6 +32,9 @@ export function NewRunDialog({
   packs,
   busy,
   error,
+  setupError = null,
+  roamReady = false,
+  onOpenSettings,
   onStart,
 }: {
   open: boolean
@@ -40,6 +44,9 @@ export function NewRunDialog({
   packs: PackChoice[]
   busy: boolean
   error: string | null
+  setupError?: string | null
+  roamReady?: boolean
+  onOpenSettings?: () => void
   // One run covers every module in `modules`.
   onStart: (alias: string, targetId: string | undefined, budgetUsd: number, modules: string[], mode: RunMode, roam: RoamSelection) => void
 }) {
@@ -49,6 +56,7 @@ export function NewRunDialog({
   const runnable = targets.filter((t) => t.runnable && allowed(t).length > 0)
   const [scopeId, setScopeId] = useState(RANDOM)
   const [ticked, setTicked] = useState<string[]>([])
+  const [modulesMissing, setModulesMissing] = useState(false)
   const [budget, setBudget] = useState(DEFAULT_BUDGET)
   // The last choice sticks, so an operator who runs fleets keeps getting one.
   const [mode, setModeState] = useState<RunMode>(() => (localStorage.getItem(MODE_KEY) === "solo" ? "solo" : "fleet"))
@@ -59,37 +67,52 @@ export function NewRunDialog({
   }
 
   const scope = runnable.find((t) => t.id === scopeId) ?? null
-  const eligible = scope ? allowed(scope) : []
+  const eligible = scope ? allowed(scope) : packs.filter((p) => p.id === DEFAULT_PACK)
   // A scope with one module needs no tick. A random scope runs the default module.
   const modules = !scope ? [DEFAULT_PACK] : eligible.length === 1 ? [eligible[0].id] : eligible.filter((p) => ticked.includes(p.id)).map((p) => p.id)
   const budgetN = Number(budget.replace(/^\$/, "").trim())
   const budgetOk = Number.isFinite(budgetN) && budgetN >= 0.01 && budgetN <= 1000
-  const canStart = alias !== "" && runnable.length > 0 && !busy && budgetOk && modules.length > 0
+  const needsRoamSetup = mode === "fleet" && freeRoam && !roamReady
+  const canStart = !needsRoamSetup && alias !== "" && !setupError && runnable.length > 0 && !busy && budgetOk
 
   const submit = () => {
     if (!canStart) return
+    if (modules.length === 0) {
+      setModulesMissing(true)
+      return
+    }
     onStart(alias, scope?.id, budgetN, modules, mode, { freeRoam: mode === "fleet" && freeRoam, options: [] })
   }
 
-  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...runnable.map((t) => ({ value: t.id, label: t.title }))]
+  const own = (target: TargetChoice) => isOwnScope(target.id) || target.kind === "live"
+  const scopeGroups = [
+    { label: "Your scopes", demo: false, targets: runnable.filter(own) },
+    { label: "Demo scopes", demo: true, targets: runnable.filter((target) => !own(target)) },
+  ]
+  const scopeItems = [{ value: RANDOM, label: "Random scope" }, ...scopeGroups.flatMap((group) => group.targets.map((t) => ({ value: t.id, label: t.title })))]
+  const demoBadge = <Badge variant="outline" className="h-[18px] shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground">Demo</Badge>
 
-  const notice = !budgetOk
+  const notice = setupError || (needsRoamSetup ? "Set up and test Daytona in Settings to use free-roam agents. You can also turn off free-roam agents for this run." : null) || (!budgetOk
     ? "The budget must be between $0.01 and $1,000."
     : alias === ""
-      ? "No model is set up. Add a provider key in Settings."
+      ? "Set up a provider key and model in Settings. NEAR AI Cloud is recommended."
       : runnable.length === 0
         ? "No runnable scopes are available right now."
-        : error
-  // Not an error: the Start button waits for a tick.
-  const hint = !notice && scope && modules.length === 0 ? "Tick the modules to run." : null
+        : error)
 
   const label = "text-[11px] leading-[15px] font-semibold tracking-[0.06em] text-muted-foreground"
   const field = "h-9 w-full rounded-lg border-input bg-background px-3 text-[13px]"
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
-        <div className="flex h-12 items-center border-b px-5">
+    <Dialog open={open} onOpenChange={(next, details) => {
+      if (!next && modulesMissing && details.reason === "escape-key") {
+        setModulesMissing(false)
+        return
+      }
+      onOpenChange(next)
+    }}>
+      <DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[440px]" showCloseButton={false}>
+        <div className="flex h-12 shrink-0 items-center border-b px-5">
           <DialogTitle className="text-sm font-semibold">New run</DialogTitle>
           <DialogClose
             render={<Button variant="ghost" size="icon-sm" className="-mr-2 ml-auto text-muted-foreground" />}
@@ -100,7 +123,7 @@ export function NewRunDialog({
         </div>
 
         <form
-          className="flex flex-col gap-4 px-5 pt-4 pb-5"
+          className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 pt-4 pb-5"
           onSubmit={(e) => {
             e.preventDefault()
             submit()
@@ -115,43 +138,50 @@ export function NewRunDialog({
                 if (!v) return
                 setScopeId(String(v))
                 setTicked([])
+                setModulesMissing(false)
               }}
             >
               <SelectTrigger className={field} aria-labelledby="new-run-scope">
                 <SelectValue className="min-w-0 truncate" />
+                {scope && !own(scope) ? demoBadge : null}
               </SelectTrigger>
               <SelectContent alignItemWithTrigger={false} className="p-1">
-                {scopeItems.map((s) => (
-                  <SelectItem key={s.value} value={s.value} className="text-[13px]">
-                    <span className="truncate">{s.label}</span>
-                  </SelectItem>
+                <SelectItem value={RANDOM} className="text-[13px]">Random scope</SelectItem>
+                {scopeGroups.filter((group) => group.targets.length > 0).map((group) => (
+                  <SelectGroup key={group.label}>
+                    <SelectLabel>{group.label}</SelectLabel>
+                    {group.targets.map((target) => (
+                      <SelectItem key={target.id} value={target.id} className="text-[13px]">
+                        <span className="min-w-0 flex-1 truncate">{target.title}</span>
+                        {group.demo ? demoBadge : null}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>
           </div>
 
-          {scope ? (
             <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-run-modules">
               <span className={label} id="new-run-modules">MODULES</span>
-              <div className="flex flex-col rounded-lg border border-input bg-background py-1">
+              <div className="flex h-28 shrink-0 flex-col overflow-y-auto rounded-lg border border-input bg-background py-1">
                 {eligible.map((p) => (
-                  <label key={p.id} className={cn("flex h-8 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
+                  <label key={p.id} className={cn("flex h-8 shrink-0 items-center gap-2.5 px-3 text-[13px]", eligible.length > 1 && "cursor-pointer")}>
                     <input
                       type="checkbox"
                       checked={modules.includes(p.id)}
                       disabled={busy || eligible.length === 1}
-                      onChange={(e) => setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))}
+                      onChange={(e) => {
+                        setModulesMissing(false)
+                        setTicked((list) => (e.target.checked ? [...list, p.id] : list.filter((id) => id !== p.id)))
+                      }}
                       className="size-3.5 shrink-0 accent-foreground"
                     />
                     {p.title}
                   </label>
                 ))}
               </div>
-              {modules.length > 1 ? (
-                <span className="text-xs text-muted-foreground">One run covers {plural(modules.length, "module")}.</span>
-              ) : null}
             </div>
-          ) : null}
 
           <div className="flex flex-col gap-1.5">
             <span className={label} id="new-run-mode">AGENTS</span>
@@ -178,13 +208,17 @@ export function NewRunDialog({
                 </button>
               ))}
             </div>
-            <span className="text-xs text-muted-foreground">{MODES.find((m) => m.value === mode)?.hint}</span>
+            <div className="grid text-xs text-muted-foreground">
+              {MODES.map((m) => (
+                <span key={m.value} aria-hidden={mode !== m.value} className={cn("col-start-1 row-start-1", mode !== m.value && "invisible")}>{m.hint}</span>
+              ))}
+            </div>
           </div>
 
-          {mode === "fleet" ? <fieldset className="flex flex-col gap-2 text-xs">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} disabled={busy} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
+          <fieldset disabled={busy || mode !== "fleet"} aria-hidden={mode !== "fleet"} className={cn("flex flex-col gap-2 text-xs", mode !== "fleet" && "invisible")}>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={freeRoam} onChange={(e) => setFreeRoam(e.target.checked)} />Allow free-roam agents</label>
             <p className="text-muted-foreground">Free-roam agents use a remote sandbox. Their session candidates remain unproven.</p>
-          </fieldset> : null}
+          </fieldset>
 
           <label className="flex flex-col gap-1.5">
             <span className={label}>BUDGET</span>
@@ -202,20 +236,27 @@ export function NewRunDialog({
                 onChange={(e) => setBudget(e.target.value)}
                 aria-label="Budget for this run in USD"
               />
-              <span className="shrink-0 text-muted-foreground/60">{modules.length > 1 ? "One budget, shared" : "Run stops at this limit"}</span>
+              <span className="shrink-0 text-muted-foreground/60">Run stops at this limit</span>
             </span>
           </label>
 
-          {notice ? <p className="text-xs text-bad">{notice}</p> : null}
-          {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+          {notice ? <p role="alert" className="text-xs text-bad">{notice}</p> : null}
+          {(setupError || needsRoamSetup || alias === "") && onOpenSettings ? (
+            <Button type="button" variant="outline" onClick={onOpenSettings}>{needsRoamSetup ? "Set up Daytona" : "Set up provider"}</Button>
+          ) : null}
         </form>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3.5">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-5 py-3.5">
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-          <Button onClick={submit} disabled={!canStart}>
-            {busy ? <Loader2 className="animate-spin" /> : null}
-            {modules.length > 1 ? "Start one run" : "Start run"}
-          </Button>
+          <Popover open={open && modulesMissing && modules.length === 0} onOpenChange={(next) => { if (!next) setModulesMissing(false) }}>
+            <PopoverTrigger onClick={submit} render={<Button disabled={!canStart} />}>
+              {busy ? <Loader2 className="animate-spin" /> : null}
+              Start run
+            </PopoverTrigger>
+            <PopoverContent side="top" align="end" initialFocus={false} aria-label="Modules required" className="w-auto max-w-64 text-xs">
+              <p role="alert">Select at least one module.</p>
+            </PopoverContent>
+          </Popover>
         </div>
       </DialogContent>
     </Dialog>
@@ -407,7 +448,7 @@ function labHost(hostname: string): boolean {
 // Live websites go as { kind: "live", hosts, pack, permission }: `pack` is the
 // list of modules the operator ticked, and the checkbox is the operator saying
 // they may test the websites. The server records it as a grant.
-function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean, fork: { chain: string; block: string; addresses: string } | null = null): Parameters<typeof attachScope>[0] {
+function scopeBody(sources: Source[], name: string, modules: string[], permission: boolean, token: string, chat: { path: string; budget: string }, allowPrivate: boolean): Parameters<typeof attachScope>[0] {
   const title = name || sources.map(sourceLabel).join(" + ")
   // Plain websites first: a run sends its requests to the first one, and a
   // wildcard entry is a grant pattern, not a website.
@@ -424,23 +465,8 @@ function scopeBody(sources: Source[], name: string, modules: string[], permissio
   const members = sources.flatMap((s): ScopeMember[] =>
     s.kind === "site" ? [] : s.kind === "folder" && "path" in s ? [{ kind: "folder", name: s.name, path: s.path }] : [s],
   )
-  // A pin turns this scope into a forked replay. Only sent when the operator filled
-  // the chain and the block in: the server refuses either one alone, and an empty
-  // pin must not become "fork at block 0".
-  const pin = fork && fork.chain.trim() && fork.block.trim()
-    ? {
-        chain: fork.chain.trim(),
-        block: Number(fork.block.trim().replace(/_/g, "")),
-        ...(fork.addresses.trim() ? { addresses: fork.addresses.split(/[\s,]+/).map((a) => a.trim()).filter(Boolean) } : {}),
-      }
-    : null
-  return { title, members, ...(pin ? { fork: pin } : {}) }
+  return { title, members }
 }
-
-// The chains a forked replay can pin, in the server's order (lib/fork.mjs). Hard
-// coded here only because the list is a property of the build, not of the operator's
-// settings: an unknown chain would be refused by the server anyway.
-const FORK_CHAIN_NAMES = ["mainnet", "bsc", "polygon", "optimism", "arbitrum", "base", "avalanche", "gnosis"]
 
 // A module every website scope allows, with nothing to tick. Same rule as
 // alwaysOn in spike/lib/targets.mjs: it can test a live site, it sends no
@@ -481,11 +507,6 @@ export function AddScope({
   // The modules ticked for a website scope. A run picks from them at start.
   const [modules, setModules] = useState<string[]>(["web"])
   const [allowPrivate, setAllowPrivate] = useState(false)
-  // The chain pin (docs/network.md). Empty by default: an unpinned scope is every
-  // scope that exists today and keeps the offline proof path.
-  const [pinChain, setPinChain] = useState("")
-  const [pinBlock, setPinBlock] = useState("")
-  const [pinAddresses, setPinAddresses] = useState("")
   const folderRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -590,15 +611,10 @@ export function AddScope({
     }
     if (live && !permission) return onError("Tick the box to confirm you have permission to test these websites.")
     if (lab && !allowPrivate) return onError("Tick the box to confirm this is your own local lab.")
-    // A pin needs both halves. The server refuses one without the other; say it
-    // here so the operator does not lose the form to a round trip.
-    if ((pinChain.trim() && !pinBlock.trim()) || (!pinChain.trim() && pinBlock.trim())) {
-      return onError("A chain pin needs both a chain and a block number.")
-    }
     setBusy(true)
     onError(null)
     try {
-      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate, { chain: pinChain, block: pinBlock, addresses: pinAddresses })))
+      onAttached(await attachScope(scopeBody(sources, name.trim(), siteModules, permission, token, { path: chatPath, budget: chatBudget }, lab && allowPrivate)))
       close()
     } catch (e) {
       onError((e as Error).message)
@@ -771,51 +787,6 @@ export function AddScope({
               className="h-7 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
           </label>
-          {/* A chain pin turns this scope into a forked replay (docs/network.md).
-              Left empty, the scope is exactly what it is today and keeps the
-              offline proof. Filled, the run must also have that chain's RPC in
-              Settings, or the module is greyed out and the run is refused. */}
-          <div role="group" aria-labelledby="add-scope-pin" className={cn(formRow, "items-start py-2")}>
-            <span id="add-scope-pin" className={cn(formLabel, "leading-7")}>Pin</span>
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-0.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <select
-                  aria-label="Chain"
-                  value={pinChain}
-                  disabled={busy}
-                  onChange={(e) => setPinChain(e.target.value)}
-                  className="h-7 rounded-md border border-input bg-background px-1.5 text-xs"
-                >
-                  <option value="">No pin</option>
-                  {FORK_CHAIN_NAMES.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-                <input
-                  aria-label="Block number"
-                  value={pinBlock}
-                  disabled={busy || !pinChain}
-                  onChange={(e) => setPinBlock(e.target.value)}
-                  inputMode="numeric"
-                  placeholder="block"
-                  className="h-7 w-28 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground disabled:opacity-50"
-                />
-              </div>
-              <input
-                aria-label="Pinned contract addresses"
-                value={pinAddresses}
-                disabled={busy || !pinChain}
-                onChange={(e) => setPinAddresses(e.target.value)}
-                placeholder="0x… addresses, comma separated (optional)"
-                className="h-7 min-w-0 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground disabled:opacity-50"
-              />
-              <span className="text-[11px] leading-relaxed text-muted-foreground">
-                {pinChain
-                  ? "The replay forks this block read-only and judges harm to these addresses. Nothing is signed or sent."
-                  : "Off. A pinned scope replays on a real chain block instead of a local EVM."}
-              </span>
-            </div>
-          </div>
           <div role="group" aria-labelledby="add-scope-modules" className={cn(formRow, "items-start py-2")}>
             <span id="add-scope-modules" className={cn(formLabel, "leading-5")}>Modules</span>
             {live ? (

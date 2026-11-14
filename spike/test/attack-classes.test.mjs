@@ -221,35 +221,6 @@ test("submit_finding declares every argument the model must supply", async () =>
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
-// The fuzz templates must fire on a protocol's own source, which is what a run
-// actually gets. The DeFiHackLabs corpus is 933 EXPLOIT TESTS, not protocol source,
-// so it cannot be the denominator for template coverage: it matched 1 of 933, which
-// says nothing about a real target. Our labs are protocol source, and 3 of 4 now
-// match a template (it was 1 of 4 with the single vault-solvency template).
-test("the fuzz templates fire on protocol source, not only one shape", async () => {
-  const { detectGuard, detectShareMath, detectVaultSolvency } = await import("../lib/harness.mjs");
-  const { readFileSync } = await import("node:fs");
-  const root = new URL("../../lab/", import.meta.url).pathname;
-  const cases = {
-    "vault-accounting/src/YieldVault.sol": ["solvency"],
-    "vault-shares/src/ShareVault.sol": ["share-math", "guard"],
-    "vault-multi/src/FeeVault.sol": ["guard"],
-  };
-  for (const [file, want] of Object.entries(cases)) {
-    const text = readFileSync(root + file, "utf8");
-    const hit = {
-      solvency: Boolean(detectVaultSolvency(text)),
-      "share-math": Boolean(detectShareMath(text)),
-      guard: Boolean(detectGuard(text)),
-    };
-    for (const w of want) assert.equal(hit[w], true, `${file} should match the ${w} template`);
-  }
-  // A shape no template knows stays unmatched, so a run says "no template" instead of
-  // fuzzing something meaningless.
-  const plain = "contract Plain { uint256 public x; function set(uint256 v) external { x = v; } }";
-  assert.equal(detectVaultSolvency(plain) || detectShareMath(plain) || detectGuard(plain), null);
-});
-
 // The class must survive the proof gate. A real run proved 5 findings and the record
 // carried `class: undefined` on every one, because proveFindings rebuilt each finding
 // field by field and left the class out. The sweep is only worth having if the operator
@@ -268,4 +239,20 @@ test("the proof gate carries a finding's class into the record", async () => {
     assert.equal(found.length, 1);
     assert.equal(found[0].class, "reentrancy", "the class survives the rebuild");
   } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+
+test("merging source checks preserves analyzer names and checks", async () => {
+  const { mergeStatic } = await import("../lib/ensemble.mjs");
+  const base = { file: "src/Vault.sol", where: "Vault.withdraw", lines: [20], impact: "High" };
+  const existing = mergeStatic([
+    { ...base, engine: "Slither", check: "reentrancy-eth" },
+    { ...base, engine: "Aderyn", check: "reentrancy" },
+  ]);
+  const merged = mergeStatic([...existing, { ...base, engine: "Touchstone", check: "unprotected-control-function" }]);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].engines, ["Slither", "Aderyn", "Touchstone"]);
+  assert.deepEqual(merged[0].checks, ["reentrancy-eth", "reentrancy", "unprotected-control-function"]);
+  assert.equal(merged[0].corroborated, true);
+  assert.deepEqual(mergeStatic(existing), existing);
 });

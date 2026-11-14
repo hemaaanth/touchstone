@@ -11,7 +11,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { SOLC_VERSION, closeRun, daytonaOn, remoteDocker } from "./daytona.mjs";
-import { forkArgs, forkFlags, forkOf } from "./fork.mjs";
 
 const IMG = "ghcr.io/foundry-rs/foundry:latest@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39";
 const SOLC = "0.8.38";
@@ -122,7 +121,7 @@ export async function cleanupWorkspace(ws) {
   // A Daytona run leaves `<ws>.daytona.json` with its machine ids. Delete those
   // machines, and wait for it: a process that exits now would lose the ids.
   // An id Daytona will not delete yet goes to the pending file.
-  if (existsSync(`${ws}.daytona.json`)) await closeRun(ws).catch(() => {});
+  await closeRun(ws).catch(() => {});
 }
 
 // Resolve a pragma expression to one concrete solc version we can pre-install.
@@ -227,22 +226,12 @@ export function warmFor(ws) {
 
 // The most forge output we read, on both paths. A replay JSON above it is cut,
 // and a cut trace is never judged: the call reports `overflow` and the proof
-// says why (see proofDelta).
-//
-// WHY THIS IS NOT SMALL. The cap used to be 8 MiB, chosen to nudge an agent away
-// from a forge-std deal() in the test BODY. That made a real bug unprovable for
-// being busy: a repeated small theft is one of the most common real patterns, and
-// our own lab measured 20 iterations at 10.3 MiB and 50 at 25.7 MiB. A proof the
-// harness declines to read is a false negative, which is the expensive direction
-// of error for a red team. So the cap is now high enough for the pattern, and the
-// refusal below stays as the honest ceiling rather than the everyday limit.
-//
-// Measured on the pinned image, one replay at -vvvvv: a small token drain is about
-// 0.4 MiB; a one-call deal() drain about 10 MiB; the 50-iteration rounding drain
-// 23 MiB; 100 iterations 45 MiB; 200 iterations 89 MiB. 256 MiB therefore covers
-// roughly 200 iterations of a state-writing loop, and the memory a caller must
-// hold is bounded by this number (the JSON string, plus its parse).
-export const FORGE_OUTPUT_CAP = 256 * 1024 * 1024;
+// says why (see proofDelta). Measured on the pinned image (H1c): a replay of a
+// small token drain is about 0.4 MiB; the same drain with one forge-std
+// deal(token, …) in the test BODY is about 10 MiB, with two deals or
+// deal(…, true) about 20 MiB. The same deal in setUp() stays at 0.4 MiB. So the
+// cap stays, and the refusal tells the agent to move deal into setUp().
+export const FORGE_OUTPUT_CAP = 8 * 1024 * 1024;
 
 // Run forge on Daytona when it is on, else in local Docker. The files forge
 // writes come back, as they would locally. The proof gate needs them: it reads
@@ -271,21 +260,17 @@ export const FOUNDRY_SVM_VOLUME = SVM_VOLUME;
 
 // The forge invocation forgeTest runs, as one string. matchContract limits to
 // one test contract; solc is a pinned version or "auto" (let forge pick).
-export function forgeTestCmd({ matchContract, solc, fork = null } = {}) {
+export function forgeTestCmd({ matchContract, solc } = {}) {
   const use = solc && solc !== "auto" ? `--use ${solc} ` : "";
   const mc = matchContract ? ` --match-contract ${matchContract}` : "";
-  // `--offline` stops forge fetching a solc or a dependency; it does not stop the
-  // fork from reading the chain, which is what `--fork-url` does. The fork flags
-  // come before the verbosity so the value that follows --fork-url is its own.
-  return `forge test --offline ${use}${forkFlags(fork)}-vv${mc}`;
+  return `forge test --offline ${use}-vv${mc}`;
 }
 
 // The standalone offline command a human runs from a bundle folder: the same
 // forge invocation inside the pinned image, with $PWD mounted. It is the exact
 // command the replay verifier runs, so the README never claims a different one.
-export function forgeReplayCommand({ matchContract, solc, fork = null } = {}) {
-  const net = fork ? `--network host -e ${fork.rpcVar}` : "--network none";
-  return `docker run --rm --pull never ${net} -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc, fork })}'`;
+export function forgeReplayCommand({ matchContract, solc } = {}) {
+  return `docker run --rm --pull never --network none -v ${SVM_VOLUME}:/home/foundry/.svm -v "$PWD":/work -w /work ${IMG} '${forgeTestCmd({ matchContract, solc })}'`;
 }
 
 // Run once, online, before a replay on a fresh machine. Its `docker run`s pull
@@ -305,10 +290,9 @@ export function forgePrepareCommand({ solc } = {}) {
 // Run `forge test` on the workspace inside the offline container. matchContract,
 // if given, limits to one test contract. Returns combined output and a pass flag.
 export async function forgeTest(ws, { matchContract, timeoutMs = 180_000 } = {}) {
-  const fork = forkOf(readTouchstone(ws));
-  const cmd = forgeTestCmd({ matchContract, solc: pinnedSolc(ws), fork });
+  const cmd = forgeTestCmd({ matchContract, solc: pinnedSolc(ws) });
   const args = [
-    "run", "--rm", "--pull=never", ...forkArgs(fork),
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,
@@ -331,17 +315,11 @@ export async function forgeTestJson(ws, { matchContract, timeoutMs = 180_000, st
   // artifact. The harm gate reads it to know which slot holds an address-typed control variable
   // (owner/admin/governor), so control-slot takeovers are judged from the real layout, not from a
   // position/value guess. It only enlarges the artifact JSON; the replay is unchanged.
-  const fork = forkOf(readTouchstone(ws));
-  // A space after solcUse: the function returns `--use 0.8.38` with no trailing
-  // space, so concatenating the next flag directly would produce `0.8.38--fork-url`
-  // (a silent "can't install missing solc" failure). The fork flags end with their
-  // own space; the empty case leaves this as it was.
-  const use = solcUse(ws);
-  let cmd = `forge test --offline ${use ? `${use} ` : ""}${forkFlags(fork)}--extra-output storageLayout ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
+  let cmd = `forge test --offline ${solcUse(ws)} --extra-output storageLayout ${stateTrace ? "-vvvvv" : "-vvvv"} --json`;
   if (matchContract) cmd += ` --match-contract ${matchContract}`;
   // --pull=never, one word: the only form planRemote (lib/daytona.mjs) accepts, as forgeTest.
   const args = [
-    "run", "--rm", "--pull=never", ...forkArgs(fork),
+    "run", "--rm", "--pull=never", "--network", "none",
     "-v", `${SVM_VOLUME}:/home/foundry/.svm`,
     "-v", `${ws}:/work`, "-w", "/work",
     IMG, cmd,

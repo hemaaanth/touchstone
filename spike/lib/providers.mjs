@@ -87,7 +87,7 @@ export const PROVIDERS = {
   },
 };
 
-const FALLBACK_ID = "boundless";
+const FALLBACK_ID = "near";
 // TOUCHSTONE_PROVIDERS_FILE exists only so tests use a throwaway config. Read on
 // each call, so a test can set it after import.
 export const providersFile = () => process.env.TOUCHSTONE_PROVIDERS_FILE || fileURLToPath(new URL("../data/providers.json", import.meta.url));
@@ -139,11 +139,11 @@ export function allProviders(cfg = readConfig()) {
 // saveProvider). An env key is bound to the provider's built-in base URL
 // (envKeyHome): when the base URL points elsewhere, it is not used.
 export function providerKey(p) {
-  if (p?.apiKey) return p.apiKey;
+  if (typeof p?.apiKey === "string" && p.apiKey.trim()) return p.apiKey.trim();
   const env = p?.keyEnv ? process.env[p.keyEnv] : null;
-  if (!env) return null;
+  if (typeof env !== "string" || !env.trim()) return null;
   const home = envKeyHome(p);
-  return home && home === originOf(p.baseUrl) ? env : null;
+  return home && home === originOf(p.baseUrl) ? env.trim() : null;
 }
 
 // The scheme, host and port an env key is sent to: the built-in base URL of
@@ -153,7 +153,14 @@ export function envKeyHome(p) {
 }
 
 export function activeId(cfg = readConfig()) {
-  return process.env.PROVIDER || cfg.default?.provider || FALLBACK_ID;
+  if (process.env.PROVIDER) return process.env.PROVIDER;
+  const all = allProviders(cfg);
+  for (const id of new Set([cfg.default?.provider, FALLBACK_ID, ...Object.keys(all)])) {
+    const p = all[id];
+    if (p && !providerSetupError(p, defaultAlias(p, cfg))) return id;
+  }
+  // Preset metadata is still needed for first-run setup; it is not a runnable default.
+  return FALLBACK_ID;
 }
 
 export function getProvider(id, cfg = readConfig()) {
@@ -173,6 +180,16 @@ export function defaultAlias(p, cfg = readConfig()) {
   const want = cfg.default?.provider === p.id ? cfg.default?.model : null;
   if (want && p.models?.[want]) return want;
   return Object.keys(p.models ?? {})[0] ?? null;
+}
+
+// Check locally before a run creates workspaces or starts scanners. No provider call.
+export function providerSetupError(p, alias) {
+  if (!p) return "Choose an inference provider in Settings before starting a run.";
+  if (!p.baseUrl) return `Add a base URL for ${p.label} in Settings before starting a run.`;
+  if (!p.models?.[alias]?.id) return `Choose a model for ${p.label} in Settings before starting a run.`;
+  const key = providerKey(p);
+  if (typeof key !== "string" || !key.trim()) return `Add an API key for ${p.label} in Settings before starting a run.`;
+  return null;
 }
 
 export function runBudgetUsd(cfg = readConfig()) {

@@ -13,15 +13,12 @@ export const DEFAULT_PACK = "contracts"
 export const packOf = (t: Pick<TargetScope, "pack"> | null | undefined): string => t?.pack ?? DEFAULT_PACK
 
 // How a pack's replay proves a finding, keyed by the pack's `proof` field.
-// Evidence re-checks a pinned snapshot, and Foundry replays in our own sandbox.
-// An HTTP pack that sets `live` can also replay against a granted host, and a
-// Foundry replay on a forked scope reads the chain it is pinned to. See
-// docs/network.md: a run may use the network, and what it reaches is a property of
-// the module and the scope.
+// Evidence re-checks a pinned snapshot, and Foundry stays in the offline
+// sandbox. An HTTP pack that sets `live` can also replay against a granted host.
 export const PROOF_KIND: Record<string, { label: string; detail: string }> = {
   forge: {
     label: "Foundry replay",
-    detail: "A finding is real only when its Foundry test replays green in our own sandbox. On a forked scope the replay also reads the chain, read-only, at the pinned block.",
+    detail: "A finding is real only when its Foundry test replays green in the offline sandbox.",
   },
   http: {
     label: "HTTP replay",

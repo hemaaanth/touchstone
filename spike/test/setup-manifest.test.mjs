@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { MANIFEST } from "../lib/images.mjs";
+import { MANIFEST, STRIX_SANDBOX_IMAGE } from "../lib/images.mjs";
 import { MANIFEST as CLI_MANIFEST } from "../scripts/setup.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -252,4 +252,37 @@ test("alpine:3.20 is optional: a setup with no flags does not select it", () => 
   const all = execFileSync(process.execPath, [SETUP, "--list", "--include-optional"], { encoding: "utf8" });
   assert.doesNotMatch(plain, /pull {2}alpine:3\.20/);
   assert.match(all, /pull {2}alpine:3\.20 {2}\(optional\)/);
+});
+
+test("Strix provisioning includes its CLI and pinned runtime sandbox in the same optional group", () => {
+  const out = execFileSync(process.execPath, [SETUP, "--list", "--only", "strix", "--include-optional"], { encoding: "utf8" });
+  const runtime = MANIFEST.find((m) => m.ref === STRIX_SANDBOX_IMAGE);
+  assert.equal(runtime.group, "strix");
+  assert.equal(runtime.kind, "pull");
+  assert.match(runtime.ref, /@sha256:[a-f0-9]{64}$/);
+  assert.ok(out.includes(runtime.tag));
+  assert.ok(out.includes("touchstone/strix:1.7.0"));
+});
+
+test("setup repairs a missing Strix runtime while keeping an already-built CLI", () => {
+  const dir = mkdtempSync(join(tmpdir(), "strix-setup-shim-"));
+  try {
+    const log = join(dir, "calls");
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\n" "$*" >> "' + log + '"\nif [ "$1" = image ] && [ "$2" = inspect ]; then [ "$3" = "touchstone/strix:1.7.0" ] && exit 0; exit 1; fi\nexit 0\n', { mode: 0o755 });
+    execFileSync(process.execPath, [SETUP, "--only", "strix", "--include-optional", "--jobs", "1"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
+    const calls = readFileSync(log, "utf8").split("\n");
+    assert.ok(calls.includes(`pull ${MANIFEST.find((m) => m.ref === STRIX_SANDBOX_IMAGE).ref}`));
+    assert.ok(!calls.some((c) => c.startsWith("build ")));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a cached Strix digest needs no short tag because setup and runtime use the same reference", () => {
+  const dir = mkdtempSync(join(tmpdir(), "strix-cached-digest-"));
+  try {
+    const log = join(dir, "calls");
+    writeFileSync(join(dir, "docker"), '#!/bin/sh\nprintf "%s\n" "$*" >> "' + log + '"\nif [ "$1" = image ] && [ "$2" = inspect ]; then case "$3" in "touchstone/strix:1.7.0"|"' + STRIX_SANDBOX_IMAGE + '") exit 0;; *) exit 1;; esac; fi\nexit 99\n', { mode: 0o755 });
+    const out = execFileSync(process.execPath, [SETUP, "--only", "strix", "--include-optional"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: "utf8" });
+    assert.match(out, /skipped:\s+2/);
+    assert.ok(readFileSync(log, "utf8").trim().split("\n").every((line) => line.startsWith("image inspect ")));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

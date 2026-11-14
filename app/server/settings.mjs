@@ -14,6 +14,7 @@ import {
   runBudgetUsd,
   defaultAlias,
   providerKey,
+  providerSetupError,
   envKeyHome,
   readConfig,
   writeConfig,
@@ -21,7 +22,7 @@ import {
 import { DEFAULT_SPEND_CAP_USD, ledgerState, spendCapUsd } from "../../spike/lib/inference.mjs"
 import { validateRunBudget } from "../../spike/lib/run-budget.mjs"
 import { DEFAULT_API_URL, DEFAULT_SNAPSHOT, DEFAULT_TARGET, execConfig, hostOf } from "../../spike/lib/daytona.mjs"
-import { rpcState, setRpc } from "../../spike/lib/rpc-store.mjs"
+import { roamSetupView } from "../../spike/lib/daytona-setup.mjs"
 import { errorText, originOf, publicUrl, scrubUrl } from "../../spike/lib/redact-url.mjs"
 import { consoleToken, rotateConsoleToken, sameToken } from "../../spike/lib/grant-store.mjs"
 // The page gets the token from here (vite.config.ts), read at serve time.
@@ -218,17 +219,16 @@ export function getSettings() {
     models: modelRows(p),
   }))
   const ap = all[active]
+  const setupError = providerSetupError(ap, ap ? defaultAlias(ap, cfg) : null)
   return {
     providers,
-    default: { provider: active, model: ap ? defaultAlias(ap, cfg) : null },
+    default: { provider: setupError ? null : active, model: !setupError && ap ? defaultAlias(ap, cfg) : null },
     // PROVIDER in the server's env overrides the saved default. Say so.
     envOverride: process.env.PROVIDER || null,
+    setupError,
     spend: { ...totalSpendState(cfg), budgetUsd: appRunBudgetUsd(cfg) },
     fallbackPrice: FALLBACK_PRICE,
     execution: executionState(cfg),
-    // Chain RPCs for forked replays. A URL never leaves the server: each row carries
-    // the chain, whether it is set, and the last 4 characters.
-    rpc: rpcState(cfg),
   }
 }
 
@@ -252,10 +252,13 @@ function executionState(cfg) {
     envKeyHost: c.envKeyHost,
     target: c.target,
     snapshot: c.snapshot,
+    roamSnapshot: c.roamSnapshot,
+    shellSetup: roamSetupView(c),
     // A server env var wins over the saved value. Name it, so the form can say so.
     envNames: {
       apiUrl: process.env.DAYTONA_API_URL ? "DAYTONA_API_URL" : null,
       target: process.env.DAYTONA_TARGET ? "DAYTONA_TARGET" : null,
+      roamSnapshot: process.env.TOUCHSTONE_ROAM_SNAPSHOT ? "TOUCHSTONE_ROAM_SNAPSHOT" : null,
     },
     defaults: { apiUrl: DEFAULT_API_URL, target: DEFAULT_TARGET, snapshot: DEFAULT_SNAPSHOT },
   }
@@ -269,7 +272,7 @@ export function setExecution(body = {}) {
   const backend = body.backend ?? prev.backend ?? "local"
   if (backend !== "local" && backend !== "daytona") throw new Error('backend must be "local" or "daytona"')
   const next = { backend }
-  for (const f of ["target", "snapshot"]) {
+  for (const f of ["target", "snapshot", "roamSnapshot"]) {
     const v = body[f] === undefined ? prev[f] : String(body[f] ?? "").trim()
     if (v && !/^[A-Za-z0-9._-]{1,64}$/.test(v)) throw new Error(`${f} has bad characters`)
     if (v) next[f] = v
@@ -390,6 +393,12 @@ export function saveProvider(body = {}) {
   }
   if (!entry.models && !preset) throw new Error("add at least one model")
   cfg.providers[id] = entry
+  // The first configured provider becomes the default; later saves preserve the choice.
+  if (!cfg.default && !process.env.PROVIDER) {
+    const p = allProviders(cfg)[id]
+    const model = defaultAlias(p, cfg)
+    if (!providerSetupError(p, model)) cfg.default = { provider: id, model }
+  }
   writeConfig(cfg)
   return getSettings()
 }
@@ -409,7 +418,8 @@ export function setDefault({ provider, model } = {}) {
   const p = allProviders(cfg)[provider]
   if (!p) throw new Error(`unknown provider "${provider}"`)
   if (!p.models?.[model]) throw new Error(`unknown model "${model}" for ${p.label}`)
-  if (!providerKey(p)) throw new Error(`${p.label} has no API key yet`)
+  const setupError = providerSetupError(p, model)
+  if (setupError) throw new Error(setupError)
   cfg.default = { provider, model }
   writeConfig(cfg)
   return getSettings()
@@ -476,17 +486,4 @@ export async function discoverModels(body = {}) {
     })
     .filter(Boolean)
   return { models, keyUsed: Boolean(key), keyNote }
-}
-
-// Save or clear one chain's RPC for forked replays. The URL is stored beside the
-// provider keys (data/providers.json, 0600) and reaches a run as an environment
-// variable, never as a file in the workspace.
-//
-// Returns the WHOLE settings state, exactly like setRunBudget and setExecution: the
-// page replaces its state with what a write returns, so returning only the rpc rows
-// made it call settings.providers.map on an array and crash. Caught by opening the
-// page in a real browser; the render tests never exercise a write.
-export function setRpcAndState(body) {
-  setRpc(body)
-  return getSettings()
 }

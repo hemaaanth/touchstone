@@ -129,9 +129,7 @@ Keep going without asking the operator questions. Work from the actual source.`;
 // A brief scope has no local source at the start. The code to audit lives behind
 // the links the scope section of the instructions lists; the agent fetches it into vendor/ with fetch_source,
 // then audits and proves it the same way. A proof is a Foundry test that deploys
-// the contracts in a local EVM. A scope may carry a `fork` pin, and then the replay
-// forks that chain at that block and reads it (lib/fork.mjs); either way nothing
-// signs or broadcasts, so a proof can never touch real funds.
+// the contracts in a local EVM with no network access.
 const SYSTEM_BRIEF = `You are an authorized offensive-security agent in an isolated sandbox.
 The operator has asked you to audit a target they own. Your job: find EVERY real,
 exploitable vulnerability in the code the scope points at and PROVE each one with
@@ -264,7 +262,7 @@ function tools(ws, state) {
   });
   const fetchSourceTool = defineTool({
     name: "fetch_source",
-    description: "Fetch one of the scope's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as the scope section of your instructions lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host. A lab or folder proof runs offline; a forked scope replay reads its chain.",
+    description: "Fetch one of the scope's GitHub links into the workspace so you can read and compile it. Pass the URL exactly as the scope section of your instructions lists it: a repo or tree link is cloned into vendor/<owner>__<repo>/ (\"@<ref>\" for a tree), a blob (single-file) link is saved under vendor/files/<owner>__<repo>@<ref>/<path>. Any other URL is refused. The fetch happens on the host. The proof runs offline in a local EVM.",
     parameters: obj({ url: str({ description: "one GitHub link exactly as the scope lists it" }) }),
     replay: "unsafe",
     execute: async (args) => {
@@ -539,7 +537,7 @@ export default {
   // What the module tests, in one plain sentence (from its SKILL.md). The
   // Modules page shows it; it makes no proof claim.
   description: "Solidity contracts you own, from a lab, a local folder or a GitHub repo.",
-  tier: "P", // passive: the target code and PoCs run only in our own sandbox (a forked replay reads its chain, read-only)
+  tier: "P", // passive: target code and PoCs run only in our offline sandbox
   proof: "forge", // a finding is real only when its Foundry test replays green
   // Where its tools reach. The Modules page reads this. fetch_source clones the
   // scope's GitHub links on the host, and warmSolc downloads the compilers those

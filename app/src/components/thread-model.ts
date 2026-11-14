@@ -164,6 +164,16 @@ export function buildMessages(
     }
     // A cognition/outcome step ends the current group and renders on its own.
     flushGroup()
+    if (step.kind === "ask" && step.ask) {
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: step.key,
+        toolName: "ask_human",
+        args: { ask: step.ask },
+        ...(step.ask.answer ? { result: step.ask.receipt ?? { answer: step.ask.answer, interrupted: step.ask.interrupted === true } } : {}),
+      })
+      return
+    }
     // A submitted finding renders its card right where the agent submitted it,
     // so a run with several findings reads in the order they landed.
     if (step.kind === "submitted" && step.finding) {
@@ -489,7 +499,7 @@ export function runStartView(events: RunEvent[], prepass: PrepassView | null, li
 
   const meta =
     [
-      p.tools ? `${count(p.tools, "tool")}${p.ran < p.tools ? ` (${p.ran} ran)` : ""}` : null,
+      p.tools ? `${count(p.tools, p.partial ? "reported tool" : "tool")}${p.ran < p.tools ? ` (${p.ran} ran)` : ""}` : null,
       p.leads != null ? count(p.leads, "lead") : null,
     ]
       .filter(Boolean)

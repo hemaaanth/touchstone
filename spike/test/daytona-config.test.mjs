@@ -3,6 +3,7 @@
 // Settings are read and written in memory here, so the saved file never changes.
 import "./helpers/isolated-env.mjs";
 import { mock, test } from "node:test";
+import { roamAccountBinding } from "../lib/daytona-state.mjs";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -209,8 +210,8 @@ test("the REST client calls the configured server, with the key bound to it", as
   const calls = [];
   try {
     await withEnv({ ...NO_ENV, DAYTONA_PENDING: join(dir, "pending.json") }, async () => {
-      writeFileSync(join(dir, "pending.json"), JSON.stringify(["sb-test-1"]));
       store = { execution: { backend: "local", apiUrl: "https://saved.example/api", apiKey: KEY, keyHost: "saved.example" } };
+      writeFileSync(join(dir, "pending.json"), JSON.stringify([{ id: "sb-test-1", account: roamAccountBinding(execConfig()) }]));
       globalThis.fetch = async (url, init) => {
         calls.push({ url: String(url), method: init.method, auth: init.headers.Authorization });
         return new Response("", { status: 404 });

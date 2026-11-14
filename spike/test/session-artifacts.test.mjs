@@ -3,11 +3,11 @@ import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import * as fs from "node:fs";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync, chmodSync, symlinkSync, linkSync, truncateSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync, symlinkSync, linkSync, truncateSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { SESSION_ARTIFACT_LIMITS as L, writeSessionArtifacts, listSessionArtifacts, readSessionArtifact, releaseSessionScreenshot, sessionArtifactBinding, captureSessionArtifacts } from "../lib/session-artifacts.mjs";
+import { SESSION_ARTIFACT_LIMITS as L, writeSessionArtifacts, listSessionArtifacts, readSessionArtifact, releaseSessionScreenshot, sessionArtifactBinding, captureSessionArtifacts, bindSessionCapture, finalizeSessionArtifacts, getSessionReviewTarget } from "../lib/session-artifacts.mjs";
 import { recordSession, sessionLookup, candidateTool, SESSION_POC } from "../lib/candidate.mjs";
 import { withAgent } from "../lib/event.mjs";
 
@@ -214,4 +214,195 @@ test("browser-only capture attaches safe evidence, does not advance, and remains
   const next = recordSession(state, { agent: who.agent, kind: "browser", action: "read", output: "new page result" });
   assert.equal(next.poc, "session:a-1:2");
   assert.equal(withAgent(who.agent, () => sessionLookup(state)(next.poc)).evidence.artifacts, undefined);
+});
+
+const machineId = "machine-original";
+const bind = (root, extra = {}) => bindSessionCapture(root, { ...who, machineId, ...extra });
+const finalize = (root, extra = {}) => finalizeSessionArtifacts(root, { ...who, machineId, har: har(), screenshots: [shot()], ...extra });
+
+test("capture binding requires a snapshot, survives restart and refuses replacement", (t) => {
+  const root = fixture(t);
+  refusal(() => bind(root));
+  save(root);
+  refusal(() => finalize(root));
+  for (const id of ["", "../machine", "a".repeat(129), null]) refusal(() => bind(root, { machineId: id }));
+  assert.equal(bind(root), undefined);
+  assert.equal(bind(root), undefined);
+  refusal(() => bind(root, { machineId: "replacement" }));
+  refusal(() => finalize(root, { machineId: "replacement" }));
+  save(root, { agent: "a-11", poc: "session:a-11:1" });
+  refusal(() => finalize(root, { agent: "a-11", poc: "session:a-11:1" }));
+  refusal(() => finalize(root, { run: "other-run" }));
+  // No in-memory state is passed to the finalizer or readers.
+  assert.equal(finalize(root).files.length, 3);
+  assert.equal(listSessionArtifacts(root, who).files.length, 3);
+});
+
+test("final overlay preserves submission files and seals exact input idempotently", (t) => {
+  const root = fixture(t);
+  const original = save(root);
+  const originalJSON = readFileSync(manifestPath(root), "utf8");
+  bind(root);
+  const final = finalize(root);
+  assert.equal(readFileSync(manifestPath(root), "utf8"), originalJSON);
+  assert.deepEqual(final.files[0], original.files[0]);
+  assert.deepEqual(finalize(root), final);
+  assert.equal(readSessionArtifact(root, { ...who, id: original.files[0].id }).data.toString(), "exported 4120 customer rows");
+  const changed = JSON.parse(har());
+  changed.log.entries[0].request.headers = [{ name: "Cookie", value: "different-raw-source" }];
+  refusal(() => finalize(root, { har: JSON.stringify(changed) })); // Even if scrubbed bytes would match.
+  refusal(() => finalize(root, { screenshots: [{ ...shot(), bytes: Buffer.concat([PNG, Buffer.from("different")]) }] }));
+  refusal(() => finalize(root, { screenshots: [] }));
+  assert.deepEqual(listSessionArtifacts(root, who), final);
+  assert.deepEqual(Object.keys(final), ["version", "run", "agent", "sequence", "files"]);
+  const visible = JSON.stringify(final);
+  for (const privateValue of [machineId, "/var/lib", "receipt", "inputSha256"]) assert.ok(!visible.includes(privateValue));
+});
+
+test("review target is exact private receipt metadata, never a pending-pixel read", (t) => {
+  const root = fixture(t);
+  save(root); bind(root);
+  const manifest = finalize(root);
+  const file = manifest.files.find((f) => f.kind === "screenshot");
+  const selector = { ...who, id: file.id, sha256: file.sha256 };
+  assert.deepEqual(getSessionReviewTarget(root, selector), { machineId, path: shot().path, sha256: file.sha256 });
+  refusal(() => readSessionArtifact(root, selector));
+  for (const patch of [{ sha256: "0".repeat(64) }, { id: manifest.files[0].id }, { poc: "session:a-1:2" }, { agent: "a-11", poc: "session:a-11:1" }, { run: "other" }]) refusal(() => getSessionReviewTarget(root, { ...selector, ...patch }));
+  const receiptPath = join(dirOf(root), "final", "receipt.json");
+  const original = readFileSync(receiptPath, "utf8");
+  const receipt = JSON.parse(original);
+  receipt.sources[0].path = "/etc/passwd";
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  refusal(() => getSessionReviewTarget(root, selector));
+  writeFileSync(receiptPath, original);
+  receipt.sources[0].path = shot().path;
+  receipt.machineId = "replacement";
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  refusal(() => getSessionReviewTarget(root, selector));
+  writeFileSync(receiptPath, original);
+  releaseSessionScreenshot(root, { ...selector, approved: true });
+  assert.deepEqual(readSessionArtifact(root, selector).data, PNG);
+  assert.deepEqual(finalize(root), listSessionArtifacts(root, who));
+  assert.equal(listSessionArtifacts(root, who).files.find((f) => f.id === file.id).approval, "released");
+});
+
+test("existing file ids and both legacy and new releases survive finalization", (t) => {
+  const root = fixture(t);
+  const initial = save(root, { har: har(), screenshots: [shot(), shot(2)] });
+  const images = initial.files.filter((f) => f.kind === "screenshot");
+  initial.files.find((f) => f.id === images[0].id).approval = "released"; // Prior-version on-disk release.
+  writeFileSync(manifestPath(root), JSON.stringify(initial));
+  releaseSessionScreenshot(root, { ...who, id: images[1].id, sha256: images[1].sha256, approved: true });
+  const before = listSessionArtifacts(root, who);
+  bind(root);
+  const final = finalize(root, { screenshots: [shot(), shot(2), shot(3)] });
+  for (const file of before.files) assert.deepEqual(final.files.find((f) => f.id === file.id), file);
+  assert.equal(final.files.length, before.files.length + 1);
+  assert.equal(final.files.at(-1).approval, "pending");
+  for (const file of images) assert.deepEqual(readSessionArtifact(root, { ...who, id: file.id }).data, PNG);
+});
+
+test("release interleaved with final publication cannot be rolled back", async (t) => {
+  const root = fixture(t);
+  const initial = save(root, { screenshots: [shot()] });
+  bind(root);
+  const image = initial.files.find((f) => f.kind === "screenshot");
+  const { default: unusedDefault, ...namedFS } = fs;
+  let released = false;
+  const mocked = mock.module("node:fs", { namedExports: { ...namedFS, renameSync: (from, to) => {
+    if (to === join(dirOf(root), "final")) {
+      releaseSessionScreenshot(root, { ...who, id: image.id, sha256: image.sha256, approved: true });
+      released = true;
+    }
+    return fs.renameSync(from, to);
+  } } });
+  try {
+    const isolated = await import("../lib/session-artifacts.mjs?release-race");
+    const result = isolated.finalizeSessionArtifacts(root, { ...who, machineId, har: har(), screenshots: [shot(), shot(2)] });
+    assert.equal(released, true);
+    assert.equal(result.files.find((f) => f.id === image.id).approval, "released");
+    assert.deepEqual(readSessionArtifact(root, { ...who, id: image.id }).data, PNG);
+  } finally { mocked.restore(); }
+});
+
+test("competing finalizers keep the first receipt; only identical input can retry", async (t) => {
+  for (const identical of [true, false]) {
+    const root = fixture(t);
+    save(root); bind(root);
+    const { default: unusedDefault, ...namedFS } = fs;
+    let winner;
+    const mocked = mock.module("node:fs", { namedExports: { ...namedFS, renameSync: (from, to) => {
+      if (to === join(dirOf(root), "final")) winner = finalize(root, identical ? {} : { har: null, screenshots: [] });
+      return fs.renameSync(from, to);
+    } } });
+    try {
+      const isolated = await import(`../lib/session-artifacts.mjs?competing-final-${identical}`);
+      const call = () => isolated.finalizeSessionArtifacts(root, { ...who, machineId, har: har(), screenshots: [shot()] });
+      if (identical) assert.deepEqual(call(), winner);
+      else refusal(call);
+      assert.deepEqual(listSessionArtifacts(root, who), winner);
+      assert.ok(!readdirSync(dirOf(root)).some((name) => name.startsWith(".stage-")));
+    } finally { mocked.restore(); }
+  }
+});
+
+test("failed final publication leaves original readable and allows exact retry", async (t) => {
+  const root = fixture(t);
+  const original = save(root); bind(root);
+  const { default: unusedDefault, ...namedFS } = fs;
+  const mocked = mock.module("node:fs", { namedExports: { ...namedFS, renameSync: (from, to) => {
+    if (to === join(dirOf(root), "final")) throw new Error("fake crash before publish");
+    return fs.renameSync(from, to);
+  } } });
+  try {
+    const isolated = await import("../lib/session-artifacts.mjs?final-crash");
+    refusal(() => isolated.finalizeSessionArtifacts(root, { ...who, machineId, har: har(), screenshots: [shot()] }));
+    assert.deepEqual(listSessionArtifacts(root, who), original);
+    assert.equal(readSessionArtifact(root, { ...who, id: original.files[0].id }).data.toString(), "exported 4120 customer rows");
+    assert.ok(!readdirSync(dirOf(root)).some((name) => name.startsWith(".stage-")));
+  } finally { mocked.restore(); }
+  assert.equal(finalize(root).files.length, 3);
+});
+
+test("partial final input is sealed; unsafe sources never publish an overlay", (t) => {
+  const root = fixture(t);
+  save(root); bind(root);
+  for (const extra of [{ har: "x".repeat(L.text + 1) }, { har: "{" }, { screenshots: [shot(13)] }, { screenshots: [shot(), shot()] }, { screenshots: [{ ...shot(), bytes: Buffer.alloc(L.screenshot + 1) }] }]) refusal(() => finalize(root, extra));
+  assert.equal(listSessionArtifacts(root, who).files.length, 1);
+  const sealed = finalize(root, { har: null, screenshots: [] });
+  assert.deepEqual(finalize(root, { har: null, screenshots: [] }), sealed);
+  refusal(() => finalize(root));
+});
+
+test("two accepted candidates share final capture without rewriting evidence or advancing", async (t) => {
+  const root = fixture(t);
+  const events = [];
+  t.mock.method(console, "log", (line) => events.push(line));
+  const state = { found: [], passed: new Map(), sessionSecrets: [SECRET] };
+  const tool = candidateTool({ pack: "web", state, lookup: sessionLookup(state), poc: SESSION_POC });
+  for (let sequence = 1; sequence <= 2; sequence++) {
+    const { poc } = recordSession(state, { agent: who.agent, kind: "browser", action: "read", sandbox: machineId, output: `exported ${sequence} private customer records` });
+    withAgent(who.agent, () => captureSessionArtifacts(root, { ...who, poc, state }));
+    if (sequence === 1) {
+      const rejected = await withAgent(who.agent, () => tool.execute({ title: "Rejected", severity: "high", poc, evidence_lines: ["not in the page"], explanation: "Fix: login" }));
+      assert.equal(rejected.isError, true);
+      refusal(() => finalize(root)); // A pre-validation snapshot alone is not bound.
+    }
+    const accepted = await withAgent(who.agent, () => tool.execute({ title: `Open export ${sequence}`, severity: "high", poc, evidence_lines: [`exported ${sequence} private customer records`], explanation: "Private data is exposed.\nFix: login" }));
+    assert.ok(!accepted.isError);
+    const candidate = state.candidates.find((c) => c.poc === poc);
+    assert.deepEqual(candidate.evidence.artifacts, sessionArtifactBinding(listSessionArtifacts(root, { ...who, poc })));
+    bind(root, { poc }); // Trusted D acceptance check above.
+  }
+  const persisted = JSON.stringify(state.candidates), sequence = state.sessionSequence.get(who.agent);
+  for (const candidate of state.candidates) {
+    const result = finalize(root, { poc: candidate.poc, secrets: [SECRET], har: har(`https://${SECRET.toLowerCase()}.example.org/`) });
+    assert.equal(result.files.length, 3);
+    const file = result.files.find((f) => f.kind === "har");
+    assert.ok(!readSessionArtifact(root, { ...who, poc: candidate.poc, id: file.id }).data.toString().includes(SECRET.toLowerCase()));
+    assert.equal(candidate.proven, false);
+  }
+  assert.equal(JSON.stringify(state.candidates), persisted);
+  assert.equal(state.sessionSequence.get(who.agent), sequence);
+  assert.equal(events.filter((line) => line.includes('"ev":"candidate-submitted"')).length, 2);
 });

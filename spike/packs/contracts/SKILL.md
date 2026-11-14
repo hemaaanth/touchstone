@@ -58,22 +58,8 @@ settles, the engine replays each submitted test once more with `--json -vvvv`.
 It records who gained and who lost funds. A test that does not replay green is
 not a finding.
 
-Two oracles decide what "harm" means, and the run says which one judged it:
-
-- **Deployed** (`lib/oracle-deployed.mjs`): a contract at a pinned address lost
-  native ETH or an ERC-20, and another address gained it. Used when the scope
-  carries a fork pin.
-- **Scope code**: a contract the test deployed from source lost value or had a
-  control slot repointed. Used for every offline run.
-
-A cheatcode that fakes a target's state disqualifies it either way, and a test that
-creates code at a pinned address is refused: on a fork those addresses already
-exist.
-
 ## Limits
 
-- A lab or a folder proves in a local EVM with no fork. A **forked** scope proves
-  on a copy of a real chain at a pinned block, read through an RPC: the block is
-  required, and the fork is read-only. Either way nothing signs or broadcasts.
+- No chain fork and no live network. The proof deploys the code in a local EVM.
 - Solidity only. Vyper, Move, Rust (NEAR, Solana) and Cairo are not covered yet.
   See TOOLS.md.

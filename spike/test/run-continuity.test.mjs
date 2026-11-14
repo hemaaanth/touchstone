@@ -133,6 +133,9 @@ const RESULTS = path.join(dir, "results");
 process.env.TOUCHSTONE_RESULTS_DIR = RESULTS;
 process.env.TOUCHSTONE_SCOPES_FILE = path.join(dir, "scopes.json");
 process.env.TOUCHSTONE_GRANTS_FILE = path.join(dir, "grants.json");
+process.env.SPEND_LEDGER = path.join(dir, "spend.json");
+process.env.PROVIDER = "near";
+process.env.NEARAI_API_KEY = "synthetic-key-for-mocked-engine";
 const made = []; // workspaces a test deleted from the record's view; removed at the end
 after(() => {
   for (const f of existsSync(RESULTS) ? readdirSync(RESULTS) : []) {
@@ -166,6 +169,64 @@ const { addScope, addLiveScope, removeScope } = await import("../lib/scopes-stor
 const { PACKS } = await import("../packs/index.mjs");
 const runs = await import("../../app/server/runs.mjs");
 const { createRun, getRun, steerRun, deleteRun, archiveRun } = runs;
+
+// Exercise the HTTP route with real registration and a deliberately blocked setup.
+const { handleRuns } = await import("../../app/server/runs-http.mjs");
+async function postRun(body) {
+  const req = new PassThrough();
+  Object.assign(req, {
+    method: "POST", url: "/api/runs",
+    headers: { "content-type": "application/json", host: "localhost:5173", origin: "http://localhost:5173", "x-touchstone-grant-token": "test-grant-token" },
+  });
+  const res = { statusCode: 0, setHeader() {}, end(text) { this.json = JSON.parse(text); } };
+  const handled = handleRuns(req, res);
+  req.end(JSON.stringify(body));
+  await handled;
+  return res;
+}
+
+for (const outcome of ["success", "failure", "stop"]) test(`HTTP run creation returns before setup: ${outcome}`, async () => {
+  const live = addLiveScope({ title: "Slow setup", hosts: ["https://example.com"], permission: true, pack: "web" });
+  let release;
+  const gate = new Promise((resolve, reject) => { release = outcome === "failure" ? () => reject(new Error("setup failed")) : resolve; });
+  const prepass = PACKS.web.prepass;
+  PACKS.web.prepass = undefined;
+  reachHook = () => gate;
+  const pending = postRun({ targetId: live.id, pack: "web", mode: "solo" });
+  let response;
+  try {
+    response = await Promise.race([pending, new Promise((resolve) => setImmediate(() => resolve(null)))]);
+    assert.ok(response, "POST must answer while setup is still blocked");
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.json.status, "starting");
+    assert.equal(getRun(response.json.id).status, "starting");
+    assert.ok(runs.listRuns().some((r) => r.id === response.json.id));
+    if (outcome === "stop") runs.stopRun(response.json.id);
+    if (outcome === "success") scripts.push({ events: [done] });
+  } finally {
+    reachHook = null;
+    release();
+    await pending;
+  }
+  const result = await settle(response.json.id);
+  PACKS.web.prepass = prepass;
+  if (outcome === "failure") {
+    assert.equal(result.status, "error");
+    assert.equal(result.error, "setup failed");
+    assert.ok(result.events.some((e) => e.ev === "status" && e.error === "setup failed"));
+  } else if (outcome === "stop") {
+    assert.ok(result.events.some((e) => e.ev === "stopped"));
+  } else {
+    assert.ok(result.events.some((e) => e.ev === "status" && e.status === "running"));
+  }
+});
+
+test("HTTP run validation still refuses before creating a run", async () => {
+  const before = runs.listRuns().length;
+  const response = await postRun({ targetId: "does-not-exist", pack: "web" });
+  assert.equal(response.statusCode, 400);
+  assert.equal(runs.listRuns().length, before);
+});
 
 const REPO = "https://github.com/acme/lib";
 const WHERE = "vendor/acme__lib";
@@ -220,6 +281,28 @@ test("A1: a settled line cut on the pipe is read from the engine's events file, 
   assert.equal(r.status, "no-finding", "not the no-settle error card");
   assert.equal(r.errorInfo ?? null, null);
   assert.equal(r.events.find((e) => e.ev === "no-finding")?.final, "I found no exploitable issue.");
+});
+
+test("a lost submission response can be confirmed and the same request never starts a second engine", async () => {
+  const requestId = "f8364750-ceee-4531-86d8-63b28f7b43bf";
+  const body = { requestId, targetId: scope.id, pack: "review", mode: "solo" };
+  const before = spawns.length;
+  scripts.push({ act: work, events: [fetched, done] });
+  const pending = createRun(body);
+  const accepted = runs.getRunByRequest(requestId);
+  assert.ok(accepted, "acceptance is queryable before setup and the POST response finish");
+  const duplicate = await createRun(body);
+  const first = await pending;
+  assert.equal(duplicate.id, first.id);
+  assert.equal(accepted.id, first.id);
+  await settle(first.id);
+  assert.equal(spawns.length, before + 1);
+  assert.equal((await createRun(body)).id, first.id, "a terminal request stays idempotent");
+  assert.equal(spawns.length, before + 1);
+  await assert.rejects(createRun({ ...body, budgetUsd: 1 }), /different run request/);
+  const record = JSON.parse(readFileSync(path.join(RESULTS, `run-${first.id}.json`), "utf8"));
+  assert.equal(record.result.requestId, requestId);
+  assert.ok(first.events.some((e) => e.ev === "run-request" && e.requestId === requestId));
 });
 
 test("A1: a follow-up whose settled line was cut still gives its answer, not 'exited early'", async () => {

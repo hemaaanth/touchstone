@@ -52,11 +52,8 @@ function belongs(cluster, lead, window) {
 function toSuspect(cluster) {
   const leads = cluster.leads;
   const rep = leads.reduce((best, l) => (rankOf(l.impact) < rankOf(best.impact) ? l : best));
-  // A lead with no `engine` contributes no name, never a null: an anonymous
-  // engine in the list would read as a second, agreeing analyzer when the
-  // suspect was flagged once. Every lead we pass in does name its engine.
-  const engines = orderEngines(new Set(leads.map((l) => l.engine).filter(Boolean)));
-  const checks = [...new Set(leads.map((l) => l.check))];
+  const engines = orderEngines(new Set(leads.flatMap((l) => l.engines ?? [l.engine]).filter(Boolean)));
+  const checks = [...new Set(leads.flatMap((l) => l.checks ?? [l.check]))];
   const lines = [...new Set(leads.flatMap((l) => l.lines))].sort((a, b) => a - b);
   const where = (leads.find((l) => l.where) || {}).where || null;
   return {

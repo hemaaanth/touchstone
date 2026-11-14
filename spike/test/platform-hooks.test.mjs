@@ -32,6 +32,7 @@ test("Contracts hooks preserve prepass events, leads, and existing record fields
       });
       const prep = await contracts.prepass(ws, { emit: (ev) => events.push(ev) });
       assert.deepEqual(prep.env, legacy.runEnv);
+      if (legacy.fuzz) assert.equal(prep.env.FUZZ_BRIEF, "fuzz leads");
       assert.deepEqual(events.map(withoutTime), legacyEvents.map(withoutTime));
       const record = {};
       if (legacy.scan) record.static = { tool: scan.tool, engines: scan.engines, mode: scan.mode, files: scan.files, analysed: scan.analysed, suspects: 1, top: legacy.scanEvent.top };

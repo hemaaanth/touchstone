@@ -1,5 +1,6 @@
 {
   "pack": "phishing",
+  "title": "Tidekeep",
   "kind": "lab",
   "domain": "tidekeep.test",
   "owned": [

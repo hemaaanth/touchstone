@@ -193,12 +193,12 @@ export function loadStore(file, what) {
 
 // saveStore: write a temp file in the same directory, then rename it over the
 // store. A crash in the middle leaves the old file whole, never a half file.
-export function saveStore(file, arr) {
+export function saveStore(file, arr, { mode: requestedMode } = {}) {
   mkdirSync(path.dirname(file), { recursive: true });
   // Keep the mode the operator gave the file. A new file gets the default mode.
-  let mode = 0o666;
+  let mode = requestedMode ?? 0o666;
   try {
-    mode = statSync(file).mode & 0o777;
+    if (requestedMode == null) mode = statSync(file).mode & 0o777;
   } catch {
     /* no file yet */
   }

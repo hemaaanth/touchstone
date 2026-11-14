@@ -79,3 +79,42 @@ test("after the summary the agent session is starting; after opened nothing runs
   const after = view([{ ev: "prepass", total: 0, tools: [] }, { ev: "opened", mode: "run" }])
   assert.ok(after.stages.every((s) => s.state !== "running"))
 })
+
+test("joined progress keeps a failed web scan separate from later domain leads", () => {
+  const p = view([
+    { ev: "packs", packs: ["web", "domains", "surface"] },
+    { ev: "web-scan-failed", error: "SECRET" },
+    { ev: "web-scan-done", coverage: ["strix:unavailable:0"], leads: 0 },
+    { ev: "domains-capture-start", domain: "allowed.test" },
+    { ev: "domains-prepass-done", leads: 5 },
+    { ev: "surface-capture-start", domain: "allowed.test" },
+  ])
+  assert.equal(p.partial, true)
+  assert.equal(p.leads, 5)
+  assert.equal(p.stages.find((s) => s.key === "web:scan")!.state, "failed")
+  assert.equal(p.stages.find((s) => s.key === "domains:scan")!.state, "done")
+  assert.equal(p.stages.find((s) => s.key === "surface:capture")!.state, "running")
+  assert.ok(!JSON.stringify(p).includes("SECRET"))
+})
+
+test("module reports count separate tool executions and sum leads without counting a report twice", () => {
+  const p = view([
+    { ev: "packs", packs: ["web", "domains", "surface"] },
+    { ev: "web-scan-done", coverage: ["nuclei:ran:2"], leads: 2 },
+    { ev: "module-prepass", pack: "web", total: 2, tools: [{ name: "nuclei", status: "ran" }] },
+    { ev: "domains-prepass-done", leads: 5 },
+    { ev: "module-prepass", pack: "domains", total: 5, tools: [{ name: "httpx", status: "ran" }] },
+    { ev: "surface-prepass-done", leads: 3 },
+    { ev: "module-prepass", pack: "surface", total: 3, tools: [{ name: "httpx", status: "ran" }] },
+  ])
+  assert.equal(p.tools, 3)
+  assert.equal(p.ran, 3)
+  assert.equal(p.leads, 10)
+})
+
+test("a joined final summary uses full tool totals even when the detail list is bounded", () => {
+  const p = view([{ ev: "prepass", total: 10, tools: [{ name: "httpx", pack: "domains", status: "ran" }], toolsTotal: 33, toolsRan: 30 }])
+  assert.equal(p.tools, 33)
+  assert.equal(p.ran, 30)
+  assert.equal(p.partial, false)
+})

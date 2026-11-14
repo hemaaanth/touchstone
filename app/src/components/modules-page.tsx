@@ -9,9 +9,6 @@ import { ModulePill } from "@/components/module-pill"
 import { ScopeIcon } from "@/components/new-run-dialog"
 import { Label, ListCard, ListEmpty, ListLoading, ListPage, ListRow, RowMenu, RowMenuItem, RunLinks, TruncatedText } from "@/components/page-parts"
 
-// Shown on a module or scope that cannot run until a need is met.
-const blockedBadge = <Badge variant="secondary" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Cannot run now</Badge>
-
 // The modules a scope allows. A scope saved before it could hold several has one.
 const modulesOf = (t: TargetChoice) => t.packs ?? [packOf(t)]
 
@@ -56,34 +53,12 @@ export function ModulesPage({
         <ListCard aria-label="Modules">
           {packs.map((p) => {
             const tests = p.description ?? null
-            // A module is ready when at least one of its scopes can run. When none
-            // can, the reason is shown on the row: a greyed row with no reason is
-            // the worst of both worlds.
-            const mine = targets.filter((t) => modulesOf(t).includes(p.id))
-            // Per-module needs. A module is blocked when some scope that allows it
-            // cannot run it, and its own reason is reported. The first version asked
-            // "is EVERY scope blocked", which is never true in practice: the five
-            // shipped labs are Contracts scopes with no needs, so a forked scope with
-            // no RPC was never reported. The operator wants to know that one of their
-            // scopes is blocked, not only that all of them are.
-            const unmet = mine.flatMap((t) => t.needsByPack?.[p.id] ?? [])
-            const blocked = unmet.length > 0
-            const reason = blocked ? (unmet[0]?.label ?? null) : null
             return (
               <ListRow
                 key={p.id}
                 title={p.title}
                 name={<ModulePill id={p.id} label={p.title} />}
-                // A row whose module cannot run reads as unavailable. The class is
-                // distinct from ListRow's own `opacity-60` meta separator, so a test can
-                // tell "unavailable" from "a dot between two items".
-                className={blocked ? "opacity-60 [&_[data-row-main]]:cursor-not-allowed" : undefined}
-                badges={blocked ? blockedBadge : undefined}
-                meta={[
-                  proofKind(p).label,
-                  reason ? <span key="need" className="text-muted-foreground">{`Needs ${reason}`}</span> : null,
-                  tests ? <TruncatedText key="tests" text={tests} /> : null,
-                ]}
+                meta={[proofKind(p).label, tests ? <TruncatedText key="tests" text={tests} /> : null]}
                 menu={
                   <RowMenu label={`Actions for ${p.title}`}>
                     <RowMenuItem onClick={() => openDetail(p)}>
@@ -115,6 +90,7 @@ export function ModulesPage({
   )
 }
 
+const blockedBadge = <Badge variant="secondary" className="h-[18px] px-1.5 text-[10.5px] font-normal text-muted-foreground">Cannot run now</Badge>
 
 // One module, in the sheet. Every module shows the same blocks in the same order.
 function ModuleDetail({
@@ -132,9 +108,6 @@ function ModuleDetail({
   const tests = p.description ?? null
   const note = moduleNote(p)
   const runnable = scopes.some((t) => t.runnable)
-  // One entry per distinct need: three forked scopes missing the same RPC is one
-  // thing to fix, not three.
-  const unmet = [...new Map(scopes.flatMap((t) => t.needsByPack?.[p.id] ?? []).map((n) => [n.id, n])).values()]
   return (
     <>
       <SheetHeader className="flex-row flex-wrap items-center gap-x-2 gap-y-1 pr-12">
@@ -156,23 +129,6 @@ function ModuleDetail({
           <section className="flex flex-col gap-2">
             <Label>Where it runs</Label>
             <p className="text-xs leading-relaxed">{note}</p>
-          </section>
-        ) : null}
-
-        {unmet.length ? (
-          <section className="flex flex-col gap-2">
-            <Label>Needs before it can run</Label>
-            <ul className="flex flex-col gap-2">
-              {unmet.map((n) => (
-                <li key={n.id} className="flex flex-col gap-0.5">
-                  <span className="text-[13px]">{n.label}</span>
-                  <span className="text-xs text-muted-foreground">{n.detail}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {n.kind === "settings" ? "Fix it in Settings → Chain RPCs." : "Fix it on the scope."}
-                  </span>
-                </li>
-              ))}
-            </ul>
           </section>
         ) : null}
 

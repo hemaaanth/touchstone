@@ -6,7 +6,8 @@ import { constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { findRoamMachine, shq } from "../lib/daytona.mjs";
+import { roamAccountBinding } from "../lib/daytona-state.mjs";
+import { execConfig, findRoamMachine, shq } from "../lib/daytona.mjs";
 
 const ERROR = "The free-roam control request failed.";
 const PRIVATE = "X".repeat(43);
@@ -29,12 +30,12 @@ async function fixture(fn) {
     artifact: Buffer.from("untrusted artifact bytes"),
     sourceKind: "file", snapshot: null,
   };
-  const sidecar = (data = { "roam:a-1": { id: "m-1", toolbox: "https://untrusted.invalid/ignored" } }) => writeFileSync(`${ws}.daytona.json`, JSON.stringify(data));
-  sidecar();
+  const sidecar = (data = { "roam:a-1": { id: "m-1", toolbox: "https://untrusted.invalid/ignored", account: roamAccountBinding(execConfig()) } }) => writeFileSync(`${ws}.daytona.json`, JSON.stringify(data));
   try {
     process.env.TOUCHSTONE_EXEC = "daytona";
     process.env.DAYTONA_API_KEY = "FAKE_PRIVATE_DAYTONA_KEY";
     process.env.DAYTONA_API_URL = "https://api.test/api";
+    sidecar();
     globalThis.fetch = async (url, init) => {
       const u = new URL(url);
       f.calls.push({ url, init });

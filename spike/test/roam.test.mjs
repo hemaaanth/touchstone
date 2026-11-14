@@ -5,15 +5,28 @@
 // Part 2 uses the real roamMachine against a fake Daytona API. No machine, no
 // network, no key, no cost.
 import "./helpers/isolated-env.mjs";
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ROAM_SNAPSHOT, closeRun, remoteDocker, roamMachine, shq } from "../lib/daytona.mjs";
+import { execConfig, closeRun, remoteDocker, roamMachine, shq } from "../lib/daytona.mjs";
+import { checkRoamSelection, SHELL_PROBE_VERSION } from "../lib/daytona-setup.mjs";
+import { beginRoamOperation, roamBinding, roamAccountBinding, setRoamSelectionState, updateRoamOperation } from "../lib/daytona-state.mjs";
+import { createHash } from "node:crypto";
+import { unwrapRootCommand } from "./helpers/daytona-fixture.mjs";
 import { withAgent } from "../lib/event.mjs";
-import { REPLACED_NOTICE, roamTools } from "../lib/roam.mjs";
+let REPLACED_NOTICE, roamTools;
+let moduleId = 0;
+beforeEach(async () => {
+  // Each fake machine set represents a fresh worker registry, not reused ids.
+  ({ REPLACED_NOTICE, roamTools } = await import(`../lib/roam.mjs?test=${++moduleId}`));
+});
+const supervisorAnswer = (q, exitCode = 0) => ({ exitCode: 0, result: JSON.stringify({
+  ok: true, id: q.id, generation: "fake-supervisor", epoch: 0,
+  ...(q.op === "run" ? { exitCode, result: RAW } : { ack: true, state: "active", scope: "managed-shell" }),
+}) });
 
 // The value lane B's EGRESS_ENV has.
 const ENV = "export HTTP_PROXY=http://127.0.0.1:8899 HTTPS_PROXY=http://127.0.0.1:8899 http_proxy=http://127.0.0.1:8899 https_proxy=http://127.0.0.1:8899; ";
@@ -28,12 +41,16 @@ function fakes({ id = "m-1", fresh = true, replaced = false, exitCode = 0, start
   const m = {
     id, fresh, replaced,
     exec: async (command, seconds) => {
-      steps.push("exec");
-      m.calls.push({ command, seconds });
-      return { exitCode, result: RAW };
+      assert.match(command, /^node \/tmp\/touchstone-shell-control\.mjs [a-f0-9-]{36}$/);
+      const q = m.uploads.get(command.split(" ").at(-1));
+      if (q.op === "run") {
+        steps.push("exec");
+        m.calls.push({ command: q.command, seconds: q.seconds });
+      }
+      return supervisorAnswer(q, exitCode);
     },
-    upload: async () => {},
-    calls: [],
+    upload: async (path, bytes) => { if (path.endsWith(".json")) { const q = JSON.parse(bytes); m.uploads.set(q.id, q); } },
+    uploads: new Map(), calls: [],
   };
   return {
     steps, entries, m,
@@ -74,8 +91,8 @@ test("shell runs its six steps in order and returns only what record() returned"
   const res = await as("a-1", shell, { command: "echo 'hi' && id" });
 
   assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1", "record egress", "record egress"]);
-  // The command goes to the machine as one string, inside sh -c, after the proxy variables.
-  assert.deepEqual(f.m.calls, [{ command: `sh -c ${shq(`${ENV}echo 'hi' && id`)}`, seconds: 120 }]);
+  // The command goes in the uploaded supervisor payload, after the proxy variables.
+  assert.deepEqual(f.m.calls, [{ command: `${ENV}echo 'hi' && id`, seconds: 120 }]);
   const [s, e1, e2] = f.entries;
   assert.ok(s.t >= before && s.t <= Date.now());
   assert.deepEqual({ ...s, t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "echo 'hi' && id", exit_code: 3, output: RAW });
@@ -141,7 +158,7 @@ test("shell: two calls of one child run one after the other", async () => {
   const [a, b] = await Promise.all([as("a-1", shell, { command: "one" }), as("a-1", shell, { command: "two" })]);
   // The second call waits. So the log is up before any command runs.
   assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1", "machine a-1", "exec", "record shell", "pull m-1"]);
-  assert.deepEqual(f.m.calls.map((c) => c.command), [`sh -c ${shq(`${ENV}one`)}`, `sh -c ${shq(`${ENV}two`)}`]);
+  assert.deepEqual(f.m.calls.map((c) => c.command), [`${ENV}one`, `${ENV}two`]);
   assert.match(textOf(a), /^session session:a-1:1\n/);
   assert.match(textOf(b), /^session session:a-1:2\n/);
 });
@@ -189,14 +206,15 @@ test("shell: the description does not say that the session line is first", () =>
 
 test("roam.mjs starts no host process and reads no host environment", () => {
   const src = readFileSync(new URL("../lib/roam.mjs", import.meta.url), "utf8");
-  assert.ok(!/child_process|process\.env|node:fs|runTool/.test(src));
+  assert.ok(!/child_process|process\.env|runTool/.test(src));
+  assert.match(src, /readFileSync\(new URL\("\.\.\/roam\/shell-control\.mjs"/);
   const local = [...src.matchAll(/from "(\.[^"]+)"/g)].map((x) => x[1]).sort();
   assert.deepEqual(local, ["./daytona.mjs", "./event.mjs"]);
 });
 
 // ---- Part 2: roamMachine against a fake Daytona API
 
-const KEYS = ["TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS", "EVENTS_FILE", "ROAM_TEST_HOST_SECRET"];
+const KEYS = ["TOUCHSTONE_ROAM_SNAPSHOT", "TOUCHSTONE_DAYTONA_STATE_FILE","TOUCHSTONE_EXEC", "DAYTONA_API_KEY", "DAYTONA_PENDING", "DAYTONA_RETRY_MS", "DAYTONA_STALE_MS", "EVENTS_FILE", "ROAM_TEST_HOST_SECRET"];
 
 function fakeDaytona(dir) {
   // The result tar of a confined tool run (only the confined test reads it).
@@ -206,13 +224,14 @@ function fakeDaytona(dir) {
   writeFileSync(join(tarDir, "meta", "out"), "hi");
   const resTar = execFileSync("tar", ["-cf", "-", "-C", tarDir, "."]);
   // onExec(body) may return a Response for one toolbox exec call.
-  const fake = { calls: [], creates: [], deletes: [], execs: [], state: {}, createStatus: 200, n: 0, onExec: null };
+  const fake = { calls: [], creates: [], deletes: [], execs: [], uploads: new Map(), state: {}, createStatus: 200, n: 0, onExec: null };
   const json = (o) => new Response(JSON.stringify(o), { status: 200 });
   fake.fetch = async (url, init = {}) => {
     const u = String(url);
     const method = init.method || "GET";
     fake.calls.push({ method, u, body: typeof init.body === "string" ? init.body : "", headers: JSON.stringify(init.headers ?? {}) });
-    if (u.includes("/snapshots")) return json({ state: "active" });
+    if (u.endsWith("/regions")) return json([{ id: "r-west", name: "us-west-3" }]);
+    if (u.includes("/snapshots")) return json({ id: "selected-shell", name: "selected-shell", state: "active", regionIds: ["r-west"], sandboxClass: "container", ref: "test-ref" });
     if (method === "POST" && u.endsWith("/api/sandbox")) {
       if (fake.createStatus !== 200) return new Response("Snapshot not found", { status: fake.createStatus });
       const id = `m-${++fake.n}`;
@@ -229,14 +248,24 @@ function fakeDaytona(dir) {
     if (u.includes("/api/sandbox?labels=")) return json({ items: [] });
     const got = u.match(/\/api\/sandbox\/([^/?]+)$/);
     if (got) return fake.state[got[1]] ? json({ id: got[1], state: fake.state[got[1]] }) : new Response("not found", { status: 404 });
-    if (u.includes("/files/upload")) return new Response("", { status: 200 });
+    if (u.includes("/files/upload")) {
+      const path = new URL(u).searchParams.get("path");
+      if (path.endsWith(".json")) {
+        const q = JSON.parse(await init.body.get("file").text());
+        fake.uploads.set(q.id, q);
+      }
+      return new Response("", { status: 200 });
+    }
     if (u.includes("/files/download")) return new Response(resTar, { status: 200 });
     if (u.includes("/process/execute")) {
       const body = JSON.parse(init.body);
-      fake.execs.push({ id: u.split("/process/")[0].split("/").pop(), ...body });
+      body.command = unwrapRootCommand(body.command);
+      const id = u.split("/process/")[0].split("/").pop();
+      const q = fake.uploads.get(body.command.split(" ").at(-1));
+      if (!q || q.op === "run") fake.execs.push({ id, ...(q ? { command: q.command, timeout: q.seconds } : body) });
       const own = fake.onExec?.(body);
       if (own) return own;
-      return json({ exitCode: 0, result: body.command === "true" ? "" : RAW });
+      return json(q ? supervisorAnswer(q) : { exitCode: 0, result: body.command === "true" ? "" : RAW });
     }
     return new Response("unexpected", { status: 500 });
   };
@@ -252,6 +281,8 @@ async function withFake(fn) {
   try {
     process.env.TOUCHSTONE_EXEC = "daytona";
     process.env.DAYTONA_API_KEY = "test-key-not-real";
+    process.env.TOUCHSTONE_DAYTONA_STATE_FILE = join(d, "setup.json");
+    process.env.TOUCHSTONE_ROAM_SNAPSHOT = "selected-shell";
     process.env.DAYTONA_PENDING = join(d, "pending.json");
     process.env.DAYTONA_RETRY_MS = "1";
     process.env.ROAM_TEST_HOST_SECRET = "host-secret-value";
@@ -259,6 +290,10 @@ async function withFake(fn) {
     delete process.env.EVENTS_FILE;
     globalThis.fetch = fake.fetch;
     console.log = (line) => String(line).startsWith("EVENT ") && events.push(JSON.parse(String(line).slice(6)));
+    const config = execConfig();
+    const selected = await checkRoamSelection(config);
+    setRoamSelectionState(roamBinding(config), "verified", { ...selected, probeVersion: SHELL_PROBE_VERSION, verificationId: "test-proof" });
+    fake.calls.length = 0;
     await fn({ ws, fake, events });
   } finally {
     await closeRun(ws).catch(() => {});
@@ -271,7 +306,18 @@ async function withFake(fn) {
   }
 }
 
-const sidecarOf = (ws) => JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8"));
+const sidecarOf = (ws) => Object.fromEntries(Object.entries(JSON.parse(readFileSync(`${ws}.daytona.json`, "utf8"))).map(([key, { id, toolbox }]) => [key, { id, toolbox }]));
+function seedSidecar(ws, entries) {
+  const config = execConfig();
+  const run = createHash("sha256").update(ws).digest("hex");
+  for (const [key, entry] of Object.entries(entries)) {
+    const slot = createHash("sha256").update(JSON.stringify([ws, key.slice(5), "test-proof"])).digest("hex");
+    const { operation } = beginRoamOperation(config, "runtime", slot, { run });
+    updateRoamOperation(operation.binding, operation.id, "intent", "created", entry.id);
+    Object.assign(entry, { account: roamAccountBinding(config), binding: operation.binding, operationId: operation.id });
+  }
+  writeFileSync(`${ws}.daytona.json`, JSON.stringify(entries));
+}
 // A real shell tool on the real roamMachine. Only record() and egress are fakes.
 function realShell(ws) {
   const f = fakes();
@@ -293,7 +339,7 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
 
     // A container snapshot that Daytona has, root, and the long lifecycle.
     const { labels, ...body } = fake.creates[0];
-    assert.deepEqual(body, { snapshot: ROAM_SNAPSHOT, target: "us-west-3", user: "root", autoStopInterval: 60, autoDeleteInterval: 240 });
+    assert.deepEqual(body, { snapshot: "selected-shell", target: "us-west-3", user: "root", autoStopInterval: 60, autoDeleteInterval: 240 });
     assert.deepEqual({ ...labels, nonce: "", run: "" }, { touchstone: "1", agent: "a-1", nonce: "", run: "", loadout: "free-roam" });
     assert.deepEqual(events.map(({ t, run, ...e }) => e), [
       { ev: "exec-machine", agent: "a-1", backend: "daytona", sandbox: "m-1", loadout: "free-roam" },
@@ -301,14 +347,14 @@ test("one machine per free-roam child, kept between calls, deleted at run end", 
     ]);
     assert.equal(events[0].run, labels.run);
 
-    // The command is in the request body of the toolbox call, with the time limit.
+    // The fake decodes the uploaded supervisor payload, including its own deadline.
     assert.deepEqual(fake.execs.filter((x) => x.command !== "true"), [
-      { id: "m-1", command: `sh -c ${shq(`${ENV}touch /root/x`)}`, timeout: 7 },
-      { id: "m-1", command: `sh -c ${shq(`${ENV}ls /root`)}`, timeout: 120 },
-      { id: "m-2", command: `sh -c ${shq(`${ENV}id`)}`, timeout: 120 },
+      { id: "m-1", command: `${ENV}touch /root/x`, timeout: 7 },
+      { id: "m-1", command: `${ENV}ls /root`, timeout: 120 },
+      { id: "m-2", command: `${ENV}id`, timeout: 120 },
     ]);
-    // It never asks for a snapshot, and nothing from the host goes along.
-    assert.ok(!fake.calls.some((c) => c.u.includes("/snapshots")));
+    // Snapshot metadata is checked without registering a snapshot.
+    assert.ok(!fake.calls.some((c) => c.method === "POST" && c.u.includes("/snapshots")));
     assert.ok(fake.calls.every((c) => c.headers.includes("test-key-not-real")));
     for (const c of fake.calls) assert.ok(!/test-key-not-real|host-secret-value/.test(c.body + c.u), c.u);
 
@@ -372,7 +418,7 @@ test("a machine from an earlier worker of the run: used when it runs, replaced w
   await withFake(async ({ ws, fake, events }) => {
     fake.state.old1 = "started";
     fake.state.old2 = "stopped";
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" }, "roam:a-2": { id: "old2", toolbox: "https://tb.test/old2" } }));
+    seedSidecar(ws, { "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" }, "roam:a-2": { id: "old2", toolbox: "https://tb.test/old2" } });
     const kept = await roamMachine(ws, "a-1");
     assert.deepEqual([kept.id, kept.fresh, kept.replaced], ["old1", false, false]);
     const made = await roamMachine(ws, "a-2");
@@ -385,23 +431,14 @@ test("a machine from an earlier worker of the run: used when it runs, replaced w
   });
 });
 
-test("a 404 on the snapshot is an error for the operator; no snapshot is created", async () => {
+test("a create rejection is fixed and stays blocked until explicit verification", async () => {
   await withFake(async ({ ws, fake }) => {
     fake.createStatus = 404;
-    const { f, shell } = realShell(ws);
-    await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
-      assert.match(e.message, /^Daytona answered 404 to the create call\. The most likely cause is that the snapshot /);
-      assert.ok(e.message.includes(`the snapshot "${ROAM_SNAPSHOT}" does not exist`));
-      assert.match(e.message, /TOUCHSTONE_ROAM_SNAPSHOT/);
-      assert.match(e.message, /never creates/);
-      return true;
-    });
-    assert.ok(!fake.calls.some((c) => c.u.includes("/snapshots")));
-    assert.deepEqual(f.steps, []);
-    assert.ok(!existsSync(`${ws}.daytona.json`));
-    // The failure is not kept: the next call asks Daytona again.
+    await assert.rejects(roamMachine(ws, "a-1"), { code: "daytona_rejected" });
+    assert.ok(!fake.calls.some((c) => c.method === "POST" && c.u.includes("/snapshots")));
     fake.createStatus = 200;
-    assert.match(textOf(await as("a-1", shell, { command: "id" })), /^session session:a-1:1\n/);
+    await assert.rejects(roamMachine(ws, "a-1"), { code: "daytona_shell_unverified" });
+    assert.equal(fake.creates.length, 0);
   });
 });
 
@@ -446,14 +483,14 @@ test("the ready check fails once: the next call still starts the log before the 
     assert.equal(fake.creates.length, 1);
     assert.deepEqual(f.steps, ["start m-1", "record shell", "pull m-1"]);
     assert.deepEqual(f.ranBeforeStart, [[]]);
-    assert.deepEqual(fake.execs.map((x) => x.command), ["true", "true", `sh -c ${shq(`${ENV}id`)}`]);
+    assert.deepEqual(fake.execs.map((x) => x.command), ["true", "true", `${ENV}id`]);
   });
 });
 
 test("a machine from the sidecar gets its log before the first command", async () => {
   await withFake(async ({ ws, fake }) => {
     fake.state.old1 = "started";
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" } }));
+    seedSidecar(ws, { "roam:a-1": { id: "old1", toolbox: "https://tb.test/old1" } });
     const { f, shell } = orderedShell(ws, fake);
     await as("a-1", shell, { command: "id" });
     await as("a-1", shell, { command: "id" });
@@ -507,7 +544,10 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
     for (const [body, code] of [
       [`{"exitCode":7,"result":${JSON.stringify(out)}}`, 7],
       [`{"result":${JSON.stringify(out)},"exitCode":7}`, 7],
-      [`{"code":7,"result":${JSON.stringify(out)}}`, undefined],
+      [`{"code":7,"result":${JSON.stringify(out)}}`, 7],
+      [`{"result":${JSON.stringify(out)},"code":7}`, 7],
+      [`{"exitCode":7,"result":${JSON.stringify(out)},"code":0}`, 7],
+      [`{"code":0,"result":${JSON.stringify(out)},"exitCode":7}`, 7],
     ]) {
       fake.onExec = () => stream(body);
       const r = await m.exec("yes", 5);
@@ -518,6 +558,8 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
       // It is the tail of the output. Only its first characters may be damaged by the cut.
       assert.ok(out.endsWith(r.result.slice(8)));
     }
+    fake.onExec = () => stream(`{"exitCode":"invalid","result":${JSON.stringify(out)},"code":0}`);
+    await assert.rejects(m.exec("yes", 5), { code: "daytona_response_invalid" });
     // A small answer is read whole, as before.
     fake.onExec = () => stream(JSON.stringify({ exitCode: 0, result: "small \n \"x\"" }));
     assert.deepEqual(await m.exec("id", 5), { exitCode: 0, result: 'small \n "x"' });
@@ -555,7 +597,7 @@ for (const failure of ["upload", "startup JSON"]) {
       assert.equal(starts, 2);
       assert.equal(f.entries.length, 1);
       assert.equal(fake.execs.at(-2).command, "start-log");
-      assert.equal(fake.execs.at(-1).command, `sh -c ${shq(`${ENV}user-command`)}`);
+      assert.equal(fake.execs.at(-1).command, `${ENV}user-command`);
       await as("a-1", shell, { command: "user-command" });
       assert.equal(starts, 2);
     });

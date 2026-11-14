@@ -2,7 +2,7 @@
 // quarantined until the authenticated app records an explicit human release.
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, parse, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { currentAgent } from "./event.mjs";
 import { scrubSessionValue, sessionLookup } from "./candidate.mjs";
 
@@ -92,22 +92,78 @@ export function sessionArtifactBinding(manifest) {
   return { version: 1, ...selector, manifest: `m-${manifest.sequence}` };
 }
 
+const json = (file) => JSON.parse(readBounded(file, L.manifest).toString("utf8"));
+const shotPath = (path) => typeof path === "string" && /^\/var\/lib\/touchstone\/session\/shot-(?:[1-9]|1[0-2])\.png$/.test(path);
+const machine = (id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id);
+const sameOwner = (value, loc) => value.version === 1 && value.run === loc.run && value.agent === loc.agent && value.sequence === loc.sequence;
+const fileIdentity = ({ approval, ...file }) => JSON.stringify(file);
+const baseHash = (manifest) => digest(Buffer.from(JSON.stringify(manifest.files.map(fileIdentity))));
+function presentDir(path) {
+  try { lstatSync(path); } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  privateDir(path);
+  return true;
+}
+function bindingAt(loc) {
+  privateDir(join(loc.dir, "binding"));
+  const value = json(join(loc.dir, "binding", "binding.json"));
+  if (!keys(value, ["version", "run", "agent", "sequence", "machineId"]) || !sameOwner(value, loc) || !machine(value.machineId)) fail();
+  return value;
+}
+
+// Final capture is an immutable overlay. Original metadata is read afresh so
+// legacy releases remain valid. New releases are monotonic separate receipts;
+// neither a concurrent release nor finalization can overwrite the other.
+function effective(root, selector) {
+  const loc = location(root, selector);
+  privateDir(loc.dir);
+  const base = validateManifest(json(join(loc.dir, "manifest.json")), loc);
+  let manifest = structuredClone(base), receipt = null;
+  const finalDir = join(loc.dir, "final");
+  if (presentDir(finalDir)) {
+    manifest = validateManifest(json(join(finalDir, "manifest.json")), loc);
+    receipt = json(join(finalDir, "receipt.json"));
+    const binding = bindingAt(loc);
+    if (!keys(receipt, ["version", "run", "agent", "sequence", "machineId", "baseSha256", "inputSha256", "sources"]) || !sameOwner(receipt, loc) || receipt.machineId !== binding.machineId || receipt.baseSha256 !== baseHash(base) || typeof receipt.inputSha256 !== "string" || !HASH.test(receipt.inputSha256) || !Array.isArray(receipt.sources) || receipt.sources.length > L.screenshots) fail();
+    for (const file of base.files) {
+      const kept = manifest.files.find((f) => f.id === file.id);
+      if (!kept || fileIdentity(kept) !== fileIdentity(file)) fail();
+      kept.approval = file.approval;
+    }
+    const ids = new Set(), paths = new Set();
+    for (const source of receipt.sources) {
+      if (!keys(source, ["id", "path", "sha256", "bytes"]) || !shotPath(source.path) || ids.has(source.id) || paths.has(source.path)) fail();
+      const file = manifest.files.find((f) => f.id === source.id);
+      if (!file || file.kind !== "screenshot" || file.sha256 !== source.sha256 || file.bytes !== source.bytes) fail();
+      ids.add(source.id); paths.add(source.path);
+    }
+    for (const file of manifest.files) {
+      if (base.files.some((f) => f.id === file.id)) continue;
+      if (file.kind === "transcript" || (file.kind === "screenshot" && (!ids.has(file.id) || file.approval !== "pending"))) fail();
+    }
+  }
+  const releases = join(loc.dir, "releases");
+  if (presentDir(releases)) for (const file of manifest.files) {
+    const released = join(releases, file.id);
+    if (!presentDir(released)) continue;
+    const value = json(join(released, "release.json"));
+    if (!keys(value, ["version", "run", "agent", "sequence", "id", "sha256"]) || !sameOwner(value, loc) || file.kind !== "screenshot" || value.id !== file.id || value.sha256 !== file.sha256) fail();
+    file.approval = "released";
+  }
+  return { loc, base, manifest, receipt, finalDir };
+}
+
 export function listSessionArtifacts(root, selector) {
-  try {
-    const loc = location(root, selector);
-    privateDir(loc.dir);
-    return validateManifest(JSON.parse(readBounded(join(loc.dir, "manifest.json"), L.manifest).toString("utf8")), loc);
-  } catch { fail(); }
+  try { return effective(root, selector).manifest; } catch { fail(); }
 }
 
 function fileData(root, selector, allowPending = false) {
-  const manifest = listSessionArtifacts(root, selector);
+  const { loc, base, manifest, finalDir } = effective(root, selector);
   const file = manifest.files.find((f) => f.id === selector.id);
   if (!file || (!allowPending && file.approval === "pending")) fail();
-  const { dir } = location(root, selector);
+  const dir = base.files.some((f) => f.id === file.id) ? loc.dir : finalDir;
   const data = readBounded(join(dir, file.id), file.kind === "screenshot" ? L.screenshot : L.text);
   if (data.length !== file.bytes || digest(data) !== file.sha256) fail();
-  return { manifest, file, data, dir };
+  return { manifest, file, data, loc };
 }
 
 export function readSessionArtifact(root, selector) {
@@ -118,23 +174,32 @@ export function readSessionArtifact(root, selector) {
   } catch { fail(); }
 }
 
-function atomicJSON(file, value) {
-  const tmp = join(dirname(file), `.write-${randomUUID()}`);
+// Rename a nonempty directory once. A competing publication cannot replace
+// the winner. Callers validate that winner rather than treating EEXIST as success.
+function publish(parent, name, files) {
+  const staging = join(parent, `.stage-${randomUUID()}`);
+  mkdirSync(staging, { mode: 0o700 });
   try {
-    writeFileSync(tmp, JSON.stringify(value), { flag: "wx", mode: 0o600 });
-    renameSync(tmp, file);
-  } finally { rmSync(tmp, { force: true }); }
+    for (const { name: file, data } of files) writeFileSync(join(staging, file), data, { flag: "wx", mode: 0o600 });
+    try { renameSync(staging, join(parent, name)); }
+    catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes(error.code)) throw error; }
+  } finally { rmSync(staging, { recursive: true, force: true }); }
 }
+const jsonFile = (name, value) => ({ name, data: Buffer.from(JSON.stringify(value)) });
 
 // TRUSTED APP ONLY. This is not a model tool. The app must authenticate the
 // current explicit human request and bind these fields to its candidate.
 export function releaseSessionScreenshot(root, selector) {
   try {
     if (selector.approved !== true || !HASH.test(selector.sha256)) fail();
-    const { manifest, file, dir } = fileData(root, selector, true);
+    const { file, loc } = fileData(root, selector, true);
     if (file.kind !== "screenshot" || file.sha256 !== selector.sha256) fail();
-    file.approval = "released";
-    atomicJSON(join(dir, "manifest.json"), manifest);
+    if (file.approval === "released") return listSessionArtifacts(root, selector);
+    const releases = privateDir(join(loc.dir, "releases"), true);
+    if (usedBytes(loc.runDir) + L.manifest > L.run) fail();
+    publish(releases, file.id, [jsonFile("release.json", { version: 1, run: loc.run, agent: loc.agent, sequence: loc.sequence, id: file.id, sha256: file.sha256 })]);
+    const manifest = listSessionArtifacts(root, selector);
+    if (manifest.files.find((f) => f.id === file.id)?.approval !== "released") fail();
     return manifest;
   } catch { fail(); }
 }
@@ -213,7 +278,7 @@ export function writeSessionArtifacts(root, { run, agent, poc, transcript, har =
     if (har !== null) blobs.push({ kind: "har", data: cleanHAR(har, secrets) });
     const paths = new Set();
     for (const shot of screenshots) {
-      if (!shot || typeof shot.path !== "string" || !/^\/var\/lib\/touchstone\/session\/shot-(?:[1-9]|1[0-2])\.png$/.test(shot.path) || paths.has(shot.path)) fail();
+      if (!shot || !shotPath(shot.path) || paths.has(shot.path)) fail();
       paths.add(shot.path);
       blobs.push({ kind: "screenshot", data: png(shot.bytes) });
     }
@@ -237,7 +302,88 @@ export function writeSessionArtifacts(root, { run, agent, poc, transcript, har =
   finally { if (staging) rmSync(staging, { recursive: true, force: true }); }
 }
 
-// D closes the browser and downloads bounded source bytes before this call.
+// TRUSTED RUNTIME ONLY. D verifies accepted state.candidates membership and
+// its exact evidence binding first. A private snapshot alone is not acceptance.
+export function bindSessionCapture(root, selector) {
+  try {
+    if (!machine(selector.machineId)) fail();
+    const { loc } = effective(root, selector);
+    const dir = join(loc.dir, "binding");
+    if (!presentDir(dir)) {
+      if (usedBytes(loc.runDir) + L.manifest > L.run) fail();
+      publish(loc.dir, "binding", [jsonFile("binding.json", { version: 1, run: loc.run, agent: loc.agent, sequence: loc.sequence, machineId: selector.machineId })]);
+    }
+    if (bindingAt(loc).machineId !== selector.machineId) fail();
+  } catch { fail(); }
+}
+
+// Terminal capture is whole-browser-session evidence, not a submission cutoff.
+// D intersects accepted membership and captures only the SAME existing machine.
+// The atomic overlay also seals empty/partial input: different retries refuse.
+export function finalizeSessionArtifacts(root, { run, agent, poc, machineId, har = null, screenshots = [], secrets = [] }) {
+  try {
+    const selector = { run, agent, poc };
+    const current = effective(root, selector), { loc, base } = current;
+    if (!machine(machineId) || bindingAt(loc).machineId !== machineId) fail();
+    if (!Array.isArray(screenshots) || screenshots.length > L.screenshots) fail();
+    const rawHAR = har === null ? null : sourceBytes(har, L.text);
+    const safeHAR = rawHAR === null ? null : cleanHAR(rawHAR, secrets);
+    if (safeHAR && safeHAR.length > L.text) fail();
+    const paths = new Set();
+    const shots = screenshots.map((shot) => {
+      if (!shot || !shotPath(shot.path) || paths.has(shot.path)) fail();
+      paths.add(shot.path);
+      const data = png(shot.bytes);
+      return { path: shot.path, data, sha256: digest(data), bytes: data.length };
+    }).sort((a, b) => a.path.localeCompare(b.path));
+    const inputSha256 = digest(Buffer.from(JSON.stringify({ har: rawHAR === null ? null : { raw: digest(rawHAR), scrubbed: digest(safeHAR) }, screenshots: shots.map(({ data, ...s }) => s) })));
+    if (current.receipt) {
+      if (current.receipt.inputSha256 !== inputSha256) fail();
+      return current.manifest;
+    }
+    const manifest = structuredClone(base), blobs = [], sources = [], used = new Set();
+    const add = (kind, data) => {
+      const file = { id: `a-${randomUUID()}`, kind, sha256: digest(data), bytes: data.length, mime: mime[kind], approval: kind === "screenshot" ? "pending" : "not-required" };
+      manifest.files.push(file);
+      blobs.push({ name: file.id, data });
+      return file;
+    };
+    if (safeHAR) {
+      const prior = base.files.find((f) => f.kind === "har");
+      if (prior && (prior.sha256 !== digest(safeHAR) || prior.bytes !== safeHAR.length)) fail();
+      if (!prior) add("har", safeHAR);
+    }
+    for (const shot of shots) {
+      const file = base.files.find((f) => f.kind === "screenshot" && !used.has(f.id) && f.sha256 === shot.sha256 && f.bytes === shot.bytes) ?? add("screenshot", shot.data);
+      used.add(file.id);
+      sources.push({ id: file.id, path: shot.path, sha256: shot.sha256, bytes: shot.bytes });
+    }
+    validateManifest(manifest, loc);
+    const receipt = { version: 1, run, agent, sequence: loc.sequence, machineId, baseSha256: baseHash(base), inputSha256, sources };
+    blobs.push(jsonFile("manifest.json", manifest), jsonFile("receipt.json", receipt));
+    if (usedBytes(loc.runDir) + blobs.reduce((n, b) => n + b.data.length, 0) > L.run) fail();
+    publish(loc.dir, "final", blobs);
+    const published = effective(root, selector);
+    if (published.receipt?.inputSha256 !== inputSha256 || published.receipt.machineId !== machineId) fail();
+    return published.manifest;
+  } catch { fail(); }
+}
+
+// TRUSTED APP ONLY. This returns metadata, never locally readable pending pixels.
+// APP verifies accepted membership and the existing machine/viewer lease first.
+export function getSessionReviewTarget(root, selector) {
+  try {
+    const { manifest, receipt } = effective(root, selector);
+    if (!receipt || typeof selector.sha256 !== "string" || !HASH.test(selector.sha256)) fail();
+    const file = manifest.files.find((f) => f.id === selector.id);
+    const source = receipt.sources.find((s) => s.id === selector.id);
+    if (!file || file.kind !== "screenshot" || file.sha256 !== selector.sha256 || !source || source.sha256 !== selector.sha256) fail();
+    return { machineId: receipt.machineId, path: source.path, sha256: source.sha256 };
+  } catch { fail(); }
+}
+
+// Pre-validation transcript snapshots do NOT close the browser. D supplies
+// no HAR/pixels there, and binds only accepted candidates after submission.
 // Caller identity comes from withAgent, never the model's candidate arguments.
 export function captureSessionArtifacts(root, { run, agent, poc, state, har = null, screenshots = [] }) {
   if (!currentAgent() || String(currentAgent()) !== agent) fail();

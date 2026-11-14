@@ -725,7 +725,7 @@ const firstOf = (cls) => CHEAT_ROWS.find((r) => r.class === cls);
 const vmData = (row) => row.selector + "00".repeat(64);
 const backstopReason = /the test used .*; after it the replay trace no longer tells what really happened, so no scope target counts\. To repair: /;
 
-for (const cls of ["state", "exec"]) {
+for (const cls of ["state", "exec", "fork"]) {
   test(`harm gate: a ${cls} cheatcode (${firstOf(cls).name}) makes every scope target unusable, in the body or in setUp() (H1e backstop)`, () => {
     const row = firstOf(cls);
     const h = judgeTamper(tamperDrain(vmData(row)));
@@ -739,24 +739,6 @@ for (const cls of ["state", "exec"]) {
     assert.match(hs.reason, new RegExp(`vm\\.${row.name} \\(${cls}, in setUp\\)`));
   });
 }
-
-// A fork cheatcode splits by WHERE it ran, and the split is the point of a forked
-// run (2026-11-14). Creating the fork in setUp is what a forked replay is: it reads
-// the chain and grants the body nothing. Rolling or re-selecting in the BODY is how
-// a test rewinds time to inflate a loss, so that stays refused.
-test("harm gate: a fork cheatcode in setUp is allowed; in the body it is not (H1e backstop)", () => {
-  const row = firstOf("fork");
-  // body: refused, and the reason names the body.
-  const inBody = judgeTamper(tamperDrain(vmData(row)));
-  assert.equal(inBody.ok, false, JSON.stringify(inBody));
-  assert.match(inBody.reason, new RegExp(`vm\\.${row.name} \\(fork, in body\\)`));
-  assert.match(inBody.reason, /do not roll, re-select or replay a transaction inside the test body/);
-  // setUp: the fork itself is fine, so the ordinary channels judge the replay.
-  const inSetup = tamperDrain(null);
-  inSetup[0][1].arena.push(node(0, { kind: "CALL", address: VM_ADDR, caller: TEST, data: vmData(row) }));
-  const hs = judgeTamper(inSetup);
-  assert.doesNotMatch(String(hs.reason ?? ""), /fork, in setUp/, "a fork in setUp is not a backstop hit any more");
-});
 
 // outcome (expectRevert, expectPartialRevert) is trusted: the trace marks the
 // expected call as reverted. The guard: the call it was armed for (the first later
@@ -1018,7 +1000,7 @@ test("forge: contracts submit_finding refuses a passing tautology with reason no
   workspaces.push(ws);
   const state = { poc: 0, passed: new Map([["TautologyTest", TAUTOLOGY]]), found: [] };
   const submit = contracts.tools(ws, state).find((t) => t.name === "submit_finding");
-  const r = await submit.execute({ title: "t", severity: "critical", class: "reentrancy", poc_contract: "TautologyTest", explanation: "x" });
+  const r = await submit.execute({ title: "t", severity: "critical", poc_contract: "TautologyTest", explanation: "x" });
   assert.equal(r.isError, true);
   assert.match(r.output[0].text, /shows no harm/);
   assert.equal(state.found.length, 0);
@@ -1442,15 +1424,10 @@ contract DealTakeTest is Test {
   assert.equal(isProven(f), false);
 });
 
-// H1c, after the cap rose from 8 MiB to 256 MiB. Two separate facts, so a change
-// to either is a test failure rather than a silent contract change:
-//   (a) a 10 MiB trace — one deal() in the test body — is now JUDGED, because a
-//       busy-but-real exploit must not be refused for being busy;
-//   (b) a trace above the ceiling is still never judged, and the refusal now
-//       points at submit_candidate as well as at a shorter test.
-// The ceiling cannot be reached by a real replay here (256 MiB is about 200
-// state-writing iterations), so (b) is exercised on the reader rather than by
-// generating that much output: traceTooLarge is the one path that decides it.
+// H1c: a forge-std deal(token, …) in the test BODY makes a replay trace above the
+// 8 MiB cap (about 10 MiB on the pinned image). The cut trace is never judged; the
+// proof fails and the reason tells the agent to move deal into setUp(). The same
+// drain with deal in setUp() stays small and is proven with its exact value.
 const DEAL_DRAIN = (poc, setupDeal) => `import "../src/Tokens.sol";
 contract ${poc} is Test {
   Tok tok; TokVault vault;
@@ -1462,23 +1439,16 @@ contract ${poc} is Test {
   }
 }
 `;
-test("forge: a deal() in the test body is now judged, not cut: a busy real exploit is not refused for being busy (H1c)", { skip, timeout: 300_000 }, async () => {
+test("forge: a deal() in the test body makes a trace above the cap; it is not judged and the reason says use setUp() (H1c)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);
   const f = await proveScope(ws, { "Tokens.sol": TOKENS }, "DealBodyTest", DEAL_DRAIN("DealBodyTest", false));
   assert.equal(f.forgePassed, true);
-  assert.ok(f.proof, "a judged replay gives a proof");
-  assert.doesNotMatch(String(f.proof.harm.reason ?? ""), /larger than \d+ MiB/, "a 10 MiB trace is under the ceiling");
+  assert.ok(f.proof, "a cut trace still gives a failed proof with a reason, not null");
+  assert.equal(f.proof.pass, false);
+  assert.equal(f.proof.harm.ok, false);
+  assert.match(f.proof.harm.reason, /larger than 8 MiB, so it was cut and the gate does not judge it.*use deal in setUp\(\) only to fund a scope contract.*get the attacker's tokens through the protocol, or use a token outside the scope/);
+  assert.equal(isProven(f), false);
 });
-
-test("forge: the ceiling still refuses a cut trace, and its reason names submit_candidate", async () => {
-  const { FORGE_OUTPUT_CAP } = await import("../lib/sandbox.mjs");
-  const { TRACE_TOO_LARGE } = await import("../lib/proof.mjs");
-  assert.ok(FORGE_OUTPUT_CAP >= 64 * 1024 * 1024, "the ceiling must fit a long loop, not a single deal");
-  assert.match(TRACE_TOO_LARGE, new RegExp(`larger than ${FORGE_OUTPUT_CAP / 1048576} MiB`));
-  assert.match(TRACE_TOO_LARGE, /submit_candidate/, "a genuinely long loop is a candidate, not a discard");
-  assert.match(TRACE_TOO_LARGE, /setUp\(\)/);
-});
-
 
 test("forge: the same drain with deal() in setUp() is STILL proven with its exact value (H1c TP)", { skip, timeout: 300_000 }, async () => {
   const ws = makeWorkspace(LAB); workspaces.push(ws);

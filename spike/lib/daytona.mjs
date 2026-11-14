@@ -53,7 +53,12 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { currentAgent, event } from "./event.mjs";
 import { readConfig } from "./providers.mjs";
 import { scrubError, scrubUrl } from "./redact-url.mjs";
+import { saveStore, withStoreLock } from "./grant-store.mjs";
 import { MANIFEST } from "./images.mjs";
+import { pendingMachines, recordPendingMachine, clearPendingMachines } from "./daytona-pending.mjs";
+import { daytonaError, daytonaShellApi, daytonaExecution, rootShellCommand, confirmDaytonaDeletion } from "./daytona-api.mjs";
+import { checkRoamSelection, requireRoamReady } from "./daytona-setup.mjs";
+import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding, setRoamSelectionState, updateRoamOperation } from "./daytona-state.mjs";
 
 export const DEFAULT_API_URL = "https://app.daytona.io/api";
 export const DEFAULT_SNAPSHOT = "touchstone-exec-dind-v1";
@@ -104,6 +109,7 @@ export function execConfig(env = process.env, cfg = safeConfig()) {
     apiUrl,
     target: String(env.DAYTONA_TARGET || saved.target || DEFAULT_TARGET),
     snapshot: String(env.DAYTONA_SNAPSHOT || saved.snapshot || DEFAULT_SNAPSHOT),
+    roamSnapshot: String(env.TOUCHSTONE_ROAM_SNAPSHOT || saved.roamSnapshot || ""),
   };
 }
 
@@ -264,6 +270,7 @@ function client(c) {
     return t ? JSON.parse(t) : null;
   }
   return {
+    account: roamAccountBinding(c),
     getSnapshot: (name) => call("GET", `${API}/snapshots/${encodeURIComponent(name)}`),
     createSnapshot: (name) => call("POST", `${API}/snapshots`, {
       name, imageName: SNAPSHOT_IMAGE, sandboxClass: "linux-vm", cpu: 2, memory: 4, disk: 10, regionId: c.target,
@@ -278,11 +285,11 @@ function client(c) {
     byLabel: (labels) => call("GET", `${API}/sandbox?labels=${encodeURIComponent(JSON.stringify(labels))}`),
     get: (id) => call("GET", `${API}/sandbox/${id}`),
     remove: (id) => call("DELETE", `${API}/sandbox/${id}`),
-    exec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
-      { timeoutMs: (seconds + 30) * 1000 }),
+    exec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000 })),
     // The same call for a free-roam machine: the answer is read with a size limit.
-    roamExec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
-      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES }),
+    roamExec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command: rootShellCommand(command), timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES })),
     upload: (m, path, buf) => {
       const form = new FormData();
       form.append("file", new Blob([buf]), "f");
@@ -327,14 +334,56 @@ export function runRoot(dir, tmp = tmpdir()) {
   }
 }
 
+// Keep the existing capped toolbox transport, but use the bounded shell API
+// for account metadata and cleanup reconciliation.
+function roamClient(config) {
+  const api = daytonaShellApi(config);
+  return { ...client(config), get: api.sandbox, remove: api.removeSandbox, byLabel: async (labels) => ({ items: await api.sandboxes(labels) }) };
+}
+
 const sidecar = (root) => `${root}.daytona.json`;
 
 function readSidecar(root) {
   try {
-    return JSON.parse(readFileSync(sidecar(root), "utf8"));
-  } catch {
-    return {};
+    const text = readFileSync(sidecar(root), "utf8");
+    if (Buffer.byteLength(text) > 1024 * 1024) throw new Error();
+    const all = JSON.parse(text);
+    if (!all || Array.isArray(all) || typeof all !== "object" || Object.entries(all).some(([key, m]) => !m || !controlId(m.id) || (key.startsWith("roam:") && typeof m.toolbox !== "string"))) throw new Error();
+    return all;
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw daytonaError("daytona_response_invalid");
   }
+}
+
+function changeSidecar(root, fn) {
+  return withStoreLock(sidecar(root), "Daytona machines", () => {
+    const all = readSidecar(root);
+    fn(all);
+    if (Object.keys(all).length) saveStore(sidecar(root), all, { mode: 0o600 });
+    else rmSync(sidecar(root), { force: true });
+  });
+}
+
+async function cleanupRoamOperation(op, api) {
+  if (!op || ["complete", "rejected"].includes(op.phase)) return false;
+  updateRoamOperation(op.binding, op.id, op.phase, "cleanup");
+  op = { ...op, phase: "cleanup" };
+  let id = op.resourceId;
+  if (!id) {
+    const labels = { touchstone: "1", nonce: op.nonce, loadout: "free-roam", run: op.run.slice(0, 12) };
+    const result = await api.byLabel(labels);
+    const matches = (result?.items ?? []).filter((m) => Object.entries(labels).every(([k, v]) => m.labels?.[k] === v));
+    if (matches.length !== 1 || !controlId(matches[0].id)) return false;
+    id = matches[0].id;
+  }
+  updateRoamOperation(op.binding, op.id, op.phase, "cleanup", id);
+  try {
+    try { await api.remove(id); } catch (error) { if (error.status !== 404) throw error; }
+    await confirmDaytonaDeletion(() => api.get(id));
+  } catch { return false; }
+  updateRoamOperation(op.binding, op.id, "cleanup", "complete");
+  return true;
 }
 
 // Find or make the machine for this call, in run `root`. A machine idle for a
@@ -349,6 +398,7 @@ async function machineFor(c, root) {
     p.catch(() => machines.delete(key));
   }
   const m = await machines.get(key);
+  if (m.api.account !== roamAccountBinding(c)) throw daytonaError("daytona_shell_unverified");
   m.key = key;
   if (Date.now() - m.used > staleMs() && !(await alive(m))) {
     retire(m);
@@ -367,15 +417,19 @@ function forget(m) {
 // goes to the pending file, so closeRun retries it.
 function retire(m) {
   forget(m);
-  if (m.root) {
-    const all = readSidecar(m.root);
-    if (all[m.agent]?.id === m.id) {
-      delete all[m.agent];
-      writeFileSync(sidecar(m.root), JSON.stringify(all, null, 2));
-    }
+  if (m.agent?.startsWith("roam:")) {
+    // The journal already holds this obligation, including after the workspace
+    // goes away. Keep the client captured when the machine was created.
+    const op = allRoamOperations().find((o) => o.id === m.operationId && o.account === m.account);
+    if (!op) return; // Legacy, unbound records stay in the sidecar for repair.
+    return cleanupRoamOperation(op, m.api).then((gone) => {
+      if (gone && m.root) changeSidecar(m.root, (all) => { if (all[m.agent]?.id === m.id) delete all[m.agent]; });
+    }).catch(() => {});
+    return;
   }
-  const keep = () => writePending([...readPending(), m.id]);
-  deleteMachine(m.api, m.id).then((ok) => ok || keep(), keep);
+  recordPendingMachine(m.id, m.api.account);
+  if (m.root) changeSidecar(m.root, (all) => { if (all[m.agent]?.id === m.id) delete all[m.agent]; });
+  deleteMachine(m.api, m.id).then((gone) => { if (gone) clearPendingMachines([{ id: m.id, account: m.api.account }]); }).catch(() => {});
 }
 
 // True when the machine can still take calls. A 404 means it is gone.
@@ -393,6 +447,7 @@ async function openMachine(c, root, agent) {
   const api = client(c);
   const known = root ? readSidecar(root)[agent] : null;
   if (known) {
+    if (known.account !== api.account) throw daytonaError("daytona_shell_unverified");
     // Another process of this run (the pre-pass in the app server) made it.
     const m = { id: known.id, toolbox: known.toolbox, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
     try {
@@ -416,15 +471,16 @@ async function openMachine(c, root, agent) {
   } catch (e) {
     api.byLabel({ touchstone: "1", nonce }).then((r) => {
       for (const x of r?.items ?? r ?? []) {
-        if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
+        if (x?.labels?.nonce === nonce) {
+          recordPendingMachine(x.id, api.account);
+          deleteMachine(api, x.id).then((ok) => { if (ok) clearPendingMachines([{ id: x.id, account: api.account }]); }).catch(() => {});
+        }
       }
     }).catch(() => {});
     throw e;
   }
   const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, synced: new Map(), ready: new Set(), lock: Promise.resolve(), used: Date.now(), root, agent };
-  const all = readSidecar(root);
-  all[agent] = { id: m.id, toolbox: m.toolbox };
-  writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
+  changeSidecar(root, (all) => { all[agent] = { id: m.id, toolbox: m.toolbox, account: api.account }; });
   event("exec-machine", { backend: "daytona", sandbox: m.id, run: labels.run ?? null });
   await waitReady(m);
   return m;
@@ -480,26 +536,46 @@ function locked(m, fn) {
 export async function closeRun(ws) {
   const root = resolve(ws);
   const all = readSidecar(root);
-  const ids = Object.values(all).map((x) => x.id).filter(Boolean);
-  for (const key of [...machines.keys()]) if (key.startsWith(`${root}|`)) machines.delete(key);
-  const old = readPending().filter((id) => !ids.includes(id));
-  if (!ids.length && !old.length) {
-    rmSync(sidecar(root), { force: true });
-    return [];
+  const config = execConfig();
+  const account = roamAccountBinding(config);
+  const runHash = createHash("sha256").update(root).digest("hex");
+  const captured = new Map();
+  for (const [key, promise] of machines) {
+    if (!key.startsWith(`${root}|`)) continue;
+    try { const m = await promise; captured.set(m.id, m); } catch {}
   }
-  // Record the ids first. If this process dies during the deletes, the next
-  // closeRun still finds them. The sidecar goes only after the deletes.
-  writePending([...old, ...ids]);
-  const api = client(execConfig());
-  const gone = await Promise.all(ids.map((id) => deleteMachine(api, id)));
-  const oldGone = await Promise.all(old.map((id) => deleteMachine(api, id, 1)));
-  const done = new Set([...ids.filter((_, i) => gone[i]), ...old.filter((_, i) => oldGone[i])]);
-  // Read the file again: another run may have added ids meanwhile.
-  const left = readPending().filter((id) => !done.has(id));
-  writePending(left);
-  rmSync(sidecar(root), { force: true });
-  if (left.length) event("exec-cleanup", { backend: "daytona", left, note: "Daytona would not delete these yet; the next run retries" });
-  return ids.filter((_, i) => gone[i]);
+  const obligations = allRoamOperations().filter((o) => o.action === "runtime" && (o.run === runHash || o.phase === "cleanup") && !["complete", "rejected"].includes(o.phase));
+  const gone = [];
+  for (const op of obligations) {
+    const m = captured.get(op.resourceId);
+    if (!m && (op.account !== account || !config.apiKey)) continue;
+    try { if (await cleanupRoamOperation(op, m?.api ?? roamClient(config))) gone.push(op.resourceId); } catch {}
+  }
+  // New confined records also carry their original account. Bare legacy IDs
+  // cannot establish ownership, so they remain unresolved without a DELETE.
+  for (const [key, entry] of Object.entries(all)) {
+    if (!key.startsWith("roam:")) recordPendingMachine(entry.id, entry.account ?? null);
+  }
+  const done = [];
+  for (const row of pendingMachines()) {
+    if (typeof row === "string") continue;
+    const m = captured.get(row.id);
+    const api = m?.api.account === row.account ? m.api : row.account === account && config.apiKey ? client(config) : null;
+    if (!api) continue;
+    if (await deleteMachine(api, row.id, all && Object.values(all).some((v) => v.id === row.id) ? 10 : 1)) { done.push(row); gone.push(row.id); }
+  }
+  if (done.length) clearPendingMachines(done);
+  const complete = new Set(allRoamOperations().filter((o) => o.phase === "complete").map((o) => o.id));
+  if (Object.keys(all).length) changeSidecar(root, (entries) => {
+    for (const [key, entry] of Object.entries(entries)) {
+      if (key.startsWith("roam:") ? complete.has(entry.operationId) : Boolean(entry.account)) delete entries[key];
+    }
+  });
+  for (const key of [...machines.keys()]) if (key.startsWith(`${root}|`)) machines.delete(key);
+  const unresolved = pendingMachines().length;
+  if (unresolved) event("exec-cleanup", { backend: "daytona", pending: unresolved, note: "Cleanup remains unresolved; legacy IDs require their original account to be established." });
+  const ownIds = new Set(Object.values(all).map((m) => m.id));
+  return gone.filter((id) => id && ownIds.has(id));
 }
 
 // True when the machine is gone.
@@ -517,23 +593,10 @@ async function deleteMachine(api, id, tries = 10) {
   return false;
 }
 
-// Machines that Daytona would not delete yet. spike/data/ is git-ignored.
-const PENDING = () => process.env.DAYTONA_PENDING || new URL("../data/daytona-pending.json", import.meta.url).pathname;
-
+// Compatibility for callers that display pending IDs. Deletion uses only the
+// account-bound records above; this view cannot authorize an API request.
 export function readPending() {
-  try {
-    const ids = JSON.parse(readFileSync(PENDING(), "utf8"));
-    return Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePending(ids) {
-  const f = PENDING();
-  if (!ids.length) return rmSync(f, { force: true });
-  mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify([...new Set(ids)]) + "\n");
+  return pendingMachines().map((r) => typeof r === "string" ? r : r.id);
 }
 
 // ---- Workspace sync
@@ -840,8 +903,8 @@ export function warmScript(v) {
 //   here: 0 deletes the child's files at the first stop.
 // - A machine that stopped or is gone is replaced by an empty one, and the
 //   caller is told (`replaced`). Nothing starts a stopped machine again.
-// - The snapshot is a Daytona default. This code never creates a snapshot.
-export const ROAM_SNAPSHOT = process.env.TOUCHSTONE_ROAM_SNAPSHOT ?? "daytona-medium";
+// - Creation uses the saved, tested shell snapshot. Settings owns explicit
+//   snapshot builds; runtime calls never register one.
 const ROAM_STOP_MIN = 60;
 const ROAM_DELETE_MIN = 240;
 // Bound retained response bytes, not decoded strings or the transport's current chunk.
@@ -876,16 +939,29 @@ async function cappedExec(r, max) {
   tail.subarray(at).reverse();
   tail.reverse();
   const s = tail.toString("utf8");
-  const last = s.match(/"\s*,\s*"exitCode"\s*:\s*(-?\d+)\s*\}\s*$/);
-  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"exitCode"\s*:\s*(-?\d+)\s*,/);
-  const end = last ? last.index : s.search(/"\s*\}\s*$/);
+  // Parse only the retained metadata around result. A fallback code may never
+  // override an authoritative exitCode, including an explicitly invalid one.
+  const start = first.toString("utf8");
+  const resultAt = start.search(/"result"\s*:/);
+  let before;
+  try {
+    if (resultAt < 0) throw new Error();
+    before = JSON.parse(`${start.slice(0, resultAt)}"result":""}`);
+  } catch { throw daytonaError("daytona_response_invalid"); }
+  const suffixStart = Math.max(0, s.length - 1024);
+  const suffix = s.slice(suffixStart).match(/"\s*,\s*("(?:exitCode|code)"[\s\S]*)\}\s*$/);
+  let after = {};
+  if (suffix) {
+    try { after = JSON.parse(`{${suffix[1]}}`); }
+    catch { throw daytonaError("daytona_response_invalid"); }
+  }
+  const status = daytonaExecution({ ...before, ...after, result: "" }).exitCode;
+  const end = suffix ? suffixStart + suffix.index : s.search(/"\s*\}\s*$/);
   // The cut may fall inside an escape. Skip a few characters until the rest reads.
   for (let k = 0; end > 0 && k < 8; k++) {
-    try {
-      return { exitCode: code ? Number(code[1]) : undefined, result: JSON.parse(`"${s.slice(k, end)}"`) };
-    } catch {}
+    try { return { exitCode: status, result: JSON.parse(`"${s.slice(k, end)}"`) }; } catch {}
   }
-  return { exitCode: code ? Number(code[1]) : undefined, result: "" };
+  return { exitCode: status, result: "" };
 }
 
 // The machine of one free-roam child, opened on first use.
@@ -913,9 +989,10 @@ export async function roamMachine(ws, agent) {
       p.catch(() => machines.get(key) === mine && machines.delete(key));
     }
     m = await p;
+    if (m.account !== roamAccountBinding(c) || m.binding !== roamBinding(c)) throw daytonaError("daytona_shell_unverified");
     if (opened || Date.now() - m.used <= staleMs() || (await alive(m))) break;
     // It stopped by itself or it is gone. Open a new one, and say so.
-    if (machines.get(key) === p) retire(m);
+    if (machines.get(key) === p) await retire(m);
     lost = true;
   }
   return {
@@ -937,43 +1014,59 @@ export async function roamMachine(ws, agent) {
 }
 
 async function openRoam(c, root, agent, key, lost) {
-  const api = client(c);
+  const api = roamClient(c);
   const tag = `roam:${agent}`;
   const known = readSidecar(root)[tag];
   if (known) {
+    if (known.account !== roamAccountBinding(c) || known.binding !== roamBinding(c)) throw daytonaError("daytona_shell_unverified");
     // An earlier worker of this run made it. It has no cache key, so retire
     // does not drop the entry of this very call.
-    const old = { id: known.id, toolbox: known.toolbox, api, root, agent: tag, used: Date.now(), created: false, replaced: false };
+    const old = { ...known, api, root, agent: tag, used: Date.now(), created: false, replaced: false };
     if (await alive(old)) {
       await roamReady(old);
       old.key = key;
       return old;
     }
-    retire(old);
+    await retire(old);
     lost = true;
   }
-  // The nonce finds the machine again if create times out after Daytona made it.
-  const nonce = randomBytes(6).toString("hex");
-  const run = createHash("sha256").update(root).digest("hex").slice(0, 12);
-  const labels = { touchstone: "1", agent: String(agent).slice(0, 60), nonce, run, loadout: "free-roam" };
+  requireRoamReady(c);
+  await checkRoamSelection(c);
+  const selection = requireRoamReady(c);
+  const binding = roamBinding(c);
+  const runHash = createHash("sha256").update(root).digest("hex");
+  const run = runHash.slice(0, 12);
+  const slot = createHash("sha256").update(JSON.stringify([root, agent])).digest("hex");
+  const { operation, created } = beginRoamOperation(c, "runtime", slot, { run: runHash });
+  const labels = { touchstone: "1", agent: String(agent).slice(0, 60), nonce: operation.nonce, run, loadout: "free-roam" };
+  const shellApi = daytonaShellApi(c);
   let sb;
-  try {
-    sb = await api.create(labels, { snapshot: ROAM_SNAPSHOT, stopMin: ROAM_STOP_MIN, deleteMin: ROAM_DELETE_MIN });
-  } catch (e) {
-    api.byLabel({ touchstone: "1", nonce }).then((r) => {
-      for (const x of r?.items ?? r ?? []) {
-        if (x?.labels?.nonce === nonce) deleteMachine(api, x.id).then((ok) => ok || writePending([...readPending(), x.id]));
+  if (!created) {
+    if (!["intent", "unknown", "created"].includes(operation.phase)) throw daytonaError("daytona_unreachable");
+    const matches = (await shellApi.sandboxes(labels)).filter((s) => Object.entries(labels).every(([name, value]) => s?.labels?.[name] === value));
+    // Empty eventually-consistent listing is not permission to repeat a POST.
+    if (matches.length !== 1) throw daytonaError("daytona_unreachable");
+    sb = matches[0];
+  } else {
+    try {
+      sb = await shellApi.createSandbox(labels, selection.snapshotId, { stopMin: ROAM_STOP_MIN, deleteMin: ROAM_DELETE_MIN });
+    } catch (e) {
+      if (e.code === "daytona_snapshot_unavailable" || e.code === "daytona_rejected") {
+        setRoamSelectionState(binding, e.code === "daytona_snapshot_unavailable" ? "unavailable" : "rejected");
+        updateRoamOperation(binding, operation.id, "intent", "rejected");
+      } else {
+        updateRoamOperation(binding, operation.id, "intent", "unknown");
       }
-    }).catch(() => {});
-    if (e.status === 404) {
-      throw new Error(`Daytona answered 404 to the create call. The most likely cause is that the snapshot "${ROAM_SNAPSHOT}" does not exist. Touchstone never creates this snapshot. Set TOUCHSTONE_ROAM_SNAPSHOT to a container snapshot that your Daytona organisation has. (${e.message})`, { cause: e });
+      throw e;
     }
-    throw e;
   }
-  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl}/${sb.id}`, api, root, agent: tag, key, used: Date.now(), created: true, replaced: lost };
-  const all = readSidecar(root);
-  all[tag] = { id: m.id, toolbox: m.toolbox };
-  writeFileSync(sidecar(root), JSON.stringify(all, null, 2));
+  if (!controlId(sb?.id) || typeof sb.toolboxProxyUrl !== "string" || sb.toolboxProxyUrl.length > 2048 || !safeUrl(sb.toolboxProxyUrl)) {
+    if (created) updateRoamOperation(binding, operation.id, "intent", "unknown");
+    throw daytonaError("daytona_response_invalid");
+  }
+  if (operation.phase !== "created") updateRoamOperation(binding, operation.id, operation.phase, "created", sb.id);
+  const m = { id: sb.id, toolbox: `${sb.toolboxProxyUrl.replace(/\/$/, "")}/${sb.id}`, account: roamAccountBinding(c), binding, operationId: operation.id, api, root, agent: tag, key, used: Date.now(), created, replaced: lost };
+  changeSidecar(root, (all) => { all[tag] = { id: m.id, toolbox: m.toolbox, account: m.account, binding, operationId: operation.id }; });
   event("exec-machine", { backend: "daytona", sandbox: m.id, run, loadout: "free-roam", ...(lost ? { replaced: true } : {}) });
   await roamReady(m);
   return m;
@@ -1094,7 +1187,7 @@ export async function findRoamMachine(ws, agent) {
     if (!controlId(known.id)) controlFail();
     const id = known.id;
     const c = execConfig();
-    if (c.backend !== "daytona" || !c.apiKey) controlFail();
+    if (c.backend !== "daytona" || !c.apiKey || known.account !== roamAccountBinding(c)) controlFail();
     const base = `${c.apiUrl}/sandbox/${encodeURIComponent(id)}`;
     const run = createHash("sha256").update(root).digest("hex").slice(0, 12);
     async function current(revoking = false) {

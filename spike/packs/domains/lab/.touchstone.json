@@ -1,5 +1,6 @@
 {
   "pack": "domains",
+  "title": "Domain Registry",
   "kind": "lab",
   "evidenceSnapshot": {
     "file": "snapshot.json",

@@ -14,11 +14,13 @@
 // Only the fleet installs these tools, and only a free-roam child may call
 // them (fleet.mjs). The agent comes from the fleet's tag (event.mjs).
 //
-// Nothing from this host goes to the machine: one command string, and no
-// environment. This file does not read the host environment at all.
+// Only the fixed supervisor script and JSON request bytes go to the machine.
+// This file does not read or forward the host environment.
 import { defineTool } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
-import { roamMachine, shq } from "./daytona.mjs";
+import { roamMachine } from "./daytona.mjs";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { currentAgent } from "./event.mjs";
 
 const DEFAULT_S = 120;
@@ -27,6 +29,96 @@ export const REPLACED_NOTICE = "The machine was replaced. Files from before are 
 const PULL_NOTICE = "The request log could not be read after this command. It is read again on the next call.";
 
 const text = (value) => ({ output: [{ type: "text", text: value }] });
+
+const CONTROL = "/tmp/touchstone-shell-control.mjs";
+const controllers = new Map(); // shared by tools and the remote takeover adapter, keyed by machine id
+const CONTROL_ERROR = "Managed shell control is unavailable. Keep human input disabled.";
+function controller(m) {
+  if (!controllers.has(m.id)) controllers.set(m.id, { mode: "active", epoch: 0, local: 0, last: Promise.resolve() });
+  return controllers.get(m.id);
+}
+async function bounded(promise, ms) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(CONTROL_ERROR)), ms); })]); }
+  finally { clearTimeout(timer); }
+}
+async function exchange(m, s, op, fields = {}) {
+  const id = randomUUID();
+  const local = s.local;
+  await bounded(m.upload(`/tmp/touchstone-shell-${id}.json`, Buffer.from(JSON.stringify({ id, op, generation: s.generation, epoch: s.epoch, ...fields }))), 30_000);
+  if (op === "run" && (s.mode !== "active" || s.local !== local || s.pending)) {
+    throw Object.assign(new Error(CONTROL_ERROR), { notLaunched: true });
+  }
+  const seconds = op === "run" ? fields.seconds + 5 : 10;
+  const r = await bounded(m.exec(`node ${CONTROL} ${id}`, seconds), (seconds + 5) * 1000);
+  if (r?.exitCode !== 0) throw new Error(CONTROL_ERROR);
+  const a = JSON.parse(r.result);
+  if (a?.ok !== true || a.id !== id || typeof a.generation !== "string" || !Number.isSafeInteger(a.epoch) || a.epoch < 0 ||
+      (s.generation && a.generation !== s.generation)) throw new Error(CONTROL_ERROR);
+  return a;
+}
+function ready(m, s) {
+  return s.ready ??= (async () => {
+    await bounded(m.upload(CONTROL, readFileSync(new URL("../roam/shell-control.mjs", import.meta.url))), 30_000);
+    const a = await exchange(m, s, "init", { fresh: m.fresh === true });
+    if (a.ack !== true || a.scope !== "managed-shell" || a.state !== "active") throw new Error(CONTROL_ERROR);
+    s.generation = a.generation; s.epoch = a.epoch;
+  })();
+}
+async function unknown(m, s) {
+  s.mode = "unknown"; s.local++;
+  // Best effort remote latch. No later success may clear this worker's unknown state.
+  try { if (s.generation) await exchange(m, s, "block"); } catch { /* already failed closed */ }
+}
+function control(m, op, target) {
+  const s = controller(m);
+  if (s.mode === "unknown" || (s.mode === "closed" && op !== "close")) return Promise.reject(new Error(CONTROL_ERROR));
+  // Latch before the first await. An upload already in flight cannot bypass it.
+  if (op !== "resume") { s.mode = target; s.local++; }
+  s.pending = (s.pending || 0) + 1;
+  const run = async () => {
+    try {
+      if (s.mode === "unknown") throw new Error(CONTROL_ERROR);
+      await ready(m, s);
+      const a = await exchange(m, s, op);
+      if (s.mode === "unknown" || a.ack !== true || a.scope !== "managed-shell" || a.state !== target || a.epoch < s.epoch) throw new Error(CONTROL_ERROR);
+      s.epoch = a.epoch; s.mode = target;
+      return { ack: true, state: target, scope: "managed-shell" };
+    } catch { await unknown(m, s); throw new Error(CONTROL_ERROR); }
+    finally { s.pending--; }
+  };
+  const result = s.last.then(run, run);
+  s.last = result.catch(() => {});
+  return result;
+}
+// These acknowledgements cover cooperative managed groups, not machine isolation.
+// The app must also pause browser automation before enabling human input.
+export const pauseRoamShell = (machine) => control(machine, "pause", "paused");
+export const resumeRoamShell = (machine) => control(machine, "resume", "active");
+export const closeRoamShell = (machine) => control(machine, "close", "closed");
+
+async function supervisedShell(m, command, seconds) {
+  const s = controller(m);
+  const local = s.local;
+  if (s.mode !== "active" || s.pending) throw new Error(CONTROL_ERROR);
+  try {
+    await ready(m, s);
+    if (s.mode !== "active" || s.local !== local || s.pending) throw Object.assign(new Error(CONTROL_ERROR), { notLaunched: true });
+    const a = await exchange(m, s, "run", { command, seconds });
+    if (!Number.isInteger(a.exitCode) || typeof a.result !== "string") throw new Error(CONTROL_ERROR);
+    return { exitCode: a.exitCode, result: a.result };
+  } catch (e) { if (!e.notLaunched) await unknown(m, s); throw e; }
+}
+
+// Setup exercises the same supervisor used by real children, including its
+// pause/resume/close acknowledgements. It never runs an owner-supplied command.
+export async function probeManagedShell(machine) {
+  const result = await supervisedShell(machine, "printf touchstone-shell-ready", 5);
+  if (result.exitCode !== 0 || result.result !== "touchstone-shell-ready") throw new Error(CONTROL_ERROR);
+  await pauseRoamShell(machine);
+  await resumeRoamShell(machine);
+  await closeRoamShell(machine);
+}
 
 export function roamTools(ws, { record, egress, machine = roamMachine }) {
   const turn = new Map(); // agent -> the end of its last shell call
@@ -48,7 +140,7 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
     }
     let r;
     try {
-      r = await m.exec(`sh -c ${shq(egress.env + command)}`, seconds);
+      r = await supervisedShell(m, egress.env + command, seconds);
       if (r.exitCode === undefined) throw new Error();
     } catch (e) {
       // The command may have run, so it gets its entry. The error is a fixed

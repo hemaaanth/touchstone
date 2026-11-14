@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dockerReady } from "./reach-confine.mjs";
 import { requireImage } from "./proof-http.mjs";
+import { STRIX_SANDBOX_IMAGE } from "./images.mjs";
 import { runDocker } from "./wrap.mjs";
 
 export const STRIX_IMAGE = "touchstone/strix:1.7.0";
@@ -65,8 +66,9 @@ export async function strixReady() {
   if (!docker.ok) return { ok: false, reason: docker.reason };
   try {
     await requireImage(STRIX_IMAGE, "strix");
-  } catch (err) {
-    return { ok: false, reason: String(err?.message ?? err).slice(0, 300) };
+    await requireImage(STRIX_SANDBOX_IMAGE, "strix");
+  } catch {
+    return { ok: false, reason: "Strix needs its CLI and sandbox images. Run: node spike/scripts/setup.mjs --only strix --include-optional" };
   }
   return { ok: true };
 }
@@ -205,6 +207,8 @@ async function scanStrix({ baseUrl, provider, budgetUsd = DEFAULT_BUDGET_USD, ti
     "-v", "/var/run/docker.sock:/var/run/docker.sock",
     "-v", `${cwd}:/work`, "-w", "/work",
     "-e", `STRIX_LLM=${provider.model}`,
+    // In Strix this variable names its inner sandbox, not this CLI image.
+    "-e", `STRIX_IMAGE=${STRIX_SANDBOX_IMAGE}`,
     "-e", "LLM_API_KEY=shim", // the in-container shim adds the real one
     "-e", `UPSTREAM_BASE=${provider.baseUrl}`,
     "-e", `UPSTREAM_KEY=${provider.key}`,

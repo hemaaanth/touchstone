@@ -5,6 +5,7 @@
 //   TOUCHSTONE_EXEC_LIVE=1 DAYTONA_API_KEY=... node --test spike/test/daytona-exec.test.mjs
 import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
+import { roamAccountBinding } from "../lib/daytona-state.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -239,7 +240,7 @@ test("closeRun keeps machines Daytona will not delete yet, and retries them late
       deletes.push(`${init.method} ${String(url).split("/").pop()}`);
       return new Response(status === 200 ? "" : "busy", { status });
     };
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ root: { id: "m-1" }, "a-1": { id: "m-2" } }));
+    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ root: { id: "m-1", account: roamAccountBinding(execConfig()) }, "a-1": { id: "m-2", account: roamAccountBinding(execConfig()) } }));
     // Daytona says "state change in progress" every time: nothing is gone yet.
     assert.deepEqual(await closeRun(ws), []);
     assert.deepEqual(readPending().sort(), ["m-1", "m-2"]);
@@ -721,7 +722,7 @@ test("F: closeRun writes the pending file before deleting and drops the sidecar 
       seen.push({ pending: readPending(), sidecar: existsSync(`${ws}.daytona.json`) });
       return new Response("", { status: 200 });
     };
-    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ root: { id: "m-7" } }));
+    writeFileSync(`${ws}.daytona.json`, JSON.stringify({ root: { id: "m-7", account: roamAccountBinding(execConfig()) } }));
     assert.deepEqual(await closeRun(ws), ["m-7"]);
     assert.deepEqual(seen[0], { pending: ["m-7"], sidecar: true });
     assert.ok(!existsSync(`${ws}.daytona.json`));

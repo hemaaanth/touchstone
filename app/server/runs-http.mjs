@@ -4,13 +4,16 @@
 // SSE stream. So this handler takes the raw (req, res) instead of just a URL.
 // It returns true when it handled the request, false to fall through to the
 // findings router.
-import { createRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, runSessionArtifacts } from "./runs.mjs"
+import { acceptRun, steerRun, stopRun, archiveRun, renameRun, deleteRun, getRun, getRunByRequest, listRuns, subscribe, availableModels, availableTargets, availablePacks, spendState, providerInfo, listScopes, addScope, deleteScope, answerRunAsk, openRunDesktop, closeRunDesktop, runSessionArtifacts } from "./runs.mjs"
 import { dismissFinding, getFinding, nowCandidate } from "./findings.mjs"
 import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown } from "./report.mjs"
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief } from "../../spike/lib/scopes-store.mjs"
-import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, setRpcAndState, consoleWriteRefusal } from "./settings.mjs"
+import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, consoleWriteRefusal } from "./settings.mjs"
+
+import { execConfig } from "../../spike/lib/daytona.mjs"
+import { discoverRoamSnapshots, checkRoamSelection, startRoamSnapshotBuild, startRoamShellTest, reconcileRoamShellTest, reconcileRoamSnapshot, roamSetupView } from "../../spike/lib/daytona-setup.mjs"
 
 function send(res, status, json) {
   res.statusCode = status
@@ -66,6 +69,12 @@ export async function handleRuns(req, res) {
 
   // GET /api/runs — list recent live runs
   if (parts.length === 2 && req.method === "GET") {
+    if (url.searchParams.has("requestId")) {
+      const run = getRunByRequest(url.searchParams.get("requestId"))
+      res.setHeader("cache-control", "no-store")
+      send(res, run ? 200 : 404, { run })
+      return true
+    }
     send(res, 200, { runs: listRuns() })
     return true
   }
@@ -78,7 +87,7 @@ export async function handleRuns(req, res) {
   if (parts.length === 2 && req.method === "POST") {
     const body = await readBody(req)
     try {
-      send(res, 201, await createRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options }))
+      send(res, 201, acceptRun({ alias: body.alias, targetId: body.targetId, modules: body.modules, budgetUsd: body.budgetUsd, pack: body.pack, packs: body.packs, mode: body.mode, freeRoam: body.freeRoam, options: body.options, requestId: body.requestId }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -98,6 +107,7 @@ export async function handleRuns(req, res) {
     const body = await readBody(req)
     try {
       if (parts[3] === "ask") send(res, 200, await answerRunAsk(id, body))
+      else if (parts[3] === "desktop") send(res, 200, req.method === "DELETE" ? await closeRunDesktop(id, body.agent, body.desktop) : await openRunDesktop(id, body.agent, body.viewOnly, req.headers.origin, body.desktop))
       else {
         const action = parts[5] ?? "list"
         const result = await runSessionArtifacts(id, body, action, parts[4])
@@ -111,7 +121,7 @@ export async function handleRuns(req, res) {
         }
       }
     } catch (err) {
-      send(res, Number.isInteger(err?.status) ? err.status : 409, { error: ["ask", "desktop"].includes(parts[3]) ? String(err?.message ?? "Control request failed.") : "Session artifact is not available for this candidate." })
+      send(res, Number.isInteger(err?.status) ? err.status : 409, { error: ["ask", "desktop"].includes(parts[3]) ? String(err?.message ?? "Control request failed.") : "Session artifact is not available for this candidate.", ...(parts[3] === "ask" ? { delivery: err?.delivery === "not-sent" ? "not-sent" : "unknown" } : {}) })
     }
     return true
   }
@@ -334,7 +344,7 @@ export async function handleScopes(req, res) {
     // cannot add either.
     const body = await readBody(req)
     try {
-      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, fork: body.fork }))
+      send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })
     }
@@ -428,7 +438,7 @@ export async function handleGrants(req, res) {
 export function handleModels(req, res) {
   const url = new URL(req.url, "http://localhost")
   if (url.pathname !== "/api/models" || req.method !== "GET") return false
-  send(res, 200, { models: availableModels(), targets: availableTargets(), packs: availablePacks(), spend: spendState(), provider: providerInfo() })
+  send(res, 200, { models: availableModels(), targets: availableTargets(), packs: availablePacks(), spend: spendState(), provider: providerInfo(), roam: { ...roamSetupView(execConfig()), backend: execConfig().backend } })
   return true
 }
 
@@ -440,7 +450,6 @@ export function handleModels(req, res) {
 //   POST   /api/settings/default           — { provider, model } for new runs
 //   POST   /api/settings/budget            — { budgetUsd } default per-run budget
 //   POST   /api/settings/execution         — { backend, apiKey?, clearKey? } where tools run
-//   POST   /api/settings/rpc               — { chain, url } an RPC for forked replays
 export async function handleSettings(req, res) {
   const url = new URL(req.url, "http://localhost")
   const parts = url.pathname.split("/").filter(Boolean)
@@ -449,6 +458,21 @@ export async function handleSettings(req, res) {
   // Every write is guarded: a cross-site page must not repoint a key or a baseUrl.
   if (refusedWrite(req, res)) return true
   try {
+    if (parts.length === 4 && parts[2] === "execution") {
+      const config = execConfig()
+      const action = parts[3]
+      if (req.method === "GET" && action === "status") return send(res, 200, roamSetupView(config)), true
+      if (req.method === "POST") {
+        const body = await readBody(req)
+        if (action === "discover") return send(res, 200, await discoverRoamSnapshots(config)), true
+        if (action === "check") { await checkRoamSelection(config); return send(res, 200, roamSetupView(config)), true }
+        if (action === "build" || action === "test") {
+          if (body.confirm !== true) throw new Error("Confirm the Daytona resource action before starting it.")
+          return send(res, 202, action === "build" ? startRoamSnapshotBuild(config, body.requestId) : startRoamShellTest(config, body.requestId)), true
+        }
+        if (action === "reconcile") return send(res, 200, body.action === "snapshot" ? await reconcileRoamSnapshot(config, body.id) : await reconcileRoamShellTest(config, body.id)), true
+      }
+    }
     if (parts.length === 2 && req.method === "GET") return send(res, 200, getSettings()), true
     if (parts.length === 3 && route === "POST providers") return send(res, 200, saveProvider(await readBody(req))), true
     if (parts.length === 4 && route === "DELETE providers") return send(res, 200, deleteProvider(decodeURIComponent(parts[3]))), true
@@ -456,7 +480,6 @@ export async function handleSettings(req, res) {
     if (parts.length === 3 && route === "POST default") return send(res, 200, setDefault(await readBody(req))), true
     if (parts.length === 3 && route === "POST budget") return send(res, 200, setRunBudget((await readBody(req)).budgetUsd)), true
     if (parts.length === 3 && route === "POST execution") return send(res, 200, setExecution(await readBody(req))), true
-    if (parts.length === 3 && route === "POST rpc") return send(res, 200, setRpcAndState(await readBody(req))), true
   } catch (err) {
     send(res, 400, { error: String(err?.message ?? err) })
     return true

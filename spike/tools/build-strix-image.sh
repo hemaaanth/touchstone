@@ -4,5 +4,5 @@
 # shim. Needs network once, to install the pinned package.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-docker build -f tools/strix/Dockerfile -t touchstone/strix:1.7.0 .
+node scripts/setup.mjs --only strix --include-optional --force
 docker run --rm --entrypoint strix touchstone/strix:1.7.0 --version
