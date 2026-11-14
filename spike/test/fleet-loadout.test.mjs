@@ -20,7 +20,7 @@ import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSI
 
 // Per-agent loadouts (I7a). Fake tools or a fake machine: no Daytona call, no
 // network, no real key. "Daytona on" is two env values with a made-up key.
-const ON = { FLEET: undefined, ROAM_OPTIONS: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
+const ON = { FLEET: undefined, FLEET_MAX: undefined, ROAM_OPTIONS: undefined, FREE_ROAM: "1", TOUCHSTONE_EXEC: "daytona", DAYTONA_API_KEY: "made-up-test-key", DAYTONA_API_URL: undefined };
 const PACK = ["read_source", "submit_finding_web", "submit_finding_contracts"]; // a joined run of two modules
 const ROAM = ["shell", "submit_session_candidate"];
 const ORIGINAL = Object.fromEntries(Object.keys(ON).map((k) => [k, process.env[k]]));
@@ -46,7 +46,7 @@ function seen(request) {
 
 // One worker of a run. `storage` and `pack` let a case open a second worker on
 // the same run, with another environment or another pack tool list.
-async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered, sharedTools = [], max = 4, defaultRoute = () => answer("Default child done.") } = {}) {
+async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered, sharedTools = [], max, defaultRoute = () => answer("Default child done.") } = {}) {
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
   set(env);
   t.after(() => set(ORIGINAL));
@@ -106,6 +106,65 @@ const twoWorkers = (name, loadout, childCalls) => (s) => {
 
 // A coordinator that spawns the given children on "start", then ends.
 const coordinator = (s, children) => text(s.last) === "start" ? result(children) : answer("Coverage complete.");
+
+test("the default admits fifty lifetime children across loadouts, refuses the fifty-first, and reuses a failed identity", { timeout: 60000 }, async (t) => {
+  const r = await runtime(t, (s) => {
+    if (s.who === "coordinator") {
+      if (text(s.last) === "start") return result(Array.from({ length: 51 }, (_, i) => spawnCall(`Child${i}`, i % 2 ? "confined" : "free-roam")));
+      if (text(s.last) === "overflow") return result([spawnCall("Overflow", "free-roam")]);
+      if (text(s.last) === "retry") return result([call("message_agent", { to: "Child3", text: "retry the assigned task" })]);
+      return answer("Report received.");
+    }
+    if (s.who === "Child3" && !text(s.last).includes("retry")) return answer([], { stopReason: "error", errorMessage: "Synthetic child failure" });
+    return answer("Child done.");
+  });
+  await r.run("start");
+  const board = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.equal(board.agents.length, 50);
+  assert.equal(board.agents.filter((a) => a.loadout === "free-roam").length, 25);
+  assert.equal(board.agents.filter((a) => a.loadout === "confined").length, 25);
+  assert.equal(board.agents.filter((a) => a.status === "done").length, 49);
+  assert.equal(board.agents.find((a) => a.name === "Child3").status, "failed");
+  assert.deepEqual((await r.results(undefined, "spawn_agent")).map((m) => !!m.isError), [...Array(50).fill(false), true]);
+  assert.match(text((await r.results(undefined, "spawn_agent")).at(-1)), /Fleet limit reached \(50\)/);
+  assert.equal(r.spawned("FreeRoam"), undefined, "explicit free-roam children suppress the fallback");
+  await r.run("overflow");
+  assert.match(text((await r.results(undefined, "spawn_agent")).at(-1)), /Fleet limit reached \(50\)/, "finished and failed children still occupy their slots");
+  await r.run("retry");
+  const retried = await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx);
+  assert.deepEqual(retried.agents.map((a) => a.id), board.agents.map((a) => a.id));
+  assert.equal(retried.agents.find((a) => a.name === "Child3").status, "done");
+  assert.equal(r.events.filter((e) => e.ev === "subagent-spawned").length, 50);
+});
+
+test("environment and explicit maximum keep their admission precedence", async (t) => {
+  for (const [label, envMax, max, admitted] of [
+    ["environment", "3", undefined, 3],
+    ["explicit beats environment", "3", 2, 2],
+    ["explicit beats invalid environment", "invalid", "2", 2],
+  ]) await t.test(label, async (t) => {
+    const r = await runtime(t, (s) => s.who === "coordinator"
+      ? coordinator(s, Array.from({ length: admitted + 1 }, (_, i) => spawnCall(`Child${i}`, i % 2 ? "confined" : "free-roam")))
+      : answer("Done."), { env: { ...ON, FLEET_MAX: envMax }, max });
+    await r.run("start");
+    assert.equal((await r.harness.snapshot(Roster, ROOT_CONVERSATION_ID, ctx)).agents.length, admitted);
+    const results = await r.results(undefined, "spawn_agent");
+    assert.deepEqual(results.map((m) => !!m.isError), [...Array(admitted).fill(false), true]);
+    assert.match(text(results.at(-1)), new RegExp(`Fleet limit reached \\(${admitted}\\)`));
+  });
+});
+
+test("invalid explicit and environment maxima fail before any provider or machine call", async (t) => {
+  for (const value of [0, -1, 1.5, "", "invalid", "Infinity"]) {
+    for (const source of ["explicit", "environment"]) await t.test(`${source}: ${JSON.stringify(value)}`, async (t) => {
+      await assert.rejects(runtime(t, () => assert.fail("no provider call"), {
+        env: { ...ON, ...(source === "environment" ? { FLEET_MAX: String(value) } : {}) },
+        ...(source === "explicit" ? { max: value } : {}),
+        offered: [defineTool({ name: "shell", description: "Never run.", parameters: obj({}), replay: "safe", execute: () => assert.fail("no machine call") })],
+      }), /FLEET_MAX must be a positive integer/);
+    });
+  }
+});
 
 test("a confined child has no roam tool, and it cannot call one", { timeout: 15000 }, async (t) => {
   const r = await runtime(t, (s) => {

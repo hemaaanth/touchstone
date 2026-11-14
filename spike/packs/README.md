@@ -87,23 +87,39 @@ Use these. Do not write a second Docker runner or SARIF parser in a pack.
 ## Fleet runs
 
 `agent-run.mjs` adds `lib/fleet.mjs` beside the pack extension by default.
-The root conversation coordinates trusted T1 children. Each child gets the
-same model and pack tools, plus `message_agent`, `bulletin_post`, and
-`bulletin_read`. Only the root gets `spawn_agent`.
+The root conversation coordinates confined T1 children and, when enabled,
+free-roam T2 children. Confined children get the same model and pack tools.
+Free-roam children get their own remote machines and no pack proof tools.
+Both get `message_agent`, `bulletin_post`, and `bulletin_read`. Only the root
+gets `spawn_agent`.
 
-- `spawn_agent({name, task, area})` starts one child in a background-owned
-  conversation. Use one clear angle per child. `FLEET_MAX` caps the number
-  of children in the run. The default is eight. The coordinator sizes the
-  fleet to the scope within that cap.
+- `spawn_agent({name, task, area, loadout?})` starts one child in a
+  background-owned conversation. Use one clear angle per child. The default
+  cap is **50 total lifetime children**, shared by both loadouts. Explicit
+  `createFleet({max})` overrides `FLEET_MAX`; otherwise `FLEET_MAX` overrides
+  the default. The effective maximum must be a positive integer.
+  This is not a concurrent-machine quota or a request to spawn 50 children.
+  The coordinator sizes the fleet to the scope within the existing run budget.
+- An unspecified loadout is `confined`. With free-roam enabled, explicitly
+  spawn multiple `free-roam` children for independent angles as needed.
+  One slot is reserved until a free-roam child exists. This is a minimum
+  fallback, not a maximum: if none was chosen, the engine starts exactly one
+  before a healthy run settles.
 - `message_agent({to, text})` accepts a child name, child id, or
   `coordinator`. It steers a busy child and starts a new turn for an idle
   or failed child. To retry, message the same child. To reassign, read its
   task from `bulletin_read` and send that task to another child.
 - `bulletin_post({text, kind, severity?, tags?})` saves a note or lead.
-  All current authors are T1, so all posts use the trusted lane.
-  `bulletin_read()` returns the posts and the child roster with tasks.
+  Confined posts use the trusted lane; free-roam posts always use the evidence
+  lane. Neither a post nor a message is a proven finding or an authorization.
+  `bulletin_read()` returns the posts and the child roster with tasks and
+  status. Read it before assigning work and when leads change. Posts are
+  pulled by reads, not automatically broadcast; message affected siblings
+  and the coordinator when coordination is needed.
 - The roster, posts, delivery tasks, and child conversations are stored in
-  pi-durable. A follow-up can reopen them from the run's SQLite session.
+  pi-durable. Completed and failed children keep their slots. Follow-ups
+  reopen the same lifetime roster from the run's SQLite session; slots are
+  not recycled. `message_agent` can resume an existing identity at the cap.
   Child failures produce `subagent-done` with plain error text. They do
   not throw into the coordinator.
 
