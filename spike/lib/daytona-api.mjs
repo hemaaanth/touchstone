@@ -63,6 +63,16 @@ function snapshot(value) {
   };
 }
 
+// Toolbox deployments use either wire name. The published SDK normalizes
+// legacy `code` to `exitCode`; every app consumer should see that same shape.
+export function daytonaExecution(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const exitCode = value.exitCode ?? value.code;
+  if (exitCode != null && !Number.isInteger(exitCode)) invalid();
+  if (value.result != null && typeof value.result !== "string") invalid();
+  return { exitCode: exitCode ?? undefined, result: value.result ?? "" };
+}
+
 export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } = {}) {
   let base;
   try {
@@ -160,7 +170,7 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
       const baseUrl = `${toolbox.href.replace(/\/$/, "")}/${encodeURIComponent(sandbox.id)}`;
       return {
         id: sandbox.id, fresh: true,
-        exec: (command, seconds) => call("POST", "/process/execute", { command, timeout: seconds }, { baseUrl, timeout: (seconds + 15) * 1000 }),
+        exec: async (command, seconds) => daytonaExecution(await call("POST", "/process/execute", { command, timeout: seconds }, { baseUrl, timeout: (seconds + 15) * 1000 })),
         upload: (path, bytes) => {
           const form = new FormData();
           form.append("file", new Blob([bytes]), "file");

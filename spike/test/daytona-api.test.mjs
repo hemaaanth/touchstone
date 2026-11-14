@@ -94,3 +94,14 @@ test("unsafe URLs are rejected before a key can be sent", () => {
     assert.throws(() => daytonaShellApi({ ...config, apiUrl }), (e) => e.code === "daytona_unconfigured");
   }
 });
+
+for (const field of ["exitCode", "code"]) test(`toolbox ${field} is normalized at the wire boundary`, async () => {
+  const api = daytonaShellApi(config, { fetch: async () => json({ [field]: 7, result: "own fixed output" }) });
+  const machine = api.machine({ id: "machine-1", toolboxProxyUrl: "https://toolbox.fixture.test" });
+  assert.deepEqual(await machine.exec("own fixed command", 5), { exitCode: 7, result: "own fixed output" });
+});
+
+test("malformed toolbox status is refused without returning its private response", async () => {
+  const api = daytonaShellApi(config, { fetch: async () => json({ code: "synthetic-private-output", result: {} }) });
+  await assert.rejects(api.machine({ id: "machine-1", toolboxProxyUrl: "https://toolbox.fixture.test" }).exec("true", 5), (e) => e.code === "daytona_response_invalid" && !e.message.includes("synthetic-private-output"));
+});

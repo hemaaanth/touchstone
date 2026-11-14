@@ -56,7 +56,7 @@ import { scrubError, scrubUrl } from "./redact-url.mjs";
 import { saveStore, withStoreLock } from "./grant-store.mjs";
 import { MANIFEST } from "./images.mjs";
 import { pendingMachines, recordPendingMachine, clearPendingMachines } from "./daytona-pending.mjs";
-import { daytonaError, daytonaShellApi, confirmDaytonaDeletion } from "./daytona-api.mjs";
+import { daytonaError, daytonaShellApi, daytonaExecution, confirmDaytonaDeletion } from "./daytona-api.mjs";
 import { checkRoamSelection, requireRoamReady } from "./daytona-setup.mjs";
 import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding, setRoamSelectionState, updateRoamOperation } from "./daytona-state.mjs";
 
@@ -285,11 +285,11 @@ function client(c) {
     byLabel: (labels) => call("GET", `${API}/sandbox?labels=${encodeURIComponent(JSON.stringify(labels))}`),
     get: (id) => call("GET", `${API}/sandbox/${id}`),
     remove: (id) => call("DELETE", `${API}/sandbox/${id}`),
-    exec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
-      { timeoutMs: (seconds + 30) * 1000 }),
+    exec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000 })),
     // The same call for a free-roam machine: the answer is read with a size limit.
-    roamExec: (m, command, seconds) => call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
-      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES }),
+    roamExec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+      { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES })),
     upload: (m, path, buf) => {
       const form = new FormData();
       form.append("file", new Blob([buf]), "f");
@@ -939,8 +939,8 @@ async function cappedExec(r, max) {
   tail.subarray(at).reverse();
   tail.reverse();
   const s = tail.toString("utf8");
-  const last = s.match(/"\s*,\s*"exitCode"\s*:\s*(-?\d+)\s*\}\s*$/);
-  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"exitCode"\s*:\s*(-?\d+)\s*,/);
+  const last = s.match(/"\s*,\s*"(?:exitCode|code)"\s*:\s*(-?\d+)\s*\}\s*$/);
+  const code = last ?? first.toString("latin1").match(/^\s*\{\s*"(?:exitCode|code)"\s*:\s*(-?\d+)\s*,/);
   const end = last ? last.index : s.search(/"\s*\}\s*$/);
   // The cut may fall inside an escape. Skip a few characters until the rest reads.
   for (let k = 0; end > 0 && k < 8; k++) {

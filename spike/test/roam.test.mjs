@@ -542,7 +542,8 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
     for (const [body, code] of [
       [`{"exitCode":7,"result":${JSON.stringify(out)}}`, 7],
       [`{"result":${JSON.stringify(out)},"exitCode":7}`, 7],
-      [`{"code":7,"result":${JSON.stringify(out)}}`, undefined],
+      [`{"code":7,"result":${JSON.stringify(out)}}`, 7],
+      [`{"result":${JSON.stringify(out)},"code":7}`, 7],
     ]) {
       fake.onExec = () => stream(body);
       const r = await m.exec("yes", 5);

@@ -15,7 +15,11 @@ export async function daytonaFixture(fn) {
   process.env.EVENTS_FILE = join(dir, "events.jsonl");
   const config = { backend: "daytona", apiUrl: "https://fixture.test/api", apiKey: "synthetic-key", target: "fixture-region", roamSnapshot: "selected" };
   const f = { calls: [], posts: 0, builds: 0, deletes: 0, initialBootReads: 0, bootReads: 0, cleanupFails: false, uncertain: false, failProbe: false, holdProbe: null, ref: "source-1", sandbox: null, snapshot: null, uploads: new Map(), epoch: 0 };
-  const json = (x, status = 200) => new Response(JSON.stringify(x), { status });
+  const json = (x, status = 200) => {
+    // Real toolbox responses can use code; the app adapter must normalize it.
+    if (x && typeof x === "object" && "exitCode" in x) { const { exitCode, ...rest } = x; x = { code: exitCode, ...rest }; }
+    return new Response(JSON.stringify(x), { status });
+  };
   const deps = { sleep: async () => {}, fetch: async (url, init) => {
     const u = new URL(url);
     assert.ok(["fixture.test", "tb.fixture.test"].includes(u.hostname), "no real provider call");
