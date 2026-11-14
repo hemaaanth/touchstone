@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { SandboxDesktopView } from "@/lib/types"
+import type { SandboxDesktopIdentity, SandboxDesktopView } from "@/lib/types"
 import { closeRunDesktop, openRunDesktop } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 
@@ -10,7 +10,7 @@ export function SandboxDesktop({ runId, agent, live, closedAt }: { runId: string
   const [error, setError] = useState<string | null>(null)
   const generation = useRef(0)
   const mounted = useRef(false)
-  const owned = useRef(false)
+  const owned = useRef<SandboxDesktopIdentity | null>(null)
   const sending = useRef(false)
   const current = useRef({ closedAt, live })
   const [seen, setSeen] = useState({ closedAt, live })
@@ -26,20 +26,22 @@ export function SandboxDesktop({ runId, agent, live, closedAt }: { runId: string
     if (sending.current || !current.current.live) return
     const gen = ++generation.current
     const version = current.current.closedAt
+    const desktop = mode === "watch" ? { id: crypto.randomUUID() } : owned.current
+    if (!desktop) return
     sending.current = true
-    owned.current = true
+    owned.current = desktop
     setBusy(true)
     setError(null)
     // Remove the old iframe before any mode change or revocation.
     setView({ kind: "closed" })
     try {
-      const next = mode === "close" ? await closeRunDesktop(runId, agent) : await openRunDesktop(runId, agent, mode === "watch")
+      const next = mode === "close" ? await closeRunDesktop(runId, agent, desktop) : await openRunDesktop(runId, agent, mode === "watch", desktop)
       if (mounted.current && gen === generation.current && current.current.live && version === current.current.closedAt) {
         setView(next)
-        owned.current = next.kind === "open"
+        owned.current = next.kind === "open" ? next.desktop : null
       } else if (next.kind === "open") {
-        await closeRunDesktop(runId, agent)
-        owned.current = false
+        await closeRunDesktop(runId, agent, desktop)
+        owned.current = null
       }
     } catch (cause) { if (mounted.current && gen === generation.current) setError(cause instanceof Error ? cause.message : "Desktop request failed.") }
     finally {
@@ -50,7 +52,8 @@ export function SandboxDesktop({ runId, agent, live, closedAt }: { runId: string
   const invalidate = useCallback(() => {
     mounted.current = false
     generation.current++
-    if (owned.current) void closeRunDesktop(runId, agent).catch(() => {})
+    const desktop = owned.current
+    if (desktop) void closeRunDesktop(runId, agent, desktop).catch(() => {})
   }, [runId, agent])
   useEffect(() => {
     mounted.current = true
@@ -59,7 +62,10 @@ export function SandboxDesktop({ runId, agent, live, closedAt }: { runId: string
   const opened = live && view.kind === "open" ? view : null
   useEffect(() => {
     if (view.kind !== "open") return
-    const timer = setTimeout(() => { void changed("close") }, Math.max(0, view.expires - Date.now()))
+    const gen = generation.current
+    const timer = setTimeout(() => {
+      if (mounted.current && gen === generation.current) void changed("close")
+    }, Math.max(0, view.expires - Date.now()))
     return () => clearTimeout(timer)
   }, [view, changed]) // The server also expires and revokes setup and open leases.
   return (

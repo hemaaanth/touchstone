@@ -43,6 +43,12 @@ function askPresentation(kind, value) {
 // Capabilities and pending replies stay only in this process, never in run records.
 export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000, now = Date.now, schedule = setTimeout, unschedule = clearTimeout }) {
   const workers = new Map()
+  const desktops = new Map()
+  const identityOf = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["id", "epoch"].includes(key)) || typeof value.id !== "string" || !ID.test(value.id) || ("epoch" in value && (typeof value.epoch !== "string" || !ID.test(value.epoch)))) throw fail("A desktop request identity is required.", 400)
+    return value
+  }
+  const desktopKey = (id, agent, identity) => JSON.stringify([id, agent, identity.id])
   const state = (run) => workers.get(run.id)
   const active = (id, expected) => {
     const run = getRun(id)
@@ -103,28 +109,39 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
     s.desktops.delete(agent)
     return closed()
   }
-  const serial = (s, agent, fn) => {
+  const serial = (s, agent, fn, scope) => {
     if (s.operations.has(agent)) return Promise.reject(fail("A desktop change is already pending."))
-    const op = { cancelled: false, promise: null }
+    const op = { cancelled: false, promise: null, scope }
     s.operations.set(agent, op)
     op.promise = Promise.resolve().then(() => fn(op)).finally(() => { s.operations.delete(agent) })
     return op.promise
   }
-  async function desktop(id, agent, viewOnly, origin) {
+  async function desktop(id, agent, viewOnly, origin, identity) {
     const { run, s } = active(id)
     agentOf(run, agent)
     if (typeof viewOnly !== "boolean") throw fail("Choose Watch or Take control.", 400)
     let appOrigin
     try { appOrigin = new URL(origin); if (appOrigin.origin !== origin || appOrigin.protocol !== "https:") throw 0 } catch { throw fail("Desktop access requires the console's HTTPS origin.", 400) }
     if (s.closing.has(agent)) throw fail("A desktop change is already pending.")
+    identity = identityOf(identity)
+    const key = desktopKey(id, agent, identity)
+    let scope = desktops.get(key)
+    if (scope?.closed) throw fail("This desktop request is retired.")
+    if ((scope && scope.s !== s) || (identity.epoch !== undefined && identity.epoch !== s.epoch)) throw fail("This desktop belongs to a different worker.")
+    if (!scope) {
+      scope = { id: identity.id, epoch: s.epoch, s, closed: false, closing: null }
+      desktops.set(key, scope)
+      s.scopes.add(scope)
+    }
     return serial(s, agent, async (op) => {
       let d
       const current = () => {
         active(id, s)
-        if (op.cancelled || (d?.expires && d.expires <= now())) throw fail("Desktop request was cancelled.")
+        if (scope.closed || op.cancelled || (d?.expires && d.expires <= now())) throw fail("Desktop request was cancelled.")
       }
       current()
       const old = s.desktops.get(agent)
+      if (old && old.scope !== scope) throw fail(old.failed ? "Automation remains blocked. Stop this run." : "Another desktop session is active. Release it first.")
       if (!viewOnly && (!old || old.view.kind !== "open" || !old.view.viewOnly || old.view.expires <= now())) throw fail("Open Watch before taking control.")
       const watched = old?.machine.id
       if (old) { await closeAgent(run, s, agent, false); current() }
@@ -135,12 +152,12 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
       current()
       if (!m) throw fail("This agent has no available desktop.")
       if (!viewOnly && m.id !== watched) throw fail("The watched machine is no longer available.")
-      d = { machine: m, view: closed(), port: null, grant: null, lease: viewOnly ? null : randomUUID(), paused: false, failed: false, timer: null, expires: null, cleanup: null }
+      d = { scope, machine: m, view: closed(), port: null, grant: null, lease: viewOnly ? null : randomUUID(), paused: false, failed: false, timer: null, expires: null, cleanup: null }
       s.desktops.set(agent, d)
       const expireAt = (expires) => {
         unschedule(d.timer)
         d.expires = expires
-        d.timer = schedule(() => { if (s.desktops.get(agent) === d) void close(id, agent, s).catch(() => {}) }, Math.max(0, expires - now()))
+        d.timer = schedule(() => { if (s.desktops.get(agent) === d) void closeOwned(run, s, agent, scope).catch(() => {}) }, Math.max(0, expires - now()))
         d.timer?.unref?.()
       }
       try {
@@ -166,7 +183,7 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
         current()
         if (opened?.kind !== "open" || opened.port !== d.port || opened.viewOnly !== viewOnly || opened.expires !== configured.expires) throw fail("Desktop runtime did not open.")
         const expires = Math.min(configured.expires, d.grant.expires)
-        d.view = { kind: "open", agent, viewOnly, expires, url: `${preview.origin}/#${token}&parentOrigin=${encodeURIComponent(appOrigin.origin)}` }
+        d.view = { kind: "open", agent, viewOnly, expires, desktop: { id: scope.id, epoch: scope.epoch }, url: `${preview.origin}/#${token}&parentOrigin=${encodeURIComponent(appOrigin.origin)}` }
         emit(run, { ev: "desktop-view", agent, state: "open", viewOnly, expires })
         return d.view
       } catch {
@@ -175,24 +192,54 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
         if (!d.failed) s.desktops.delete(agent)
         throw fail(d.failed ? "Desktop setup failed. Automation remains blocked; stop this run." : "Desktop request was cancelled.")
       }
-    })
+    }, scope)
   }
-  async function close(id, agent, expected) {
-    const { run, s } = active(id, expected)
-    agentOf(run, agent)
-    if (s.closing.has(agent)) return s.closing.get(agent)
+  function closeOwned(run, s, agent, scope) {
+    active(run.id, s)
+    if (scope.closing) return scope.closing
+    scope.closed = true
     const op = s.operations.get(agent)
-    if (op) op.cancelled = true
+    const pendingOp = op?.scope === scope ? op : null
+    if (pendingOp) pendingOp.cancelled = true
+    if (!pendingOp && s.desktops.get(agent)?.scope !== scope) {
+      scope.s = null
+      return Promise.resolve(closed())
+    }
     const closing = (async () => {
-      if (op) await op.promise.catch(() => {})
-      active(id, s)
-      return serial(s, agent, () => closeAgent(run, s, agent))
-    })().finally(() => { s.closing.delete(agent) })
+      if (pendingOp) await pendingOp.promise.catch(() => {})
+      active(run.id, s)
+      if (s.desktops.get(agent)?.scope !== scope) return closed()
+      return serial(s, agent, () => closeAgent(run, s, agent), scope)
+    })().finally(() => {
+      if (s.closing.get(agent) === closing) s.closing.delete(agent)
+      scope.s = null
+    })
+    scope.closing = closing
     s.closing.set(agent, closing)
     return closing
   }
+  async function close(id, agent, identity) {
+    const run = getRun(id)
+    if (!run) throw fail("No such run.", 404)
+    if (!run.owner) throw fail("This server does not own this run.")
+    agentOf(run, agent)
+    identity = identityOf(identity)
+    const key = desktopKey(id, agent, identity)
+    const scope = desktops.get(key)
+    if (!scope) {
+      // A cancellation can arrive before its POST. Never let that POST open later.
+      desktops.set(key, { closed: true })
+      return closed()
+    }
+    if (identity.epoch !== undefined && identity.epoch !== scope.epoch) return closed()
+    if (scope.closing) { await scope.closing; return closed() }
+    if (scope.closed || !scope.s) return closed()
+    if (scope.s.retired) { await scope.s.invalidation; return closed() }
+    if (scope.s !== state(run)) return closed()
+    return closeOwned(run, scope.s, agent, scope)
+  }
   async function answer(id, body) {
-    const { s } = active(id)
+    const { run, s } = active(id)
     const keys = Object.keys(body ?? {})
     const hasDone = typeof body?.done === "boolean"
     const reply = typeof body?.reply === "string" ? body.reply.trim() : ""
@@ -201,7 +248,9 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
     if (!ask || ask.answer || ask.sending) throw fail("This ask is stale or already answered.")
     ask.sending = true
     try {
-      if (s.desktops.has(ask.agent) || s.operations.has(ask.agent) || s.closing.has(ask.agent)) await close(id, ask.agent)
+      const scope = s.operations.get(ask.agent)?.scope ?? s.desktops.get(ask.agent)?.scope
+      if (scope) await closeOwned(run, s, ask.agent, scope)
+      else if (s.closing.has(ask.agent)) await s.closing.get(ask.agent)
       active(id, s)
       if (ask.answer) throw fail("This ask is no longer pending.")
       const expected = hasDone ? body.done ? "done" : "cancel" : "reply"
@@ -249,6 +298,7 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
     if (!s || (child !== undefined && (s.child !== child || s.epoch !== epoch))) return Promise.resolve()
     if (s.invalidation) return s.invalidation
     s.retired = true
+    for (const scope of s.scopes) scope.closed = true
     for (const op of s.operations.values()) op.cancelled = true
     for (const p of [...s.pending.values()]) p.reject(fail("Worker ended before acknowledgement."))
     for (const ask of s.asks.values()) if (!ask.answer) {
@@ -256,11 +306,16 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
       emit(run, { ev: "ask-answered", id: ask.id, agent: ask.agent, answer: "cancel", interrupted: true, t: now() })
     }
     s.invalidation = (async () => {
-      await Promise.allSettled([...s.operations.values()].map((op) => op.promise).concat([...s.closing.values()]))
-      const cleanup = await Promise.allSettled([...s.desktops.values()].map(cleanDesktop))
-      if (cleanup.some((r) => r.status === "rejected")) throw fail("Desktop revocation failed.")
-      if (state(run) === s) workers.delete(run.id)
+      try {
+        await Promise.allSettled([...s.operations.values()].map((op) => op.promise).concat([...s.closing.values()]))
+        const cleanup = await Promise.allSettled([...s.desktops.values()].map(cleanDesktop))
+        if (cleanup.some((r) => r.status === "rejected")) throw fail("Desktop revocation failed.")
+        if (state(run) === s) workers.delete(run.id)
+      } finally {
+        for (const scope of s.scopes) scope.s = null
+      }
     })()
+    for (const scope of s.scopes) scope.closing ??= s.invalidation
     return s.invalidation
   }
   function assertIdle(run) {
@@ -268,7 +323,7 @@ export function createRoamControlApi({ getRun, emit, machine, timeoutMs = 15000,
   }
   function begin(run, child, epoch) {
     assertIdle(run)
-    workers.set(run.id, { child, epoch, retired: false, invalidation: null, asks: new Map(), pending: new Map(), desktops: new Map(), operations: new Map(), closing: new Map() })
+    workers.set(run.id, { child, epoch, retired: false, invalidation: null, asks: new Map(), pending: new Map(), desktops: new Map(), operations: new Map(), closing: new Map(), scopes: new Set() })
   }
   return { begin, assertIdle, consume, invalidate, answer, desktop, close }
 }
