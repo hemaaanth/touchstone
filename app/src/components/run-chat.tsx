@@ -54,7 +54,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { DEMO_SOURCE, demoConfig } from "@/lib/demo"
+import { demoConfig } from "@/lib/demo"
 
 // The center column. The run is a pi-durable agent session; its live SSE step
 // log is reduced into RunState, then mapped onto assistant-ui's message model
@@ -644,11 +644,7 @@ export function RunChat({
           </div>
           {narrow ? panelLayer : null}
           <div inert={drawerOpen} className="shrink-0">
-            {demo ? <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs text-muted-foreground">
-              <span>Sponsored inference via NEAR AI · ${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit</span>
-              <a className="focus-ring rounded-sm underline underline-offset-4 hover:text-foreground" href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer">Build your own with Touchstone</a>
-              {sendError ? <p role="alert" className="w-full">{sendError}</p> : null}
-            </div> : <PendingAskLinks onOpen={openPeek} />}
+            {demo ? (sendError ? <div className="px-4 py-2 text-xs text-negative" role="alert">{sendError}</div> : null) : <PendingAskLinks onOpen={openPeek} />}
           </div>
 
           <div data-run-chat-area className="relative flex min-h-0 flex-1 flex-col">

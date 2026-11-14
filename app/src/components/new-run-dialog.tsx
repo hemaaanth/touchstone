@@ -132,7 +132,6 @@ export function NewRunDialog({
           }}
         >
           {demo ? <div className="space-y-1 text-sm text-muted-foreground">
-            <p>Sponsored inference via NEAR AI · DeepSeek</p>
             <p>No API key needed. Choose one of two prepared contract scopes.</p>
           </div> : null}
           <div className="flex flex-col gap-1.5">

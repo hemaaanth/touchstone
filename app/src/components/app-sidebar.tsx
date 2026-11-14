@@ -146,7 +146,6 @@ export function AppSidebar({
             </SidebarMenuButton>
           </SidebarMenuItem>}
         </SidebarMenu>
-        {demo ? <p className="px-2 pt-3 text-xs leading-relaxed text-muted-foreground">Sponsored inference via NEAR AI</p> : null}
       </SidebarFooter>
       <ResizeHandle edge="right" width={width} onWidth={onWidth} initial={defaultWidth} label="Resize sidebar" />
     </Sidebar>
