@@ -73,13 +73,15 @@ test("hidden, host, absolute, and .. paths are rejected", () => {
   assert.equal(readScopes().length, 0);
 });
 
-test("more than 200 files or more than 2 MB is rejected, across folders", () => {
+test("a real monorepo fits: 4000 files and 40 MB, across folders", () => {
   const many = (n, pre) => Array.from({ length: n }, (_, i) => file(`${pre}${i}.py`));
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(201, "a"))] }), /1 to 200 files/);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", many(150, "a")), folder("b", many(51, "b"))] }), /1 to 200 files/);
-  assert.ok(addScope({ title: "t", members: [folder("a", many(100, "a")), folder("b", many(100, "b"))] }));
-  const big = "x".repeat(1024 * 1024 + 1);
-  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 2 MB/);
+  // 292 files (privacy-pools-core) is an ordinary app, not a special case.
+  assert.ok(addScope({ title: "t", members: [folder("a", many(292, "a"))] }));
+  assert.ok(addScope({ title: "t", members: [folder("a", many(3000, "a")), folder("b", many(999, "b"))] }));
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(4001, "a"))] }), /1 to 4000 files/);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", many(3000, "a")), folder("b", many(1001, "b"))] }), /1 to 4000 files/);
+  const big = "x".repeat(21 * 1024 * 1024);
+  assert.throws(() => addScope({ title: "t", members: [folder("a", [file("a.py", big)]), folder("b", [file("b.py", big)])] }), /under 40 MB/);
   assert.throws(() => addScope({ title: "t", members: [folder("a", [])] }), /at least one file/);
   assert.throws(() => addScope({ title: "t", members: [] }), /1 to 20/);
 });

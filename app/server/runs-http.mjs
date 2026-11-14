@@ -10,6 +10,7 @@ import { buildReport, renderReportAgent, renderReportHtml, renderReportMarkdown 
 import { bundleRefusal, loadRecordedReplay, planReplayBundle, UNJUDGED_NOTE } from "./replay-bundle.mjs"
 import { readGrants, addGrant, removeGrant, grantActive } from "../../spike/lib/grant-store.mjs"
 import { setScopeBrief, setScopeNetworkPolicy } from "../../spike/lib/scopes-store.mjs"
+import { checkDeployment, verifiedSources } from "../../spike/lib/explorer.mjs"
 import { getSettings, saveProvider, deleteProvider, setDefault, setRunBudget, discoverModels, setExecution, setStrixSettings, consoleWriteRefusal } from "./settings.mjs"
 
 import { execConfig } from "../../spike/lib/daytona.mjs"
@@ -344,6 +345,22 @@ export async function handleScopes(req, res) {
     // cannot add either.
     const body = await readBody(req)
     try {
+      // kind "explorer" carries { chainId, address } and no members: the
+      // verified source is fetched here and stored as an ordinary folder member,
+      // so the run path never learns a new member kind.
+      if (body.kind === "explorer") {
+        const dep = checkDeployment(body.chainId, body.address)
+        const { files, contractName } = await verifiedSources(dep.chainId, dep.address)
+        const label = contractName || `${dep.address.slice(0, 10)}`
+        send(res, 201, addScope({
+          title: body.title || `${label} on chain ${dep.chainId}`,
+          blurb: body.blurb || `Verified source of ${dep.address} on chain ${dep.chainId}, fetched from Sourcify.`,
+          members: [{ kind: "folder", name: label.replace(/[^\w.-]/g, "_").slice(0, 64) || "contract", files }],
+          contracts: [dep],
+          pack: "contracts",
+        }))
+        return true
+      }
       send(res, 201, addScope({ kind: body.kind, title: body.title, brief: body.brief, blurb: body.blurb, files: body.files, repo: body.repo, members: body.members, contracts: body.contracts, pack: body.pack, hosts: body.hosts, permission: body.permission, token: body.token, tokens: body.tokens, toolScope: body.toolScope, assistant: body.assistant, allowPrivate: body.allowPrivate, networkPolicy: body.networkPolicy }))
     } catch (err) {
       send(res, 400, { error: String(err?.message ?? err) })

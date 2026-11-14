@@ -301,8 +301,8 @@ const SECRET_NAME = [
 ]
 const SANDBOX_CONFIG = new Set(["foundry.toml", "remappings.txt"])
 const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/
-const MAX_FILES = 200
-const MAX_BYTES = 2 * 1024 * 1024
+const MAX_FILES = 4000
+const MAX_BYTES = 40 * 1024 * 1024
 
 // Keep one path? Foundry keeps dependencies in a top-level lib/, so lib/ is
 // skipped only in a folder that has Solidity.
@@ -329,7 +329,7 @@ async function readFolder(list: FileList): Promise<{ name: string; files: { path
   const solidity = all.some((f) => rel(f).endsWith(".sol"))
   const keep = all.filter((f) => keepPath(rel(f), solidity))
   if (keep.length > MAX_FILES) return `${root || "This folder"} has ${keep.length} source files. A scope takes up to ${MAX_FILES}.`
-  if (keep.reduce((n, f) => n + f.size, 0) > MAX_BYTES) return `${root || "This folder"} is over 2 MB of source. Pick a smaller folder.`
+  if (keep.reduce((n, f) => n + f.size, 0) > MAX_BYTES) return `${root || "This folder"} is over 40 MB of source. Pick a smaller folder.`
   const files: { path: string; content: string }[] = []
   for (const f of keep) {
     const content = await f.text()

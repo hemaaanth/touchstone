@@ -234,7 +234,7 @@ export function readFolderInPlace(dir, hooks = {}) {
       if (!st.isFile()) throw new Error(`${n} is no longer a file.`)
       if (!openedInside(fd, st, full, root)) throw new Error(`${n} is no longer inside ${raw}.`)
       bytes += st.size
-      if (bytes > MAX_BYTES) throw new Error(`${raw} is over 2 MB of source. Pick a smaller folder.`)
+      if (bytes > MAX_BYTES) throw new Error(`${raw} is over ${MAX_BYTES / 1024 / 1024} MB of source. Pick a smaller folder.`)
       return { path: n, content: readFileSync(fd, "utf8") }
     } finally {
       closeSync(fd)

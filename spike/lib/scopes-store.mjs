@@ -153,8 +153,14 @@ export function addBriefScope({ title, brief, blurb } = {}) {
 
 // Limits for one scope, across all of its folders. Totals, so each file is also
 // under them.
-export const MAX_FILES = 200;
-export const MAX_BYTES = 2 * 1024 * 1024;
+//
+// These are workspace intake limits, not reading limits: the hunter navigates
+// with the codebase-memory index and reads files on demand, so a real monorepo
+// is the normal case, not the exception. 200 files refused privacy-pools-core
+// (292) on 2026-11-14. 4,000 files / 40 MB fits a large app while keeping the
+// scope store and a per-run workspace copy sane.
+export const MAX_FILES = 4000;
+export const MAX_BYTES = 40 * 1024 * 1024;
 export const MAX_MEMBERS = 20;
 
 // Folders that hold dependencies or build output, not the code under test.
@@ -266,7 +272,7 @@ export function folderFiles(files, budget = { files: 0, bytes: 0 }) {
     }
     if (f.content.includes("\u0000")) throw new Error("Attach text source files only.");
     budget.bytes += Buffer.byteLength(f.content);
-    if (budget.bytes > MAX_BYTES) throw new Error("Source files must be under 2 MB in total.");
+    if (budget.bytes > MAX_BYTES) throw new Error(`Source files must be under ${MAX_BYTES / 1024 / 1024} MB in total.`);
     kept.push({ path: name, content: f.content });
   }
   if (!kept.length) throw new Error("No source files left after skipping dependency, build, secret, and non-source files.");
