@@ -4,6 +4,8 @@ import { createServer, request } from 'node:http';
 import { createServer as tcpServer } from 'node:net';
 import { ViewerLease, viewerPage, viewerScript } from './desktop-viewer.mjs';
 import { launchVoxl } from './voxl-process.mjs';
+import { readReviewImage } from './review-image.mjs';
+import { launchImageReview } from './review-renderer.mjs';
 
 export const VIEW_TTL_MS = 15 * 60_000;
 const publicFiles = new Set(['/client.js', '/worker.js', '/audio.js', '/mic.js', '/favicon.ico', '/inter.woff2']);
@@ -59,14 +61,20 @@ async function stop(child) {
 
 /** One configured port and one viewer lease per machine. No process discovery. */
 export class DesktopRuntime {
-  constructor({ spawnVoxl = launchVoxl, clock = systemClock, notices = '' } = {}) {
+  constructor({ spawnVoxl = launchVoxl, readImage = readReviewImage, renderImage = launchImageReview, clock = systemClock, notices = '' } = {}) {
     this.spawnVoxl = spawnVoxl;
+    this.readImage = readImage;
+    this.renderImage = renderImage;
     this.clock = clock;
     this.notices = notices;
     this.session = null;
     this.queue = Promise.resolve();
   }
   command(input) {
+    const owner = this.session;
+    if (input?.action === 'close' || input?.action === 'clear-review') {
+      void this.clearReview(owner).catch(() => this.retire(owner));
+    }
     const job = this.queue.catch(() => {}).then(async () => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw Error('Invalid desktop command');
       if (input.action === 'status') {
@@ -76,6 +84,12 @@ export class DesktopRuntime {
       if (input.action === 'close') { await this.closeNow(); return { kind: 'closed' }; }
       if (input.action === 'configure') return this.configure();
       if (input.action === 'open') return this.open(input);
+      if (input.action === 'review-image') return this.reviewImage(input, owner);
+      if (input.action === 'clear-review') {
+        if (owner !== this.session) throw Error('Image review unavailable');
+        await this.clearReview(owner);
+        return { kind: 'review-cleared' };
+      }
       throw Error('Invalid desktop command');
     });
     this.queue = job;
@@ -87,7 +101,8 @@ export class DesktopRuntime {
   }
   async configure() {
     if (this.session) throw Error('Desktop already configured; close it first');
-    const s = { kind: 'configured', expires: this.clock.now() + VIEW_TTL_MS, sockets: new Set(), lease: new ViewerLease(), token: null, child: null };
+    const s = { kind: 'configured', expires: this.clock.now() + VIEW_TTL_MS, sockets: new Set(), token: null, child: null, reviewVersion: 0 };
+    s.lease = new ViewerLease(() => { void this.clearReview(s).catch(() => this.retire(s)); });
     s.server = createServer((req, res) => { void this.handle(s, req, res).catch(() => { if (!res.headersSent) res.writeHead(400); res.end(); }); });
     s.server.on('connection', socket => { s.sockets.add(socket); socket.once('close', () => s.sockets.delete(socket)); });
     s.server.on('upgrade', (req, socket, head) => this.upgrade(s, req, socket, head));
@@ -132,6 +147,38 @@ export class DesktopRuntime {
       await this.closeNow();
       // Never echo request fields, URLs, child errors or tokens to the host.
       throw Error('Desktop open failed');
+    }
+  }
+  clearReview(s) {
+    if (!s) return Promise.resolve();
+    s.reviewVersion++;
+    s.reviewAbort?.abort();
+    s.reviewAbort = null;
+    const renderer = s.review;
+    s.review = null;
+    s.reviewCleanup = Promise.all([s.reviewCleanup, renderer?.close()]).then(() => {});
+    return s.reviewCleanup;
+  }
+  async reviewImage(input, owner) {
+    const s = this.session;
+    if (!s || s !== owner || s.kind !== 'open' || !s.viewOnly || this.clock.now() >= s.expires) throw Error('Image review unavailable');
+    let renderer;
+    try {
+      await this.clearReview(s);
+      const version = s.reviewVersion, controller = new AbortController();
+      s.reviewAbort = controller;
+      const png = await this.readImage(input);
+      controller.signal.throwIfAborted();
+      renderer = await this.renderImage({ png, sha256: input.sha256, expires: s.expires }, {
+        signal: controller.signal, onExit: () => this.retire(s),
+      });
+      if (this.session !== s || s.kind !== 'open' || !s.viewOnly || this.clock.now() >= s.expires || version !== s.reviewVersion || controller.signal.aborted) throw Error('Image review unavailable');
+      s.review = renderer;
+      return { kind: 'review-image', sha256: input.sha256, bytes: png.length };
+    } catch {
+      await renderer?.close();
+      await this.clearReview(s);
+      throw Error('Image review unavailable');
     }
   }
   valid(s, token) {
@@ -215,6 +262,8 @@ export class DesktopRuntime {
     forward.once('error', end); forward.end();
   }
   retire(session) {
+    if (!session) return;
+    void this.clearReview(session).catch(() => {});
     const job = this.queue.catch(() => {}).then(async () => {
       if (this.session === session) await this.closeNow();
     });
@@ -224,12 +273,13 @@ export class DesktopRuntime {
   async closeNow() {
     const s = this.session;
     if (!s) return;
+    const reviewCleanup = this.clearReview(s);
     this.session = null;
     s.kind = 'closed'; s.token = null; s.password = null;
     this.clock.clearTimeout(s.timer);
     s.lease.revoke();
     for (const socket of s.sockets) socket.destroy();
     s.server.closeAllConnections();
-    await Promise.all([new Promise(resolve => s.server.close(resolve)), stop(s.child)]);
+    await Promise.all([new Promise(resolve => s.server.close(resolve)), stop(s.child), reviewCleanup]);
   }
 }

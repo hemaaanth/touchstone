@@ -3,6 +3,7 @@ import {randomBytes} from 'node:crypto';
 
 /** All transitions are synchronous. A pending upgrade occupies the same slot as a live pair. */
 export class ViewerLease {
+ constructor(onRevoke=()=>{}){this.onRevoke=onRevoke;}
  current=null;
  generation=0;
  connection=null;
@@ -29,8 +30,10 @@ export class ViewerLease {
   return {current:()=>this.owns(secret)&&this.connection===connection,done:()=>{if(this.connection===connection)this.connection=null;}};
  }
  revoke(){
+  const hadLease=this.current!==null;
   this.current=null;this.generation++;this.ticket=null;
   const old=this.connection;this.connection=null;old?.cancel();
+  if(hadLease)this.onRevoke();
  }
 }
 
