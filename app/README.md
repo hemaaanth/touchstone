@@ -94,15 +94,28 @@ Done approves only that exact request. Reply and Cancel do not approve it.
 An answer succeeds only after the current worker acknowledges it.
 Passwords and codes belong in the browser, never in Reply.
 
-This first release does not enable built-in browser streaming, takeover, or
-exact-image review. Their routes refuse requests. There are no active desktop
-or screenshot-release controls. Passwords and codes must never go in Reply.
-The frozen desktop checkpoint remains separate from first-release readiness.
+Live free-roam agents expose Watch, then explicit Take control, within the human
+queue even when no Ask is pending. Watch uses an existing machine only; it does
+not create, restart or pause one. Desktop access requires the console's exact
+HTTPS origin and a private signed preview.
+
+Take control waits for the current worker's matched pause acknowledgment for
+managed shell and browser automation. It is not isolation from shared root
+processes: other sandbox processes may observe input. Release removes the viewer,
+closes the runtime and revokes the preview before a matched resume. Cancellation,
+expiry, worker replacement and setup failures cannot return a late viewer URL.
+Unknown pause/resume state stays latched; stop the run. Incomplete revocation
+also refuses a new worker. A child turn ending does not imply lost membership;
+the current worker gate is authoritative.
+
+These controls are development source with isolated fixture coverage, not proof
+of a deployed desktop image or real streaming. Exact-image review and screenshot
+release remain disabled. No post-run machine retention is implied.
 
 Private routes use authenticated same-origin JSON POSTs, except desktop close:
 
 - `/api/runs/:id/ask`: `{ask,done}` or `{ask,reply}`.
-- `/api/runs/:id/desktop` (POST/DELETE): disabled in this release.
+- `/api/runs/:id/desktop` POST: `{agent,viewOnly}`; DELETE: `{agent}`.
 - `/api/runs/:id/session-artifacts`: `{candidate}`.
 - `/api/runs/:id/session-artifacts/:artifact/read`: `{candidate}`.
 - `/api/runs/:id/session-artifacts/:artifact/release`: disabled in this release.
