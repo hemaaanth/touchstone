@@ -1,4 +1,4 @@
-import { AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
+import { AgentDoc, AssistantEntry, configure, defineDoc, defineExtension, defineTask, defineTool, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, UsageDoc } from "@earendil-works/pi-durable";
 import { arr, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import { event, withAgent } from "./event.mjs";
@@ -68,13 +68,14 @@ export const fleetPlan = (survey) => `The operator chose a fleet run. Plan first
 // Loadouts. A child is "confined" (the default) or "free-roam". `roamTools` are
 // the free-roam tools. Only this function installs one, so a solo run has none.
 //   - A confined child gets the pack tools and loses the roam tools.
-//   - A free-roam child gets an allow list: the roam tools and the three fleet
-//     tools, nothing else. So it has no pack tool, no submit_finding in any
+//   - Shared tools are installed unchanged, outside packQueue and the roam guard.
+//   - A free-roam child gets an allow list: roam, shared and three fleet tools,
+//     nothing else. So it has no pack tool, no submit_finding in any
 //     form, and no path to a proven finding. A later worker with one more pack
 //     tool does not change that.
 //   - Each roam tool also checks the board on every call (`roam` below). That
 //     stops the coordinator, which has no tool removal.
-export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [] } = {}) {
+export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, required = process.env.FLEET === "1", survey = 6, brief = "", briefChange = () => "", changed = "", roamTools = [], sharedTools = [] } = {}) {
   const freeRoam = process.env.FREE_ROAM === "1";
   let runOptions;
   try {
@@ -235,8 +236,8 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
       const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
       // `configure` keeps or removes a tool by its name, so these are the tool objects.
       await configure(tx, child.id, free ? {
-        tools: [...roamTools, message, post, read],
-        instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your only tools are: ${[...roamTools, message, post, read].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
+        tools: [...roamTools, message, post, read, ...sharedTools],
+        instructions: `${system}\n\nYou are free-roam child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nYou work on your own remote machine, with open network. Your only tools are: ${[...roamTools, message, post, read, ...sharedTools].map((t) => t.name).join(", ")}. The other tools named above are not yours.\nWhat you find is a candidate, never a proven finding.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
       } : {
         tools: { remove: [spawn, ...offered] },
         instructions: `${system}\n\nYou are trusted child ${name} (${who(child.id)}). Work only on this angle: ${area}.\nTask: ${task}\nOther children may work at the same time. Use unique proof contract names.\nUse bulletin_read to see the roster and notes. Post useful notes or leads with bulletin_post.\nUse message_agent to contact the coordinator or another child by name or id.\nDo not spawn children. Finish with a short report. Your final answer goes to the coordinator.`,
@@ -345,7 +346,7 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
 
   return {
     instructions: (required ? `${COORDINATOR_INSTRUCTIONS}\n\n${fleetPlan(survey)}` : COORDINATOR_INSTRUCTIONS) + (roamTools.length ? `\n\n${FREE_ROAM_INSTRUCTIONS}` : ""),
-    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [spawn, message, post, read, ...roam].map((t) => tag(t)) }),
+    extension: defineExtension({ name: "fleet", tasks: [Anchor, Reporter], tools: [...[spawn, message, post, read, ...roam].map((t) => tag(t)), ...sharedTools] }),
     wrapTools: (tools) => tools.map((t) => tag(t, true)),
     agentForSession: (sessionId) => sessions.get(sessionId),
     async options(agent, api, ctx) {
@@ -359,6 +360,16 @@ export function createFleet({ system, costOf, max = process.env.FLEET_MAX ?? 8, 
       harness = value;
       const board = await harness.snapshot(Fleet, ROOT_CONVERSATION_ID, ctx) ?? empty();
       spawned = board.agents.length > 0;
+      // Saved free-roam children have exact allow lists from their first worker.
+      // Add only shared tools; never widen their pack or roam permissions here.
+      if (sharedTools.length) await harness.commit(async (tx) => {
+        for (const agent of board.agents) {
+          const config = await tx.doc(AgentDoc, agent.conv);
+          if (Array.isArray(config.tools)) {
+            for (const tool of sharedTools) if (!config.tools.includes(tool.name)) config.tools.push(tool.name);
+          }
+        }
+      }, ctx);
       for (const agent of board.agents) {
         const provider = await harness.snapshot(ProviderDoc, agent.conv, ctx);
         if (provider) sessions.set(provider.sessionId, agent.id);

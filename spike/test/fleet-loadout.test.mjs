@@ -12,6 +12,7 @@ import { createRegistry, defineDoc, defineExtension, defineTool, Harness, LiveDo
 import { obj } from "@earendil-works/pi-schema";
 import { createFleet, FREE_ROAM_INSTRUCTIONS } from "../lib/fleet.mjs";
 import { currentAgent } from "../lib/event.mjs";
+import { askHumanTool, answerAsk } from "../lib/ask.mjs";
 import { roamTools } from "../lib/roam.mjs";
 import { EGRESS_ENV, startEgressLog, pullEgressLog } from "../lib/roam-egress.mjs";
 import { candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC } from "../lib/candidate.mjs";
@@ -44,12 +45,12 @@ function seen(request) {
 
 // One worker of a run. `storage` and `pack` let a case open a second worker on
 // the same run, with another environment or another pack tool list.
-async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered, max = 4, defaultRoute = () => answer("Default child done.") } = {}) {
+async function runtime(t, route, { env = ON, required = false, survey, hooks = {}, storage = new MemoryStorage(), pack = PACK, offered, sharedTools = [], max = 4, defaultRoute = () => answer("Default child done.") } = {}) {
   const set = (values) => { for (const [k, v] of Object.entries(values)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
   set(env);
   t.after(() => set(ORIGINAL));
   const events = [], reports = [], ran = [], lists = {};
-  t.mock.method(console, "log", (line) => { if (line.startsWith("EVENT ")) events.push(JSON.parse(line.slice(6))); });
+  t.mock.method(console, "log", (line) => { if (line.startsWith("EVENT ")) { const e = JSON.parse(line.slice(6)); events.push(e); hooks.event?.(e); } });
   // Each fake records who ran it. `hooks[name]` lets one case hold a call open.
   const fake = (name) => defineTool({
     name, description: `Fake ${name}.`, parameters: obj({}), replay: "safe",
@@ -60,11 +61,12 @@ async function runtime(t, route, { env = ON, required = false, survey, hooks = {
   faux.setResponses(Array.from({ length: 150 }, () => (request) => { const s = seen(request); lists[s.who] = s.tools; return /^FreeRoam_*$/.test(s.who) ? defaultRoute(s) : route(s); }));
   const models = createModels();
   models.setProvider(faux.provider);
-  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max, required, survey, roamTools });
+  const fleet = createFleet({ system: "Audit the lab only.", costOf: () => 0, max, required, survey, roamTools, sharedTools });
   const registry = createRegistry();
   // The same wiring as agent-run.mjs: the pack extension, then the fleet's own.
   registry.install(defineExtension({ name: "pack", tools: fleet ? fleet.wrapTools(packTools) : packTools }));
   if (fleet) registry.install(fleet.extension);
+  else registry.install(defineExtension({ name: "shared", tools: sharedTools }));
   const harness = await Harness.open(storage, { models, registry, settings: { retry: { maxRetries: 0 } }, onReport: (r) => reports.push(r) }, ctx);
   await fleet?.attach(harness, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: fleet ? fleet.instructions : "Audit the lab only." } });
@@ -197,11 +199,12 @@ test("with FLEET=0 and FREE_ROAM=0 the tool list has no shell", { timeout: 15000
   assert.ok((await r.results(undefined, "shell")).every((m) => m.isError));
   assert.deepEqual(r.ran, []);
   // agent-run.mjs runs on import, so its wiring is pinned by its source: only
-  // two extensions are installed, the pack's and the fleet's.
+  // the shared solo tool is installed separately from the pack.
   const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
   assert.deepEqual(src.match(/registry\.install\([^\n]*/g), [
     "registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));",
     "registry.install(fleet.extension);",
+    'registry.install(defineExtension({ name: "shared", tools: [askHumanTool] }));',
   ]);
 });
 
@@ -302,7 +305,7 @@ test("agent-run always offers the slice tools and uses the session contracts", (
   assert.match(src, /import \{ candidateTool, recordSession, sessionLookup, SESSION_DESCRIPTION, SESSION_POC, [^}]+\} from "\.\/lib\/candidate\.mjs"/);
   assert.ok(src.includes('const sessionTool = candidateTool({ name: "submit_session_candidate", description: SESSION_DESCRIPTION, pack: pack.id, state, lookup: sessionLookup(state), poc: SESSION_POC });'));
   assert.ok(src.includes('const offered = [...roamTools(ws, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog } }), sessionTool];'));
-  assert.match(src, /const fleet = createFleet\(\{ system, [^\n]+roamTools: offered \}\);/);
+  assert.match(src, /const fleet = createFleet\(\{ system, [^\n]+roamTools: offered, sharedTools: \[askHumanTool\] \}\);/);
   assert.ok(!src.includes("process.env.FREE_ROAM"), "only createFleet gates the tools, never their construction");
 });
 
@@ -525,4 +528,42 @@ test("a reopened worker cannot grant a stale option", async (t) => {
   await w.close();
   w = await runtime(t, () => answer("Done."), { storage: await open(), env: { ...ON, FREE_ROAM: "0" } });
   await assert.rejects(w.fleet.options(child.id, api, ctx), /calling free-roam child/);
+});
+
+const askCall = () => call("ask_human", { kind: "question", question: "Which scope?" });
+const answerEvents = { event: (e) => { if (e.ev === "ask-human") queueMicrotask(() => answerAsk({ ask: e.id, reply: "The lab only." })); } };
+
+test("shared Ask is available to coordinator, confined and free-roam children", async (t) => {
+  const r = await runtime(t, (s) => {
+    if (s.who === "coordinator") return text(s.last) === "start" ? result([spawnCall("Alpha"), spawnCall("Beta", "free-roam"), askCall()]) : answer("Done.");
+    return s.last.role === "user" ? result([askCall()]) : answer("Done.");
+  }, { sharedTools: [askHumanTool], hooks: answerEvents });
+  await r.run("start");
+  for (const name of ["coordinator", "Alpha", "Beta"]) assert.ok(r.lists[name].includes("ask_human"));
+  assert.deepEqual(r.events.filter((e) => e.ev === "ask-human").map((e) => e.agent).sort(), ["coordinator", r.spawned("Alpha").id, r.spawned("Beta").id].sort());
+  assert.equal(r.events.filter((e) => e.ev === "ask-answered").length, 3);
+  assert.equal(r.fleet.extension.tools.find((t) => t.name === "ask_human"), askHumanTool, "shared Ask is not wrapped by packQueue or the roam guard");
+});
+
+test("a solo worker retains shared Ask without installing roam tools", async (t) => {
+  const r = await runtime(t, (s) => text(s.last) === "start" ? result([askCall()]) : answer("Done."), { sharedTools: [askHumanTool], hooks: answerEvents, env: { ...ON, FLEET: "0", FREE_ROAM: "0" } });
+  await r.run("start");
+  assert.ok(r.lists.coordinator.includes("ask_human"));
+  assert.ok(!r.lists.coordinator.includes("shell"));
+  assert.equal(r.events.find((e) => e.ev === "ask-human").agent, "coordinator");
+});
+
+test("saved free-roam allow lists gain shared Ask but no new pack tool", async (t) => {
+  const open = await shared(t);
+  let w = await runtime(t, (s) => s.who === "coordinator" ? coordinator(s, [spawnCall("Beta", "free-roam")]) : answer("Done."), { storage: await open() });
+  await w.run("start");
+  const beta = w.spawned("Beta");
+  await w.close();
+  w = await runtime(t, (s) => {
+    if (s.who === "coordinator") return text(s.last) === "go on" ? result([call("message_agent", { to: "Beta", text: "Go on." })]) : answer("Done.");
+    return s.last.role === "user" ? result([askCall()]) : answer("Done.");
+  }, { storage: await open(), sharedTools: [askHumanTool], hooks: answerEvents, pack: [...PACK, "new_pack_tool"] });
+  await w.run("go on");
+  assert.deepEqual(w.lists.Beta.toSorted(), ["ask_human", "bulletin_post", "bulletin_read", "message_agent", "shell", "submit_session_candidate"]);
+  assert.equal(w.events.find((e) => e.ev === "ask-human").agent, beta.id);
 });

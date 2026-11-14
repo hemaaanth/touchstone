@@ -31,6 +31,7 @@ import { openReach } from "./lib/reach.mjs";
 import { event, exitAfterEvents } from "./lib/event.mjs";
 import { watchCognition } from "./lib/cognition.mjs";
 import { createFleet } from "./lib/fleet.mjs";
+import { askHumanTool, answerAsk, disposeAsks } from "./lib/ask.mjs";
 import { packFor } from "./packs/index.mjs";
 import { sourceNavTools, NAV_SYSTEM } from "./packs/source-nav/pack.mjs";
 import { DIAGRAM_RULE } from "./lib/diagram-rule.mjs";
@@ -93,10 +94,11 @@ async function openHarness(db, ws, state) {
   const offered = [...roamTools(ws, { record: (e) => recordSession(state, e), egress: { env: EGRESS_ENV, start: startEgressLog, pull: pullEgressLog } }), sessionTool];
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered });
+  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", roamTools: offered, sharedTools: [askHumanTool] });
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
+  else registry.install(defineExtension({ name: "shared", tools: [askHumanTool] }));
   const reports = [];
   const harness = await Harness.open(await openNodeSqliteStorage(db), {
     models: inferenceModels({ agentForSession: fleet?.agentForSession }),
@@ -108,11 +110,17 @@ async function openHarness(db, ws, state) {
     settings: { retry: { maxRetries: 5 }, stream: { timeoutMs: 180_000 } },
     onReport: (r) => reports.push({ kind: r.kind, reason: r.reason, msg: String(r.error?.message ?? r.error ?? "").slice(0, 200) }),
   }, ctx);
-  await fleet?.attach(harness, ctx);
-  const root = await harness.root(ctx, {
-    agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : "") },
-  });
-  return { harness, root, reports, pack, fleet };
+  try {
+    await fleet?.attach(harness, ctx);
+    const root = await harness.root(ctx, {
+      agent: { model: { provider: PROVIDER_ID, modelId: MODELS[ALIAS].id }, instructions: system + (fleet ? `\n\n${fleet.instructions}` : "") },
+    });
+    return { harness, root, reports, pack, fleet };
+  } catch (error) {
+    disposeAsks();
+    try { await fleet?.close(); } finally { await harness.close(ctx); }
+    throw error;
+  }
 }
 
 // The record keeps each assistant text, cut at TEXT_CAP so a long run's record
@@ -184,8 +192,11 @@ function readSteers(root) {
       const line = stdinBuf.slice(0, i);
       stdinBuf = stdinBuf.slice(i + 1);
       if (!line.trim()) continue;
-      let text, id;
-      try { ({ text, id } = JSON.parse(line)); } catch { continue; }
+      let message;
+      try { message = JSON.parse(line); } catch { continue; }
+      if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+      if (Object.hasOwn(message, "ask")) { answerAsk(message); continue; }
+      const { text, id } = message;
       if (typeof text !== "string" || !text.trim()) continue;
       // The UI's id for this message. The echo carries it back, so the UI can
       // swap its instant copy for the real one.
@@ -233,49 +244,58 @@ async function chat({ harness, root, reports, state, fleet }) {
 
 // ---- Child worker: one process runs the whole audit.
 async function child([, , , mode, db, ws]) {
+  // Preserve immediate stop: a dead parent must not leave model work running.
+  const stop = (code) => { try { disposeAsks(); } finally { process.exit(code); } };
+  process.once("SIGTERM", () => stop(143));
+  process.once("SIGINT", () => stop(130));
   // The server owns this worker. A closed parent pipe means a restart; do not
   // keep charging or writing the session while a new server recovers it.
   if (process.env.TOUCHSTONE_PARENT_PIPE === "1") {
-    process.stdin.on("end", () => process.exit(1));
+    process.stdin.on("end", () => stop(1));
     process.stdin.resume();
   }
-  const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
-  const { harness, root, reports, pack, fleet } = await openHarness(db, ws, state);
-  event("opened", { mode });
-  if (mode === "chat") {
-    await chat({ harness, root, reports, state, fleet });
-    await fleet?.close();
-    await harness.close(ctx);
-    return exitAfterEvents(0);
+  let opened, completed = false;
+  try {
+    const state = auditState(mode === "run" && process.env.TOUCHSTONE_PARENT_PIPE === "1" ? `${db}.audit.json` : null);
+    opened = await openHarness(db, ws, state);
+    const { harness, root, reports, pack, fleet } = opened;
+    event("opened", { mode });
+    if (mode === "chat") {
+      await chat({ harness, root, reports, state, fleet });
+      completed = true;
+      return;
+    }
+    const sub = await root.submit({ type: "input", requestId: "run1", content: pack.kickoff(ws, process.env) }, ctx);
+
+    if (mode === "run") {
+      // Stream the agent's thinking and prose to the UI for the whole live turn.
+      // In CLI mode stdin is /dev/null, so the steer reader never fires.
+      await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
+      readSteers(root);
+    }
+
+    let settled = await sub.wait(ctx);
+    settled = await fleet?.drain(ctx) ?? settled;
+
+    // One nudge, owned by the pack: ask a model that stopped early to work the
+    // suspects it has not tried. Only after a clean end of turn.
+    const more = settled.status === "done" ? pack.nudge(state) : null;
+    const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
+    const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
+    if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
+    settled = await fleet?.drain(ctx) ?? settled;
+
+    const s = await summarize(root);
+    flushFinal(s);
+    if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
+    const usage = await chargeUsage(harness);
+    event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
+    completed = true;
+  } finally {
+    disposeAsks();
+    try { await opened?.fleet?.close(); } finally { await opened?.harness.close(ctx); }
+    if (completed) exitAfterEvents(0);
   }
-  const sub = await root.submit({ type: "input", requestId: "run1", content: pack.kickoff(ws, process.env) }, ctx);
-
-  if (mode === "run") {
-    // Stream the agent's thinking and prose to the UI for the whole live turn.
-    // In CLI mode stdin is /dev/null, so the steer reader never fires.
-    await streamCognition(harness, Number(process.env.ATTEMPT_BASE ?? 0));
-    readSteers(root);
-  }
-
-  let settled = await sub.wait(ctx);
-  settled = await fleet?.drain(ctx) ?? settled;
-
-  // One nudge, owned by the pack: ask a model that stopped early to work the
-  // suspects it has not tried. Only after a clean end of turn.
-  const more = settled.status === "done" ? pack.nudge(state) : null;
-  const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
-  const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
-  if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
-  settled = await fleet?.drain(ctx) ?? settled;
-
-  const s = await summarize(root);
-  flushFinal(s);
-  if (before) ({ settled, final: s.final } = afterNudge(before, { settled, final: s.final, ...tally() }));
-  const usage = await chargeUsage(harness);
-  event("settled", { status: settled.status, reason: settled.reason, detail: settled.detail, summary: s, findings: state.found, candidates: state.candidates, usage, reports });
-  await fleet?.close();
-  await harness.close(ctx);
-  exitAfterEvents(0);
 }
 
 // Spawn a worker; resolve on exit.
