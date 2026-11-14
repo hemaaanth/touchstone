@@ -63,6 +63,8 @@ const echoSpawner: HunterSpawner = {
       name: spec.name,
       model: spec.model,
       tier: spec.tier,
+      loadout: spec.loadout,
+      options: spec.options,
       module: spec.shard.module,
       toolkit: spec.shard.toolkit,
       status: "working",
@@ -110,11 +112,38 @@ test("shardWork produces module / toolkit / free-form shards", () => {
     freeForm: 2,
     baseToolkit: ["grep"],
   })
-  assert.equal(shards.length, 5)
-  assert.deepEqual(shards[0], { kind: "module", module: "web", toolkit: ["grep"] })
-  assert.deepEqual(shards[2], { kind: "toolkit", module: null, toolkit: ["slither", "echidna"] })
-  assert.equal(shards[3].kind, "free-form")
-  assert.equal(shards[3].module, null)
+  assert.deepEqual(shards, [
+    { kind: "module", module: "web", toolkit: ["grep"], loadout: "confined", options: [] },
+    { kind: "module", module: "contracts", toolkit: ["grep"], loadout: "confined", options: [] },
+    { kind: "toolkit", module: null, toolkit: ["slither", "echidna"], loadout: "confined", options: [] },
+    { kind: "free-form", module: null, toolkit: ["grep"], loadout: "confined", options: [] },
+    { kind: "free-form", module: null, toolkit: ["grep"], loadout: "confined", options: [] },
+    { kind: "free-form", module: null, toolkit: ["grep"], loadout: "free-roam", options: [] },
+  ])
+})
+
+test("freeRoam defaults to one separate shard and false removes only that shard", () => {
+  assert.deepEqual(shardWork({}), [
+    { kind: "free-form", module: null, toolkit: [], loadout: "free-roam", options: [] },
+  ])
+  assert.deepEqual(shardWork({ freeRoam: true }), shardWork({}))
+  assert.deepEqual(shardWork({ freeRoam: false }), [])
+  const selected = { modules: ["web"], toolkits: [["x"]], freeForm: 2 }
+  assert.deepEqual(shardWork({ ...selected, freeRoam: false }), shardWork(selected).slice(0, -1))
+})
+
+test("planned toolkits and options are detached from inputs and sibling shards", () => {
+  const spec = { modules: ["web", "contracts"], toolkits: [["x"]], baseToolkit: ["grep"] }
+  const shards = shardWork(spec)
+  spec.baseToolkit.push("input")
+  spec.toolkits[0].push("input")
+  shards[0].toolkit.push("output")
+  shards[0].options!.push("wallet")
+  assert.deepEqual(shards[1].toolkit, ["grep"])
+  assert.deepEqual(shards[2].toolkit, ["x"])
+  assert.deepEqual(shards[3].toolkit, ["grep"])
+  assert.deepEqual(shards[3].options, [])
+  assert.deepEqual(spec.baseToolkit, ["grep", "input"])
 })
 
 // --- spawn + registry ---
@@ -129,10 +158,172 @@ test("spawnFleet registers agents and reports a fleet summary", async () => {
     shard,
   }))
   const fleet = await coord.spawnFleet(specs)
-  assert.equal(fleet.agents.length, 2)
+  assert.equal(fleet.agents.length, 3)
+  assert.deepEqual(fleet.agents.map((a) => [a.loadout, a.options]), [
+    ["confined", []], ["confined", []], ["free-roam", []],
+  ])
   const report = coord.report(fleet)
-  assert.equal(report.agents, 2)
-  assert.equal(report.active, 2)
+  assert.equal(report.agents, 3)
+  assert.equal(report.active, 3)
+})
+
+const roamSpec = (over: Partial<HunterSpec> = {}): HunterSpec => ({
+  id: "h7", name: "Hunter 7", model: "any-model", tier: 2,
+  shard: { kind: "free-form", module: null, toolkit: ["x"], loadout: "free-roam", options: [] },
+  ...over,
+})
+
+test("legacy specs and legacy spawner records normalize to confined with no options", async () => {
+  const board = new InMemoryBulletin()
+  const coord = new Coordinator({
+    runId: RUN, coordinatorId: COORD, bulletin: (a) => board.session(a),
+    spawner: { async spawn() { return agent() } }, oracle: rejectingOracle, now: () => 500,
+  })
+  const fleet = await coord.spawnFleet([{
+    id: "h7", name: "Hunter 7", model: "m", tier: 2,
+    shard: { kind: "module", module: "web", toolkit: ["x"] },
+  }])
+  assert.equal(fleet.agents[0].loadout, "confined")
+  assert.deepEqual(fleet.agents[0].options, [])
+})
+
+test("coordinator options override shard defaults and dedupe without changing caller input", async () => {
+  const { coord } = harness(rejectingOracle)
+  const spec = roamSpec({ options: ["wallet", "email", "wallet"] })
+  const fleet = await coord.spawnFleet([spec])
+  assert.equal(fleet.agents[0].loadout, "free-roam")
+  assert.deepEqual(fleet.agents[0].options, ["wallet", "email"])
+  assert.deepEqual(spec.options, ["wallet", "email", "wallet"])
+  const inherited = await coord.spawnFleet([roamSpec({
+    id: "h8", shard: { ...spec.shard, options: ["email", "email"] },
+  })])
+  assert.deepEqual(inherited.agents[0].options, ["email"])
+})
+
+test("invalid requested loadouts are rejected before spawning any agents", async () => {
+  const invalid: HunterSpec[] = [
+    roamSpec({ loadout: "unknown" as HunterSpec["loadout"] }),
+    roamSpec({ options: ["unknown"] as unknown as HunterSpec["options"] }),
+    roamSpec({ options: null as unknown as HunterSpec["options"] }),
+    roamSpec({ options: "wallet" as unknown as HunterSpec["options"] }),
+    roamSpec({ options: new Array(1) }),
+    roamSpec({ tier: 1 }),
+    roamSpec({ loadout: "confined" }),
+    roamSpec({ shard: { kind: "module", module: "web", toolkit: [], loadout: "free-roam" } }),
+    roamSpec({ shard: { kind: "toolkit", module: null, toolkit: [], loadout: "free-roam" } }),
+    roamSpec({ loadout: "confined", options: ["wallet"], shard: { kind: "free-form", module: null, toolkit: [] } }),
+    roamSpec({ shard: { kind: "free-form", module: null, toolkit: [], options: ["email"] } }),
+  ]
+  for (const spec of invalid) {
+    let spawned = 0
+    const board = new InMemoryBulletin()
+    const coord = new Coordinator({
+      runId: RUN, coordinatorId: COORD, bulletin: (a) => board.session(a),
+      spawner: { async spawn(s) { spawned++; return echoSpawner.spawn(s) } },
+      oracle: rejectingOracle, now: () => 500,
+    })
+    await assert.rejects(coord.spawnFleet([roamSpec({ id: "valid" }), spec]))
+    assert.equal(spawned, 0)
+  }
+})
+
+test("spawner cannot replace the requested identity, tier, loadout or option set", async () => {
+  const changes: Partial<HunterAgent>[] = [
+    { id: "other" }, { tier: 1 }, { tier: 0 }, { loadout: "confined", options: [] },
+    { loadout: undefined, options: undefined }, { options: [] }, { options: ["wallet", "email"] },
+    { loadout: "unknown" as HunterAgent["loadout"] },
+    { options: ["unknown"] as unknown as HunterAgent["options"] }, { options: new Array(1) },
+  ]
+  for (const change of changes) {
+    const board = new InMemoryBulletin()
+    const coord = new Coordinator({
+      runId: RUN, coordinatorId: COORD, bulletin: (a) => board.session(a),
+      spawner: { async spawn(s) { return { ...await echoSpawner.spawn(s), ...change } } },
+      oracle: provingOracle(), now: () => 500,
+    })
+    await assert.rejects(coord.spawnFleet([roamSpec({ options: ["wallet"] })]))
+    await postAs(board, "h7", lead())
+    const result = await coord.tick()
+    assert.deepEqual(result.rejected.map((r) => r.reason), ["unknown-author"])
+    assert.deepEqual(result.proven, [])
+  }
+})
+
+test("duplicate or coordinator identities cannot replace registry trust", async () => {
+  const { coord, board } = harness(provingOracle())
+  const spec = roamSpec()
+  await assert.rejects(coord.spawnFleet([spec, spec]))
+  await assert.rejects(coord.spawnFleet([roamSpec({ id: COORD })]))
+  await assert.rejects(coord.spawnFleet([roamSpec({ id: " " })]))
+  await coord.spawnFleet([spec])
+  await assert.rejects(coord.spawnFleet([{
+    ...spec, tier: 1, shard: { ...spec.shard, loadout: "confined" },
+  }]))
+  await postAs(board, "h7", lead({ tier: 1, lane: "bulletin" }))
+  assert.deepEqual((await coord.tick()).rejected.map((r) => r.reason), ["tier-spoof"])
+})
+
+test("input, spawner and returned nested mutations cannot rewrite a free-roam registry binding", async () => {
+  const board = new InMemoryBulletin()
+  const spec = roamSpec({ options: ["wallet"] })
+  const next = roamSpec({ id: "h8", options: ["email"] })
+  let returned: HunterAgent
+  const coord = new Coordinator({
+    runId: RUN, coordinatorId: COORD, bulletin: (a) => board.session(a),
+    spawner: {
+      async spawn(s) {
+        const result = await echoSpawner.spawn(s)
+        if (s.id === "h7") {
+          spec.tier = 1
+          next.tier = 1
+          next.options!.push("wallet")
+          s.tier = 1
+          s.loadout = "confined"
+          s.options!.push("email")
+          s.shard.toolkit.push("mutated")
+          // Return an independent, correctly bound record.
+          result.options = ["wallet"]
+          result.toolkit = ["x"]
+          returned = result
+        }
+        return result
+      },
+    },
+    oracle: rejectingOracle, now: () => 500,
+  })
+  const fleet = await coord.spawnFleet([spec, next])
+  assert.deepEqual(fleet.agents.map((a) => [a.id, a.tier, a.loadout, a.options, a.toolkit]), [
+    ["h7", 2, "free-roam", ["wallet"], ["x"]],
+    ["h8", 2, "free-roam", ["email"], ["x"]],
+  ])
+  returned!.tier = 1
+  returned!.options!.push("email")
+  returned!.spend.usd = 900
+  fleet.agents[0].tier = 1
+  fleet.agents[0].loadout = "confined"
+  fleet.agents[0].options!.push("email")
+  await postAs(board, "h7", lead({ tier: 1, lane: "bulletin" }))
+  const result = await coord.tick()
+  assert.deepEqual(result.rejected.map((r) => r.reason), ["tier-spoof"])
+  assert.deepEqual(result.proven, [])
+})
+
+test("free-roam evidence remains quarantined without a positive oracle verdict", async () => {
+  const { coord, board } = harness(rejectingOracle)
+  await coord.spawnFleet([roamSpec({ options: ["wallet", "email"] })])
+  await postAs(board, "h7", lead({
+    reactions: [{ by: ["trusted"], emoji: "confirmed" }],
+    evidenceRef: "forged",
+  }))
+  await postAs(board, "h7", lead({ id: "L2", status: "corroborated" }))
+  await postAs(board, "h7", lead({ id: "L3", transitions: [{ status: "proven", at: 1, by: null }] }))
+  const result = await coord.tick()
+  assert.deepEqual(result.proven, [])
+  assert.deepEqual(result.rejected.map((r) => r.reason), ["policy", "policy"])
+  assert.equal(result.dismissed[0].lane, "evidence")
+  assert.equal(leadStatus(result.dismissed[0]), "dismissed")
+  assert.equal(result.dismissed[0].evidenceRef, null)
+  assert.equal(coord.adjudicatedLeads().some((l) => leadStatus(l) === "proven"), false)
 })
 
 // --- the proof gate: oracle is the ONLY promoter ---
