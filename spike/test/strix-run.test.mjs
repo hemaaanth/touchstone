@@ -1,5 +1,6 @@
 // Strix is best-effort: a Strix failure degrades to "unavailable" with a reason
 // and never throws into the run. Docker is mocked; the file system is real.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

@@ -10,6 +10,7 @@
 // No Docker and no network: node:child_process is a fake docker that answers
 // code 0, lib/lab-net.mjs is a stub, and node:fs throws on one chosen copy or
 // write. Each test runs the starter with its own TMPDIR and checks it is empty.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import * as realFs from "node:fs";

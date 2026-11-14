@@ -1,3 +1,4 @@
+import "./helpers/isolated-env"
 import { useEnv } from "./helpers/env"
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { spawnSync } from "node:child_process"

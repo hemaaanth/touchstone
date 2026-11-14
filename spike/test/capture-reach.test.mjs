@@ -10,6 +10,7 @@
 // Docker. The grant and scope stores are temp files.
 //
 //   node --experimental-test-module-mocks --test spike/test/capture-reach.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';

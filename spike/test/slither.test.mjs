@@ -1,6 +1,7 @@
 // Slither through runTool() for the chain-watch and keys packs (lib/slither.mjs).
 // The real-run tests need the image (tools/build-slither-image.sh) and skip when it
 // is not built. The failure tests run without it.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

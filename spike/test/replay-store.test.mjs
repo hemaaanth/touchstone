@@ -1,5 +1,6 @@
 // proveFindings keeps the replay files out of the run record. The forge replay
 // itself is mocked (it needs Docker); the snapshot and the store are real.
+import "./helpers/isolated-env.mjs";
 import { test, mock, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

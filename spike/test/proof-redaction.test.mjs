@@ -5,6 +5,7 @@
 // rendered output.
 //
 //   node --experimental-test-module-mocks --test test/proof-redaction.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ORACLES as WEB } from "../packs/web/pack.mjs";

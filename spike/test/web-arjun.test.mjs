@@ -6,6 +6,7 @@
 // miss. It skips when an image is not built.
 //
 //   node --experimental-test-module-mocks --test test/web-arjun.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

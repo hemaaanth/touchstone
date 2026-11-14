@@ -1,5 +1,6 @@
 // Aderyn runs in Docker. This test needs the image (tools/build-aderyn-image.sh)
 // and skips when it is not built.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

@@ -2,6 +2,7 @@
 // and the small debian image; it is skipped when Docker is not there.
 //
 //   node --test spike/test/wrap.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

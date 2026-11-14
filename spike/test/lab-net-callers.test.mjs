@@ -15,6 +15,7 @@
 //      only its text (for example a flag built in a variable).
 // The Docker tests (reach-confine, proof-http-lab-net) read .Internal from a
 // real network for two of the callers.
+import "./helpers/isolated-env.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";

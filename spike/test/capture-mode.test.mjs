@@ -9,6 +9,7 @@
 // missing.
 //
 //   node --experimental-test-module-mocks --test spike/test/capture-mode.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

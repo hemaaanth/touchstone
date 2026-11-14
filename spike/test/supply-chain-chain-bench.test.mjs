@@ -9,6 +9,7 @@
 // A fake token must be in no argv, no record, no snapshot, no lead, no gap.
 //
 //   node --experimental-test-module-mocks --test spike/test/supply-chain-chain-bench.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

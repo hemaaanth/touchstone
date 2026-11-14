@@ -2,6 +2,7 @@
 // server on an --internal Docker network (no internet, no model call). It shows
 // that the image we build still gives the output the parser test was recorded
 // from. It skips when Docker or the images are missing.
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

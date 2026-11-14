@@ -5,6 +5,7 @@ import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // A known console token, set before the import, so the guard can be tested.
 const TOKEN = "t6-test-token";
@@ -61,6 +62,19 @@ test("setExecution rejects a bad backend and Daytona with no key, before any wri
     assert.throws(() => setExecution({ backend: "cloud" }), /backend must be/);
     assert.throws(() => setExecution({ backend: "local", target: "us west; rm" }), /bad characters/);
     assert.throws(() => setExecution({ backend: "daytona" }), /needs an API key/);
+  });
+});
+
+test("the saved provider config follows TOUCHSTONE_PROVIDERS_FILE, and defaults to spike/data", () => {
+  const file = join(TEST_STORE_DIR, "providers.json");
+  assert.equal(process.env.TOUCHSTONE_PROVIDERS_FILE, file);
+  assert.equal(realProviders.providersFile(), file);
+  realProviders.writeConfig({ default: null, capUsd: 7, providers: {}, execution: { backend: "local" } });
+  assert.equal(realProviders.readConfig().capUsd, 7);
+  assert.equal(realProviders.readConfig().execution.backend, "local");
+  // Unset, the path is the one the app has always used. Not read here.
+  withEnv({ TOUCHSTONE_PROVIDERS_FILE: undefined }, () => {
+    assert.equal(realProviders.providersFile(), fileURLToPath(new URL("../data/providers.json", import.meta.url)));
   });
 });
 

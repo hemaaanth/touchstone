@@ -3,6 +3,7 @@
 // the usage at $0, the ledger never moves, and every next scan passes the cap.
 // This goes through the real runStrix and live prepass. Docker is mocked: the
 // fake container writes Strix's run.json usage record. The ledger is a temp file.
+import "./helpers/isolated-env.mjs";
 import { test, mock, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

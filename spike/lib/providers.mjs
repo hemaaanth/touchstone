@@ -15,6 +15,8 @@
 // Settings, else FALLBACK_ID. The app pins PROVIDER per run, so a run keeps its
 // provider even when the default changes later.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { DEFAULT_RUN_BUDGET_USD, validateRunBudget } from "./run-budget.mjs";
 import { originOf } from "./redact-url.mjs";
@@ -86,25 +88,29 @@ export const PROVIDERS = {
 };
 
 const FALLBACK_ID = "boundless";
-const CONFIG = new URL("../data/providers.json", import.meta.url);
+// TOUCHSTONE_PROVIDERS_FILE exists only so tests use a throwaway config. Read on
+// each call, so a test can set it after import.
+export const providersFile = () => process.env.TOUCHSTONE_PROVIDERS_FILE || fileURLToPath(new URL("../data/providers.json", import.meta.url));
 
 // ---- Saved config. Shape:
 //   { default: { provider, model } | null, capUsd: number | null,
 //     providers: { [id]: { id, label, baseUrl, apiKey, models: { [alias]: model } } } }
 export function readConfig() {
   const empty = { default: null, capUsd: null, providers: {} };
-  if (!existsSync(CONFIG)) return empty;
+  const file = providersFile();
+  if (!existsSync(file)) return empty;
   try {
-    return { ...empty, ...JSON.parse(readFileSync(CONFIG, "utf8")) };
+    return { ...empty, ...JSON.parse(readFileSync(file, "utf8")) };
   } catch {
     return empty;
   }
 }
 
 export function writeConfig(cfg) {
-  mkdirSync(new URL(".", CONFIG), { recursive: true });
-  writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(CONFIG, 0o600);
+  const file = providersFile();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(file, 0o600);
 }
 
 // Every provider: presets merged with saved entries. Read fresh on each call,

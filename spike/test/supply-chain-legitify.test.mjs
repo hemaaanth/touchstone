@@ -8,6 +8,7 @@
 // Throwaway scope and grant stores; no real store or console token is read.
 //
 //   node --experimental-test-module-mocks --test spike/test/supply-chain-legitify.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs";

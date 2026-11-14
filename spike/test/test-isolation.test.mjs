@@ -16,6 +16,9 @@
 // The check follows each test's relative imports to the stores, so a new
 // test, or a new import chain, that reaches a store is caught here.
 //
+// lib/providers.mjs is guarded the same way: it reads spike/data/providers.json
+// (saved provider keys), so its env is TOUCHSTONE_PROVIDERS_FILE.
+//
 //   node --test spike/test/test-isolation.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,6 +28,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const STORES = ["spike/lib/grant-store.mjs", "spike/lib/scopes-store.mjs"].map((p) => join(ROOT, p));
+// The saved provider config (spike/data/providers.json), read through TOUCHSTONE_PROVIDERS_FILE.
+const PROVIDERS = join(ROOT, "spike/lib/providers.mjs");
 const HELPER = /^\.\/helpers\/isolated-env(\.mjs|\.ts)?$/;
 
 // Every import with a relative specifier, in source order, with its position.
@@ -44,18 +49,24 @@ function resolveSpec(from, spec) {
   }
   return null;
 }
-const memo = new Map();
-// Does loading this file (static and dynamic imports) reach a store?
-function reaches(file) {
-  if (STORES.includes(file)) return true;
-  if (memo.has(file)) return memo.get(file);
-  memo.set(file, false); // a cycle reaches nothing new
-  let src = "";
-  try { src = readFileSync(file, "utf8"); } catch { return false; }
-  const hit = imports(src).some(({ spec }) => { const p = resolveSpec(file, spec); return p && reaches(p); });
-  memo.set(file, hit);
-  return hit;
+// Does loading this file (static and dynamic imports) reach one of targets?
+function reacher(targets) {
+  const memo = new Map();
+  const r = (file) => {
+    if (targets.includes(file)) return true;
+    if (memo.has(file)) return memo.get(file);
+    memo.set(file, false); // a cycle reaches nothing new
+    let src = "";
+    try { src = readFileSync(file, "utf8"); } catch { return false; }
+    const hit = imports(src).some(({ spec }) => { const p = resolveSpec(file, spec); return p && r(p); });
+    memo.set(file, hit);
+    return hit;
+  };
+  return r;
 }
+const reachesStore = reacher(STORES);
+const reachesProviders = reacher([PROVIDERS]);
+const reaches = (file) => reachesStore(file) || reachesProviders(file);
 
 // Source with its comments taken out: a block comment, or a line whose code is
 // only a comment. A commented-out set does not count.
@@ -75,8 +86,10 @@ export function violation(file, src) {
   if (staticHit) return `static import ${staticHit.spec} reaches a store, and the first import is not the helper`;
   const before = src.slice(0, hits[0].at);
   const token = SETS(before, "TOUCHSTONE_GRANT_TOKEN") || SETS(before, "TOUCHSTONE_GRANT_TOKEN_FILE");
-  if (token && SETS(before, "TOUCHSTONE_GRANTS_FILE") && SETS(before, "TOUCHSTONE_SCOPES_FILE")) return null;
-  return `dynamic import ${hits[0].spec} reaches a store before the token, grants and scopes env are set`;
+  const stores = !hits.some((i) => reachesStore(i.path)) || (token && SETS(before, "TOUCHSTONE_GRANTS_FILE") && SETS(before, "TOUCHSTONE_SCOPES_FILE"));
+  const providers = !hits.some((i) => reachesProviders(i.path)) || SETS(before, "TOUCHSTONE_PROVIDERS_FILE");
+  if (stores && providers) return null;
+  return `dynamic import ${hits[0].spec} reaches a store before the token, grants, scopes and providers env it needs are set`;
 }
 
 function testFiles() {
@@ -112,7 +125,27 @@ test("the guard sees the stores: it is not blind", () => {
   assert.match(violation(fake, token + grants + '// process.env.TOUCHSTONE_SCOPES_FILE = "s";\n' + load), /dynamic import/);
 });
 
-test("every test that loads the grant or scope store isolates them first", () => {
+test("the guard sees the saved provider config: it is not blind", () => {
+  const fake = join(ROOT, "spike/test/fake.test.mjs");
+  // Direct, and through each module that loads it.
+  for (const spec of ["../lib/providers.mjs", "../lib/inference.mjs", "../../app/server/settings.mjs", "../../app/server/runs.mjs", "../lib/daytona.mjs"]) {
+    assert.ok(reachesProviders(resolveSpec(fake, spec)), `${spec} must reach providers`);
+    assert.match(violation(fake, `import x from "${spec}";\n`), /static import/, spec);
+    assert.equal(violation(fake, `import "./helpers/isolated-env.mjs";\nimport x from "${spec}";\n`), null, spec);
+  }
+  // A dynamic load needs TOUCHSTONE_PROVIDERS_FILE set above it.
+  const load = 'const m = await import("../lib/providers.mjs");\n';
+  assert.match(violation(fake, load), /dynamic import/);
+  assert.match(violation(fake, load + 'process.env.TOUCHSTONE_PROVIDERS_FILE = "p";\n'), /dynamic import/);
+  assert.equal(violation(fake, 'process.env.TOUCHSTONE_PROVIDERS_FILE = "p";\n' + load), null);
+  // Through a module that also loads the grant store, all four are needed.
+  const both = 'const m = await import("../../app/server/settings.mjs");\n';
+  const three = 'process.env.TOUCHSTONE_GRANT_TOKEN = "t";\nprocess.env.TOUCHSTONE_GRANTS_FILE = "g";\nprocess.env.TOUCHSTONE_SCOPES_FILE = "s";\n';
+  assert.match(violation(fake, three + both), /dynamic import/);
+  assert.equal(violation(fake, three + 'process.env.TOUCHSTONE_PROVIDERS_FILE = "p";\n' + both), null);
+});
+
+test("every test that loads the grant, scope or provider store isolates them first", () => {
   const bad = [];
   for (const f of testFiles()) {
     const why = violation(f, readFileSync(f, "utf8"));

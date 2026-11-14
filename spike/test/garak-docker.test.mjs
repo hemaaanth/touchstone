@@ -4,6 +4,7 @@
 // namespace, so no request can leave the host and no model is called. It shows
 // that the image we build still gives the output the parser test was recorded
 // from, and that the relay holds the budget. Skips when the image is missing.
+import "./helpers/isolated-env.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

@@ -1,4 +1,5 @@
 // makeWorkspace keeps the target's .touchstone.json, so a run reaches its pack.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

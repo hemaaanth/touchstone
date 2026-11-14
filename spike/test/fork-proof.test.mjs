@@ -10,6 +10,7 @@
 //   honest PoC  -> PASS   (real lab target lost ETH)
 //   forgery PoC -> NO PASS (the drained victim was never a lab target)
 // That is the whole F1 claim, demonstrated against a live Docker lab.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

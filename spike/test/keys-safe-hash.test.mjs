@@ -4,6 +4,7 @@
 // chain-tools image, and skip when one is not built.
 //
 //   node --experimental-test-module-mocks --test test/keys-safe-hash.test.mjs
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
