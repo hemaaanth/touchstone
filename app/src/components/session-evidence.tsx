@@ -1,26 +1,21 @@
 import { useState } from "react"
 import type { Candidate } from "@/lib/candidate"
 import type { SessionArtifact, SessionManifest } from "@/lib/types"
-import { downloadSessionArtifact, fetchSessionArtifacts, releaseSessionScreenshot } from "@/lib/api"
+import { downloadSessionArtifact, fetchSessionArtifacts } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 
 export function SessionEvidence({ runId, candidate }: { runId?: string; candidate: Candidate }) {
   const [manifest, setManifest] = useState<SessionManifest | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [release, setRelease] = useState<string | null>(null)
   const evidence = candidate.evidence
   if (!evidence || typeof evidence !== "object" || !("kind" in evidence) || evidence.kind !== "session") return null
   const hasArtifacts = "artifacts" in evidence && evidence.artifacts != null
-  const perform = async (action: "list" | "read" | "release", file?: SessionArtifact) => {
+  const perform = async (action: "list" | "read", file?: SessionArtifact) => {
     if (!runId) return
     setBusy(true)
     setError(null)
     try {
-      if (action === "release" && file) {
-        await releaseSessionScreenshot(runId, candidate.poc, file.id, file.sha256)
-        setRelease(null)
-      }
       if (action === "read" && file) {
         const blob = await downloadSessionArtifact(runId, candidate.poc, file.id)
         const url = URL.createObjectURL(blob)
@@ -41,12 +36,8 @@ export function SessionEvidence({ runId, candidate }: { runId?: string; candidat
       <div className="flex flex-wrap items-center gap-2">
         <span>{file.kind} · {file.bytes.toLocaleString()} bytes</span>
         <span className="font-data break-all text-muted-foreground" title={file.sha256}>{file.sha256.slice(0, 12)}</span>
-        {file.approval === "pending" ? <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRelease(file.id)}>Review release</Button> : <Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform("read", file)}>Download {file.kind}</Button>}
+        {file.kind === "screenshot" ? <span className="text-muted-foreground">Withheld · exact-image review is unavailable in this release</span> : <Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform("read", file)}>Download {file.kind}</Button>}
       </div>
-      {release === file.id && file.approval === "pending" ? <div className="flex flex-col gap-2">
-        <p>Pixels cannot be scrubbed as text. Inspect this screenshot on the remote desktop first. Release only if it contains no passwords, codes, or private data. This releases only this exact image hash.</p>
-        <div className="flex gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void perform("release", file)}>Release this screenshot</Button><Button size="sm" variant="ghost" onClick={() => setRelease(null)}>Cancel</Button></div>
-      </div> : null}
     </div>)}
     {busy ? <p role="status">Reading private session files…</p> : null}
     {error ? <p role="alert">{error}</p> : null}

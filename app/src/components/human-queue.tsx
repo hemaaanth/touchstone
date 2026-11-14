@@ -5,22 +5,15 @@ import { answerRunAsk } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { SandboxDesktop } from "@/components/sandbox-desktop"
 
 export function HumanQueue({ runId, state, live }: { runId: string; state: RunState; live: boolean }) {
   const asks = state.humanAsks.filter((a) => !a.answer)
-  const agents = state.agents.filter((a) => a.loadout === "free-roam" && !["done", "failed"].includes(a.state))
-  if (!asks.length && !agents.length) return null
+  if (!asks.length) return null
   return (
     <section aria-label="Human queue" className="max-h-[45vh] shrink-0 overflow-auto bg-muted/20 px-4 py-2 text-xs">
       {asks.length ? <h2 className="py-1 font-medium">Waiting for you · {asks.length}</h2> : null}
       {asks.map((ask) => <AskRow key={ask.id} runId={runId} ask={ask} live={live} name={state.agents.find((a) => a.id === ask.agent)?.name ?? ask.agent} />)}
-      {agents.map((agent) => <Collapsible key={agent.id}>
-        <CollapsibleTrigger className="focus-ring flex w-full flex-wrap items-center gap-2 py-2 text-left">
-          <span>{agent.name ?? agent.id}</span><span className="text-muted-foreground">free-roam · {agent.model ? `Model: ${agent.model}` : "Agent model not reported"} · Desktop</span>
-        </CollapsibleTrigger>
-        <CollapsibleContent><SandboxDesktop runId={runId} agent={agent.id} live={live} closedAt={state.events.findLastIndex((e) => e.ev === "desktop-view" && e.agent === agent.id && e.state === "closed")} /></CollapsibleContent>
-      </Collapsible>)}
+      <p className="py-1 text-muted-foreground">Built-in browser streaming and takeover are not enabled in this release.</p>
     </section>
   )
 }

@@ -159,10 +159,10 @@ test("expiry closes and revokes even when no browser remains", async () => {
 
 test("artifact candidate/run/agent/id/hash authorization and pending screenshots", async () => {
   const hash = "a".repeat(64)
-  const manifest = { version: 1, run: "r1", agent: "a-1", sequence: 1, files: [{ id: "f1", kind: "screenshot", sha256: hash, bytes: 3, mime: "image/png", approval: "pending" }] }
+  const manifest = { version: 1, run: "r1", agent: "a-1", sequence: 1, files: [{ id: "f1", kind: "screenshot", sha256: hash, bytes: 3, mime: "image/png", approval: "pending" }, { id: "t1", kind: "transcript", sha256: hash, bytes: 3, mime: "text/plain", approval: "not-required" }] }
   const run = { owner: {}, candidates: [{ poc: "session:a-1:1", proven: false, evidence: { kind: "session", agent: "a-1", artifacts: { version: 1, run: "r1", agent: "a-1", poc: "session:a-1:1", manifest: "m-1" } } }] }
   const calls = []
-  const api = createSessionArtifactsApi({ getRun: (id) => id === "r1" ? run : null, rootOf: () => "/private/r1", store: async () => ({ listSessionArtifacts: () => manifest, readSessionArtifact: (_root, selectors) => { calls.push(selectors); return { data: Buffer.from("png"), mime: "image/png" } }, releaseSessionScreenshot: (_root, selectors) => { calls.push(selectors); manifest.files[0].approval = "released" } }) })
+  const api = createSessionArtifactsApi({ getRun: (id) => id === "r1" ? run : null, rootOf: () => "/private/r1", store: async () => ({ listSessionArtifacts: () => manifest, readSessionArtifact: (_root, selectors) => { calls.push(selectors); return { data: Buffer.from("log"), mime: "text/plain" } }, releaseSessionScreenshot: (_root, selectors) => { calls.push(selectors) } }) })
   const body = { candidate: "session:a-1:1" }
   await expect(api("r2", body)).rejects.toThrow()
   await expect(api("r1", { candidate: "session:a-2:1" })).rejects.toThrow()
@@ -170,18 +170,19 @@ test("artifact candidate/run/agent/id/hash authorization and pending screenshots
   await expect(api("r1", { ...body, sha256: "b".repeat(64) }, "release", "f1")).rejects.toThrow()
   expect(calls).toHaveLength(0)
   expect(await api("r1", body)).toEqual(manifest)
-  await api("r1", { ...body, sha256: hash }, "release", "f1")
-  expect(calls[0]).toEqual({ run: "r1", agent: "a-1", poc: body.candidate, id: "f1", sha256: hash, approved: true })
-  const data = await api("r1", body, "read", "f1")
-  expect(data.data.toString()).toBe("png")
-  run.owner = null
   await expect(api("r1", { ...body, sha256: hash }, "release", "f1")).rejects.toThrow()
+  manifest.files[0].approval = "released"
+  await expect(api("r1", body, "read", "f1")).rejects.toThrow()
+  expect(calls).toHaveLength(0)
+  const data = await api("r1", body, "read", "t1")
+  expect(data.data.toString()).toBe("log")
+  expect(calls[0]).toEqual({ run: "r1", agent: "a-1", poc: body.candidate, id: "t1" })
   run.candidates[0].evidence.artifacts.agent = "a-2"
   await expect(api("r1", body)).rejects.toThrow()
 })
 
 test("every private endpoint refuses bad authentication and CSRF before body reads", async () => {
-  for (const [method, path] of [["POST", "ask"], ["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts"], ["POST", "session-artifacts/f1/read"], ["POST", "session-artifacts/f1/release"]]) {
+  for (const [method, path] of [["POST", "ask"], ["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts"], ["POST", "session-artifacts/f1/read"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]]) {
     for (const headers of [{ host: "console.example" }, { host: "console.example", origin: "https://evil.example", "content-type": "application/json", "x-touchstone-grant-token": "test-grant-token" }, { host: "console.example", origin: "https://console.example", "content-type": "application/json" }]) {
       const req = new EventEmitter(); req.url = `/api/runs/r1/${path}`; req.method = method; req.headers = headers
       let status, bodyRead = false
@@ -210,4 +211,22 @@ test("Done is exact-id acknowledged, and runtime close failure keeps control blo
     expect(f.log.at(-1)).toBe("revoke")
     expect(f.log).not.toContain("resume")
   } finally { await f.end() }
+})
+
+test("first release refuses desktop and screenshot release even for the authenticated operator", async () => {
+  for (const [method, endpoint] of [["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]]) {
+    const req = new EventEmitter()
+    req.url = `/api/runs/r1/${endpoint}`
+    req.method = method
+    req.headers = { host: "console.example", origin: "https://console.example", "content-type": "application/json", "x-touchstone-grant-token": "test-grant-token" }
+    let status, data, bodyRead = false
+    req.on = () => { bodyRead = true; return req }
+    const headers = {}
+    const res = { set statusCode(v) { status = v }, setHeader(k, v) { headers[k] = v }, end(v) { data = JSON.parse(v) } }
+    expect(await handleRuns(req, res)).toBe(true)
+    expect(status).toBe(409)
+    expect(data.error).toContain("not enabled")
+    expect(headers["cache-control"]).toBe("no-store")
+    expect(bodyRead).toBe(false)
+  }
 })

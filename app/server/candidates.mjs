@@ -208,7 +208,7 @@ export function createSessionArtifactsApi({ getRun, rootOf, store }) {
   return async (runId, body, action = "list", id) => {
     const refused = () => Object.assign(new Error("Session artifact is not available for this candidate."), { status: 404 })
     const run = getRun(runId)
-    if (!run || (action === "release" && !run.owner)) throw refused()
+    if (!run) throw refused()
     const candidate = run.candidates?.find((c) => c.poc === body?.candidate && c.proven === false)
     const evidence = candidate?.evidence
     const b = evidence?.artifacts
@@ -227,11 +227,8 @@ export function createSessionArtifactsApi({ getRun, rootOf, store }) {
     if (action === "list") return safe
     const file = safe.files.find((f) => f.id === id)
     if (!file) throw refused()
-    if (action === "release") {
-      if (file.kind !== "screenshot" || body.sha256 !== file.sha256 || file.approval !== "pending") throw refused()
-      try { await adapter.releaseSessionScreenshot(root, { ...selectors, id, sha256: file.sha256, approved: true }) } catch { throw refused() }
-      return { ok: true }
-    }
+    // Exact-image review is not part of the first release. No receipt, no pixels.
+    if (["review", "release"].includes(action) || file.kind === "screenshot") throw refused()
     if (action !== "read" || file.approval === "pending") throw refused()
     let result
     try { result = await adapter.readSessionArtifact(root, { ...selectors, id }) } catch { throw refused() }

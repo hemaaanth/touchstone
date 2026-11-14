@@ -298,10 +298,7 @@ const sessionArtifacts = createSessionArtifactsApi({
   store: () => import("../../spike/lib/session-artifacts.mjs"),
 })
 export async function runSessionArtifacts(id, body, action, artifact) {
-  const run = runs.get(id)
-  const acquired = action === "release" && run && !run.owner && idle(run) && own(run)
-  try { return await sessionArtifacts(id, body, action, artifact) }
-  finally { if (acquired) release(run) }
+  return sessionArtifacts(id, body, action, artifact)
 }
 let seq = 0
 const TERMINAL = ["recorded", "denied", "error", "no-finding"]

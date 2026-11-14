@@ -318,7 +318,6 @@ export async function closeRunDesktop(run: string, agent: string): Promise<Sandb
 }
 const sessionPath = (run: string, id?: string, action?: string) => `/api/runs/${encodeURIComponent(run)}/session-artifacts${id ? `/${encodeURIComponent(id)}/${action}` : ""}`
 export const fetchSessionArtifacts = (run: string, candidate: string) => postJson<SessionManifest>(sessionPath(run), { candidate })
-export const releaseSessionScreenshot = (run: string, candidate: string, id: string, sha256: string) => postJson<{ ok: true }>(sessionPath(run, id, "release"), { candidate, sha256 })
 export async function downloadSessionArtifact(run: string, candidate: string, id: string): Promise<Blob> {
   const url = sessionPath(run, id, "read")
   const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ candidate }) })

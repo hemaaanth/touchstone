@@ -19,6 +19,7 @@ test("one queue keeps exact ask identity across agents and removes only matched 
   expect(html).toContain("Keep passwords and codes in the browser")
   expect(html).toContain("Reply and Cancel do not approve it")
   const settled = reduceEvents([spawn, first, second, { ev: "ask-answered", id: "one", agent: "a-1", answer: "reply" }])
+  for (const label of [">Watch<", ">Take control<", ">Release<"]) expect(html).not.toContain(label)
   expect(settled.humanAsks.filter((a) => !a.answer).map((a) => a.id)).toEqual(["two"])
 })
 
