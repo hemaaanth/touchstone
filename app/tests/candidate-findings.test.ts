@@ -19,7 +19,7 @@ const { getFinding, listFindings } = await import("../server/findings.mjs")
 // @ts-expect-error — plain .mjs module, no types
 const { handleFindings } = await import("../server/runs-http.mjs")
 
-const proof = { kind: "http", status: "pass", pass: true }
+const proof = { kind: "http", status: "pass", pass: true, oracle: { name: "bola-wallet-idor", passed: true } }
 const candidate = (poc: string) => ({
   n: 1, pack: "web", title: `Candidate ${poc}`, severity: "critical", poc, explanation: "Agent says so.\nFix: x.",
   evidence: { kind: "transcript" }, cites: [], kind: "candidate", candidate: true, assertedBy: "agent", proven: false, provedBy: null,
@@ -75,5 +75,19 @@ describe("the Findings page never holds a candidate", () => {
       }
     }
     expect((await call("/api/findings/cand-ledger-1.1/report?format=md")).status).toBe(200)
+  })
+})
+
+// N3: the Findings page lists candidates beside the findings, as their own state.
+describe("the list API and the page list candidates apart (N3)", () => {
+  test("/api/findings sends the candidates beside the findings, never among them", async () => {
+    // @ts-expect-error — plain .mjs module, no types
+    const { handleApi } = await import("../server/api.mjs")
+    const { json } = await handleApi("/api/findings")
+    expect(json.findings.some((f: { id: string }) => f.id.includes(".c"))).toBe(false)
+    const own = json.candidates.filter((c: { runId: string }) => c.runId === "cand-ledger-1")
+    expect(own.map((c: { origin: string; proven: boolean }) => [c.origin, c.proven])).toEqual([["agent", false]])
+    // A candidate id is the run plus a hash of what it is (repair 1, m8).
+    expect(own[0].id).toMatch(/^cand-ledger-1\.c-[0-9a-f]{12}$/)
   })
 })

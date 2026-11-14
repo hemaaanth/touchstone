@@ -2,6 +2,7 @@ import { defineTool } from '@earendil-works/pi-durable';
 import { obj, str } from '@earendil-works/pi-schema';
 import { event } from '../../lib/event.mjs';
 import { CANDIDATE_HINT, EVIDENCE_POC, candidateTool, withCandidateLine, evidenceLookup, recordEvidence } from "../../lib/candidate.mjs";
+import { readableTitle } from "../../lib/check-titles.mjs";
 import { scanSnapshot, detectorsFor } from './checks.mjs';
 import { replayEvidence, proveFindings, loadSnapshot } from '../../lib/proof-evidence.mjs';
 import { readFileSync } from 'node:fs';
@@ -19,7 +20,7 @@ export function evidenceTools(ws,state,id) {
       const evidence = {check:lead.check,where:lead.where,snapshotHash:scan.snapshotHash};
       const proof = await replayEvidence(ws,evidence,{detectors:detectorsFor(id)});
       if(proof.status !== 'pass') { recordEvidence(state,lead.id,{lead,evidence,proof}); return {...text({...proof,candidate:CANDIDATE_HINT}),isError:true}; }
-      const finding={n:state.found.length+1,title:lead.check,severity:lead.severity,poc:lead.id,explanation:args.explanation,evidence};
+      const finding={n:state.found.length+1,title:readableTitle(lead.check,lead.check),severity:lead.severity,poc:lead.id,explanation:args.explanation,evidence};
       state.found.push(finding);
       event('finding-submitted',{pack:id,n:finding.n,title:finding.title,severity:finding.severity,poc:finding.poc});
       return text({recorded:finding.n,proof});

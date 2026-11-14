@@ -1,10 +1,10 @@
-import type { FindingSummary } from "./types"
+import type { CandidateSummary, FindingSummary } from "./types"
 
 // The Findings page's filter and sort (src/components/findings-page.tsx).
 // Pure, so tests/findings-page.test.tsx checks them with 500 synthetic rows.
 
 export type SortKey = "proven" | "severity" | "newest" | "oldest" | "scope"
-export type StateFilter = "all" | "proven" | "unproven"
+export type StateFilter = "all" | "proven" | "unproven" | "candidate"
 // A dismissed finding is hidden until the operator asks to see it.
 export type DismissedFilter = "hide" | "show"
 export interface FindingsView {
@@ -106,7 +106,10 @@ export function filterFindings(rows: FindingSummary[], v: FindingsView): Finding
     if (v.module !== ALL && moduleOf(f) !== v.module) return false
     if (v.severity !== ALL && (f.severity ?? "").toLowerCase() !== v.severity) return false
     if (v.state === "proven" && !f.proven) return false
-    if (v.state === "unproven" && f.proven) return false
+    // "Not proven" is a finding whose replay did not prove it; a candidate is
+    // its own state (N3).
+    if (v.state === "unproven" && (f.proven || f.candidate)) return false
+    if (v.state === "candidate" && !f.candidate) return false
     if (v.from || v.to) {
       // A finding with no recorded time cannot be in a date range.
       if (f.at == null) return false
@@ -160,4 +163,51 @@ export const BUNDLE_LABEL = "Download replay bundle"
 // end in that refusal.
 export function hasBundle(f: { stages: { proven: boolean }; proofKind?: string }): boolean {
   return f.stages.proven === true && f.proofKind !== "evidence"
+}
+
+// A candidate as a list row. It keeps its own fields under `candidate`, so the
+// same filters and sorts work, and it is never proven (N3).
+export function candidateRow(c: CandidateSummary): FindingSummary {
+  return {
+    id: c.id,
+    runId: c.runId,
+    title: c.title ?? "Candidate",
+    severity: c.severity,
+    module: c.module,
+    target: c.target,
+    stages: { hypothesis: false, reproduced: false, proven: false, accepted: false },
+    proven: false,
+    dismissed: false,
+    ms: null,
+    pack: c.pack,
+    scope: c.scope,
+    at: c.at,
+    candidate: c,
+  }
+}
+
+// The candidate's state words on its row.
+export const CANDIDATE_STATE: Record<string, string> = {
+  repeated: "Candidate · measurement repeated",
+  "no-effect": "Candidate · no effect shown",
+  "harm-not-judged": "Candidate · harm not judged",
+  unknown: "Candidate · not proof of harm",
+}
+// The one short word a phone row shows (below sm): never truncated. It is
+// "Candidate" for both kinds: a repeated measurement is a candidate, not a
+// tier of its own. The full state stays in the row's title at every width.
+export const candidateShortState = (_c: CandidateSummary) => "Candidate"
+export const candidateState = (c: CandidateSummary) => (c.measured ? (CANDIDATE_STATE[c.measured.reason] ?? CANDIDATE_STATE.unknown) : "Candidate · needs review")
+
+// The count line's words, before "· N proven" (N3). Candidates are counted
+// apart: "N findings" never includes one. Under the Candidate filter the line
+// counts candidates.
+export function countLine(all: FindingSummary[], shown: FindingSummary[], v: FindingsView, hiddenDismissed = 0): { lead: string; candidates: string | null } {
+  const candidates = shown.filter((f) => f.candidate).length
+  const allCandidates = all.filter((f) => f.candidate).length
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  if (v.state === "candidate") return { lead: `${candidates} of ${plural(allCandidates, "candidate", "candidates")}`, candidates: null }
+  const findings = shown.length - candidates
+  const lead = isFiltered(v) ? `${findings} of ${all.length - hiddenDismissed - allCandidates} findings` : plural(findings, "finding", "findings")
+  return { lead, candidates: candidates ? plural(candidates, "candidate", "candidates") : null }
 }

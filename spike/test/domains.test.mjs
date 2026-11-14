@@ -93,6 +93,8 @@ test('submission refuses review-only patterns, duplicate roots and later snapsho
     assert((await submit.execute({lead_id:'unknown',explanation:'not proof'})).isError);
     const lead=leads.find(l=>l.check==='dangling-cname');
     assert(!(await submit.execute({lead_id:lead.id,explanation:'Captured NXDOMAIN. Fix: Remove stale DNS.'})).isError);
+    // N3: the finding's title is the readable one, never the raw check id.
+    assert.equal(state.found[0].title,'A DNS name points at a service that no longer answers for it');
     assert((await submit.execute({lead_id:lead.id,explanation:'duplicate'})).isError);
     assert.equal((await domains.prove(ws,state.found,[],()=>{})).length,1);
     writeFileSync(join(ws,'snapshot.json'),'{}');

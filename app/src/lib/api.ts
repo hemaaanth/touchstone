@@ -1,4 +1,5 @@
 import type {
+  CandidateSummary,
   DiscoveredModel,
   Finding,
   FindingSummary,
@@ -78,6 +79,25 @@ export async function rotateConsoleToken(): Promise<void> {
 export async function fetchFindings(): Promise<FindingSummary[]> {
   const data = await getJson<{ findings: FindingSummary[] }>("/api/findings")
   return data.findings
+}
+
+// An old link to a finding that is now a candidate (N3): the server answers
+// 404 with the candidate's poc. Null for any other answer.
+export async function fetchNowCandidate(id: string): Promise<{ poc: string; error: string } | null> {
+  try {
+    const res = await fetch(`/api/findings/${encodeURIComponent(id)}?events=0`)
+    if (res.status !== 404) return null
+    const body = (await res.json()) as { candidate?: boolean; poc?: string | null; error?: string }
+    return body.candidate && body.poc ? { poc: body.poc, error: body.error ?? "" } : null
+  } catch {
+    return null
+  }
+}
+
+// The Findings page's list: the findings, and the candidates beside them.
+export async function fetchFindingsAndCandidates(): Promise<{ findings: FindingSummary[]; candidates: CandidateSummary[] }> {
+  const data = await getJson<{ findings: FindingSummary[]; candidates?: CandidateSummary[] }>("/api/findings")
+  return { findings: data.findings, candidates: data.candidates ?? [] }
 }
 
 // `events: false` asks for the finding without its run's transcript

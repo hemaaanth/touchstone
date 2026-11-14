@@ -24,7 +24,7 @@ import type {
   Verdict,
 } from "./types"
 import { COORDINATOR } from "./types"
-import { CANDIDATE_NOTE, candidateFrom, type Candidate } from "./candidate"
+import { CANDIDATE_NOTE, candidateFrom, measuredNote, measuredPocs, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
 // list of meaningful STEPS — and PoC attempts especially need pairing: a
@@ -734,6 +734,25 @@ export function reduceEvents(events: RunEvent[]): RunState {
         const c = candidateFrom(e)
         if (!c || candidates.some((x) => x.poc === c.poc)) break
         candidates.push(c)
+        if (c.measured) {
+          // The engine's replay only repeated a measurement: the findings it
+          // folds are not findings. Each one's chat card becomes a neutral
+          // note where it was submitted, and it leaves the submitted list.
+          const pocs = new Set(measuredPocs(c))
+          let placed = false
+          for (let i = 0; i < steps.length; i++) {
+            const s = steps[i]
+            if (s.kind !== "submitted" || !s.finding?.poc || !pocs.has(s.finding.poc)) continue
+            steps[i] = { key: s.key, kind: "note", phase: "run", label: `${measuredNote(c.measured)}: ${s.finding.title}`, ...(s.agent ? { agent: s.agent } : {}) }
+            placed = true
+          }
+          if (pocs.size) {
+            for (let i = submitted.length - 1; i >= 0; i--) if (pocs.has(submitted[i].poc)) submitted.splice(i, 1)
+            pending = submitted.length ? submitted.reduce((w, x) => (severityRank(x.severity) < severityRank(w.severity) ? x : w)) : null
+          }
+          if (!placed) steps.push({ key, kind: "note", phase: "run", label: `${measuredNote(c.measured)}: ${c.title}` })
+          break
+        }
         // Always a run-phase note: the chat drops notes from the decide pass.
         steps.push({ key, kind: "note", phase: "run", label: `${CANDIDATE_NOTE}: ${c.title}` })
         break

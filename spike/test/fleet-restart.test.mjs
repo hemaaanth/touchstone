@@ -26,7 +26,7 @@ const proved = [];
 mock.module("../packs/index.mjs", { exports: { ...realPacks, packFor: () => ({
   prepass: async () => ({ record: { pack: "web", coverage: [], leads: [] }, env: {} }),
   teardown: async () => {},
-  prove: async (_ws, found) => { proved.push(...found); return found.map((f) => ({ ...f, proof: { kind: "http", status: "pass" } })); },
+  prove: async (_ws, found) => { proved.push(...found); return found.map((f) => ({ ...f, proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } })); },
 }) } });
 // Every worker the server starts is recorded. A fleet that a restart interrupted
 // must start none by itself: a worker is a paid model session.
@@ -132,7 +132,7 @@ const doneId = save("fleet-done", [
   { t: 34, ev: "closed" },
 ]);
 record(doneId, [
-  { title: "Login accepts a forged session", severity: "high", poc: "forged_session", proof: { kind: "http", status: "pass" } },
+  { title: "Login accepts a forged session", severity: "high", poc: "forged_session", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
   { title: "Upload keeps the file name", severity: "low", poc: "upload_name", proof: { kind: "http", status: "fail" } },
 ]);
 // 6. A stream that says "proven" for findings whose stored replay record does
@@ -161,7 +161,7 @@ writeFileSync(join(dir, `run-${tornId}.json`), '{"result":{"findings":[');
 // An older record holds one finding, and its id is the run id. Its proof is in
 // the record's own fields. One such run proved it, one did not.
 const oldId = save("fleet-old", [...head(), { t: 31, ev: "finding", id: "fleet-old-2611130900-1", title: "Old form", severity: "high", proven: true }, { t: 33, ev: "status", status: "recorded" }, { t: 34, ev: "closed" }]);
-writeFileSync(join(dir, `run-${oldId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "pass", pass: true } } }));
+writeFileSync(join(dir, `run-${oldId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "pass", pass: true, harm: { ok: true, kind: "funds" } } } }));
 const oldFailId = save("fleet-oldfail", [...head(), { t: 31, ev: "finding", id: "fleet-oldfail-2611130900-1", title: "Old form", severity: "high", proven: true }, { t: 33, ev: "status", status: "recorded" }, { t: 34, ev: "closed" }]);
 writeFileSync(join(dir, `run-${oldFailId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "fail", pass: false } } }));
 // 8. A stream file with a damaged line in the middle and a torn last line, and
@@ -201,11 +201,11 @@ const relabelId = save("fleet-relabel", [
   { t: 34, ev: "closed" },
 ]);
 record(relabelId, [
-  { title: "Missing header", severity: "low", poc: "header", proof: { kind: "http", status: "pass" } },
-  { title: "Upload keeps the file name", severity: "low", poc: "upload_name", proof: { kind: "http", status: "pass" } },
-  { title: "Cookie has no flag", severity: "low", poc: "cookie_flag", proof: { kind: "http", status: "pass" } },
-  { title: "Open redirect", severity: "low", poc: "open_redirect", proof: { kind: "http", status: "pass" } },
-  { title: "Login accepts a forged session", severity: "high", poc: "forged_session", proof: { kind: "http", status: "pass" } },
+  { title: "Missing header", severity: "low", poc: "header", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
+  { title: "Upload keeps the file name", severity: "low", poc: "upload_name", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
+  { title: "Cookie has no flag", severity: "low", poc: "cookie_flag", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
+  { title: "Open redirect", severity: "low", poc: "open_redirect", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
+  { title: "Login accepts a forged session", severity: "high", poc: "forged_session", proof: { kind: "http", status: "pass", oracle: { name: "bola-wallet-idor" } } },
 ]);
 // The older record form: its one finding has the run id. A line with another
 // title, and a line with another id, do not get its proof.
@@ -218,7 +218,7 @@ const oldClaimId = save("fleet-oldclaim", [
   { t: 33, ev: "status", status: "recorded" },
   { t: 34, ev: "closed" },
 ]);
-writeFileSync(join(dir, `run-${oldClaimId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "pass", pass: true } } }));
+writeFileSync(join(dir, `run-${oldClaimId}.json`), JSON.stringify({ result: { finding: { title: "Old form", severity: "high" }, pocProved: true, proof: { status: "pass", pass: true, harm: { ok: true, kind: "funds" } } } }));
 // 13. A solo run that stopped while its one agent worked, with a finding
 // submitted. Only a fleet takes the proof check here: a solo run starts its agent again.
 const soloId = save("solo-agent", [...head("solo"), fleetWork.find((e) => e.ev === "finding-submitted")], { state: { ws: workspace(), phase: "agent", mode: "solo" }, audit: { poc: 3, found: [submitted], passed: [["forged_session", submitted.source]] } });
