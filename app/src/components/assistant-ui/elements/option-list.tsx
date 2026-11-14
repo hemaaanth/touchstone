@@ -3,7 +3,7 @@
 /*
 Adapted from assistant-ui/assistant-ui at 7d7427653f6ba47b0b954510eed9c594d64e74d5:
 packages/ui/src/components/react/assistant-ui/elements/option-list.tsx
-Changes: base-nova Button/theme, continuous surface, external busy state, synchronous
+Changes: base-nova Button/theme, rounded surface with custom-reply footer, external busy state, synchronous
 submission lock, and local bounds in place of registry helpers. No runtime completion API.
 
 MIT License
@@ -29,7 +29,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-import { useId, useRef, useState, type ComponentProps } from "react"
+import { useId, useRef, useState, type ComponentProps, type ReactNode } from "react"
 import { CheckIcon, Loader2Icon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -51,20 +51,21 @@ export interface OptionListProps extends Omit<ComponentProps<"div">, "children" 
   confirmLabel?: string
   choice?: readonly string[]
   disabled?: boolean
+  children?: ReactNode
 }
 
-const row = "focus-ring flex h-auto w-full min-w-0 items-start justify-start gap-2.5 px-2 py-2 text-left !whitespace-normal"
+const row = "focus-ring flex h-auto w-full min-w-0 items-start justify-start gap-3 rounded-lg px-3 py-3 text-left !whitespace-normal"
 
 function OptionText({ option, descriptionId }: { option: OptionListOption; descriptionId: string }) {
   return <span className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
-    <span className="text-xs leading-5">{option.label}</span>
+    <span className="text-sm leading-5">{option.label}</span>
     {option.description ? <span id={descriptionId} className="text-xs leading-4 text-muted-foreground">{option.description}</span> : null}
   </span>
 }
 
 export function OptionList({
   options, selectionMode = "single", defaultValue, minSelections = 1, maxSelections,
-  onConfirm, confirmLabel = "Confirm choices", choice, disabled = false, className, ...props
+  onConfirm, confirmLabel = "Confirm choices", choice, disabled = false, children, className, ...props
 }: OptionListProps) {
   const multiple = selectionMode === "multiple"
   const [selected, setSelected] = useState<readonly string[]>(() => (defaultValue ?? []).filter((id) => options.some((o) => o.id === id)))
@@ -73,7 +74,7 @@ export function OptionList({
   const [error, setError] = useState<string | null>(null)
   const submitting = useRef(false)
   const descriptionPrefix = useId()
-  const root = cn("flex w-full min-w-0 flex-col gap-1 bg-muted/20 py-1", className)
+  const root = cn("flex w-full min-w-0 max-w-xl flex-col gap-0.5 overflow-hidden rounded-2xl border border-border/60 bg-muted/20 p-1", className)
   const confirmedChoice = choice ?? confirmed
 
   if (confirmedChoice !== undefined) {
@@ -89,6 +90,7 @@ export function OptionList({
 
   if (!onConfirm) return <div data-slot="option-list" className={root} {...props}>
     {options.map((option) => <div key={option.id} className={row}><OptionText option={option} descriptionId={`${descriptionPrefix}-${option.id}`} /></div>)}
+    {children ? <div className="mt-1 border-t border-border/60 p-2">{children}</div> : null}
   </div>
 
   const locked = disabled || pending !== null
@@ -146,5 +148,6 @@ export function OptionList({
         if (canConfirm) commit(options.filter((option) => selectedIds.includes(option.id)).map((option) => option.id))
       }}>{pending !== null ? <Loader2Icon aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" /> : null}{confirmLabel}</Button>
     </div> : null}
+    {children ? <div className="mt-1 border-t border-border/60 p-2">{children}</div> : null}
   </div>
 }

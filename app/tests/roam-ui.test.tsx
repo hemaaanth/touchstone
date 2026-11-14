@@ -84,7 +84,7 @@ test("single option renders beside free text and formats only a Reply, never Don
   expect(html).toContain('aria-label="Reply to Scout"')
   expect(html).toContain(">Reply</button>")
   expect(html).toContain("Replies are visible to the agent")
-  expect(html).toContain("Do not include secrets")
+  expect(html).toContain("Never put passwords or codes in Reply")
   expect(html).not.toContain(">Done</button>")
   expect(formatAskChoiceReply(single, ["test"])).toBe("Selected option: test (Run tests)")
   for (const ids of [[], ["scan", "test"], ["unknown"], ["scan", "scan"]]) expect(() => formatAskChoiceReply(single, ids)).toThrow()
@@ -254,4 +254,14 @@ test("Ask client treats missing delivery metadata and lost HTTP as uncertain, no
     globalThis.fetch = (async () => { throw Error("synthetic connection loss") }) as typeof fetch
     await expect(answerRunAsk("r1", { ask: "one", reply: "first" })).rejects.toMatchObject({ uncertain: true })
   } finally { globalThis.fetch = original }
+})
+
+
+test("option list owns the custom reply while receipts stay read-only", () => {
+  const open = renderToStaticMarkup(<OptionList options={options} onConfirm={() => {}}><form><input aria-label="Custom answer" /></form></OptionList>)
+  expect(open).toContain('aria-label="Custom answer"')
+  const receipt = renderToStaticMarkup(<OptionList options={options} choice={["scan"]}><form><input aria-label="Custom answer" /></form></OptionList>)
+  expect(receipt).toContain("Selected:")
+  expect(receipt).not.toContain("Custom answer")
+  expect(receipt).not.toContain("Run tests")
 })

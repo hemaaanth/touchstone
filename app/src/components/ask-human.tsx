@@ -94,15 +94,22 @@ export function AskHuman({ ask }: { ask: HumanAsk }) {
   const presentation = ask.presentation
   const failed = (cause: unknown) => context?.patch(ask.id, { error: cause instanceof Error ? cause.message : "The answer was not accepted." })
   const submit = (body: AskAnswer, choices?: string[]) => context ? context.submit(ask, body, choices) : Promise.reject(new Error("This request is read-only."))
-  return <section data-slot="ask-human" data-ask-id={ask.id} aria-labelledby={questionId} aria-busy={draft.pending || undefined} className="flex min-w-0 flex-col gap-2 bg-muted/20 px-3 py-3 text-sm">
+  const replyForm = (
+    <form className={`flex min-w-0 flex-wrap items-center gap-2 ${presentation ? "" : "rounded-xl border border-border/60 p-2"}`} onSubmit={(e) => { e.preventDefault(); void submit({ ask: ask.id, reply: draft.reply ?? "" }).catch(failed) }}>
+        <Input aria-label={`Reply to ${name}`} value={draft.reply ?? ""} onChange={(e) => context?.patch(ask.id, { reply: e.target.value })} disabled={!live} placeholder={presentation ? "Or write your own answer…" : "Write a reply…"} className="min-w-32 flex-1 border-0 bg-transparent shadow-none focus-visible:ring-1 dark:bg-transparent" />
+        <Button type="submit" size="sm" variant="secondary" disabled={!live || !draft.reply?.trim()}>Reply</Button>
+        {!presentation ? <Button type="button" size="sm" disabled={!live} onClick={() => void submit({ ask: ask.id, done: true }).catch(failed)}>Done</Button> : null}
+        <Button type="button" size="sm" variant="ghost" disabled={!live} onClick={() => void submit({ ask: ask.id, done: false }).catch(failed)}>Cancel</Button>
+    </form>
+  )
+  return <section data-slot="ask-human" data-ask-id={ask.id} aria-labelledby={questionId} aria-busy={draft.pending || undefined} className="flex min-w-0 flex-col gap-3 py-2 text-sm">
     <p className="text-xs text-muted-foreground">{name} · {ask.kind}</p>
-    <p id={questionId} className="whitespace-pre-wrap break-words">{ask.question}</p>
+    <p id={questionId} className="whitespace-pre-wrap break-words leading-relaxed">{ask.question}</p>
     {ask.detail ? <Collapsible><CollapsibleTrigger className="focus-ring w-fit text-xs text-muted-foreground">Request details</CollapsibleTrigger><CollapsibleContent><pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all">{ask.detail}</pre></CollapsibleContent></Collapsible> : null}
     {answer ? <div data-slot="ask-receipt" className="flex min-w-0 flex-col gap-2 text-muted-foreground">
       {ask.interrupted ? <p>Request interrupted. No approval was restored.</p> : <>
         <p>{answer === "reply" ? "Answered" : answer === "done" ? "Done for this request" : "Cancelled"}</p>
-        {answer === "reply" && receipt?.text !== undefined ? <p className="whitespace-pre-wrap break-words">{receipt.text}</p> : answer === "reply" ? <p>The answer text was not saved.</p> : null}
-        {answer === "reply" && presentation && draft.choices ? <OptionList options={presentation.options} choice={draft.choices} /> : null}
+        {answer === "reply" && presentation && draft.choices ? <OptionList options={presentation.options} choice={draft.choices} /> : answer === "reply" && receipt?.text !== undefined ? <p className="whitespace-pre-wrap break-words">{receipt.text}</p> : answer === "reply" ? <p>The answer text was not saved.</p> : null}
       </>}
     </div> : draft.pending ? <p role="status">Waiting for the agent to accept this answer…</p> : draft.uncertain ? <>
       <p role="status">Delivery is uncertain. Only the original answer can be retried until its status is known.</p>
@@ -111,14 +118,8 @@ export function AskHuman({ ask }: { ask: HumanAsk }) {
         <Button size="sm" variant="ghost" onClick={() => context?.refresh()}>Refresh answer status</Button>
       </div>
     </> : <>
-      <p className="text-xs text-muted-foreground">Replies are visible to the agent. Never put passwords or codes in Reply. Browser takeover is not enabled in this release. Do not include secrets. Done approves only this request. Reply and Cancel do not approve it.</p>
-      {presentation ? <OptionList aria-labelledby={questionId} options={presentation.options} selectionMode={presentation.select} minSelections={presentation.select === "multiple" ? presentation.min : undefined} maxSelections={presentation.select === "multiple" ? presentation.max : undefined} defaultValue={draft.choices} disabled={!live} onConfirm={live ? (ids) => submit({ ask: ask.id, reply: formatAskChoiceReply(presentation, ids) }, ids) : undefined} /> : null}
-      <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); void submit({ ask: ask.id, reply: draft.reply ?? "" }).catch(failed) }}>
-        <Input aria-label={`Reply to ${name}`} value={draft.reply ?? ""} onChange={(e) => context?.patch(ask.id, { reply: e.target.value })} disabled={!live} className="min-w-32 flex-1" />
-        <Button type="submit" size="sm" variant="outline" disabled={!live || !draft.reply?.trim()}>Reply</Button>
-        {!presentation ? <Button type="button" size="sm" disabled={!live} onClick={() => void submit({ ask: ask.id, done: true }).catch(failed)}>Done</Button> : null}
-        <Button type="button" size="sm" variant="ghost" disabled={!live} onClick={() => void submit({ ask: ask.id, done: false }).catch(failed)}>Cancel</Button>
-      </form>
+      {presentation ? <OptionList aria-labelledby={questionId} options={presentation.options} selectionMode={presentation.select} minSelections={presentation.select === "multiple" ? presentation.min : undefined} maxSelections={presentation.select === "multiple" ? presentation.max : undefined} defaultValue={draft.choices} disabled={!live} onConfirm={live ? (ids) => submit({ ask: ask.id, reply: formatAskChoiceReply(presentation, ids) }, ids) : undefined}>{replyForm}</OptionList> : replyForm}
+      <p className="text-xs leading-relaxed text-muted-foreground">Replies are visible to the agent. Never put passwords or codes in Reply.{!presentation ? " Done approves only this request. Reply and Cancel do not approve it." : ""}</p>
     </>}
     {draft.error && !answer ? <p role="alert" className="whitespace-pre-wrap break-words">{draft.error}</p> : null}
   </section>

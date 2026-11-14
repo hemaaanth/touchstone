@@ -56,12 +56,27 @@ const reset = (next) => {
   control.consume(run, child, run.roamEpoch, { ev: "ask-human", id: "child-q2", agent: "a-2", kind: "login", question: "Which test environment should I use?" })
 }
 reset("http-first")
+const fixtureSettings = {
+  providers: [{ id: "near", label: "NEAR AI Cloud", baseUrl: "https://cloud-api.near.ai/v1", builtIn: true, saved: true,
+    key: { set: false, source: null, last4: null },
+    models: ["Qwen/Qwen3.8-27B-abliterated", "Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated", "deepseek-ai/DeepSeek-V4.1-Flash-1017"].map((id, n) => ({ id, alias: `fixture-${n}`, input: 0.04, output: 1.35, context: 128000, priced: true })),
+  }],
+  default: { provider: "near", model: "fixture-0" }, envOverride: null,
+  spend: { budgetUsd: 5, usd: 0, capUsd: null }, fallbackPrice: { input: 1, output: 2 },
+  execution: { backend: "daytona", saved: "daytona", envOverride: null,
+    key: { set: true, source: "settings", last4: "demo" },
+    apiUrl: "https://app.daytona.io/api", target: "us", roamSnapshot: "daytona-medium",
+    defaults: { apiUrl: "https://app.daytona.io/api", target: "us" },
+    envNames: { apiUrl: null, target: null, roamSnapshot: null }, shellSetup: { ready: true, status: "ready" },
+  },
+}
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, async fetch(request) {
   const url = new URL(request.url)
   if (url.pathname === "/") return new Response('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } })
   if (url.pathname === "/fixture.js") return new Response(Bun.file(join(directory, "bundle/ask-chat.js")), { headers: { "content-type": "text/javascript" } })
   if (url.pathname === "/fixture.css") return new Response(css, { headers: { "content-type": "text/css" } })
   if (url.pathname.startsWith("/fonts/")) return new Response("", { status: 404 })
+  if (url.pathname === "/api/settings" && request.method === "GET") return Response.json(fixtureSettings)
   if (url.pathname === "/fixture/status") return Response.json({ mode, lines, held: held.length })
   if (url.pathname === "/fixture/reset" && request.method === "POST") { reset((await request.json()).mode); return Response.json({ ok: true }) }
   if (url.pathname === "/fixture/flush" && request.method === "POST") { for (const event of held) for (const stream of streams) stream.enqueue(`data: ${JSON.stringify(event)}\n\n`); held = []; return Response.json({ ok: true }) }

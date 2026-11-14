@@ -567,22 +567,25 @@ function ProviderEditor({
               // cannot until it is saved.
               const alias = provider?.models.find((m) => m.id === id)?.alias
               return (
-                <li key={id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 py-1.5">
+                <li key={id} className="grid h-20 grid-cols-[minmax(0,1fr)_1.75rem] grid-rows-[1.75rem_1.5rem] content-center items-center gap-x-2 gap-y-1 px-3 py-2">
                   <button
                     type="button"
                     role="checkbox"
                     aria-checked={on}
                     onClick={() => toggle(id)}
-                    className="flex min-w-0 flex-1 basis-full items-center gap-2 rounded-md py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:basis-0"
+                    aria-label={id}
+                    title={id}
+                    className="focus-ring flex min-w-0 items-center gap-2 rounded-md py-0.5 text-left"
                   >
                     <span className={cn("flex size-4 shrink-0 items-center justify-center rounded-[5px] transition-colors", on ? "bg-foreground text-background" : "bg-foreground/10")}>
                       {on ? <Check className="size-3" strokeWidth={3} /> : null}
                     </span>
-                    <span className={cn("min-w-0 font-mono text-xs break-all", !on && "text-muted-foreground")}>{id}</span>
+                    <span className={cn("min-w-0 truncate text-sm", !on && "text-muted-foreground")}>{id.slice(id.lastIndexOf("/") + 1).replace(/[-_]+/g, " ")}</span>
                   </button>
+                  {on && alias ? <DefaultStar on={alias === defaultAlias} label={id} onPick={onMakeDefault ? () => onMakeDefault(alias) : null} /> : null}
                   {d ? (
-                    <span className="flex items-center gap-1 text-[11px] text-muted-foreground" title="USD per 1M tokens. A model with no price is charged a high fallback price.">
-                      in $
+                    <span className="col-span-2 row-start-2 flex items-center gap-1.5 pl-6 text-[11px] text-muted-foreground" title="USD per 1M tokens. A model with no price is charged a high fallback price.">
+                      In $
                       <input
                         className="h-6 w-14 rounded-md bg-muted px-1.5 text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                         inputMode="decimal"
@@ -591,7 +594,7 @@ function ProviderEditor({
                         onChange={(e) => setPrice(id, "input", e.target.value)}
                         aria-label={`${id} input price per 1M`}
                       />
-                      out $
+                      Out $
                       <input
                         className="h-6 w-14 rounded-md bg-muted px-1.5 text-xs tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                         inputMode="decimal"
@@ -602,8 +605,7 @@ function ProviderEditor({
                       />
                       /1M
                     </span>
-                  ) : null}
-                  {on && alias ? <DefaultStar on={alias === defaultAlias} label={id} onPick={onMakeDefault ? () => onMakeDefault(alias) : null} /> : null}
+                  ) : <span className="col-span-2 row-start-2 pl-6 text-xs text-muted-foreground">Select to edit pricing</span>}
                 </li>
               )
             })}
@@ -889,7 +891,7 @@ function ExecutionSection({
           icon={<Container />}
           title="Local Docker"
           meta={["Tools run on this machine"]}
-          trailing={<div className="grid grid-cols-[5rem_3rem] items-center gap-2"><UseControl on={ex.backend === "local"} name="Local Docker" disabled={fixed} onUse={() => onUse("local")} /></div>}
+          trailing={<div className="grid grid-cols-[3rem_5rem] items-center gap-2"><span aria-hidden /><UseControl on={ex.backend === "local"} name="Local Docker" disabled={fixed} onUse={() => onUse("local")} /></div>}
         />
         <ListRow
           icon={<Cloud />}
@@ -902,7 +904,8 @@ function ExecutionSection({
           }
           meta={["Tools run on remote machines, one per run"]}
           trailing={
-            <div className="grid grid-cols-[5rem_3rem] items-center gap-2">
+            <div className="grid grid-cols-[3rem_5rem] items-center gap-2">
+              <Button variant="ghost" size="sm" aria-label="Edit Daytona settings" onClick={(e) => { e.stopPropagation(); onOpenDaytona(false) }}>Edit</Button>
               <UseControl
                 on={ex.backend === "daytona"}
                 name="Daytona"
@@ -910,7 +913,6 @@ function ExecutionSection({
                 // With no key, Use opens the form first.
                 onUse={() => (ex.key.set ? onUse("daytona") : onOpenDaytona(true))}
               />
-              <Button variant="ghost" size="sm" aria-label="Edit Daytona settings" onClick={(e) => { e.stopPropagation(); onOpenDaytona(false) }}>Edit</Button>
             </div>
           }
           onOpen={() => onOpenDaytona(false)}
