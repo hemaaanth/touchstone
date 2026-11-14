@@ -20,6 +20,9 @@ import type { Severity } from "./types"
 //       validates them.
 export type Tier = 0 | 1 | 2
 
+export type Loadout = "confined" | "free-roam"
+export type LoadoutOption = "wallet" | "email"
+
 // Neutral agent lifecycle. Done is NOT success and Failed is NOT danger — the
 // console reserves success/danger signalling for an authoritative *proven* lead
 // (docs §6a), never for an agent merely finishing or erroring.
@@ -44,6 +47,9 @@ export interface HunterAgent {
   name: string // primary identity
   model: string // neutral descriptor, e.g. "near-abliterated-70b"
   tier: Tier
+  // Missing fields in legacy records mean confined with no optional tools.
+  loadout?: Loadout
+  options?: LoadoutOption[]
   status: AgentStatus
   // Current work, one line (the console truncates it). null before first task.
   task: string | null

@@ -21,7 +21,7 @@
 // Tier-2 posts are read from the `evidence` lane only and are treated as evidence
 // submissions, never as control messages.
 
-import type { Fleet, HunterAgent, Lead, Tier, BulletinLane, LeadTransition } from "./fleet"
+import type { Fleet, HunterAgent, Lead, Tier, BulletinLane, LeadTransition, Loadout, LoadoutOption } from "./fleet"
 import { bulletinChannel, fleetSummary, leadStatus } from "./fleet"
 import type { ClaimStatus, OracleVerdict, BulletinPostArgs } from "./fleet-policy"
 import {
@@ -236,6 +236,8 @@ export interface Shard {
   kind: ShardKind
   module: string | null
   toolkit: string[]
+  loadout?: Loadout
+  options?: LoadoutOption[]
 }
 
 export interface RunSpec {
@@ -247,19 +249,34 @@ export interface RunSpec {
   freeForm?: number
   // Default toolkit handed to module + free-form shards.
   baseToolkit?: string[]
+  // Add one default free-form roam shard. Explicit false opts out.
+  freeRoam?: boolean
+}
+
+function normalizeLoadout(loadout: Loadout = "confined", options: LoadoutOption[] = []): { loadout: Loadout; options: LoadoutOption[] } {
+  if (loadout !== "confined" && loadout !== "free-roam") throw new Error("Unknown loadout.")
+  if (!Array.isArray(options)) throw new Error("Unknown loadout option.")
+  for (const option of options) {
+    if (option !== "wallet" && option !== "email") throw new Error("Unknown loadout option.")
+  }
+  if (loadout === "confined" && options.length) throw new Error("Confined agents cannot have loadout options.")
+  return { loadout, options: [...new Set(options)] }
 }
 
 export function shardWork(spec: RunSpec): Shard[] {
   const base = spec.baseToolkit ?? []
   const shards: Shard[] = []
   for (const module of spec.modules ?? []) {
-    shards.push({ kind: "module", module, toolkit: base })
+    shards.push({ kind: "module", module, toolkit: [...base], loadout: "confined", options: [] })
   }
   for (const toolkit of spec.toolkits ?? []) {
-    shards.push({ kind: "toolkit", module: null, toolkit })
+    shards.push({ kind: "toolkit", module: null, toolkit: [...toolkit], loadout: "confined", options: [] })
   }
   for (let i = 0; i < (spec.freeForm ?? 0); i++) {
-    shards.push({ kind: "free-form", module: null, toolkit: base })
+    shards.push({ kind: "free-form", module: null, toolkit: [...base], loadout: "confined", options: [] })
+  }
+  if (spec.freeRoam !== false) {
+    shards.push({ kind: "free-form", module: null, toolkit: [...base], loadout: "free-roam", options: [] })
   }
   return shards
 }
@@ -277,6 +294,8 @@ export interface HunterSpec {
   name: string
   model: string
   tier: Tier
+  loadout?: Loadout
+  options?: LoadoutOption[]
   shard: Shard
 }
 
@@ -454,21 +473,41 @@ export class Coordinator {
     return shardWork(spec)
   }
 
-  // Spawn the hunters for a set of specs and build the Fleet. Each spawned agent
-  // is registered under `spec.id` — the id the spawner sets as that session's
-  // PI_BULLETIN_AGENT, and therefore exactly the `agent` value that will appear
-  // on its posts. Registering under the returned record's own id instead would
-  // let a mismatched spawner silently de-register every post.
+  // Bind the spawner to a detached, coordinator-selected identity and loadout.
+  // Legacy specs and records normalize to confined with no optional tools.
   async spawnFleet(specs: HunterSpec[]): Promise<Fleet> {
+    const ids = new Set(this.registry.keys())
+    const requested = specs.map((input) => {
+      const spec = this.out(input)
+      if (typeof spec.id !== "string" || !spec.id.trim() || spec.id === this.coordinatorId || ids.has(spec.id)) {
+        throw new Error("Hunter identity must be unique and distinct from the coordinator.")
+      }
+      ids.add(spec.id)
+      const shard = normalizeLoadout(spec.shard.loadout, spec.shard.options)
+      const selected = normalizeLoadout(
+        spec.loadout === undefined ? shard.loadout : spec.loadout,
+        spec.options === undefined ? shard.options : spec.options,
+      )
+      if ((spec.shard.loadout !== undefined && selected.loadout !== shard.loadout) ||
+        (spec.shard.kind !== "free-form" && selected.loadout !== "confined")) {
+        throw new Error("Hunter and shard loadout must match; module/toolkit shards stay confined.")
+      }
+      if (selected.loadout === "free-roam" && spec.tier !== 2) throw new Error("Free-roam hunters must have tier 2.")
+      return { ...spec, ...selected, shard: { ...spec.shard, ...selected } }
+    })
     const agents: HunterAgent[] = []
-    for (const spec of specs) {
-      const agent = await this.spawner.spawn(spec)
-      this.registry.set(spec.id, agent)
-      agents.push(agent)
+    for (const spec of requested) {
+      // The spawner cannot rewrite the expected binding or retain a registry alias.
+      const agent = this.out(await this.spawner.spawn(this.out(spec)))
+      const selected = normalizeLoadout(agent.loadout, agent.options)
+      if (agent.id !== spec.id || agent.tier !== spec.tier || selected.loadout !== spec.loadout ||
+        selected.options.length !== spec.options.length || selected.options.some((option) => !spec.options.includes(option))) {
+        throw new Error("Spawned hunter identity, tier, or loadout does not match its specification.")
+      }
+      const registered = { ...agent, loadout: spec.loadout, options: [...spec.options] }
+      this.registry.set(spec.id, registered)
+      agents.push(registered)
     }
-    // The registry keeps the originals (the ONLY trusted source of each author's
-    // tier); the caller gets deep clones. Otherwise `fleet.agents[0].tier = 1`
-    // would rewrite the registry and defeat the tier-spoof check at its root.
     return this.out({
       runId: this.runId,
       coordinatorId: this.coordinatorId,
