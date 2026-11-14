@@ -53,7 +53,15 @@ async function exchange(m, s, op, fields = {}) {
   const seconds = op === "run" ? fields.seconds + 5 : 10;
   const r = await bounded(m.exec(`node ${CONTROL} ${id}`, seconds), (seconds + 5) * 1000);
   if (r?.exitCode !== 0) throw new Error(CONTROL_ERROR);
-  const a = JSON.parse(r.result);
+  // The reply is the supervisor's JSON. A reply with no result at all used to
+  // reach JSON.parse as undefined, and the run settled with the bare sentence
+  // `"undefined" is not valid JSON` — no op, no exit code, nothing to act on.
+  // Name the exchange instead; the caller's message already says the run stops.
+  const raw = typeof r?.result === "string" ? r.result : "";
+  let a;
+  try { a = JSON.parse(raw); } catch {
+    throw new Error(`${CONTROL_ERROR}: the ${op} reply held no JSON (exit ${r?.exitCode}, ${raw.length} chars)`);
+  }
   if (a?.ok !== true || a.id !== id || typeof a.generation !== "string" || !Number.isSafeInteger(a.epoch) || a.epoch < 0 ||
       (s.generation && a.generation !== s.generation)) throw new Error(CONTROL_ERROR);
   return a;
