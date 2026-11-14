@@ -43,7 +43,7 @@ import { prepassFailed, prepassFromResult } from "../../spike/lib/prepass-view.m
 import { MULTI_DIR, prepassViewOf, shareFetched } from "../../spike/packs/multi.mjs"
 import { memberUrl, restoreSource } from "../../spike/lib/fetch.mjs"
 import { checkRecordedReplays, pruneReplayStore } from "../../spike/lib/replay-bundle.mjs"
-import { primeAttestation, runAttestation, cachedSummary, loadSummary, attestationSupported } from "../../spike/lib/attestation.mjs"
+import { primeAttestation, runAttestation, loadSummary, attestationSupported } from "../../spike/lib/attestation.mjs"
 import { readableTitle } from "../../spike/lib/check-titles.mjs"
 import { isMeasured } from "../../spike/lib/candidate.mjs"
 import { recordProven } from "./findings.mjs"

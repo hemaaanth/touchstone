@@ -33,6 +33,12 @@ const target = (id) => ({ id, title: id, kind: "lab", pack: "contracts", links: 
 const provider = { id: "near", label: "NEAR AI Cloud", baseUrl: "https://cloud-api.near.ai/v1", models: { "ds-abl": { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated", input: .3, output: 1.2 } } };
 const allowed = {
   readConfig: () => ({}), activeProvider: () => provider, allProviders: () => ({ near: provider }), defaultAlias: () => "ds-abl", providerSetupError: () => null,
+  // TEE attestation is a NEAR-only, network-backed provenance capability. The
+  // public demo backend must never touch the real network, so warming is a
+  // no-op, the provider reports as unable to attest, and the run record carries
+  // a neutral "unattested" receipt without a background fetch.
+  primeAttestation: () => {}, attestationSupported: () => false, loadSummary: async () => null,
+  runAttestation: () => ({ state: "unattested", provider: null, models: [], fetchedAt: Date.now() }),
   appRunBudgetUsd: () => 1, appSpendCapUsd: () => 20, spendCapRefusal: () => null, totalSpendState: () => ({ usd: 0, capUsd: 20, ledgerError: null }), validateRunBudget: (n) => n,
   listTargets: () => [target("vault-reentrancy"), target("vault-accounting")], pickTarget: ({ id }) => target(id), withPack: (t) => t, targetSummary: (t) => t,
   briefOf: () => "", enforceReach: () => ({ grants: [] }), openReach: async () => {

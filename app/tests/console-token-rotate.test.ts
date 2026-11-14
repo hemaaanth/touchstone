@@ -201,7 +201,7 @@ describe("client: the page that rotates keeps working; a stale page is told", ()
 
   test("a write refused with 403 tells the app (the stale-page notice) with the server's own sentence", async () => {
     g.window = new EventTarget()
-    g.document = { querySelector: () => ({ content: "old" }) }
+    g.document = { querySelector: (sel: string) => (sel.includes("touchstone-console-token") ? { content: "old" } : null) }
     g.fetch = async () => new Response(JSON.stringify({ error: settings.STALE_PAGE }), { status: 403, headers: { "content-type": "application/json" } })
     const heard: string[] = []
     const off = onStalePage((m) => heard.push(m))
