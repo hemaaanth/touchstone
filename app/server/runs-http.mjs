@@ -98,7 +98,7 @@ export async function handleRuns(req, res) {
     const body = await readBody(req)
     try {
       if (parts[3] === "ask") send(res, 200, await answerRunAsk(id, body))
-      else if (parts[3] === "desktop") send(res, 200, req.method === "DELETE" ? await closeRunDesktop(id, body.agent) : await openRunDesktop(id, body.agent, body.viewOnly, req.headers.origin))
+      else if (parts[3] === "desktop") send(res, 200, req.method === "DELETE" ? await closeRunDesktop(id, body.agent, body.desktop) : await openRunDesktop(id, body.agent, body.viewOnly, req.headers.origin, body.desktop))
       else {
         const action = parts[5] ?? "list"
         const result = await runSessionArtifacts(id, body, action, parts[4])

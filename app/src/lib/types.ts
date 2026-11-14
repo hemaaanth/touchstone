@@ -693,7 +693,8 @@ export interface HumanAsk {
   answer?: "done" | "cancel" | "reply"
   interrupted?: boolean
 }
-export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean }
+export interface SandboxDesktopIdentity { id: string; epoch?: string }
+export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean; desktop: SandboxDesktopIdentity & { epoch: string } }
 export interface SessionArtifact {
   id: string
   kind: "transcript" | "har" | "screenshot"

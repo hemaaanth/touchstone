@@ -3,6 +3,15 @@ import { test, expect } from "bun:test"
 import { createRoamControlApi, roamSelection } from "../server/roam-control.mjs"
 import { createSessionArtifactsApi } from "../server/candidates.mjs"
 import { createRoamControl } from "../../spike/lib/roam-control.mjs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+
+function routeChild(source, args = [], cwd = new URL("../", import.meta.url).pathname) {
+  return Bun.spawn([process.execPath, "--no-env-file", "--eval", source, ...args], {
+    cwd,
+    env: { PATH: process.env.PATH, HOME: TEST_STORE_DIR, TMPDIR: TEST_STORE_DIR, SPEND_LEDGER: `${TEST_STORE_DIR}/route-spend.jsonl`, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${TEST_STORE_DIR}/route-token`, TOUCHSTONE_GRANTS_FILE: `${TEST_STORE_DIR}/route-grants.json`, TOUCHSTONE_SCOPES_FILE: `${TEST_STORE_DIR}/route-scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${TEST_STORE_DIR}/route-providers.json`, TOUCHSTONE_RESULTS_DIR: `${TEST_STORE_DIR}/route-results` },
+    stdout: "pipe", stderr: "pipe",
+  })
+}
 
 // The real runs module boots workers and scans workspaces. Only the real router
 // and console guard load here; every other route dependency is process-isolated.
@@ -39,11 +48,7 @@ async function routeCases(cases) {
     }
     console.log(JSON.stringify({results,calls}));
   `
-  const child = Bun.spawn([process.execPath, "--eval", source, JSON.stringify(cases)], {
-    cwd: new URL("../", import.meta.url).pathname,
-    env: { PATH: process.env.PATH, HOME: TEST_STORE_DIR, TMPDIR: TEST_STORE_DIR, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${TEST_STORE_DIR}/route-token`, TOUCHSTONE_GRANTS_FILE: `${TEST_STORE_DIR}/route-grants.json`, TOUCHSTONE_SCOPES_FILE: `${TEST_STORE_DIR}/route-scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${TEST_STORE_DIR}/route-providers.json`, TOUCHSTONE_RESULTS_DIR: `${TEST_STORE_DIR}/route-results` },
-    stdout: "pipe", stderr: "pipe",
-  })
+  const child = routeChild(source, [JSON.stringify(cases)])
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
   expect(stderr).toBe("")
   expect(code).toBe(0)
@@ -72,7 +77,7 @@ function fixture({ timeoutMs = 20 } = {}) {
   const scheduled = []
   const api = createRoamControlApi({ getRun: (id) => id === run.id ? run : null, emit: (_run, event) => events.push(event), machine: (...args) => lookup(...args), now: () => 1, timeoutMs, schedule: (fn, ms) => { const timer = setTimeout(fn, ms); timers.push(timer); scheduled.push({ fn, ms }); return timer }, unschedule: clearTimeout })
   api.begin(run, child, run.roamEpoch)
-  return { api, run, child, log, events, lines, machine, lookup(fn) { lookup = fn }, member(value) { member = value }, expire() { const timer = scheduled.findLast((s) => s.ms > timeoutMs); timer?.fn(); return Boolean(timer) }, ack(value) { autoAck = value }, failOpen() { failOpen = true }, failRevoke() { failRevoke = true }, failClose() { failClose = true }, async end() { timers.forEach(clearTimeout); await api.invalidate(run).catch(() => {}) } }
+  return { api, run, child, log, events, lines, machine, scope: { id: "fixture-desktop" }, lookup(fn) { lookup = fn }, member(value) { member = value }, expire() { const timer = scheduled.findLast((s) => s.ms > timeoutMs); timer?.fn(); return Boolean(timer) }, ack(value) { autoAck = value }, failOpen() { failOpen = true }, failRevoke() { failRevoke = true }, failClose() { failClose = true }, async end() { timers.forEach(clearTimeout); await api.invalidate(run).catch(() => {}) } }
 }
 const ask = (id = "ask-1", agent = "a-1") => ({ ev: "ask-human", id, agent, kind: "login", question: "Open the test account", detail: { token: "synthetic-secret" } })
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -117,7 +122,7 @@ test("timeout cancellation cannot acknowledge Done; stop and restart invalidate 
     f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "cancel" })
     await expect(answer).rejects.toThrow("cancelled")
     f.run.stopping = true
-    await expect(f.api.desktop("r1", "a-1", true, "https://console.example")).rejects.toThrow()
+    await expect(f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)).rejects.toThrow()
     f.run.stopping = false
     f.run.owner = null
     await expect(f.api.answer("r1", { ask: "ask-1", done: true })).rejects.toThrow("own")
@@ -132,13 +137,13 @@ test("timeout cancellation cannot acknowledge Done; stop and restart invalidate 
 test("Watch first; gate pause ack precedes control; close and revoke precede resume", async () => {
   const f = fixture()
   try {
-    await expect(f.api.desktop("r1", "a-1", false, "https://console.example")).rejects.toThrow("Watch")
-    await expect(f.api.desktop("r1", "a-2", true, "https://console.example")).rejects.toThrow("free-roam")
-    const watched = await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await expect(f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)).rejects.toThrow("Watch")
+    await expect(f.api.desktop("r1", "a-2", true, "https://console.example", f.scope)).rejects.toThrow("free-roam")
+    const watched = await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     expect(watched.viewOnly).toBe(true)
     expect(f.log).not.toContain("pause")
     f.ack(false)
-    const take = f.api.desktop("r1", "a-1", false, "https://console.example")
+    const take = f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)
     await tick()
     expect(f.log).toEqual(["status", "configure", "grant", "open", "close", "revoke", "pause"])
     const req = f.lines.at(-1).roamControl
@@ -150,7 +155,7 @@ test("Watch first; gate pause ack precedes control; close and revoke precede res
     const controlled = await take
     expect(controlled.viewOnly).toBe(false)
     f.ack(true)
-    await f.api.close("r1", "a-1")
+    await f.api.close("r1", "a-1", f.scope)
     expect(f.log.slice(-3)).toEqual(["close", "revoke", "resume"])
     expect(JSON.stringify(f.events)).not.toContain("https://")
     expect(JSON.stringify(f.events)).not.toContain("synthetic-grant")
@@ -161,20 +166,20 @@ test("Watch first; gate pause ack precedes control; close and revoke precede res
 test("pause timeout never opens control, and failed setup cleans runtime and grant", async () => {
   const f = fixture()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     f.ack(false)
-    await expect(f.api.desktop("r1", "a-1", false, "https://console.example")).rejects.toThrow("blocked")
+    await expect(f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)).rejects.toThrow("blocked")
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
     expect(f.log).not.toContain("resume")
   } finally { await f.end() }
   const g = fixture()
   try {
-    await g.api.desktop("r1", "a-1", true, "https://console.example")
+    await g.api.desktop("r1", "a-1", true, "https://console.example", g.scope)
     g.failOpen()
-    await expect(g.api.desktop("r1", "a-1", false, "https://console.example")).rejects.toThrow("blocked")
+    await expect(g.api.desktop("r1", "a-1", false, "https://console.example", g.scope)).rejects.toThrow("blocked")
     expect(g.log.slice(-2)).toEqual(["close", "revoke"])
     expect(g.log).not.toContain("resume")
-    await expect(g.api.close("r1", "a-1")).rejects.toThrow("blocked")
+    await expect(g.api.close("r1", "a-1", g.scope)).rejects.toThrow("blocked")
     expect(g.log).not.toContain("resume")
   } finally { await g.end() }
 })
@@ -182,8 +187,8 @@ test("pause timeout never opens control, and failed setup cleans runtime and gra
 test("revocation failure never resumes and ask answer waits for cleanup", async () => {
   const f = fixture()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
-    await f.api.desktop("r1", "a-1", false, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    await f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)
     f.api.consume(f.run, f.child, "epoch-1", ask())
     f.failRevoke()
     await expect(f.api.answer("r1", { ask: "ask-1", done: true })).rejects.toThrow("blocked")
@@ -195,7 +200,7 @@ test("revocation failure never resumes and ask answer waits for cleanup", async 
 test("expiry closes and revokes even when no browser remains", async () => {
   const f = fixture()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     expect(f.expire()).toBe(true)
     await tick()
     expect(f.log.slice(-2)).toEqual(["close", "revoke"])
@@ -252,10 +257,10 @@ test("Done is exact-id acknowledged, and runtime close failure keeps control blo
     expect(f.lines.at(-1)).toEqual({ ask: "ask-1", done: true })
     f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "done" })
     expect(await done).toEqual({ ok: true })
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
-    await f.api.desktop("r1", "a-1", false, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    await f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)
     f.failClose()
-    await expect(f.api.close("r1", "a-1")).rejects.toThrow("blocked")
+    await expect(f.api.close("r1", "a-1", f.scope)).rejects.toThrow("blocked")
     expect(f.log.at(-1)).toBe("revoke")
     expect(f.log).not.toContain("resume")
   } finally { await f.end() }
@@ -263,8 +268,9 @@ test("Done is exact-id acknowledged, and runtime close failure keeps control blo
 
 test("desktop POST and DELETE dispatch privately while exact-image routes remain disabled", async () => {
   const headers = { host: "console.example", origin: "https://console.example", "content-type": "application/json", "x-touchstone-grant-token": "test-grant-token" }
-  const { results, calls } = await routeCases([["POST", "desktop"], ["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]].map(([method, endpoint], index) => ({ url: `/api/runs/r1/${endpoint}`, method, headers, body: { agent: "a-1", ...(method === "POST" ? { viewOnly: index === 0 } : {}) } })))
-  expect(calls).toEqual([["open", "r1", "a-1", true, "https://console.example"], ["open", "r1", "a-1", false, "https://console.example"], ["close", "r1", "a-1"]])
+  const desktop = { id: "route-desktop", epoch: "epoch-1" }
+  const { results, calls } = await routeCases([["POST", "desktop"], ["POST", "desktop"], ["DELETE", "desktop"], ["POST", "session-artifacts/f1/review"], ["POST", "session-artifacts/f1/release"]].map(([method, endpoint], index) => ({ url: `/api/runs/r1/${endpoint}`, method, headers, body: { agent: "a-1", desktop, ...(method === "POST" ? { viewOnly: index === 0 } : {}) } })))
+  expect(calls).toEqual([["open", "r1", "a-1", true, "https://console.example", desktop], ["open", "r1", "a-1", false, "https://console.example", desktop], ["close", "r1", "a-1", desktop]])
   for (const result of results.slice(0, 3)) expect(result).toMatchObject({ handled: true, status: 200, bodyRead: true })
   for (const result of results) {
     expect(result.headers["cache-control"]).toBe("no-store")
@@ -387,12 +393,13 @@ test("desktop membership comes from the current gate, not a completed child turn
   const f = fixture()
   try {
     f.run.events.push({ ev: "subagent-done", id: "a-1", t: 2 })
-    expect((await f.api.desktop("r1", "a-1", true, "https://console.example")).viewOnly).toBe(true)
+    expect((await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)).viewOnly).toBe(true)
     expect(f.log[0]).toBe("status")
     expect(f.log).not.toContain("pause")
-    await f.api.close("r1", "a-1")
+    await f.api.close("r1", "a-1", f.scope)
     f.member(false)
-    await expect(f.api.desktop("r1", "a-1", true, "https://console.example")).rejects.toThrow()
+    await expect(f.api.desktop("r1", "a-1", true, "https://console.example", { id: "next-desktop" })).rejects.toThrow()
+    expect(f.log.filter((x) => x === "status")).toHaveLength(2)
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
   } finally { await f.end() }
 })
@@ -407,7 +414,7 @@ test("invalidation joins setup at every remote stage and prevents a new worker f
       const grant = f.machine.previewGrant
       f.machine.previewGrant = async (...args) => { const result = await grant(...args); started.resolve(); await released.promise; return result }
     } else held = holdRequest(f, stage)
-    const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example"))
+    const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example", f.scope))
     try {
       await (held?.started ?? started.promise)
       let cleaned = false
@@ -431,11 +438,11 @@ test("invalidation joins setup at every remote stage and prevents a new worker f
 test("Release cancels an in-flight open, waits for cleanup and never returns its URL", async () => {
   const f = fixture()
   const held = holdRequest(f, "open")
-  const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example"))
+  const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example", f.scope))
   try {
     await held.started
     let closed = false
-    const release = outcome(f.api.close("r1", "a-1")).then((r) => { closed = true; return r })
+    const release = outcome(f.api.close("r1", "a-1", f.scope)).then((r) => { closed = true; return r })
     await tick()
     expect(closed).toBe(false)
     held.release()
@@ -449,7 +456,7 @@ test("Release cancels an in-flight open, waits for cleanup and never returns its
 test("expiry cancels a configured setup before its delayed open response", async () => {
   const f = fixture()
   const held = holdRequest(f, "open")
-  const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example"))
+  const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example", f.scope))
   try {
     await held.started
     expect(f.expire()).toBe(true)
@@ -481,13 +488,13 @@ test("an old worker exit cannot invalidate a new worker's pending Ask", async ()
 test("a timed-out pause and late acknowledgment never authorize Release to resume", async () => {
   const f = fixture()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     f.ack(false)
-    await expect(f.api.desktop("r1", "a-1", false, "https://console.example")).rejects.toThrow()
+    await expect(f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)).rejects.toThrow()
     const req = f.lines.findLast((l) => l.roamControl?.op === "pause").roamControl
     f.api.consume(f.run, f.child, "epoch-1", { ev: "roam-control", ...req, ok: true, state: "paused" })
     f.ack(true)
-    await expect(f.api.close("r1", "a-1")).rejects.toThrow("blocked")
+    await expect(f.api.close("r1", "a-1", f.scope)).rejects.toThrow("blocked")
     expect(f.log).not.toContain("resume")
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
   } finally { await f.end() }
@@ -498,8 +505,8 @@ test("Take control refuses a different machine than the one watched", async () =
   let lookups = 0
   f.lookup(async () => ++lookups === 1 ? f.machine : { ...f.machine, id: "replacement" })
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
-    await expect(f.api.desktop("r1", "a-1", false, "https://console.example")).rejects.toThrow("machine")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    await expect(f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)).rejects.toThrow("machine")
     expect(f.log).not.toContain("pause")
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
   } finally { await f.end() }
@@ -519,10 +526,10 @@ test("real worker gate drains active work before its matching pause can authoriz
   }
   let work, take
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     work = worker.run("a-1", () => active.promise)
     await tick()
-    take = outcome(f.api.desktop("r1", "a-1", false, "https://console.example"))
+    take = outcome(f.api.desktop("r1", "a-1", false, "https://console.example", f.scope))
     await tick()
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
     await expect(worker.run("a-1", () => "must not run")).rejects.toThrow()
@@ -531,7 +538,7 @@ test("real worker gate drains active work before its matching pause can authoriz
     expect(f.log.filter((x) => x === "open")).toHaveLength(1)
     paused.resolve()
     expect((await take).value.viewOnly).toBe(false)
-    await f.api.close("r1", "a-1")
+    await f.api.close("r1", "a-1", f.scope)
     expect(f.log.slice(-3)).toEqual(["close", "revoke", "resume"])
   } finally { active.resolve(); paused.resolve(); await work; await take; worker.dispose(); await f.end() }
 })
@@ -541,8 +548,8 @@ test("Ask waits for both cleanup completions and matching resume before its own 
   let held, answer
   const revoked = deferred(), revokeStarted = deferred()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
-    await f.api.desktop("r1", "a-1", false, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    await f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)
     f.api.consume(f.run, f.child, "epoch-1", ask())
     held = holdRequest(f, "close")
     const revoke = f.machine.expirePreview
@@ -569,13 +576,13 @@ test("Ask waits for both cleanup completions and matching resume before its own 
 test("a lost resume acknowledgment sends terminal cancel and never reopens the failed lease", async () => {
   const f = fixture()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
-    await f.api.desktop("r1", "a-1", false, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    await f.api.desktop("r1", "a-1", false, "https://console.example", f.scope)
     f.ack(false)
-    await expect(f.api.close("r1", "a-1")).rejects.toThrow("blocked")
+    await expect(f.api.close("r1", "a-1", f.scope)).rejects.toThrow("blocked")
     expect(f.log.slice(-4)).toEqual(["close", "revoke", "resume", "cancel"])
     f.ack(true)
-    await expect(f.api.desktop("r1", "a-1", true, "https://console.example")).rejects.toThrow("blocked")
+    await expect(f.api.desktop("r1", "a-1", true, "https://console.example", { id: "retry-desktop" })).rejects.toThrow("blocked")
   } finally { await f.end() }
 })
 
@@ -583,7 +590,7 @@ test("invalidation joins a held revocation and refuses a new worker after cleanu
   const f = fixture()
   const held = deferred(), started = deferred()
   try {
-    await f.api.desktop("r1", "a-1", true, "https://console.example")
+    await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
     f.machine.expirePreview = async () => { started.resolve(); await held.promise; throw Error("synthetic cleanup failure") }
     let ended = false
     const first = outcome(f.api.invalidate(f.run)).then((r) => { ended = true; return r })
@@ -597,4 +604,92 @@ test("invalidation joins a held revocation and refuses a new worker after cleanu
     expect((await second).error).toBeDefined()
     expect(() => f.api.begin(f.run, {}, "epoch-2")).toThrow("cleanup")
   } finally { held.resolve(); await f.end() }
+})
+
+test("router child explicitly disables dotenv and uses a synthetic spend path", async () => {
+  const dir = mkdtempSync(`${TEST_STORE_DIR}/dotenv-canary-`)
+  try {
+    writeFileSync(`${dir}/.env`, "REVIEW_SYNTHETIC_CANARY=synthetic-only\n", { mode: 0o600 })
+    const command = 'console.log(JSON.stringify({canary:process.env.REVIEW_SYNTHETIC_CANARY ?? "absent",ledger:process.env.SPEND_LEDGER}))'
+    const control = Bun.spawn([process.execPath, "--eval", command], { cwd: dir, env: { TMPDIR: dir, HOME: dir, SPEND_LEDGER: `${dir}/control-spend.jsonl` }, stdout: "pipe", stderr: "pipe" })
+    const guarded = routeChild(command, [], dir)
+    const [controlOut, guardedOut, controlErr, guardedErr, controlCode, guardedCode] = await Promise.all([
+      new Response(control.stdout).text(), new Response(guarded.stdout).text(), new Response(control.stderr).text(), new Response(guarded.stderr).text(), control.exited, guarded.exited,
+    ])
+    expect(controlCode).toBe(0)
+    expect(guardedCode).toBe(0)
+    expect(controlErr).toBe("")
+    expect(guardedErr).toBe("")
+    expect(JSON.parse(controlOut).canary).toBe("synthetic-only")
+    expect(JSON.parse(guardedOut)).toEqual({ canary: "absent", ledger: `${TEST_STORE_DIR}/route-spend.jsonl` })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("desktop identity is required, bound to worker/run/agent, and never enters events", async () => {
+  const f = fixture()
+  try {
+    for (const identity of [undefined, null, [], "unscoped", {}, { id: "" }, { id: "x".repeat(129) }, { id: "valid", epoch: 7 }, { id: "valid", extra: true }]) {
+      await expect(f.api.desktop("r1", "a-1", true, "https://console.example", identity)).rejects.toThrow("identity")
+      await expect(f.api.close("r1", "a-1", identity)).rejects.toThrow("identity")
+    }
+    expect(f.log).toEqual([])
+    const watched = await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    expect(watched.desktop).toEqual({ id: f.scope.id, epoch: "epoch-1" })
+    await f.api.desktop("r1", "a-1", false, "https://console.example", watched.desktop)
+    const before = f.log.length
+    await f.api.close("r1", "a-1", { id: f.scope.id, epoch: "old-worker" })
+    await expect(f.api.close("r2", "a-1", watched.desktop)).rejects.toThrow("run")
+    await expect(f.api.close("r1", "a-2", watched.desktop)).rejects.toThrow("free-roam")
+    expect(f.log.slice(before)).toEqual([])
+    expect(f.events.at(-1).viewOnly).toBe(false)
+    expect(JSON.stringify(f.events)).not.toContain(f.scope.id)
+    expect(JSON.stringify(f.events)).not.toContain("epoch-1")
+    await f.api.close("r1", "a-1", watched.desktop)
+    expect(f.log.slice(-3)).toEqual(["close", "revoke", "resume"])
+  } finally { await f.end() }
+})
+
+test("cancellation before its POST retires only that request and cannot affect another setup", async () => {
+  const f = fixture({ timeoutMs: 1000 })
+  try {
+    const cancelled = { id: "cancelled-before-post" }
+    expect(await f.api.close("r1", "a-1", cancelled)).toEqual({ kind: "closed" })
+    await expect(f.api.desktop("r1", "a-1", true, "https://console.example", cancelled)).rejects.toThrow("retired")
+    expect(f.log).toEqual([])
+    const watched = await f.api.desktop("r1", "a-1", true, "https://console.example", f.scope)
+    f.ack(false)
+    const take = outcome(f.api.desktop("r1", "a-1", false, "https://console.example", watched.desktop))
+    await tick()
+    const before = f.log.length
+    await f.api.close("r1", "a-1", cancelled)
+    expect(f.log.slice(before)).toEqual([])
+    const pause = f.lines.at(-1).roamControl
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "roam-control", ...pause, ok: true, state: "paused" })
+    expect((await take).value.viewOnly).toBe(false)
+    f.ack(true)
+    await f.api.close("r1", "a-1", watched.desktop)
+    expect(f.log.slice(-3)).toEqual(["close", "revoke", "resume"])
+  } finally { await f.end() }
+})
+
+test("unowned Watch cannot replace another session and a genuine delayed capability is revoked on cancellation", async () => {
+  const f = fixture()
+  const held = holdRequest(f, "open")
+  const setup = outcome(f.api.desktop("r1", "a-1", true, "https://console.example", f.scope))
+  try {
+    await held.started
+    const cancelling = outcome(f.api.close("r1", "a-1", f.scope))
+    held.release()
+    expect((await setup).error).toBeDefined()
+    expect((await cancelling).value).toEqual({ kind: "closed" })
+    expect(f.log.slice(-2)).toEqual(["close", "revoke"])
+    const next = { id: "new-session" }
+    await f.api.desktop("r1", "a-1", true, "https://console.example", next)
+    await f.api.desktop("r1", "a-1", false, "https://console.example", next)
+    const before = f.log.length
+    await expect(f.api.desktop("r1", "a-1", true, "https://console.example", { id: "foreign-session" })).rejects.toThrow("Another desktop")
+    await f.api.close("r1", "a-1", f.scope)
+    expect(f.log.slice(before)).toEqual([])
+    expect(f.events.at(-1).viewOnly).toBe(false)
+  } finally { held.release(); await setup; await f.end() }
 })

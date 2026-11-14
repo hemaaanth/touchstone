@@ -16,6 +16,7 @@ import type {
   AskAnswer,
   RoamSelection,
   SandboxDesktopView,
+  SandboxDesktopIdentity,
   SessionManifest,
 } from "./types"
 import { reportStalePage, setConsoleToken, tokenHeaders } from "./console-token"
@@ -310,10 +311,10 @@ export function fetchRun(id: string): Promise<RunView> {
 }
 
 export const answerRunAsk = (run: string, answer: AskAnswer) => postJson<{ ok: true }>(`/api/runs/${encodeURIComponent(run)}/ask`, answer)
-export const openRunDesktop = (run: string, agent: string, viewOnly: boolean) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly })
-export async function closeRunDesktop(run: string, agent: string): Promise<SandboxDesktopView> {
+export const openRunDesktop = (run: string, agent: string, viewOnly: boolean, desktop: SandboxDesktopIdentity) => postJson<SandboxDesktopView>(`/api/runs/${encodeURIComponent(run)}/desktop`, { agent, viewOnly, desktop })
+export async function closeRunDesktop(run: string, agent: string, desktop: SandboxDesktopIdentity): Promise<SandboxDesktopView> {
   const url = `/api/runs/${encodeURIComponent(run)}/desktop`
-  const res = await fetch(url, { method: "DELETE", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ agent }) })
+  const res = await fetch(url, { method: "DELETE", headers: { "content-type": "application/json", ...tokenHeaders() }, body: JSON.stringify({ agent, desktop }) })
   return writeResult<SandboxDesktopView>(url, res)
 }
 const sessionPath = (run: string, id?: string, action?: string) => `/api/runs/${encodeURIComponent(run)}/session-artifacts${id ? `/${encodeURIComponent(id)}/${action}` : ""}`

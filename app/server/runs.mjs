@@ -290,8 +290,8 @@ const roamControl = (registry.roamControl ??= createRoamControlApi({
 }))
 
 export const answerRunAsk = (id, body) => roamControl.answer(id, body)
-export const openRunDesktop = (id, agent, viewOnly, origin) => roamControl.desktop(id, agent, viewOnly, origin)
-export const closeRunDesktop = (id, agent) => roamControl.close(id, agent)
+export const openRunDesktop = (id, agent, viewOnly, origin, desktop) => roamControl.desktop(id, agent, viewOnly, origin, desktop)
+export const closeRunDesktop = (id, agent, desktop) => roamControl.close(id, agent, desktop)
 const sessionArtifacts = createSessionArtifactsApi({
   getRun: (id) => runs.get(id),
   rootOf: (id) => path.join(RESULTS_DIR, `run-${id}.session`),

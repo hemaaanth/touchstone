@@ -57,6 +57,13 @@ Unknown pause/resume state stays latched; stop the run. Incomplete revocation
 also refuses a new worker. A child turn ending does not imply lost membership;
 the current worker gate is authoritative.
 
+Each desktop starts with a client request ID before its POST is sent. The server
+binds it to the existing worker epoch and returns that binding privately.
+Take control and Release reuse it. Unmount and late-response cleanup name only
+that original request, never whichever desktop is current for the agent.
+Cancelled IDs stay retired in this process, including cancellation before POST;
+old worker responses and expiry callbacks cannot release a newer session.
+
 These controls are development source with isolated fixture coverage, not proof
 of a deployed desktop image or real streaming. Exact-image review and screenshot
 release remain disabled. No post-run machine retention is implied.
@@ -64,7 +71,9 @@ release remain disabled. No post-run machine retention is implied.
 Private routes use authenticated same-origin JSON POSTs, except desktop close:
 
 - `/api/runs/:id/ask`: `{ask,done}` or `{ask,reply}`.
-- `/api/runs/:id/desktop` POST: `{agent,viewOnly}`; DELETE: `{agent}`.
+- `/api/runs/:id/desktop` POST: `{agent,viewOnly,desktop}`; DELETE: `{agent,desktop}`.
+- `desktop`: `{id,epoch?}`. Create one ID for Watch; reuse the returned worker
+  epoch for control and release. Missing or malformed identities are refused.
 - `/api/runs/:id/session-artifacts`: `{candidate}`.
 - `/api/runs/:id/session-artifacts/:artifact/read`: `{candidate}`.
 - `/api/runs/:id/session-artifacts/:artifact/release`: disabled in this release.

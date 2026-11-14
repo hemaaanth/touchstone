@@ -1,3 +1,4 @@
+import { TEST_STORE_DIR } from "./helpers/isolated-env"
 import { test, expect } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { reduceEvents } from "../src/lib/runModel"
@@ -8,6 +9,7 @@ import { runStartBody } from "../src/lib/api"
 import { OptionList } from "../src/components/assistant-ui/elements/option-list"
 import { formatAskChoiceReply, isAskPresentation, type AskPresentation } from "../src/lib/types"
 import { SandboxDesktop } from "../src/components/sandbox-desktop"
+import { execFileSync } from "node:child_process"
 
 const spawn = { ev: "subagent-spawned", id: "a-1", name: "Scout", loadout: "free-roam", model: "test-model", t: 1 }
 const first = { ev: "ask-human", id: "one", agent: "a-1", kind: "login", question: "Open test account", t: 2 }
@@ -143,4 +145,76 @@ test("desktop starts closed with Watch only; a stopped worker has no enabled des
   expect(live).not.toContain("<iframe")
   const stopped = renderToStaticMarkup(<SandboxDesktop runId="r1" agent="a-1" live={false} closedAt={-1} />)
   expect(stopped).toMatch(/<button[^>]*disabled[^>]*>Watch<\/button>/)
+})
+
+test("retired component cleanup cannot release a newer session or replacement worker; expiry stays scoped", () => {
+  const app = new URL("../", import.meta.url).pathname
+  const probe = String.raw`
+    import assert from 'node:assert/strict';
+    import {readFileSync} from 'node:fs';
+    import {randomUUID} from 'node:crypto';
+    import {runInNewContext} from 'node:vm';
+    import {createRoamControlApi} from ${JSON.stringify(`${app}server/roam-control.mjs`)};
+    const source=readFileSync(${JSON.stringify(`${app}src/components/sandbox-desktop.tsx`)},'utf8');
+    const body=source.slice(source.indexOf('  const [view,'),source.indexOf('\n  return ('));
+    const js=new Bun.Transpiler({loader:'tsx'}).transformSync('function component({runId,agent,live,closedAt}) {'+body+'\nreturn {changed,invalidate};}');
+    function component(open,close,initialView){
+      let states=0,refs=0;const timers=[];
+      const make=runInNewContext(js+';component',{
+        useState:value=>[states++===0&&initialView?initialView:value,()=>{}],
+        useRef:value=>({current:refs++===2&&initialView?initialView.desktop:value}),
+        useCallback:f=>f,useEffect:f=>f(),useLayoutEffect:f=>f(),
+        setTimeout:f=>{timers.push(f);return timers.length},clearTimeout:()=>{},
+        crypto:{randomUUID},openRunDesktop:open,closeRunDesktop:close,
+      });
+      return{...make({runId:'r1',agent:'a-1',live:true,closedAt:-1}),timers};
+    }
+    function backend(){
+      const log=[],events=[],grants=new Set();let api,sequence=0,remote='closed';
+      const run={id:'r1',owner:{},ws:'/synthetic',status:'running',roamEpoch:'epoch-1',events:[{ev:'subagent-spawned',id:'a-1',loadout:'free-roam',t:1}]};
+      function child(epoch){const value={stdin:{writable:true,write(raw,cb){cb?.();const q=JSON.parse(raw).roamControl;if(q){log.push(q.op);queueMicrotask(()=>api.consume(run,value,epoch,{ev:'roam-control',...q,ok:true,state:q.op==='pause'?'paused':q.op==='cancel'?'closed':'running'}))}}}};return value}
+      const machine={id:'machine-1',async request(bytes){const q=JSON.parse(bytes);log.push(q.action);if(q.action==='configure'){assert.equal(remote,'closed');remote='configured';sequence++;return{kind:'configured',port:9876,expires:900001}}if(q.action==='open'){assert.equal(remote,'configured');remote='open';return{kind:'open',port:9876,viewOnly:q.viewOnly,expires:900001}}remote='closed';return{kind:'closed'}},async previewGrant(){log.push('grant');const token='grant-'+sequence;grants.add(token);return{url:'https://synthetic.invalid/',expires:900001,revokeToken:token}},async expirePreview(port,token){assert.equal(port,9876);assert(grants.delete(token));log.push('revoke')}};
+      api=createRoamControlApi({getRun:id=>id===run.id?run:null,emit:(_,event)=>events.push(event),machine:async()=>machine,now:()=>1,timeoutMs:1000});
+      run.child=child(run.roamEpoch);api.begin(run,run.child,run.roamEpoch);
+      return{api,run,machine,log,events,grants,async replace(){await api.invalidate(run,run.child,run.roamEpoch);run.roamEpoch='epoch-2';run.child=child(run.roamEpoch);machine.id='machine-2';api.begin(run,run.child,run.roamEpoch)}};
+    }
+    for(const replacement of [false,true]){
+      const f=backend(),response=Promise.withResolvers(),opened=Promise.withResolvers(),arrival=Promise.withResolvers();let first=true,delayClose=replacement,pendingClose;
+      const open=async(id,agent,viewOnly,desktop)=>{const hold=first;first=false;const value=await f.api.desktop(id,agent,viewOnly,'https://console.invalid',desktop);if(hold){opened.resolve(value);return response.promise}return value};
+      const close=(id,agent,desktop)=>{if(delayClose){delayClose=false;return pendingClose=arrival.promise.then(()=>f.api.close(id,agent,desktop))}return pendingClose=f.api.close(id,agent,desktop)};
+      try{
+        const old=component(open,close),request=old.changed('watch'),oldResponse=await opened.promise;
+        old.invalidate();const oldCleanup=pendingClose;
+        if(replacement)await f.replace();else await oldCleanup;
+        const newer=component(open,close);await newer.changed('watch');await newer.changed('control');
+        assert.equal(f.events.at(-1).viewOnly,false);assert.equal(f.grants.size,1);
+        const before=f.log.length;
+        if(replacement){arrival.resolve();await oldCleanup}
+        response.resolve(oldResponse);await request;
+        assert.deepEqual(f.log.slice(before),[]);assert.equal(f.events.at(-1).viewOnly,false);assert.equal(f.grants.size,1);
+        await newer.changed('close');assert.deepEqual(f.log.slice(-3),['close','revoke','resume']);assert.equal(f.grants.size,0);
+      }finally{arrival.resolve();await f.api.invalidate(f.run)}
+    }
+    {
+      const f=backend();let cleanup;
+      const identity={id:randomUUID()};
+      const open=(id,agent,viewOnly,desktop)=>f.api.desktop(id,agent,viewOnly,'https://console.invalid',desktop);
+      const close=(id,agent,desktop)=>cleanup=f.api.close(id,agent,desktop);
+      try{
+        const watched=await open('r1','a-1',true,identity);
+        const old=component(open,close,watched);assert.equal(old.timers.length,1);
+        await old.changed('control');const before=f.log.length;old.timers[0]();await Bun.sleep(0);
+        assert.deepEqual(f.log.slice(before),[]);assert.equal(f.events.at(-1).viewOnly,false);assert.equal(f.grants.size,1);
+        const controlled={...watched,viewOnly:false};
+        const current=component(open,close,controlled);current.timers[0]();await Bun.sleep(0);await cleanup;
+        assert.deepEqual(f.log.slice(-3),['close','revoke','resume']);assert.equal(f.grants.size,0);
+      }finally{await f.api.invalidate(f.run)}
+    }
+    console.log(JSON.stringify({retiredResponse:'ignored',replacementWorker:'untouched',staleExpiry:'ignored',currentReleaseAndExpiry:'closed-revoked-resumed'}));
+  `
+  const output = execFileSync(process.execPath, ["--no-env-file", "--eval", probe], {
+    cwd: TEST_STORE_DIR, encoding: "utf8", timeout: 10000,
+    env: { PATH: process.env.PATH, HOME: TEST_STORE_DIR, TMPDIR: TEST_STORE_DIR, SPEND_LEDGER: `${TEST_STORE_DIR}/ui-spend.jsonl`, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${TEST_STORE_DIR}/ui-token`, TOUCHSTONE_GRANTS_FILE: `${TEST_STORE_DIR}/ui-grants.json`, TOUCHSTONE_SCOPES_FILE: `${TEST_STORE_DIR}/ui-scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${TEST_STORE_DIR}/ui-providers.json`, TOUCHSTONE_RESULTS_DIR: `${TEST_STORE_DIR}/ui-results` },
+  })
+  expect(JSON.parse(output)).toEqual({ retiredResponse: "ignored", replacementWorker: "untouched", staleExpiry: "ignored", currentReleaseAndExpiry: "closed-revoked-resumed" })
 })
