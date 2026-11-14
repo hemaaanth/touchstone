@@ -8,14 +8,19 @@ const PREREQUISITES = `sh -c ${quote(`for x in sh nohup seq sleep base64 head ta
 const LOCAL_HTTP = `import http from 'node:http';const server=http.createServer((q,r)=>r.end('touchstone-egress-ready'));await new Promise(r=>server.listen(0,'127.0.0.1',r));try{await new Promise((resolve,reject)=>{const q=http.get({host:'127.0.0.1',port:8899,path:'http://127.0.0.1:'+server.address().port+'/touchstone-probe',signal:AbortSignal.timeout(5000)},r=>{let text='';r.on('data',b=>text+=b);r.on('end',()=>r.statusCode===200&&text==='touchstone-egress-ready'?resolve():reject(new Error('probe')))});q.on('error',reject)});process.stdout.write('touchstone-egress-ready')}finally{server.close()}`;
 
 export async function probeDaytonaShell(machine) {
+  let stage = "prerequisites";
   try {
     const prerequisites = await machine.exec(PREREQUISITES, 15);
     if (prerequisites?.exitCode !== 0 || prerequisites.result !== "touchstone-prerequisites-ready") throw new Error();
+    stage = "egress_start";
     await startEgressLog(machine);
+    stage = "egress_http";
     const http = await machine.exec(`node --input-type=module -e ${quote(LOCAL_HTTP)}`, 15);
     if (http?.exitCode !== 0 || http.result !== "touchstone-egress-ready") throw new Error();
+    stage = "egress_record";
     const records = await pullEgressLog(machine);
     if (!records.some((r) => r.host === "127.0.0.1" && r.method === "GET" && r.status === 200 && new URL(r.url).pathname === "/touchstone-probe")) throw new Error();
+    stage = "supervisor";
     await probeManagedShell(machine);
-  } catch { throw daytonaError("daytona_shell_unverified"); }
+  } catch { throw daytonaError(`daytona_shell_${stage}_failed`); }
 }

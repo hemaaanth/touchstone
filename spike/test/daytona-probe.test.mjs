@@ -54,5 +54,5 @@ test("the shell probe exercises the actual supervisor protocol and only loopback
 
 for (const stage of ["prerequisites", "logger", "egress", "ack"]) test(`failed ${stage} cannot become shell readiness`, async () => {
   const fake = fakeMachine(stage);
-  await assert.rejects(probeDaytonaShell(fake.machine), (e) => e.code === "daytona_shell_unverified" && e.cause === undefined);
+  await assert.rejects(probeDaytonaShell(fake.machine), (e) => e.code === ({ prerequisites: "daytona_shell_prerequisites_failed", logger: "daytona_shell_egress_start_failed", egress: "daytona_shell_egress_record_failed", ack: "daytona_shell_supervisor_failed" })[stage] && e.cause === undefined);
 });
