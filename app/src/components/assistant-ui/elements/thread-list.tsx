@@ -420,7 +420,7 @@ export const ThreadListItem: FC = () => {
           <ModuleDots ids={run.modules.map((m) => m.id)} packs={run.modules} />
         </span>
       ) : null}
-      {isDemoMode() ? null : <ThreadListItemMore
+      {isDemoMode() ? <ThreadListItemMoreInert /> : <ThreadListItemMore
         canArchive={run?.canArchive ?? false}
         onRename={() => setIsRenaming(true)}
       />}
@@ -501,6 +501,20 @@ const ThreadListItemRename: FC<{
 
 const MORE_ITEM =
   "hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none";
+
+// In the demo the runs are read-only — no rename, archive or delete. The row
+// still reserves the menu's slot (pe-9), so rather than leave it blank, it holds
+// the ⋯ mark inert: a faint affordance that appears on hover like the real one
+// but cannot be focused or clicked, so the absence of actions looks deliberate.
+const ThreadListItemMoreInert: FC = () => (
+  <span
+    aria-hidden
+    data-slot="aui_thread-list-item-more"
+    className="text-muted-foreground pointer-events-none absolute end-1.5 top-[5px] flex size-6 items-center justify-center opacity-0 transition-opacity group-hover:opacity-30 group-has-focus-visible:opacity-30 group-data-active:opacity-30"
+  >
+    <MoreHorizontalIcon className="size-3.5" />
+  </span>
+);
 
 const ThreadListItemMore: FC<{ canArchive: boolean; onRename: () => void }> = ({
   canArchive,

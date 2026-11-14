@@ -277,11 +277,7 @@ export function App() {
               <section className="flex w-full max-w-md flex-col items-start gap-5" aria-labelledby="demo-welcome">
                 <div className="space-y-2">
                   <h1 id="demo-welcome" className="text-xl font-medium tracking-tight">Watch an audit take shape.</h1>
-                  <p className="text-sm leading-relaxed text-muted-foreground">Select a prepared demo, watch the agents work, then inspect their evidence, files and replay results.</p>
-                </div>
-                <div className="space-y-1 text-sm text-muted-foreground">
-                  <p>Sponsored inference via NEAR AI · DeepSeek</p>
-                  <p>${demo.budgetUsd} budget · {demo.maxMinutes}-minute work limit · No API key needed</p>
+                  <p className="text-sm leading-relaxed text-muted-foreground">Pick a prepared scope and watch the agents work, then inspect their evidence.</p>
                 </div>
                 <Button onClick={() => { refreshModels(); setStartError(null); setDialogOpen(true) }}>Select a demo</Button>
                 <a className="focus-ring rounded-sm text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground" href={DEMO_SOURCE} target="_blank" rel="noopener noreferrer">Explore Touchstone on GitHub</a>
