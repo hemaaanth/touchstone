@@ -169,12 +169,16 @@ test("shell: the log cannot be read after the command; the model still gets the 
   assert.deepEqual(f.steps, ["machine a-1", "start m-1", "exec", "record shell", "pull m-1"]);
 });
 
-test("shell: no exit code from the machine gives `exit unknown`", async () => {
+test("shell: no exit code records empty output and throws fixed text", async () => {
   const f = fakes();
   f.m.exec = async () => ({ exitCode: undefined, result: RAW });
-  assert.equal(textOf(await as("a-1", shellOf(f), { command: "id" })), "session session:a-1:1\nexit unknown\nscrubbed output");
-  assert.ok("exit_code" in f.entries[0]);
-  assert.equal(f.entries[0].exit_code, undefined);
+  await assert.rejects(as("a-1", shellOf(f), { command: "id" }), (e) => {
+    assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+    assert.equal(e.cause, undefined);
+    return true;
+  });
+  assert.deepEqual({ ...f.entries[0], t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "id", exit_code: undefined, output: "" });
+  assert.deepEqual(f.steps, ["machine a-1", "start m-1", "record shell"]);
 });
 
 test("shell: the description does not say that the session line is first", () => {
@@ -517,5 +521,109 @@ test("a huge answer of a roam exec: this computer keeps only its last 4 MB", asy
     // A small answer is read whole, as before.
     fake.onExec = () => stream(JSON.stringify({ exitCode: 0, result: "small \n \"x\"" }));
     assert.deepEqual(await m.exec("id", 5), { exitCode: 0, result: 'small \n "x"' });
+    fake.onExec = () => stream("﻿" + JSON.stringify({ exitCode: 0, result: "BOM é" }));
+    assert.deepEqual(await m.exec("id", 5), { exitCode: 0, result: "BOM é" });
+  });
+});
+
+for (const failure of ["upload", "startup JSON"]) {
+  test(`shell hides ${failure} failure and retries startup without a user command`, async () => {
+    await withFake(async ({ ws, fake }) => {
+      const { f, shell } = realShell(ws);
+      let starts = 0;
+      let fail = true;
+      const fetch = globalThis.fetch;
+      globalThis.fetch = (url, init) => fail && failure === "upload" && String(url).includes("/files/upload")
+        ? Promise.resolve(new Response("MACHINE_SECRET_UPLOAD", { status: 500 })) : fetch(url, init);
+      fake.onExec = ({ command }) => fail && failure === "startup JSON" && command === "start-log"
+        ? new Response("MACHINE_SECRET_PARSE") : null;
+      f.egress.start = async (m) => {
+        starts++;
+        await m.upload("/tmp/log-script", Buffer.from("log script fixture"));
+        await m.exec("start-log", 5);
+      };
+      await assert.rejects(as("a-1", shell, { command: "user-command" }), (e) => {
+        assert.equal(e.message, "The request log did not start. No log, no shell.");
+        assert.equal(e.cause, undefined);
+        return true;
+      });
+      assert.equal(starts, 1);
+      assert.deepEqual(f.entries, []);
+      assert.ok(fake.execs.every((e) => e.command === "true" || e.command === "start-log"));
+      fail = false;
+      assert.equal(textOf(await as("a-1", shell, { command: "user-command" })), "session session:a-1:1\nexit 0\nscrubbed output");
+      assert.equal(starts, 2);
+      assert.equal(f.entries.length, 1);
+      assert.equal(fake.execs.at(-2).command, "start-log");
+      assert.equal(fake.execs.at(-1).command, `sh -c ${shq(`${ENV}user-command`)}`);
+      await as("a-1", shell, { command: "user-command" });
+      assert.equal(starts, 2);
+    });
+  });
+}
+
+for (const fragmented of [false, true]) {
+  test(`roam reader bounds its retained buffers: ${fragmented ? "fragmented prefix and many chunks" : "one 64 MiB chunk"}`, async (t) => {
+    await withFake(async ({ ws, fake }) => {
+      const MAX = 4 * 1024 * 1024;
+      const m = await roamMachine(ws, "a-1");
+      const bytes = Buffer.from(`{"exitCode":7,"result":"${"x".repeat(fragmented ? MAX + 1234 : 64 * 1024 * 1024)}END"}`);
+      const allocations = [];
+      const destinations = new Set();
+      // Observe allocations by this reader, excluding the fixture and HTTP machinery.
+      for (const name of ["alloc", "allocUnsafe", "allocUnsafeSlow", "from", "concat"]) {
+        const original = Buffer[name];
+        t.mock.method(Buffer, name, function (...args) {
+          const result = Reflect.apply(original, this, args);
+          if (new Error().stack.includes("at cappedExec")) allocations.push(result);
+          return result;
+        });
+      }
+      const set = Buffer.prototype.set;
+      t.mock.method(Buffer.prototype, "set", function (source, offset) {
+        if (allocations.includes(this)) {
+          assert.ok(source.byteLength <= MAX);
+          assert.notEqual(this.buffer, bytes.buffer);
+          destinations.add(this);
+        }
+        return Reflect.apply(set, this, [source, offset]);
+      });
+      fake.onExec = () => ({ ok: true, body: (async function* () {
+        let at = 0;
+        while (at < bytes.length) {
+          const end = Math.min(bytes.length, at + (fragmented ? (at < 64 ? 1 : 257) : bytes.length));
+          const chunk = bytes.subarray(at, end);
+          yield chunk;
+          // Reusing incoming storage must not alter the retained prefix or tail.
+          chunk.fill(0);
+          at = end;
+        }
+      })() });
+      try {
+        const r = await m.exec("large-output", 5);
+        assert.equal(r.exitCode, 7);
+        assert.equal(r.result, "x".repeat(MAX - 5) + "END");
+        assert.deepEqual(allocations.map((b) => b.length), [MAX, 64]);
+        assert.deepEqual(allocations.map((b) => b.buffer.byteLength), [MAX, 64]);
+        assert.equal(destinations.size, 2);
+      } finally {
+        t.mock.restoreAll();
+      }
+    });
+  });
+}
+
+test("shell treats a capped answer with no recoverable exit code as a failed command", async () => {
+  await withFake(async ({ ws, fake }) => {
+    const { f, shell } = realShell(ws);
+    fake.onExec = ({ command }) => command === "true" ? null
+      : new Response(JSON.stringify({ result: "x".repeat(5 * 1024 * 1024) }));
+    await assert.rejects(as("a-1", shell, { command: "id" }), (e) => {
+      assert.equal(e.message, "The command did not finish on the machine (HTTP no answer). It may still be running.");
+      assert.equal(e.cause, undefined);
+      return true;
+    });
+    assert.deepEqual({ ...f.entries[0], t: 0 }, { agent: "a-1", kind: "shell", t: 0, sandbox: "m-1", command: "id", exit_code: undefined, output: "" });
+    assert.deepEqual(f.steps, ["start m-1", "record shell"]);
   });
 });

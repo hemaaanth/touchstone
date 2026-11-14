@@ -39,12 +39,17 @@ export function roamTools(ws, { record, egress, machine = roamMachine }) {
     // No log, no shell. A machine this worker did not start the log on gets it
     // first: a new one, one from the sidecar, one whose last start or pull failed.
     if (!logged.has(m.id)) {
-      await egress.start(m);
+      try {
+        await egress.start(m);
+      } catch {
+        throw new Error("The request log did not start. No log, no shell.");
+      }
       logged.add(m.id);
     }
     let r;
     try {
       r = await m.exec(`sh -c ${shq(egress.env + command)}`, seconds);
+      if (r.exitCode === undefined) throw new Error();
     } catch (e) {
       // The command may have run, so it gets its entry. The error is a fixed
       // text: what the machine answered is not scrubbed, and the model reads it.

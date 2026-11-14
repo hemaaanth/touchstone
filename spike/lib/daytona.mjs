@@ -844,30 +844,38 @@ export function warmScript(v) {
 export const ROAM_SNAPSHOT = process.env.TOUCHSTONE_ROAM_SNAPSHOT ?? "daytona-medium";
 const ROAM_STOP_MIN = 60;
 const ROAM_DELETE_MIN = 240;
-// The child is root on its machine and can print gigabytes. This computer
-// keeps at most this much of one answer in memory.
+// Bound retained response bytes, not decoded strings or the transport's current chunk.
 const ROAM_ANSWER_BYTES = 4 * 1024 * 1024;
 
-// Read the answer of a roam `exec` ({ exitCode, result } as JSON), with at
-// most `max` bytes kept. A larger answer loses its head: `result` is the tail
-// of the output, and `exitCode` is known only when it stands at the start or
-// the end of the JSON.
+// Retain a fixed `max`-byte tail and a separate 64-byte prefix. For a larger
+// answer, exitCode is known only when it stands at the start or end of the JSON.
 async function cappedExec(r, max) {
-  const chunks = [];
-  let kept = 0;
+  const tail = Buffer.alloc(max);
+  const first = Buffer.alloc(64);
+  let prefix = 0;
+  let at = 0;
   let total = 0;
-  let first = null;
   for await (const chunk of r.body ?? []) {
-    const b = Buffer.from(chunk);
-    first ??= b.subarray(0, 64);
-    total += b.length;
-    kept += b.length;
-    chunks.push(b);
-    while (kept - chunks[0].length >= max) kept -= chunks.shift().length;
+    const n = Math.min(first.length - prefix, chunk.length);
+    first.set(chunk.subarray(0, n), prefix);
+    prefix += n;
+    total += chunk.length;
+    if (chunk.length >= max) {
+      tail.set(chunk.subarray(chunk.length - max));
+      at = 0;
+    } else {
+      const end = Math.min(chunk.length, max - at);
+      tail.set(chunk.subarray(0, end), at);
+      tail.set(chunk.subarray(end), 0);
+      at = (at + chunk.length) % max;
+    }
   }
-  const buf = Buffer.concat(chunks);
-  if (total <= max) return total ? JSON.parse(buf.toString("utf8")) : null;
-  const s = buf.subarray(buf.length - max).toString("utf8");
+  if (total <= max) return total ? JSON.parse(new TextDecoder().decode(tail.subarray(0, total))) : null;
+  // Rotate the ring in place; do not allocate another response-sized buffer.
+  tail.subarray(0, at).reverse();
+  tail.subarray(at).reverse();
+  tail.reverse();
+  const s = tail.toString("utf8");
   const last = s.match(/"\s*,\s*"exitCode"\s*:\s*(-?\d+)\s*\}\s*$/);
   const code = last ?? first.toString("latin1").match(/^\s*\{\s*"exitCode"\s*:\s*(-?\d+)\s*,/);
   const end = last ? last.index : s.search(/"\s*\}\s*$/);
