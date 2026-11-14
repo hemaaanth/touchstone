@@ -1,6 +1,9 @@
 import { TEST_STORE_DIR } from "./helpers/isolated-env"
 import { test, expect } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
+import { execFile as execFileCallback } from "node:child_process"
+import { promisify } from "node:util"
+const execFile = promisify(execFileCallback)
 import { reduceEvents } from "../src/lib/runModel"
 import { buildMessages } from "../src/components/thread-model"
 
@@ -66,16 +69,14 @@ test("matched Ask producer reaches private run stream, snapshot and fresh-proces
   const directory = mkdtempSync(`${TEST_STORE_DIR}/ask-stream-`)
   try {
     const invoke = async (phase: string) => {
-      const child = Bun.spawn([process.execPath, "--no-env-file", "--eval", fixture, phase, directory, new URL("../server/runs.mjs", import.meta.url).href], {
+      const { stdout, stderr } = await execFile(process.execPath, ["--no-env-file", "--eval", fixture, phase, directory, new URL("../server/runs.mjs", import.meta.url).href], {
         cwd: TEST_STORE_DIR,
         env: { PATH: process.env.PATH, HOME: TEST_STORE_DIR, TMPDIR: TEST_STORE_DIR, NODE_PATH: process.env.NODE_PATH,
           SPEND_LEDGER: `${TEST_STORE_DIR}/ask-spend.jsonl`, TOUCHSTONE_GRANT_TOKEN: "test-grant-token", TOUCHSTONE_GRANT_TOKEN_FILE: `${TEST_STORE_DIR}/ask-token`,
           TOUCHSTONE_GRANTS_FILE: `${TEST_STORE_DIR}/ask-grants.json`, TOUCHSTONE_SCOPES_FILE: `${TEST_STORE_DIR}/ask-scopes.json`, TOUCHSTONE_PROVIDERS_FILE: `${TEST_STORE_DIR}/ask-providers.json`, TOUCHSTONE_RESULTS_DIR: directory },
-        stdout: "pipe", stderr: "pipe",
+        timeout: 5000, maxBuffer: 2 * 1024 * 1024,
       })
-      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
       expect(stderr).toBe("")
-      expect(code).toBe(0)
       return JSON.parse(stdout)
     }
     const live = await invoke("write")

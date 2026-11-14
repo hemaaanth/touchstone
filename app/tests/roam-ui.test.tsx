@@ -247,7 +247,7 @@ test("Ask client treats missing delivery metadata and lost HTTP as uncertain, no
     for (const status of [400, 403, 409, 500]) {
       globalThis.fetch = (async () => Response.json({ error: "refused" }, { status })) as typeof fetch
       try { await answerRunAsk("r1", { ask: "one", reply: "first" }); throw Error("Expected refusal") }
-      catch (error) { expect(error).toBeInstanceOf(AskAnswerError); expect((error as AskAnswerError).uncertain).toBe(true) }
+      catch (error) { expect(error instanceof AskAnswerError).toBe(true); expect((error as AskAnswerError).uncertain).toBe(true) }
     }
     globalThis.fetch = (async () => Response.json({ error: "not sent", delivery: "not-sent" }, { status: 409 })) as typeof fetch
     await expect(answerRunAsk("r1", { ask: "one", reply: "first" })).rejects.toMatchObject({ uncertain: false })
