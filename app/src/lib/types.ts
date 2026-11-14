@@ -640,12 +640,55 @@ export interface RunView {
 export type RoamOption = "wallet" | "email"
 export interface RoamSelection { freeRoam: boolean; options: RoamOption[] }
 export type AskAnswer = { ask: string; done: boolean } | { ask: string; reply: string }
+
+export interface AskOption {
+  id: string
+  label: string
+  description?: string
+}
+export type AskPresentation =
+  | { options: AskOption[]; select: "single"; min?: never; max?: never }
+  | { options: AskOption[]; select: "multiple"; min?: number; max?: number }
+export function formatAskChoiceReply(presentation: AskPresentation, ids: readonly string[]) {
+  const choices = presentation.options.filter((option) => ids.includes(option.id))
+  const min = presentation.select === "single" ? 1 : presentation.min ?? 1
+  const max = presentation.select === "single" ? 1 : presentation.max ?? presentation.options.length
+  if (new Set(ids).size !== ids.length || choices.length !== ids.length || choices.length < min || choices.length > max) throw new Error("Choose the required number of options.")
+  const reply = presentation.select === "single"
+    ? `Selected option: ${choices[0].id} (${choices[0].label})`
+    : `Selected options:\n${choices.map((option) => `- ${option.id} (${option.label})`).join("\n")}`
+  if (reply.length > 4000) throw new Error("The selected answer exceeds 4,000 characters. Use a shorter free-text Reply.")
+  return reply
+}
+
+const presentationEncoder = new TextEncoder()
+const askObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
+
+// Saved events may predate server validation. Never turn malformed metadata into controls.
+export function isAskPresentation(value: unknown): value is AskPresentation {
+  if (!askObject(value) || Object.keys(value).some((k) => !["options", "select", "min", "max"].includes(k))) return false
+  const options = value.options
+  if (!Array.isArray(options) || options.length < 2 || options.length > 12 || (value.select !== "single" && value.select !== "multiple")) return false
+  if (value.select === "single" && ("min" in value || "max" in value)) return false
+  const min = value.min === undefined ? 1 : value.min, max = value.max === undefined ? options.length : value.max
+  if (value.select === "multiple" && (typeof min !== "number" || typeof max !== "number" || !Number.isInteger(min) || !Number.isInteger(max) || min < 1 || min > max || max > options.length)) return false
+  const seen = new Set<string>()
+  for (const option of options) {
+    if (!askObject(option) || Object.keys(option).some((k) => !["id", "label", "description"].includes(k))) return false
+    if (typeof option.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(option.id) || seen.has(option.id)) return false
+    if (typeof option.label !== "string" || !option.label.trim() || option.label.trim().length > 200 || ("description" in option && (typeof option.description !== "string" || option.description.length > 500))) return false
+    seen.add(option.id)
+  }
+  try { return presentationEncoder.encode(JSON.stringify(value)).length <= 16384 }
+  catch { return false }
+}
 export interface HumanAsk {
   id: string
   agent: string
   kind: string
   question: string
   detail?: string
+  presentation?: AskPresentation
   t: number
   answer?: "done" | "cancel" | "reply"
   interrupted?: boolean

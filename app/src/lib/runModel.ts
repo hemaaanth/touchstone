@@ -24,7 +24,7 @@ import type {
   TargetScope,
   Verdict,
 } from "./types"
-import { COORDINATOR } from "./types"
+import { COORDINATOR, isAskPresentation } from "./types"
 import { CANDIDATE_NOTE, candidateFrom, measuredNote, measuredPocs, type Candidate } from "./candidate"
 
 // The live stream is a flat list of raw engine events. The UI wants an ordered
@@ -331,7 +331,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
         break
       case "ask-human":
         if (str(e.id) && str(e.agent) && str(e.question) && !humanAsks.some((a) => a.id === e.id))
-          humanAsks.push({ id: str(e.id), agent: str(e.agent), kind: str(e.kind), question: str(e.question), t: num(e.t) ?? 0, ...(typeof e.detail === "string" ? { detail: e.detail } : {}) })
+          humanAsks.push({ id: str(e.id), agent: str(e.agent), kind: str(e.kind), question: str(e.question), t: num(e.t) ?? 0, ...(typeof e.detail === "string" ? { detail: e.detail } : {}), ...(e.kind === "question" && isAskPresentation(e.presentation) ? { presentation: e.presentation } : {}) })
         break
       case "ask-answered": {
         const ask = humanAsks.find((a) => a.id === e.id && a.agent === e.agent)
