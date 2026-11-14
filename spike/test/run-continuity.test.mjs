@@ -36,6 +36,10 @@ import path from "node:path";
 const scripts = [];
 const spawns = [];
 function spawn(cmd, args, opts = {}) {
+  if (forbidExternal) {
+    assert.equal(cmd, process.execPath);
+    assert.equal(args[0], path.resolve(import.meta.dirname, "../agent-run.mjs"));
+  }
   const script = scripts.shift() ?? { events: [] };
   const call = { args, env: opts.env ?? {} };
   spawns.push(call);
@@ -65,7 +69,13 @@ function spawn(cmd, args, opts = {}) {
   });
   return child;
 }
-mock.module("node:child_process", { exports: { ...realChild, default: { ...realChild, spawn }, spawn } });
+let forbidExternal = false;
+const externalCalls = [];
+const external = Object.fromEntries(["exec", "execFile", "execSync", "execFileSync", "spawnSync", "fork"].map((name) => [name, (...args) => {
+  if (forbidExternal) { externalCalls.push(name); throw new Error(`Unexpected external operation: ${name}`); }
+  return realChild[name](...args);
+}]));
+mock.module("node:child_process", { exports: { ...realChild, ...external, default: { ...realChild, ...external, spawn }, spawn } });
 // rmSync with one extra: a test can act at the moment a delete fails part way, as
 // a process that still runs in the workspace could.
 let onRmFail = null;
@@ -77,13 +87,19 @@ const rmSyncHooked = (target, opts) => {
     throw err;
   }
 };
-mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, rmSync: rmSyncHooked }, rmSync: rmSyncHooked } });
+let beforeWrite = null;
+const writeHooked = (...args) => { beforeWrite?.(...args); return realFs.writeFileSync(...args); };
+const existsHooked = (file) => String(file).endsWith("/.env.local") ? false : realFs.existsSync(file);
+const fsHooks = { rmSync: rmSyncHooked, writeFileSync: writeHooked, existsSync: existsHooked };
+mock.module("node:fs", { exports: { ...realFs, default: { ...realFs.default, ...fsHooks }, ...fsHooks } });
 // A live run opens a Docker boundary. These tests have no live target, so a live
 // scope gets an inert gate. Every other scope keeps the real one.
 const realReach = await import("../lib/reach.mjs");
 // One extra: a test can act while the reach opens (a boot that resumes a run waits here).
 let reachHook = null;
+const reachCalls = [];
 const openReach = async (target, opts) => {
+  reachCalls.push({ target, opts });
   await reachHook?.();
   return target.kind === "live" ? { env: {}, stop: async () => {} } : realReach.openReach(target, opts);
 };
@@ -721,6 +737,7 @@ test("safety: a kept live AI/MCP workspace holds no credential; a follow-up gets
     assert.equal(told.length, 1);
     assert.equal(told[0].message, "The access token of this run's scope is no longer in the scope library, so this follow-up runs without it.");
     assert.ok(third.env.WORKSPACE_NOTE.includes(told[0].message), "the agent is told the same");
+    assert.match(third.env.WORKSPACE_NOTE, /Live requests are unavailable/, "the credential note and live limitation both survive");
     assert.ok(!r.events.some((e) => e.ev === "reply-error"));
 
     // The same when the workspace is gone too: one event, both facts.
@@ -2038,3 +2055,118 @@ test("messages: every refusal and every reply error is a full sentence that says
   for (const text of said) assert.match(text, sentence, text);
   assert.equal(said.length, 5);
 });
+
+// No live endpoint, container or inference: only saved binding lifetimes.
+const staleBinding = { net: "stopped-network", gate: "http://stopped-gate:8080", baseUrl: "https://app.example.com", image: "synthetic-image" };
+const configFile = (ws) => path.join(ws, ".touchstone.json");
+const configsFor = (ws, packs) => [ws, ...(packs.length > 1 ? packs.map((p) => path.join(ws, "modules", p)) : [])];
+function putStale(ws) {
+  const file = configFile(ws);
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), live: staleBinding }));
+}
+async function offlineLiveFixture(packs, fn) {
+  const saved = packs.map((p) => [p, PACKS[p].prepass, PACKS[p].teardown]);
+  const fetch = globalThis.fetch;
+  const reachesBefore = reachCalls.length;
+  externalCalls.length = 0;
+  forbidExternal = true;
+  globalThis.fetch = () => { externalCalls.push("fetch"); throw new Error("Unexpected network fetch"); };
+  for (const p of packs) {
+    PACKS[p].prepass = async (ws) => { putStale(ws); return {}; };
+    PACKS[p].teardown = async () => {};
+  }
+  try {
+    const live = addLiveScope({ hosts: ["app.example.com"], pack: packs, permission: true });
+    scripts.push({ act: ({ args }) => { writeFileSync(args[3], ""); writeFileSync(path.join(args[4], "notes.md"), "saved observation"); }, events: [done] });
+    const { id } = await createRun({ targetId: live.id, packs, mode: "solo" });
+    await settle(id);
+    await fn({ id, ws: spawns.at(-1).args[4] });
+    assert.equal(reachCalls.length, reachesBefore + 1, "only the initial run opens reach");
+    assert.deepEqual(externalCalls, [], "no external execution, even if a caller catches its error");
+  } finally {
+    beforeWrite = null;
+    forbidExternal = false;
+    globalThis.fetch = fetch;
+    for (const [p, prepass, teardown] of saved) Object.assign(PACKS[p], { prepass, teardown });
+  }
+}
+
+for (const packs of [["web"], ["web", "ai-mcp"], ["ai-mcp", "web"]]) {
+  test(`offline live follow-up: clears closed and legacy bindings (${packs.join(",")})`, async () => {
+    await offlineLiveFixture(packs, async ({ id, ws }) => {
+      for (const part of configsFor(ws, packs)) assert.equal(JSON.parse(readFileSync(configFile(part), "utf8")).live, undefined, "closed workspace has no live binding");
+      // An older release retained these fields, including a root in a joined run.
+      for (const part of configsFor(ws, packs)) putStale(part);
+      const keys = ["TOUCHSTONE_SCOPE_PROXY", "TOUCHSTONE_SCOPE_ALLOW"];
+      const env = keys.map((k) => process.env[k]);
+      try {
+        for (const k of keys) process.env[k] = "inherited-stale-route";
+        scripts.push({ act: (call) => {
+          call.configs = configsFor(call.args[4], packs).map((part) => JSON.parse(readFileSync(configFile(part), "utf8")));
+          call.note = readFileSync(path.join(call.args[4], "notes.md"), "utf8");
+          call.requests = Promise.all(packs.map((p) => {
+            const part = packs.length > 1 ? path.join(call.args[4], "modules", p) : call.args[4];
+            const tool = PACKS[p].tools(part, { poc: 0, found: [], passed: new Map() }).find((t) => t.name === "run_request_script");
+            return tool.execute({ label: "old-route", script: 'await request("GET", "/")' });
+          }));
+        }, events: [done] });
+        steerRun(id, "Explain the saved observation.");
+        await settle(id, 1);
+        const call = spawns.at(-1);
+        assert.equal(call.args[4], ws);
+        assert.equal(call.note, "saved observation");
+        for (const result of await call.requests) {
+          assert.equal(result.isError, true);
+          assert.match(result.output[0].text, /Live requests are unavailable/);
+          assert.doesNotMatch(result.output[0].text, /Keep investigating|No known harm pattern/);
+        }
+        assert.ok(call.configs.every((cfg) => cfg.live === undefined));
+        for (const k of keys) assert.equal(call.env[k], undefined);
+        assert.match(call.env.WORKSPACE_NOTE, /Live requests are unavailable/);
+        assert.match(call.env.WORKSPACE_NOTE, /Start a new run/);
+      } finally {
+        keys.forEach((k, i) => { if (env[i] === undefined) delete process.env[k]; else process.env[k] = env[i]; });
+      }
+    });
+  });
+}
+
+test("offline live follow-up: rebuilt workspace preserves the rebuild note and adds the limitation", async () => {
+  await offlineLiveFixture(["web", "ai-mcp"], async ({ id, ws }) => {
+    rmSync(ws, { recursive: true, force: true });
+    scripts.push({ events: [done] });
+    steerRun(id, "Explain the earlier result.");
+    await settle(id, 1);
+    const call = spawns.at(-1);
+    assert.notEqual(call.args[4], ws);
+    assert.match(call.env.WORKSPACE_NOTE, /new workspace built from the same scope/);
+    assert.match(call.env.WORKSPACE_NOTE, /Live requests are unavailable/);
+    for (const part of configsFor(call.args[4], ["web", "ai-mcp"])) assert.equal(JSON.parse(readFileSync(configFile(part), "utf8")).live, undefined);
+  });
+});
+
+for (const packs of [["web"], ["web", "ai-mcp"], ["ai-mcp", "web"]]) {
+  test(`offline live follow-up: invalidation failure closes the reply and allows another message (${packs.join(",")})`, async () => {
+    await offlineLiveFixture(packs, async ({ id, ws }) => {
+      for (const part of configsFor(ws, packs)) putStale(part);
+      const failedConfig = configFile(packs.length > 1 ? path.join(ws, "modules", "web") : ws);
+      const count = spawns.length;
+      beforeWrite = (file, text) => {
+        if (file === failedConfig && !JSON.parse(text).live) throw new Error("synthetic config write failure");
+      };
+      try {
+        steerRun(id, "Explain the result.");
+        const r = await settle(id, 1);
+        assert.equal(spawns.length, count);
+        assert.equal(r.replying, false);
+        assert.match(r.events.findLast((e) => e.ev === "reply-error")?.error ?? "", /live|workspace/i);
+        assert.ok(!existsSync(ws), "unsafe-to-keep workspace is cleaned up");
+      } finally { beforeWrite = null; }
+      scripts.push({ events: [done] });
+      steerRun(id, "Explain it now.");
+      const r = await settle(id, 2);
+      assert.equal(r.replying, false);
+      assert.equal(spawns.length, count + 1, "run ownership was released");
+    });
+  });
+}

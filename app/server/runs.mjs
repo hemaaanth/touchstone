@@ -1288,6 +1288,21 @@ function workspaceConfigs(ws) {
 
 const WS_LINK = "The modules folder of this workspace is not a real folder (a link, or outside the workspace), so nothing can safely be written into it."
 
+// Kept files outlive the reach boundary; its saved route must not outlive it.
+function clearLiveBindings(ws) {
+  const files = workspaceConfigs(ws)
+  if (!files) throw new Error(WS_LINK)
+  let live = false
+  for (const file of files) {
+    const cfg = JSON.parse(readFileSync(file, "utf8"))
+    live ||= cfg.kind === "live"
+    if (!Object.hasOwn(cfg, "live")) continue
+    delete cfg.live
+    writeFileSync(file, JSON.stringify(cfg, null, 2))
+  }
+  return live
+}
+
 // Change the `mcp` part of every workspace config, which the AI/MCP tools read.
 // A credential in a kept workspace is scrubbed and restored in all of them: the
 // root of a joined run carries no `mcp`, only its ai-mcp module does. Throws
@@ -1464,6 +1479,7 @@ function keepWorkspace(run, ws) {
     // The same when the old record cannot be read: it may have said `restored`.
     if ((old === null || old?.restored) && !secrets.length) return false
     if (secrets.length) scrubSecrets(real, secrets)
+    clearLiveBindings(real)
     const mark = path.join(real, WS_MARK)
     rmSync(mark, { recursive: true, force: true }) // the agent could have put a link here
     writeFileSync(mark, markText(run.id), { flag: "wx", mode: 0o600 })
@@ -1783,13 +1799,22 @@ export function followUp(run, text, clientId) {
   // it ends here, and a Stop that was taken starts no worker.
   const start = (note) => {
     if (run.stopping) return void stopped()
+    try {
+      if (clearLiveBindings(run.ws)) note = [note, "Live requests are unavailable in this follow-up. Do not retry request scripts. You can discuss saved results and inspect saved files. Start a new run for live testing."].filter(Boolean).join(" ")
+    } catch {
+      broadcast(run, { t: Date.now(), ev: "reply-error", error: "The workspace's old live route could not be cleared, so this follow-up did not start. Start a new run for live testing." })
+      return void end()
+    }
+    const env = { ...process.env }
+    delete env.TOUCHSTONE_SCOPE_PROXY
+    delete env.TOUCHSTONE_SCOPE_ALLOW
     const since = Date.now()
     const errFrom = run.stderr.length // the card must not quote an earlier worker's output
     const child = spawn(process.execPath, [ENGINE, "child", "chat", run.db, run.ws], {
       cwd: SPIKE,
-      // No reach env: a follow-up gets no route to a live target, as before.
+      // No inherited reach env: follow-ups keep files, not a live route.
       env: {
-        ...process.env,
+        ...env,
         TOUCHSTONE_PARENT_PIPE: "1",
         PROVIDER: runProvider(run),
         ALIAS: run.alias,
