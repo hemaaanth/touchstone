@@ -73,6 +73,17 @@ function snapshot(value) {
   };
 }
 
+const quoteShell = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+const ROOT_SHELL = `if [ "$(id -u)" = 0 ]; then exec sh -c "$1"; fi; command -v sudo >/dev/null 2>&1 || exit 76; sudo -n true >/dev/null 2>&1 || exit 76; exec sudo -n env "PATH=$PATH" sh -c "$1"`;
+
+// The standard image's toolbox can run as its image user despite the create
+// request's user=root. Use only its existing passwordless-sudo permission.
+// This program executes inside that sandbox. It never invokes host sudo.
+export function rootShellCommand(command) {
+  if (typeof command !== "string") invalid();
+  return `sh -c ${quoteShell(ROOT_SHELL)} touchstone-root ${quoteShell(command)}`;
+}
+
 // Toolbox deployments use either wire name. The published SDK normalizes
 // legacy `code` to `exitCode`; every app consumer should see that same shape.
 export function daytonaExecution(value) {
@@ -170,7 +181,7 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
       if (!id(sandboxId)) invalid();
       return call("GET", `/sandbox/${encodeURIComponent(sandboxId)}`, undefined, { timeout: timeoutMs });
     },
-    machine(sandbox) {
+    machine(sandbox, { asRoot = false } = {}) {
       if (!id(sandbox?.id) || typeof sandbox.toolboxProxyUrl !== "string" || sandbox.toolboxProxyUrl.length > 2048) invalid();
       let toolbox;
       try {
@@ -180,7 +191,7 @@ export function daytonaShellApi(config, { fetch: transport = globalThis.fetch } 
       const baseUrl = `${toolbox.href.replace(/\/$/, "")}/${encodeURIComponent(sandbox.id)}`;
       return {
         id: sandbox.id, fresh: true,
-        exec: async (command, seconds, { timeoutMs = (seconds + 15) * 1000 } = {}) => daytonaExecution(await call("POST", "/process/execute", { command, timeout: seconds }, { baseUrl, timeout: Math.min(timeoutMs, (seconds + 15) * 1000) })),
+        exec: async (command, seconds, { timeoutMs = (seconds + 15) * 1000 } = {}) => daytonaExecution(await call("POST", "/process/execute", { command: asRoot ? rootShellCommand(command) : command, timeout: seconds }, { baseUrl, timeout: Math.min(timeoutMs, (seconds + 15) * 1000) })),
         upload: (path, bytes) => {
           const form = new FormData();
           form.append("file", new Blob([bytes]), "file");

@@ -15,6 +15,7 @@ import { execConfig, closeRun, remoteDocker, roamMachine, shq } from "../lib/day
 import { checkRoamSelection, SHELL_PROBE_VERSION } from "../lib/daytona-setup.mjs";
 import { beginRoamOperation, roamBinding, roamAccountBinding, setRoamSelectionState, updateRoamOperation } from "../lib/daytona-state.mjs";
 import { createHash } from "node:crypto";
+import { unwrapRootCommand } from "./helpers/daytona-fixture.mjs";
 import { withAgent } from "../lib/event.mjs";
 let REPLACED_NOTICE, roamTools;
 let moduleId = 0;
@@ -258,6 +259,7 @@ function fakeDaytona(dir) {
     if (u.includes("/files/download")) return new Response(resTar, { status: 200 });
     if (u.includes("/process/execute")) {
       const body = JSON.parse(init.body);
+      body.command = unwrapRootCommand(body.command);
       const id = u.split("/process/")[0].split("/").pop();
       const q = fake.uploads.get(body.command.split(" ").at(-1));
       if (!q || q.op === "run") fake.execs.push({ id, ...(q ? { command: q.command, timeout: q.seconds } : body) });

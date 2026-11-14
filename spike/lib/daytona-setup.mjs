@@ -239,7 +239,7 @@ async function waitForTestMachine(api, accepted, dependencies) {
       try { ready = (await machine.exec("true", 5, { timeoutMs: remaining }))?.exitCode === 0; }
       catch (error) { if (!["daytona_unreachable", "daytona_response_invalid"].includes(error.code) && error.status !== 404) throw error; }
       if (now() >= deadline) break;
-      if (ready) return machine;
+      if (ready) return api.machine({ ...sandbox, toolboxProxyUrl: toolbox }, { asRoot: true });
     } else if (sandbox && !["creating", "starting", "pending", "pending_build", "pulling", "queued"].includes(sandbox.state)) {
       throw daytonaError("daytona_sandbox_start_failed");
     }

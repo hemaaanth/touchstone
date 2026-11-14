@@ -3,6 +3,17 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+// The fake executor interprets the fixed wrapper's quoted command argument;
+// actual wrapper routing is tested separately with harmless shell fixtures.
+export function unwrapRootCommand(command) {
+  const marker = " touchstone-root ";
+  const at = command.startsWith("sh -c ") ? command.indexOf(marker) : -1;
+  if (at < 0) return command;
+  const quoted = command.slice(at + marker.length);
+  assert.ok(quoted.startsWith("'") && quoted.endsWith("'"));
+  return quoted.slice(1, -1).replaceAll("'\\''", "'");
+}
+
 const tick = () => new Promise((r) => setImmediate(r));
 export async function settle() {
   for (let i = 0; i < 100; i++) await tick();
@@ -60,7 +71,7 @@ export async function daytonaFixture(fn) {
       return new Response(null, { status: 204 });
     }
     if (u.pathname.endsWith("/process/execute")) {
-      const { command } = JSON.parse(init.body);
+      const command = unwrapRootCommand(JSON.parse(init.body).command);
       assert.ok(f.bootReads <= 0, "no command before the machine starts");
       if (command === "true") return json({ exitCode: 0, result: "" });
       if (command.includes("touchstone-prerequisites-ready")) {

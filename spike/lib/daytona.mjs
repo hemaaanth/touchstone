@@ -56,7 +56,7 @@ import { scrubError, scrubUrl } from "./redact-url.mjs";
 import { saveStore, withStoreLock } from "./grant-store.mjs";
 import { MANIFEST } from "./images.mjs";
 import { pendingMachines, recordPendingMachine, clearPendingMachines } from "./daytona-pending.mjs";
-import { daytonaError, daytonaShellApi, daytonaExecution, confirmDaytonaDeletion } from "./daytona-api.mjs";
+import { daytonaError, daytonaShellApi, daytonaExecution, rootShellCommand, confirmDaytonaDeletion } from "./daytona-api.mjs";
 import { checkRoamSelection, requireRoamReady } from "./daytona-setup.mjs";
 import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding, setRoamSelectionState, updateRoamOperation } from "./daytona-state.mjs";
 
@@ -288,7 +288,7 @@ function client(c) {
     exec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
       { timeoutMs: (seconds + 30) * 1000 })),
     // The same call for a free-roam machine: the answer is read with a size limit.
-    roamExec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command, timeout: seconds },
+    roamExec: async (m, command, seconds) => daytonaExecution(await call("POST", `${m.toolbox}/process/execute`, { command: rootShellCommand(command), timeout: seconds },
       { timeoutMs: (seconds + 30) * 1000, cap: ROAM_ANSWER_BYTES })),
     upload: (m, path, buf) => {
       const form = new FormData();
