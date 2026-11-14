@@ -87,8 +87,9 @@ async function openHarness(db, ws, state) {
   const registry = createRegistry();
   // A child that a follow-up reopens holds the brief of its spawn. The fleet
   // gives it the current one with its next message (fleet.mjs createFleet).
-  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "" });
+  // The fleet gets the pack tool list: a free-roam child loses every one of them.
   const tools = [...pack.tools(ws, state), ...(navy ? sourceNavTools(ws) : [])];
+  const fleet = createFleet({ system, costOf, brief: process.env.SCOPE_BRIEF ?? "", briefChange, changed: process.env.BRIEF_CHANGE ?? "", packTools: tools });
   registry.install(defineExtension({ name: pack.id, tools: fleet ? fleet.wrapTools(tools) : tools }));
   if (fleet) registry.install(fleet.extension);
   const reports = [];

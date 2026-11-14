@@ -363,5 +363,5 @@ test("the engine gives the fleet the worker's brief, the change text and the cha
   // agent-run.mjs runs on import, so its wiring is pinned by its source.
   const src = readFileSync(new URL("../agent-run.mjs", import.meta.url), "utf8");
   assert.match(src, /import \{[^}]*\bbriefChange\b[^}]*\} from "\.\/lib\/targets\.mjs"/);
-  assert.match(src, /createFleet\(\{ system, costOf, brief: process\.env\.SCOPE_BRIEF \?\? "", briefChange, changed: process\.env\.BRIEF_CHANGE \?\? "" \}\)/);
+  assert.match(src, /createFleet\(\{ system, costOf, brief: process\.env\.SCOPE_BRIEF \?\? "", briefChange, changed: process\.env\.BRIEF_CHANGE \?\? "", /);
 });

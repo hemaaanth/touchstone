@@ -8,6 +8,7 @@
 //
 // The first process is this same file, started as a plain program. It is killed
 // with SIGKILL while the child's model call is in flight: a crash, not a close.
+import "./helpers/isolated-env.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
