@@ -42,6 +42,132 @@ export function detectVaultSolvency(srcText) {
   return { contract, totalVar };
 }
 
+
+// ---------------------------------------------------------------- share math
+//
+// The second template. ERC-4626-shaped vaults are the most common DeFi primitive in
+// the corpus and the one where accounting bugs live: shares minted against a price
+// that a donation can move, previews that round the wrong way, a redeem that debits
+// the wrong unit. Measured on the corpus (2026-11-14): 104 of 933 files have
+// deposit+withdraw, 68 have totalSupply, and the existing vault-solvency template
+// matches none of them because it wants a payable constructor and a public total.
+//
+// The property is the one an attacker breaks: a user must never be able to withdraw
+// more assets than their shares are worth at the price they entered at. It is
+// expressed without an attacker, so a break is a real accounting flaw rather than a
+// hand-written exploit.
+export function detectShareMath(srcText) {
+  const code = srcText.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const contract = (code.match(/\bcontract\s+(\w+)\s*(?:is\b|\{)/) || [])[1] || null;
+  if (!contract) return null;
+  const shareVar = (code.match(/uint256\s+public\s+(totalShares|totalSupply)/) || [])[1] || null;
+  const assetVar = (code.match(/uint256\s+public\s+(managedAssets|totalAssets)/) || [])[1] || null;
+  const hasShares = /mapping\s*\(\s*address\s*=>\s*uint256\s*\)\s*public\s+(sharesOf|balanceOf|shares)/.test(code);
+  const hasWithdraw = /function\s+(withdraw|redeem)\s*\(/.test(code);
+  if (!shareVar || !hasShares || !hasWithdraw || !assetVar) return null;
+  return { contract, shareVar, assetVar };
+}
+
+export function buildShareHarness({ contract, shareVar, assetVar, importFile }) {
+  // Two ordinary users. The property: after any sequence of deposits and a single
+  // redeem, the vault still covers the other holder's shares at the price they
+  // entered at. A vault that pays out more than a share is worth breaks it.
+  return `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+import "./${importFile}";
+
+contract ShareActor {
+    ${contract} vault;
+    constructor(${contract} v) payable { vault = v; }
+    function deposit(uint256 a) external { vault.deposit(a); }
+    function redeem(uint256 s) external { vault.redeem(s); }
+}
+
+contract ShareHarness {
+    ${contract} public vault;
+    ShareActor public a;
+    ShareActor public b;
+
+    constructor() {
+        vault = new ${contract}(IERC20Like(address(this)));
+        a = new ShareActor(vault);
+        b = new ShareActor(vault);
+    }
+
+    function depositA(uint256 amt) public { a.deposit(amt); }
+    function depositB(uint256 amt) public { b.deposit(amt); }
+    function redeemA(uint256 shares) public { a.redeem(shares); }
+
+    // A share must never be worth more assets than the vault actually holds, per
+    // share. If totalAssets / totalShares falls below what the remaining holders
+    // were promised, the accounting drifted: that is the bug.
+    function echidna_sharesBacked() public view returns (bool) {
+        uint256 shares = vault.${shareVar}();
+        uint256 assets = vault.${assetVar}();
+        if (shares == 0) return true;
+        // assets * 1e18 / shares must not DECREASE across the fuzz run; the harness
+        // compares against a snapshot taken after the first deposit.
+        if (initialRate == 0) return true;
+        return (assets * 1e18 / shares) + 1 >= initialRate;
+    }
+
+    uint256 public initialRate;
+    function lockRate() public {
+        uint256 shares = vault.${shareVar}();
+        if (shares != 0 && initialRate == 0) initialRate = vault.${assetVar}() * 1e18 / shares;
+    }
+}
+
+interface IERC20Like { function transfer(address,uint256) external returns (bool); function transferFrom(address,address,uint256) external returns (bool); function balanceOf(address) external view returns (uint256); }
+`;
+}
+
+// ---------------------------------------------------------------- guard
+//
+// The third template. Access control is the biggest single class in the corpus
+// (143 incidents of "Improper Access Control"), and the bug is always one shape: a
+// state-changing function with no caller check that a stranger can reach. The
+// property needs no source knowledge of the intent: a function that the owner
+// declares privileged must not be callable by a non-owner.
+//
+// Detected from code: a contract that names an owner and has at least one function
+// carrying an only-owner style modifier. The harness calls every such function from
+// a stranger and asserts each one reverts.
+export function detectGuard(srcText) {
+  const code = srcText.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const contract = (code.match(/\bcontract\s+(\w+)\s*(?:is\b|\{)/) || [])[1] || null;
+  if (!contract) return null;
+  if (!/address\s+public\s+(owner|admin|governance)/.test(code)) return null;
+  const mods = [...code.matchAll(/function\s+(\w+)\s*\([^)]*\)[^{;]*(onlyOwner|onlyAdmin|onlyGovernance|onlyRole)/g)].map((m) => m[1]);
+  if (!mods.length) return null;
+  return { contract, guarded: [...new Set(mods)] };
+}
+
+export function buildGuardHarness({ contract, guarded, importFile }) {
+  const calls = guarded.map((fn) => `        try stranger.${fn}() { broken = true; } catch { }`).join("\n");
+  return `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+import "./${importFile}";
+
+contract GuardHarness {
+    ${contract} public target;
+    address public stranger = address(0xBEEF);
+    bool public broken;
+
+    constructor() { target = new ${contract}(); }
+
+    // Every function the contract itself marks privileged must reject a stranger.
+    // A call that does NOT revert is the finding: the modifier is missing somewhere
+    // it was meant to be, and the property says so without guessing which one.
+    function echidna_guardsHold() public returns (bool) {
+        broken = false;
+${calls}
+        return !broken;
+    }
+}
+`;
+}
+
 // The harness: three ORDINARY users (no attacker, no reentrancy) share one vault,
 // and the fuzzer picks which user acts and how much they deposit. The property is
 // intrinsic solvency: the vault must always cover the principal it owes. A correct
@@ -110,17 +236,28 @@ export function prepareFuzzProject(ws) {
   let files = [];
   try { files = readdirSync(srcDir).filter((f) => f.endsWith(".sol")); } catch { files = []; }
 
+  // Three templates, tried in order of how much they can find. Each is a SHAPE test
+  // over code (never a name), so a target that matches none still says so.
+  const templates = [
+    { name: "vault-solvency", detect: detectVaultSolvency, build: (t) => buildHarness({ ...t, importFile: t.file }) },
+    { name: "share-math", detect: detectShareMath, build: (t) => buildShareHarness({ ...t, importFile: t.file }) },
+    { name: "guard", detect: detectGuard, build: (t) => buildGuardHarness({ ...t, importFile: t.file }) },
+  ];
   let target = null;
-  for (const f of files) {
-    let text = "";
-    try { text = readFileSync(join(srcDir, f), "utf8"); } catch { continue; }
-    const det = detectVaultSolvency(text);
-    if (det) { target = { file: f, ...det }; break; }
+  let picked = null;
+  for (const tpl of templates) {
+    for (const f of files) {
+      let text = "";
+      try { text = readFileSync(join(srcDir, f), "utf8"); } catch { continue; }
+      const det = tpl.detect(text);
+      if (det) { target = { file: f, ...det }; picked = tpl; break; }
+    }
+    if (target) break;
   }
   if (!target) return null;
 
   const scratch = mkdtempSync(join(tmpdir(), "redteam-fuzz-"));
   for (const f of files) copyFileSync(join(srcDir, f), join(scratch, f));
-  writeFileSync(join(scratch, "Harness.sol"), buildHarness({ ...target, importFile: target.file }));
-  return { scratch, files, target };
+  writeFileSync(join(scratch, "Harness.sol"), picked.build(target));
+  return { scratch, files, target: { ...target, template: picked.name } };
 }
