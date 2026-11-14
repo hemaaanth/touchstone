@@ -172,7 +172,8 @@ export class DesktopRuntime {
       else throw Error('Invalid lease');
       res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(result)); return;
     }
-    if (req.method !== 'GET' || url.pathname.startsWith('/files/') || !(publicFiles.has(url.pathname) || this.valid(s, token) && s.lease.owns(url.searchParams.get('lease')))) { res.writeHead(403); res.end('Session ended'); return; }
+    // Capture and other unused Voxl routes can outlive a viewer lease.
+    if (req.method !== 'GET' || !(publicFiles.has(url.pathname) || url.pathname === '/view' && this.valid(s, token) && s.lease.owns(url.searchParams.get('lease')))) { res.writeHead(403); res.end('Session ended'); return; }
     if (url.pathname === '/view') url.pathname = '/';
     url.searchParams.delete('token'); url.searchParams.delete('lease');
     secure(res, ancestors);

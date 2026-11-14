@@ -152,6 +152,25 @@ test('proxy strips capabilities and denies file transfer and writes in both mode
   }
 });
 
+test('authenticated capture and unused HTTP routes never reach Voxl across release or takeover', async t => {
+  for (const action of ['release', 'takeover']) {
+    const f = await open(t);
+    const secret = (await lease(f.port)).data.lease;
+    const paths = ['/record?seconds=300', '/record/start', '/record/stop', '/screenshot', '/wait', '/stats', '/healthz', '/index.html', '/files/download', '/unused'];
+    const before = f.received.length;
+    for (const path of paths) {
+      const separator = path.includes('?') ? '&' : '?';
+      const result = await http(f.port, path + separator + 'token=' + token + '&lease=' + secret);
+      assert.equal(result.status, 403, path + ' must be denied before forwarding');
+    }
+    assert.equal(f.received.length, before, 'No capture or unused request may reach the upstream');
+    if (action === 'release') await lease(f.port, 'release', { lease: secret });
+    else await lease(f.port, 'acquire', { takeover: true });
+    assert.equal((await lease(f.port, 'status', { lease: secret })).data.current, false);
+    assert.equal(f.received.length, before, 'Revoked viewer has no upstream HTTP response left to receive');
+  }
+});
+
 test('close revokes active sockets, stops child, closes port, and permits a fresh session', async t => {
   const f = await open(t);
   const secret = (await lease(f.port)).data.lease;

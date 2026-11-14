@@ -22,7 +22,7 @@ Voxl listens on loopback only. A small child guardian owns it. Guardian IPC disc
 
 One `ViewerLease` owns at most one pending or active WebSocket. Its transfer ticket supports pop-out without a second active viewer. Lease POSTs and WebSocket upgrades require the exact configured signed preview origin. No localhost or wildcard-origin exception. HTTP proxy credentials, cookies, Origin and Referer are stripped before forwarding. The local Voxl password replaces the outer token.
 
-Watch uses Voxl `--read-only=true` and `--enable-clipboard=false`. In Voxl 0.3.3, the server rejects input and clipboard text commands and every binary input message in read-only mode (`src/server.rs`). Control uses source flag `--enable-clipboard=in`. Both modes disable files, audio, microphone and resize. The wrapper also denies file endpoints and non-GET forwarding. Clipboard suppression alone does not enforce watch; Voxl does.
+Watch uses Voxl `--read-only=true` and `--enable-clipboard=false`. In Voxl 0.3.3, the server rejects input and clipboard text commands and every binary input message in read-only mode (`src/server.rs`). Control uses source flag `--enable-clipboard=in`. Both modes disable files, audio, microphone and resize. HTTP forwarding allows only the authenticated `/view` page and the exact required static files. Capture routes (`/record`, `/screenshot`, `/wait`) and every unused upstream route are denied before forwarding. Clipboard suppression alone does not enforce watch; Voxl does.
 
 ## Image and licensing
 
