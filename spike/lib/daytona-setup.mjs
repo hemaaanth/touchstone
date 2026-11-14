@@ -170,7 +170,7 @@ async function buildSnapshot(config, op, api) {
     }
     throw daytonaError("daytona_unreachable");
   } catch (error) {
-    move(op.id, !posted || error.code === "daytona_rejected" ? "rejected" : "unknown", resourceId, { errorCode: safeCode(error), ...safeStatus(error) });
+    move(op.id, !posted || (!resourceId && error.code === "daytona_rejected") ? "rejected" : "unknown", resourceId, { errorCode: safeCode(error), ...safeStatus(error) });
   }
 }
 

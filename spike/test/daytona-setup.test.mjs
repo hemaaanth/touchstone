@@ -227,3 +227,20 @@ for (const status of [71,72,73,74,75,76,77,78,79,80]) test(`prerequisite ${statu
   assert.equal(f.posts, 1);
   assert.equal(f.deletes, 1);
 }));
+
+test("snapshot polling rejection preserves the accepted resource for reconciliation", async () => fixture(async ({ config, f, deps }) => {
+  const deniedPoll = { ...deps, fetch: (url, init) => new URL(url).pathname === "/api/snapshots/built-id"
+    ? Promise.resolve(new Response("{}", { status: 403 })) : deps.fetch(url, init) };
+  startRoamSnapshotBuild(config, randomUUID(), deniedPoll);
+  await settle();
+  const op = allRoamOperations()[0];
+  assert.equal(op.phase, "unknown");
+  assert.equal(op.resourceId, "built-id");
+  assert.equal(op.errorStatus, 403);
+  startRoamSnapshotBuild(config, randomUUID(), deps);
+  await settle();
+  assert.equal(f.builds, 1, "accepted resource blocks another build");
+  await reconcileRoamSnapshot(config, op.id, deps);
+  assert.equal(allRoamOperations()[0].phase, "complete");
+  assert.equal(f.builds, 1);
+}));
