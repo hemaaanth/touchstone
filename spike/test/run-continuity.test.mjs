@@ -283,6 +283,28 @@ test("A1: a settled line cut on the pipe is read from the engine's events file, 
   assert.equal(r.events.find((e) => e.ev === "no-finding")?.final, "I found no exploitable issue.");
 });
 
+test("a lost submission response can be confirmed and the same request never starts a second engine", async () => {
+  const requestId = "f8364750-ceee-4531-86d8-63b28f7b43bf";
+  const body = { requestId, targetId: scope.id, pack: "review", mode: "solo" };
+  const before = spawns.length;
+  scripts.push({ act: work, events: [fetched, done] });
+  const pending = createRun(body);
+  const accepted = runs.getRunByRequest(requestId);
+  assert.ok(accepted, "acceptance is queryable before setup and the POST response finish");
+  const duplicate = await createRun(body);
+  const first = await pending;
+  assert.equal(duplicate.id, first.id);
+  assert.equal(accepted.id, first.id);
+  await settle(first.id);
+  assert.equal(spawns.length, before + 1);
+  assert.equal((await createRun(body)).id, first.id, "a terminal request stays idempotent");
+  assert.equal(spawns.length, before + 1);
+  await assert.rejects(createRun({ ...body, budgetUsd: 1 }), /different run request/);
+  const record = JSON.parse(readFileSync(path.join(RESULTS, `run-${first.id}.json`), "utf8"));
+  assert.equal(record.result.requestId, requestId);
+  assert.ok(first.events.some((e) => e.ev === "run-request" && e.requestId === requestId));
+});
+
 test("A1: a follow-up whose settled line was cut still gives its answer, not 'exited early'", async () => {
   const { id } = await finished();
   scripts.push({ torn: done });

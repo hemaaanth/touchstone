@@ -330,7 +330,7 @@ function savePhase(run, phase) {
   run.phase = phase
   if (!run.stateFile) return
   const next = `${run.stateFile}.tmp`
-  writeFileSync(next, JSON.stringify({ ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
+  writeFileSync(next, JSON.stringify({ requestId: run.requestId, requestHash: run.requestHash, ws: run.ws, target: run.target, ...(run.packs ? { packs: run.packs } : {}), grantIds: run.grantIds, phase, mode: modeOf(run) ?? run.mode, ...roamSelectionOf(run), modules: run.modules, budget: run.budget, provider: run.provider, model: run.model, leads: run.leads ?? {}, prepass: run.prepass ?? null, settled: run.settled ?? null }), { mode: 0o600 })
   renameSync(next, run.stateFile)
 }
 
@@ -468,6 +468,17 @@ export function getRun(id) {
   return run ? view(run) : null
 }
 
+function runForRequest(requestId) {
+  if (!requestId) return null
+  for (const run of runs.values()) if (run.requestId === requestId) return run
+  return null
+}
+
+export function getRunByRequest(requestId) {
+  const run = runForRequest(requestId)
+  return run ? view(run) : null
+}
+
 // `since` skips events the client already holds (it loaded a snapshot first).
 export function subscribe(id, send, since = 0) {
   const run = runs.get(id)
@@ -524,7 +535,18 @@ export async function createRun(options) {
   return view(run)
 }
 
-function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [] } = {}) {
+function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = "fleet", freeRoam, options = [], requestId } = {}) {
+  if (requestId != null && (typeof requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId))) {
+    throw new Error("The run request ID is invalid. Reload the console before starting a run.")
+  }
+  const requestHash = requestId == null ? null : createHash("sha256").update(JSON.stringify([alias ?? null, targetId ?? null, modules ?? null, budgetUsd ?? null, pack ?? null, packs ?? null, mode, freeRoam ?? null, options])).digest("hex")
+  if (requestId) {
+    const accepted = runForRequest(requestId)
+    if (accepted) {
+      if (accepted.requestHash !== requestHash) throw new Error("This request ID already belongs to a different run request.")
+      return { run: accepted, setup: Promise.resolve() }
+    }
+  }
   const roam = roamSelection(freeRoam, options, mode)
   const cfg = readConfig()
   // The total spend cap comes first: at or above it, or with a ledger that
@@ -601,6 +623,8 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
   for (const f of [db, `${db}-wal`, `${db}-shm`, eventsFile, streamFile]) rmSync(f, { force: true })
 
   const run = {
+    requestId,
+    requestHash,
     reach: null,
     id,
     alias,
@@ -660,6 +684,7 @@ function registerRun({ alias, targetId, modules, budgetUsd, pack, packs, mode = 
   broadcast(run, modulesEvent(plan))
   // The provider and model, so a follow-up after a restart uses the same pair.
   broadcast(run, { t: Date.now(), ev: "provider", provider: provider.id, model: run.model })
+  if (requestId) broadcast(run, { t: Date.now(), ev: "run-request", requestId, requestHash })
 
   setRunStatus(run, "starting")
   return { run, setup: prepareNewRun(run) }
@@ -2164,6 +2189,8 @@ function persistRun(run, findings) {
   const worst = findings[0] ?? null
   const result = {
     alias: run.alias,
+    requestId: run.requestId,
+    requestHash: run.requestHash,
     provider: runProvider(run),
     // The scope this run was pointed at, from the target library, so history and
     // the findings ledger can show which resource was under evaluation.
@@ -2278,6 +2305,7 @@ function rebuildEvents(id, record, engineEvents) {
   const tN = engineEvents[engineEvents.length - 1]?.t ?? t0
   const evs = []
   if (r.target) evs.push({ t: t0, ev: "scope", scope: r.target })
+  if (r.requestId) evs.push({ t: t0, ev: "run-request", requestId: r.requestId, requestHash: r.requestHash })
   if (Array.isArray(r.modules)) evs.push({ ...modulesEvent(r.modules), t: t0 })
   if (r.static) evs.push({ t: t0, ev: "static-scan", failed: 0, ...r.static })
   if (r.fuzz) evs.push({ t: t0, ev: "fuzz-scan", ...r.fuzz })
@@ -2530,8 +2558,11 @@ function savedRun(id, events, mtime) {
   if (TERMINAL.includes(status) && !events.some((e) => e.ev === "closed") && !existsSync(path.join(RESULTS_DIR, `run-${id}.state.json`))) events.push({ t: end, ev: "closed" })
   const loaded = { submitted, candidates: candidatesOf(events) }
   dropMeasuredSubmitted(loaded) // a finding that became a measured candidate is not one of the run's findings
+  const request = events.find((e) => e.ev === "run-request") ?? saved ?? {}
   return {
     id,
+    requestId: request.requestId,
+    requestHash: request.requestHash,
     alias,
     target: null,
     scope,

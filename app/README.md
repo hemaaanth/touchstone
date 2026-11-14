@@ -53,9 +53,13 @@ live-network RPC endpoints are not supported by the current chain modules.
 Do not collect an unused RPC key during onboarding. A live-chain design must bind
 each endpoint to a network, scope, read/fork policy, and credential boundary first.
 
-If the connection drops during Start, acceptance is unknown: the run may already
-exist. Reload the run list before starting another run. A transport failure is not
-evidence that the inference key is missing.
+Docker creates network interfaces when a live scope starts. On the same host,
+Chromium can abort an in-flight browser request with `ERR_NETWORK_CHANGED`, even
+when the server sent a valid response. Each submission therefore has a durable
+request ID. After a lost response, the client confirms that exact ID with read-only
+requests and opens the accepted run. It never automatically repeats the POST.
+An explicit retry of an unconfirmed submission reuses its ID, so it cannot create
+a duplicate. The ID survives server reloads in the run checkpoint and event stream.
 
 ## Run history and scan progress
 

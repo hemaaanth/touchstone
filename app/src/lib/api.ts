@@ -51,7 +51,10 @@ export class StalePageError extends Error {}
 // is told (reportStalePage), and the caller gets the server's sentence as a
 // StalePageError.
 async function writeResult<T>(url: string, res: Response): Promise<T> {
-  const json = await res.json().catch(() => ({}))
+  const json = await res.json().catch((error: unknown) => {
+    if (res.ok) throw error
+    return {}
+  })
   if (!res.ok) {
     const error = (json as { error?: string }).error ?? `${url} -> ${res.status}`
     if (res.status === 403) {
@@ -206,6 +209,9 @@ export function runStartBody(alias: string, targetId: string | undefined, budget
   return { alias, targetId, budgetUsd, mode, ...roam, ...(packs.length > 1 ? { packs } : { pack: packs[0] }) }
 }
 
+// Keep an unconfirmed submission identity for an explicit retry of the same inputs.
+let pendingRunStart: { body: string; requestId: string } | null = null
+
 export async function startRun(
   alias: string,
   targetId?: string,
@@ -214,12 +220,32 @@ export async function startRun(
   mode?: RunMode,
   roam?: RoamSelection,
 ): Promise<RunView> {
+  const body = runStartBody(alias, targetId, budgetUsd, modules, mode, roam)
+  const key = JSON.stringify(body)
+  if (pendingRunStart?.body !== key) pendingRunStart = { body: key, requestId: crypto.randomUUID() }
+  const { requestId } = pendingRunStart
   try {
-    return await postJson<RunView>("/api/runs", runStartBody(alias, targetId, budgetUsd, modules, mode, roam))
+    const run = await postJson<RunView>("/api/runs", { ...body, requestId })
+    pendingRunStart = null
+    return run
   } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error("The connection was lost before the server response arrived. The run may already exist. Reload the run list before starting another run.", { cause: error })
+    if (error instanceof TypeError || error instanceof SyntaxError) {
+      // Docker interface changes can make Chromium discard an accepted POST response.
+      for (const delay of [0, 200, 500, 1000, 2000, 3000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        try {
+          const { run } = await getJson<{ run: RunView | null }>(`/api/runs?requestId=${encodeURIComponent(requestId)}`)
+          if (run && typeof run.id === "string") {
+            pendingRunStart = null
+            return run
+          }
+        } catch {
+          // The interface change can interrupt confirmation requests too.
+        }
+      }
+      throw new Error("Could not confirm the run. Check your connection and try again. Retrying this submission will not create a duplicate.", { cause: error })
     }
+    pendingRunStart = null
     throw error
   }
 }

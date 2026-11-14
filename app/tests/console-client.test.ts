@@ -66,15 +66,24 @@ test("a read of the client sends no token", async () => {
   expect(sent[0].headers["x-touchstone-grant-token"]).toBe(undefined)
 })
 
-test("a lost start response warns about an existing run instead of telling the operator to retry", async () => {
+test("an unconfirmed submission keeps the same identity for an explicit retry", async () => {
   const savedFetch = g.fetch
-  g.fetch = async () => { throw new TypeError("Failed to fetch") }
+  let firstId = ""
+  g.fetch = async (_url: string, init: { method?: string; body?: string } = {}) => {
+    if (init.method === "POST") firstId = JSON.parse(init.body ?? "{}").requestId
+    throw new TypeError("Failed to fetch")
+  }
   try {
-    await expect(api.startRun("alias", "scope")).rejects.toThrow("The run may already exist")
+    await expect(api.startRun("alias", "scope")).rejects.toThrow("will not create a duplicate")
+    g.fetch = async (_url: string, init: { body?: string } = {}) => {
+      expect(JSON.parse(init.body ?? "{}").requestId).toBe(firstId)
+      return new Response(JSON.stringify({ id: "accepted-on-retry" }), { status: 201 })
+    }
+    expect((await api.startRun("alias", "scope")).id).toBe("accepted-on-retry")
   } finally {
     g.fetch = savedFetch
   }
-})
+}, 15000)
 
 test("a refused start preserves the server's actionable setup error", async () => {
   const savedFetch = g.fetch
@@ -84,4 +93,60 @@ test("a refused start preserves the server's actionable setup error", async () =
   } finally {
     g.fetch = savedFetch
   }
+})
+
+test("a dropped start response opens the exact accepted run without submitting another run", async () => {
+  const savedFetch = g.fetch
+  let requestId = ""
+  let posts = 0
+  g.fetch = async (url: string, init: { method?: string; body?: string } = {}) => {
+    if (init.method === "POST") {
+      posts += 1
+      requestId = JSON.parse(init.body ?? "{}").requestId
+      throw new TypeError("Failed to fetch")
+    }
+    expect(url).toBe(`/api/runs?requestId=${requestId}`)
+    return new Response(JSON.stringify({ run: { id: "accepted-run", alias: "alias", status: "starting" } }), { status: 200 })
+  }
+  try {
+    const run = await api.startRun("alias", "scope")
+    expect(run.id).toBe("accepted-run")
+    expect(posts).toBe(1)
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/)
+  } finally {
+    g.fetch = savedFetch
+  }
+})
+
+test("a truncated success response is reconciled instead of returning an empty run", async () => {
+  const savedFetch = g.fetch
+  let posts = 0
+  g.fetch = async (_url: string, init: { method?: string } = {}) => {
+    if (init.method === "POST") {
+      posts += 1
+      return new Response("{", { status: 201 })
+    }
+    return new Response(JSON.stringify({ run: { id: "accepted-before-truncation" } }), { status: 200 })
+  }
+  try {
+    expect((await api.startRun("alias", "scope")).id).toBe("accepted-before-truncation")
+    expect(posts).toBe(1)
+  } finally {
+    g.fetch = savedFetch
+  }
+})
+
+test("confirmation survives a second network change without sending another POST", async () => {
+  const savedFetch = g.fetch
+  let posts = 0, reads = 0
+  g.fetch = async (_url: string, init: { method?: string } = {}) => {
+    if (init.method === "POST") { posts++; throw new TypeError("Failed to fetch") }
+    if (++reads === 1) throw new TypeError("Failed to fetch")
+    return new Response(JSON.stringify({ run: { id: "recovered-after-network-change" } }), { status: 200 })
+  }
+  try {
+    expect((await api.startRun("alias", "scope")).id).toBe("recovered-after-network-change")
+    expect(posts).toBe(1)
+    expect(reads).toBe(2)
+  } finally { g.fetch = savedFetch }
 })
