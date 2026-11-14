@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ test("the actual Vite Settings route can finish a disposable shell test after st
   let server;
   try {
     const app = fileURLToPath(new URL("../../app/", import.meta.url));
+    assert.equal(existsSync(join(app, "../spike/.env.local")), false, "Run this integration check from a test checkout without spike/.env.local.");
     const require = createRequire(join(app, "package.json"));
     const { createServer } = await import(require.resolve("vite"));
     server = await createServer({
