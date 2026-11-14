@@ -27,6 +27,19 @@ const texts = (events: RunEvent[]) => {
   return prose(buildMessages(state, state.steps, state.status, false))
 }
 
+// The agent's streamed reasoning and prose, keyed by attempt so a new number
+// starts a new block (as a fresh thinking-delta does on a real run).
+const think = (attempt: number, text: string): RunEvent => ({ ev: "thinking-delta", conv: "root", attempt, text })
+const say = (attempt: number, text: string): RunEvent => ({ ev: "assistant-delta", conv: "root", attempt, text })
+// The tool-call parts a run reduces to, in order, as the renderer sees them.
+type WorkPart = { toolName?: string; args?: { work?: { kind: string }[] } }
+const partsOf = (events: RunEvent[], live = false) => {
+  const state = reduceEvents(events)
+  return buildMessages(state, state.steps, "running", live).flatMap((m) =>
+    Array.isArray(m.content) ? (m.content as WorkPart[]) : [],
+  )
+}
+
 test("a run that ends as a coverage error still shows the agent's final answer", () => {
   const final: RunEvent = { ev: "no-finding", final: "I found nothing in x/bank." }
   assert.deepEqual(texts([final, { ev: "status", status: "no-finding" }]), ["I found nothing in x/bank."])
@@ -456,6 +469,40 @@ test("Ask is a stable unresolved native tool part between groups, then one recei
   assert.equal(answered.filter((p) => p.toolName === "ask_human").length, 1)
 })
 
+
+test("a think → request → think stretch folds into one work card; prose stays outside", () => {
+  const parts = partsOf([
+    think(0, "First thought"),
+    { ev: "run_request_script", label: "prompt-injection probe", attempt: 1 },
+    { ev: "run_request_script-done", label: "prompt-injection probe", calls: 3, matched: null },
+    think(1, "Second thought"),
+    say(0, "Here is what I found."),
+  ])
+  // One card folds both thoughts and the request, in order; the real prose is
+  // its own part, never swallowed by the card.
+  assert.deepEqual(parts.map((p) => p.toolName), ["work", "say"])
+  assert.deepEqual(parts[0].args?.work?.map((s) => s.kind), ["reasoning", "request", "reasoning"])
+})
+
+test("a lone thought is a plain reasoning row, not a work card", () => {
+  const parts = partsOf([think(0, "Just thinking"), say(0, "Done.")])
+  assert.deepEqual(parts.map((p) => p.toolName), ["reasoning", "say"])
+})
+
+test("on a live run the tail thought stays a standalone row below the work card", () => {
+  const parts = partsOf(
+    [
+      think(0, "First"),
+      { ev: "run_request_script", label: "probe", attempt: 1 },
+      { ev: "run_request_script-done", label: "probe", calls: 2 },
+      think(1, "Still thinking"),
+    ],
+    true,
+  )
+  // The finished work folds away; the live tail thought keeps shimmering below.
+  assert.deepEqual(parts.map((p) => p.toolName), ["work", "reasoning"])
+  assert.deepEqual(parts[0].args?.work?.map((s) => s.kind), ["reasoning", "request"])
+})
 
 test("a lost send response retains its copy for a later agent receipt", async () => {
   const copy: Sent = { id: "lost-response", text: "continue", base: 0, mode: "sending" }

@@ -79,22 +79,59 @@ export function buildMessages(
     buf = null
   }
 
-  // A contiguous run of the agent's non-cognition steps collapses into one
-  // ToolGroup card instead of a row each, so recon stops jittering the layout.
-  let group: Step[] = []
-  const flushGroup = () => {
-    if (buf && group.length) {
+  // A contiguous stretch of the agent's working steps — its reasoning, the
+  // requests it scripts, and its recon tool calls — folds into one card instead
+  // of a row (or a wall of thinking blocks) each. So a long think → probe →
+  // think stretch reads as one line the operator can open, not a goofy stack of
+  // "Thought it through". The live tail thought and the agent's prose stay
+  // outside it.
+  let work: Step[] = []
+  const flushWork = () => {
+    if (!buf || !work.length) {
+      work = []
+      return
+    }
+    const batch = work
+    work = []
+    const thoughts = batch.filter((s) => s.kind === "reasoning").length
+    // No thinking to combine: a pure run of recon tools or request probes stays
+    // the existing ToolGroup card, so candidate notes keep their label and a
+    // lone tool reads as itself.
+    if (thoughts === 0) {
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
-        toolCallId: `group:${group[0].key}`,
+        toolCallId: `group:${batch[0].key}`,
         toolName: "toolgroup",
-        args: { group },
+        args: { group: batch },
         result: "done",
       })
+      return
     }
-    group = []
+    // One lone thought with nothing around it stays a plain reasoning row — and
+    // its first one takes the waiting row's key, so that row becomes it with no
+    // remount.
+    if (batch.length === 1) {
+      const lead = buf.parts.length === (fleet ? 1 : 0)
+      ;(buf.parts as unknown[]).push({
+        type: "tool-call",
+        toolCallId: lead ? `lead:${buf.id}` : batch[0].key,
+        toolName: "reasoning",
+        args: { step: batch[0] },
+        result: "done",
+      })
+      return
+    }
+    // A mixed or repeated stretch: one work card, thoughts and tool calls in
+    // the order they happened.
+    ;(buf.parts as unknown[]).push({
+      type: "tool-call",
+      toolCallId: `work:${batch[0].key}`,
+      toolName: "work",
+      args: { work: batch },
+      result: "done",
+    })
   }
-  const GROUPED = new Set<Step["kind"]>(["open", "list", "read", "scan", "note", "cap"])
+  const WORK = new Set<Step["kind"]>(["reasoning", "request", "open", "list", "read", "scan", "note", "cap"])
 
   // Fleet: consecutive spawns become one row.
   let spawn: Step[] = []
@@ -124,7 +161,7 @@ export function buildMessages(
   steps.forEach((step, i) => {
     if (step.kind !== "subagent" || !fleet) flushSpawn()
     if (step.kind === "operator") {
-      flushGroup()
+      flushWork()
       flush()
       msgs.push({ role: "user", id: step.key, content: [{ type: "text", text: step.label }] })
       answers = turnId(step, owner)
@@ -140,7 +177,7 @@ export function buildMessages(
 
     // Fleet: a message between agents stands on its own, outside any block.
     if (fleet && step.kind === "message") {
-      flushGroup()
+      flushWork()
       flush()
       msgs.push({
         role: "assistant",
@@ -154,16 +191,20 @@ export function buildMessages(
     }
     if (!buf) buf = open(step.key)
     if (fleet && step.kind === "subagent") {
-      flushGroup()
+      flushWork()
       spawn.push(step)
       return
     }
-    if (GROUPED.has(step.kind)) {
-      group.push(step)
+    // Reasoning, request probes and recon tools fold into one work card — but
+    // the live tail thought stays out, below the card, so "Thinking…" keeps
+    // shimmering while the finished work folds away above it.
+    if (WORK.has(step.kind) && !(step.kind === "reasoning" && i === tailIndex)) {
+      work.push(step)
       return
     }
-    // A cognition/outcome step ends the current group and renders on its own.
-    flushGroup()
+    // A prose line, the live tail thought, or any outcome step ends the work
+    // stretch and renders on its own.
+    flushWork()
     if (step.kind === "ask" && step.ask) {
       ;(buf.parts as unknown[]).push({
         type: "tool-call",
@@ -259,7 +300,7 @@ export function buildMessages(
     })
   })
   flushSpawn()
-  flushGroup()
+  flushWork()
 
   flush()
   return msgs
