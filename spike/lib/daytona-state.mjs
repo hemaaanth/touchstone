@@ -36,6 +36,7 @@ function load(file) {
       if (r.run != null && !HASH.test(r.run)) fail();
       for (const key of ["resourceId", "regionId", "snapshotId", "probeVersion", "snapshotName", "errorCode"]) if (r[key] != null && (typeof r[key] !== "string" || !ID.test(r[key]))) fail();
       for (const key of ["snapshotRef", "recipeHash"]) if (r[key] != null && !HASH.test(r[key])) fail();
+      if (r.errorStatus != null && (!Number.isInteger(r.errorStatus) || r.errorStatus < 400 || r.errorStatus > 599)) fail();
       if (r.probePassed != null && typeof r.probePassed !== "boolean") fail();
       if (["created", "cleanup"].includes(r.phase) && r.action !== "runtime" && !r.resourceId) fail();
     } else fail();
@@ -121,6 +122,10 @@ export function updateRoamOperation(binding, id, expectedPhase, phase, resourceI
         if (typeof details[key] !== "string" || !ID.test(details[key])) fail();
         operation[key] = details[key];
       }
+    }
+    if (details.errorStatus != null) {
+      if (!Number.isInteger(details.errorStatus) || details.errorStatus < 400 || details.errorStatus > 599) fail();
+      operation.errorStatus = details.errorStatus;
     }
     if (details.probePassed != null) {
       if (typeof details.probePassed !== "boolean") fail();

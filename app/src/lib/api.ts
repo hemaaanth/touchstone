@@ -438,7 +438,7 @@ export interface ShellSetup {
   ready: boolean
   legacyPending?: number
   previousPending?: number
-  operation?: { id: string; action: "snapshot" | "probe"; phase: string; probePassed: boolean; errorCode: string | null; canReconcile: boolean; snapshotId?: string | null; snapshotName?: string | null } | null
+  operation?: { id: string; action: "snapshot" | "probe"; phase: string; probePassed: boolean; errorCode: string | null; errorStatus?: number | null; canReconcile: boolean; snapshotId?: string | null; snapshotName?: string | null } | null
 }
 export interface ShellDiscovery {
   regions: { id: string; name: string }[]

@@ -22,5 +22,8 @@ export async function probeDaytonaShell(machine) {
     if (!records.some((r) => r.host === "127.0.0.1" && r.method === "GET" && r.status === 200 && new URL(r.url).pathname === "/touchstone-probe")) throw new Error();
     stage = "supervisor";
     await probeManagedShell(machine);
-  } catch { throw daytonaError(`daytona_shell_${stage}_failed`); }
+  } catch (error) {
+    if (["daytona_unreachable", "daytona_rejected", "daytona_response_invalid"].includes(error.code)) throw error;
+    throw daytonaError(`daytona_shell_${stage}_failed`);
+  }
 }

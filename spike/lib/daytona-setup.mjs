@@ -8,6 +8,8 @@ import { allRoamOperations, beginRoamOperation, roamAccountBinding, roamBinding,
 export const SHELL_PROBE_VERSION = "managed-shell-1";
 const drivers = new Map();
 const hash = (text) => createHash("sha256").update(text).digest("hex");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const safeStatus = (error) => Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 ? { errorStatus: error.status } : {};
 const terminal = (op) => ["complete", "rejected"].includes(op.phase);
 const safeCode = (error) => typeof error?.code === "string" && error.code.startsWith("daytona_") ? error.code : "daytona_response_invalid";
 const operation = (id) => allRoamOperations().find((op) => op.id === id);
@@ -52,6 +54,7 @@ export function roamSetupView(config) {
         id: latest.id, action: latest.action, phase: latest.phase,
         probePassed: latest.probePassed === true,
         errorCode: latest.errorCode ?? null,
+        errorStatus: latest.errorStatus ?? null,
         ...(latest.action === "snapshot" ? { snapshotId: latest.resourceId ?? null, snapshotName: latest.snapshotName ?? null } : {}),
         canReconcile: !terminal(latest) && !drivers.has(latest.id),
       } : null,
@@ -149,7 +152,7 @@ async function buildSnapshot(config, op, api) {
     posted = true;
     const snapshot = await api.createSnapshot({
       name, regionId: region.id, sandboxClass: "container", cpu: 2, memory: 4, disk: 10,
-      buildInfo: { dockerfileContent: recipe },
+      buildInfo: { dockerfileContent: recipe, contextHashes: [] },
     });
     if (!snapshot || typeof snapshot.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(snapshot.id) || snapshot.name !== name) throw daytonaError("daytona_response_invalid");
     resourceId = snapshot.id;
@@ -166,7 +169,7 @@ async function buildSnapshot(config, op, api) {
     }
     throw daytonaError("daytona_unreachable");
   } catch (error) {
-    move(op.id, !posted || error.code === "daytona_rejected" ? "rejected" : "unknown", resourceId, { errorCode: safeCode(error) });
+    move(op.id, !posted || error.code === "daytona_rejected" ? "rejected" : "unknown", resourceId, { errorCode: safeCode(error), ...safeStatus(error) });
   }
 }
 
@@ -207,8 +210,31 @@ async function removeTestMachine(api, id, dependencies) {
   await confirmDaytonaDeletion(() => api.sandbox(id), dependencies);
 }
 
+// POST /sandbox accepts the resource before it necessarily starts. Match the
+// SDK lifecycle: observe this same ID, then check its toolbox before probing.
+// Polling never sends another create.
+async function waitForTestMachine(api, id, dependencies) {
+  const pause = dependencies?.sleep ?? sleep;
+  const deadline = Date.now() + 60_000;
+  for (let i = 0; i < 60 && Date.now() < deadline; i++) {
+    let sandbox;
+    try { sandbox = await api.sandbox(id); }
+    catch (error) { if (error.status !== 404 && error.code !== "daytona_unreachable") throw error; }
+    if (sandbox && sandbox.id !== id) throw daytonaError("daytona_response_invalid");
+    if (sandbox?.state === "started") {
+      const machine = api.machine(sandbox);
+      try { if ((await machine.exec("true", 5))?.exitCode === 0) return machine; }
+      catch (error) { if (!["daytona_unreachable", "daytona_response_invalid"].includes(error.code) && error.status !== 404) throw error; }
+    } else if (sandbox && !["creating", "starting", "pending", "pending_build", "pulling", "queued"].includes(sandbox.state)) {
+      throw daytonaError("daytona_sandbox_start_failed");
+    }
+    await pause(1000);
+  }
+  throw daytonaError("daytona_sandbox_start_failed");
+}
+
 async function testShell(config, op, dependencies, api) {
-  let selected, sandbox, posted = false, passed = false, errorCode = null;
+  let selected, sandbox, posted = false, passed = false, errorCode = null, errorStatus = {};
   try {
     selected = await checkRoamSelection(config, dependencies);
     setRoamSelectionState(op.binding, "checked", selected);
@@ -217,18 +243,20 @@ async function testShell(config, op, dependencies, api) {
     sandbox = await api.createSandbox({ touchstone: "1", loadout: "shell-setup", nonce: op.nonce, operation: op.id }, selected.snapshotId, { stopMin: 5, deleteMin: 0, ttlMinutes: 10 });
     if (!sandbox || typeof sandbox.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sandbox.id)) throw daytonaError("daytona_response_invalid");
     move(op.id, "created", sandbox.id);
-    await probeDaytonaShell(api.machine(sandbox));
+    const machine = await waitForTestMachine(api, sandbox.id, dependencies);
+    await probeDaytonaShell(machine);
     passed = true;
   } catch (error) {
     errorCode = safeCode(error);
+    errorStatus = safeStatus(error);
     if (errorCode === "daytona_snapshot_unavailable") setRoamSelectionState(op.binding, "unavailable");
   }
   if (!sandbox?.id || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sandbox.id)) {
-    move(op.id, posted && errorCode !== "daytona_rejected" && errorCode !== "daytona_snapshot_unavailable" ? "unknown" : "rejected", undefined, { errorCode: errorCode || "daytona_response_invalid" });
+    move(op.id, posted && errorCode !== "daytona_rejected" && errorCode !== "daytona_snapshot_unavailable" ? "unknown" : "rejected", undefined, { errorCode: errorCode || "daytona_response_invalid", ...errorStatus });
     return;
   }
   // Record proof and cleanup separately. Readiness requires both.
-  move(op.id, "cleanup", sandbox.id, { probePassed: passed, ...(errorCode ? { errorCode } : {}) });
+  move(op.id, "cleanup", sandbox.id, { probePassed: passed, ...errorStatus, ...(errorCode ? { errorCode } : {}) });
   try { await removeTestMachine(api, sandbox.id, dependencies); }
   catch {
     move(op.id, "cleanup", undefined, { errorCode: "daytona_cleanup_pending" });

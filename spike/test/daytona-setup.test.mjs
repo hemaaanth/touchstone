@@ -108,7 +108,8 @@ test("the explicit snapshot action sends a fixed remote Dockerfile and never upl
   assert.equal(body.sandboxClass, "container");
   assert.match(body.buildInfo.dockerfileContent, /FROM --platform=linux\/amd64 node:22-bookworm-slim@sha256:/);
   assert.doesNotMatch(body.buildInfo.dockerfileContent, /^\s*(COPY|ADD)\s/im);
-  assert.deepEqual(Object.keys(body.buildInfo), ["dockerfileContent"]);
+  assert.deepEqual(body.buildInfo.contextHashes, []);
+  assert.deepEqual(Object.keys(body.buildInfo).sort(), ["contextHashes", "dockerfileContent"]);
   assert.equal(allRoamOperations()[0].phase, "complete");
   assert.equal(roamSetupView(config).ready, false, "a built snapshot still needs explicit selection and test");
   startRoamSnapshotBuild(config, id, deps);
@@ -164,4 +165,27 @@ test("a second real setup proof cannot bypass an uncertain runtime create for th
     globalThis.fetch = realFetch;
     for (const [k, v] of Object.entries(old)) v == null ? delete process.env[k] : process.env[k] = v;
   }
+}));
+
+test("setup waits for the accepted machine to start before checking capabilities", async () => fixture(async ({ config, f, deps }) => {
+  f.initialBootReads = 3;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(roamSetupView(config).ready, true);
+  assert.equal(f.posts, 1);
+  assert.equal(f.deletes, 1);
+  const create = f.calls.findIndex((c) => c.path === "/api/sandbox" && c.method === "POST");
+  const execute = f.calls.findIndex((c) => c.path.endsWith("/process/execute"));
+  assert.ok(f.calls.slice(create + 1, execute).filter((c) => c.method === "GET").length >= 4);
+}));
+
+test("a machine that never starts is cleaned up without testing capabilities or creating another", async () => fixture(async ({ config, f, deps }) => {
+  f.neverStarts = true;
+  startRoamShellTest(config, randomUUID(), deps);
+  await settle();
+  assert.equal(roamSetupView(config).ready, false);
+  assert.equal(f.posts, 1);
+  assert.equal(f.deletes, 1);
+  assert.equal(allRoamOperations()[0].errorCode, "daytona_sandbox_start_failed");
+  assert.ok(!f.calls.some((c) => c.path.endsWith("/process/execute")));
 }));

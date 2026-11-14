@@ -14,7 +14,7 @@ export async function daytonaFixture(fn) {
   process.env.TOUCHSTONE_DAYTONA_STATE_FILE = join(dir, "setup.json");
   process.env.EVENTS_FILE = join(dir, "events.jsonl");
   const config = { backend: "daytona", apiUrl: "https://fixture.test/api", apiKey: "synthetic-key", target: "fixture-region", roamSnapshot: "selected" };
-  const f = { calls: [], posts: 0, builds: 0, deletes: 0, cleanupFails: false, uncertain: false, failProbe: false, holdProbe: null, ref: "source-1", sandbox: null, snapshot: null, uploads: new Map(), epoch: 0 };
+  const f = { calls: [], posts: 0, builds: 0, deletes: 0, initialBootReads: 0, bootReads: 0, cleanupFails: false, uncertain: false, failProbe: false, holdProbe: null, ref: "source-1", sandbox: null, snapshot: null, uploads: new Map(), epoch: 0 };
   const json = (x, status = 200) => new Response(JSON.stringify(x), { status });
   const deps = { sleep: async () => {}, fetch: async (url, init) => {
     const u = new URL(url);
@@ -34,12 +34,13 @@ export async function daytonaFixture(fn) {
       f.posts++;
       const body = JSON.parse(init.body);
       f.epoch = 0;
-      f.sandbox = { id: `probe-${randomUUID()}`, toolboxProxyUrl: "https://tb.fixture.test", labels: body.labels };
+      f.bootReads = f.initialBootReads;
+      f.sandbox = { id: `probe-${randomUUID()}`, state: "creating", toolboxProxyUrl: "https://tb.fixture.test", labels: body.labels };
       if (f.uncertain || (f.uncertainRuntime && body.labels.loadout === "free-roam")) throw new Error("synthetic-secret");
       return json(f.sandbox);
     }
     if (u.pathname === "/api/sandbox") return json({ items: f.sandbox && !f.hideMachine ? [f.sandbox] : [] });
-    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "GET") return f.sandbox ? json(f.sandbox) : json({}, 404);
+    if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "GET") return f.sandbox ? json({ ...f.sandbox, state: f.neverStarts || f.bootReads-- > 0 ? "creating" : "started" }) : json({}, 404);
     if (u.hostname === "fixture.test" && u.pathname.startsWith("/api/sandbox/") && init.method === "DELETE") {
       f.deletes++;
       if (f.cleanupFails) return json({ message: "synthetic-secret" }, 409);
@@ -53,6 +54,8 @@ export async function daytonaFixture(fn) {
     }
     if (u.pathname.endsWith("/process/execute")) {
       const { command } = JSON.parse(init.body);
+      assert.ok(f.bootReads <= 0, "no command before the machine starts");
+      if (command === "true") return json({ exitCode: 0, result: "" });
       if (command.includes("touchstone-prerequisites-ready")) {
         await f.holdProbe?.();
         return json({ exitCode: f.failProbe ? 1 : 0, result: "touchstone-prerequisites-ready" });

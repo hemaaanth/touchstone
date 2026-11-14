@@ -8,6 +8,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const STATES = new Set(["building", "pending", "pulling", "snapshotting", "active", "inactive", "error", "build_failed", "removing"]);
 
 const MESSAGES = {
+  daytona_sandbox_start_failed: "The disposable Daytona machine did not become ready. Its cleanup remains tracked.",
   daytona_shell_prerequisites_failed: "The snapshot did not pass the Linux, root, Node.js and shell prerequisites. Choose another snapshot or create the Touchstone shell snapshot.",
   daytona_shell_egress_start_failed: "The shell snapshot could not start the request logger. Choose another snapshot or create the Touchstone shell snapshot.",
   daytona_shell_egress_http_failed: "The shell snapshot did not pass its loopback HTTP test.",
