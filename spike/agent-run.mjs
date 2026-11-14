@@ -296,8 +296,10 @@ async function child([, , , mode, db, ws]) {
     const more = settled.status === "done" ? pack.nudge(state) : null;
     const tally = () => ({ found: state.found.length, leads: state.leads ?? 0 });
     const before = more ? { settled, final: (await summarize(root)).final, ...tally() } : null;
-    if (more) settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
-    settled = await fleet?.drain(ctx) ?? settled;
+    if (more) {
+      settled = await (await root.submit({ type: "input", requestId: "continue1", content: more }, ctx)).wait(ctx);
+      settled = await fleet?.drain(ctx) ?? settled;
+    }
 
     const s = await summarize(root);
     flushFinal(s);
