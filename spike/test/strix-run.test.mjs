@@ -1,6 +1,7 @@
 // Strix is best-effort: a Strix failure degrades to "unavailable" with a reason
 // and never throws into the run. Docker is mocked; the file system is real.
 import "./helpers/isolated-env.mjs";
+import { STRIX_SANDBOX_IMAGE } from "../lib/images.mjs";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -59,6 +60,7 @@ test("a crashed Strix agent with no findings is unavailable, not a clean scan", 
   };
   const events = [];
   const r = await runStrix({ baseUrl: "https://example.com", provider, emit: (e) => events.push(e) });
+  assert.ok(calls.some((args) => args.includes(`STRIX_IMAGE=${STRIX_SANDBOX_IMAGE}`)));
   assert.equal(r.status, "unavailable");
   assert.match(r.reason, /agent run failed/);
   assert.equal(r.coverage.status, "unavailable");

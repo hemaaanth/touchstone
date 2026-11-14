@@ -14,7 +14,8 @@
 // group = the pack the image belongs to. optional = heavy / rarely needed.
 // daytona = true for the images that reach a Daytona sandbox on main today.
 
-export const STRIX_SANDBOX_IMAGE = "ghcr.io/usestrix/strix-sandbox:1.3.0";
+const STRIX_SANDBOX_TAG = "ghcr.io/usestrix/strix-sandbox:1.3.0";
+export const STRIX_SANDBOX_IMAGE = `${STRIX_SANDBOX_TAG}@sha256:f6906c3114e504fd1a218fcf028d7a0e46851118403a438b63956de6ea7c4331`;
 
 export const MANIFEST = [
   // ---- base (plain images the code and tests run directly) ----
@@ -178,8 +179,8 @@ export const MANIFEST = [
     ref: "semgrep/semgrep@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed" },
 
   // ---- strix (its own sandbox; carries a docker client) ----
-  { tag: STRIX_SANDBOX_IMAGE, group: "strix", kind: "pull", optional: true,
-    ref: `${STRIX_SANDBOX_IMAGE}@sha256:f6906c3114e504fd1a218fcf028d7a0e46851118403a438b63956de6ea7c4331`,
+  { tag: STRIX_SANDBOX_TAG, group: "strix", kind: "pull", optional: true,
+    ref: STRIX_SANDBOX_IMAGE,
     note: "Runtime sandbox required by the pinned Strix 1.7.0 CLI." },
   { tag: "touchstone/strix:1.7.0", group: "strix", kind: "build",
     file: "spike/tools/strix/Dockerfile", context: "spike", optional: true,
