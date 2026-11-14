@@ -20,7 +20,8 @@ const fixture = String.raw`
   globalThis.fetch = () => {throw Error("Network forbidden")};
   mock.module("node:child_process",()=>({spawn(){throw Error("Worker forbidden")}}));
   mock.module("node:sqlite",()=>({DatabaseSync:class {constructor(){throw Error("Recovery database forbidden")}}}));
-  mock.module("node:fs",()=>({...fs,existsSync(path){if(String(path).endsWith("/.env.local"))return false;return fs.existsSync(path)},readFileSync(path,...rest){if(String(path).endsWith("/.env.local"))throw Error("Env read forbidden");return fs.readFileSync(path,...rest)}}));
+  const nativeFs = { ...fs };
+  mock.module("node:fs",()=>({...nativeFs,existsSync(path){if(String(path).endsWith("/.env.local"))return false;return nativeFs.existsSync(path)},readFileSync(path,...rest){if(String(path).endsWith("/.env.local"))throw Error("Env read forbidden");return nativeFs.readFileSync(path,...rest)}}));
   const allowed = {
     allProviders:()=>({fixture:{id:"fixture",models:{fixture:{id:"test-model"}}}}),
     activeProvider:()=>({id:"fixture",models:{fixture:{id:"test-model"}}}),
@@ -30,7 +31,7 @@ const fixture = String.raw`
   for(const match of fs.readFileSync(base,"utf8").matchAll(/import\s*\{([^}]+)\}\s*from\s*"([^\"]+)"/g)){
     if(!match[2].startsWith(".")||match[2]==="./roam-control.mjs")continue;
     const exports=Object.fromEntries(match[1].split(",").map(name=>{
-      name=name.trim();return [name,name==="PACKS"?{}:allowed[name]??(()=>{throw Error("Unexpected dependency: "+name)})];
+      name=name.trim().split(/\s+as\s+/)[0];return [name,name==="PACKS"?{}:allowed[name]??(()=>{throw Error("Unexpected dependency: "+name)})];
     }));
     mock.module(new URL(match[2],base).href,()=>exports);
   }
