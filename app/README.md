@@ -89,13 +89,24 @@ accepts only `options: []`; wallet and email capabilities are not offered.
 Every worker receives explicit `FREE_ROAM`, an empty `ROAM_OPTIONS`,
 `ROAM_CONTROL_EPOCH`, and the server-owned `SESSION_ARTIFACT_DIR`.
 
-The run workspace combines every agent's human requests in one queue.
+Human questions appear in order inside the originating agent's chat.
+Pending child questions have links beside the existing desktop disclosures.
+The child's composer stays read-only; only the current Ask action can answer.
 Done approves only that exact request. Reply and Cancel do not approve it.
-An answer succeeds only after the current worker acknowledges it.
-Passwords and codes belong in the browser, never in Reply.
+An answer succeeds only after the current worker acknowledges it. Pending controls
+become a neutral read-only receipt on accepted HTTP, even if the stream trails.
+Passwords and codes belong in the browser, never in Reply. Arbitrary secrets
+cannot be reliably detected.
+
+Accepted answer display copies are scrubbed and URL values are omitted. The actual
+model Reply is unchanged. Question and safe answer text use the existing best-effort
+run stream across snapshot/reload; this is not a crash-safe save guarantee. Old
+acknowledgements without display text say the answer text was not saved.
+After uncertain delivery, the first possibly-sent answer stays frozen. Retry that
+same answer or refresh its status; edited answers require a definite pre-send refusal.
 
 Live free-roam agents expose Watch, then explicit Take control, within the human
-queue even when no Ask is pending. Watch uses an existing machine only; it does
+desktop disclosures even when no Ask is pending. Watch uses an existing machine only; it does
 not create, restart or pause one. Desktop access requires the console's exact
 HTTPS origin and a private signed preview.
 
@@ -137,7 +148,8 @@ Screenshots stay withheld in this release. There is no pending-image read except
 Exact-image review and release require separate proof before they can be enabled.
 Session evidence remains unproven. Secret masking is not complete.
 Preview URLs, preview tokens, control acknowledgements, and raw ask replies
-are never sent through the run event stream or stored in run records.
+never enter the run stream. The separate server-owned `ask-receipt` display event
+contains only the matched ask identity, outcome, and bounded sanitized display text.
 
 Desktop and session adapters require the reviewed Wave 4 engine and Daytona
 exports. An unavailable adapter refuses the operation; it is not a live-ready

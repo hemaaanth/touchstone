@@ -55,6 +55,7 @@ export type StepKind =
   | "message"
   | "agent-error"
   | "submitted"
+  | "ask"
   // A quiet line from the system, e.g. "the workspace was rebuilt".
   | "system"
   // A follow-up that stopped. `label` is the reason; `detail` is the raw output.
@@ -103,6 +104,7 @@ export interface Step {
   // A child's handoff or end that a server restart cut off (the server's
   // `subagent-done` with `interrupted: true`). It did not fail.
   cut?: boolean
+  ask?: HumanAsk
 }
 
 // Lower is worse. Matches spike/lib/record.mjs so the UI and the recorder agree
@@ -329,15 +331,26 @@ export function reduceEvents(events: RunEvent[]): RunState {
         freeRoam = e.freeRoam === true
         options = Array.isArray(e.options) ? e.options.filter((v): v is "wallet" | "email" => v === "wallet" || v === "email") : []
         break
-      case "ask-human":
-        if (str(e.id) && str(e.agent) && str(e.question) && !humanAsks.some((a) => a.id === e.id))
-          humanAsks.push({ id: str(e.id), agent: str(e.agent), kind: str(e.kind), question: str(e.question), t: num(e.t) ?? 0, ...(typeof e.detail === "string" ? { detail: e.detail } : {}), ...(e.kind === "question" && isAskPresentation(e.presentation) ? { presentation: e.presentation } : {}) })
+      case "ask-human": {
+        if (str(e.id) && str(e.agent) && str(e.question) && !humanAsks.some((a) => a.id === e.id)) {
+          const ask: HumanAsk = { id: str(e.id), agent: str(e.agent), kind: str(e.kind), question: str(e.question), t: num(e.t) ?? 0, ...(typeof e.detail === "string" ? { detail: e.detail } : {}), ...(e.kind === "question" && isAskPresentation(e.presentation) ? { presentation: e.presentation } : {}) }
+          humanAsks.push(ask)
+          steps.push({ key: `ask:${ask.id}`, kind: "ask", phase, label: ask.question, ask })
+        }
         break
+      }
       case "ask-answered": {
         const ask = humanAsks.find((a) => a.id === e.id && a.agent === e.agent)
-        if (ask && ["done", "cancel", "reply"].includes(str(e.answer))) {
+        if (ask && !ask.answer && ["done", "cancel", "reply"].includes(str(e.answer))) {
           ask.answer = e.answer as HumanAsk["answer"]
           ask.interrupted = e.interrupted === true
+        }
+        break
+      }
+      case "ask-receipt": {
+        const ask = humanAsks.find((a) => a.id === e.id && a.agent === e.agent)
+        if (ask && ask.answer === e.answer && !ask.interrupted && !ask.receipt && (e.text === undefined || (typeof e.text === "string" && e.text.length <= 4000))) {
+          ask.receipt = { id: ask.id, agent: ask.agent, answer: ask.answer!, ...(typeof e.text === "string" ? { text: e.text } : {}) }
         }
         break
       }
@@ -960,7 +973,7 @@ export function reduceEvents(events: RunEvent[]): RunState {
       default:
         break
     }
-    if (who) {
+    if (who && !(e.ev === "ask-human" && who === COORDINATOR)) {
       // Tag the steps this child event added, and keep the run's activity on
       // the coordinator. The child's own activity lives on its node.
       for (let j = stepsBefore; j < steps.length; j++) steps[j].agent ??= who

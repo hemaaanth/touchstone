@@ -30,7 +30,7 @@ import {
   Loader2,
   CirclePause,
 } from "lucide-react"
-import type { ArtifactDoc, ArtifactVersion, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
+import type { ArtifactDoc, ArtifactVersion, HumanAsk, PendingApproval, PrepassView, ProofKind } from "@/lib/types"
 import { COORDINATOR } from "@/lib/types"
 import type { ContextUse } from "@/components/fleet-view"
 import { PrepassDetail } from "@/components/prepass"
@@ -52,6 +52,7 @@ import { ArtifactCard } from "@/components/assistant-ui/elements/artifact-card"
 import { useSmoothText } from "@/components/assistant-ui/elements/streaming-text"
 import { agentName, FleetContext, fleetSpend, stepAge, ThreadOwner } from "@/components/fleet-view"
 import { agentLook, FindingNote, MarkedStep, OpenArtifact, sentence, type CardState, type RunStartView } from "@/components/thread-model"
+import { AskHuman } from "@/components/ask-human"
 
 // The run's thread: the message list, its part renderers, and the composer.
 // The main chat and a fleet peek both render through this one file, so a
@@ -418,6 +419,7 @@ const Text: TextMessagePartComponent = ({ text }) => <Markdown text={text} class
 const StepPart: ToolCallMessagePartComponent = ({ args }) => {
   const a = args as {
     step?: Step
+    ask?: HumanAsk
     group?: Step[]
     pending?: PendingApproval
     card?: CardState
@@ -435,6 +437,7 @@ const StepPart: ToolCallMessagePartComponent = ({ args }) => {
     waiting?: boolean
   }
   if (a.eyebrow) return <Eyebrow text={a.eyebrow} />
+  if (a.ask) return <AskHuman ask={a.ask} />
   // The agent has the message and has not answered yet. This is the same
   // element as live reasoning below, so the row stays put when thinking starts.
   if (a.waiting) return <ReasoningPart step={null} tail />

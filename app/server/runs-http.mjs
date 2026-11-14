@@ -121,7 +121,7 @@ export async function handleRuns(req, res) {
         }
       }
     } catch (err) {
-      send(res, Number.isInteger(err?.status) ? err.status : 409, { error: ["ask", "desktop"].includes(parts[3]) ? String(err?.message ?? "Control request failed.") : "Session artifact is not available for this candidate." })
+      send(res, Number.isInteger(err?.status) ? err.status : 409, { error: ["ask", "desktop"].includes(parts[3]) ? String(err?.message ?? "Control request failed.") : "Session artifact is not available for this candidate.", ...(parts[3] === "ask" ? { delivery: err?.delivery === "not-sent" ? "not-sent" : "unknown" } : {}) })
     }
     return true
   }

@@ -106,10 +106,65 @@ test("queue exact identities, confined asks, strict answers and ack not pipe suc
     expect(settled).toBe(false)
     f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", reply: "must not serialize" })
     await answer
-    expect(JSON.stringify(f.events)).not.toContain("synthetic-private-reply")
+    expect(JSON.stringify(f.events.filter((e) => e.ev !== "ask-receipt"))).not.toContain("synthetic-private-reply")
+    expect(f.events.find((e) => e.ev === "ask-receipt")).toMatchObject({ id: "ask-1", agent: "a-1", answer: "reply", text: "synthetic-private-reply" })
     expect(JSON.stringify(f.events)).not.toContain("must not serialize")
     expect(f.lines[0]).toEqual({ ask: "ask-1", reply: "synthetic-private-reply" })
     await expect(f.api.answer("r1", { ask: "ask-1", done: true })).rejects.toThrow()
+  } finally { await f.end() }
+})
+
+test("safe Ask receipts come only from the frozen submitted candidate after exact acknowledgement", async () => {
+  const f = fixture({ timeoutMs: 100 })
+  try {
+    f.api.consume(f.run, f.child, "epoch-1", ask())
+    const reply = "Use staging. Authorization: Bearer abcdefghijklmnopqrstuvwxyz\nhttps://viewer.example/capability/private-token /preview/private-path"
+    const pending = f.api.answer("r1", { ask: "ask-1", reply })
+    await tick()
+    expect(f.events.some((e) => e.ev === "ask-receipt")).toBe(false)
+    for (const patch of [{ agent: "a-2" }, { id: "other" }]) f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", ...patch })
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-receipt", id: "ask-1", agent: "a-1", answer: "reply", text: "worker forgery" })
+    expect(f.events.some((e) => e.ev === "ask-receipt")).toBe(false)
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", text: "worker forgery" })
+    const accepted = await pending
+    expect(accepted.receipt.text).toContain("Use staging.")
+    for (const secret of ["abcdefghijklmnopqrstuvwxyz", "private-token", "private-path", "viewer.example", "worker forgery"]) expect(JSON.stringify(f.events)).not.toContain(secret)
+    expect(f.lines[0].reply).toBe(reply)
+    expect(f.events.filter((e) => e.ev === "ask-receipt")).toEqual([{ ev: "ask-receipt", ...accepted.receipt, t: 1 }])
+    expect(f.events.find((e) => e.ev === "ask-answered")).toEqual({ ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply", t: 1 })
+  } finally { await f.end() }
+})
+
+test("late category-only acknowledgement cannot certify different retry text", async () => {
+  const f = fixture()
+  try {
+    f.api.consume(f.run, f.child, "epoch-1", ask())
+    await expect(f.api.answer("r1", { ask: "ask-1", reply: "first answer" })).rejects.toMatchObject({ delivery: "unknown" })
+    await expect(f.api.answer("r1", { ask: "ask-1", reply: "different retry" })).rejects.toMatchObject({ delivery: "unknown" })
+    expect(f.lines.filter((l) => l.ask)).toHaveLength(1)
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply" })
+    const accepted = await f.api.answer("r1", { ask: "ask-1", reply: "first answer" })
+    expect(accepted.receipt.text).toBe("first answer")
+    expect(JSON.stringify(f.events)).not.toContain("different retry")
+    expect(f.lines.filter((l) => l.ask)).toHaveLength(1)
+  } finally { await f.end() }
+})
+
+test("definitive synchronous Ask write refusal allows edited retry; duplicates send once", async () => {
+  const f = fixture({ timeoutMs: 100 })
+  try {
+    f.api.consume(f.run, f.child, "epoch-1", ask())
+    const write = f.child.stdin.write
+    f.child.stdin.write = () => { throw Error("private probe detail") }
+    await expect(f.api.answer("r1", { ask: "ask-1", reply: "not sent" })).rejects.toMatchObject({ delivery: "not-sent" })
+    f.child.stdin.write = write
+    const pending = f.api.answer("r1", { ask: "ask-1", reply: "edited answer" })
+    await expect(f.api.answer("r1", { ask: "ask-1", reply: "edited answer" })).rejects.toThrow("pending")
+    await tick()
+    f.api.consume(f.run, f.child, "epoch-1", { ev: "ask-answered", id: "ask-1", agent: "a-1", answer: "reply" })
+    expect((await pending).receipt.text).toBe("edited answer")
+    expect(f.lines.filter((l) => l.ask)).toHaveLength(1)
+    expect(JSON.stringify(f.events)).not.toContain("not sent")
   } finally { await f.end() }
 })
 

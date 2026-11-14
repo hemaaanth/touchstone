@@ -644,6 +644,8 @@ export interface RunView {
 export type RoamOption = "wallet" | "email"
 export interface RoamSelection { freeRoam: boolean; options: RoamOption[] }
 export type AskAnswer = { ask: string; done: boolean } | { ask: string; reply: string }
+export interface AskReceipt { id: string; agent: string; answer: "done" | "cancel" | "reply"; text?: string }
+export interface AskAccepted { ok: true; receipt: AskReceipt }
 
 export interface AskOption {
   id: string
@@ -696,6 +698,7 @@ export interface HumanAsk {
   t: number
   answer?: "done" | "cancel" | "reply"
   interrupted?: boolean
+  receipt?: AskReceipt
 }
 export interface SandboxDesktopIdentity { id: string; epoch?: string }
 export type SandboxDesktopView = { kind: "closed" } | { kind: "open"; agent: string; url: string; expires: number; viewOnly: boolean; desktop: SandboxDesktopIdentity & { epoch: string } }
